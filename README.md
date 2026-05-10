@@ -1,4 +1,4 @@
-# CodeGraph MCP
+# CodeGraph MCP - WIP, Not published here yet.
 
 CodeGraph MCP is a local, Rust-first codebase intelligence layer for AI coding
 agents. It is designed to give models fast, proof-oriented context so they stop
