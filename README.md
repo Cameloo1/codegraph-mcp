@@ -123,7 +123,7 @@ Tree-sitter extraction across 13 languages including TS/JS, Python, Go, Rust, Ja
 
 ## Reports
 
-Benchmark and audit artifacts are kept in-repo so claims can be checked instead of guessed.
+Benchmark and audit artifacts
 
 - `comprehensive_benchmark_latest.md` — current master gate.
 - `compact_proof_db_gate.md` — compact proof DB gate.
