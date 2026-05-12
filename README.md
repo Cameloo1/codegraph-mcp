@@ -2,8 +2,6 @@
 
 Local code-graph evidence layer for AI coding agents.
 
-**Vectors suggest. Graph verifies. Packets prove.**
-
 CodeGraph MCP indexes a repository into a deterministic typed program graph, verifies facts against source spans and provenance, and returns compact context packets that a coding agent can actually trust.
 
 ```text
