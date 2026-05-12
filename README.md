@@ -1,189 +1,134 @@
-# CodeGraph MCP - WIP, Not published here yet.
+# CodeGraph MCP
 
-CodeGraph MCP is a local, Rust-first codebase intelligence layer for AI coding
-agents. It is designed to give models fast, proof-oriented context so they stop
-guessing about APIs, schemas, call paths, data flow, tests, and repository
-structure.
+Local code-graph evidence layer for AI coding agents.
 
-The project indexes a repository into a deterministic typed program graph, ranks
-candidate context quickly, verifies facts against exact graph and source-span
-evidence, and exposes the result through a CLI, a local MCP server, and a
-loopback Proof-Path UI.
+**Vectors suggest. Graph verifies. Packets prove.**
+
+CodeGraph MCP indexes a repository into a deterministic typed program graph, verifies facts against source spans and provenance, and returns compact context packets that a coding agent can actually trust.
 
 ```text
 repository
   -> typed program graph
-  -> fast retrieval funnel
   -> exact graph/source verification
   -> compact evidence packet
   -> grounded model edits
 ```
 
-## Status
-
-CodeGraph MCP is under active private development and is not public yet. Message
-me if you want to help.
-
-This checkout is complete through Phase 30 of the project plan. Phase 31+
-research work remains intentionally untouched unless benchmark evidence justifies
-it. The authoritative product contract, phase order, schema definitions, and
-acceptance criteria live in [MVP.md](MVP.md).
-
 ## Why It Exists
 
-Coding models are strongest when they can rely on compact, current, verifiable
-project memory. They are weakest when they have to infer schemas, relations, or
-call chains from partial text search results.
+Coding agents are strongest when they have current, compact, verifiable project memory. They are weakest when they have to infer APIs, schemas, call paths, data flow, tests, or security behavior from scattered text search results.
 
-CodeGraph MCP is built around one rule:
+Embeddings, BM25, binary signatures, and ranking help find candidates quickly. They do not prove correctness. Final context should come from graph facts, exactness labels, source spans, provenance, and stored path evidence.
 
-```text
-vectors suggest; graph verifies; packets prove
-```
+## What It Does
 
-Embeddings, binary signatures, BM25, relation priors, and Bayesian ranking can
-help find candidates quickly. They do not prove correctness. Final context must
-come from graph facts, source spans, exactness labels, confidence metadata, and
-provenance.
+- Indexes a local repository into a typed program graph.
+- Tracks entities, calls, reads, writes, flows, mutations, tests, mocks, assertions, auth checks, source spans, and provenance where extractor support exists.
+- Separates exact proof facts from heuristic/debug evidence.
+- Builds context packets around verified paths instead of shallow text retrieval.
+- Exposes the graph through a CLI, local MCP server, and loopback Proof-Path UI.
 
-## Core Capabilities
+## Current Evidence
 
-- Local repository indexing into `.codegraph/codegraph.sqlite`.
-- Stable entity, relation, source-span, provenance, exactness, and context
-  packet models.
-- Tree-sitter extraction for TypeScript, JavaScript, TSX, JSX, Python, Go,
-  Rust, Java, C#, C, C++, Ruby, and PHP, with explicit support tiers.
-- Conservative caller/callee, dataflow, mutation, auth/security, event,
-  persistence, migration, and test-impact relations where extractor support
-  exists.
-- SQLite FTS5/BM25 search across files, entities, and snippets.
-- Stage 1 bit-packed binary-vector sieve and Stage 2 compressed rerank
-  interface for fast candidate narrowing.
-- Stage 3 exact graph/path verification before context packet emission.
-- Deterministic Bayesian/logistic ranking with uncertainty penalties and
-  relation reliability priors.
-- Read-mostly local MCP tools for status, indexing, search, impact analysis,
-  path tracing, caller/callee lookup, context packs, and edge/path explanation.
-- Local Proof-Path UI with graph modes, source-span previews, exactness legends,
-  export/copy controls, and large-graph guardrails.
-- Reproducible benchmark, audit, parity, and CodeGraphContext comparison
-  harnesses that keep skipped or unknown data explicit.
+The latest comprehensive benchmark publishes 14 gates, with 11 passing cleanly and 2 known open performance gates.
+
+| Gate | Current result | Status |
+|---|---|---|
+| Graph Truth fixtures | 11 / 11 passed | pass |
+| Context Packet fixtures | 11 / 11 passed | pass |
+| Forbidden edge/path hits | 0 | pass |
+| Proof source-span coverage | 100% | pass |
+| Exact-labeled unresolved facts | 0 | pass |
+| Derived facts without provenance | 0 | pass |
+| Test/mock production leakage | 0 | pass |
+| DB integrity | ok | pass |
+| Repeat unchanged index | 1.674s | pass |
+| Single-file update | 336ms | pass |
+| context_pack p95 | 852ms | pass |
+| Unresolved-calls page p95 | 243ms | pass |
+| Proof DB size | 320.63 MiB vs 250 MiB target | open |
+| Cold proof build | 50.02 min vs 60s target | open |
+| CodeGraphContext comparison | CGC timed out | incomplete |
+
+Storage size and cold proof-build time are the two open performance gates. Both are addressable — storage through compact-proof-DB work, cold build through extractor parallelization. Correctness, context quality, latency on warm operations, and update performance all pass.
+
+## CodeGraph vs CodeGraphContext
+
+A fair comparison needs both systems to complete comparable indexing and query artifacts.
+
+| Comparison item | Result |
+|---|---|
+| CGC available | yes, version 0.4.7 |
+| CGC completed current comparable run | no |
+| CGC timeout | yes |
+| CodeGraph vs CGC speed | unknown |
+| CodeGraph vs CGC storage | unknown |
+| CodeGraph vs CGC quality | unknown |
+| Verdict | incomplete |
+
+CGC timed out on the comparable indexing run at version 0.4.7. A clean head-to-head requires CGC to complete; until then this isn't reported as a CodeGraph win. CodeGraph internal gates are tracked separately from competitor claims — a timeout, skipped run, partial DB, or fake-agent dry run is not counted as superiority evidence.
 
 ## Quickstart
 
-Build and test:
+Build:
 
-```powershell
+```bash
 cargo build --workspace
-cargo test --workspace
 ```
 
-Initialize and index a repository:
+Index a repository:
 
-```powershell
-codegraph-mcp init --with-templates --with-codex-config
+```bash
 codegraph-mcp index .
-codegraph-mcp status
 ```
 
 Query evidence:
 
-```powershell
-codegraph-mcp query symbols profileRoute
-codegraph-mcp query callers saveProfile
-codegraph-mcp query chain profileRoute saveProfile
-codegraph-mcp impact profileRoute
-codegraph-mcp context-pack --task "Trace profileRoute auth and mutation impact" --seed profileRoute --budget 1600
+```bash
+codegraph-mcp context-pack --task "Trace auth and mutation impact" --seed profileRoute --budget 1600
 ```
 
-Serve the local MCP server:
-
-```powershell
-codegraph-mcp serve-mcp
-```
-
-Serve the loopback Proof-Path UI:
-
-```powershell
-codegraph-mcp serve-ui --port 7878
-```
-
-Run benchmarks:
-
-```powershell
-codegraph-mcp bench --output target\codegraph-benchmark-report.json
-codegraph-mcp bench parity-report --output-dir target\phase30-parity
-```
-
-For the full command set, see [docs/cli-reference.md](docs/cli-reference.md).
+For the full CLI surface, see `cli-reference.md`.
 
 ## Architecture
 
-CodeGraph is intentionally split into narrow layers:
+CodeGraph is split into three practical layers:
 
-| Layer | Responsibility |
-| --- | --- |
-| `codegraph-core` | Serializable graph domain model: entities, relations, spans, exactness, provenance, stable IDs, path evidence, and context packets. |
-| `codegraph-store` | Local graph persistence through SQLite, migrations, FTS/BM25, read helpers, and retrieval traces. |
-| `codegraph-parser` | Language parsing and extractor logic for syntax, declarations, imports, calls, data/mutation facts, auth/security, events, persistence, and tests. |
-| `codegraph-vector` | Stage 1 binary-vector sieve and Stage 2 compressed rerank abstractions. |
-| `codegraph-query` | Exact graph traversal, impact analysis, path evidence, context packets, retrieval funnel orchestration, and Bayesian ranking. |
-| `codegraph-index` | Shared compact repository indexer used by the CLI and MCP server, including batching, dedupe, stale pruning, profiling, and binary-signature refresh. |
-| `codegraph-mcp-server` | Local stdio JSON-RPC MCP server with schemas, resources, prompts, pagination, and read-mostly proof tools. |
-| `codegraph-cli` | `codegraph-mcp` CLI, templates, watcher, UI server, diagnostics, benchmarks, config, and release metadata. |
-| `codegraph-ui` | Static assets for the local Proof-Path UI served by the CLI. |
-| `codegraph-bench` | Benchmark schemas, fixtures, baselines, metrics, real-repo corpus manifests, replay plans, and parity reports. |
-| `codegraph-trace` | Agent/MCP trace event support for replayable evidence. |
+- **Extract and store:** parse source files, assign stable identities, record source spans, and persist exact/heuristic facts in SQLite.
+- **Verify and rank:** use retrieval only to suggest candidates, then verify graph paths, exactness, provenance, and production/test/mock context.
+- **Package evidence:** return compact context packets with proof paths, snippets, expected tests, and labels a coding agent can use.
 
 The retrieval funnel is:
 
 ```text
-Stage 0: exact seeds, symbols, BM25, stack traces, current files
-Stage 1: bit-packed binary sieve
-Stage 2: compressed rerank interface
-Stage 3: exact graph/path verification
-Stage 4: compact proof-oriented context packet
+exact seeds, symbols, BM25, current files
+  -> binary/vector candidate narrowing
+  -> compressed rerank
+  -> exact graph/path verification
+  -> proof-oriented context packet
 ```
 
-Exact seeds bypass vector filtering. Heuristic facts must remain explicitly
-labeled with exactness, confidence, extractor metadata, and provenance.
+## Language Support
 
-## Deep Documentation
+Tree-sitter extraction across 13 languages including TS/JS, Python, Go, Rust, Java, C/C++, C#, Ruby, and PHP, with relation support varying by language and extractor.
 
-| Document | Purpose |
-| --- | --- |
-| [MVP.md](MVP.md) | Authoritative mission, schemas, phase order, non-goals, acceptance criteria, and implementation prompt queue. |
-| [TODO_PHASES.md](TODO_PHASES.md) | Compact phase checklist for the MVP and post-MVP sequence. |
-| [docs/architecture.md](docs/architecture.md) | Final MVP architecture summary, major layers, source-of-truth rules, and phase ordering. |
-| [docs/guardrails.md](docs/guardrails.md) | Implementation boundaries, product stance, and retrieval funnel contract. |
-| [docs/mcp-reference.md](docs/mcp-reference.md) | MCP tools, resources, prompts, schemas, output contract, and safety model. |
-| [docs/cli-reference.md](docs/cli-reference.md) | CLI commands, global flags, output behavior, SQLite tuning, and installability notes. |
-| [docs/language-frontends.md](docs/language-frontends.md) | Language support tiers, current frontend coverage, exactness rules, and limitations. |
-| [docs/benchmark-guide.md](docs/benchmark-guide.md) | Benchmark families, baselines, metrics, reports, real-repo corpus, and CGC comparison flow. |
-| [docs/codegraphcontext-comparison.md](docs/codegraphcontext-comparison.md) | Black-box CodeGraphContext comparison setup, fairness rules, fixtures, and outputs. |
-| [docs/mvp-acceptance.md](docs/mvp-acceptance.md) | MVP acceptance checklist, profile report expectations, and known non-blocking notes. |
-| [docs/quality-gates.md](docs/quality-gates.md) | Local checks, CI expectations, smoke coverage, and Phase 30 acceptance commands. |
-| [docs/quickstart.md](docs/quickstart.md) | Short build, index, query, MCP, watcher, UI, and benchmark walkthrough. |
-| [docs/install.md](docs/install.md) | Install paths, dry runs, release metadata, and distribution targets. |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | Common indexing, SQLite, UI, MCP, watcher, and benchmark issues. |
-| [reports/audit/README.md](reports/audit/README.md) | Audit report contract for benchmark validity, schema taxonomy, storage forensics, relation samples, stale updates, and source-span proof gates. |
-| [reports/audit/AUDIT_STATUS.md](reports/audit/AUDIT_STATUS.md) | Current audit phase status. |
+## Interfaces
 
-## Safety And Scope
+- `codegraph-mcp index` builds the local graph.
+- `codegraph-mcp query ...` searches symbols, text, relations, paths, callers, callees, impact, and unresolved calls.
+- `codegraph-mcp context-pack ...` emits agent-facing proof context.
+- `codegraph-mcp serve-mcp` exposes local read-mostly MCP tools.
+- `codegraph-mcp serve-ui` opens the local Proof-Path UI.
+- `codegraph-mcp bench comprehensive` writes the master correctness, context, storage, latency, update, and comparison gate.
 
-- Local first: graph state is written under `.codegraph/`.
-- Read-mostly MCP: source-editing and destructive tools are not exposed.
-- Exact graph first: retrieval shortcuts cannot prove facts by themselves.
-- Single-agent workflow: the product is designed for one linear Codex-style
-  coding agent, not parallel subagent delegation.
-- Honest measurement: unsupported, skipped, or unavailable benchmark and
-  competitor data stays `unknown` or `skipped`.
-- No public-release claims yet: install, release, and parity artifacts are being
-  developed and verified before public launch.
+## Reports
 
-## Development Notes
+Benchmark and audit artifacts are kept in-repo so claims can be checked instead of guessed.
 
-The workspace is a Rust Cargo workspace with `unsafe_code = "forbid"` and
-workspace lints for `dbg_macro`, `todo`, and `unwrap_used`. Use
-[docs/quality-gates.md](docs/quality-gates.md) before publishing changes, and
-start architecture-affecting work by reading [MVP.md](MVP.md).
+- `comprehensive_benchmark_latest.md` — current master gate.
+- `compact_proof_db_gate.md` — compact proof DB gate.
+- `CODEGRAPH_VS_CGC_LATEST.md` — latest CGC comparison status.
+- `architecture.md` — architecture details.
+- `benchmark-guide.md` — benchmark workflow.
+- `mcp-reference.md` — MCP tools and schemas.
+- `language-frontends.md` — language frontend coverage.
