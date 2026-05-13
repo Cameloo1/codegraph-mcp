@@ -1,0 +1,189 @@
+{
+  "schema_version": 1,
+  "status": "completed",
+  "verdict": "storage_target_passed_overall_tool_gate_still_failed",
+  "generated_at": "2026-05-12T21:07:48-05:00",
+  "source_of_truth": "MVP.md",
+  "fresh_artifact": {
+    "path": "reports/audit/artifacts/minimal_storage_package_autoresearch_proof.sqlite",
+    "metadata_path": "reports/audit/artifacts/minimal_storage_package_autoresearch_proof.artifact.json",
+    "schema_version": 19,
+    "storage_mode": "proof",
+    "freshly_built": true,
+    "artifact_reuse_in_comprehensive": true,
+    "artifact_reuse_reason": "The DB was freshly built by this task, then consumed by the comprehensive benchmark with matching freshness metadata and --fail-on-stale-artifact.",
+    "integrity_status": "ok",
+    "db_bytes": 179568640,
+    "file_family_bytes": 179601408,
+    "proof_db_mib": 171.28125,
+    "target_mib": 250.0,
+    "preferred_safety_target_mib": 240.0,
+    "storage_result_claimable": true
+  },
+  "baseline_comparison": {
+    "compact_proof_baseline_bytes": 336203776,
+    "compact_proof_baseline_mib": 320.63,
+    "current_file_family_bytes": 179601408,
+    "current_file_family_mib": 171.28125,
+    "savings_bytes": 156602368,
+    "savings_mib": 149.34875
+  },
+  "minimal_safe_package": {
+    "template_edge_directional_indexes": {
+      "status": "applied",
+      "disposition": "Removed from proof-mode schema; no semantic data removed. Equivalent index data is derivable/recreatable and audit/debug experiments run on copied DBs only.",
+      "proof_db_contains_idx_template_edges_head_relation": false,
+      "proof_db_contains_idx_template_edges_tail_relation": false
+    },
+    "template_local_id_integerization": {
+      "status": "applied",
+      "disposition": "Wide per-template local entity/edge/head/tail IDs are compact integers keyed by content_template_id. External identity remains path-specific through file/template overlay."
+    },
+    "path_evidence_json_normalization": {
+      "status": "applied_in_schema_19",
+      "disposition": "Verbose per-edge labels are materialized into path_evidence_edges; context/audit readers hydrate labels from rows. Optional path_evidence_debug_metadata sidecar exists and is not populated in proof mode.",
+      "path_evidence_bytes_after": 4587520,
+      "path_evidence_edges_bytes_after": 1306624,
+      "note": "The direct PathEvidence table saving is smaller than the old lower-bound estimate because core edges/source-spans JSON remains for compatibility; total fresh proof DB still clears the 250 MiB target."
+    }
+  },
+  "do_not_regress_answers": {
+    "graph_truth_still_passed": true,
+    "context_packet_quality_still_passed": true,
+    "proof_db_size_decreased": true,
+    "removed_data_disposition_clear": true
+  },
+  "gates": {
+    "graph_truth": {
+      "status": "passed",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "artifact_json": "reports/audit/artifacts/minimal_storage_package_graph_truth.json"
+    },
+    "context_packet": {
+      "status": "passed",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "critical_symbol_recall": 1.0,
+      "proof_path_coverage": 1.0,
+      "source_span_coverage": 1.0,
+      "artifact_json": "reports/audit/artifacts/minimal_storage_package_context_packet.json"
+    },
+    "db_integrity": {
+      "status": "ok",
+      "artifact_json": "reports/audit/artifacts/minimal_storage_package_storage.json"
+    },
+    "path_evidence_sampler": {
+      "status": "ok",
+      "limit": 20,
+      "elapsed_ms": 27,
+      "limit_100_elapsed_ms": 33,
+      "stored_path_count": 4096,
+      "generated_fallback_used": false,
+      "artifact_json": "reports/audit/artifacts/minimal_storage_package_sample_paths.json",
+      "artifact_100_json": "reports/audit/artifacts/minimal_storage_package_sample_paths_100.json"
+    },
+    "relation_sampler": {
+      "status": "ok",
+      "relation": "CALLS",
+      "sample_count": 50,
+      "artifact_json": "reports/audit/artifacts/minimal_storage_package_sample_CALLS.json"
+    },
+    "default_query_surface": {
+      "status": "passed",
+      "iterations": 20,
+      "p95_ms": {
+        "entity_name_lookup": 2.7419,
+        "symbol_lookup": 217.1939,
+        "qname_lookup": 26.95,
+        "text_fts_query": 0.2989,
+        "relation_query_calls": 283.7993,
+        "relation_query_reads_writes": 277.2853,
+        "path_evidence_lookup": 3.6329,
+        "source_snippet_batch_load": 56.3256,
+        "context_pack_normal": 148.8863,
+        "unresolved_calls_paginated": 109.7057
+      },
+      "artifact_json": "reports/audit/artifacts/minimal_storage_package_query_surface.json"
+    },
+    "repeat_unchanged": {
+      "status": "passed",
+      "total_wall_ms": 1535,
+      "files_read": 0,
+      "files_hashed": 0,
+      "files_parsed": 0,
+      "files_metadata_unchanged": 4975
+    },
+    "single_file_update": {
+      "status": "passed_from_latest_comprehensive_persisted_metric",
+      "observed_ms": 336.0,
+      "target_ms": 750.0,
+      "note": "Autoresearch single-file update was not rerun in this storage package because this task did not need to mutate the external Autoresearch checkout; the latest comprehensive metric remains passing."
+    },
+    "cargo_test_workspace": {
+      "status": "passed"
+    },
+    "comprehensive_benchmark": {
+      "status": "reported",
+      "verdict": "fail",
+      "failed_targets": [
+        "bytes_per_proof_edge",
+        "cold_proof_build_total_wall_ms",
+        "proof_db_mib_stretch"
+      ],
+      "artifact_json": "reports/final/comprehensive_benchmark_minimal_storage_package_apply.json",
+      "note": "The intended proof DB <=250 MiB target passes. The comprehensive gate honestly remains failed because cold proof build is still far above 60s and stretch storage/bytes-per-proof-edge targets fail."
+    }
+  },
+  "storage_contributors_after": [
+    {
+      "name": "template_entities",
+      "bytes": 58146816,
+      "mib": 55.453125,
+      "rows": 653819,
+      "share_percent": 32.38
+    },
+    {
+      "name": "template_edges",
+      "bytes": 17743872,
+      "mib": 16.921875,
+      "rows": 169290,
+      "share_percent": 9.88
+    },
+    {
+      "name": "file_entities",
+      "bytes": 10248192,
+      "mib": 9.7734375,
+      "rows": 89407,
+      "share_percent": 5.71
+    },
+    {
+      "name": "idx_file_entities_entity",
+      "bytes": 9097216,
+      "mib": 8.67578125,
+      "rows": null,
+      "share_percent": 5.07
+    },
+    {
+      "name": "symbol_dict",
+      "bytes": 8077312,
+      "mib": 7.703125,
+      "rows": 176558,
+      "share_percent": 4.5
+    },
+    {
+      "name": "qname_prefix_dict",
+      "bytes": 6148096,
+      "mib": 5.86328125,
+      "rows": 48603,
+      "share_percent": 3.42
+    }
+  ],
+  "artifacts": {
+    "storage_audit_json": "reports/audit/artifacts/minimal_storage_package_storage.json",
+    "schema_check_json": "reports/audit/artifacts/minimal_storage_package_schema_check.json",
+    "storage_experiments_json": "reports/audit/artifacts/minimal_storage_package_storage_experiments.json",
+    "query_surface_json": "reports/audit/artifacts/minimal_storage_package_query_surface.json",
+    "comprehensive_json": "reports/final/comprehensive_benchmark_minimal_storage_package_apply.json"
+  }
+}

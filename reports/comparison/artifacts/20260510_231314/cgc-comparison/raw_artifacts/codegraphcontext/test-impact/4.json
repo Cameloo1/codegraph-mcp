@@ -1,0 +1,17 @@
+{
+  "executable": "target\\cgc-competitor\\.venv312-pypi\\Scripts\\cgc.exe",
+  "args": [
+    "--database",
+    "kuzudb",
+    "query",
+    "path",
+    "calculateTotal",
+    "calculateTotal adds tax"
+  ],
+  "cwd": "reports\\comparison\\artifacts\\20260510_231314\\cgc-comparison\\fixtures\\test-impact",
+  "stdout": "",
+  "stderr": "Usage: cgc query [OPTIONS] QUERY\r\nTry 'cgc query --help' for help.\r\n┌─ Error ─────────────────────────────────────────────────────────────────────┐\r\n│ Got unexpected extra arguments (calculateTotal calculateTotal adds tax)     │\r\n└─────────────────────────────────────────────────────────────────────────────┘\r\n",
+  "exit_code": 2,
+  "latency_ms": 787,
+  "timed_out": false
+}

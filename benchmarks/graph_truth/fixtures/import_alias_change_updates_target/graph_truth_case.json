@@ -1,0 +1,506 @@
+{
+  "schema_version": 1,
+  "case_id": "import_alias_change_updates_target",
+  "description": "Import alias target must update after mutation.",
+  "repo_fixture_path": "benchmarks/graph_truth/fixtures/import_alias_change_updates_target/repo",
+  "task_prompt": "Resolve selected() after alias target changes.",
+  "expected_entities": [
+    {
+      "selector": {
+        "qualified_name": "src/use.run",
+        "kind": "Function",
+        "source_file": "src/use.ts",
+        "context": "production"
+      },
+      "kind": "Function",
+      "context": "production",
+      "source_file": "src/use.ts"
+    },
+    {
+      "selector": {
+        "qualified_name": "src/beta.betaTarget",
+        "kind": "Function",
+        "source_file": "src/beta.ts",
+        "context": "production"
+      },
+      "kind": "Function",
+      "context": "production",
+      "source_file": "src/beta.ts"
+    }
+  ],
+  "expected_edges": [
+    {
+      "id": "edge://alias/imports-beta",
+      "head": {
+        "qualified_name": "src/use",
+        "kind": "File",
+        "source_file": "src/use.ts",
+        "context": "production"
+      },
+      "relation": "IMPORTS",
+      "tail": {
+        "qualified_name": "src/beta.betaTarget",
+        "kind": "Function",
+        "source_file": "src/beta.ts",
+        "context": "production"
+      },
+      "source_file": "src/use.ts",
+      "source_span": {
+        "start_line": 1,
+        "start_column": 1,
+        "end_line": 1,
+        "end_column": 49,
+        "expected_text": "import { betaTarget as selected } from \"./beta\"",
+        "syntax_role": "import"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "hand_labeled_fixture",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "hand_labeled_fixture",
+      "direction": "head_to_tail"
+    },
+    {
+      "id": "edge://alias/calls-beta",
+      "head": {
+        "qualified_name": "src/use.run",
+        "kind": "Function",
+        "source_file": "src/use.ts",
+        "context": "production"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "qualified_name": "src/beta.betaTarget",
+        "kind": "Function",
+        "source_file": "src/beta.ts",
+        "context": "production"
+      },
+      "source_file": "src/use.ts",
+      "source_span": {
+        "start_line": 4,
+        "start_column": 10,
+        "end_line": 4,
+        "end_column": 20,
+        "expected_text": "selected()",
+        "syntax_role": "callsite"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "hand_labeled_fixture",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "hand_labeled_fixture",
+      "direction": "head_to_tail"
+    }
+  ],
+  "forbidden_edges": [
+    {
+      "id": "edge://alias/stale-alpha",
+      "head": {
+        "qualified_name": "src/use.run",
+        "kind": "Function",
+        "source_file": "src/use.ts",
+        "context": "production"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "qualified_name": "src/alpha.alphaTarget",
+        "kind": "Function",
+        "source_file": "src/alpha.ts",
+        "context": "production"
+      },
+      "source_file": "src/use.ts",
+      "source_span": {
+        "start_line": 4,
+        "start_column": 10,
+        "end_line": 4,
+        "end_column": 20,
+        "expected_text": "selected()",
+        "syntax_role": "callsite"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "forbidden_stale_alias_target",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "forbidden_stale_alias_target",
+      "direction": "head_to_tail"
+    }
+  ],
+  "expected_paths": [
+    {
+      "path_id": "path://alias/run-to-beta",
+      "description": "run calls betaTarget through alias selected.",
+      "source": {
+        "qualified_name": "src/use.run",
+        "kind": "Function",
+        "source_file": "src/use.ts",
+        "context": "production"
+      },
+      "target": {
+        "qualified_name": "src/beta.betaTarget",
+        "kind": "Function",
+        "source_file": "src/beta.ts",
+        "context": "production"
+      },
+      "ordered_edges": [
+        {
+          "id": "edge://alias/calls-beta",
+          "head": {
+            "qualified_name": "src/use.run",
+            "kind": "Function",
+            "source_file": "src/use.ts",
+            "context": "production"
+          },
+          "relation": "CALLS",
+          "tail": {
+            "qualified_name": "src/beta.betaTarget",
+            "kind": "Function",
+            "source_file": "src/beta.ts",
+            "context": "production"
+          },
+          "source_file": "src/use.ts",
+          "source_span": {
+            "start_line": 4,
+            "start_column": 10,
+            "end_line": 4,
+            "end_column": 20,
+            "expected_text": "selected()",
+            "syntax_role": "callsite"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "hand_labeled_fixture",
+          "exactness": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "hand_labeled_fixture",
+          "direction": "head_to_tail"
+        }
+      ],
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "max_length": 1,
+      "source_span_required": true,
+      "production_only": true,
+      "derived_allowed": false,
+      "provenance_required": false,
+      "required_source_spans": [
+        {
+          "edge_ref": "edge://alias/calls-beta",
+          "source_file": "src/use.ts",
+          "span": {
+            "start_line": 4,
+            "start_column": 10,
+            "end_line": 4,
+            "end_column": 20,
+            "expected_text": "selected()",
+            "syntax_role": "callsite"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "selected()",
+          "syntax_role": "callsite"
+        }
+      ],
+      "context": "production",
+      "allow_test_mock_edges": false,
+      "derived_edges_require_provenance": true,
+      "proof_grade": true
+    }
+  ],
+  "forbidden_paths": [
+    {
+      "path_id": "path://alias/run-to-alpha",
+      "description": "Stale alpha target must disappear.",
+      "source": {
+        "qualified_name": "src/use.run",
+        "kind": "Function",
+        "source_file": "src/use.ts",
+        "context": "production"
+      },
+      "target": {
+        "qualified_name": "src/alpha.alphaTarget",
+        "kind": "Function",
+        "source_file": "src/alpha.ts",
+        "context": "production"
+      },
+      "ordered_edges": [
+        {
+          "id": "edge://alias/stale-alpha",
+          "head": {
+            "qualified_name": "src/use.run",
+            "kind": "Function",
+            "source_file": "src/use.ts",
+            "context": "production"
+          },
+          "relation": "CALLS",
+          "tail": {
+            "qualified_name": "src/alpha.alphaTarget",
+            "kind": "Function",
+            "source_file": "src/alpha.ts",
+            "context": "production"
+          },
+          "source_file": "src/use.ts",
+          "source_span": {
+            "start_line": 4,
+            "start_column": 10,
+            "end_line": 4,
+            "end_column": 20,
+            "expected_text": "selected()",
+            "syntax_role": "callsite"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "forbidden_stale_alias_target",
+          "exactness": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "forbidden_stale_alias_target",
+          "direction": "head_to_tail"
+        }
+      ],
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "max_length": 1,
+      "source_span_required": true,
+      "production_only": true,
+      "derived_allowed": false,
+      "provenance_required": false,
+      "required_source_spans": [
+        {
+          "edge_ref": "edge://alias/stale-alpha",
+          "source_file": "src/use.ts",
+          "span": {
+            "start_line": 4,
+            "start_column": 10,
+            "end_line": 4,
+            "end_column": 20,
+            "expected_text": "selected()",
+            "syntax_role": "callsite"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "selected()",
+          "syntax_role": "callsite"
+        }
+      ],
+      "context": "production",
+      "allow_test_mock_edges": false,
+      "derived_edges_require_provenance": true,
+      "proof_grade": false
+    }
+  ],
+  "expected_source_spans": [
+    {
+      "edge_ref": "edge://alias/calls-beta",
+      "source_file": "src/use.ts",
+      "span": {
+        "start_line": 4,
+        "start_column": 10,
+        "end_line": 4,
+        "end_column": 20,
+        "expected_text": "selected()",
+        "syntax_role": "callsite"
+      },
+      "must_resolve_to_text": true,
+      "expected_text": "selected()",
+      "syntax_role": "callsite"
+    },
+    {
+      "edge_ref": "edge://alias/imports-beta",
+      "source_file": "src/use.ts",
+      "span": {
+        "start_line": 1,
+        "start_column": 1,
+        "end_line": 1,
+        "end_column": 49,
+        "expected_text": "import { betaTarget as selected } from \"./beta\"",
+        "syntax_role": "import"
+      },
+      "must_resolve_to_text": true,
+      "expected_text": "import { betaTarget as selected } from \"./beta\"",
+      "syntax_role": "import"
+    }
+  ],
+  "expected_context_symbols": [
+    {
+      "symbol": {
+        "qualified_name": "src/beta.betaTarget",
+        "kind": "Function",
+        "source_file": "src/beta.ts",
+        "context": "production"
+      },
+      "critical": true,
+      "source_file": "src/beta.ts",
+      "reason": "Current alias target"
+    }
+  ],
+  "forbidden_context_symbols": [
+    {
+      "symbol": {
+        "qualified_name": "src/alpha.alphaTarget",
+        "kind": "Function",
+        "source_file": "src/alpha.ts",
+        "context": "production"
+      },
+      "critical": true,
+      "source_file": "src/alpha.ts",
+      "reason": "Old alias target"
+    }
+  ],
+  "expected_tests": [],
+  "forbidden_tests": [],
+  "mutation_steps": [
+    {
+      "type": "add_file",
+      "path": "src/use.ts",
+      "content": "import { alphaTarget as selected } from \"./alpha\";\n\nexport function run() {\n  return selected();\n}\n"
+    },
+    {
+      "type": "reindex"
+    },
+    {
+      "type": "change_import_alias",
+      "path": "src/use.ts",
+      "old_alias": "alphaTarget as selected",
+      "new_alias": "betaTarget as selected",
+      "import_from": "./beta"
+    },
+    {
+      "type": "edit_file",
+      "path": "src/use.ts",
+      "find": "alphaTarget as selected } from \"./alpha\"",
+      "replace": "betaTarget as selected } from \"./beta\""
+    },
+    {
+      "type": "reindex"
+    },
+    {
+      "type": "query_again",
+      "query_prompt": "Resolve selected after alias retarget."
+    }
+  ],
+  "performance_expectations": {
+    "schema_validation_100_cases_max_ms": 1000,
+    "index_time_ms_max": 10000
+  },
+  "notes": [
+    "Catches stale alias edges after an import target mutation."
+  ],
+  "failure_rules": {
+    "missing_required_edge_fails": true,
+    "forbidden_edge_appearing_fails": true,
+    "wrong_direction_fails": true,
+    "missing_source_span_fails_for_proof_grade_edge": true,
+    "unresolved_name_labeled_exact_fails": true,
+    "mock_or_test_edge_in_production_proof_path_fails": true,
+    "derived_edge_without_provenance_fails": true,
+    "stale_edge_after_edit_fails": true,
+    "same_name_symbol_collision_fails": true,
+    "critical_symbol_missing_from_context_packet_fails": true,
+    "forbidden_context_symbol_included_fails": true,
+    "expected_test_omitted_fails": true,
+    "too_many_distractors_fail_if_threshold_specified": true
+  },
+  "distractor_policy": {
+    "max_context_distractors": 0,
+    "max_symbol_distractors": 0,
+    "distractor_symbols": [],
+    "count_scope": "context_packet"
+  }
+}

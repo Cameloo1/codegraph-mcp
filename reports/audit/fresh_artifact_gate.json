@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-13T00:11:45.061Z",
+  "source_of_truth": "MVP.md",
+  "goal": "Fresh artifact gate for comprehensive benchmark",
+  "verdict": "pass_for_harness_fix",
+  "behavior": {
+    "default_mode": "fresh_proof_build",
+    "explicit_reuse_mode": "explicit_artifact_reuse",
+    "stale_artifact_policy": "stale artifacts make storage/cold-build results not claimable; --fail-on-stale-artifact refuses them",
+    "storage_win_claim_rule": "storage wins require fresh or freshness-validated proof artifact metadata"
+  },
+  "implemented_metadata_fields": [
+    "artifact_path",
+    "artifact_created_at",
+    "git_commit",
+    "schema_version",
+    "migration_version",
+    "storage_mode",
+    "build_command",
+    "build_duration_ms",
+    "db_size_bytes",
+    "integrity_status",
+    "benchmark_run_id"
+  ],
+  "fresh_probe": {
+    "artifact_path": "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\audit\\artifacts\\fresh_artifact_gate_fresh\\artifacts\\comprehensive_proof_fresh_artifact_gate.sqlite",
+    "metadata_path": "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\audit\\artifacts\\fresh_artifact_gate_fresh\\artifacts\\comprehensive_proof_fresh_artifact_gate.artifact.json",
+    "freshness_metadata_present": true,
+    "execution_mode": "fresh_proof_build",
+    "freshly_built": true,
+    "artifact_reuse": false,
+    "stale": false,
+    "schema_version": 18,
+    "storage_result_claimable": true,
+    "cold_build_result_claimable": true,
+    "integrity_status": "ok",
+    "build_duration_ms": 533,
+    "db_size_bytes": 528384,
+    "benchmark_verdict": "fail",
+    "benchmark_failure_reason": "failed targets: bytes_per_edge_table_plus_index, bytes_per_proof_edge",
+    "artifact_json": "reports/audit/artifacts/fresh_artifact_gate_fresh/comprehensive_benchmark_latest.json"
+  },
+  "stale_reuse_probe": {
+    "artifact_path": "reports\\final\\artifacts\\compact_gate_autoresearch_proof.sqlite",
+    "freshness_metadata_present": false,
+    "execution_mode": "explicit_artifact_reuse",
+    "freshly_built": false,
+    "artifact_reuse": true,
+    "stale": true,
+    "stale_reasons": [
+      "missing freshness metadata",
+      "schema mismatch: metadata=None, current=18",
+      "database schema mismatch: actual=15, current=18",
+      "migration mismatch: metadata=None, current=18",
+      "storage mode mismatch: metadata=None, expected proof",
+      "missing db_size_bytes",
+      "missing build_duration_ms",
+      "missing git_commit"
+    ],
+    "storage_result_claimable": false,
+    "cold_build_result_claimable": false,
+    "benchmark_verdict": "fail",
+    "failed_targets": [
+      "artifact_has_freshness_metadata",
+      "artifact_not_stale",
+      "artifact_schema_matches_current",
+      "bytes_per_proof_edge",
+      "cold_build_result_claimable",
+      "proof_db_mib",
+      "proof_db_mib_stretch",
+      "storage_result_claimable"
+    ],
+    "artifact_json": "reports/audit/artifacts/fresh_artifact_gate_reuse/comprehensive_benchmark_latest.json"
+  },
+  "fail_on_stale_probe": {
+    "command_status": "failed_as_expected",
+    "message": "stale artifact refused by --fail-on-stale-artifact for reports/final/artifacts/compact_gate_autoresearch_proof.sqlite"
+  },
+  "tests": {
+    "targeted": "cargo test -p codegraph-cli bench_comprehensive -- --nocapture passed: 5/5",
+    "workspace": "cargo test --workspace passed"
+  },
+  "production_behavior_changes": [
+    "bench comprehensive defaults to fresh proof DB build",
+    "explicit --use-existing-artifact is required for reuse",
+    "artifact freshness metadata is embedded in JSON/Markdown reports",
+    "stale artifact metrics are failed targets, preventing storage/cold-build wins from stale data"
+  ],
+  "acceptance": {
+    "comprehensive_cannot_silently_reuse_stale_artifact": true,
+    "fresh_proof_build_is_default": true,
+    "reused_artifacts_visibly_labeled": true,
+    "stale_artifact_blocks_storage_claim": true,
+    "existing_tests_pass": true
+  }
+}

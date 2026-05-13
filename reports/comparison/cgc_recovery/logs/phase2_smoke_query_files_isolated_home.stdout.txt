@@ -1,0 +1,15 @@
+Resolving context...
+Initializing services and database connection...
+Services initialized.
+[
+  {
+    "path": 
+"<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\comparison\\cg
+c_recovery\\artifacts\\smoke_repo\\smoke.py"
+  },
+  {
+    "path": 
+"<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\comparison\\cg
+c_recovery\\artifacts\\smoke_repo\\smoke.ts"
+  }
+]

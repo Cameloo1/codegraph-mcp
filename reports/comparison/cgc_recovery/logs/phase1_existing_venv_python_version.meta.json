@@ -1,0 +1,12 @@
+{
+    "name":  "phase1_existing_venv_python_version",
+    "command":  "target/cgc-competitor/.venv312-pypi/Scripts/python.exe --version",
+    "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+    "exit_code":  0,
+    "timed_out":  false,
+    "started_at":  "2026-05-13T07:56:29.4542667-05:00",
+    "ended_at":  "2026-05-13T07:56:29.4692572-05:00",
+    "duration_ms":  15,
+    "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase1_existing_venv_python_version.stdout.txt",
+    "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase1_existing_venv_python_version.stderr.txt"
+}

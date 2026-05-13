@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "db_path": "<REPO_ROOT>/Desktop/development/codegraph-mcp/reports/final/artifacts/run_20260510_232527/fixture_workers4.sqlite",
+  "relation_filter": "WRITES",
+  "limit": 50,
+  "seed": 17,
+  "include_snippets": true,
+  "manual_classification_options": [
+    "true_positive",
+    "false_positive",
+    "wrong_direction",
+    "wrong_target",
+    "wrong_span",
+    "stale",
+    "duplicate",
+    "unresolved_mislabeled_exact",
+    "test_mock_leaked",
+    "derived_missing_provenance",
+    "unsure"
+  ],
+  "samples": [
+    {
+      "ordinal": 1,
+      "edge_id": "edge-key:-7412890628781895775",
+      "head": {
+        "id": "repo://e/af824afc40aa9bc54b31726d12081117",
+        "name": "loadPlugin",
+        "qualified_name": "dynamic_import_marked_heuristic::repo::src::loader.loadPlugin",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/a24e6d8368307ba3b83fd00e9b292759",
+        "name": "mod",
+        "qualified_name": "dynamic_import_marked_heuristic::repo::src::loader.loadPlugin.mod",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "dynamic_import_marked_heuristic/repo/src/loader.ts",
+        "start_line": 2,
+        "start_column": 9,
+        "end_line": 2,
+        "end_column": 48
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:3e60612ecd044bf9",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/dynamic_import_marked_heuristic/repo/src/loader.ts",
+        "start_line": 1,
+        "end_line": 4,
+        "text": "1: export async function loadPlugin(name: string) {\n2:   const mod = await import(\"./plugins/\" + name);\n3:   return mod.default();\n4: }"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 2,
+      "edge_id": "edge-key:-5748113415438238707",
+      "head": {
+        "id": "repo://e/1f89b459da26c0283f1355c5c7b2b612",
+        "name": "saveComment",
+        "qualified_name": "sanitizer_exists_but_not_on_flow::repo::src::register.saveComment",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/6231fc5dca04885693d7ef9c5c0e88c4",
+        "name": "normalized",
+        "qualified_name": "sanitizer_exists_but_not_on_flow::repo::src::register.saveComment.normalized",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "sanitizer_exists_but_not_on_flow/repo/src/register.ts",
+        "start_line": 5,
+        "start_column": 9,
+        "end_line": 5,
+        "end_column": 32
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:19c73fc7fae08363",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/sanitizer_exists_but_not_on_flow/repo/src/register.ts",
+        "start_line": 3,
+        "end_line": 7,
+        "text": "3: export function saveComment(req: any) {\n4:   const raw = req.body.comment;\n5:   const normalized = raw.trim();\n6:   return writeComment(normalized);\n7: }"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 3,
+      "edge_id": "edge-key:-997635485439463650",
+      "head": {
+        "id": "repo://e/1f89b459da26c0283f1355c5c7b2b612",
+        "name": "saveComment",
+        "qualified_name": "sanitizer_exists_but_not_on_flow::repo::src::register.saveComment",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/7725451ed037301988efdd7f414beb63",
+        "name": "raw",
+        "qualified_name": "sanitizer_exists_but_not_on_flow::repo::src::register.saveComment.raw",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "sanitizer_exists_but_not_on_flow/repo/src/register.ts",
+        "start_line": 4,
+        "start_column": 9,
+        "end_line": 4,
+        "end_column": 31
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:19c73fc7fae08363",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/sanitizer_exists_but_not_on_flow/repo/src/register.ts",
+        "start_line": 2,
+        "end_line": 6,
+        "text": "2: \n3: export function saveComment(req: any) {\n4:   const raw = req.body.comment;\n5:   const normalized = raw.trim();\n6:   return writeComment(normalized);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    }
+  ],
+  "notes": [
+    "Classification fields are intentionally blank in markdown for human review.",
+    "Sampling is deterministic for a seed and starts at a seeded edge primary-key range, wrapping once if needed.",
+    "production_test_mock_context is inferred from relation/path/id text because context is not first-class in the current edge schema."
+  ]
+}

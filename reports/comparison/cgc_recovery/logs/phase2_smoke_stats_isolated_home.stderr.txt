@@ -1,0 +1,9 @@
+Warning: Could not load .env from current directory: name 'find_dotenv' is not 
+defined
+No configuration file found. Using defaults.
+Using database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))
+2026-05-13 08:23:00,572 - INFO - codegraphcontext.utils.debug_log - Using KùzuDB (explicit) at <REPO_ROOT>/Desktop\development\codegraph-mcp\.tools\cgc_recovery\home_shared\.codegraphcontext\global\db\kuzudb
+2026-05-13 08:23:00,578 - INFO - codegraphcontext.utils.debug_log - Initializing KùzuDB at <REPO_ROOT>/Desktop\development\codegraph-mcp\.tools\cgc_recovery\home_shared\.codegraphcontext\global\db\kuzudb
+2026-05-13 08:23:00,657 - INFO - codegraphcontext.utils.debug_log - KùzuDB connection established and schema verified
+2026-05-13 08:23:00,693 - INFO - codegraphcontext.utils.debug_log - Database schema verified/created successfully
+2026-05-13 08:23:00,735 - INFO - codegraphcontext.utils.debug_log - Closing KùzuDB connection

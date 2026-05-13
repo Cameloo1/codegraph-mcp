@@ -1,0 +1,237 @@
+{
+  "schema_version": 1,
+  "baseline_id": "frozen_baseline_20260510_171911",
+  "created_at_local": "2026-05-10T17:19:11-05:00",
+  "source_of_truth": "MVP.md",
+  "artifact_source": "target/codegraph-bench-report/sweep-20260509-231456",
+  "verdict": {
+    "status": "diagnostic_unknown",
+    "quality_claim": "unknown",
+    "superiority_claim": false,
+    "summary": "Diagnostic baseline only. CodeGraph completed the recorded Autoresearch index, but graph quality is unknown until strict graph truth gates exist. CGC timed out, so comparison is incomplete. Fake-agent dry run is not real model coding evidence."
+  },
+  "mvp_targets_interpreted": [
+    "local Rust-first graph memory layer",
+    "compact verified relation-aware context",
+    "exact graph verification",
+    "proof-oriented context packets",
+    "source-span-backed evidence",
+    "SQLite MVP storage via rusqlite",
+    "single-agent workflow with no subagents",
+    "honest unknown/incomplete proof handling"
+  ],
+  "codegraph_autoresearch": {
+    "artifact_path": "target/codegraph-bench-report/sweep-20260509-231456/autoresearch-codegraph-attempt3/run.json",
+    "repo_root": "<REPO_ROOT>/Desktop/development/autoresearch-codexlab",
+    "status": "completed",
+    "exit_code": 0,
+    "elapsed_ms": 169950,
+    "elapsed_seconds": 169.95,
+    "db_path": "<REPO_ROOT>/Desktop/development/codegraph-mcp/target/codegraph-bench-report/sweep-20260509-231456/autoresearch-codegraph-attempt3/codegraph.sqlite",
+    "db_file_size_bytes": 803495936,
+    "db_file_size_mib": 766.2734375,
+    "db_file_size_mb_decimal": 803.495936,
+    "sqlite_family_size_status_bytes": 842441752,
+    "sqlite_family_size_status_mib": 803.4150619506836,
+    "current_artifact_family_size_bytes": 803528704,
+    "files": 4975,
+    "entities": 865896,
+    "edges": 2050123,
+    "source_spans": 2916019,
+    "schema_version": 4,
+    "languages": [
+      "c",
+      "cpp",
+      "javascript",
+      "python",
+      "rust",
+      "typescript"
+    ],
+    "storage_policy": "default:compact-full-mvp-graph"
+  },
+  "relation_counts": {
+    "ALTERS_COLUMN": 19,
+    "ARGUMENT_0": 175879,
+    "ARGUMENT_1": 39569,
+    "ARGUMENT_N": 32020,
+    "ASSERTS": 558,
+    "ASSIGNED_FROM": 1969,
+    "AWAITS": 1123,
+    "CALLEE": 276611,
+    "CALLS": 271509,
+    "CHECKS_PERMISSION": 4,
+    "CHECKS_ROLE": 21,
+    "CONSUMES": 80,
+    "CONTAINS": 477866,
+    "COVERS": 121,
+    "DECLARES": 112930,
+    "DEFINED_IN": 473033,
+    "DEFINES": 38056,
+    "EMITS": 5,
+    "EXPORTS": 8361,
+    "FIXTURES_FOR": 1,
+    "FLOWS_TO": 94236,
+    "HANDLES": 37,
+    "IMPORTS": 37779,
+    "LISTENS_TO": 40,
+    "MOCKS": 12,
+    "MUTATES": 199,
+    "PUBLISHES": 1,
+    "READS": 5335,
+    "READS_TABLE": 2,
+    "RETURNS": 516,
+    "RETURNS_TO": 516,
+    "SANITIZES": 61,
+    "SINKS_TO": 60,
+    "SOURCE_OF_TAINT": 86,
+    "SPAWNS": 60,
+    "SUBSCRIBES_TO": 1,
+    "TESTS": 121,
+    "TRUST_BOUNDARY": 1,
+    "VALIDATES": 67,
+    "WRITES": 1247,
+    "WRITES_TABLE": 11
+  },
+  "query_latency_metrics": {
+    "artifact_path": "target/codegraph-bench-report/sweep-20260509-231456/autoresearch-codegraph-attempt3/query-latencies.json",
+    "measurements": [
+      {
+        "query": "symbols task",
+        "elapsed_ms": 3309
+      },
+      {
+        "query": "text Codex",
+        "elapsed_ms": 3275
+      },
+      {
+        "query": "files agent",
+        "elapsed_ms": 3284
+      },
+      {
+        "query": "unresolved-calls",
+        "elapsed_ms": 71271
+      }
+    ],
+    "slowest_query": "unresolved-calls",
+    "slowest_query_elapsed_ms": 71271
+  },
+  "sqlite_storage_contributors": {
+    "artifact_path": "target/codegraph-bench-report/sweep-20260509-231456/autoresearch-codegraph-attempt3/dbstat.json",
+    "top_entries": [
+      {
+        "name": "edges",
+        "bytes": 165593088
+      },
+      {
+        "name": "sqlite_autoindex_qualified_name_dict_1",
+        "bytes": 125501440
+      },
+      {
+        "name": "qualified_name_dict",
+        "bytes": 109445120
+      },
+      {
+        "name": "entities",
+        "bytes": 62488576
+      },
+      {
+        "name": "sqlite_autoindex_object_id_dict_1",
+        "bytes": 48812032
+      },
+      {
+        "name": "object_id_dict",
+        "bytes": 43884544
+      },
+      {
+        "name": "idx_edges_tail_relation",
+        "bytes": 38608896
+      },
+      {
+        "name": "idx_edges_head_relation",
+        "bytes": 38608896
+      },
+      {
+        "name": "idx_edges_span_path",
+        "bytes": 32833536
+      },
+      {
+        "name": "sqlite_autoindex_symbol_dict_1",
+        "bytes": 30224384
+      },
+      {
+        "name": "symbol_dict",
+        "bytes": 26824704
+      },
+      {
+        "name": "sqlite_autoindex_qname_prefix_dict_1",
+        "bytes": 26296320
+      },
+      {
+        "name": "qname_prefix_dict",
+        "bytes": 23056384
+      }
+    ]
+  },
+  "cgc_autoresearch": {
+    "artifact_path": "target/codegraph-bench-report/sweep-20260509-231456/autoresearch-cgc/run.json",
+    "tool": "cgc",
+    "status": "timeout",
+    "comparison_status": "incomplete",
+    "elapsed_ms": 180000,
+    "timeout_ms": 180000,
+    "partial_db_size_bytes": 2696673,
+    "db_size_bytes": null,
+    "package_version": "0.4.7",
+    "executable_path": "<REPO_ROOT>/Desktop/development/codegraph-mcp/target/cgc-competitor/.venv312-pypi/Scripts/cgc.exe",
+    "backend": "kuzudb",
+    "python_version": "Python 3.12.13",
+    "reason": "CGC Autoresearch indexing exceeded the 3-minute cap; partial artifacts retained but final DB size is unknown."
+  },
+  "fixture_cgc_gate": {
+    "artifact_path": "target/codegraph-bench-report/sweep-20260509-231456/final-gate/summary.json",
+    "final_verdict": "unknown",
+    "internal_verdict": "pass",
+    "cgc_status": "incomplete",
+    "no_superiority_claim_without_completed_cgc": true,
+    "fairness_note": "Incomplete CGC results are not counted as a CodeGraph win."
+  },
+  "fake_agent": {
+    "artifact_path": "target/codegraph-bench-report/sweep-20260509-231456/agent-quality-command.json",
+    "status": "fake-agent-dry-run",
+    "real_model_patch_success_measured": false,
+    "warning": "Dry-run trace artifacts are not evidence of real agent coding superiority."
+  },
+  "quality_metrics": {
+    "current_quality": "unknown",
+    "internal_gate": "pass",
+    "graph_truth_gate_available_at_freeze": false,
+    "strict_graph_correctness_proven": false,
+    "notes": [
+      "Internal pass results are diagnostic only.",
+      "Fixture and aggregate metrics do not prove expected and forbidden graph facts.",
+      "Later audit reports show strict graph-truth/context gates are required before quality claims."
+    ]
+  },
+  "known_weaknesses": [
+    "Quality is unknown until strict graph truth gates prove expected and forbidden facts.",
+    "CGC timed out on Autoresearch, so comparison is incomplete and superiority is unknown.",
+    "Fake-agent dry run is not real model patch success.",
+    "unresolved-calls query took about 71.3 seconds.",
+    "SQLite family size was about 803.4 MiB.",
+    "Large edge count requires proof-grade exactness, source-span, derived provenance, and test/mock context separation.",
+    "Internal baselines may conflate file recall, symbol recall, path recall, graph proof, and vector/retrieval effects.",
+    "CGC evidence recall may be affected by query or parsing mismatch.",
+    "Source-span count does not prove source-span correctness.",
+    "Unit tests alone do not prove graph correctness."
+  ],
+  "next_phase": {
+    "name": "adversarial fixtures",
+    "recommendation": "Create strict hand-labeled graph truth fixtures with expected and forbidden entities, edges, paths, source spans, context symbols, and tests."
+  },
+  "tests": {
+    "json_validation": "passed",
+    "unit_suite": "passed",
+    "unit_suite_command": "cargo test --workspace",
+    "benchmark_report_parser_tests": "no dedicated parser-only test target discovered by targeted search; benchmark report/output tests in codegraph-bench passed under cargo test --workspace"
+  }
+}

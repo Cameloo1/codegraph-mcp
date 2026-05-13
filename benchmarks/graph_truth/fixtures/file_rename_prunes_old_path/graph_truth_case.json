@@ -1,0 +1,444 @@
+{
+  "schema_version": 1,
+  "case_id": "file_rename_prunes_old_path",
+  "description": "Rename should prune old path facts.",
+  "repo_fixture_path": "benchmarks/graph_truth/fixtures/file_rename_prunes_old_path/repo",
+  "task_prompt": "After rename, find the live renamedTarget call.",
+  "expected_entities": [
+    {
+      "selector": {
+        "qualified_name": "src/use.run",
+        "kind": "Function",
+        "source_file": "src/use.ts",
+        "context": "production"
+      },
+      "kind": "Function",
+      "context": "production",
+      "source_file": "src/use.ts"
+    },
+    {
+      "selector": {
+        "qualified_name": "src/newName.renamedTarget",
+        "kind": "Function",
+        "source_file": "src/newName.ts",
+        "context": "production"
+      },
+      "kind": "Function",
+      "context": "production",
+      "source_file": "src/newName.ts"
+    }
+  ],
+  "expected_edges": [
+    {
+      "id": "edge://rename/calls-new",
+      "head": {
+        "qualified_name": "src/use.run",
+        "kind": "Function",
+        "source_file": "src/use.ts",
+        "context": "production"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "qualified_name": "src/newName.renamedTarget",
+        "kind": "Function",
+        "source_file": "src/newName.ts",
+        "context": "production"
+      },
+      "source_file": "src/use.ts",
+      "source_span": {
+        "start_line": 4,
+        "start_column": 10,
+        "end_line": 4,
+        "end_column": 25,
+        "expected_text": "renamedTarget()",
+        "syntax_role": "callsite"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "hand_labeled_fixture",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "hand_labeled_fixture",
+      "direction": "head_to_tail"
+    }
+  ],
+  "forbidden_edges": [
+    {
+      "id": "edge://rename/stale-old-call",
+      "head": {
+        "qualified_name": "src/use.run",
+        "kind": "Function",
+        "source_file": "src/use.ts",
+        "context": "production"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "qualified_name": "src/oldName.renamedTarget",
+        "kind": "Function",
+        "source_file": "src/oldName.ts",
+        "context": "production"
+      },
+      "source_file": "src/use.ts",
+      "source_span": {
+        "start_line": 4,
+        "start_column": 10,
+        "end_line": 4,
+        "end_column": 25,
+        "expected_text": "renamedTarget()",
+        "syntax_role": "callsite"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "forbidden_stale_rename",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "forbidden_stale_rename",
+      "direction": "head_to_tail"
+    }
+  ],
+  "expected_paths": [
+    {
+      "path_id": "path://rename/run-to-new",
+      "description": "run calls the renamed target at its new path.",
+      "source": {
+        "qualified_name": "src/use.run",
+        "kind": "Function",
+        "source_file": "src/use.ts",
+        "context": "production"
+      },
+      "target": {
+        "qualified_name": "src/newName.renamedTarget",
+        "kind": "Function",
+        "source_file": "src/newName.ts",
+        "context": "production"
+      },
+      "ordered_edges": [
+        {
+          "id": "edge://rename/calls-new",
+          "head": {
+            "qualified_name": "src/use.run",
+            "kind": "Function",
+            "source_file": "src/use.ts",
+            "context": "production"
+          },
+          "relation": "CALLS",
+          "tail": {
+            "qualified_name": "src/newName.renamedTarget",
+            "kind": "Function",
+            "source_file": "src/newName.ts",
+            "context": "production"
+          },
+          "source_file": "src/use.ts",
+          "source_span": {
+            "start_line": 4,
+            "start_column": 10,
+            "end_line": 4,
+            "end_column": 25,
+            "expected_text": "renamedTarget()",
+            "syntax_role": "callsite"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "hand_labeled_fixture",
+          "exactness": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "hand_labeled_fixture",
+          "direction": "head_to_tail"
+        }
+      ],
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "max_length": 1,
+      "source_span_required": true,
+      "production_only": true,
+      "derived_allowed": false,
+      "provenance_required": false,
+      "required_source_spans": [
+        {
+          "edge_ref": "edge://rename/calls-new",
+          "source_file": "src/use.ts",
+          "span": {
+            "start_line": 4,
+            "start_column": 10,
+            "end_line": 4,
+            "end_column": 25,
+            "expected_text": "renamedTarget()",
+            "syntax_role": "callsite"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "renamedTarget()",
+          "syntax_role": "callsite"
+        }
+      ],
+      "context": "production",
+      "allow_test_mock_edges": false,
+      "derived_edges_require_provenance": true,
+      "proof_grade": true
+    }
+  ],
+  "forbidden_paths": [
+    {
+      "path_id": "path://rename/run-to-old",
+      "description": "Old path must not remain queryable.",
+      "source": {
+        "qualified_name": "src/use.run",
+        "kind": "Function",
+        "source_file": "src/use.ts",
+        "context": "production"
+      },
+      "target": {
+        "qualified_name": "src/oldName.renamedTarget",
+        "kind": "Function",
+        "source_file": "src/oldName.ts",
+        "context": "production"
+      },
+      "ordered_edges": [
+        {
+          "id": "edge://rename/stale-old-call",
+          "head": {
+            "qualified_name": "src/use.run",
+            "kind": "Function",
+            "source_file": "src/use.ts",
+            "context": "production"
+          },
+          "relation": "CALLS",
+          "tail": {
+            "qualified_name": "src/oldName.renamedTarget",
+            "kind": "Function",
+            "source_file": "src/oldName.ts",
+            "context": "production"
+          },
+          "source_file": "src/use.ts",
+          "source_span": {
+            "start_line": 4,
+            "start_column": 10,
+            "end_line": 4,
+            "end_column": 25,
+            "expected_text": "renamedTarget()",
+            "syntax_role": "callsite"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "forbidden_stale_rename",
+          "exactness": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "forbidden_stale_rename",
+          "direction": "head_to_tail"
+        }
+      ],
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "max_length": 1,
+      "source_span_required": true,
+      "production_only": true,
+      "derived_allowed": false,
+      "provenance_required": false,
+      "required_source_spans": [
+        {
+          "edge_ref": "edge://rename/stale-old-call",
+          "source_file": "src/use.ts",
+          "span": {
+            "start_line": 4,
+            "start_column": 10,
+            "end_line": 4,
+            "end_column": 25,
+            "expected_text": "renamedTarget()",
+            "syntax_role": "callsite"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "renamedTarget()",
+          "syntax_role": "callsite"
+        }
+      ],
+      "context": "production",
+      "allow_test_mock_edges": false,
+      "derived_edges_require_provenance": true,
+      "proof_grade": false
+    }
+  ],
+  "expected_source_spans": [
+    {
+      "edge_ref": "edge://rename/calls-new",
+      "source_file": "src/use.ts",
+      "span": {
+        "start_line": 4,
+        "start_column": 10,
+        "end_line": 4,
+        "end_column": 25,
+        "expected_text": "renamedTarget()",
+        "syntax_role": "callsite"
+      },
+      "must_resolve_to_text": true,
+      "expected_text": "renamedTarget()",
+      "syntax_role": "callsite"
+    }
+  ],
+  "expected_context_symbols": [
+    {
+      "symbol": {
+        "qualified_name": "src/newName.renamedTarget",
+        "kind": "Function",
+        "source_file": "src/newName.ts",
+        "context": "production"
+      },
+      "critical": true,
+      "source_file": "src/newName.ts",
+      "reason": "Live renamed target"
+    }
+  ],
+  "forbidden_context_symbols": [
+    {
+      "symbol": {
+        "qualified_name": "src/oldName.renamedTarget",
+        "kind": "Function",
+        "source_file": "src/oldName.ts",
+        "context": "production"
+      },
+      "critical": true,
+      "source_file": "src/oldName.ts",
+      "reason": "Stale old path"
+    }
+  ],
+  "expected_tests": [],
+  "forbidden_tests": [],
+  "mutation_steps": [
+    {
+      "type": "add_file",
+      "path": "src/oldName.ts",
+      "content": "export function renamedTarget() {\n  return \"old\";\n}\n"
+    },
+    {
+      "type": "reindex",
+      "notes": [
+        "Index initial oldName.ts state."
+      ]
+    },
+    {
+      "type": "rename_file",
+      "from": "src/oldName.ts",
+      "to": "src/newName.ts"
+    },
+    {
+      "type": "edit_file",
+      "path": "src/use.ts",
+      "find": "./oldName",
+      "replace": "./newName"
+    },
+    {
+      "type": "reindex",
+      "notes": [
+        "Reindex after rename."
+      ]
+    },
+    {
+      "type": "query_again",
+      "query_prompt": "Find renamedTarget after rename."
+    }
+  ],
+  "performance_expectations": {
+    "schema_validation_100_cases_max_ms": 1000,
+    "index_time_ms_max": 10000
+  },
+  "notes": [
+    "Mutation fixture for stale path cleanup."
+  ],
+  "failure_rules": {
+    "missing_required_edge_fails": true,
+    "forbidden_edge_appearing_fails": true,
+    "wrong_direction_fails": true,
+    "missing_source_span_fails_for_proof_grade_edge": true,
+    "unresolved_name_labeled_exact_fails": true,
+    "mock_or_test_edge_in_production_proof_path_fails": true,
+    "derived_edge_without_provenance_fails": true,
+    "stale_edge_after_edit_fails": true,
+    "same_name_symbol_collision_fails": true,
+    "critical_symbol_missing_from_context_packet_fails": true,
+    "forbidden_context_symbol_included_fails": true,
+    "expected_test_omitted_fails": true,
+    "too_many_distractors_fail_if_threshold_specified": true
+  },
+  "distractor_policy": {
+    "max_context_distractors": 0,
+    "max_symbol_distractors": 0,
+    "distractor_symbols": [],
+    "count_scope": "context_packet"
+  }
+}

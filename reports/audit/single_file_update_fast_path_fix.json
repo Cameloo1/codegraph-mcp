@@ -1,0 +1,60 @@
+{
+  "generated_at": "2026-05-12 12:20:42 -05:00",
+  "source_of_truth": "MVP.md",
+  "status": "passed",
+  "target": {
+    "single_file_update_p95_ms": 750
+  },
+  "before": {
+    "compact_baseline_single_file_update_ms": 1694
+  },
+  "after": {
+    "mode": "update-fast",
+    "autoresearch_update_samples_ms": [312, 298, 313, 293, 313, 298, 336, 319, 310, 299, 314, 296],
+    "autoresearch_update_p95_ms": 336,
+    "autoresearch_restore_p95_ms": 273,
+    "global_hash_check_ran": false,
+    "graph_counts_ran": false,
+    "graph_digest_kind": "incremental_graph_digest",
+    "integrity_check_kind": "quick_check_post_measurement",
+    "all_integrity_checks_passed": true,
+    "changed_file_updates_graph_fact_hash": true,
+    "restore_returns_to_repeat_graph_fact_hash": true
+  },
+  "fixes": [
+    "Added update-fast, update-validated, and update-debug benchmark modes.",
+    "Fast update uses incremental graph digest instead of full graph fact hash.",
+    "Fast update skips global graph counts when prior repo state exists.",
+    "Rename detection now runs only for unknown/new paths.",
+    "Old cache entity lookup is skipped for empty incremental caches.",
+    "PathEvidence cleanup uses reverse-map materialized rows when available.",
+    "Static JS/TS resolver impact analysis is skipped for non-static-resolver changed paths."
+  ],
+  "correctness": {
+    "graph_truth_cases_passed": 11,
+    "graph_truth_cases_total": 11,
+    "context_packet_cases_passed": 11,
+    "context_packet_cases_total": 11,
+    "stale_incremental_tests": "passed",
+    "cargo_test_workspace": "passed"
+  },
+  "comprehensive_benchmark": {
+    "verdict": "fail",
+    "single_file_update_total_ms_status": "pass",
+    "single_file_update_total_ms_observed": 336,
+    "update_global_work_accidentally_triggered": false,
+    "remaining_failed_targets": [
+      "bytes_per_proof_edge",
+      "cold_proof_build_total_wall_ms",
+      "proof_db_mib",
+      "proof_db_mib_stretch"
+    ]
+  },
+  "storage_safety_rule": {
+    "graph_truth_still_passed": true,
+    "context_packet_quality_still_passed": true,
+    "proof_db_size_decreased": false,
+    "removed_data_disposition": "No proof data was removed. JSON-scan cleanup remains as fallback for DBs without reverse maps; reverse-map-backed DBs use indexed materialized mappings.",
+    "storage_note": "A path_evidence_edges(edge_id, path_id) lookup index was added; the next storage gate must account for its size impact."
+  }
+}

@@ -1,0 +1,4008 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-12 12:43:00 -05:00",
+  "source_of_truth": "MVP.md",
+  "db_path": "reports\\final\\artifacts\\compact_gate_autoresearch_proof.sqlite",
+  "proof_db_bytes": 336203776,
+  "proof_db_mib": 320.62890625,
+  "target_mib": 250.0,
+  "minimum_savings_needed_mib": 70.62890625,
+  "dbstat_source": "reports\\final\\artifacts\\compact_gate_proof_storage.json",
+  "dbstat_available_in_storage_artifact": true,
+  "focus_contributors": [
+    {
+      "name": "template_entities",
+      "classification": "template",
+      "rows": 653819,
+      "dbstat_bytes": 87523328,
+      "dbstat_mib": 83.46875,
+      "dbstat_payload_bytes": 75801704,
+      "avg_dbstat_bytes_per_row": 133.86476685443526,
+      "columns": [
+        {
+          "table": "template_entities",
+          "column": "content_template_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 1,
+          "rows": 653819,
+          "non_null": 653819,
+          "payload_bytes_estimate": 5230552,
+          "payload_mib_estimate": 4.988243103027344,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_entities",
+          "column": "local_template_entity_id",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 2,
+          "rows": 653819,
+          "non_null": 653819,
+          "payload_bytes_estimate": 26806579,
+          "payload_mib_estimate": 25.564745903015137,
+          "avg_payload_bytes": 41.0,
+          "max_payload_bytes": 41
+        },
+        {
+          "table": "template_entities",
+          "column": "kind_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 653819,
+          "non_null": 653819,
+          "payload_bytes_estimate": 5230552,
+          "payload_mib_estimate": 4.988243103027344,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_entities",
+          "column": "name_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 653819,
+          "non_null": 653819,
+          "payload_bytes_estimate": 5230552,
+          "payload_mib_estimate": 4.988243103027344,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_entities",
+          "column": "qualified_name_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 653819,
+          "non_null": 653819,
+          "payload_bytes_estimate": 5230552,
+          "payload_mib_estimate": 4.988243103027344,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_entities",
+          "column": "start_line",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 653819,
+          "non_null": 653819,
+          "payload_bytes_estimate": 5230552,
+          "payload_mib_estimate": 4.988243103027344,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_entities",
+          "column": "start_column",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 653819,
+          "non_null": 653819,
+          "payload_bytes_estimate": 5230552,
+          "payload_mib_estimate": 4.988243103027344,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_entities",
+          "column": "end_line",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 653819,
+          "non_null": 653819,
+          "payload_bytes_estimate": 5230552,
+          "payload_mib_estimate": 4.988243103027344,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_entities",
+          "column": "end_column",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 653819,
+          "non_null": 653819,
+          "payload_bytes_estimate": 5230552,
+          "payload_mib_estimate": 4.988243103027344,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_entities",
+          "column": "content_hash",
+          "declared_type": "TEXT",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 653819,
+          "non_null": 0,
+          "payload_bytes_estimate": 0,
+          "payload_mib_estimate": 0.0,
+          "avg_payload_bytes": 0.0,
+          "max_payload_bytes": 0
+        },
+        {
+          "table": "template_entities",
+          "column": "created_from_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 653819,
+          "non_null": 653819,
+          "payload_bytes_estimate": 5230552,
+          "payload_mib_estimate": 4.988243103027344,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_entities",
+          "column": "confidence",
+          "declared_type": "REAL",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 653819,
+          "non_null": 653819,
+          "payload_bytes_estimate": 5230552,
+          "payload_mib_estimate": 4.988243103027344,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_entities",
+          "column": "metadata_json",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 653819,
+          "non_null": 653819,
+          "payload_bytes_estimate": 26671320,
+          "payload_mib_estimate": 25.435752868652344,
+          "avg_payload_bytes": 40.79312470270824,
+          "max_payload_bytes": 220
+        }
+      ],
+      "column_payload_estimate_bytes": 105783419,
+      "index_count": 1,
+      "index_bytes": 0,
+      "index_mib": 0.0,
+      "indexes": [
+        {
+          "name": "sqlite_autoindex_template_entities_1",
+          "unique": true,
+          "origin": "pk",
+          "columns": [
+            "content_template_id",
+            "local_template_entity_id"
+          ],
+          "bytes": 0,
+          "mib": 0.0,
+          "payload_bytes": null,
+          "pages": null
+        }
+      ],
+      "row_is_proof_required": false,
+      "row_is_derivable": true,
+      "row_can_move_to_sidecar": false,
+      "row_can_become_compact_enum_hash_integer": "local TEXT ids and repeated metadata can become compact integer/template references",
+      "proof_requirement_note": "partly proof-required through duplicate-file overlay; over-broad if it keeps non-proof local symbols"
+    },
+    {
+      "name": "template_edges",
+      "classification": "template",
+      "rows": 169290,
+      "dbstat_bytes": 40804352,
+      "dbstat_mib": 38.9140625,
+      "dbstat_payload_bytes": 34356421,
+      "avg_dbstat_bytes_per_row": 241.03226416208872,
+      "columns": [
+        {
+          "table": "template_edges",
+          "column": "content_template_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 1,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 1354320,
+          "payload_mib_estimate": 1.2915802001953125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_edges",
+          "column": "local_template_edge_id",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 2,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 6602310,
+          "payload_mib_estimate": 6.296453475952148,
+          "avg_payload_bytes": 39.0,
+          "max_payload_bytes": 39
+        },
+        {
+          "table": "template_edges",
+          "column": "local_head_entity_id",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 6940890,
+          "payload_mib_estimate": 6.619348526000977,
+          "avg_payload_bytes": 41.0,
+          "max_payload_bytes": 41
+        },
+        {
+          "table": "template_edges",
+          "column": "relation_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 1354320,
+          "payload_mib_estimate": 1.2915802001953125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_edges",
+          "column": "local_tail_entity_id",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 6940890,
+          "payload_mib_estimate": 6.619348526000977,
+          "avg_payload_bytes": 41.0,
+          "max_payload_bytes": 41
+        },
+        {
+          "table": "template_edges",
+          "column": "start_line",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 1354320,
+          "payload_mib_estimate": 1.2915802001953125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_edges",
+          "column": "start_column",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 1354320,
+          "payload_mib_estimate": 1.2915802001953125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_edges",
+          "column": "end_line",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 1354320,
+          "payload_mib_estimate": 1.2915802001953125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_edges",
+          "column": "end_column",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 1354320,
+          "payload_mib_estimate": 1.2915802001953125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_edges",
+          "column": "repo_commit",
+          "declared_type": "TEXT",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 0,
+          "payload_bytes_estimate": 0,
+          "payload_mib_estimate": 0.0,
+          "avg_payload_bytes": 0.0,
+          "max_payload_bytes": 0
+        },
+        {
+          "table": "template_edges",
+          "column": "extractor_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 1354320,
+          "payload_mib_estimate": 1.2915802001953125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_edges",
+          "column": "confidence",
+          "declared_type": "REAL",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 1354320,
+          "payload_mib_estimate": 1.2915802001953125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_edges",
+          "column": "confidence_q",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 1354320,
+          "payload_mib_estimate": 1.2915802001953125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_edges",
+          "column": "exactness_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 1354320,
+          "payload_mib_estimate": 1.2915802001953125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_edges",
+          "column": "resolution_kind_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 1354320,
+          "payload_mib_estimate": 1.2915802001953125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_edges",
+          "column": "edge_class_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 1354320,
+          "payload_mib_estimate": 1.2915802001953125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_edges",
+          "column": "context_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 1354320,
+          "payload_mib_estimate": 1.2915802001953125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_edges",
+          "column": "context_kind_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 1354320,
+          "payload_mib_estimate": 1.2915802001953125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_edges",
+          "column": "flags_bitset",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 1354320,
+          "payload_mib_estimate": 1.2915802001953125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_edges",
+          "column": "derived",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 1354320,
+          "payload_mib_estimate": 1.2915802001953125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_edges",
+          "column": "provenance_edges_json",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 338580,
+          "payload_mib_estimate": 0.3228950500488281,
+          "avg_payload_bytes": 2.0,
+          "max_payload_bytes": 2
+        },
+        {
+          "table": "template_edges",
+          "column": "provenance_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 1354320,
+          "payload_mib_estimate": 1.2915802001953125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "template_edges",
+          "column": "metadata_json",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 169290,
+          "non_null": 169290,
+          "payload_bytes_estimate": 6766412,
+          "payload_mib_estimate": 6.452953338623047,
+          "avg_payload_bytes": 39.969354362336816,
+          "max_payload_bytes": 43
+        }
+      ],
+      "column_payload_estimate_bytes": 50612522,
+      "index_count": 3,
+      "index_bytes": 33079296,
+      "index_mib": 31.546875,
+      "indexes": [
+        {
+          "name": "idx_template_edges_tail_relation",
+          "unique": false,
+          "origin": "c",
+          "columns": [
+            "content_template_id",
+            "local_tail_entity_id",
+            "relation_id"
+          ],
+          "bytes": 16539648,
+          "mib": 15.7734375,
+          "payload_bytes": 15913260,
+          "pages": 4038
+        },
+        {
+          "name": "idx_template_edges_head_relation",
+          "unique": false,
+          "origin": "c",
+          "columns": [
+            "content_template_id",
+            "local_head_entity_id",
+            "relation_id"
+          ],
+          "bytes": 16539648,
+          "mib": 15.7734375,
+          "payload_bytes": 15913260,
+          "pages": 4038
+        },
+        {
+          "name": "sqlite_autoindex_template_edges_1",
+          "unique": true,
+          "origin": "pk",
+          "columns": [
+            "content_template_id",
+            "local_template_edge_id"
+          ],
+          "bytes": 0,
+          "mib": 0.0,
+          "payload_bytes": null,
+          "pages": null
+        }
+      ],
+      "row_is_proof_required": false,
+      "row_is_derivable": true,
+      "row_can_move_to_sidecar": false,
+      "row_can_become_compact_enum_hash_integer": "local TEXT ids, repeated metadata, and unused directional indexes can compact",
+      "proof_requirement_note": "proof-required only for duplicate-file overlay proof relations; structural/debug relations should not live here"
+    },
+    {
+      "name": "symbol_dict",
+      "classification": "dictionary",
+      "rows": 696373,
+      "dbstat_bytes": 30392320,
+      "dbstat_mib": 28.984375,
+      "dbstat_payload_bytes": 25916469,
+      "avg_dbstat_bytes_per_row": 43.64373690536537,
+      "columns": [
+        {
+          "table": "symbol_dict",
+          "column": "id",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 1,
+          "rows": 696373,
+          "non_null": 696373,
+          "payload_bytes_estimate": 5570984,
+          "payload_mib_estimate": 5.312904357910156,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "symbol_dict",
+          "column": "value",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 696373,
+          "non_null": 696373,
+          "payload_bytes_estimate": 16137884,
+          "payload_mib_estimate": 15.39028549194336,
+          "avg_payload_bytes": 23.17419543836421,
+          "max_payload_bytes": 286
+        },
+        {
+          "table": "symbol_dict",
+          "column": "value_hash",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 696373,
+          "non_null": 696373,
+          "payload_bytes_estimate": 5570984,
+          "payload_mib_estimate": 5.312904357910156,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "symbol_dict",
+          "column": "value_len",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 696373,
+          "non_null": 696373,
+          "payload_bytes_estimate": 5570984,
+          "payload_mib_estimate": 5.312904357910156,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        }
+      ],
+      "column_payload_estimate_bytes": 32850836,
+      "index_count": 1,
+      "index_bytes": 14602240,
+      "index_mib": 13.92578125,
+      "indexes": [
+        {
+          "name": "idx_symbol_dict_hash",
+          "unique": false,
+          "origin": "c",
+          "columns": [
+            "value_hash",
+            "value_len"
+          ],
+          "bytes": 14602240,
+          "mib": 13.92578125,
+          "payload_bytes": 11109040,
+          "pages": 3565
+        }
+      ],
+      "row_is_proof_required": false,
+      "row_is_derivable": false,
+      "row_can_move_to_sidecar": true,
+      "row_can_become_compact_enum_hash_integer": "split proof dictionary from audit/debug dictionary or intern local template ordinals",
+      "proof_requirement_note": "required for human-readable names, but not all template/debug names need proof DB residency"
+    },
+    {
+      "name": "qname_prefix_dict",
+      "classification": "dictionary",
+      "rows": 155741,
+      "dbstat_bytes": 22274048,
+      "dbstat_mib": 21.2421875,
+      "dbstat_payload_bytes": 20771044,
+      "avg_dbstat_bytes_per_row": 143.01980852826168,
+      "columns": [
+        {
+          "table": "qname_prefix_dict",
+          "column": "id",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 1,
+          "rows": 155741,
+          "non_null": 155741,
+          "payload_bytes_estimate": 1245928,
+          "payload_mib_estimate": 1.1882095336914062,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "qname_prefix_dict",
+          "column": "value",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 155741,
+          "non_null": 155741,
+          "payload_bytes_estimate": 18380648,
+          "payload_mib_estimate": 17.529151916503906,
+          "avg_payload_bytes": 118.02061114285898,
+          "max_payload_bytes": 363
+        },
+        {
+          "table": "qname_prefix_dict",
+          "column": "value_hash",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 155741,
+          "non_null": 155741,
+          "payload_bytes_estimate": 1245928,
+          "payload_mib_estimate": 1.1882095336914062,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "qname_prefix_dict",
+          "column": "value_len",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 155741,
+          "non_null": 155741,
+          "payload_bytes_estimate": 1245928,
+          "payload_mib_estimate": 1.1882095336914062,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        }
+      ],
+      "column_payload_estimate_bytes": 22118432,
+      "index_count": 1,
+      "index_bytes": 3309568,
+      "index_mib": 3.15625,
+      "indexes": [
+        {
+          "name": "idx_qname_prefix_dict_hash",
+          "unique": false,
+          "origin": "c",
+          "columns": [
+            "value_hash",
+            "value_len"
+          ],
+          "bytes": 3309568,
+          "mib": 3.15625,
+          "payload_bytes": 2515701,
+          "pages": 808
+        }
+      ],
+      "row_is_proof_required": false,
+      "row_is_derivable": true,
+      "row_can_move_to_sidecar": true,
+      "row_can_become_compact_enum_hash_integer": "reconstruct or sidecar long/debug prefixes",
+      "proof_requirement_note": "required only for displayed qnames; many prefixes are derivable from hierarchy/path"
+    },
+    {
+      "name": "qualified_name_dict",
+      "classification": "dictionary",
+      "rows": 727372,
+      "dbstat_bytes": 12173312,
+      "dbstat_mib": 11.609375,
+      "dbstat_payload_bytes": 7739773,
+      "avg_dbstat_bytes_per_row": 16.7360195333337,
+      "columns": [
+        {
+          "table": "qualified_name_dict",
+          "column": "id",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 1,
+          "rows": 727372,
+          "non_null": 727372,
+          "payload_bytes_estimate": 5818976,
+          "payload_mib_estimate": 5.549407958984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "qualified_name_dict",
+          "column": "prefix_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 727372,
+          "non_null": 727372,
+          "payload_bytes_estimate": 5818976,
+          "payload_mib_estimate": 5.549407958984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "qualified_name_dict",
+          "column": "suffix_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 727372,
+          "non_null": 727372,
+          "payload_bytes_estimate": 5818976,
+          "payload_mib_estimate": 5.549407958984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "qualified_name_dict",
+          "column": "value",
+          "declared_type": "TEXT",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 727372,
+          "non_null": 0,
+          "payload_bytes_estimate": 0,
+          "payload_mib_estimate": 0.0,
+          "avg_payload_bytes": 0.0,
+          "max_payload_bytes": 0
+        }
+      ],
+      "column_payload_estimate_bytes": 17456928,
+      "index_count": 1,
+      "index_bytes": 12742656,
+      "index_mib": 12.15234375,
+      "indexes": [
+        {
+          "name": "idx_qualified_name_parts",
+          "unique": true,
+          "origin": "c",
+          "columns": [
+            "prefix_id",
+            "suffix_id"
+          ],
+          "bytes": 12742656,
+          "mib": 12.15234375,
+          "payload_bytes": 9161622,
+          "pages": 3111
+        }
+      ],
+      "row_is_proof_required": false,
+      "row_is_derivable": true,
+      "row_can_move_to_sidecar": false,
+      "row_can_become_compact_enum_hash_integer": "further reduce indexes or template-only qnames",
+      "proof_requirement_note": "required for lookup/display today; value text is already decomposed"
+    },
+    {
+      "name": "source_spans",
+      "classification": "proof_required",
+      "rows": 0,
+      "dbstat_bytes": 4096,
+      "dbstat_mib": 0.00390625,
+      "dbstat_payload_bytes": 0,
+      "avg_dbstat_bytes_per_row": null,
+      "columns": [
+        {
+          "table": "source_spans",
+          "column": "id_key",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 1,
+          "rows": 0,
+          "non_null": 0,
+          "payload_bytes_estimate": 0,
+          "payload_mib_estimate": 0.0,
+          "avg_payload_bytes": 0.0,
+          "max_payload_bytes": 0
+        },
+        {
+          "table": "source_spans",
+          "column": "path_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 0,
+          "non_null": 0,
+          "payload_bytes_estimate": 0,
+          "payload_mib_estimate": 0.0,
+          "avg_payload_bytes": 0.0,
+          "max_payload_bytes": 0
+        },
+        {
+          "table": "source_spans",
+          "column": "start_line",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 0,
+          "non_null": 0,
+          "payload_bytes_estimate": 0,
+          "payload_mib_estimate": 0.0,
+          "avg_payload_bytes": 0.0,
+          "max_payload_bytes": 0
+        },
+        {
+          "table": "source_spans",
+          "column": "start_column",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 0,
+          "non_null": 0,
+          "payload_bytes_estimate": 0,
+          "payload_mib_estimate": 0.0,
+          "avg_payload_bytes": 0.0,
+          "max_payload_bytes": 0
+        },
+        {
+          "table": "source_spans",
+          "column": "end_line",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 0,
+          "non_null": 0,
+          "payload_bytes_estimate": 0,
+          "payload_mib_estimate": 0.0,
+          "avg_payload_bytes": 0.0,
+          "max_payload_bytes": 0
+        },
+        {
+          "table": "source_spans",
+          "column": "end_column",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 0,
+          "non_null": 0,
+          "payload_bytes_estimate": 0,
+          "payload_mib_estimate": 0.0,
+          "avg_payload_bytes": 0.0,
+          "max_payload_bytes": 0
+        }
+      ],
+      "column_payload_estimate_bytes": 0,
+      "index_count": 2,
+      "index_bytes": 4096,
+      "index_mib": 0.00390625,
+      "indexes": [
+        {
+          "name": "idx_source_spans_path",
+          "unique": false,
+          "origin": "c",
+          "columns": [
+            "path_id"
+          ],
+          "bytes": 4096,
+          "mib": 0.00390625,
+          "payload_bytes": 0,
+          "pages": 1
+        },
+        {
+          "name": "sqlite_autoindex_source_spans_1",
+          "unique": true,
+          "origin": "pk",
+          "columns": [
+            "id_key"
+          ],
+          "bytes": 0,
+          "mib": 0.0,
+          "payload_bytes": null,
+          "pages": null
+        }
+      ],
+      "row_is_proof_required": true,
+      "row_is_derivable": false,
+      "row_can_move_to_sidecar": false,
+      "row_can_become_compact_enum_hash_integer": "no target",
+      "proof_requirement_note": "zero physical rows in this artifact; spans are stored elsewhere"
+    },
+    {
+      "name": "file_source_spans",
+      "classification": "proof_required",
+      "rows": 62005,
+      "dbstat_bytes": 6795264,
+      "dbstat_mib": 6.48046875,
+      "dbstat_payload_bytes": 5808732,
+      "avg_dbstat_bytes_per_row": 109.59219417788889,
+      "columns": [
+        {
+          "table": "file_source_spans",
+          "column": "file_id",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 1,
+          "rows": 62005,
+          "non_null": 62005,
+          "payload_bytes_estimate": 3188295,
+          "payload_mib_estimate": 3.040595054626465,
+          "avg_payload_bytes": 51.419966131763566,
+          "max_payload_bytes": 105
+        },
+        {
+          "table": "file_source_spans",
+          "column": "span_id",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 2,
+          "rows": 62005,
+          "non_null": 62005,
+          "payload_bytes_estimate": 2418195,
+          "payload_mib_estimate": 2.3061704635620117,
+          "avg_payload_bytes": 39.0,
+          "max_payload_bytes": 39
+        }
+      ],
+      "column_payload_estimate_bytes": 5606490,
+      "index_count": 2,
+      "index_bytes": 6094848,
+      "index_mib": 5.8125,
+      "indexes": [
+        {
+          "name": "idx_file_source_spans_span",
+          "unique": false,
+          "origin": "c",
+          "columns": [
+            "span_id",
+            "file_id"
+          ],
+          "bytes": 6094848,
+          "mib": 5.8125,
+          "payload_bytes": 5808732,
+          "pages": 1488
+        },
+        {
+          "name": "sqlite_autoindex_file_source_spans_1",
+          "unique": true,
+          "origin": "pk",
+          "columns": [
+            "file_id",
+            "span_id"
+          ],
+          "bytes": 0,
+          "mib": 0.0,
+          "payload_bytes": null,
+          "pages": null
+        }
+      ],
+      "row_is_proof_required": true,
+      "row_is_derivable": false,
+      "row_can_move_to_sidecar": false,
+      "row_can_become_compact_enum_hash_integer": "integerize file/span ids later",
+      "proof_requirement_note": "needed for source-span proof and stale cleanup"
+    },
+    {
+      "name": "path_evidence",
+      "classification": "derived_cache",
+      "rows": 4096,
+      "dbstat_bytes": 8519680,
+      "dbstat_mib": 8.125,
+      "dbstat_payload_bytes": 7115002,
+      "avg_dbstat_bytes_per_row": 2080.0,
+      "columns": [
+        {
+          "table": "path_evidence",
+          "column": "id",
+          "declared_type": "TEXT",
+          "not_null": false,
+          "pk_position": 1,
+          "rows": 4096,
+          "non_null": 4096,
+          "payload_bytes_estimate": 94208,
+          "payload_mib_estimate": 0.08984375,
+          "avg_payload_bytes": 23.0,
+          "max_payload_bytes": 23
+        },
+        {
+          "table": "path_evidence",
+          "column": "source",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 4096,
+          "non_null": 4096,
+          "payload_bytes_estimate": 167936,
+          "payload_mib_estimate": 0.16015625,
+          "avg_payload_bytes": 41.0,
+          "max_payload_bytes": 41
+        },
+        {
+          "table": "path_evidence",
+          "column": "target",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 4096,
+          "non_null": 4096,
+          "payload_bytes_estimate": 167936,
+          "payload_mib_estimate": 0.16015625,
+          "avg_payload_bytes": 41.0,
+          "max_payload_bytes": 41
+        },
+        {
+          "table": "path_evidence",
+          "column": "summary",
+          "declared_type": "TEXT",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 4096,
+          "non_null": 4096,
+          "payload_bytes_estimate": 424911,
+          "payload_mib_estimate": 0.4052267074584961,
+          "avg_payload_bytes": 103.738037109375,
+          "max_payload_bytes": 106
+        },
+        {
+          "table": "path_evidence",
+          "column": "metapath_json",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 4096,
+          "non_null": 4096,
+          "payload_bytes_estimate": 48079,
+          "payload_mib_estimate": 0.045851707458496094,
+          "avg_payload_bytes": 11.738037109375,
+          "max_payload_bytes": 14
+        },
+        {
+          "table": "path_evidence",
+          "column": "edges_json",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 4096,
+          "non_null": 4096,
+          "payload_bytes_estimate": 416719,
+          "payload_mib_estimate": 0.3974142074584961,
+          "avg_payload_bytes": 101.738037109375,
+          "max_payload_bytes": 104
+        },
+        {
+          "table": "path_evidence",
+          "column": "source_spans_json",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 4096,
+          "non_null": 4096,
+          "payload_bytes_estimate": 520833,
+          "payload_mib_estimate": 0.4967050552368164,
+          "avg_payload_bytes": 127.156494140625,
+          "max_payload_bytes": 198
+        },
+        {
+          "table": "path_evidence",
+          "column": "exactness",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 4096,
+          "non_null": 4096,
+          "payload_bytes_estimate": 75876,
+          "payload_mib_estimate": 0.07236099243164062,
+          "avg_payload_bytes": 18.5244140625,
+          "max_payload_bytes": 27
+        },
+        {
+          "table": "path_evidence",
+          "column": "length",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 4096,
+          "non_null": 4096,
+          "payload_bytes_estimate": 32768,
+          "payload_mib_estimate": 0.03125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "path_evidence",
+          "column": "confidence",
+          "declared_type": "REAL",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 4096,
+          "non_null": 4096,
+          "payload_bytes_estimate": 32768,
+          "payload_mib_estimate": 0.03125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "path_evidence",
+          "column": "metadata_json",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 4096,
+          "non_null": 4096,
+          "payload_bytes_estimate": 5100200,
+          "payload_mib_estimate": 4.863929748535156,
+          "avg_payload_bytes": 1245.166015625,
+          "max_payload_bytes": 1610
+        }
+      ],
+      "column_payload_estimate_bytes": 7082234,
+      "index_count": 3,
+      "index_bytes": 634880,
+      "index_mib": 0.60546875,
+      "indexes": [
+        {
+          "name": "idx_path_evidence_target",
+          "unique": false,
+          "origin": "c",
+          "columns": [
+            "target",
+            "length",
+            "confidence"
+          ],
+          "bytes": 245760,
+          "mib": 0.234375,
+          "payload_bytes": 229248,
+          "pages": 60
+        },
+        {
+          "name": "idx_path_evidence_source",
+          "unique": false,
+          "origin": "c",
+          "columns": [
+            "source",
+            "length",
+            "confidence"
+          ],
+          "bytes": 245760,
+          "mib": 0.234375,
+          "payload_bytes": 229248,
+          "pages": 60
+        },
+        {
+          "name": "sqlite_autoindex_path_evidence_1",
+          "unique": true,
+          "origin": "pk",
+          "columns": [
+            "id"
+          ],
+          "bytes": 143360,
+          "mib": 0.13671875,
+          "payload_bytes": 114560,
+          "pages": 35
+        }
+      ],
+      "row_is_proof_required": false,
+      "row_is_derivable": true,
+      "row_can_move_to_sidecar": true,
+      "row_can_become_compact_enum_hash_integer": "move verbose JSON to sidecar or reconstruct",
+      "proof_requirement_note": "required for context quality, but verbose JSON is derivable from materialized path tables and proof edges/spans"
+    },
+    {
+      "name": "files",
+      "classification": "proof_required",
+      "rows": 4975,
+      "dbstat_bytes": 1695744,
+      "dbstat_mib": 1.6171875,
+      "dbstat_payload_bytes": 1452837,
+      "avg_dbstat_bytes_per_row": 340.85306532663316,
+      "columns": [
+        {
+          "table": "files",
+          "column": "file_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 1,
+          "rows": 4975,
+          "non_null": 4975,
+          "payload_bytes_estimate": 39800,
+          "payload_mib_estimate": 0.03795623779296875,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "files",
+          "column": "path_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 4975,
+          "non_null": 4975,
+          "payload_bytes_estimate": 39800,
+          "payload_mib_estimate": 0.03795623779296875,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "files",
+          "column": "content_hash",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 4975,
+          "non_null": 4975,
+          "payload_bytes_estimate": 109450,
+          "payload_mib_estimate": 0.10437965393066406,
+          "avg_payload_bytes": 22.0,
+          "max_payload_bytes": 22
+        },
+        {
+          "table": "files",
+          "column": "mtime_unix_ms",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 4975,
+          "non_null": 0,
+          "payload_bytes_estimate": 0,
+          "payload_mib_estimate": 0.0,
+          "avg_payload_bytes": 0.0,
+          "max_payload_bytes": 0
+        },
+        {
+          "table": "files",
+          "column": "size_bytes",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 4975,
+          "non_null": 4975,
+          "payload_bytes_estimate": 39800,
+          "payload_mib_estimate": 0.03795623779296875,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "files",
+          "column": "language_id",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 4975,
+          "non_null": 4975,
+          "payload_bytes_estimate": 39800,
+          "payload_mib_estimate": 0.03795623779296875,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "files",
+          "column": "indexed_at_unix_ms",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 4975,
+          "non_null": 4975,
+          "payload_bytes_estimate": 39800,
+          "payload_mib_estimate": 0.03795623779296875,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "files",
+          "column": "content_template_id",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 4975,
+          "non_null": 4975,
+          "payload_bytes_estimate": 39800,
+          "payload_mib_estimate": 0.03795623779296875,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "files",
+          "column": "metadata_json",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 4975,
+          "non_null": 4975,
+          "payload_bytes_estimate": 1184050,
+          "payload_mib_estimate": 1.1291980743408203,
+          "avg_payload_bytes": 238.0,
+          "max_payload_bytes": 238
+        }
+      ],
+      "column_payload_estimate_bytes": 1532300,
+      "index_count": 3,
+      "index_bytes": 163840,
+      "index_mib": 0.15625,
+      "indexes": [
+        {
+          "name": "idx_files_content_template",
+          "unique": false,
+          "origin": "c",
+          "columns": [
+            "content_template_id",
+            "path_id"
+          ],
+          "bytes": 102400,
+          "mib": 0.09765625,
+          "payload_bytes": 79344,
+          "pages": 25
+        },
+        {
+          "name": "sqlite_autoindex_files_2",
+          "unique": true,
+          "origin": "pk",
+          "columns": [
+            "file_id"
+          ],
+          "bytes": 0,
+          "mib": 0.0,
+          "payload_bytes": null,
+          "pages": null
+        },
+        {
+          "name": "sqlite_autoindex_files_1",
+          "unique": true,
+          "origin": "u",
+          "columns": [
+            "path_id"
+          ],
+          "bytes": 61440,
+          "mib": 0.05859375,
+          "payload_bytes": 34569,
+          "pages": 15
+        }
+      ],
+      "row_is_proof_required": true,
+      "row_is_derivable": false,
+      "row_can_move_to_sidecar": false,
+      "row_can_become_compact_enum_hash_integer": "content_hash is small but could become blob",
+      "proof_requirement_note": "canonical file identity/snapshot table"
+    },
+    {
+      "name": "source_content_template",
+      "classification": "template",
+      "rows": 2718,
+      "dbstat_bytes": 200704,
+      "dbstat_mib": 0.19140625,
+      "dbstat_payload_bytes": 173610,
+      "avg_dbstat_bytes_per_row": 73.84253127299485,
+      "columns": [
+        {
+          "table": "source_content_template",
+          "column": "content_template_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 1,
+          "rows": 2718,
+          "non_null": 2718,
+          "payload_bytes_estimate": 21744,
+          "payload_mib_estimate": 0.0207366943359375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "source_content_template",
+          "column": "content_hash",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2718,
+          "non_null": 2718,
+          "payload_bytes_estimate": 59796,
+          "payload_mib_estimate": 0.057025909423828125,
+          "avg_payload_bytes": 22.0,
+          "max_payload_bytes": 22
+        },
+        {
+          "table": "source_content_template",
+          "column": "language_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2718,
+          "non_null": 2718,
+          "payload_bytes_estimate": 21744,
+          "payload_mib_estimate": 0.0207366943359375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "source_content_template",
+          "column": "extraction_version",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2718,
+          "non_null": 2718,
+          "payload_bytes_estimate": 59796,
+          "payload_mib_estimate": 0.057025909423828125,
+          "avg_payload_bytes": 22.0,
+          "max_payload_bytes": 22
+        },
+        {
+          "table": "source_content_template",
+          "column": "canonical_path_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2718,
+          "non_null": 2718,
+          "payload_bytes_estimate": 21744,
+          "payload_mib_estimate": 0.0207366943359375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "source_content_template",
+          "column": "metadata_json",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2718,
+          "non_null": 2718,
+          "payload_bytes_estimate": 5436,
+          "payload_mib_estimate": 0.005184173583984375,
+          "avg_payload_bytes": 2.0,
+          "max_payload_bytes": 2
+        }
+      ],
+      "column_payload_estimate_bytes": 190260,
+      "index_count": 2,
+      "index_bytes": 196608,
+      "index_mib": 0.1875,
+      "indexes": [
+        {
+          "name": "sqlite_autoindex_source_content_template_2",
+          "unique": true,
+          "origin": "pk",
+          "columns": [
+            "content_template_id"
+          ],
+          "bytes": 0,
+          "mib": 0.0,
+          "payload_bytes": null,
+          "pages": null
+        },
+        {
+          "name": "sqlite_autoindex_source_content_template_1",
+          "unique": true,
+          "origin": "u",
+          "columns": [
+            "content_hash",
+            "language_id",
+            "extraction_version"
+          ],
+          "bytes": 196608,
+          "mib": 0.1875,
+          "payload_bytes": 157480,
+          "pages": 48
+        }
+      ],
+      "row_is_proof_required": false,
+      "row_is_derivable": false,
+      "row_can_move_to_sidecar": false,
+      "row_can_become_compact_enum_hash_integer": "small",
+      "proof_requirement_note": "required for content-template dedupe"
+    },
+    {
+      "name": "edges",
+      "classification": "proof_required",
+      "rows": 31848,
+      "dbstat_bytes": 2105344,
+      "dbstat_mib": 2.0078125,
+      "dbstat_payload_bytes": 1740018,
+      "avg_dbstat_bytes_per_row": 66.10600351670435,
+      "columns": [
+        {
+          "table": "edges",
+          "column": "id_key",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 1,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "head_id_key",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "relation_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "tail_id_key",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "span_path_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "start_line",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "start_column",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "end_line",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "end_column",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "repo_commit",
+          "declared_type": "TEXT",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 0,
+          "payload_bytes_estimate": 0,
+          "payload_mib_estimate": 0.0,
+          "avg_payload_bytes": 0.0,
+          "max_payload_bytes": 0
+        },
+        {
+          "table": "edges",
+          "column": "file_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "extractor_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "confidence",
+          "declared_type": "REAL",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "confidence_q",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "exactness_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "resolution_kind_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "edge_class_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "context_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "context_kind_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "flags_bitset",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "derived",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "edges",
+          "column": "provenance_edges_json",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 163545,
+          "payload_mib_estimate": 0.15596866607666016,
+          "avg_payload_bytes": 5.135173323285606,
+          "max_payload_bytes": 85
+        },
+        {
+          "table": "edges",
+          "column": "provenance_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 31848,
+          "non_null": 31848,
+          "payload_bytes_estimate": 254784,
+          "payload_mib_estimate": 0.24298095703125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        }
+      ],
+      "column_payload_estimate_bytes": 5514009,
+      "index_count": 4,
+      "index_bytes": 1691648,
+      "index_mib": 1.61328125,
+      "indexes": [
+        {
+          "name": "idx_edges_span_path",
+          "unique": false,
+          "origin": "c",
+          "columns": [
+            "span_path_id"
+          ],
+          "bytes": 503808,
+          "mib": 0.48046875,
+          "payload_bytes": 402465,
+          "pages": 123
+        },
+        {
+          "name": "idx_edges_tail_relation",
+          "unique": false,
+          "origin": "c",
+          "columns": [
+            "tail_id_key",
+            "relation_id"
+          ],
+          "bytes": 593920,
+          "mib": 0.56640625,
+          "payload_bytes": 494857,
+          "pages": 145
+        },
+        {
+          "name": "idx_edges_head_relation",
+          "unique": false,
+          "origin": "c",
+          "columns": [
+            "head_id_key",
+            "relation_id"
+          ],
+          "bytes": 593920,
+          "mib": 0.56640625,
+          "payload_bytes": 494858,
+          "pages": 145
+        },
+        {
+          "name": "sqlite_autoindex_edges_1",
+          "unique": true,
+          "origin": "pk",
+          "columns": [
+            "id_key"
+          ],
+          "bytes": 0,
+          "mib": 0.0,
+          "payload_bytes": null,
+          "pages": null
+        }
+      ],
+      "row_is_proof_required": true,
+      "row_is_derivable": false,
+      "row_can_move_to_sidecar": false,
+      "row_can_become_compact_enum_hash_integer": "already compact",
+      "proof_requirement_note": "proof edge table"
+    },
+    {
+      "name": "entities",
+      "classification": "proof_required",
+      "rows": 89407,
+      "dbstat_bytes": 6803456,
+      "dbstat_mib": 6.48828125,
+      "dbstat_payload_bytes": 5960003,
+      "avg_dbstat_bytes_per_row": 76.09533929110697,
+      "columns": [
+        {
+          "table": "entities",
+          "column": "id_key",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 1,
+          "rows": 89407,
+          "non_null": 89407,
+          "payload_bytes_estimate": 715256,
+          "payload_mib_estimate": 0.6821212768554688,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "entities",
+          "column": "entity_hash",
+          "declared_type": "BLOB",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 89407,
+          "payload_bytes_estimate": 1430512,
+          "payload_mib_estimate": 1.3642425537109375,
+          "avg_payload_bytes": 16.0,
+          "max_payload_bytes": 16
+        },
+        {
+          "table": "entities",
+          "column": "kind_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 89407,
+          "payload_bytes_estimate": 715256,
+          "payload_mib_estimate": 0.6821212768554688,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "entities",
+          "column": "name_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 89407,
+          "payload_bytes_estimate": 715256,
+          "payload_mib_estimate": 0.6821212768554688,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "entities",
+          "column": "qualified_name_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 89407,
+          "payload_bytes_estimate": 715256,
+          "payload_mib_estimate": 0.6821212768554688,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "entities",
+          "column": "path_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 89407,
+          "payload_bytes_estimate": 715256,
+          "payload_mib_estimate": 0.6821212768554688,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "entities",
+          "column": "span_path_id",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 89407,
+          "payload_bytes_estimate": 715256,
+          "payload_mib_estimate": 0.6821212768554688,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "entities",
+          "column": "start_line",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 89407,
+          "payload_bytes_estimate": 715256,
+          "payload_mib_estimate": 0.6821212768554688,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "entities",
+          "column": "start_column",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 89407,
+          "payload_bytes_estimate": 715256,
+          "payload_mib_estimate": 0.6821212768554688,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "entities",
+          "column": "end_line",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 89407,
+          "payload_bytes_estimate": 715256,
+          "payload_mib_estimate": 0.6821212768554688,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "entities",
+          "column": "end_column",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 89407,
+          "payload_bytes_estimate": 715256,
+          "payload_mib_estimate": 0.6821212768554688,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "entities",
+          "column": "content_hash",
+          "declared_type": "TEXT",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 0,
+          "payload_bytes_estimate": 0,
+          "payload_mib_estimate": 0.0,
+          "avg_payload_bytes": 0.0,
+          "max_payload_bytes": 0
+        },
+        {
+          "table": "entities",
+          "column": "created_from_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 89407,
+          "payload_bytes_estimate": 715256,
+          "payload_mib_estimate": 0.6821212768554688,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "entities",
+          "column": "confidence",
+          "declared_type": "REAL",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 89407,
+          "payload_bytes_estimate": 715256,
+          "payload_mib_estimate": 0.6821212768554688,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "entities",
+          "column": "metadata_json",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 89407,
+          "payload_bytes_estimate": 212534,
+          "payload_mib_estimate": 0.20268821716308594,
+          "avg_payload_bytes": 2.3771516771617436,
+          "max_payload_bytes": 239
+        },
+        {
+          "table": "entities",
+          "column": "parent_id",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 48532,
+          "payload_bytes_estimate": 388256,
+          "payload_mib_estimate": 0.370269775390625,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "entities",
+          "column": "file_id",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 89407,
+          "payload_bytes_estimate": 715256,
+          "payload_mib_estimate": 0.6821212768554688,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "entities",
+          "column": "scope_id",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 48532,
+          "payload_bytes_estimate": 388256,
+          "payload_mib_estimate": 0.370269775390625,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "entities",
+          "column": "declaration_span_id",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 89407,
+          "payload_bytes_estimate": 715256,
+          "payload_mib_estimate": 0.6821212768554688,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "entities",
+          "column": "structural_flags",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 89407,
+          "non_null": 89407,
+          "payload_bytes_estimate": 715256,
+          "payload_mib_estimate": 0.6821212768554688,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        }
+      ],
+      "column_payload_estimate_bytes": 13148398,
+      "index_count": 4,
+      "index_bytes": 2981888,
+      "index_mib": 2.84375,
+      "indexes": [
+        {
+          "name": "idx_entities_qname",
+          "unique": false,
+          "origin": "c",
+          "columns": [
+            "qualified_name_id"
+          ],
+          "bytes": 1028096,
+          "mib": 0.98046875,
+          "payload_bytes": 752584,
+          "pages": 251
+        },
+        {
+          "name": "idx_entities_name",
+          "unique": false,
+          "origin": "c",
+          "columns": [
+            "name_id"
+          ],
+          "bytes": 1015808,
+          "mib": 0.96875,
+          "payload_bytes": 740803,
+          "pages": 248
+        },
+        {
+          "name": "idx_entities_path",
+          "unique": false,
+          "origin": "c",
+          "columns": [
+            "path_id"
+          ],
+          "bytes": 937984,
+          "mib": 0.89453125,
+          "payload_bytes": 663193,
+          "pages": 229
+        },
+        {
+          "name": "sqlite_autoindex_entities_1",
+          "unique": true,
+          "origin": "pk",
+          "columns": [
+            "id_key"
+          ],
+          "bytes": 0,
+          "mib": 0.0,
+          "payload_bytes": null,
+          "pages": null
+        }
+      ],
+      "row_is_proof_required": true,
+      "row_is_derivable": false,
+      "row_can_move_to_sidecar": false,
+      "row_can_become_compact_enum_hash_integer": "already compact except small metadata/hash fields",
+      "proof_requirement_note": "proof entity table"
+    },
+    {
+      "name": "callsites",
+      "classification": "structural",
+      "rows": 2177,
+      "dbstat_bytes": 126976,
+      "dbstat_mib": 0.12109375,
+      "dbstat_payload_bytes": 99947,
+      "avg_dbstat_bytes_per_row": 58.32613688562242,
+      "columns": [
+        {
+          "table": "callsites",
+          "column": "id_key",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 1,
+          "rows": 2177,
+          "non_null": 2177,
+          "payload_bytes_estimate": 17416,
+          "payload_mib_estimate": 0.01660919189453125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsites",
+          "column": "callsite_id_key",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2177,
+          "non_null": 2177,
+          "payload_bytes_estimate": 17416,
+          "payload_mib_estimate": 0.01660919189453125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsites",
+          "column": "caller_id_key",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 2177,
+          "non_null": 0,
+          "payload_bytes_estimate": 0,
+          "payload_mib_estimate": 0.0,
+          "avg_payload_bytes": 0.0,
+          "max_payload_bytes": 0
+        },
+        {
+          "table": "callsites",
+          "column": "relation_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2177,
+          "non_null": 2177,
+          "payload_bytes_estimate": 17416,
+          "payload_mib_estimate": 0.01660919189453125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsites",
+          "column": "callee_id_key",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2177,
+          "non_null": 2177,
+          "payload_bytes_estimate": 17416,
+          "payload_mib_estimate": 0.01660919189453125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsites",
+          "column": "span_path_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2177,
+          "non_null": 2177,
+          "payload_bytes_estimate": 17416,
+          "payload_mib_estimate": 0.01660919189453125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsites",
+          "column": "start_line",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2177,
+          "non_null": 2177,
+          "payload_bytes_estimate": 17416,
+          "payload_mib_estimate": 0.01660919189453125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsites",
+          "column": "start_column",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 2177,
+          "non_null": 2177,
+          "payload_bytes_estimate": 17416,
+          "payload_mib_estimate": 0.01660919189453125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsites",
+          "column": "end_line",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2177,
+          "non_null": 2177,
+          "payload_bytes_estimate": 17416,
+          "payload_mib_estimate": 0.01660919189453125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsites",
+          "column": "end_column",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 2177,
+          "non_null": 2177,
+          "payload_bytes_estimate": 17416,
+          "payload_mib_estimate": 0.01660919189453125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsites",
+          "column": "repo_commit",
+          "declared_type": "TEXT",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 2177,
+          "non_null": 0,
+          "payload_bytes_estimate": 0,
+          "payload_mib_estimate": 0.0,
+          "avg_payload_bytes": 0.0,
+          "max_payload_bytes": 0
+        },
+        {
+          "table": "callsites",
+          "column": "file_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2177,
+          "non_null": 2177,
+          "payload_bytes_estimate": 17416,
+          "payload_mib_estimate": 0.01660919189453125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsites",
+          "column": "extractor_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2177,
+          "non_null": 2177,
+          "payload_bytes_estimate": 17416,
+          "payload_mib_estimate": 0.01660919189453125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsites",
+          "column": "confidence",
+          "declared_type": "REAL",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2177,
+          "non_null": 2177,
+          "payload_bytes_estimate": 17416,
+          "payload_mib_estimate": 0.01660919189453125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsites",
+          "column": "exactness_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2177,
+          "non_null": 2177,
+          "payload_bytes_estimate": 17416,
+          "payload_mib_estimate": 0.01660919189453125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsites",
+          "column": "edge_class_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2177,
+          "non_null": 2177,
+          "payload_bytes_estimate": 17416,
+          "payload_mib_estimate": 0.01660919189453125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsites",
+          "column": "context_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2177,
+          "non_null": 2177,
+          "payload_bytes_estimate": 17416,
+          "payload_mib_estimate": 0.01660919189453125,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsites",
+          "column": "metadata_json",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 2177,
+          "non_null": 2177,
+          "payload_bytes_estimate": 4354,
+          "payload_mib_estimate": 0.0041522979736328125,
+          "avg_payload_bytes": 2.0,
+          "max_payload_bytes": 2
+        }
+      ],
+      "column_payload_estimate_bytes": 265594,
+      "index_count": 1,
+      "index_bytes": 0,
+      "index_mib": 0.0,
+      "indexes": [
+        {
+          "name": "sqlite_autoindex_callsites_1",
+          "unique": true,
+          "origin": "pk",
+          "columns": [
+            "id_key"
+          ],
+          "bytes": 0,
+          "mib": 0.0,
+          "payload_bytes": null,
+          "pages": null
+        }
+      ],
+      "row_is_proof_required": false,
+      "row_is_derivable": false,
+      "row_can_move_to_sidecar": false,
+      "row_can_become_compact_enum_hash_integer": "small",
+      "proof_requirement_note": "typed structural records; queryable but not generic proof edges"
+    },
+    {
+      "name": "callsite_args",
+      "classification": "structural",
+      "rows": 27980,
+      "dbstat_bytes": 1540096,
+      "dbstat_mib": 1.46875,
+      "dbstat_payload_bytes": 1288777,
+      "avg_dbstat_bytes_per_row": 55.04274481772695,
+      "columns": [
+        {
+          "table": "callsite_args",
+          "column": "id_key",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 1,
+          "rows": 27980,
+          "non_null": 27980,
+          "payload_bytes_estimate": 223840,
+          "payload_mib_estimate": 0.213470458984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsite_args",
+          "column": "callsite_id_key",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 27980,
+          "non_null": 27980,
+          "payload_bytes_estimate": 223840,
+          "payload_mib_estimate": 0.213470458984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsite_args",
+          "column": "ordinal",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 27980,
+          "non_null": 27980,
+          "payload_bytes_estimate": 223840,
+          "payload_mib_estimate": 0.213470458984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsite_args",
+          "column": "relation_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 27980,
+          "non_null": 27980,
+          "payload_bytes_estimate": 223840,
+          "payload_mib_estimate": 0.213470458984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsite_args",
+          "column": "argument_id_key",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 27980,
+          "non_null": 27980,
+          "payload_bytes_estimate": 223840,
+          "payload_mib_estimate": 0.213470458984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsite_args",
+          "column": "span_path_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 27980,
+          "non_null": 27980,
+          "payload_bytes_estimate": 223840,
+          "payload_mib_estimate": 0.213470458984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsite_args",
+          "column": "start_line",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 27980,
+          "non_null": 27980,
+          "payload_bytes_estimate": 223840,
+          "payload_mib_estimate": 0.213470458984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsite_args",
+          "column": "start_column",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 27980,
+          "non_null": 27980,
+          "payload_bytes_estimate": 223840,
+          "payload_mib_estimate": 0.213470458984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsite_args",
+          "column": "end_line",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 27980,
+          "non_null": 27980,
+          "payload_bytes_estimate": 223840,
+          "payload_mib_estimate": 0.213470458984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsite_args",
+          "column": "end_column",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 27980,
+          "non_null": 27980,
+          "payload_bytes_estimate": 223840,
+          "payload_mib_estimate": 0.213470458984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsite_args",
+          "column": "repo_commit",
+          "declared_type": "TEXT",
+          "not_null": false,
+          "pk_position": 0,
+          "rows": 27980,
+          "non_null": 0,
+          "payload_bytes_estimate": 0,
+          "payload_mib_estimate": 0.0,
+          "avg_payload_bytes": 0.0,
+          "max_payload_bytes": 0
+        },
+        {
+          "table": "callsite_args",
+          "column": "file_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 27980,
+          "non_null": 27980,
+          "payload_bytes_estimate": 223840,
+          "payload_mib_estimate": 0.213470458984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsite_args",
+          "column": "extractor_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 27980,
+          "non_null": 27980,
+          "payload_bytes_estimate": 223840,
+          "payload_mib_estimate": 0.213470458984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsite_args",
+          "column": "confidence",
+          "declared_type": "REAL",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 27980,
+          "non_null": 27980,
+          "payload_bytes_estimate": 223840,
+          "payload_mib_estimate": 0.213470458984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsite_args",
+          "column": "exactness_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 27980,
+          "non_null": 27980,
+          "payload_bytes_estimate": 223840,
+          "payload_mib_estimate": 0.213470458984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsite_args",
+          "column": "edge_class_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 27980,
+          "non_null": 27980,
+          "payload_bytes_estimate": 223840,
+          "payload_mib_estimate": 0.213470458984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsite_args",
+          "column": "context_id",
+          "declared_type": "INTEGER",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 27980,
+          "non_null": 27980,
+          "payload_bytes_estimate": 223840,
+          "payload_mib_estimate": 0.213470458984375,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "callsite_args",
+          "column": "metadata_json",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 27980,
+          "non_null": 27980,
+          "payload_bytes_estimate": 55960,
+          "payload_mib_estimate": 0.05336761474609375,
+          "avg_payload_bytes": 2.0,
+          "max_payload_bytes": 2
+        }
+      ],
+      "column_payload_estimate_bytes": 3637400,
+      "index_count": 1,
+      "index_bytes": 0,
+      "index_mib": 0.0,
+      "indexes": [
+        {
+          "name": "sqlite_autoindex_callsite_args_1",
+          "unique": true,
+          "origin": "pk",
+          "columns": [
+            "id_key"
+          ],
+          "bytes": 0,
+          "mib": 0.0,
+          "payload_bytes": null,
+          "pages": null
+        }
+      ],
+      "row_is_proof_required": false,
+      "row_is_derivable": false,
+      "row_can_move_to_sidecar": false,
+      "row_can_become_compact_enum_hash_integer": "small",
+      "proof_requirement_note": "typed callsite argument records"
+    },
+    {
+      "name": "path_dict",
+      "classification": "dictionary",
+      "rows": 4975,
+      "dbstat_bytes": 397312,
+      "dbstat_mib": 0.37890625,
+      "dbstat_payload_bytes": 360366,
+      "avg_dbstat_bytes_per_row": 79.86170854271357,
+      "columns": [
+        {
+          "table": "path_dict",
+          "column": "id",
+          "declared_type": "INTEGER",
+          "not_null": false,
+          "pk_position": 1,
+          "rows": 4975,
+          "non_null": 4975,
+          "payload_bytes_estimate": 39800,
+          "payload_mib_estimate": 0.03795623779296875,
+          "avg_payload_bytes": 8.0,
+          "max_payload_bytes": 8
+        },
+        {
+          "table": "path_dict",
+          "column": "value",
+          "declared_type": "TEXT",
+          "not_null": true,
+          "pk_position": 0,
+          "rows": 4975,
+          "non_null": 4975,
+          "payload_bytes_estimate": 341970,
+          "payload_mib_estimate": 0.3261280059814453,
+          "avg_payload_bytes": 68.73768844221105,
+          "max_payload_bytes": 122
+        }
+      ],
+      "column_payload_estimate_bytes": 381770,
+      "index_count": 1,
+      "index_bytes": 442368,
+      "index_mib": 0.421875,
+      "indexes": [
+        {
+          "name": "sqlite_autoindex_path_dict_1",
+          "unique": true,
+          "origin": "u",
+          "columns": [
+            "value"
+          ],
+          "bytes": 442368,
+          "mib": 0.421875,
+          "payload_bytes": 370188,
+          "pages": 108
+        }
+      ],
+      "row_is_proof_required": false,
+      "row_is_derivable": false,
+      "row_can_move_to_sidecar": false,
+      "row_can_become_compact_enum_hash_integer": "small",
+      "proof_requirement_note": "canonical paths are required for snippets/file identity"
+    }
+  ],
+  "top_20_columns_by_payload_estimate": [
+    {
+      "table": "template_entities",
+      "column": "local_template_entity_id",
+      "declared_type": "TEXT",
+      "not_null": true,
+      "pk_position": 2,
+      "rows": 653819,
+      "non_null": 653819,
+      "payload_bytes_estimate": 26806579,
+      "payload_mib_estimate": 25.564745903015137,
+      "avg_payload_bytes": 41.0,
+      "max_payload_bytes": 41
+    },
+    {
+      "table": "template_entities",
+      "column": "metadata_json",
+      "declared_type": "TEXT",
+      "not_null": true,
+      "pk_position": 0,
+      "rows": 653819,
+      "non_null": 653819,
+      "payload_bytes_estimate": 26671320,
+      "payload_mib_estimate": 25.435752868652344,
+      "avg_payload_bytes": 40.79312470270824,
+      "max_payload_bytes": 220
+    },
+    {
+      "table": "qname_prefix_dict",
+      "column": "value",
+      "declared_type": "TEXT",
+      "not_null": true,
+      "pk_position": 0,
+      "rows": 155741,
+      "non_null": 155741,
+      "payload_bytes_estimate": 18380648,
+      "payload_mib_estimate": 17.529151916503906,
+      "avg_payload_bytes": 118.02061114285898,
+      "max_payload_bytes": 363
+    },
+    {
+      "table": "symbol_dict",
+      "column": "value",
+      "declared_type": "TEXT",
+      "not_null": true,
+      "pk_position": 0,
+      "rows": 696373,
+      "non_null": 696373,
+      "payload_bytes_estimate": 16137884,
+      "payload_mib_estimate": 15.39028549194336,
+      "avg_payload_bytes": 23.17419543836421,
+      "max_payload_bytes": 286
+    },
+    {
+      "table": "template_edges",
+      "column": "local_head_entity_id",
+      "declared_type": "TEXT",
+      "not_null": true,
+      "pk_position": 0,
+      "rows": 169290,
+      "non_null": 169290,
+      "payload_bytes_estimate": 6940890,
+      "payload_mib_estimate": 6.619348526000977,
+      "avg_payload_bytes": 41.0,
+      "max_payload_bytes": 41
+    },
+    {
+      "table": "template_edges",
+      "column": "local_tail_entity_id",
+      "declared_type": "TEXT",
+      "not_null": true,
+      "pk_position": 0,
+      "rows": 169290,
+      "non_null": 169290,
+      "payload_bytes_estimate": 6940890,
+      "payload_mib_estimate": 6.619348526000977,
+      "avg_payload_bytes": 41.0,
+      "max_payload_bytes": 41
+    },
+    {
+      "table": "template_edges",
+      "column": "metadata_json",
+      "declared_type": "TEXT",
+      "not_null": true,
+      "pk_position": 0,
+      "rows": 169290,
+      "non_null": 169290,
+      "payload_bytes_estimate": 6766412,
+      "payload_mib_estimate": 6.452953338623047,
+      "avg_payload_bytes": 39.969354362336816,
+      "max_payload_bytes": 43
+    },
+    {
+      "table": "template_edges",
+      "column": "local_template_edge_id",
+      "declared_type": "TEXT",
+      "not_null": true,
+      "pk_position": 2,
+      "rows": 169290,
+      "non_null": 169290,
+      "payload_bytes_estimate": 6602310,
+      "payload_mib_estimate": 6.296453475952148,
+      "avg_payload_bytes": 39.0,
+      "max_payload_bytes": 39
+    },
+    {
+      "table": "qualified_name_dict",
+      "column": "id",
+      "declared_type": "INTEGER",
+      "not_null": false,
+      "pk_position": 1,
+      "rows": 727372,
+      "non_null": 727372,
+      "payload_bytes_estimate": 5818976,
+      "payload_mib_estimate": 5.549407958984375,
+      "avg_payload_bytes": 8.0,
+      "max_payload_bytes": 8
+    },
+    {
+      "table": "qualified_name_dict",
+      "column": "prefix_id",
+      "declared_type": "INTEGER",
+      "not_null": true,
+      "pk_position": 0,
+      "rows": 727372,
+      "non_null": 727372,
+      "payload_bytes_estimate": 5818976,
+      "payload_mib_estimate": 5.549407958984375,
+      "avg_payload_bytes": 8.0,
+      "max_payload_bytes": 8
+    },
+    {
+      "table": "qualified_name_dict",
+      "column": "suffix_id",
+      "declared_type": "INTEGER",
+      "not_null": true,
+      "pk_position": 0,
+      "rows": 727372,
+      "non_null": 727372,
+      "payload_bytes_estimate": 5818976,
+      "payload_mib_estimate": 5.549407958984375,
+      "avg_payload_bytes": 8.0,
+      "max_payload_bytes": 8
+    },
+    {
+      "table": "symbol_dict",
+      "column": "id",
+      "declared_type": "INTEGER",
+      "not_null": false,
+      "pk_position": 1,
+      "rows": 696373,
+      "non_null": 696373,
+      "payload_bytes_estimate": 5570984,
+      "payload_mib_estimate": 5.312904357910156,
+      "avg_payload_bytes": 8.0,
+      "max_payload_bytes": 8
+    },
+    {
+      "table": "symbol_dict",
+      "column": "value_hash",
+      "declared_type": "INTEGER",
+      "not_null": true,
+      "pk_position": 0,
+      "rows": 696373,
+      "non_null": 696373,
+      "payload_bytes_estimate": 5570984,
+      "payload_mib_estimate": 5.312904357910156,
+      "avg_payload_bytes": 8.0,
+      "max_payload_bytes": 8
+    },
+    {
+      "table": "symbol_dict",
+      "column": "value_len",
+      "declared_type": "INTEGER",
+      "not_null": true,
+      "pk_position": 0,
+      "rows": 696373,
+      "non_null": 696373,
+      "payload_bytes_estimate": 5570984,
+      "payload_mib_estimate": 5.312904357910156,
+      "avg_payload_bytes": 8.0,
+      "max_payload_bytes": 8
+    },
+    {
+      "table": "template_entities",
+      "column": "content_template_id",
+      "declared_type": "INTEGER",
+      "not_null": true,
+      "pk_position": 1,
+      "rows": 653819,
+      "non_null": 653819,
+      "payload_bytes_estimate": 5230552,
+      "payload_mib_estimate": 4.988243103027344,
+      "avg_payload_bytes": 8.0,
+      "max_payload_bytes": 8
+    },
+    {
+      "table": "template_entities",
+      "column": "kind_id",
+      "declared_type": "INTEGER",
+      "not_null": true,
+      "pk_position": 0,
+      "rows": 653819,
+      "non_null": 653819,
+      "payload_bytes_estimate": 5230552,
+      "payload_mib_estimate": 4.988243103027344,
+      "avg_payload_bytes": 8.0,
+      "max_payload_bytes": 8
+    },
+    {
+      "table": "template_entities",
+      "column": "name_id",
+      "declared_type": "INTEGER",
+      "not_null": true,
+      "pk_position": 0,
+      "rows": 653819,
+      "non_null": 653819,
+      "payload_bytes_estimate": 5230552,
+      "payload_mib_estimate": 4.988243103027344,
+      "avg_payload_bytes": 8.0,
+      "max_payload_bytes": 8
+    },
+    {
+      "table": "template_entities",
+      "column": "qualified_name_id",
+      "declared_type": "INTEGER",
+      "not_null": true,
+      "pk_position": 0,
+      "rows": 653819,
+      "non_null": 653819,
+      "payload_bytes_estimate": 5230552,
+      "payload_mib_estimate": 4.988243103027344,
+      "avg_payload_bytes": 8.0,
+      "max_payload_bytes": 8
+    },
+    {
+      "table": "template_entities",
+      "column": "start_line",
+      "declared_type": "INTEGER",
+      "not_null": false,
+      "pk_position": 0,
+      "rows": 653819,
+      "non_null": 653819,
+      "payload_bytes_estimate": 5230552,
+      "payload_mib_estimate": 4.988243103027344,
+      "avg_payload_bytes": 8.0,
+      "max_payload_bytes": 8
+    },
+    {
+      "table": "template_entities",
+      "column": "start_column",
+      "declared_type": "INTEGER",
+      "not_null": false,
+      "pk_position": 0,
+      "rows": 653819,
+      "non_null": 653819,
+      "payload_bytes_estimate": 5230552,
+      "payload_mib_estimate": 4.988243103027344,
+      "avg_payload_bytes": 8.0,
+      "max_payload_bytes": 8
+    }
+  ],
+  "top_20_indexes_by_bytes": [
+    {
+      "name": "idx_template_edges_head_relation",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 4038,
+      "total_bytes": 16539648,
+      "payload_bytes": 15913260,
+      "unused_bytes": 70066,
+      "percent_of_database_file": 4.92
+    },
+    {
+      "name": "idx_template_edges_tail_relation",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 4038,
+      "total_bytes": 16539648,
+      "payload_bytes": 15913260,
+      "unused_bytes": 70066,
+      "percent_of_database_file": 4.92
+    },
+    {
+      "name": "idx_symbol_dict_hash",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 3565,
+      "total_bytes": 14602240,
+      "payload_bytes": 11109040,
+      "unused_bytes": 1361305,
+      "percent_of_database_file": 4.34
+    },
+    {
+      "name": "idx_qualified_name_parts",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 3111,
+      "total_bytes": 12742656,
+      "payload_bytes": 9161622,
+      "unused_bytes": 1361590,
+      "percent_of_database_file": 3.79
+    },
+    {
+      "name": "idx_file_entities_entity",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 2221,
+      "total_bytes": 9097216,
+      "payload_bytes": 8673290,
+      "unused_bytes": 125234,
+      "percent_of_database_file": 2.71
+    },
+    {
+      "name": "idx_file_edges_edge",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1506,
+      "total_bytes": 6168576,
+      "payload_bytes": 5883234,
+      "unused_bytes": 77243,
+      "percent_of_database_file": 1.83
+    },
+    {
+      "name": "idx_file_source_spans_span",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1488,
+      "total_bytes": 6094848,
+      "payload_bytes": 5808732,
+      "unused_bytes": 81095,
+      "percent_of_database_file": 1.81
+    },
+    {
+      "name": "idx_qname_prefix_dict_hash",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 808,
+      "total_bytes": 3309568,
+      "payload_bytes": 2515701,
+      "unused_bytes": 316952,
+      "percent_of_database_file": 0.98
+    },
+    {
+      "name": "idx_entities_qname",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 251,
+      "total_bytes": 1028096,
+      "payload_bytes": 752584,
+      "unused_bytes": 4283,
+      "percent_of_database_file": 0.31
+    },
+    {
+      "name": "idx_entities_name",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 248,
+      "total_bytes": 1015808,
+      "payload_bytes": 740803,
+      "unused_bytes": 3812,
+      "percent_of_database_file": 0.3
+    },
+    {
+      "name": "idx_entities_path",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 229,
+      "total_bytes": 937984,
+      "payload_bytes": 663193,
+      "unused_bytes": 3826,
+      "percent_of_database_file": 0.28
+    },
+    {
+      "name": "idx_path_evidence_symbols_entity",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 156,
+      "total_bytes": 638976,
+      "payload_bytes": 606208,
+      "unused_bytes": 6324,
+      "percent_of_database_file": 0.19
+    },
+    {
+      "name": "idx_path_evidence_symbols_path",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 156,
+      "total_bytes": 638976,
+      "payload_bytes": 606208,
+      "unused_bytes": 6324,
+      "percent_of_database_file": 0.19
+    },
+    {
+      "name": "idx_edges_head_relation",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 145,
+      "total_bytes": 593920,
+      "payload_bytes": 494858,
+      "unused_bytes": 1782,
+      "percent_of_database_file": 0.18
+    },
+    {
+      "name": "idx_edges_tail_relation",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 145,
+      "total_bytes": 593920,
+      "payload_bytes": 494857,
+      "unused_bytes": 1783,
+      "percent_of_database_file": 0.18
+    },
+    {
+      "name": "idx_edges_span_path",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 123,
+      "total_bytes": 503808,
+      "payload_bytes": 402465,
+      "unused_bytes": 4327,
+      "percent_of_database_file": 0.15
+    },
+    {
+      "name": "sqlite_autoindex_path_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 108,
+      "total_bytes": 442368,
+      "payload_bytes": 370188,
+      "unused_bytes": 55962,
+      "percent_of_database_file": 0.13
+    },
+    {
+      "name": "idx_path_evidence_lookup_source",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 77,
+      "total_bytes": 315392,
+      "payload_bytes": 289615,
+      "unused_bytes": 12569,
+      "percent_of_database_file": 0.09
+    },
+    {
+      "name": "idx_path_evidence_lookup_target",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 77,
+      "total_bytes": 315392,
+      "payload_bytes": 289615,
+      "unused_bytes": 12569,
+      "percent_of_database_file": 0.09
+    },
+    {
+      "name": "idx_file_path_evidence_path",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 67,
+      "total_bytes": 274432,
+      "payload_bytes": 247523,
+      "unused_bytes": 13781,
+      "percent_of_database_file": 0.08
+    }
+  ],
+  "template_indexes": [
+    {
+      "name": "idx_files_content_template",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 25,
+      "total_bytes": 102400,
+      "payload_bytes": 79344,
+      "unused_bytes": 7835,
+      "percent_of_database_file": 0.03
+    },
+    {
+      "name": "idx_template_edges_head_relation",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 4038,
+      "total_bytes": 16539648,
+      "payload_bytes": 15913260,
+      "unused_bytes": 70066,
+      "percent_of_database_file": 4.92
+    },
+    {
+      "name": "idx_template_edges_tail_relation",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 4038,
+      "total_bytes": 16539648,
+      "payload_bytes": 15913260,
+      "unused_bytes": 70066,
+      "percent_of_database_file": 4.92
+    },
+    {
+      "name": "sqlite_autoindex_source_content_template_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 48,
+      "total_bytes": 196608,
+      "payload_bytes": 157480,
+      "unused_bytes": 30402,
+      "percent_of_database_file": 0.06
+    },
+    {
+      "name": "sqlite_autoindex_source_content_template_2",
+      "total_bytes": 0,
+      "object_type": "index"
+    },
+    {
+      "name": "sqlite_autoindex_template_edges_1",
+      "total_bytes": 0,
+      "object_type": "index"
+    },
+    {
+      "name": "sqlite_autoindex_template_entities_1",
+      "total_bytes": 0,
+      "object_type": "index"
+    }
+  ],
+  "dictionary_indexes": [
+    {
+      "name": "idx_object_id_dict_hash",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "unused_bytes": 4088,
+      "percent_of_database_file": 0.0
+    },
+    {
+      "name": "idx_qname_prefix_dict_hash",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 808,
+      "total_bytes": 3309568,
+      "payload_bytes": 2515701,
+      "unused_bytes": 316952,
+      "percent_of_database_file": 0.98
+    },
+    {
+      "name": "idx_qualified_name_parts",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 3111,
+      "total_bytes": 12742656,
+      "payload_bytes": 9161622,
+      "unused_bytes": 1361590,
+      "percent_of_database_file": 3.79
+    },
+    {
+      "name": "idx_symbol_dict_hash",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 3565,
+      "total_bytes": 14602240,
+      "payload_bytes": 11109040,
+      "unused_bytes": 1361305,
+      "percent_of_database_file": 4.34
+    },
+    {
+      "name": "sqlite_autoindex_edge_class_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 63,
+      "unused_bytes": 4010,
+      "percent_of_database_file": 0.0
+    },
+    {
+      "name": "sqlite_autoindex_edge_context_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 21,
+      "unused_bytes": 4061,
+      "percent_of_database_file": 0.0
+    },
+    {
+      "name": "sqlite_autoindex_edge_provenance_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 32,
+      "total_bytes": 131072,
+      "payload_bytes": 109352,
+      "unused_bytes": 17728,
+      "percent_of_database_file": 0.04
+    },
+    {
+      "name": "sqlite_autoindex_entity_kind_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 346,
+      "unused_bytes": 3649,
+      "percent_of_database_file": 0.0
+    },
+    {
+      "name": "sqlite_autoindex_exactness_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 49,
+      "unused_bytes": 4033,
+      "percent_of_database_file": 0.0
+    },
+    {
+      "name": "sqlite_autoindex_extractor_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 201,
+      "unused_bytes": 3869,
+      "percent_of_database_file": 0.0
+    },
+    {
+      "name": "sqlite_autoindex_language_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 57,
+      "unused_bytes": 4013,
+      "percent_of_database_file": 0.0
+    },
+    {
+      "name": "sqlite_autoindex_path_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 108,
+      "total_bytes": 442368,
+      "payload_bytes": 370188,
+      "unused_bytes": 55962,
+      "percent_of_database_file": 0.13
+    },
+    {
+      "name": "sqlite_autoindex_relation_kind_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 243,
+      "unused_bytes": 3785,
+      "percent_of_database_file": 0.0
+    },
+    {
+      "name": "sqlite_autoindex_resolution_kind_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 170,
+      "unused_bytes": 3897,
+      "percent_of_database_file": 0.0
+    }
+  ],
+  "duplicate_symbol_qname_prefix_stats": {
+    "symbol_dict": {
+      "table": "symbol_dict",
+      "rows": 696373,
+      "unique_count": 696373,
+      "duplicate_count": 0,
+      "avg_length": 23.17419543836421,
+      "p95_length": 54,
+      "max_length": 286,
+      "hash_collision_groups_or_duplicate_hash_groups": 0
+    },
+    "qname_prefix_dict": {
+      "table": "qname_prefix_dict",
+      "rows": 155741,
+      "unique_count": 155741,
+      "duplicate_count": 0,
+      "avg_length": 118.02061114285898,
+      "p95_length": 180,
+      "max_length": 363,
+      "hash_collision_groups_or_duplicate_hash_groups": 0
+    }
+  },
+  "template_density": {
+    "content_templates": 2718,
+    "file_instances": 4975,
+    "template_entities": 653819,
+    "template_edges": 169290,
+    "template_entities_per_template": 240.5515084621045,
+    "template_edges_per_template": 62.28476821192053,
+    "template_entities_per_file_instance": 131.42090452261306,
+    "template_edges_per_file_instance": 34.028140703517586,
+    "duplicate_templates_reused_by_multiple_files": 2404,
+    "duplicate_file_instances": 2420,
+    "max_file_instances_per_template": 14,
+    "largest_templates_by_entity_count": [
+      {
+        "content_template_id": 2345684228067928891,
+        "entity_count": 9749,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/tui/src/bottom_pane/chat_composer.rs",
+        "content_hash": "fnv64:201d6dfc6e461865"
+      },
+      {
+        "content_template_id": 6177352509006711462,
+        "entity_count": 8113,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/tui/src/chatwidget.rs",
+        "content_hash": "fnv64:6d1ba8007c425e2b"
+      },
+      {
+        "content_template_id": 6807434422762731922,
+        "entity_count": 7186,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/core/src/config/config_tests.rs",
+        "content_hash": "fnv64:b4baf085776c565e"
+      },
+      {
+        "content_template_id": 4907633544993687481,
+        "entity_count": 6860,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/sdk/python/src/codex_app_server/generated/v2_all.py",
+        "content_hash": "fnv64:455016083f3d67c7"
+      },
+      {
+        "content_template_id": 8615013886084405762,
+        "entity_count": 6084,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/tui/src/resume_picker.rs",
+        "content_hash": "fnv64:937bbecc7c58501a"
+      },
+      {
+        "content_template_id": 4911029311906625827,
+        "entity_count": 5368,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/tui/src/history_cell.rs",
+        "content_hash": "fnv64:0f42339ec686c270"
+      },
+      {
+        "content_template_id": 4747138561753734429,
+        "entity_count": 4493,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/tui/src/app/tests.rs",
+        "content_hash": "fnv64:c4b878a0cac82a06"
+      },
+      {
+        "content_template_id": 4027941902125741481,
+        "entity_count": 4272,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/state/src/runtime/memories.rs",
+        "content_hash": "fnv64:af4ba43ebfb0958a"
+      },
+      {
+        "content_template_id": 6770099863928595956,
+        "entity_count": 3594,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "content_hash": "fnv64:d93dd6070dfc9f78"
+      },
+      {
+        "content_template_id": 8063347016472880194,
+        "entity_count": 3488,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/tui/src/bottom_pane/textarea.rs",
+        "content_hash": "fnv64:d1e99f800661b15a"
+      }
+    ],
+    "largest_templates_by_edge_count": [
+      {
+        "content_template_id": 2345684228067928891,
+        "edge_count": 2744,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/tui/src/bottom_pane/chat_composer.rs",
+        "content_hash": "fnv64:201d6dfc6e461865"
+      },
+      {
+        "content_template_id": 6177352509006711462,
+        "edge_count": 2106,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/tui/src/chatwidget.rs",
+        "content_hash": "fnv64:6d1ba8007c425e2b"
+      },
+      {
+        "content_template_id": 8615013886084405762,
+        "edge_count": 1463,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/tui/src/resume_picker.rs",
+        "content_hash": "fnv64:937bbecc7c58501a"
+      },
+      {
+        "content_template_id": 8063347016472880194,
+        "edge_count": 1330,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/tui/src/bottom_pane/textarea.rs",
+        "content_hash": "fnv64:d1e99f800661b15a"
+      },
+      {
+        "content_template_id": 4911029311906625827,
+        "edge_count": 1170,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/tui/src/history_cell.rs",
+        "content_hash": "fnv64:0f42339ec686c270"
+      },
+      {
+        "content_template_id": 6807434422762731922,
+        "edge_count": 1129,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/core/src/config/config_tests.rs",
+        "content_hash": "fnv64:b4baf085776c565e"
+      },
+      {
+        "content_template_id": 6770099863928595956,
+        "edge_count": 837,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "content_hash": "fnv64:d93dd6070dfc9f78"
+      },
+      {
+        "content_template_id": 6156521540213617262,
+        "edge_count": 835,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/tui/src/bottom_pane/mod.rs",
+        "content_hash": "fnv64:94523d72120d7fff"
+      },
+      {
+        "content_template_id": 2418721836340623652,
+        "edge_count": 789,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/tui/src/bottom_pane/request_user_input/mod.rs",
+        "content_hash": "fnv64:da9717a49e9878bd"
+      },
+      {
+        "content_template_id": 4027941902125741481,
+        "edge_count": 750,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/state/src/runtime/memories.rs",
+        "content_hash": "fnv64:af4ba43ebfb0958a"
+      }
+    ],
+    "duplicate_templates_reused_by_multiple_files_top20": [
+      {
+        "content_template_id": 6204208347898340492,
+        "file_instances": 14,
+        "canonical_path": "runtime/arl-codex/codex-rs/app-server/tests/all.rs",
+        "content_hash": "fnv64:c6c3d64c12f9d161"
+      },
+      {
+        "content_template_id": 1148835255747160619,
+        "file_instances": 4,
+        "canonical_path": "runtime/arl-codex/codex-rs/app-server-protocol/schema/typescript/NetworkPolicyRuleAction.ts",
+        "content_hash": "fnv64:c8fda272b633beb4"
+      },
+      {
+        "content_template_id": 5991931316774985196,
+        "file_instances": 4,
+        "canonical_path": "runtime/arl-codex/codex-rs/app-server-protocol/schema/typescript/NetworkPolicyAmendment.ts",
+        "content_hash": "fnv64:de678af240c7c601"
+      },
+      {
+        "content_template_id": 5569694767409187,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/app-server-protocol/schema/typescript/ResourceTemplate.ts",
+        "content_hash": "fnv64:1c87a17169fdd86d"
+      },
+      {
+        "content_template_id": 9047096784330040,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/app-server-protocol/schema/typescript/v2/TurnCompletedNotification.ts",
+        "content_hash": "fnv64:ab1cd40c1c41f8f2"
+      },
+      {
+        "content_template_id": 9169186481476394,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/app-server-protocol/schema/typescript/v2/ModelUpgradeInfo.ts",
+        "content_hash": "fnv64:832df23f612be9bb"
+      },
+      {
+        "content_template_id": 10904410468168358,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/tui/src/tui.rs",
+        "content_hash": "fnv64:008d8aee22f0b16b"
+      },
+      {
+        "content_template_id": 16591736894929484,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/execpolicy/tests/basic.rs",
+        "content_hash": "fnv64:39911ee6f423e3f0"
+      },
+      {
+        "content_template_id": 23019605660490135,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/execpolicy/src/executable_name.rs",
+        "content_hash": "fnv64:f9dfb0a3052c9843"
+      },
+      {
+        "content_template_id": 29245242018810397,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/tui/src/shimmer.rs",
+        "content_hash": "fnv64:9f404ce50cdfc3a1"
+      },
+      {
+        "content_template_id": 29533954959860818,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/app-server/tests/suite/v2/thread_metadata_update.rs",
+        "content_hash": "fnv64:58bb158cbbc2b247"
+      },
+      {
+        "content_template_id": 30729952024198408,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/utils/pty/src/win/mod.rs",
+        "content_hash": "fnv64:1bef40f3afe2e110"
+      },
+      {
+        "content_template_id": 35081745045762084,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/memories/write/src/extensions/prune.rs",
+        "content_hash": "fnv64:c6a51331074cb0b1"
+      },
+      {
+        "content_template_id": 37413805524731256,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/tui/src/bottom_pane/title_setup.rs",
+        "content_hash": "fnv64:edd406b9e24edd55"
+      },
+      {
+        "content_template_id": 40277436338935675,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/app-server-protocol/schema/typescript/v2/PluginSummary.ts",
+        "content_hash": "fnv64:01c5f5fb667aff79"
+      },
+      {
+        "content_template_id": 40516220252001998,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/sdk/python/examples/14_turn_controls/sync.py",
+        "content_hash": "fnv64:1a1f8a4d5b49274f"
+      },
+      {
+        "content_template_id": 44689957072972595,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/core/src/compact_remote.rs",
+        "content_hash": "fnv64:26f1f4ccf3880ab6"
+      },
+      {
+        "content_template_id": 47731234908800625,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/otel/tests/suite/runtime_summary.rs",
+        "content_hash": "fnv64:be513791d55e0663"
+      },
+      {
+        "content_template_id": 48007879026899086,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/thread-store/src/remote/mod.rs",
+        "content_hash": "fnv64:7935741e209e20c2"
+      },
+      {
+        "content_template_id": 50347506534542143,
+        "file_instances": 2,
+        "canonical_path": "runtime/arl-codex/codex-rs/app-server-protocol/schema/typescript/v2/ToolRequestUserInputAnswer.ts",
+        "content_hash": "fnv64:491327a7206e220c"
+      }
+    ],
+    "template_entity_kind_distribution_top30": [
+      {
+        "kind": "CallSite",
+        "rows": 251037
+      },
+      {
+        "kind": "Expression",
+        "rows": 220823
+      },
+      {
+        "kind": "LocalVariable",
+        "rows": 72184
+      },
+      {
+        "kind": "Import",
+        "rows": 34643
+      },
+      {
+        "kind": "Function",
+        "rows": 27093
+      },
+      {
+        "kind": "Parameter",
+        "rows": 27039
+      },
+      {
+        "kind": "Export",
+        "rows": 7258
+      },
+      {
+        "kind": "Module",
+        "rows": 4410
+      },
+      {
+        "kind": "Class",
+        "rows": 4019
+      },
+      {
+        "kind": "File",
+        "rows": 2404
+      },
+      {
+        "kind": "Enum",
+        "rows": 1007
+      },
+      {
+        "kind": "Migration",
+        "rows": 960
+      },
+      {
+        "kind": "Type",
+        "rows": 234
+      },
+      {
+        "kind": "Method",
+        "rows": 213
+      },
+      {
+        "kind": "Promise",
+        "rows": 133
+      },
+      {
+        "kind": "Task",
+        "rows": 118
+      },
+      {
+        "kind": "Trait",
+        "rows": 88
+      },
+      {
+        "kind": "ReturnSite",
+        "rows": 72
+      },
+      {
+        "kind": "TestCase",
+        "rows": 37
+      },
+      {
+        "kind": "Topic",
+        "rows": 15
+      },
+      {
+        "kind": "Event",
+        "rows": 15
+      },
+      {
+        "kind": "Constructor",
+        "rows": 12
+      },
+      {
+        "kind": "TestFile",
+        "rows": 4
+      },
+      {
+        "kind": "Dependency",
+        "rows": 1
+      }
+    ],
+    "template_edge_relation_distribution_top30": [
+      {
+        "relation": "FLOWS_TO",
+        "rows": 73702
+      },
+      {
+        "relation": "DEFINES",
+        "rows": 34825
+      },
+      {
+        "relation": "IMPORTS",
+        "rows": 34643
+      },
+      {
+        "relation": "CALLS",
+        "rows": 17967
+      },
+      {
+        "relation": "EXPORTS",
+        "rows": 7258
+      },
+      {
+        "relation": "ASSIGNED_FROM",
+        "rows": 421
+      },
+      {
+        "relation": "READS",
+        "rows": 248
+      },
+      {
+        "relation": "WRITES",
+        "rows": 135
+      },
+      {
+        "relation": "RETURNS",
+        "rows": 69
+      },
+      {
+        "relation": "MUTATES",
+        "rows": 22
+      }
+    ]
+  },
+  "safe_candidate_changes": [
+    {
+      "id": "drop_unused_template_edge_directional_indexes",
+      "description": "Drop idx_template_edges_head_relation and idx_template_edges_tail_relation from proof mode unless pushed-down template endpoint lookup is implemented. Current synthesized template endpoint lookup materializes then filters, so these indexes are not buying current default semantics.",
+      "safe_disposition": "proven unnecessary for current code path; can be audit/debug/build-only if future endpoint lookup needs it",
+      "estimated_savings_bytes_lower_bound": 33079296,
+      "estimated_savings_mib_lower_bound": 31.546875,
+      "risk": "low if query latency gates pass"
+    },
+    {
+      "id": "integerize_template_local_ids",
+      "description": "Replace local template entity/edge/head/tail TEXT ids with compact per-template integer ordinals and reconstruct external ids at overlay time.",
+      "safe_disposition": "derivable from content_template_id plus local ordinal/hash; debug local strings can sidecar",
+      "estimated_savings_bytes_lower_bound": 37997157,
+      "estimated_savings_mib_lower_bound": 36.23691272735596,
+      "risk": "medium: touches overlay identity/import resolution; duplicate identity fixtures must pass"
+    },
+    {
+      "id": "normalize_path_evidence_json_payloads",
+      "description": "Move verbose PathEvidence JSON arrays/metadata to materialized path_evidence_edges/files/symbols/tests or debug sidecar, keeping compact path headers in proof mode.",
+      "safe_disposition": "derivable from materialized lookup tables and proof edges/spans; debug metadata can sidecar",
+      "estimated_savings_bytes_lower_bound": 6510742,
+      "estimated_savings_mib_lower_bound": 6.209127426147461,
+      "risk": "medium: context packet reader must reconstruct exactly"
+    },
+    {
+      "id": "compact_template_metadata_json_defaults",
+      "description": "Replace repeated template metadata/provenance JSON with compact flags/defaults and optional debug sidecar.",
+      "safe_disposition": "default metadata is derivable from schema; non-empty debug/provenance details can sidecar while preserving derived provenance fields",
+      "estimated_savings_bytes_lower_bound": 33776312,
+      "estimated_savings_mib_lower_bound": 32.21160125732422,
+      "risk": "low-medium: must preserve non-empty provenance/debug semantics"
+    },
+    {
+      "id": "split_template_only_symbol_prefix_dictionaries",
+      "description": "Split proof-visible symbol/qname-prefix dictionaries from template-only/debug display strings, or reconstruct qname prefixes from entity hierarchy where possible.",
+      "safe_disposition": "proof lookup names remain; debug/template-only strings move to sidecar or become derivable",
+      "estimated_savings_bytes_upper_area": 70578176,
+      "estimated_savings_mib_upper_area": 67.30859375,
+      "risk": "medium-high: needs careful lookup compatibility and manual relation/context gates"
+    },
+    {
+      "id": "content_hash_payload_status",
+      "description": "Repeated entity/template content_hash is not a meaningful remaining lever in this artifact. The payload is already effectively zero in template_entities/entities.",
+      "safe_disposition": "already solved; do not count this toward the 70 MiB plan",
+      "estimated_savings_bytes_lower_bound": 0,
+      "estimated_savings_mib_lower_bound": 0.0,
+      "risk": "n/a"
+    }
+  ],
+  "minimal_safe_package": {
+    "candidate_ids": [
+      "drop_unused_template_edge_directional_indexes",
+      "integerize_template_local_ids",
+      "normalize_path_evidence_json_payloads"
+    ],
+    "estimated_savings_bytes_lower_bound": 77587195,
+    "estimated_savings_mib_lower_bound": 73.99291515350342,
+    "margin_over_required_mib": 3.364008903503418,
+    "notes": "No data is removed in this phase. This package reaches the target by making template identity data compact/derivable, moving verbose PathEvidence JSON to normalized rows/sidecar, and removing currently-unused proof-mode indexes."
+  }
+}

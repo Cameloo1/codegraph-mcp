@@ -1,0 +1,232 @@
+{
+    "schema_version":  1,
+    "report_id":  "codegraph_vs_cgc_20260510_231314",
+    "generated_at_local":  "2026-05-10 23:19:20 -05:00",
+    "source_of_truth":  "MVP.md",
+    "artifacts":  {
+                      "markdown":  "reports/comparison/codegraph_vs_cgc_20260510_231314.md",
+                      "json":  "reports/comparison/codegraph_vs_cgc_20260510_231314.json",
+                      "latest_markdown":  "reports/comparison/codegraph_vs_cgc_latest.md",
+                      "latest_json":  "reports/comparison/codegraph_vs_cgc_latest.json",
+                      "cgc_harness":  "reports\\comparison\\artifacts\\20260510_231314/cgc-comparison/run.json",
+                      "graph_truth":  "reports\\comparison\\artifacts\\20260510_231314/graph_truth.json",
+                      "context_packet":  "reports\\comparison\\artifacts\\20260510_231314/context_packet.json",
+                      "storage_optimization":  "reports/audit/20_storage_optimization_implementation.md",
+                      "indexing_performance":  "reports/audit/17_indexing_performance_gate.json",
+                      "frozen_baseline":  "reports/baselines/BASELINE_LATEST.json"
+                  },
+    "environment":  {
+                        "os":  "Microsoft Windows 10.0.26200",
+                        "os_architecture":  "x64",
+                        "cpu":  "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+                        "logical_processors":  "16",
+                        "memory":  "unknown: Get-CimInstance Win32_ComputerSystem returned access denied in this shell",
+                        "python_version_for_cgc":  "Python 3.12.13",
+                        "cgc_version":  "0.4.7",
+                        "cgc_path":  "target\\cgc-competitor\\.venv312-pypi\\Scripts\\cgc.exe",
+                        "cgc_backend":  "kuzudb",
+                        "codegraph_version":  "0.0.0",
+                        "codegraph_commit":  "unknown: workspace has no readable .git metadata from this shell"
+                    },
+    "indexing":  {
+                     "codegraph_fixture_harness":  {
+                                                       "status":  "completed",
+                                                       "scope":  "5 CGC harness fixtures",
+                                                       "graph_only_total_index_ms":  210,
+                                                       "context_packet_total_index_ms":  203,
+                                                       "graph_truth_fixture_cold_workers4_ms":  201,
+                                                       "workers":  4,
+                                                       "graph_fact_hash":  "6016de052d15311ee040211d5712ddf7a29f8d60d3d6a4fe6ede210c23950a91"
+                                                   },
+                     "cgc_fixture_harness":  {
+                                                 "status":  "completed_with_command_errors",
+                                                 "scope":  "5 CGC harness fixtures",
+                                                 "total_index_ms":  4019,
+                                                 "timeout_ms":  60000,
+                                                 "runs":  5,
+                                                 "skipped":  0,
+                                                 "command_error_warning_count":  25,
+                                                 "comparable_for_speed_claim":  false
+                                             },
+                     "frozen_autoresearch":  {
+                                                 "codegraph_status":  "completed",
+                                                 "codegraph_elapsed_ms":  169950,
+                                                 "cgc_status":  "timeout",
+                                                 "cgc_timeout_ms":  180000,
+                                                 "comparison":  "incomplete: CGC timed out, not a CodeGraph win"
+                                             },
+                     "current_autoresearch":  {
+                                                  "codegraph_cold_status":  "failed_timeout",
+                                                  "codegraph_cold_wall_lower_bound_ms":  180202,
+                                                  "timeout_ms":  180000,
+                                                  "repeat_status":  "failed",
+                                                  "single_file_update_status":  "failed"
+                                              }
+                 },
+    "storage":  {
+                    "codegraph_fixture_optimized_total_bytes":  618496,
+                    "codegraph_fixture_edges":  833,
+                    "codegraph_fixture_bytes_per_edge":  742.49,
+                    "codegraph_current_autoresearch_status_db_bytes":  500717264,
+                    "codegraph_frozen_autoresearch_sqlite_family_bytes":  842441752,
+                    "codegraph_target_bytes":  262144000,
+                    "codegraph_target_status":  "fail",
+                    "cgc_frozen_autoresearch_final_artifact_bytes":  null,
+                    "cgc_frozen_autoresearch_partial_bytes_not_comparable":  2696673,
+                    "cgc_fixture_final_db_artifact_bytes":  null,
+                    "cgc_fixture_harness_artifact_bytes_not_db":  818430,
+                    "cgc_fixture_db_like_artifacts":  0
+                },
+    "quality":  {
+                    "graph_truth":  {
+                                        "status":  "failed",
+                                        "cases_passed":  10,
+                                        "cases_total":  11,
+                                        "required_edge_pass_rate":  "18/20",
+                                        "forbidden_edge_violation_count":  0,
+                                        "expected_path_pass_rate":  "10/11",
+                                        "forbidden_path_violation_count":  0,
+                                        "source_span_failure_count":  0,
+                                        "failed_cases":  [
+                                                             "derived_closure_edge_requires_provenance"
+                                                         ],
+                                        "exact_false_positives":  0,
+                                        "exact_false_negatives":  [
+                                                                      "missing required edge src/store.saveOrder -WRITES-\u003e src/store.ordersTable at src/store.ts:4",
+                                                                      "missing required edge src/service.submitOrder -MAY_MUTATE-\u003e src/store.ordersTable at src/service.ts:4"
+                                                                  ]
+                                    },
+                    "context_packet":  {
+                                           "status":  "failed",
+                                           "cases_passed":  0,
+                                           "cases_total":  11,
+                                           "proof_path_coverage":  0.0,
+                                           "critical_symbol_missing_rate":  0.8,
+                                           "forbidden_context_symbols_included":  2
+                                       },
+                    "cgc_fixture_retrieval":  {
+                                                  "status":  "not_quality_comparable_due_command_errors",
+                                                  "file_recall_at_10":  0.0,
+                                                  "symbol_recall_at_10":  0.0,
+                                                  "path_recall_at_10":  0.0,
+                                                  "relation_f1":  0.0,
+                                                  "command_error_warning_count":  25
+                                              },
+                    "unsupported_cases":  [
+                                              "Autoresearch CGC final storage and quality: unknown due timeout.",
+                                              "CGC fixture DB size: unknown because no final DB artifact was captured by the harness.",
+                                              "Real model agent patch quality: unsupported in this run.",
+                                              "CodeGraph context packet proof-path recovery: implemented but currently failing 0/11."
+                                          ]
+                },
+    "query_latency":  {
+                          "codegraph_fixture_core_queries":  [
+                                                                 {
+                                                                     "query":  "entity_name_lookup",
+                                                                     "before_ms":  0,
+                                                                     "after_ms":  0,
+                                                                     "status":  "ok"
+                                                                 },
+                                                                 {
+                                                                     "query":  "entity_qname_lookup",
+                                                                     "before_ms":  0,
+                                                                     "after_ms":  0,
+                                                                     "status":  "ok"
+                                                                 },
+                                                                 {
+                                                                     "query":  "text_query_fts",
+                                                                     "before_ms":  0,
+                                                                     "after_ms":  0,
+                                                                     "status":  "ok"
+                                                                 },
+                                                                 {
+                                                                     "query":  "relation_query_calls",
+                                                                     "before_ms":  0,
+                                                                     "after_ms":  0,
+                                                                     "status":  "ok"
+                                                                 },
+                                                                 {
+                                                                     "query":  "context_pack_outbound",
+                                                                     "before_ms":  0,
+                                                                     "after_ms":  0,
+                                                                     "status":  "ok"
+                                                                 },
+                                                                 {
+                                                                     "query":  "unresolved_calls_paginated",
+                                                                     "before_ms":  0,
+                                                                     "after_ms":  0,
+                                                                     "status":  "ok"
+                                                                 }
+                                                             ],
+                          "codegraph_frozen_autoresearch":  [
+                                                                {
+                                                                    "query":  "symbols task",
+                                                                    "elapsed_ms":  3309
+                                                                },
+                                                                {
+                                                                    "query":  "text Codex",
+                                                                    "elapsed_ms":  3275
+                                                                },
+                                                                {
+                                                                    "query":  "files agent",
+                                                                    "elapsed_ms":  3284
+                                                                },
+                                                                {
+                                                                    "query":  "unresolved-calls",
+                                                                    "elapsed_ms":  71271
+                                                                }
+                                                            ],
+                          "cgc_fixture_total_query_ms":  16207,
+                          "cgc_query_latency_comparable":  false,
+                          "cgc_query_latency_note":  "CGC fixture commands returned exit-code-2 warnings; per-query latency is not comparable to successful CodeGraph query timings."
+                      },
+    "agent_quality":  {
+                          "status":  "fake_agent_only",
+                          "real_model_patch_success_measured":  false,
+                          "claim_allowed":  "trace-shape only; no model superiority claim",
+                          "baseline_artifact":  "target/codegraph-bench-report/sweep-20260509-231456/agent-quality-command.json"
+                      },
+    "verdict_logic":  {
+                          "tests_added":  [
+                                              "competitor timeout =\u003e incomplete, not win",
+                                              "fake-agent only =\u003e no model superiority",
+                                              "storage target fail =\u003e storage fail",
+                                              "graph truth fail =\u003e quality fail",
+                                              "both complete + faster/smaller/better =\u003e qualified win"
+                                          ],
+                          "focused_verdict_tests":  "passed: cargo test -q -p codegraph-bench codegraph_vs_cgc_",
+                          "full_tests":  "passed: cargo test -q"
+                      },
+    "before_after_baseline":  {
+                                  "frozen_baseline":  {
+                                                          "codegraph_autoresearch_elapsed_ms":  169950,
+                                                          "codegraph_autoresearch_sqlite_family_bytes":  842441752,
+                                                          "cgc_autoresearch_status":  "timeout",
+                                                          "graph_truth_status":  "not available at freeze; diagnostic only"
+                                                      },
+                                  "current":  {
+                                                  "graph_truth_status":  "failed: 10/11",
+                                                  "context_packet_status":  "failed: 0/11",
+                                                  "fixture_storage_bytes":  618496,
+                                                  "current_autoresearch_clean_cold_status":  "failed_timeout",
+                                                  "current_autoresearch_status_db_bytes":  500717264
+                                              }
+                              },
+    "verdict":  {
+                    "final":  "fail",
+                    "comparison_completeness":  "incomplete",
+                    "superiority":  "unknown",
+                    "speed":  "unknown",
+                    "storage":  "fail",
+                    "quality":  "fail",
+                    "agent_quality":  "unknown_fake_agent_only",
+                    "reasons":  [
+                                    "Graph Truth Gate failed, so quality fails regardless of speed/storage.",
+                                    "Context Packet Gate failed 0/11 cases, so end-to-end proof packets are not trustworthy.",
+                                    "Autoresearch-scale CodeGraph storage still fails the 250 MiB target in available current/frozen artifacts.",
+                                    "Autoresearch CGC timed out in the frozen baseline; partial CGC DB size is not comparable.",
+                                    "Fresh fixture CGC harness completed but CGC index/query commands emitted exit-code-2 warnings and no final DB artifact was captured, so fixture speed/storage/quality are not a clean win claim.",
+                                    "Agent quality remains fake-agent dry-run only; no real model superiority claim is allowed."
+                                ]
+                }
+}

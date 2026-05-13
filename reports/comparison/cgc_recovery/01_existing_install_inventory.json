@@ -1,0 +1,37 @@
+{
+    "schema_version":  1,
+    "generated_at":  "2026-05-13T08:49:31.3297896-05:00",
+    "phase":  "existing_install_inventory",
+    "existing_executables":  [
+                                 "target/cgc-competitor/.venv312-pypi/Scripts/cgc.exe",
+                                 "target/cgc-competitor/.venv312-pypi/Scripts/codegraphcontext.exe"
+                             ],
+    "package":  "codegraphcontext",
+    "existing_version":  "0.4.7",
+    "existing_python":  "Python 3.12.13",
+    "existing_failure_classes":  [
+                                     "not_on_path",
+                                     "harness_discovery_gap",
+                                     "win_home_permission_when_unisolated",
+                                     "parser_dependency_mismatch",
+                                     "old_cli_syntax_in_historical_reports"
+                                 ],
+    "evidence_logs":  [
+                          "phase1_existing_cgc_version",
+                          "phase1_existing_cgc_help",
+                          "phase1_existing_cgc_help_subcommand",
+                          "phase1_existing_venv_python_version",
+                          "phase1_existing_venv_pip_show_cgc",
+                          "phase1_existing_venv_pip_show_codegraphcontext",
+                          "phase1_existing_venv_pip_freeze"
+                      ],
+    "tree_sitter_existing":  "tree-sitter-language-pack==1.8.0",
+    "exact_root_cause_summary":  [
+                                     "Old comparison/harness discovery checked CGC_COMPETITOR_BIN and PATH but not the repo-local disposable CGC virtualenv, so current reports marked CGC unavailable even though target/cgc-competitor contained executables.",
+                                     "Older comparison artifacts invoked obsolete/guessed CGC syntax such as query symbols/query callers instead of the installed 0.4.7 CLI syntax: find name, find content, analyze calls, analyze callers, analyze chain.",
+                                     "The existing stock venv used tree-sitter-language-pack 1.8.0 with tree-sitter 0.25.2 and failed parser initialization; the diagnostic compatibility reinstall keeps codegraphcontext 0.4.7 but pins tree-sitter-language-pack==1.6.2.",
+                                     "Unisolated CGC commands tried to create <REPO_ROOT>/.codegraphcontext and hit WinError 5; the fixed harness sets a disposable CGC_COMPETITOR_HOME/USERPROFILE/LOCALAPPDATA/APPDATA.",
+                                     "Early fake-home isolation broke parser cache discovery; the final smoke run uses a Windows-profile-shaped disposable home with AppData\\Local parser cache.",
+                                     "Autoresearch CGC now starts correctly but times out at the 180s diagnostic cap while still parsing/writing; only a small DB file plus partial WAL is produced, so it is not comparable."
+                                 ]
+}

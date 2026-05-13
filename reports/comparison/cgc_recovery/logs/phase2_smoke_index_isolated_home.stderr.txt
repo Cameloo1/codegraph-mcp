@@ -1,0 +1,30 @@
+Warning: Could not load .env from current directory: name 'find_dotenv' is not 
+defined
+No configuration file found. Using defaults.
+Using database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))
+Force re-indexing (--force flag detected)
+2026-05-13 08:22:58,952 - INFO - codegraphcontext.utils.debug_log - Using KùzuDB (explicit) at <REPO_ROOT>/Desktop\development\codegraph-mcp\.tools\cgc_recovery\home_shared\.codegraphcontext\global\db\kuzudb
+2026-05-13 08:22:58,957 - INFO - codegraphcontext.utils.debug_log - Initializing KùzuDB at <REPO_ROOT>/Desktop\development\codegraph-mcp\.tools\cgc_recovery\home_shared\.codegraphcontext\global\db\kuzudb
+2026-05-13 08:22:59,068 - INFO - codegraphcontext.utils.debug_log - KùzuDB connection established and schema verified
+2026-05-13 08:22:59,107 - INFO - codegraphcontext.utils.debug_log - Database schema verified/created successfully
+2026-05-13 08:22:59,562 - WARNING - codegraphcontext.utils.debug_log - No parser found for file extension . Skipping <REPO_ROOT>/Desktop\development\codegraph-mcp\reports\comparison\cgc_recovery\artifacts\smoke_repo\.cgcignore
+2026-05-13 08:22:59,699 - INFO - codegraphcontext.utils.debug_log - File processing complete. 2 files parsed. Starting post-processing phase (inheritance + function calls)...
+2026-05-13 08:22:59,700 - INFO - codegraphcontext.utils.debug_log - [INHERITS] Resolving inheritance links across 2 files...
+2026-05-13 08:22:59,700 - INFO - codegraphcontext.utils.debug_log - [INHERITS] Resolved 0 inheritance links, 0 C# files. Writing to Neo4j...
+2026-05-13 08:22:59,701 - INFO - codegraphcontext.utils.debug_log - [INHERITS] Complete: 0 inheritance links processed.
+2026-05-13 08:22:59,701 - INFO - codegraphcontext.utils.debug_log - Inheritance links created in 0.0s. Starting function calls...
+2026-05-13 08:22:59,702 - INFO - codegraphcontext.utils.debug_log - [CALLS] Resolving function calls across 2 files...
+2026-05-13 08:22:59,702 - INFO - codegraphcontext.utils.debug_log - [CALLS] Resolution complete: fn→fn=2, fn→cls=0, cls→fn=0, cls→cls=0, file→fn=0, file→cls=0. Total=2
+2026-05-13 08:22:59,716 - INFO - codegraphcontext.utils.debug_log - [CALLS] fn→fn: 2/2 (0.0s)
+2026-05-13 08:22:59,716 - INFO - codegraphcontext.utils.debug_log - [CALLS] fn→fn done: 2 in 0.0s
+2026-05-13 08:22:59,717 - INFO - codegraphcontext.utils.debug_log - [CALLS] fn→cls: 0 (skipped)
+2026-05-13 08:22:59,717 - INFO - codegraphcontext.utils.debug_log - [CALLS] cls→fn: 0 (skipped)
+2026-05-13 08:22:59,717 - INFO - codegraphcontext.utils.debug_log - [CALLS] cls→cls: 0 (skipped)
+2026-05-13 08:22:59,717 - INFO - codegraphcontext.utils.debug_log - [CALLS] file→fn: 0 (skipped)
+2026-05-13 08:22:59,718 - INFO - codegraphcontext.utils.debug_log - [CALLS] file→cls: 0 (skipped)
+2026-05-13 08:22:59,718 - INFO - codegraphcontext.utils.debug_log - [CALLS] All complete: 2 CALLS relationships processed.
+2026-05-13 08:22:59,718 - INFO - codegraphcontext.utils.debug_log - Function calls created in 0.0s. Total post-processing: 0.0s
+2026-05-13 08:22:59,719 - INFO - codegraphcontext.utils.debug_log - [MAVEN] Discovered 0 pom.xml modules, 0 external lib references.
+2026-05-13 08:22:59,720 - INFO - codegraphcontext.utils.debug_log - [GRADLE] Discovered 0 Gradle modules, 0 external lib references.
+2026-05-13 08:22:59,721 - INFO - codegraphcontext.utils.debug_log - [MYBATIS] Parsed 0 mapper files, 0 operation records found
+2026-05-13 08:22:59,723 - INFO - codegraphcontext.utils.debug_log - Closing KùzuDB connection

@@ -1,0 +1,346 @@
+{
+  "schema_version": 1,
+  "report_id": "cold_proof_build_diagnosis",
+  "generated_at_local": "2026-05-12 11:21:10 -05:00",
+  "source_of_truth": "MVP.md",
+  "verdict": "diagnosed_fail",
+  "inputs": {
+    "comprehensive_benchmark_latest_md": "reports/final/comprehensive_benchmark_latest.md",
+    "comprehensive_benchmark_latest_json": "reports/final/comprehensive_benchmark_latest.json",
+    "compact_proof_gate_json": "reports/final/compact_proof_db_gate.json",
+    "compact_proof_storage_json": "reports/final/artifacts/compact_gate_proof_storage.json",
+    "historical_detailed_profile_json": "reports/audit/perf_profile_autoresearch.json"
+  },
+  "target": {
+    "production_cold_proof_build_ms": 60000,
+    "production_cold_proof_build_seconds": 60
+  },
+  "observed": {
+    "proof_build_only_ms": 3001445,
+    "proof_build_only_minutes": 50.0241,
+    "proof_build_only_status": "fail",
+    "db_write_ms": 2877316,
+    "db_write_minutes": 47.9553,
+    "db_write_pct_of_proof_build": 0.9586435866724194,
+    "combined_non_db_residual_ms": 124129,
+    "combined_non_db_residual_pct_of_proof_build": 0.04135641332758055,
+    "integrity_check_ms": 12937.4035,
+    "proof_build_plus_validation_ms": 3014382.4035,
+    "integrity_pct_of_proof_build_plus_validation": 0.004291891926179764,
+    "audit_build_ms": 3500365,
+    "audit_build_minutes": 58.3394,
+    "proof_plus_audit_ms": 6501810,
+    "proof_plus_audit_minutes": 108.3635
+  },
+  "classification": {
+    "fifty_point_zero_two_minutes_is": "actual production proof-mode cold build profile wall time from the compact gate",
+    "is_benchmark_gate_wall_time": false,
+    "is_debug_or_audit_sidecar_build_time": false,
+    "includes_repeated_rebuilds": false,
+    "includes_slow_storage_audit_or_dbstat": false,
+    "includes_integrity_check": false,
+    "integrity_check_is_reported_separately": true,
+    "includes_cgc_or_competitor_work": false,
+    "includes_report_generation": false,
+    "dominant_known_stage": "production_persistence_and_global_reduction_bucket"
+  },
+  "mode_distinction": [
+    {
+      "mode": "proof-build-only",
+      "observed_ms": 3001445,
+      "observed_minutes": 50.0241,
+      "target_ms": 60000,
+      "status": "fail",
+      "included_in_50_02_minute_number": true,
+      "classification": "actual production proof-mode cold build as persisted by the compact gate"
+    },
+    {
+      "mode": "proof-build-plus-validation",
+      "observed_ms": 3014382.4035,
+      "observed_minutes": 50.2397,
+      "target_ms": 60000,
+      "status": "fail",
+      "included_in_50_02_minute_number": false,
+      "classification": "proof build plus separately persisted integrity_check"
+    },
+    {
+      "mode": "proof-build-plus-audit",
+      "observed_ms": 6501810,
+      "observed_minutes": 108.3635,
+      "target_ms": null,
+      "status": "reported",
+      "included_in_50_02_minute_number": false,
+      "classification": "sequential proof build plus separate audit sidecar build"
+    },
+    {
+      "mode": "full-gate",
+      "observed_ms": null,
+      "observed_minutes": null,
+      "target_ms": null,
+      "status": "unknown",
+      "included_in_50_02_minute_number": false,
+      "classification": "not persisted as one wall-clock value in the compact gate"
+    }
+  ],
+  "waterfall_profile": [
+    {
+      "stage": "actual_proof_db_build_total",
+      "elapsed_ms": 3001445,
+      "pct_of_reference": 1.0,
+      "reference": "proof-build-only",
+      "included_in_50_02_minute_number": true,
+      "source": "compact_proof_db_gate.autoresearch.proof_build.wall_ms",
+      "known": true
+    },
+    {
+      "stage": "production_persistence_and_global_reduction_bucket",
+      "elapsed_ms": 2877316,
+      "pct_of_reference": 0.9586435866724194,
+      "reference": "proof-build-only",
+      "included_in_50_02_minute_number": true,
+      "source": "compact_proof_db_gate.autoresearch.proof_build.db_write_ms",
+      "known": true,
+      "scope": [
+        "SQLite persistence",
+        "template fact persistence",
+        "dictionary interning",
+        "post-local import/security/test/derived reducers",
+        "PathEvidence refresh",
+        "index recreation",
+        "ANALYZE",
+        "WAL checkpoint",
+        "transaction commit"
+      ]
+    },
+    {
+      "stage": "source_scan_parse_extract_dedupe_reducer_residual",
+      "elapsed_ms": 124129,
+      "pct_of_reference": 0.04135641332758055,
+      "reference": "proof-build-only",
+      "included_in_50_02_minute_number": true,
+      "source": "wall_ms - db_write_ms",
+      "known": true,
+      "notes": "Current compact gate did not persist nested spans for these phases, but the combined residual is below the 5% unexplained-time threshold."
+    },
+    {
+      "stage": "integrity_check_validation",
+      "elapsed_ms": 12937.4035,
+      "pct_of_reference": 0.004291891926179764,
+      "reference": "proof-build-plus-validation",
+      "included_in_50_02_minute_number": false,
+      "source": "compact_proof_db_gate.autoresearch.proof_build.integrity_check_ms",
+      "known": true
+    },
+    {
+      "stage": "audit_sidecar_build",
+      "elapsed_ms": 3500365,
+      "pct_of_reference": null,
+      "reference": "separate audit build",
+      "included_in_50_02_minute_number": false,
+      "source": "compact_proof_db_gate.autoresearch.audit_build.wall_ms",
+      "known": true
+    }
+  ],
+  "required_stage_split": [
+    {
+      "stage": "actual proof DB build",
+      "observed_ms": 3001445,
+      "status": "known",
+      "parent": "proof-build-only"
+    },
+    {
+      "stage": "source scan",
+      "observed_ms": null,
+      "status": "not separately persisted in compact gate",
+      "parent": "source_scan_parse_extract_dedupe_reducer_residual"
+    },
+    {
+      "stage": "parse/extract",
+      "observed_ms": null,
+      "status": "not separately persisted in compact gate",
+      "parent": "source_scan_parse_extract_dedupe_reducer_residual",
+      "files_parsed": 2555
+    },
+    {
+      "stage": "content-template dedupe",
+      "observed_ms": null,
+      "status": "not separately persisted in compact gate",
+      "parent": "source_scan_parse_extract_dedupe_reducer_residual",
+      "duplicate_local_analyses_skipped": 2420,
+      "content_templates": 2718
+    },
+    {
+      "stage": "reducer",
+      "observed_ms": null,
+      "status": "not separately persisted in compact gate",
+      "parent": "production_persistence_and_global_reduction_bucket"
+    },
+    {
+      "stage": "dictionary interning",
+      "observed_ms": null,
+      "status": "not separately persisted in compact gate",
+      "parent": "production_persistence_and_global_reduction_bucket",
+      "evidence_rows": {
+        "symbols": 696373,
+        "qualified_names": 727372,
+        "qname_prefixes": 155741
+      }
+    },
+    {
+      "stage": "template entity insert",
+      "observed_ms": null,
+      "status": "not separately persisted in compact gate",
+      "parent": "production_persistence_and_global_reduction_bucket",
+      "rows": 653819
+    },
+    {
+      "stage": "template edge insert",
+      "observed_ms": null,
+      "status": "not separately persisted in compact gate",
+      "parent": "production_persistence_and_global_reduction_bucket",
+      "rows": 169290
+    },
+    {
+      "stage": "proof graph materialization",
+      "observed_ms": null,
+      "status": "not separately persisted in compact gate",
+      "parent": "production_persistence_and_global_reduction_bucket",
+      "proof_entities": 89407,
+      "proof_edges": 31848
+    },
+    {
+      "stage": "PathEvidence generation",
+      "observed_ms": null,
+      "status": "not separately persisted in compact gate",
+      "parent": "production_persistence_and_global_reduction_bucket",
+      "path_evidence_rows": 4096
+    },
+    {
+      "stage": "index creation",
+      "observed_ms": null,
+      "status": "not separately persisted in compact gate",
+      "parent": "production_persistence_and_global_reduction_bucket"
+    },
+    {
+      "stage": "VACUUM",
+      "observed_ms": null,
+      "status": "not present in finish_bulk_index_load SQL evidence",
+      "parent": "not included by current evidence"
+    },
+    {
+      "stage": "ANALYZE",
+      "observed_ms": null,
+      "status": "not separately persisted in compact gate",
+      "parent": "production_persistence_and_global_reduction_bucket"
+    },
+    {
+      "stage": "integrity_check",
+      "observed_ms": 12937.4035,
+      "status": "known separately",
+      "parent": "proof-build-plus-validation"
+    },
+    {
+      "stage": "report generation",
+      "observed_ms": null,
+      "status": "not part of proof_build.wall_ms",
+      "parent": "full-gate-only"
+    },
+    {
+      "stage": "benchmark-only cleanup",
+      "observed_ms": null,
+      "status": "not persisted and no evidence it is part of proof_build.wall_ms",
+      "parent": "full-gate-only"
+    },
+    {
+      "stage": "artifact copy/compression",
+      "observed_ms": null,
+      "status": "not persisted and no evidence it is part of proof_build.wall_ms",
+      "parent": "full-gate-only"
+    }
+  ],
+  "top_5_cold_build_bottlenecks": [
+    {
+      "rank": 1,
+      "name": "production_persistence_and_global_reduction_bucket",
+      "evidence_strength": "exact current compact proof artifact",
+      "elapsed_ms": 2877316,
+      "pct_of_proof_build": 0.9586435866724194,
+      "why_it_matters": "This single bucket explains 47.96 minutes of the 50.02-minute proof build."
+    },
+    {
+      "rank": 2,
+      "name": "template entity persistence and identity interning",
+      "evidence_strength": "row-count and dbstat evidence; exact current time not separately persisted",
+      "rows": 653819,
+      "storage_bytes": 87523328,
+      "why_it_matters": "Template entities are the largest proof DB object and must be inserted with symbol/qname/kind/extractor interning."
+    },
+    {
+      "rank": 3,
+      "name": "template edge persistence and relation/provenance interning",
+      "evidence_strength": "row-count and dbstat evidence; exact current time not separately persisted",
+      "rows": 169290,
+      "storage_bytes": 40804352,
+      "why_it_matters": "Template edge rows plus template indexes are large enough to dominate both write time and index build work."
+    },
+    {
+      "rank": 4,
+      "name": "dictionary interning for symbols, qnames, qname prefixes, relations, extractors, and provenance",
+      "evidence_strength": "current dictionary cardinality plus historical detailed profile; exact current time not separately persisted",
+      "symbol_rows": 696373,
+      "qualified_name_rows": 727372,
+      "qname_prefix_rows": 155741,
+      "historical_profile_dictionary_lookup_insert_ms": 144145.086,
+      "historical_profile_dictionary_lookup_insert_calls": 45618322,
+      "why_it_matters": "The older detailed profile showed dictionary lookup/insert as a top-3 cold-index cost. The compact run still has high dictionary cardinality."
+    },
+    {
+      "rank": 5,
+      "name": "post-local global reducers and PathEvidence refresh counted as db_write",
+      "evidence_strength": "code-path evidence; exact current time not separately persisted",
+      "path_evidence_rows": 4096,
+      "why_it_matters": "Current db_write_ms includes reducer reads/writes and PathEvidence refresh, so the label hides non-trivial global graph construction work."
+    }
+  ],
+  "profile_gap": {
+    "current_gap": "The compact gate did not persist nested IndexProfile.spans for the proof-mode cold build. It preserved wall_ms, db_write_ms, integrity_check_ms, and cardinality/storage evidence.",
+    "stages_over_5_percent_unknown": [],
+    "operator_interpretation": "No high-level operation over 5% is unexplained because db_write_ms accounts for 95.86% and the residual is 4.14%. The next profiling improvement is to split the db_write_ms parent bucket, not to guess inside it.",
+    "required_next_instrumentation": [
+      "template_entity_insert",
+      "template_edge_insert",
+      "dictionary_interning by table",
+      "global_import_reducer",
+      "global_security_reducer",
+      "global_test_reducer",
+      "derived_mutation_reducer",
+      "PathEvidence refresh",
+      "index recreation",
+      "ANALYZE",
+      "WAL checkpoint",
+      "transaction commit"
+    ]
+  },
+  "benchmark_reporting_change": {
+    "implemented": true,
+    "files_changed": [
+      "crates/codegraph-cli/src/lib.rs",
+      "crates/codegraph-cli/tests/cli_smoke.rs"
+    ],
+    "new_sections": [
+      "sections.cold_proof_build_profile.mode_distinction",
+      "sections.cold_proof_build_profile.waterfall",
+      "sections.cold_proof_build_profile.interpretation"
+    ],
+    "production_semantics_changed": false,
+    "benchmark_thresholds_changed": false,
+    "comprehensive_benchmark_rerun": "reports/final/comprehensive_benchmark_latest.json"
+  },
+  "conclusion": {
+    "explained": true,
+    "top_bottleneck_identified": "production_persistence_and_global_reduction_bucket",
+    "production_cold_build_target_status": "fail",
+    "needs_optimization_next": true,
+    "optimization_performed_in_this_phase": false
+  }
+}

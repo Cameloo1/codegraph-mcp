@@ -1,0 +1,1283 @@
+{
+  "schema_version": 1,
+  "gate": "graph_truth",
+  "status": "failed",
+  "verdict": "failed",
+  "cases_path": "benchmarks/graph_truth/fixtures",
+  "fixture_root": ".",
+  "cases_total": 10,
+  "cases_passed": 2,
+  "cases_failed": 8,
+  "relation_metrics": [
+    {
+      "relation": "ASSERTS",
+      "expected_edges": 1,
+      "matched_expected_edges": 0,
+      "forbidden_edges": 0,
+      "matched_forbidden_edges": 0,
+      "precision": null,
+      "recall": 0.0
+    },
+    {
+      "relation": "CALLS",
+      "expected_edges": 8,
+      "matched_expected_edges": 6,
+      "forbidden_edges": 8,
+      "matched_forbidden_edges": 0,
+      "precision": 1.0,
+      "recall": 0.75
+    },
+    {
+      "relation": "CHECKS_ROLE",
+      "expected_edges": 2,
+      "matched_expected_edges": 0,
+      "forbidden_edges": 2,
+      "matched_forbidden_edges": 0,
+      "precision": null,
+      "recall": 0.0
+    },
+    {
+      "relation": "FLOWS_TO",
+      "expected_edges": 1,
+      "matched_expected_edges": 0,
+      "forbidden_edges": 0,
+      "matched_forbidden_edges": 0,
+      "precision": null,
+      "recall": 0.0
+    },
+    {
+      "relation": "IMPORTS",
+      "expected_edges": 3,
+      "matched_expected_edges": 2,
+      "forbidden_edges": 1,
+      "matched_forbidden_edges": 0,
+      "precision": 1.0,
+      "recall": 0.6666666666666666
+    },
+    {
+      "relation": "MAY_MUTATE",
+      "expected_edges": 1,
+      "matched_expected_edges": 0,
+      "forbidden_edges": 1,
+      "matched_forbidden_edges": 0,
+      "precision": null,
+      "recall": 0.0
+    },
+    {
+      "relation": "MOCKS",
+      "expected_edges": 1,
+      "matched_expected_edges": 0,
+      "forbidden_edges": 0,
+      "matched_forbidden_edges": 0,
+      "precision": null,
+      "recall": 0.0
+    },
+    {
+      "relation": "SANITIZES",
+      "expected_edges": 0,
+      "matched_expected_edges": 0,
+      "forbidden_edges": 1,
+      "matched_forbidden_edges": 0,
+      "precision": null,
+      "recall": null
+    },
+    {
+      "relation": "STUBS",
+      "expected_edges": 1,
+      "matched_expected_edges": 0,
+      "forbidden_edges": 0,
+      "matched_forbidden_edges": 0,
+      "precision": null,
+      "recall": 0.0
+    },
+    {
+      "relation": "WRITES",
+      "expected_edges": 1,
+      "matched_expected_edges": 0,
+      "forbidden_edges": 0,
+      "matched_forbidden_edges": 0,
+      "precision": null,
+      "recall": 0.0
+    }
+  ],
+  "totals": {
+    "expected_entities": 27,
+    "matched_entities": 19,
+    "expected_edges": 19,
+    "matched_expected_edges": 8,
+    "forbidden_edges": 13,
+    "matched_forbidden_edges": 0,
+    "expected_paths": 10,
+    "matched_expected_paths": 3,
+    "forbidden_paths": 9,
+    "matched_forbidden_paths": 0,
+    "source_span_failures": 2,
+    "context_packet_failures": 6,
+    "stale_failures": 0,
+    "base_edges_observed": 747,
+    "derived_edges_observed": 0,
+    "edge_class_counts": {
+      "base_exact": 429,
+      "base_heuristic": 31,
+      "inverse": 157,
+      "reified_callsite": 69,
+      "test_mock": 61
+    }
+  },
+  "cases": [
+    {
+      "case_id": "admin_user_middleware_role_separation",
+      "description": "Admin and user middleware role checks must stay separate.",
+      "status": "failed",
+      "repo_fixture_path": "benchmarks/graph_truth/fixtures/admin_user_middleware_role_separation/repo",
+      "db_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-admin-user-middleware-role-separation-1778454383795.sqlite",
+      "staged_repo_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-workdir-admin-user-middleware-role-separation-1778454383793",
+      "files_indexed": 2,
+      "entities_indexed": 91,
+      "edges_indexed": 164,
+      "entity_count": 91,
+      "edge_count": 164,
+      "source_span_count": 255,
+      "timing": {
+        "total_ms": 70,
+        "index_ms": 51,
+        "mutation_ms": 0,
+        "query_ms": 14,
+        "evaluation_ms": 1
+      },
+      "index_time": 51,
+      "query_time": 14,
+      "base_edges_observed": 164,
+      "derived_edges_observed": 0,
+      "edge_class_counts": {
+        "base_exact": 97,
+        "base_heuristic": 8,
+        "inverse": 35,
+        "reified_callsite": 24
+      },
+      "expected_entities": 4,
+      "matched_entities": 0,
+      "expected_edges": 2,
+      "matched_expected_edges": 0,
+      "forbidden_edges": 2,
+      "matched_forbidden_edges": 0,
+      "expected_paths": 2,
+      "matched_expected_paths": 0,
+      "forbidden_paths": 1,
+      "matched_forbidden_paths": 0,
+      "expected_context_symbols": 2,
+      "matched_context_symbols": 0,
+      "expected_tests": 0,
+      "matched_tests": 0,
+      "failures": [
+        {
+          "category": "missing_expected_entity",
+          "severity": "error",
+          "message": "missing expected entity src/auth.requireAdmin",
+          "relation": null,
+          "expected_id": null
+        },
+        {
+          "category": "missing_expected_entity",
+          "severity": "error",
+          "message": "missing expected entity src/auth.requireUser",
+          "relation": null,
+          "expected_id": null
+        },
+        {
+          "category": "missing_expected_entity",
+          "severity": "error",
+          "message": "missing expected entity role:admin",
+          "relation": null,
+          "expected_id": null
+        },
+        {
+          "category": "missing_expected_entity",
+          "severity": "error",
+          "message": "missing expected entity role:user",
+          "relation": null,
+          "expected_id": null
+        },
+        {
+          "category": "missing_required_edge",
+          "severity": "error",
+          "message": "missing required edge src/auth.requireAdmin -CHECKS_ROLE-> role:admin at src/auth.ts:2",
+          "relation": "CHECKS_ROLE",
+          "expected_id": "edge://roles/admin-checks-admin"
+        },
+        {
+          "category": "missing_required_edge",
+          "severity": "error",
+          "message": "missing required edge src/auth.requireUser -CHECKS_ROLE-> role:user at src/auth.ts:6",
+          "relation": "CHECKS_ROLE",
+          "expected_id": "edge://roles/user-checks-user"
+        },
+        {
+          "category": "missing_expected_path",
+          "severity": "error",
+          "message": "missing expected path path://roles/admin",
+          "relation": null,
+          "expected_id": "path://roles/admin"
+        },
+        {
+          "category": "missing_expected_path",
+          "severity": "error",
+          "message": "missing expected path path://roles/user",
+          "relation": null,
+          "expected_id": "path://roles/user"
+        },
+        {
+          "category": "critical_context_symbol_missing",
+          "severity": "error",
+          "message": "critical context symbol missing from packet: role:admin",
+          "relation": null,
+          "expected_id": null
+        },
+        {
+          "category": "critical_context_symbol_missing",
+          "severity": "error",
+          "message": "critical context symbol missing from packet: role:user",
+          "relation": null,
+          "expected_id": null
+        }
+      ],
+      "missing_entities": [
+        "missing expected entity src/auth.requireAdmin",
+        "missing expected entity src/auth.requireUser",
+        "missing expected entity role:admin",
+        "missing expected entity role:user"
+      ],
+      "missing_edges": [
+        "missing required edge src/auth.requireAdmin -CHECKS_ROLE-> role:admin at src/auth.ts:2",
+        "missing required edge src/auth.requireUser -CHECKS_ROLE-> role:user at src/auth.ts:6"
+      ],
+      "forbidden_edges_found": [],
+      "missing_paths": [
+        "missing expected path path://roles/admin",
+        "missing expected path path://roles/user"
+      ],
+      "forbidden_paths_found": [],
+      "false_positives": [],
+      "false_negatives": [
+        "missing expected entity src/auth.requireAdmin",
+        "missing expected entity src/auth.requireUser",
+        "missing expected entity role:admin",
+        "missing expected entity role:user",
+        "missing required edge src/auth.requireAdmin -CHECKS_ROLE-> role:admin at src/auth.ts:2",
+        "missing required edge src/auth.requireUser -CHECKS_ROLE-> role:user at src/auth.ts:6",
+        "missing expected path path://roles/admin",
+        "missing expected path path://roles/user"
+      ],
+      "source_span_failures": [],
+      "context_symbol_failures": [
+        "critical context symbol missing from packet: role:admin",
+        "critical context symbol missing from packet: role:user"
+      ],
+      "context_packet_failures": [
+        "critical context symbol missing from packet: role:admin",
+        "critical context symbol missing from packet: role:user"
+      ],
+      "expected_test_failures": [],
+      "mutation_failures": [],
+      "stale_failures": [],
+      "relation_metrics": [
+        {
+          "relation": "CHECKS_ROLE",
+          "expected_edges": 2,
+          "matched_expected_edges": 0,
+          "forbidden_edges": 2,
+          "matched_forbidden_edges": 0,
+          "precision": null,
+          "recall": 0.0
+        }
+      ],
+      "notes": [
+        "Covers CHECKS_ROLE role separation."
+      ]
+    },
+    {
+      "case_id": "barrel_export_default_export_resolution",
+      "description": "Default export and barrel re-export must resolve distinctly.",
+      "status": "failed",
+      "repo_fixture_path": "benchmarks/graph_truth/fixtures/barrel_export_default_export_resolution/repo",
+      "db_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-barrel-export-default-export-resolution-1778454383872.sqlite",
+      "staged_repo_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-workdir-barrel-export-default-export-resolution-1778454383870",
+      "files_indexed": 4,
+      "entities_indexed": 35,
+      "edges_indexed": 71,
+      "entity_count": 35,
+      "edge_count": 71,
+      "source_span_count": 106,
+      "timing": {
+        "total_ms": 52,
+        "index_ms": 38,
+        "mutation_ms": 0,
+        "query_ms": 10,
+        "evaluation_ms": 0
+      },
+      "index_time": 38,
+      "query_time": 10,
+      "base_edges_observed": 71,
+      "derived_edges_observed": 0,
+      "edge_class_counts": {
+        "base_exact": 44,
+        "base_heuristic": 4,
+        "inverse": 17,
+        "reified_callsite": 6
+      },
+      "expected_entities": 4,
+      "matched_entities": 3,
+      "expected_edges": 2,
+      "matched_expected_edges": 0,
+      "forbidden_edges": 2,
+      "matched_forbidden_edges": 0,
+      "expected_paths": 2,
+      "matched_expected_paths": 0,
+      "forbidden_paths": 1,
+      "matched_forbidden_paths": 0,
+      "expected_context_symbols": 2,
+      "matched_context_symbols": 1,
+      "expected_tests": 0,
+      "matched_tests": 0,
+      "failures": [
+        {
+          "category": "missing_expected_entity",
+          "severity": "error",
+          "message": "missing expected entity src/defaultFeature.default",
+          "relation": null,
+          "expected_id": null
+        },
+        {
+          "category": "missing_required_edge",
+          "severity": "error",
+          "message": "missing required edge src/use.runDefault -CALLS-> src/defaultFeature.default at src/use.ts:4",
+          "relation": "CALLS",
+          "expected_id": "edge://barrel/calls-default"
+        },
+        {
+          "category": "missing_required_edge",
+          "severity": "error",
+          "message": "missing required edge src/use.runNamed -CALLS-> src/namedFeature.feature at src/use.ts:8",
+          "relation": "CALLS",
+          "expected_id": "edge://barrel/calls-named"
+        },
+        {
+          "category": "missing_expected_path",
+          "severity": "error",
+          "message": "missing expected path path://barrel/default",
+          "relation": null,
+          "expected_id": "path://barrel/default"
+        },
+        {
+          "category": "missing_expected_path",
+          "severity": "error",
+          "message": "missing expected path path://barrel/named",
+          "relation": null,
+          "expected_id": "path://barrel/named"
+        },
+        {
+          "category": "critical_context_symbol_missing",
+          "severity": "error",
+          "message": "critical context symbol missing from packet: src/defaultFeature.default",
+          "relation": null,
+          "expected_id": null
+        }
+      ],
+      "missing_entities": [
+        "missing expected entity src/defaultFeature.default"
+      ],
+      "missing_edges": [
+        "missing required edge src/use.runDefault -CALLS-> src/defaultFeature.default at src/use.ts:4",
+        "missing required edge src/use.runNamed -CALLS-> src/namedFeature.feature at src/use.ts:8"
+      ],
+      "forbidden_edges_found": [],
+      "missing_paths": [
+        "missing expected path path://barrel/default",
+        "missing expected path path://barrel/named"
+      ],
+      "forbidden_paths_found": [],
+      "false_positives": [],
+      "false_negatives": [
+        "missing expected entity src/defaultFeature.default",
+        "missing required edge src/use.runDefault -CALLS-> src/defaultFeature.default at src/use.ts:4",
+        "missing required edge src/use.runNamed -CALLS-> src/namedFeature.feature at src/use.ts:8",
+        "missing expected path path://barrel/default",
+        "missing expected path path://barrel/named"
+      ],
+      "source_span_failures": [],
+      "context_symbol_failures": [
+        "critical context symbol missing from packet: src/defaultFeature.default"
+      ],
+      "context_packet_failures": [
+        "critical context symbol missing from packet: src/defaultFeature.default"
+      ],
+      "expected_test_failures": [],
+      "mutation_failures": [],
+      "stale_failures": [],
+      "relation_metrics": [
+        {
+          "relation": "CALLS",
+          "expected_edges": 2,
+          "matched_expected_edges": 0,
+          "forbidden_edges": 2,
+          "matched_forbidden_edges": 0,
+          "precision": null,
+          "recall": 0.0
+        }
+      ],
+      "notes": [
+        "Covers default export, named export, and barrel re-export resolution."
+      ]
+    },
+    {
+      "case_id": "derived_closure_edge_requires_provenance",
+      "description": "Derived closure edges require provenance.",
+      "status": "failed",
+      "repo_fixture_path": "benchmarks/graph_truth/fixtures/derived_closure_edge_requires_provenance/repo",
+      "db_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-derived-closure-edge-requires-provenance-1778454383931.sqlite",
+      "staged_repo_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-workdir-derived-closure-edge-requires-provenance-1778454383929",
+      "files_indexed": 2,
+      "entities_indexed": 24,
+      "edges_indexed": 57,
+      "entity_count": 24,
+      "edge_count": 57,
+      "source_span_count": 81,
+      "timing": {
+        "total_ms": 52,
+        "index_ms": 38,
+        "mutation_ms": 0,
+        "query_ms": 10,
+        "evaluation_ms": 0
+      },
+      "index_time": 38,
+      "query_time": 10,
+      "base_edges_observed": 57,
+      "derived_edges_observed": 0,
+      "edge_class_counts": {
+        "base_exact": 37,
+        "base_heuristic": 2,
+        "inverse": 14,
+        "reified_callsite": 4
+      },
+      "expected_entities": 3,
+      "matched_entities": 2,
+      "expected_edges": 3,
+      "matched_expected_edges": 1,
+      "forbidden_edges": 1,
+      "matched_forbidden_edges": 0,
+      "expected_paths": 1,
+      "matched_expected_paths": 0,
+      "forbidden_paths": 1,
+      "matched_forbidden_paths": 0,
+      "expected_context_symbols": 2,
+      "matched_context_symbols": 1,
+      "expected_tests": 0,
+      "matched_tests": 0,
+      "failures": [
+        {
+          "category": "missing_expected_entity",
+          "severity": "error",
+          "message": "missing expected entity src/store.ordersTable",
+          "relation": null,
+          "expected_id": null
+        },
+        {
+          "category": "missing_required_edge",
+          "severity": "error",
+          "message": "missing required edge src/store.saveOrder -WRITES-> src/store.ordersTable at src/store.ts:4",
+          "relation": "WRITES",
+          "expected_id": "edge://derived/base-write"
+        },
+        {
+          "category": "missing_required_edge",
+          "severity": "error",
+          "message": "missing required edge src/service.submitOrder -MAY_MUTATE-> src/store.ordersTable at src/service.ts:4",
+          "relation": "MAY_MUTATE",
+          "expected_id": "edge://derived/may-mutate"
+        },
+        {
+          "category": "missing_expected_path",
+          "severity": "error",
+          "message": "missing expected path path://derived/provenance",
+          "relation": null,
+          "expected_id": "path://derived/provenance"
+        },
+        {
+          "category": "critical_context_symbol_missing",
+          "severity": "error",
+          "message": "critical context symbol missing from packet: src/store.ordersTable",
+          "relation": null,
+          "expected_id": null
+        }
+      ],
+      "missing_entities": [
+        "missing expected entity src/store.ordersTable"
+      ],
+      "missing_edges": [
+        "missing required edge src/store.saveOrder -WRITES-> src/store.ordersTable at src/store.ts:4",
+        "missing required edge src/service.submitOrder -MAY_MUTATE-> src/store.ordersTable at src/service.ts:4"
+      ],
+      "forbidden_edges_found": [],
+      "missing_paths": [
+        "missing expected path path://derived/provenance"
+      ],
+      "forbidden_paths_found": [],
+      "false_positives": [],
+      "false_negatives": [
+        "missing expected entity src/store.ordersTable",
+        "missing required edge src/store.saveOrder -WRITES-> src/store.ordersTable at src/store.ts:4",
+        "missing required edge src/service.submitOrder -MAY_MUTATE-> src/store.ordersTable at src/service.ts:4",
+        "missing expected path path://derived/provenance"
+      ],
+      "source_span_failures": [],
+      "context_symbol_failures": [
+        "critical context symbol missing from packet: src/store.ordersTable"
+      ],
+      "context_packet_failures": [
+        "critical context symbol missing from packet: src/store.ordersTable"
+      ],
+      "expected_test_failures": [],
+      "mutation_failures": [],
+      "stale_failures": [],
+      "relation_metrics": [
+        {
+          "relation": "CALLS",
+          "expected_edges": 1,
+          "matched_expected_edges": 1,
+          "forbidden_edges": 0,
+          "matched_forbidden_edges": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        {
+          "relation": "WRITES",
+          "expected_edges": 1,
+          "matched_expected_edges": 0,
+          "forbidden_edges": 0,
+          "matched_forbidden_edges": 0,
+          "precision": null,
+          "recall": 0.0
+        },
+        {
+          "relation": "MAY_MUTATE",
+          "expected_edges": 1,
+          "matched_expected_edges": 0,
+          "forbidden_edges": 1,
+          "matched_forbidden_edges": 0,
+          "precision": null,
+          "recall": 0.0
+        }
+      ],
+      "notes": [
+        "Catches derived/cache fact inflation and missing provenance."
+      ]
+    },
+    {
+      "case_id": "dynamic_import_marked_heuristic",
+      "description": "Dynamic import must stay heuristic unless proven.",
+      "status": "failed",
+      "repo_fixture_path": "benchmarks/graph_truth/fixtures/dynamic_import_marked_heuristic/repo",
+      "db_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-dynamic-import-marked-heuristic-1778454383989.sqlite",
+      "staged_repo_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-workdir-dynamic-import-marked-heuristic-1778454383987",
+      "files_indexed": 2,
+      "entities_indexed": 24,
+      "edges_indexed": 48,
+      "entity_count": 24,
+      "edge_count": 48,
+      "source_span_count": 72,
+      "timing": {
+        "total_ms": 49,
+        "index_ms": 36,
+        "mutation_ms": 0,
+        "query_ms": 10,
+        "evaluation_ms": 0
+      },
+      "index_time": 36,
+      "query_time": 10,
+      "base_edges_observed": 48,
+      "derived_edges_observed": 0,
+      "edge_class_counts": {
+        "base_exact": 30,
+        "base_heuristic": 3,
+        "inverse": 10,
+        "reified_callsite": 5
+      },
+      "expected_entities": 2,
+      "matched_entities": 1,
+      "expected_edges": 1,
+      "matched_expected_edges": 0,
+      "forbidden_edges": 1,
+      "matched_forbidden_edges": 0,
+      "expected_paths": 0,
+      "matched_expected_paths": 0,
+      "forbidden_paths": 0,
+      "matched_forbidden_paths": 0,
+      "expected_context_symbols": 1,
+      "matched_context_symbols": 0,
+      "expected_tests": 0,
+      "matched_tests": 0,
+      "failures": [
+        {
+          "category": "missing_expected_entity",
+          "severity": "error",
+          "message": "missing expected entity dynamic_import:./plugins/+name",
+          "relation": null,
+          "expected_id": null
+        },
+        {
+          "category": "missing_required_edge",
+          "severity": "error",
+          "message": "missing required edge src/loader.loadPlugin -IMPORTS-> dynamic_import:./plugins/+name at src/loader.ts:2",
+          "relation": "IMPORTS",
+          "expected_id": "edge://dynamic-import/runtime-specifier"
+        },
+        {
+          "category": "critical_context_symbol_missing",
+          "severity": "error",
+          "message": "critical context symbol missing from packet: dynamic_import:./plugins/+name",
+          "relation": null,
+          "expected_id": null
+        }
+      ],
+      "missing_entities": [
+        "missing expected entity dynamic_import:./plugins/+name"
+      ],
+      "missing_edges": [
+        "missing required edge src/loader.loadPlugin -IMPORTS-> dynamic_import:./plugins/+name at src/loader.ts:2"
+      ],
+      "forbidden_edges_found": [],
+      "missing_paths": [],
+      "forbidden_paths_found": [],
+      "false_positives": [],
+      "false_negatives": [
+        "missing expected entity dynamic_import:./plugins/+name",
+        "missing required edge src/loader.loadPlugin -IMPORTS-> dynamic_import:./plugins/+name at src/loader.ts:2"
+      ],
+      "source_span_failures": [],
+      "context_symbol_failures": [
+        "critical context symbol missing from packet: dynamic_import:./plugins/+name"
+      ],
+      "context_packet_failures": [
+        "critical context symbol missing from packet: dynamic_import:./plugins/+name"
+      ],
+      "expected_test_failures": [],
+      "mutation_failures": [],
+      "stale_failures": [],
+      "relation_metrics": [
+        {
+          "relation": "IMPORTS",
+          "expected_edges": 1,
+          "matched_expected_edges": 0,
+          "forbidden_edges": 1,
+          "matched_forbidden_edges": 0,
+          "precision": null,
+          "recall": 0.0
+        }
+      ],
+      "notes": [
+        "Catches exact labels on unresolved dynamic imports."
+      ]
+    },
+    {
+      "case_id": "file_rename_prunes_old_path",
+      "description": "Rename should prune old path facts.",
+      "status": "passed",
+      "repo_fixture_path": "benchmarks/graph_truth/fixtures/file_rename_prunes_old_path/repo",
+      "db_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-file-rename-prunes-old-path-1778454384044.sqlite",
+      "staged_repo_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-workdir-file-rename-prunes-old-path-1778454384042",
+      "files_indexed": 2,
+      "entities_indexed": 18,
+      "edges_indexed": 37,
+      "entity_count": 18,
+      "edge_count": 37,
+      "source_span_count": 55,
+      "timing": {
+        "total_ms": 95,
+        "index_ms": 81,
+        "mutation_ms": 47,
+        "query_ms": 9,
+        "evaluation_ms": 0
+      },
+      "index_time": 81,
+      "query_time": 9,
+      "base_edges_observed": 37,
+      "derived_edges_observed": 0,
+      "edge_class_counts": {
+        "base_exact": 23,
+        "base_heuristic": 2,
+        "inverse": 9,
+        "reified_callsite": 3
+      },
+      "expected_entities": 2,
+      "matched_entities": 2,
+      "expected_edges": 1,
+      "matched_expected_edges": 1,
+      "forbidden_edges": 1,
+      "matched_forbidden_edges": 0,
+      "expected_paths": 1,
+      "matched_expected_paths": 1,
+      "forbidden_paths": 1,
+      "matched_forbidden_paths": 0,
+      "expected_context_symbols": 1,
+      "matched_context_symbols": 1,
+      "expected_tests": 0,
+      "matched_tests": 0,
+      "failures": [],
+      "missing_entities": [],
+      "missing_edges": [],
+      "forbidden_edges_found": [],
+      "missing_paths": [],
+      "forbidden_paths_found": [],
+      "false_positives": [],
+      "false_negatives": [],
+      "source_span_failures": [],
+      "context_symbol_failures": [],
+      "context_packet_failures": [],
+      "expected_test_failures": [],
+      "mutation_failures": [],
+      "stale_failures": [],
+      "relation_metrics": [
+        {
+          "relation": "CALLS",
+          "expected_edges": 1,
+          "matched_expected_edges": 1,
+          "forbidden_edges": 1,
+          "matched_forbidden_edges": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        }
+      ],
+      "notes": [
+        "Mutation fixture for stale path cleanup."
+      ]
+    },
+    {
+      "case_id": "import_alias_change_updates_target",
+      "description": "Import alias target must update after mutation.",
+      "status": "failed",
+      "repo_fixture_path": "benchmarks/graph_truth/fixtures/import_alias_change_updates_target/repo",
+      "db_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-import-alias-change-updates-target-1778454384145.sqlite",
+      "staged_repo_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-workdir-import-alias-change-updates-target-1778454384144",
+      "files_indexed": 1,
+      "entities_indexed": 12,
+      "edges_indexed": 24,
+      "entity_count": 24,
+      "edge_count": 50,
+      "source_span_count": 74,
+      "timing": {
+        "total_ms": 92,
+        "index_ms": 79,
+        "mutation_ms": 42,
+        "query_ms": 9,
+        "evaluation_ms": 0
+      },
+      "index_time": 79,
+      "query_time": 9,
+      "base_edges_observed": 50,
+      "derived_edges_observed": 0,
+      "edge_class_counts": {
+        "base_exact": 32,
+        "base_heuristic": 2,
+        "inverse": 12,
+        "reified_callsite": 4
+      },
+      "expected_entities": 2,
+      "matched_entities": 2,
+      "expected_edges": 2,
+      "matched_expected_edges": 2,
+      "forbidden_edges": 1,
+      "matched_forbidden_edges": 0,
+      "expected_paths": 1,
+      "matched_expected_paths": 1,
+      "forbidden_paths": 1,
+      "matched_forbidden_paths": 0,
+      "expected_context_symbols": 1,
+      "matched_context_symbols": 1,
+      "expected_tests": 0,
+      "matched_tests": 0,
+      "failures": [
+        {
+          "category": "source_span_failure",
+          "severity": "error",
+          "message": "source span end column mismatch: observed src/use.ts:1:1-1:48, expected column 49",
+          "relation": "IMPORTS",
+          "expected_id": "edge://alias/imports-beta"
+        }
+      ],
+      "missing_entities": [],
+      "missing_edges": [],
+      "forbidden_edges_found": [],
+      "missing_paths": [],
+      "forbidden_paths_found": [],
+      "false_positives": [],
+      "false_negatives": [],
+      "source_span_failures": [
+        "source span end column mismatch: observed src/use.ts:1:1-1:48, expected column 49"
+      ],
+      "context_symbol_failures": [],
+      "context_packet_failures": [],
+      "expected_test_failures": [],
+      "mutation_failures": [],
+      "stale_failures": [],
+      "relation_metrics": [
+        {
+          "relation": "IMPORTS",
+          "expected_edges": 1,
+          "matched_expected_edges": 1,
+          "forbidden_edges": 0,
+          "matched_forbidden_edges": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        {
+          "relation": "CALLS",
+          "expected_edges": 1,
+          "matched_expected_edges": 1,
+          "forbidden_edges": 1,
+          "matched_forbidden_edges": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        }
+      ],
+      "notes": [
+        "Catches stale alias edges after an import target mutation."
+      ]
+    },
+    {
+      "case_id": "same_function_name_only_one_imported",
+      "description": "Two files export chooseUser; main imports only one target.",
+      "status": "passed",
+      "repo_fixture_path": "benchmarks/graph_truth/fixtures/same_function_name_only_one_imported/repo",
+      "db_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-same-function-name-only-one-imported-1778454384245.sqlite",
+      "staged_repo_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-workdir-same-function-name-only-one-imported-1778454384243",
+      "files_indexed": 4,
+      "entities_indexed": 41,
+      "edges_indexed": 94,
+      "entity_count": 41,
+      "edge_count": 94,
+      "source_span_count": 135,
+      "timing": {
+        "total_ms": 60,
+        "index_ms": 44,
+        "mutation_ms": 0,
+        "query_ms": 13,
+        "evaluation_ms": 0
+      },
+      "index_time": 44,
+      "query_time": 13,
+      "base_edges_observed": 94,
+      "derived_edges_observed": 0,
+      "edge_class_counts": {
+        "base_exact": 61,
+        "base_heuristic": 3,
+        "inverse": 22,
+        "reified_callsite": 8
+      },
+      "expected_entities": 2,
+      "matched_entities": 2,
+      "expected_edges": 2,
+      "matched_expected_edges": 2,
+      "forbidden_edges": 2,
+      "matched_forbidden_edges": 0,
+      "expected_paths": 1,
+      "matched_expected_paths": 1,
+      "forbidden_paths": 1,
+      "matched_forbidden_paths": 0,
+      "expected_context_symbols": 1,
+      "matched_context_symbols": 1,
+      "expected_tests": 0,
+      "matched_tests": 0,
+      "failures": [],
+      "missing_entities": [],
+      "missing_edges": [],
+      "forbidden_edges_found": [],
+      "missing_paths": [],
+      "forbidden_paths_found": [],
+      "false_positives": [],
+      "false_negatives": [],
+      "source_span_failures": [],
+      "context_symbol_failures": [],
+      "context_packet_failures": [],
+      "expected_test_failures": [],
+      "mutation_failures": [],
+      "stale_failures": [],
+      "relation_metrics": [
+        {
+          "relation": "IMPORTS",
+          "expected_edges": 1,
+          "matched_expected_edges": 1,
+          "forbidden_edges": 0,
+          "matched_forbidden_edges": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        {
+          "relation": "CALLS",
+          "expected_edges": 1,
+          "matched_expected_edges": 1,
+          "forbidden_edges": 2,
+          "matched_forbidden_edges": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        }
+      ],
+      "notes": [
+        "Catches broad same-name CALLS linking and broad source-span proof."
+      ]
+    },
+    {
+      "case_id": "sanitizer_exists_but_not_on_flow",
+      "description": "Sanitizer existence must not imply sanitized flow.",
+      "status": "failed",
+      "repo_fixture_path": "benchmarks/graph_truth/fixtures/sanitizer_exists_but_not_on_flow/repo",
+      "db_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-sanitizer-exists-but-not-on-flow-1778454384311.sqlite",
+      "staged_repo_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-workdir-sanitizer-exists-but-not-on-flow-1778454384309",
+      "files_indexed": 2,
+      "entities_indexed": 40,
+      "edges_indexed": 87,
+      "entity_count": 40,
+      "edge_count": 87,
+      "source_span_count": 127,
+      "timing": {
+        "total_ms": 53,
+        "index_ms": 41,
+        "mutation_ms": 0,
+        "query_ms": 10,
+        "evaluation_ms": 0
+      },
+      "index_time": 41,
+      "query_time": 10,
+      "base_edges_observed": 87,
+      "derived_edges_observed": 0,
+      "edge_class_counts": {
+        "base_exact": 55,
+        "base_heuristic": 4,
+        "inverse": 19,
+        "reified_callsite": 9
+      },
+      "expected_entities": 2,
+      "matched_entities": 2,
+      "expected_edges": 1,
+      "matched_expected_edges": 0,
+      "forbidden_edges": 1,
+      "matched_forbidden_edges": 0,
+      "expected_paths": 0,
+      "matched_expected_paths": 0,
+      "forbidden_paths": 1,
+      "matched_forbidden_paths": 0,
+      "expected_context_symbols": 1,
+      "matched_context_symbols": 1,
+      "expected_tests": 0,
+      "matched_tests": 0,
+      "failures": [
+        {
+          "category": "missing_required_edge",
+          "severity": "error",
+          "message": "missing required edge src/register.saveComment.raw -FLOWS_TO-> src/register.writeComment at src/register.ts:6",
+          "relation": "FLOWS_TO",
+          "expected_id": "edge://sanitizer/raw-flows-write"
+        },
+        {
+          "category": "forbidden_context_symbol",
+          "severity": "error",
+          "message": "forbidden context symbol appeared: src/sanitize.sanitizeHtml",
+          "relation": null,
+          "expected_id": null
+        }
+      ],
+      "missing_entities": [],
+      "missing_edges": [
+        "missing required edge src/register.saveComment.raw -FLOWS_TO-> src/register.writeComment at src/register.ts:6"
+      ],
+      "forbidden_edges_found": [],
+      "missing_paths": [],
+      "forbidden_paths_found": [],
+      "false_positives": [],
+      "false_negatives": [
+        "missing required edge src/register.saveComment.raw -FLOWS_TO-> src/register.writeComment at src/register.ts:6"
+      ],
+      "source_span_failures": [],
+      "context_symbol_failures": [
+        "forbidden context symbol appeared: src/sanitize.sanitizeHtml"
+      ],
+      "context_packet_failures": [
+        "forbidden context symbol appeared: src/sanitize.sanitizeHtml"
+      ],
+      "expected_test_failures": [],
+      "mutation_failures": [],
+      "stale_failures": [],
+      "relation_metrics": [
+        {
+          "relation": "FLOWS_TO",
+          "expected_edges": 1,
+          "matched_expected_edges": 0,
+          "forbidden_edges": 0,
+          "matched_forbidden_edges": 0,
+          "precision": null,
+          "recall": 0.0
+        },
+        {
+          "relation": "SANITIZES",
+          "expected_edges": 0,
+          "matched_expected_edges": 0,
+          "forbidden_edges": 1,
+          "matched_forbidden_edges": 0,
+          "precision": null,
+          "recall": null
+        }
+      ],
+      "notes": [
+        "Catches proximity-based SANITIZES false positives."
+      ]
+    },
+    {
+      "case_id": "stale_graph_cache_after_edit_delete",
+      "description": "Deleted symbols and stale call edges must disappear.",
+      "status": "failed",
+      "repo_fixture_path": "benchmarks/graph_truth/fixtures/stale_graph_cache_after_edit_delete/repo",
+      "db_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-stale-graph-cache-after-edit-delete-1778454384371.sqlite",
+      "staged_repo_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-workdir-stale-graph-cache-after-edit-delete-1778454384370",
+      "files_indexed": 1,
+      "entities_indexed": 9,
+      "edges_indexed": 18,
+      "entity_count": 15,
+      "edge_count": 31,
+      "source_span_count": 46,
+      "timing": {
+        "total_ms": 104,
+        "index_ms": 90,
+        "mutation_ms": 57,
+        "query_ms": 8,
+        "evaluation_ms": 0
+      },
+      "index_time": 90,
+      "query_time": 8,
+      "base_edges_observed": 31,
+      "derived_edges_observed": 0,
+      "edge_class_counts": {
+        "base_exact": 20,
+        "base_heuristic": 1,
+        "inverse": 8,
+        "reified_callsite": 2
+      },
+      "expected_entities": 2,
+      "matched_entities": 2,
+      "expected_edges": 1,
+      "matched_expected_edges": 1,
+      "forbidden_edges": 1,
+      "matched_forbidden_edges": 0,
+      "expected_paths": 1,
+      "matched_expected_paths": 0,
+      "forbidden_paths": 1,
+      "matched_forbidden_paths": 0,
+      "expected_context_symbols": 1,
+      "matched_context_symbols": 1,
+      "expected_tests": 0,
+      "matched_tests": 0,
+      "failures": [
+        {
+          "category": "source_span_failure",
+          "severity": "error",
+          "message": "source span start column mismatch: observed src/use.ts:4:3-4:15, expected column 10",
+          "relation": "CALLS",
+          "expected_id": "edge://stale/calls-live"
+        },
+        {
+          "category": "missing_expected_path",
+          "severity": "error",
+          "message": "missing expected path path://stale/run-live",
+          "relation": null,
+          "expected_id": "path://stale/run-live"
+        }
+      ],
+      "missing_entities": [],
+      "missing_edges": [],
+      "forbidden_edges_found": [],
+      "missing_paths": [
+        "missing expected path path://stale/run-live"
+      ],
+      "forbidden_paths_found": [],
+      "false_positives": [],
+      "false_negatives": [
+        "missing expected path path://stale/run-live"
+      ],
+      "source_span_failures": [
+        "source span start column mismatch: observed src/use.ts:4:3-4:15, expected column 10"
+      ],
+      "context_symbol_failures": [],
+      "context_packet_failures": [],
+      "expected_test_failures": [],
+      "mutation_failures": [],
+      "stale_failures": [],
+      "relation_metrics": [
+        {
+          "relation": "CALLS",
+          "expected_edges": 1,
+          "matched_expected_edges": 1,
+          "forbidden_edges": 1,
+          "matched_forbidden_edges": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        }
+      ],
+      "notes": [
+        "Mutation fixture for stale delete cleanup."
+      ]
+    },
+    {
+      "case_id": "test_mock_not_production_call",
+      "description": "Mock/test evidence must not become production proof.",
+      "status": "failed",
+      "repo_fixture_path": "benchmarks/graph_truth/fixtures/test_mock_not_production_call/repo",
+      "db_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-test-mock-not-production-call-1778454384482.sqlite",
+      "staged_repo_path": "<REPO_ROOT>/AppData/Local/Temp/codegraph-graph-truth-workdir-test-mock-not-production-call-1778454384480",
+      "files_indexed": 3,
+      "entities_indexed": 76,
+      "edges_indexed": 108,
+      "entity_count": 76,
+      "edge_count": 108,
+      "source_span_count": 184,
+      "timing": {
+        "total_ms": 63,
+        "index_ms": 46,
+        "mutation_ms": 0,
+        "query_ms": 14,
+        "evaluation_ms": 0
+      },
+      "index_time": 46,
+      "query_time": 14,
+      "base_edges_observed": 108,
+      "derived_edges_observed": 0,
+      "edge_class_counts": {
+        "base_exact": 30,
+        "base_heuristic": 2,
+        "inverse": 11,
+        "reified_callsite": 4,
+        "test_mock": 61
+      },
+      "expected_entities": 4,
+      "matched_entities": 3,
+      "expected_edges": 4,
+      "matched_expected_edges": 1,
+      "forbidden_edges": 1,
+      "matched_forbidden_edges": 0,
+      "expected_paths": 1,
+      "matched_expected_paths": 0,
+      "forbidden_paths": 1,
+      "matched_forbidden_paths": 0,
+      "expected_context_symbols": 2,
+      "matched_context_symbols": 2,
+      "expected_tests": 1,
+      "matched_tests": 1,
+      "failures": [
+        {
+          "category": "missing_expected_entity",
+          "severity": "error",
+          "message": "missing expected entity tests/checkout.test.chargeCardMock",
+          "relation": null,
+          "expected_id": null
+        },
+        {
+          "category": "missing_required_edge",
+          "severity": "error",
+          "message": "missing required edge tests/checkout.test.uses a test double for chargeCard -MOCKS-> src/service.chargeCard at tests/checkout.test.ts:5",
+          "relation": "MOCKS",
+          "expected_id": "edge://mock/test-mocks-charge"
+        },
+        {
+          "category": "missing_required_edge",
+          "severity": "error",
+          "message": "missing required edge tests/checkout.test.chargeCardMock -STUBS-> src/service.chargeCard at tests/checkout.test.ts:5",
+          "relation": "STUBS",
+          "expected_id": "edge://mock/stubs-charge"
+        },
+        {
+          "category": "missing_required_edge",
+          "severity": "error",
+          "message": "missing required edge tests/checkout.test.uses a test double for chargeCard -ASSERTS-> src/checkout.checkout at tests/checkout.test.ts:11",
+          "relation": "ASSERTS",
+          "expected_id": "edge://mock/asserts-checkout"
+        },
+        {
+          "category": "missing_expected_path",
+          "severity": "error",
+          "message": "missing expected path path://mock/test-impact",
+          "relation": null,
+          "expected_id": "path://mock/test-impact"
+        }
+      ],
+      "missing_entities": [
+        "missing expected entity tests/checkout.test.chargeCardMock"
+      ],
+      "missing_edges": [
+        "missing required edge tests/checkout.test.uses a test double for chargeCard -MOCKS-> src/service.chargeCard at tests/checkout.test.ts:5",
+        "missing required edge tests/checkout.test.chargeCardMock -STUBS-> src/service.chargeCard at tests/checkout.test.ts:5",
+        "missing required edge tests/checkout.test.uses a test double for chargeCard -ASSERTS-> src/checkout.checkout at tests/checkout.test.ts:11"
+      ],
+      "forbidden_edges_found": [],
+      "missing_paths": [
+        "missing expected path path://mock/test-impact"
+      ],
+      "forbidden_paths_found": [],
+      "false_positives": [],
+      "false_negatives": [
+        "missing expected entity tests/checkout.test.chargeCardMock",
+        "missing required edge tests/checkout.test.uses a test double for chargeCard -MOCKS-> src/service.chargeCard at tests/checkout.test.ts:5",
+        "missing required edge tests/checkout.test.chargeCardMock -STUBS-> src/service.chargeCard at tests/checkout.test.ts:5",
+        "missing required edge tests/checkout.test.uses a test double for chargeCard -ASSERTS-> src/checkout.checkout at tests/checkout.test.ts:11",
+        "missing expected path path://mock/test-impact"
+      ],
+      "source_span_failures": [],
+      "context_symbol_failures": [],
+      "context_packet_failures": [],
+      "expected_test_failures": [],
+      "mutation_failures": [],
+      "stale_failures": [],
+      "relation_metrics": [
+        {
+          "relation": "CALLS",
+          "expected_edges": 1,
+          "matched_expected_edges": 1,
+          "forbidden_edges": 1,
+          "matched_forbidden_edges": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        {
+          "relation": "ASSERTS",
+          "expected_edges": 1,
+          "matched_expected_edges": 0,
+          "forbidden_edges": 0,
+          "matched_forbidden_edges": 0,
+          "precision": null,
+          "recall": 0.0
+        },
+        {
+          "relation": "MOCKS",
+          "expected_edges": 1,
+          "matched_expected_edges": 0,
+          "forbidden_edges": 0,
+          "matched_forbidden_edges": 0,
+          "precision": null,
+          "recall": 0.0
+        },
+        {
+          "relation": "STUBS",
+          "expected_edges": 1,
+          "matched_expected_edges": 0,
+          "forbidden_edges": 0,
+          "matched_forbidden_edges": 0,
+          "precision": null,
+          "recall": 0.0
+        }
+      ],
+      "notes": [
+        "Covers TEST/MOCK/STUB/ASSERT path separation."
+      ]
+    }
+  ],
+  "notes": [
+    "Graph Truth Gate indexes each fixture and compares observed graph facts against hand-labeled expected and forbidden facts.",
+    "A failed gate is expected until semantic resolution, source-span exactness, stale update, and provenance gaps are fixed."
+  ]
+}

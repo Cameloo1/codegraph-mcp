@@ -1,0 +1,111 @@
+﻿{
+    "benchmark":  "context_pack_20",
+    "db":  "reports\\final\\artifacts\\compact_gate_autoresearch_proof.sqlite",
+    "iterations":  20,
+    "p50_ms":  732.912,
+    "p95_ms":  1014.833,
+    "p99_ms":  1014.833,
+    "all_exit_zero":  true,
+    "samples":  [
+                    {
+                        "iteration":  0,
+                        "exit_code":  0,
+                        "wall_ms":  890.438
+                    },
+                    {
+                        "iteration":  1,
+                        "exit_code":  0,
+                        "wall_ms":  700.011
+                    },
+                    {
+                        "iteration":  2,
+                        "exit_code":  0,
+                        "wall_ms":  750.815
+                    },
+                    {
+                        "iteration":  3,
+                        "exit_code":  0,
+                        "wall_ms":  738.373
+                    },
+                    {
+                        "iteration":  4,
+                        "exit_code":  0,
+                        "wall_ms":  721.821
+                    },
+                    {
+                        "iteration":  5,
+                        "exit_code":  0,
+                        "wall_ms":  746.115
+                    },
+                    {
+                        "iteration":  6,
+                        "exit_code":  0,
+                        "wall_ms":  709.285
+                    },
+                    {
+                        "iteration":  7,
+                        "exit_code":  0,
+                        "wall_ms":  714.46
+                    },
+                    {
+                        "iteration":  8,
+                        "exit_code":  0,
+                        "wall_ms":  699.301
+                    },
+                    {
+                        "iteration":  9,
+                        "exit_code":  0,
+                        "wall_ms":  692.228
+                    },
+                    {
+                        "iteration":  10,
+                        "exit_code":  0,
+                        "wall_ms":  806.667
+                    },
+                    {
+                        "iteration":  11,
+                        "exit_code":  0,
+                        "wall_ms":  1014.833
+                    },
+                    {
+                        "iteration":  12,
+                        "exit_code":  0,
+                        "wall_ms":  732.912
+                    },
+                    {
+                        "iteration":  13,
+                        "exit_code":  0,
+                        "wall_ms":  747.725
+                    },
+                    {
+                        "iteration":  14,
+                        "exit_code":  0,
+                        "wall_ms":  723.516
+                    },
+                    {
+                        "iteration":  15,
+                        "exit_code":  0,
+                        "wall_ms":  703.803
+                    },
+                    {
+                        "iteration":  16,
+                        "exit_code":  0,
+                        "wall_ms":  756.973
+                    },
+                    {
+                        "iteration":  17,
+                        "exit_code":  0,
+                        "wall_ms":  728.279
+                    },
+                    {
+                        "iteration":  18,
+                        "exit_code":  0,
+                        "wall_ms":  734.074
+                    },
+                    {
+                        "iteration":  19,
+                        "exit_code":  0,
+                        "wall_ms":  754.136
+                    }
+                ]
+}

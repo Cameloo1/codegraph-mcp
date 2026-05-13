@@ -1,0 +1,9 @@
+{
+    "repo":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\run_20260510_232527\\single_update_repo",
+    "db":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\run_20260510_232527\\single_update.sqlite",
+    "cold_status":  "passed",
+    "cold_wall_ms":  54,
+    "update_status":  "failed",
+    "update_wall_ms":  21,
+    "changed_file":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\run_20260510_232527\\single_update_repo\\src\\main.ts"
+}

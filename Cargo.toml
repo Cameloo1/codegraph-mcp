@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/codegraph-core",
+    "crates/codegraph-trace",
+    "crates/codegraph-store",
+    "crates/codegraph-parser",
+    "crates/codegraph-vector",
+    "crates/codegraph-query",
+    "crates/codegraph-index",
+    "crates/codegraph-mcp-server",
+    "crates/codegraph-cli",
+    "crates/codegraph-bench",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+
+[workspace.metadata.codegraph]
+public_contract = "README.md"
+agent_workflow = "single-agent-only"

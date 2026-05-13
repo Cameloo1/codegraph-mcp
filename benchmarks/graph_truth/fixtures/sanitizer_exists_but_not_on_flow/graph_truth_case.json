@@ -1,0 +1,383 @@
+{
+  "schema_version": 1,
+  "case_id": "sanitizer_exists_but_not_on_flow",
+  "description": "Sanitizer existence must not imply sanitized flow.",
+  "repo_fixture_path": "benchmarks/graph_truth/fixtures/sanitizer_exists_but_not_on_flow/repo",
+  "task_prompt": "Check whether req.body.comment is sanitized before writeComment.",
+  "expected_entities": [
+    {
+      "selector": {
+        "qualified_name": "src/register.writeComment",
+        "kind": "Function",
+        "source_file": "src/register.ts",
+        "context": "production"
+      },
+      "kind": "Function",
+      "context": "production",
+      "source_file": "src/register.ts"
+    },
+    {
+      "selector": {
+        "qualified_name": "src/sanitize.sanitizeHtml",
+        "kind": "Sanitizer",
+        "source_file": "src/sanitize.ts",
+        "context": "production"
+      },
+      "kind": "Sanitizer",
+      "context": "production",
+      "source_file": "src/sanitize.ts"
+    }
+  ],
+  "expected_edges": [
+    {
+      "id": "edge://sanitizer/raw-flows-write",
+      "head": {
+        "qualified_name": "src/register.saveComment.raw",
+        "kind": "LocalVariable",
+        "source_file": "src/register.ts",
+        "context": "production"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "qualified_name": "src/register.writeComment",
+        "kind": "Function",
+        "source_file": "src/register.ts",
+        "context": "production"
+      },
+      "source_file": "src/register.ts",
+      "source_span": {
+        "start_line": 6,
+        "start_column": 10,
+        "end_line": 6,
+        "end_column": 34,
+        "expected_text": "writeComment(normalized)",
+        "syntax_role": "dataflow"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified",
+          "static_heuristic"
+        ],
+        "minimum": "static_heuristic",
+        "proof_grade_required": false,
+        "confidence_floor": 0.5
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "hand_labeled_fixture",
+      "exactness": {
+        "allowed": [
+          "parser_verified",
+          "static_heuristic"
+        ],
+        "minimum": "static_heuristic",
+        "proof_grade_required": false,
+        "confidence_floor": 0.5
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "hand_labeled_fixture",
+      "direction": "head_to_tail"
+    }
+  ],
+  "forbidden_edges": [
+    {
+      "id": "edge://sanitizer/false-sanitizes",
+      "head": {
+        "qualified_name": "src/sanitize.sanitizeHtml",
+        "kind": "Sanitizer",
+        "source_file": "src/sanitize.ts",
+        "context": "production"
+      },
+      "relation": "SANITIZES",
+      "tail": {
+        "qualified_name": "src/register.saveComment.raw",
+        "kind": "LocalVariable",
+        "source_file": "src/register.ts",
+        "context": "production"
+      },
+      "source_file": "src/register.ts",
+      "source_span": {
+        "start_line": 1,
+        "start_column": 1,
+        "end_line": 3,
+        "end_column": 2,
+        "expected_text": "export function sanitizeHtml",
+        "syntax_role": "sanitizer"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "forbidden_existence_based_sanitizer",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "forbidden_existence_based_sanitizer",
+      "direction": "head_to_tail"
+    }
+  ],
+  "expected_paths": [],
+  "forbidden_paths": [
+    {
+      "path_id": "path://sanitizer/false-path",
+      "description": "Raw comment must not have a sanitizer path.",
+      "source": {
+        "qualified_name": "src/register.saveComment.raw",
+        "kind": "LocalVariable",
+        "source_file": "src/register.ts",
+        "context": "production"
+      },
+      "target": {
+        "qualified_name": "src/register.writeComment",
+        "kind": "Function",
+        "source_file": "src/register.ts",
+        "context": "production"
+      },
+      "ordered_edges": [
+        {
+          "id": "edge://sanitizer/false-sanitizes",
+          "head": {
+            "qualified_name": "src/sanitize.sanitizeHtml",
+            "kind": "Sanitizer",
+            "source_file": "src/sanitize.ts",
+            "context": "production"
+          },
+          "relation": "SANITIZES",
+          "tail": {
+            "qualified_name": "src/register.saveComment.raw",
+            "kind": "LocalVariable",
+            "source_file": "src/register.ts",
+            "context": "production"
+          },
+          "source_file": "src/register.ts",
+          "source_span": {
+            "start_line": 1,
+            "start_column": 1,
+            "end_line": 3,
+            "end_column": 2,
+            "expected_text": "export function sanitizeHtml",
+            "syntax_role": "sanitizer"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "forbidden_existence_based_sanitizer",
+          "exactness": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "forbidden_existence_based_sanitizer",
+          "direction": "head_to_tail"
+        },
+        {
+          "id": "edge://sanitizer/raw-flows-write",
+          "head": {
+            "qualified_name": "src/register.saveComment.raw",
+            "kind": "LocalVariable",
+            "source_file": "src/register.ts",
+            "context": "production"
+          },
+          "relation": "FLOWS_TO",
+          "tail": {
+            "qualified_name": "src/register.writeComment",
+            "kind": "Function",
+            "source_file": "src/register.ts",
+            "context": "production"
+          },
+          "source_file": "src/register.ts",
+          "source_span": {
+            "start_line": 6,
+            "start_column": 10,
+            "end_line": 6,
+            "end_column": 34,
+            "expected_text": "writeComment(normalized)",
+            "syntax_role": "dataflow"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified",
+              "static_heuristic"
+            ],
+            "minimum": "static_heuristic",
+            "proof_grade_required": false,
+            "confidence_floor": 0.5
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "hand_labeled_fixture",
+          "exactness": {
+            "allowed": [
+              "parser_verified",
+              "static_heuristic"
+            ],
+            "minimum": "static_heuristic",
+            "proof_grade_required": false,
+            "confidence_floor": 0.5
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "hand_labeled_fixture",
+          "direction": "head_to_tail"
+        }
+      ],
+      "relation_sequence": [
+        "SANITIZES",
+        "FLOWS_TO"
+      ],
+      "max_length": 2,
+      "source_span_required": true,
+      "production_only": true,
+      "derived_allowed": false,
+      "provenance_required": false,
+      "required_source_spans": [
+        {
+          "edge_ref": "edge://sanitizer/false-sanitizes",
+          "source_file": "src/register.ts",
+          "span": {
+            "start_line": 1,
+            "start_column": 1,
+            "end_line": 3,
+            "end_column": 2,
+            "expected_text": "export function sanitizeHtml",
+            "syntax_role": "sanitizer"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "export function sanitizeHtml",
+          "syntax_role": "sanitizer"
+        },
+        {
+          "edge_ref": "edge://sanitizer/raw-flows-write",
+          "source_file": "src/register.ts",
+          "span": {
+            "start_line": 6,
+            "start_column": 10,
+            "end_line": 6,
+            "end_column": 34,
+            "expected_text": "writeComment(normalized)",
+            "syntax_role": "dataflow"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "writeComment(normalized)",
+          "syntax_role": "dataflow"
+        }
+      ],
+      "context": "production",
+      "allow_test_mock_edges": false,
+      "derived_edges_require_provenance": true,
+      "proof_grade": false
+    }
+  ],
+  "expected_source_spans": [
+    {
+      "edge_ref": "edge://sanitizer/raw-flows-write",
+      "source_file": "src/register.ts",
+      "span": {
+        "start_line": 6,
+        "start_column": 10,
+        "end_line": 6,
+        "end_column": 34,
+        "expected_text": "writeComment(normalized)",
+        "syntax_role": "dataflow"
+      },
+      "must_resolve_to_text": true,
+      "expected_text": "writeComment(normalized)",
+      "syntax_role": "dataflow"
+    }
+  ],
+  "expected_context_symbols": [
+    {
+      "symbol": {
+        "qualified_name": "src/register.writeComment",
+        "kind": "Function",
+        "source_file": "src/register.ts",
+        "context": "production"
+      },
+      "critical": true,
+      "source_file": "src/register.ts",
+      "reason": "Sink receiving unsanitized value"
+    }
+  ],
+  "forbidden_context_symbols": [
+    {
+      "symbol": {
+        "qualified_name": "src/sanitize.sanitizeHtml",
+        "kind": "Sanitizer",
+        "source_file": "src/sanitize.ts",
+        "context": "production"
+      },
+      "critical": false,
+      "source_file": "src/sanitize.ts",
+      "reason": "Distractor sanitizer not on flow"
+    }
+  ],
+  "expected_tests": [],
+  "forbidden_tests": [],
+  "mutation_steps": [],
+  "performance_expectations": {
+    "schema_validation_100_cases_max_ms": 1000,
+    "index_time_ms_max": 10000
+  },
+  "notes": [
+    "Catches proximity-based SANITIZES false positives."
+  ],
+  "failure_rules": {
+    "missing_required_edge_fails": true,
+    "forbidden_edge_appearing_fails": true,
+    "wrong_direction_fails": true,
+    "missing_source_span_fails_for_proof_grade_edge": true,
+    "unresolved_name_labeled_exact_fails": true,
+    "mock_or_test_edge_in_production_proof_path_fails": true,
+    "derived_edge_without_provenance_fails": true,
+    "stale_edge_after_edit_fails": true,
+    "same_name_symbol_collision_fails": true,
+    "critical_symbol_missing_from_context_packet_fails": true,
+    "forbidden_context_symbol_included_fails": true,
+    "expected_test_omitted_fails": true,
+    "too_many_distractors_fail_if_threshold_specified": true
+  },
+  "distractor_policy": {
+    "max_context_distractors": 0,
+    "max_symbol_distractors": 0,
+    "distractor_symbols": [],
+    "count_scope": "context_packet"
+  }
+}

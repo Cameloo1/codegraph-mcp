@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-13T10:12:19-05:00",
+  "source_of_truth": "MVP.md",
+  "source_reports": [
+    "reports/final/intended_tool_quality_gate.md",
+    "reports/final/intended_tool_quality_gate.json",
+    "reports/final/comprehensive_benchmark_latest.md",
+    "reports/final/comprehensive_benchmark_latest.json",
+    "reports/final/manual_relation_precision.md",
+    "reports/final/manual_relation_precision.json"
+  ],
+  "pr_scope": {
+    "summary": "Fresh-clone buildability, smoke indexing, docs, CI, Windows/Linux support, and README correctness.",
+    "in_scope": [
+      "fresh-clone buildability",
+      "smoke indexing",
+      "documentation correctness",
+      "README correctness",
+      "CI readiness",
+      "Windows/Linux support boundary",
+      "honest baseline reporting"
+    ],
+    "out_of_scope": [
+      "final intended-performance pass",
+      "CodeGraph beats CGC claim",
+      "benchmark threshold changes",
+      "unrelated product features",
+      "macOS support claims",
+      "weakening Graph Truth, Context Packet, DB integrity, or benchmark honesty"
+    ]
+  },
+  "current_status": {
+    "intended_tool_quality_gate_verdict": "fail",
+    "overall_claim": "PR-readiness baseline only; not final intended-performance ready.",
+    "comparison_claims_allowed": false,
+    "final_intended_performance_pass_claim_allowed": false,
+    "failed_targets": [
+      "proof_build_only_ms"
+    ],
+    "passed_targets": [
+      "cargo_test_workspace",
+      "graph_truth_cases",
+      "context_packet_cases",
+      "db_integrity",
+      "proof_db_mib",
+      "repeat_unchanged_ms",
+      "single_file_update_ms",
+      "artifact_freshness"
+    ]
+  },
+  "metrics": [
+    {
+      "id": "cargo_test_workspace",
+      "observed": "pass",
+      "target": "pass",
+      "status": "pass"
+    },
+    {
+      "id": "graph_truth_cases",
+      "observed": "11/11",
+      "target": "11/11",
+      "status": "pass"
+    },
+    {
+      "id": "context_packet_cases",
+      "observed": "11/11",
+      "target": "11/11",
+      "status": "pass"
+    },
+    {
+      "id": "db_integrity",
+      "observed": "ok",
+      "target": "ok",
+      "status": "pass"
+    },
+    {
+      "id": "proof_db_mib",
+      "observed": 171.184,
+      "target": 250,
+      "unit": "MiB",
+      "status": "pass"
+    },
+    {
+      "id": "proof_build_only_ms",
+      "observed": 184297,
+      "target": 60000,
+      "unit": "ms",
+      "status": "fail"
+    },
+    {
+      "id": "repeat_unchanged_ms",
+      "observed": 1674,
+      "target": 5000,
+      "unit": "ms",
+      "status": "pass"
+    },
+    {
+      "id": "single_file_update_ms",
+      "observed": 336,
+      "target": 750,
+      "unit": "ms",
+      "status": "pass"
+    },
+    {
+      "id": "artifact_freshness",
+      "observed": "fresh",
+      "target": "fresh",
+      "status": "pass"
+    }
+  ],
+  "known_limitations": [
+    "Intended Tool Quality Gate verdict is FAIL.",
+    "Main failed target is proof_build_only_ms = 184297 ms, target <=60000 ms.",
+    "This baseline does not prove final intended-performance readiness.",
+    "This baseline does not prove CodeGraph beats CGC.",
+    "Benchmark thresholds were not changed.",
+    "Graph Truth, Context Packet, DB integrity, and benchmark honesty must remain protected during PR-readiness edits."
+  ],
+  "cgc_status": {
+    "installed_invoked_diagnostically": true,
+    "official_comparison_status": "blocked_incomplete",
+    "codegraph_beats_cgc_claim_allowed": false,
+    "notes": [
+      "CGC was installed and invoked diagnostically.",
+      "Smoke and fixture diagnostic evidence exists but is not an official comparison.",
+      "CGC Autoresearch did not complete under the diagnostic cap.",
+      "Official comparison remains blocked because CodeGraph currently fails proof_build_only_ms and CGC completion is incomplete."
+    ]
+  },
+  "manual_relation_precision_boundary": {
+    "labeled_samples": 320,
+    "precision_scope": "sampled_precision_only",
+    "recall": "unknown",
+    "false_negative_gold_denominator": "unknown",
+    "absent_proof_mode_relation_precision_claim": false,
+    "absent_proof_mode_relations_without_precision_claim": [
+      "AUTHORIZES",
+      "CHECKS_ROLE",
+      "SANITIZES",
+      "EXPOSES",
+      "TESTS",
+      "ASSERTS",
+      "MOCKS",
+      "STUBS"
+    ]
+  },
+  "platform_support_goal": {
+    "current_pr_goal": [
+      "Windows fresh-clone build/smoke support",
+      "Linux fresh-clone build/smoke support"
+    ],
+    "not_claimed": [
+      "macOS support"
+    ]
+  },
+  "threshold_policy": {
+    "benchmark_thresholds_changed": false,
+    "notes": "No benchmark threshold changes are part of this baseline freeze."
+  },
+  "production_behavior": {
+    "changed": false,
+    "notes": "Documentation/artifact update only."
+  }
+}

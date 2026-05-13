@@ -1,0 +1,30 @@
+{
+    "schema_version":  1,
+    "generated_at":  "2026-05-13T08:51:32.8206026-05:00",
+    "phase":  "codegraph_gate_alongside_cgc",
+    "cargo_test_workspace":  "pass",
+    "graph_truth":  {
+                        "verdict":  "passed",
+                        "cases_passed":  11,
+                        "cases_total":  11
+                    },
+    "context_packet":  {
+                           "verdict":  "passed",
+                           "cases_passed":  11,
+                           "cases_total":  11
+                       },
+    "db_integrity":  "ok",
+    "comprehensive_verdict":  "fail",
+    "comprehensive_failed_targets":  [
+                                         "bytes_per_proof_edge",
+                                         "cold_proof_build_total_wall_ms",
+                                         "proof_db_mib_stretch"
+                                     ],
+    "proof_build_only_ms":  184297,
+    "proof_build_target_ms":  60000,
+    "proof_db_mib":  171.184,
+    "repeat_unchanged_ms":  1674.0,
+    "single_file_update_ms":  336.0,
+    "official_comparison_allowed":  false,
+    "official_comparison_blocker":  "current fresh comprehensive gate fails proof_build_only_ms \u003e 60000 and CGC Autoresearch is incomplete"
+}

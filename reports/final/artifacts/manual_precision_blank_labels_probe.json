@@ -1,0 +1,2819 @@
+{
+  "schema_version": 1,
+  "label_schema_version": 1,
+  "generated_at_unix_ms": 1778644060202,
+  "edge_inputs": [
+    "reports/final/artifacts/manual_precision_sample_CALLS.json"
+  ],
+  "path_inputs": [
+    "reports/final/artifacts/manual_precision_sample_PathEvidence.json"
+  ],
+  "markdown_inputs": [
+    "reports/final/artifacts/manual_precision_sample_CALLS.md",
+    "reports/final/artifacts/manual_precision_sample_PathEvidence.md"
+  ],
+  "manual_classification_options": [
+    "true_positive",
+    "false_positive",
+    "wrong_direction",
+    "wrong_target",
+    "wrong_span",
+    "stale",
+    "duplicate",
+    "unresolved_mislabeled_exact",
+    "test_mock_leaked",
+    "derived_missing_provenance",
+    "unsure"
+  ],
+  "samples": [
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 1,
+      "sample_id": "edge-key:-9219686753999769194",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9219686753999769194"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 2,
+      "sample_id": "edge-key:-9218329364481355278",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9218329364481355278"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 3,
+      "sample_id": "edge-key:-9207033643377571536",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9207033643377571536"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 4,
+      "sample_id": "edge-key:-9204612225682906844",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9204612225682906844"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 5,
+      "sample_id": "edge-key:-9203917153979327882",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9203917153979327882"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 6,
+      "sample_id": "edge-key:-9203193041256805099",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9203193041256805099"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 7,
+      "sample_id": "edge-key:-9200221164749853995",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9200221164749853995"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 8,
+      "sample_id": "edge-key:-9194174111317313219",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9194174111317313219"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 9,
+      "sample_id": "edge-key:-9191016095031720750",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9191016095031720750"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 10,
+      "sample_id": "edge-key:-9189397946054752705",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9189397946054752705"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 11,
+      "sample_id": "edge-key:-9188943476723159600",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9188943476723159600"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 12,
+      "sample_id": "edge-key:-9180476430850508159",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9180476430850508159"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 13,
+      "sample_id": "edge-key:-9175448200043001236",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9175448200043001236"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 14,
+      "sample_id": "edge-key:-9173920181625997413",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9173920181625997413"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 15,
+      "sample_id": "edge-key:-9173892207857001214",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9173892207857001214"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 16,
+      "sample_id": "edge-key:-9157570605903685370",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9157570605903685370"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 17,
+      "sample_id": "edge-key:-9155260334438884468",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9155260334438884468"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 18,
+      "sample_id": "edge-key:-9154203036610331841",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9154203036610331841"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 19,
+      "sample_id": "edge-key:-9152681992855170393",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9152681992855170393"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 20,
+      "sample_id": "edge-key:-9152578509063404769",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9152578509063404769"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 21,
+      "sample_id": "edge-key:-9141581984135587689",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9141581984135587689"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 22,
+      "sample_id": "edge-key:-9138460836748129052",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9138460836748129052"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 23,
+      "sample_id": "edge-key:-9130907523969240159",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9130907523969240159"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 24,
+      "sample_id": "edge-key:-9126065031123564016",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9126065031123564016"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 25,
+      "sample_id": "edge-key:-9120489193624736370",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9120489193624736370"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 26,
+      "sample_id": "edge-key:-9112745193504538070",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9112745193504538070"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 27,
+      "sample_id": "edge-key:-9106514634442348822",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9106514634442348822"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 28,
+      "sample_id": "edge-key:-9104049820924482317",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9104049820924482317"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 29,
+      "sample_id": "edge-key:-9103749106578594669",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9103749106578594669"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "unknown_not_first_class",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 30,
+      "sample_id": "edge-key:-9100751433761581788",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9100751433761581788"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 31,
+      "sample_id": "edge-key:-9094616922695647144",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9094616922695647144"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 32,
+      "sample_id": "edge-key:-9084986007038172354",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9084986007038172354"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 33,
+      "sample_id": "edge-key:-9079661291070287650",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9079661291070287650"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 34,
+      "sample_id": "edge-key:-9079232366376572273",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9079232366376572273"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 35,
+      "sample_id": "edge-key:-9072974522009405318",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9072974522009405318"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 36,
+      "sample_id": "edge-key:-9064041375540811618",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9064041375540811618"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 37,
+      "sample_id": "edge-key:-9059168678235437306",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9059168678235437306"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 38,
+      "sample_id": "edge-key:-9057137899338545144",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9057137899338545144"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "unknown_not_first_class",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 39,
+      "sample_id": "edge-key:-9053502937740038339",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9053502937740038339"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "unknown_not_first_class",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 40,
+      "sample_id": "edge-key:-9052519494226975129",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9052519494226975129"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 41,
+      "sample_id": "edge-key:-9050224252766646807",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9050224252766646807"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 42,
+      "sample_id": "edge-key:-9048160255253830301",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9048160255253830301"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 43,
+      "sample_id": "edge-key:-9046347112424857064",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9046347112424857064"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 44,
+      "sample_id": "edge-key:-9038502750529297448",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9038502750529297448"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 45,
+      "sample_id": "edge-key:-9037548711169898310",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9037548711169898310"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 46,
+      "sample_id": "edge-key:-9035728481260840138",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9035728481260840138"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 47,
+      "sample_id": "edge-key:-9031276788898217171",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9031276788898217171"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 48,
+      "sample_id": "edge-key:-9028314406606205006",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9028314406606205006"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 49,
+      "sample_id": "edge-key:-9027935844295319503",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9027935844295319503"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "unknown_not_first_class",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "edge",
+      "source_json": "reports/final/artifacts/manual_precision_sample_CALLS.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_CALLS.md",
+      "ordinal": 50,
+      "sample_id": "edge-key:-9024713504740049076",
+      "relation": "CALLS",
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_ids": [
+        "edge-key:-9024713504740049076"
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 1,
+      "sample_id": "path://16fe3d901d2767ea",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://3852aafde4101009ae2ff989442f671b"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 2,
+      "sample_id": "path://6a6110e78b5b5221",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://3a9caf057dfefd0a8b176acb9e47b22c"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 3,
+      "sample_id": "path://0a5cc4db3c8ecdf3",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://3c2f777c0339b2e3ccda602cbf1f1ad1"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 4,
+      "sample_id": "path://14e3df0913748040",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://3c47fe08900bbafd8fff2b592e75747f"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 5,
+      "sample_id": "path://5e358951773480f7",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://401471e536a1695f370808b55cd5bfd1"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 6,
+      "sample_id": "path://ac209085fc2be091",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://41479c0f5cca52e6480829be189bed50"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 7,
+      "sample_id": "path://46ce5e87a3d7b509",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://450698e8d667b6e11fd1db5ac68acb93"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 8,
+      "sample_id": "path://73e648035c67d03b",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://450d076dd7dd77556fb7a156dd79a4bb"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 9,
+      "sample_id": "path://2a53d300dd4de481",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://466473bff63bcfece7c0a7410ed7e306"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 10,
+      "sample_id": "path://e39d2cdfc44468d2",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://466c39c995bcd7ad7bfcdc6014872833"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 11,
+      "sample_id": "path://37d9d1b1c9ab3940",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://47698f8153549abda83970204b0bcb73"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 12,
+      "sample_id": "path://f9966baea768ab8d",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://4d167a3f04a556af55aba584338578d5"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 13,
+      "sample_id": "path://833b30ec1b5129d0",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://4dcccdb645143181430ad72bcf0a2d3b"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 14,
+      "sample_id": "path://6ad86dc34719852d",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://4eaf66c2bc9ba6844bd9d53eec201d16"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 15,
+      "sample_id": "path://b7f7ae0fe0f196b8",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://4f34f22967acb41a11ea89ecc85f7c8c"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 16,
+      "sample_id": "path://75cfc9e03af93e95",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://4facfacd2bff1206fb64a953dec2c3ac"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 17,
+      "sample_id": "path://4db98dca38c6ef58",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://4fcc2779ce588bb41a30926cf91ca9ce"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 18,
+      "sample_id": "path://3289154380c9d55c",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://501f2528d109cebfe6acde60fc171101"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 19,
+      "sample_id": "path://1d91ba79d190cf3a",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://51b73c293cd2457059dd032475106dca"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    },
+    {
+      "sample_type": "path",
+      "source_json": "reports/final/artifacts/manual_precision_sample_PathEvidence.json",
+      "source_markdown": "reports/final/artifacts/manual_precision_sample_PathEvidence.md",
+      "ordinal": 20,
+      "sample_id": "path://40b41d54fbcb4026",
+      "relation": "PathEvidence",
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_ids": [
+        "edge://520b3c0032637271e5fec01de4c851fb"
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "source_span_count": 1,
+      "span_loaded": true,
+      "fact_classification": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "labels": {
+        "true_positive": false,
+        "false_positive": false,
+        "wrong_direction": false,
+        "wrong_target": false,
+        "wrong_span": false,
+        "stale": false,
+        "duplicate": false,
+        "unresolved_mislabeled_exact": false,
+        "test_mock_leaked": false,
+        "derived_missing_provenance": false,
+        "unsure": false,
+        "unsupported": false,
+        "false_positive_cause": null,
+        "wrong_span_cause": null,
+        "unsupported_pattern": null,
+        "notes": null
+      },
+      "labeled": false
+    }
+  ],
+  "summary": {
+    "total_samples": 70,
+    "edge_samples": 50,
+    "path_samples": 20,
+    "labeled_samples": 0,
+    "unlabeled_samples": 70,
+    "unsupported_samples": 0,
+    "unsure_samples": 0,
+    "relation_precision": [
+      {
+        "relation": "CALLS",
+        "labeled_samples": 0,
+        "unlabeled_samples": 50,
+        "unsupported_samples": 0,
+        "unsure_samples": 0,
+        "true_positive": 0,
+        "false_positive": 0,
+        "wrong_span": 0,
+        "precision": null,
+        "recall": null,
+        "recall_status": "unknown_no_gold_false_negative_denominator"
+      },
+      {
+        "relation": "PathEvidence",
+        "labeled_samples": 0,
+        "unlabeled_samples": 20,
+        "unsupported_samples": 0,
+        "unsure_samples": 0,
+        "true_positive": 0,
+        "false_positive": 0,
+        "wrong_span": 0,
+        "precision": null,
+        "recall": null,
+        "recall_status": "unknown_no_gold_false_negative_denominator"
+      }
+    ],
+    "source_span_precision": {
+      "eligible_samples": 0,
+      "true_positive": 0,
+      "false_positive": 0,
+      "wrong_span": 0,
+      "precision": null,
+      "recall": null,
+      "recall_status": "unknown_no_gold_false_negative_denominator"
+    },
+    "false_positive_taxonomy": [],
+    "wrong_span_taxonomy": [],
+    "unsupported_pattern_taxonomy": [],
+    "recall_estimate_status": "unknown_no_gold_false_negative_denominator",
+    "notes": [
+      "No labeled samples found; precision and recall remain unknown."
+    ]
+  },
+  "notes": [
+    "Manual labels are read from edited sample markdown bullets or from sample JSON manual_labels/labels objects.",
+    "Blank labels remain unlabeled and are excluded from precision denominators.",
+    "Recall is unknown unless a separate gold false-negative denominator is supplied; sampled positives only estimate precision.",
+    "No human labels were found in the supplied inputs."
+  ]
+}

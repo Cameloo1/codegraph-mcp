@@ -1,0 +1,17 @@
+{
+  "executable": "target\\cgc-competitor\\.venv312-pypi\\Scripts\\cgc.exe",
+  "args": [
+    "--database",
+    "kuzudb",
+    "query",
+    "path",
+    "adminRoute",
+    "checkRole"
+  ],
+  "cwd": "reports\\final\\artifacts\\cgc-comparison\\fixtures\\auth-route",
+  "stdout": "",
+  "stderr": "Usage: cgc query [OPTIONS] QUERY\r\nTry 'cgc query --help' for help.\r\n┌─ Error ─────────────────────────────────────────────────────────────────────┐\r\n│ Got unexpected extra arguments (adminRoute checkRole)                       │\r\n└─────────────────────────────────────────────────────────────────────────────┘\r\n",
+  "exit_code": 2,
+  "latency_ms": 842,
+  "timed_out": false
+}

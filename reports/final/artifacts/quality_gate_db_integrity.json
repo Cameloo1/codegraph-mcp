@@ -1,0 +1,11 @@
+{
+  "db": "reports\\final\\artifacts\\compact_gate_autoresearch_proof.sqlite",
+  "exists": true,
+  "integrity_check": [
+    "ok"
+  ],
+  "quick_check": [
+    "ok"
+  ],
+  "foreign_key_check": []
+}

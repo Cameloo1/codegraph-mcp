@@ -1,0 +1,188 @@
+{
+  "source_of_truth": "MVP.md",
+  "generated_at": "2026-05-13T14:40:20.8331215-05:00",
+  "scope": "fresh-clone buildability, smoke indexing, docs, CI, Windows/Linux support, and README correctness",
+  "not_scope": "final intended-performance pass",
+  "environment": {
+    "os": "Microsoft Windows NT 10.0.26200.0",
+    "shell": "Windows PowerShell 5.1.26100.8457",
+    "rustc_version": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "cargo_version": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+    "git_commit": {
+      "status": "unavailable",
+      "value": null,
+      "detail": "git rev-parse HEAD failed: fatal: not a git repository (or any of the parent directories): .git"
+    }
+  },
+  "commands": {
+    "cargo_build_workspace": {
+      "command": "cargo build --workspace",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "Finished dev profile successfully."
+    },
+    "cargo_test_workspace": {
+      "command": "cargo test --workspace",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "Workspace tests passed; optional CGC/Node-dependent tests remain ignored as designed."
+    },
+    "help_command": {
+      "command": "cargo run --bin codegraph-mcp -- --help",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "CLI help printed successfully."
+    },
+    "fixture_index": {
+      "command": "cargo run --bin codegraph-mcp -- index fixtures/smoke/basic_repo",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "Fixture index completed without crash.",
+      "observed": {
+        "status": "indexed",
+        "files_indexed": 1,
+        "files_seen": 3,
+        "files_skipped": 2,
+        "entities": 15,
+        "edges": 35,
+        "parse_errors": 0,
+        "syntax_errors": 0
+      }
+    },
+    "repo_index": {
+      "command": "target/debug/codegraph-mcp.exe index .",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "Repo index was feasible locally and completed without crash as a warm no-op over the existing local index.",
+      "observed": {
+        "status": "indexed",
+        "files_seen": 1317,
+        "files_skipped": 1317,
+        "files_metadata_unchanged": 149,
+        "files_indexed": 0,
+        "files_parsed": 0,
+        "parse_errors": 0,
+        "syntax_errors": 0
+      }
+    },
+    "readme_artifact_check": {
+      "command": "python scripts/check_readme_artifacts.py",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "README artifact check passed: 12 report paths checked."
+    },
+    "readme_link_check": {
+      "command": "python scripts/check_markdown_links.py",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "Markdown link check passed: 27 local links checked, 0 external links skipped."
+    },
+    "powershell_index_smoke": {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\smoke_index.ps1 -SkipRepoIndex",
+      "status": "pass",
+      "exit_code": 0,
+      "logs": "reports/smoke/index/windows_20260513_143753_6b31f896"
+    },
+    "powershell_fresh_clone_smoke": {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\smoke_fresh_clone.ps1",
+      "status": "pass",
+      "exit_code": 0,
+      "logs": "reports/smoke/fresh_clone/windows_20260513_143757_f25465cd",
+      "clone_path": "C:\\Users\\wamin\\AppData\\Local\\Temp\\codegraph fresh clone 20260513_143757_f25465cd\\repo under test",
+      "path_with_spaces": true
+    },
+    "bash_smoke": {
+      "command": "bash -lc \"pwd && uname -a\"",
+      "status": "not_run",
+      "exit_code": 1,
+      "reason": "Host is Windows and WSL has no installed distributions, so Linux/WSL Bash smoke is not applicable on this machine."
+    },
+    "docker_smoke": {
+      "command": "docker version --format '{{.Server.Version}}'",
+      "status": "not_run",
+      "exit_code": 1,
+      "reason": "Docker CLI exists, but config access/daemon connection failed; Docker local smoke is an environment skip."
+    }
+  },
+  "ci_configuration": {
+    "windows": {
+      "status": "pass",
+      "job": "windows-build-test-smoke",
+      "runs_on": "windows-latest",
+      "validates": [
+        "cargo metadata",
+        "cargo build --workspace",
+        "cargo test --workspace",
+        "codegraph-mcp --help",
+        "fixture index smoke",
+        "README artifact check",
+        "Markdown link check"
+      ]
+    },
+    "linux": {
+      "status": "pass",
+      "job": "linux-build-test-smoke",
+      "runs_on": "ubuntu-latest",
+      "validates": [
+        "cargo metadata",
+        "cargo build --workspace",
+        "cargo test --workspace",
+        "codegraph-mcp --help",
+        "fixture index smoke",
+        "README artifact check",
+        "Markdown link check"
+      ]
+    },
+    "docker": {
+      "status": "pass",
+      "job": "docker-smoke",
+      "runs_on": "ubuntu-latest",
+      "validates": [
+        "docker build",
+        "container help",
+        "container fixture index smoke"
+      ]
+    },
+    "macos": {
+      "status": "coming soon / not tested",
+      "ci_coverage": false,
+      "job_present": false
+    },
+    "requires_cgc": false,
+    "requires_autoresearch": false,
+    "requires_large_benchmark_artifacts": false
+  },
+  "benchmark_honesty": {
+    "status": "pass",
+    "intended_tool_quality_gate": "FAIL",
+    "proof_build_only_ms": 184297,
+    "proof_build_only_target_ms": 60000,
+    "cgc_status": "diagnostic/blocked/incomplete",
+    "codegraph_vs_cgc_superiority_claim": false,
+    "manual_relation_precision": {
+      "samples": 320,
+      "type": "sampled precision only",
+      "recall": "unknown"
+    }
+  },
+  "known_blockers": [],
+  "known_limitations": [
+    "proof_build_only_ms still fails intended target",
+    "official CGC comparison remains blocked/incomplete",
+    "macOS is coming soon",
+    "manual relation precision is sampled precision only, recall unknown"
+  ],
+  "pass_criteria": {
+    "cargo_build_workspace_passes": true,
+    "cargo_test_workspace_passes": true,
+    "help_passes": true,
+    "fixture_index_smoke_passes": true,
+    "readme_artifact_references_pass": true,
+    "readme_relative_links_pass": true,
+    "ci_workflow_exists_for_windows_and_linux": true,
+    "macos_marked_coming_soon": true,
+    "current_benchmark_status_honest": true,
+    "no_false_cgc_or_superiority_claim": true
+  },
+  "final_verdict": "ready_with_known_limitations"
+}

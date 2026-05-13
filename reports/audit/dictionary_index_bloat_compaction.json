@@ -1,0 +1,75 @@
+{
+  "generated_at": "2026-05-11 13:24:29 -05:00",
+  "verdict": "implemented_with_semantic_gates_passing",
+  "schema_version": 9,
+  "storage": {
+    "clean_autoresearch_bytes": 1712730112,
+    "structural_compaction_bytes": 1265242112,
+    "dictionary_index_compaction_bytes": 860700672,
+    "reduction_from_structural_bytes": 404541440,
+    "reduction_from_structural_mib": 385.8,
+    "reduction_from_clean_bytes": 852029440,
+    "reduction_from_clean_mib": 812.56,
+    "target_bytes": 262144000,
+    "target_met": false
+  },
+  "dictionary_deltas": [
+    {
+      "area": "qualified_name_dict_plus_index",
+      "before_mib": 380.13,
+      "after_mib": 45.03,
+      "delta_mib": -335.11
+    },
+    {
+      "area": "object_id_dict_plus_lookup_index",
+      "before_mib": 157.59,
+      "after_mib": 125.0,
+      "delta_mib": -32.59
+    },
+    {
+      "area": "qname_prefix_dict_plus_lookup_index",
+      "before_mib": 80.28,
+      "after_mib": 50.25,
+      "delta_mib": -30.03
+    },
+    {
+      "area": "symbol_dict_plus_lookup_index",
+      "before_mib": 51.18,
+      "after_mib": 48.37,
+      "delta_mib": -2.81
+    }
+  ],
+  "gates": {
+    "graph_truth": {
+      "status": "passed",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "artifact": "reports/audit/artifacts/dictionary_index_compaction_graph_truth.json"
+    },
+    "context_packet": {
+      "status": "passed",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "critical_symbol_recall": 1.0,
+      "proof_path_coverage": 1.0,
+      "source_span_coverage": 1.0,
+      "artifact": "reports/audit/artifacts/dictionary_index_compaction_context_packet.json"
+    },
+    "integrity_check": {
+      "status": "ok",
+      "artifact": "reports/audit/artifacts/dictionary_index_compaction_autoresearch_storage.json"
+    },
+    "full_rust_tests": "passed"
+  },
+  "implemented": [
+    "qualified names reconstructed from prefix/suffix component IDs",
+    "full qualified-name unique text index removed",
+    "object/symbol/qname-prefix dictionaries use hash and length indexes with exact string verification",
+    "human-readable lookup views preserved",
+    "edge rows continue to use path_id/span_path_id rather than path strings"
+  ],
+  "not_completed": [
+    "single global string table across all dictionary categories",
+    "250 MiB Autoresearch-scale target"
+  ]
+}

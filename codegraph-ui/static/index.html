@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CodeGraph Proof Paths</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>CodeGraph Proof Paths</h1>
+          <p id="status-line">Local graph evidence only</p>
+        </div>
+        <form id="query-form" class="query-form">
+          <input id="symbol-search-input" name="symbol" placeholder="symbol search" autocomplete="off" aria-label="Symbol search" />
+          <input id="source-input" name="source" placeholder="source symbol" autocomplete="off" aria-label="Source symbol" />
+          <input id="target-input" name="target" placeholder="target symbol" autocomplete="off" aria-label="Target symbol" />
+          <button type="submit">Trace</button>
+        </form>
+      </header>
+
+      <main class="workspace">
+        <aside class="sidebar">
+          <section>
+            <h2>Mode</h2>
+            <select id="mode-select" aria-label="Graph mode">
+              <option value="proof_path">Proof path</option>
+              <option value="neighborhood">Neighborhood</option>
+              <option value="impact">Impact</option>
+              <option value="auth_security">Auth/security</option>
+              <option value="event_flow">Event flow</option>
+              <option value="test_impact">Test impact</option>
+              <option value="unresolved_calls">Unresolved calls</option>
+            </select>
+            <div id="symbol-results" class="symbol-results"></div>
+          </section>
+          <section>
+            <h2>Relations</h2>
+            <div id="relation-filters" class="filter-grid"></div>
+          </section>
+          <section>
+            <h2>Examples</h2>
+            <div class="example-list">
+              <button data-example="CALLS,MUTATES">CALLS -> MUTATES</button>
+              <button data-example="EXPOSES,AUTHORIZES,CHECKS_ROLE">EXPOSES -> AUTHORIZES -> CHECKS_ROLE</button>
+              <button data-example="PUBLISHES,EMITS,CONSUMES,LISTENS_TO">PUBLISHES/EMITS -> CONSUMES/LISTENS_TO</button>
+              <button data-example="MIGRATES,READS_TABLE,WRITES_TABLE,TESTS">MIGRATES -> DB impact -> TESTS</button>
+            </div>
+          </section>
+          <section>
+            <h2>Impact</h2>
+            <input id="impact-input" placeholder="file or symbol" autocomplete="off" />
+            <button id="impact-button">Analyze</button>
+            <div id="impact-dashboard" class="metric-grid"></div>
+          </section>
+        </aside>
+
+        <section class="graph-pane">
+          <div class="graph-toolbar">
+            <span id="graph-summary">Loading local graph evidence.</span>
+            <div class="toolbar-actions">
+              <button id="export-json-button" type="button">Export JSON</button>
+              <button id="compare-button" type="button">Compare</button>
+            </div>
+          </div>
+          <div id="graph"></div>
+          <div id="truncation-warning" class="warning" hidden></div>
+        </section>
+
+        <aside class="detail-pane">
+          <section>
+            <h2>Proof Quality</h2>
+            <div id="exactness-legend" class="legend"></div>
+          </section>
+          <section>
+            <h2>Edge Detail</h2>
+            <pre id="edge-detail">Select an edge.</pre>
+          </section>
+          <section>
+            <h2>Source Span</h2>
+            <pre id="source-span">Select an edge or path.</pre>
+          </section>
+          <section>
+            <h2>Context Packet</h2>
+            <textarea id="task-input" placeholder="task for context packet">Inspect proof paths</textarea>
+            <button id="context-button">Preview</button>
+            <button id="copy-context-button">Copy</button>
+            <pre id="context-preview">No packet loaded.</pre>
+          </section>
+        </aside>
+      </main>
+    </div>
+    <script src="/assets/d3.v7.min.js"></script>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

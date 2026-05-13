@@ -1,0 +1,1715 @@
+{
+  "schema_version": 1,
+  "db_path": "<REPO_ROOT>/Desktop/development/codegraph-mcp/reports/final/artifacts/run_20260510_232527/fixture_workers4.sqlite",
+  "limit": 20,
+  "seed": 17,
+  "include_snippets": true,
+  "stored_path_count": 0,
+  "generated_path_count": 20,
+  "manual_classification_options": [
+    "true_positive",
+    "false_positive",
+    "wrong_direction",
+    "wrong_target",
+    "wrong_span",
+    "stale",
+    "duplicate",
+    "unresolved_mislabeled_exact",
+    "test_mock_leaked",
+    "derived_missing_provenance",
+    "unsure"
+  ],
+  "samples": [
+    {
+      "ordinal": 1,
+      "path_id": "generated://audit/edge-key:-9203119335740638116",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/af824afc40aa9bc54b31726d12081117 -CALLS-> repo://e/978efa52f9bfd5d3eb88b7cf3839b181",
+      "source": {
+        "id": "repo://e/af824afc40aa9bc54b31726d12081117",
+        "name": "loadPlugin",
+        "qualified_name": "dynamic_import_marked_heuristic::repo::src::loader.loadPlugin",
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/978efa52f9bfd5d3eb88b7cf3839b181",
+        "name": "import",
+        "qualified_name": "static_reference:import",
+        "kind": "Function"
+      },
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9203119335740638116",
+          "head": {
+            "id": "repo://e/af824afc40aa9bc54b31726d12081117",
+            "name": "loadPlugin",
+            "qualified_name": "dynamic_import_marked_heuristic::repo::src::loader.loadPlugin",
+            "kind": "Function"
+          },
+          "relation": "CALLS",
+          "tail": {
+            "id": "repo://e/978efa52f9bfd5d3eb88b7cf3839b181",
+            "name": "import",
+            "qualified_name": "static_reference:import",
+            "kind": "Function"
+          },
+          "source_span": {
+            "repo_relative_path": "dynamic_import_marked_heuristic/repo/src/loader.ts",
+            "start_line": 2,
+            "start_column": 21,
+            "end_line": 2,
+            "end_column": 48
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "static_heuristic",
+          "confidence": 0.55,
+          "derived": false,
+          "fact_classification": "base_heuristic",
+          "production_test_mock_context": "production_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "dynamic_import_marked_heuristic/repo/src/loader.ts",
+          "start_line": 2,
+          "start_column": 21,
+          "end_line": 2,
+          "end_column": 48
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/dynamic_import_marked_heuristic/repo/src/loader.ts",
+          "start_line": 1,
+          "end_line": 4,
+          "text": "1: export async function loadPlugin(name: string) {\n2:   const mod = await import(\"./plugins/\" + name);\n3:   return mod.default();\n4: }"
+        }
+      ],
+      "exactness": "static_heuristic",
+      "confidence": 0.55,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 2,
+      "path_id": "generated://audit/edge-key:-9186605581599358930",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/6a1b0c3cc14d15484c5a384f59464b76 -MOCKS-> repo://e/d06e57aa4f843b868d3d6c69e446827c",
+      "source": {
+        "id": "repo://e/6a1b0c3cc14d15484c5a384f59464b76",
+        "name": "test_mock_not_production_call/repo/tests/checkout.test.ts",
+        "qualified_name": "test::test_mock_not_production_call/repo/tests/checkout.test.ts",
+        "kind": "TestFile"
+      },
+      "target": {
+        "id": "repo://e/d06e57aa4f843b868d3d6c69e446827c",
+        "name": "expr@190",
+        "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test.expr@190",
+        "kind": "Expression"
+      },
+      "relation_sequence": [
+        "MOCKS"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9186605581599358930",
+          "head": {
+            "id": "repo://e/6a1b0c3cc14d15484c5a384f59464b76",
+            "name": "test_mock_not_production_call/repo/tests/checkout.test.ts",
+            "qualified_name": "test::test_mock_not_production_call/repo/tests/checkout.test.ts",
+            "kind": "TestFile"
+          },
+          "relation": "MOCKS",
+          "tail": {
+            "id": "repo://e/d06e57aa4f843b868d3d6c69e446827c",
+            "name": "expr@190",
+            "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test.expr@190",
+            "kind": "Expression"
+          },
+          "source_span": {
+            "repo_relative_path": "test_mock_not_production_call/repo/tests/checkout.test.ts",
+            "start_line": 6,
+            "start_column": 15,
+            "end_line": 6,
+            "end_column": 36
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "static_heuristic",
+          "confidence": 0.64,
+          "derived": false,
+          "fact_classification": "test_or_mock",
+          "production_test_mock_context": "mock_or_stub_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "test_mock_not_production_call/repo/tests/checkout.test.ts",
+          "start_line": 6,
+          "start_column": 15,
+          "end_line": 6,
+          "end_column": 36
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/test_mock_not_production_call/repo/tests/checkout.test.ts",
+          "start_line": 4,
+          "end_line": 8,
+          "text": "4: \n5: vi.mock(\"../src/service\", () => ({\n6:   chargeCard: vi.fn(() => \"mocked\")\n7: }));\n8: "
+        }
+      ],
+      "exactness": "static_heuristic",
+      "confidence": 0.64,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "mock_or_stub_inferred",
+      "metadata": {
+        "framework": "jest-vitest",
+        "heuristic": true,
+        "pattern": "mock-call",
+        "phase": "07"
+      },
+      "missing_metadata": [
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 3,
+      "path_id": "generated://audit/edge-key:-9184959491801231768",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/0cf32c78426c163d2d92ecc618c7354b -DEFINED_IN-> repo://e/0570030f46c7d0bfeb2dd40aa28332ad",
+      "source": {
+        "id": "repo://e/0cf32c78426c163d2d92ecc618c7354b",
+        "name": "return@43",
+        "qualified_name": "same_function_name_only_one_imported::repo::src::a.chooseUser.return@43",
+        "kind": "ReturnSite"
+      },
+      "target": {
+        "id": "repo://e/0570030f46c7d0bfeb2dd40aa28332ad",
+        "name": "chooseUser",
+        "qualified_name": "same_function_name_only_one_imported::repo::src::a.chooseUser",
+        "kind": "Function"
+      },
+      "relation_sequence": [
+        "DEFINED_IN"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9184959491801231768",
+          "head": {
+            "id": "repo://e/0cf32c78426c163d2d92ecc618c7354b",
+            "name": "return@43",
+            "qualified_name": "same_function_name_only_one_imported::repo::src::a.chooseUser.return@43",
+            "kind": "ReturnSite"
+          },
+          "relation": "DEFINED_IN",
+          "tail": {
+            "id": "repo://e/0570030f46c7d0bfeb2dd40aa28332ad",
+            "name": "chooseUser",
+            "qualified_name": "same_function_name_only_one_imported::repo::src::a.chooseUser",
+            "kind": "Function"
+          },
+          "source_span": {
+            "repo_relative_path": "same_function_name_only_one_imported/repo/src/a.ts",
+            "start_line": 2,
+            "start_column": 3,
+            "end_line": 2,
+            "end_column": 20
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "parser_verified",
+          "confidence": 1.0,
+          "derived": false,
+          "fact_classification": "base_exact",
+          "production_test_mock_context": "production_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "same_function_name_only_one_imported/repo/src/a.ts",
+          "start_line": 2,
+          "start_column": 3,
+          "end_line": 2,
+          "end_column": 20
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/same_function_name_only_one_imported/repo/src/a.ts",
+          "start_line": 1,
+          "end_line": 3,
+          "text": "1: export function chooseUser(id: string) {\n2:   return `A:${id}`;\n3: }"
+        }
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 4,
+      "path_id": "generated://audit/edge-key:-9183397129905989238",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/51fff005ee0ed8b8cd46f751b4c4f2fa -CONTAINS-> repo://e/6a74682889eab28dc7f2e0f88178020f",
+      "source": {
+        "id": "repo://e/51fff005ee0ed8b8cd46f751b4c4f2fa",
+        "name": "requireUser",
+        "qualified_name": "admin_user_middleware_role_separation::repo::src::auth.requireUser",
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/6a74682889eab28dc7f2e0f88178020f",
+        "name": "return@123",
+        "qualified_name": "admin_user_middleware_role_separation::repo::src::auth.requireUser.return@123",
+        "kind": "ReturnSite"
+      },
+      "relation_sequence": [
+        "CONTAINS"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9183397129905989238",
+          "head": {
+            "id": "repo://e/51fff005ee0ed8b8cd46f751b4c4f2fa",
+            "name": "requireUser",
+            "qualified_name": "admin_user_middleware_role_separation::repo::src::auth.requireUser",
+            "kind": "Function"
+          },
+          "relation": "CONTAINS",
+          "tail": {
+            "id": "repo://e/6a74682889eab28dc7f2e0f88178020f",
+            "name": "return@123",
+            "qualified_name": "admin_user_middleware_role_separation::repo::src::auth.requireUser.return@123",
+            "kind": "ReturnSite"
+          },
+          "source_span": {
+            "repo_relative_path": "admin_user_middleware_role_separation/repo/src/auth.ts",
+            "start_line": 6,
+            "start_column": 3,
+            "end_line": 6,
+            "end_column": 34
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "parser_verified",
+          "confidence": 1.0,
+          "derived": false,
+          "fact_classification": "base_exact",
+          "production_test_mock_context": "production_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "admin_user_middleware_role_separation/repo/src/auth.ts",
+          "start_line": 6,
+          "start_column": 3,
+          "end_line": 6,
+          "end_column": 34
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/admin_user_middleware_role_separation/repo/src/auth.ts",
+          "start_line": 4,
+          "end_line": 8,
+          "text": "4: \n5: export function requireUser(user: any) {\n6:   return checkRole(user, \"user\");\n7: }\n8: "
+        }
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 5,
+      "path_id": "generated://audit/edge-key:-9167314706337965205",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/49f0d2e7f224b22c0a5a39e7cb800d4e -RETURNS_TO-> repo://e/dab42b501d98f20fd7dd491e0d09b2fd",
+      "source": {
+        "id": "repo://e/49f0d2e7f224b22c0a5a39e7cb800d4e",
+        "name": "return@95",
+        "qualified_name": "derived_closure_edge_requires_provenance::repo::src::service.submitOrder.return@95",
+        "kind": "ReturnSite"
+      },
+      "target": {
+        "id": "repo://e/dab42b501d98f20fd7dd491e0d09b2fd",
+        "name": "submitOrder",
+        "qualified_name": "derived_closure_edge_requires_provenance::repo::src::service.submitOrder",
+        "kind": "Function"
+      },
+      "relation_sequence": [
+        "RETURNS_TO"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9167314706337965205",
+          "head": {
+            "id": "repo://e/49f0d2e7f224b22c0a5a39e7cb800d4e",
+            "name": "return@95",
+            "qualified_name": "derived_closure_edge_requires_provenance::repo::src::service.submitOrder.return@95",
+            "kind": "ReturnSite"
+          },
+          "relation": "RETURNS_TO",
+          "tail": {
+            "id": "repo://e/dab42b501d98f20fd7dd491e0d09b2fd",
+            "name": "submitOrder",
+            "qualified_name": "derived_closure_edge_requires_provenance::repo::src::service.submitOrder",
+            "kind": "Function"
+          },
+          "source_span": {
+            "repo_relative_path": "derived_closure_edge_requires_provenance/repo/src/service.ts",
+            "start_line": 4,
+            "start_column": 3,
+            "end_line": 4,
+            "end_column": 27
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "parser_verified",
+          "confidence": 1.0,
+          "derived": false,
+          "fact_classification": "base_exact",
+          "production_test_mock_context": "production_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "derived_closure_edge_requires_provenance/repo/src/service.ts",
+          "start_line": 4,
+          "start_column": 3,
+          "end_line": 4,
+          "end_column": 27
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/derived_closure_edge_requires_provenance/repo/src/service.ts",
+          "start_line": 2,
+          "end_line": 5,
+          "text": "2: \n3: export function submitOrder(order: any) {\n4:   return saveOrder(order);\n5: }"
+        }
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 6,
+      "path_id": "generated://audit/edge-key:-9167193223427871390",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/cc687a46b4296d6066e5d993fe4126d2 -DEFINES-> repo://e/b63e935a95390a36f7562e1f7da82b00",
+      "source": {
+        "id": "repo://e/cc687a46b4296d6066e5d993fe4126d2",
+        "name": "derived_closure_edge_requires_provenance::repo::src::service",
+        "qualified_name": "derived_closure_edge_requires_provenance/repo/src/service.ts",
+        "kind": "File"
+      },
+      "target": {
+        "id": "repo://e/b63e935a95390a36f7562e1f7da82b00",
+        "name": "derived_closure_edge_requires_provenance::repo::src::service",
+        "qualified_name": "derived_closure_edge_requires_provenance::repo::src::service",
+        "kind": "Module"
+      },
+      "relation_sequence": [
+        "DEFINES"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9167193223427871390",
+          "head": {
+            "id": "repo://e/cc687a46b4296d6066e5d993fe4126d2",
+            "name": "derived_closure_edge_requires_provenance::repo::src::service",
+            "qualified_name": "derived_closure_edge_requires_provenance/repo/src/service.ts",
+            "kind": "File"
+          },
+          "relation": "DEFINES",
+          "tail": {
+            "id": "repo://e/b63e935a95390a36f7562e1f7da82b00",
+            "name": "derived_closure_edge_requires_provenance::repo::src::service",
+            "qualified_name": "derived_closure_edge_requires_provenance::repo::src::service",
+            "kind": "Module"
+          },
+          "source_span": {
+            "repo_relative_path": "derived_closure_edge_requires_provenance/repo/src/service.ts",
+            "start_line": 1,
+            "start_column": 1,
+            "end_line": 6,
+            "end_column": 1
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "parser_verified",
+          "confidence": 1.0,
+          "derived": false,
+          "fact_classification": "base_exact",
+          "production_test_mock_context": "production_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "derived_closure_edge_requires_provenance/repo/src/service.ts",
+          "start_line": 1,
+          "start_column": 1,
+          "end_line": 6,
+          "end_column": 1
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/derived_closure_edge_requires_provenance/repo/src/service.ts",
+          "start_line": 1,
+          "end_line": 5,
+          "text": "1: import { saveOrder, ordersTable } from \"./store\";\n2: \n3: export function submitOrder(order: any) {\n4:   return saveOrder(order);\n5: }"
+        }
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 7,
+      "path_id": "generated://audit/edge-key:-9158827528441336654",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/0b91a650eb5eef675fce7c9c05416fdd -DEFINED_IN-> repo://e/0912589e6c1abf6348d02f568b2030fd",
+      "source": {
+        "id": "repo://e/0b91a650eb5eef675fce7c9c05416fdd",
+        "name": "import { checkout } from \"../src/checkout\";",
+        "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test.import { checkout } from \"../src/checkout\";",
+        "kind": "Import"
+      },
+      "target": {
+        "id": "repo://e/0912589e6c1abf6348d02f568b2030fd",
+        "name": "test_mock_not_production_call::repo::tests::checkout.test",
+        "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test",
+        "kind": "Module"
+      },
+      "relation_sequence": [
+        "DEFINED_IN"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9158827528441336654",
+          "head": {
+            "id": "repo://e/0b91a650eb5eef675fce7c9c05416fdd",
+            "name": "import { checkout } from \"../src/checkout\";",
+            "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test.import { checkout } from \"../src/checkout\";",
+            "kind": "Import"
+          },
+          "relation": "DEFINED_IN",
+          "tail": {
+            "id": "repo://e/0912589e6c1abf6348d02f568b2030fd",
+            "name": "test_mock_not_production_call::repo::tests::checkout.test",
+            "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test",
+            "kind": "Module"
+          },
+          "source_span": {
+            "repo_relative_path": "test_mock_not_production_call/repo/tests/checkout.test.ts",
+            "start_line": 2,
+            "start_column": 1,
+            "end_line": 2,
+            "end_column": 44
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "parser_verified",
+          "confidence": 1.0,
+          "derived": false,
+          "fact_classification": "test_or_mock",
+          "production_test_mock_context": "test_or_fixture_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "test_mock_not_production_call/repo/tests/checkout.test.ts",
+          "start_line": 2,
+          "start_column": 1,
+          "end_line": 2,
+          "end_column": 44
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/test_mock_not_production_call/repo/tests/checkout.test.ts",
+          "start_line": 1,
+          "end_line": 4,
+          "text": "1: import { describe, expect, it, vi } from \"vitest\";\n2: import { checkout } from \"../src/checkout\";\n3: import { chargeCard } from \"../src/service\";\n4: "
+        }
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 8,
+      "path_id": "generated://audit/edge-key:-9147749043063313696",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/d35b8c8a8a398c6063a17b843698622e -EXPORTS-> repo://e/b862883df700d4054c0554d737fc20fb",
+      "source": {
+        "id": "repo://e/d35b8c8a8a398c6063a17b843698622e",
+        "name": "barrel_export_default_export_resolution::repo::src::use",
+        "qualified_name": "barrel_export_default_export_resolution::repo::src::use",
+        "kind": "Module"
+      },
+      "target": {
+        "id": "repo://e/b862883df700d4054c0554d737fc20fb",
+        "name": "export function runDefault() { return defaultFeature(); }",
+        "qualified_name": "barrel_export_default_export_resolution::repo::src::use.export function runDefault() { return defaultFeature(); }",
+        "kind": "Export"
+      },
+      "relation_sequence": [
+        "EXPORTS"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9147749043063313696",
+          "head": {
+            "id": "repo://e/d35b8c8a8a398c6063a17b843698622e",
+            "name": "barrel_export_default_export_resolution::repo::src::use",
+            "qualified_name": "barrel_export_default_export_resolution::repo::src::use",
+            "kind": "Module"
+          },
+          "relation": "EXPORTS",
+          "tail": {
+            "id": "repo://e/b862883df700d4054c0554d737fc20fb",
+            "name": "export function runDefault() { return defaultFeature(); }",
+            "qualified_name": "barrel_export_default_export_resolution::repo::src::use.export function runDefault() { return defaultFeature(); }",
+            "kind": "Export"
+          },
+          "source_span": {
+            "repo_relative_path": "barrel_export_default_export_resolution/repo/src/use.ts",
+            "start_line": 3,
+            "start_column": 1,
+            "end_line": 5,
+            "end_column": 2
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "parser_verified",
+          "confidence": 1.0,
+          "derived": false,
+          "fact_classification": "base_exact",
+          "production_test_mock_context": "production_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "barrel_export_default_export_resolution/repo/src/use.ts",
+          "start_line": 3,
+          "start_column": 1,
+          "end_line": 5,
+          "end_column": 2
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/barrel_export_default_export_resolution/repo/src/use.ts",
+          "start_line": 1,
+          "end_line": 7,
+          "text": "1: import { defaultFeature, namedFeature } from \"./index\";\n2: \n3: export function runDefault() {\n4:   return defaultFeature();\n5: }\n6: \n7: export function runNamed() {"
+        }
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 9,
+      "path_id": "generated://audit/edge-key:-9134365703709946445",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/026e70c08ba2aa164b666205b41ce45c -DECLARES-> repo://e/fae56d36230b390c08499fad73310c7a",
+      "source": {
+        "id": "repo://e/026e70c08ba2aa164b666205b41ce45c",
+        "name": "run",
+        "qualified_name": "source_span_exact_callsite::repo::src::main.run",
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/fae56d36230b390c08499fad73310c7a",
+        "name": "flag",
+        "qualified_name": "source_span_exact_callsite::repo::src::main.run.flag",
+        "kind": "Parameter"
+      },
+      "relation_sequence": [
+        "DECLARES"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9134365703709946445",
+          "head": {
+            "id": "repo://e/026e70c08ba2aa164b666205b41ce45c",
+            "name": "run",
+            "qualified_name": "source_span_exact_callsite::repo::src::main.run",
+            "kind": "Function"
+          },
+          "relation": "DECLARES",
+          "tail": {
+            "id": "repo://e/fae56d36230b390c08499fad73310c7a",
+            "name": "flag",
+            "qualified_name": "source_span_exact_callsite::repo::src::main.run.flag",
+            "kind": "Parameter"
+          },
+          "source_span": {
+            "repo_relative_path": "source_span_exact_callsite/repo/src/main.ts",
+            "start_line": 3,
+            "start_column": 21,
+            "end_line": 3,
+            "end_column": 34
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "parser_verified",
+          "confidence": 1.0,
+          "derived": false,
+          "fact_classification": "base_exact",
+          "production_test_mock_context": "production_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "source_span_exact_callsite/repo/src/main.ts",
+          "start_line": 3,
+          "start_column": 21,
+          "end_line": 3,
+          "end_column": 34
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/source_span_exact_callsite/repo/src/main.ts",
+          "start_line": 1,
+          "end_line": 5,
+          "text": "1: import { first, second } from \"./actions\";\n2: \n3: export function run(flag: boolean) {\n4:   first();\n5:   if (flag) {"
+        }
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 10,
+      "path_id": "generated://audit/edge-key:-9120530291440236237",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/512f01d9d7f11941423642663ef4fc13 -DEFINED_IN-> repo://e/026e70c08ba2aa164b666205b41ce45c",
+      "source": {
+        "id": "repo://e/512f01d9d7f11941423642663ef4fc13",
+        "name": "call:second",
+        "qualified_name": "source_span_exact_callsite::repo::src::main.run.call:second@110",
+        "kind": "CallSite"
+      },
+      "target": {
+        "id": "repo://e/026e70c08ba2aa164b666205b41ce45c",
+        "name": "run",
+        "qualified_name": "source_span_exact_callsite::repo::src::main.run",
+        "kind": "Function"
+      },
+      "relation_sequence": [
+        "DEFINED_IN"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9120530291440236237",
+          "head": {
+            "id": "repo://e/512f01d9d7f11941423642663ef4fc13",
+            "name": "call:second",
+            "qualified_name": "source_span_exact_callsite::repo::src::main.run.call:second@110",
+            "kind": "CallSite"
+          },
+          "relation": "DEFINED_IN",
+          "tail": {
+            "id": "repo://e/026e70c08ba2aa164b666205b41ce45c",
+            "name": "run",
+            "qualified_name": "source_span_exact_callsite::repo::src::main.run",
+            "kind": "Function"
+          },
+          "source_span": {
+            "repo_relative_path": "source_span_exact_callsite/repo/src/main.ts",
+            "start_line": 6,
+            "start_column": 5,
+            "end_line": 6,
+            "end_column": 13
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "parser_verified",
+          "confidence": 1.0,
+          "derived": false,
+          "fact_classification": "base_exact",
+          "production_test_mock_context": "production_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "source_span_exact_callsite/repo/src/main.ts",
+          "start_line": 6,
+          "start_column": 5,
+          "end_line": 6,
+          "end_column": 13
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/source_span_exact_callsite/repo/src/main.ts",
+          "start_line": 4,
+          "end_line": 8,
+          "text": "4:   first();\n5:   if (flag) {\n6:     second();\n7:   }\n8: }"
+        }
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 11,
+      "path_id": "generated://audit/edge-key:-9118877849179843568",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/17d04388e2d4fc14e84f74a37d2b2542 -CONTAINS-> repo://e/32edfe2d4112bbc88343b15291b17b76",
+      "source": {
+        "id": "repo://e/17d04388e2d4fc14e84f74a37d2b2542",
+        "name": "handler",
+        "qualified_name": "same_function_name_only_one_imported::repo::src::main.handler",
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/32edfe2d4112bbc88343b15291b17b76",
+        "name": "call:audit",
+        "qualified_name": "same_function_name_only_one_imported::repo::src::main.handler.call:audit@108",
+        "kind": "CallSite"
+      },
+      "relation_sequence": [
+        "CONTAINS"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9118877849179843568",
+          "head": {
+            "id": "repo://e/17d04388e2d4fc14e84f74a37d2b2542",
+            "name": "handler",
+            "qualified_name": "same_function_name_only_one_imported::repo::src::main.handler",
+            "kind": "Function"
+          },
+          "relation": "CONTAINS",
+          "tail": {
+            "id": "repo://e/32edfe2d4112bbc88343b15291b17b76",
+            "name": "call:audit",
+            "qualified_name": "same_function_name_only_one_imported::repo::src::main.handler.call:audit@108",
+            "kind": "CallSite"
+          },
+          "source_span": {
+            "repo_relative_path": "same_function_name_only_one_imported/repo/src/main.ts",
+            "start_line": 5,
+            "start_column": 3,
+            "end_line": 5,
+            "end_column": 12
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "parser_verified",
+          "confidence": 1.0,
+          "derived": false,
+          "fact_classification": "base_exact",
+          "production_test_mock_context": "production_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "same_function_name_only_one_imported/repo/src/main.ts",
+          "start_line": 5,
+          "start_column": 3,
+          "end_line": 5,
+          "end_column": 12
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/same_function_name_only_one_imported/repo/src/main.ts",
+          "start_line": 3,
+          "end_line": 7,
+          "text": "3: \n4: export function handler(id: string) {\n5:   audit(id);\n6:   return chooseUser(id);\n7: }"
+        }
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 12,
+      "path_id": "generated://audit/edge-key:-9109762047521311757",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/17d04388e2d4fc14e84f74a37d2b2542 -CONTAINS-> repo://e/54496b38ba7d6a9bdb39c05b89dad921",
+      "source": {
+        "id": "repo://e/17d04388e2d4fc14e84f74a37d2b2542",
+        "name": "handler",
+        "qualified_name": "same_function_name_only_one_imported::repo::src::main.handler",
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/54496b38ba7d6a9bdb39c05b89dad921",
+        "name": "id",
+        "qualified_name": "same_function_name_only_one_imported::repo::src::main.handler.id",
+        "kind": "Parameter"
+      },
+      "relation_sequence": [
+        "CONTAINS"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9109762047521311757",
+          "head": {
+            "id": "repo://e/17d04388e2d4fc14e84f74a37d2b2542",
+            "name": "handler",
+            "qualified_name": "same_function_name_only_one_imported::repo::src::main.handler",
+            "kind": "Function"
+          },
+          "relation": "CONTAINS",
+          "tail": {
+            "id": "repo://e/54496b38ba7d6a9bdb39c05b89dad921",
+            "name": "id",
+            "qualified_name": "same_function_name_only_one_imported::repo::src::main.handler.id",
+            "kind": "Parameter"
+          },
+          "source_span": {
+            "repo_relative_path": "same_function_name_only_one_imported/repo/src/main.ts",
+            "start_line": 4,
+            "start_column": 25,
+            "end_line": 4,
+            "end_column": 35
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "parser_verified",
+          "confidence": 1.0,
+          "derived": false,
+          "fact_classification": "base_exact",
+          "production_test_mock_context": "production_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "same_function_name_only_one_imported/repo/src/main.ts",
+          "start_line": 4,
+          "start_column": 25,
+          "end_line": 4,
+          "end_column": 35
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/same_function_name_only_one_imported/repo/src/main.ts",
+          "start_line": 2,
+          "end_line": 6,
+          "text": "2: import { audit } from \"./audit\";\n3: \n4: export function handler(id: string) {\n5:   audit(id);\n6:   return chooseUser(id);"
+        }
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 13,
+      "path_id": "generated://audit/edge-key:-9103623495338762252",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/1e8138c4ee352bcc68d7846dfea0e982 -EXPORTS-> repo://e/3e43ce296abfc27ecf18b6aeaa2a3048",
+      "source": {
+        "id": "repo://e/1e8138c4ee352bcc68d7846dfea0e982",
+        "name": "sanitizer_exists_but_not_on_flow::repo::src::register",
+        "qualified_name": "sanitizer_exists_but_not_on_flow::repo::src::register",
+        "kind": "Module"
+      },
+      "target": {
+        "id": "repo://e/3e43ce296abfc27ecf18b6aeaa2a3048",
+        "name": "export function writeComment(comment: string) { return comment; ...@187",
+        "qualified_name": "sanitizer_exists_but_not_on_flow::repo::src::register.export function writeComment(comment: string) { return comment; ...@187",
+        "kind": "Export"
+      },
+      "relation_sequence": [
+        "EXPORTS"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9103623495338762252",
+          "head": {
+            "id": "repo://e/1e8138c4ee352bcc68d7846dfea0e982",
+            "name": "sanitizer_exists_but_not_on_flow::repo::src::register",
+            "qualified_name": "sanitizer_exists_but_not_on_flow::repo::src::register",
+            "kind": "Module"
+          },
+          "relation": "EXPORTS",
+          "tail": {
+            "id": "repo://e/3e43ce296abfc27ecf18b6aeaa2a3048",
+            "name": "export function writeComment(comment: string) { return comment; ...@187",
+            "qualified_name": "sanitizer_exists_but_not_on_flow::repo::src::register.export function writeComment(comment: string) { return comment; ...@187",
+            "kind": "Export"
+          },
+          "source_span": {
+            "repo_relative_path": "sanitizer_exists_but_not_on_flow/repo/src/register.ts",
+            "start_line": 9,
+            "start_column": 1,
+            "end_line": 11,
+            "end_column": 2
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "parser_verified",
+          "confidence": 1.0,
+          "derived": false,
+          "fact_classification": "base_exact",
+          "production_test_mock_context": "production_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "sanitizer_exists_but_not_on_flow/repo/src/register.ts",
+          "start_line": 9,
+          "start_column": 1,
+          "end_line": 11,
+          "end_column": 2
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/sanitizer_exists_but_not_on_flow/repo/src/register.ts",
+          "start_line": 7,
+          "end_line": 11,
+          "text": "7: }\n8: \n9: export function writeComment(comment: string) {\n10:   return comment;\n11: }"
+        }
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 14,
+      "path_id": "generated://audit/edge-key:-9088743095391623643",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/461f0dca6b2c90b0858db12ab865238a -ARGUMENT_0-> repo://e/20521b048eda9f1074d2c2bfe49956c6",
+      "source": {
+        "id": "repo://e/461f0dca6b2c90b0858db12ab865238a",
+        "name": "call:it",
+        "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test.call:it@249",
+        "kind": "CallSite"
+      },
+      "target": {
+        "id": "repo://e/20521b048eda9f1074d2c2bfe49956c6",
+        "name": "argument_0@252",
+        "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test.argument_0@252@252",
+        "kind": "Expression"
+      },
+      "relation_sequence": [
+        "ARGUMENT_0"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9088743095391623643",
+          "head": {
+            "id": "repo://e/461f0dca6b2c90b0858db12ab865238a",
+            "name": "call:it",
+            "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test.call:it@249",
+            "kind": "CallSite"
+          },
+          "relation": "ARGUMENT_0",
+          "tail": {
+            "id": "repo://e/20521b048eda9f1074d2c2bfe49956c6",
+            "name": "argument_0@252",
+            "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test.argument_0@252@252",
+            "kind": "Expression"
+          },
+          "source_span": {
+            "repo_relative_path": "test_mock_not_production_call/repo/tests/checkout.test.ts",
+            "start_line": 10,
+            "start_column": 6,
+            "end_line": 10,
+            "end_column": 41
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "parser_verified",
+          "confidence": 1.0,
+          "derived": false,
+          "fact_classification": "test_or_mock",
+          "production_test_mock_context": "test_or_fixture_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "test_mock_not_production_call/repo/tests/checkout.test.ts",
+          "start_line": 10,
+          "start_column": 6,
+          "end_line": 10,
+          "end_column": 41
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/test_mock_not_production_call/repo/tests/checkout.test.ts",
+          "start_line": 8,
+          "end_line": 12,
+          "text": "8: \n9: describe(\"checkout\", () => {\n10:   it(\"uses a test double for chargeCard\", () => {\n11:     expect(checkout(5)).toBe(\"mocked\");\n12:   });"
+        }
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 15,
+      "path_id": "generated://audit/edge-key:-9078797523463538200",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/efd09837b97864ef2c254211542f3549 -DEFINES-> repo://e/8bf153b30e86765deef61e18f0f307ff",
+      "source": {
+        "id": "repo://e/efd09837b97864ef2c254211542f3549",
+        "name": "stale_graph_cache_after_edit_delete::repo::src::use",
+        "qualified_name": "stale_graph_cache_after_edit_delete/repo/src/use.ts",
+        "kind": "File"
+      },
+      "target": {
+        "id": "repo://e/8bf153b30e86765deef61e18f0f307ff",
+        "name": "stale_graph_cache_after_edit_delete::repo::src::use",
+        "qualified_name": "stale_graph_cache_after_edit_delete::repo::src::use",
+        "kind": "Module"
+      },
+      "relation_sequence": [
+        "DEFINES"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9078797523463538200",
+          "head": {
+            "id": "repo://e/efd09837b97864ef2c254211542f3549",
+            "name": "stale_graph_cache_after_edit_delete::repo::src::use",
+            "qualified_name": "stale_graph_cache_after_edit_delete/repo/src/use.ts",
+            "kind": "File"
+          },
+          "relation": "DEFINES",
+          "tail": {
+            "id": "repo://e/8bf153b30e86765deef61e18f0f307ff",
+            "name": "stale_graph_cache_after_edit_delete::repo::src::use",
+            "qualified_name": "stale_graph_cache_after_edit_delete::repo::src::use",
+            "kind": "Module"
+          },
+          "source_span": {
+            "repo_relative_path": "stale_graph_cache_after_edit_delete/repo/src/use.ts",
+            "start_line": 1,
+            "start_column": 1,
+            "end_line": 6,
+            "end_column": 1
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "parser_verified",
+          "confidence": 1.0,
+          "derived": false,
+          "fact_classification": "base_exact",
+          "production_test_mock_context": "production_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "stale_graph_cache_after_edit_delete/repo/src/use.ts",
+          "start_line": 1,
+          "start_column": 1,
+          "end_line": 6,
+          "end_column": 1
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/stale_graph_cache_after_edit_delete/repo/src/use.ts",
+          "start_line": 1,
+          "end_line": 5,
+          "text": "1: import { liveTarget } from \"./live\";\n2: \n3: export function run() {\n4:   return liveTarget();\n5: }"
+        }
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 16,
+      "path_id": "generated://audit/edge-key:-9063415924526603170",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/e678885a1a134ee45d3e7cc7644e209a -DEFINED_IN-> repo://e/af824afc40aa9bc54b31726d12081117",
+      "source": {
+        "id": "repo://e/e678885a1a134ee45d3e7cc7644e209a",
+        "name": "name",
+        "qualified_name": "dynamic_import_marked_heuristic::repo::src::loader.loadPlugin.name",
+        "kind": "Parameter"
+      },
+      "target": {
+        "id": "repo://e/af824afc40aa9bc54b31726d12081117",
+        "name": "loadPlugin",
+        "qualified_name": "dynamic_import_marked_heuristic::repo::src::loader.loadPlugin",
+        "kind": "Function"
+      },
+      "relation_sequence": [
+        "DEFINED_IN"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9063415924526603170",
+          "head": {
+            "id": "repo://e/e678885a1a134ee45d3e7cc7644e209a",
+            "name": "name",
+            "qualified_name": "dynamic_import_marked_heuristic::repo::src::loader.loadPlugin.name",
+            "kind": "Parameter"
+          },
+          "relation": "DEFINED_IN",
+          "tail": {
+            "id": "repo://e/af824afc40aa9bc54b31726d12081117",
+            "name": "loadPlugin",
+            "qualified_name": "dynamic_import_marked_heuristic::repo::src::loader.loadPlugin",
+            "kind": "Function"
+          },
+          "source_span": {
+            "repo_relative_path": "dynamic_import_marked_heuristic/repo/src/loader.ts",
+            "start_line": 1,
+            "start_column": 34,
+            "end_line": 1,
+            "end_column": 46
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "parser_verified",
+          "confidence": 1.0,
+          "derived": false,
+          "fact_classification": "base_exact",
+          "production_test_mock_context": "production_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "dynamic_import_marked_heuristic/repo/src/loader.ts",
+          "start_line": 1,
+          "start_column": 34,
+          "end_line": 1,
+          "end_column": 46
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/dynamic_import_marked_heuristic/repo/src/loader.ts",
+          "start_line": 1,
+          "end_line": 3,
+          "text": "1: export async function loadPlugin(name: string) {\n2:   const mod = await import(\"./plugins/\" + name);\n3:   return mod.default();"
+        }
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 17,
+      "path_id": "generated://audit/edge-key:-9022168102169518164",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/2502aaef833dfe1bc42a9250fdc892e9 -DEFINED_IN-> repo://e/2c59e6b2e0f7105f5edab60a3650c91d",
+      "source": {
+        "id": "repo://e/2502aaef833dfe1bc42a9250fdc892e9",
+        "name": "call:selected",
+        "qualified_name": "import_alias_change_updates_target::repo::src::use.run.call:selected@85",
+        "kind": "CallSite"
+      },
+      "target": {
+        "id": "repo://e/2c59e6b2e0f7105f5edab60a3650c91d",
+        "name": "run",
+        "qualified_name": "import_alias_change_updates_target::repo::src::use.run",
+        "kind": "Function"
+      },
+      "relation_sequence": [
+        "DEFINED_IN"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9022168102169518164",
+          "head": {
+            "id": "repo://e/2502aaef833dfe1bc42a9250fdc892e9",
+            "name": "call:selected",
+            "qualified_name": "import_alias_change_updates_target::repo::src::use.run.call:selected@85",
+            "kind": "CallSite"
+          },
+          "relation": "DEFINED_IN",
+          "tail": {
+            "id": "repo://e/2c59e6b2e0f7105f5edab60a3650c91d",
+            "name": "run",
+            "qualified_name": "import_alias_change_updates_target::repo::src::use.run",
+            "kind": "Function"
+          },
+          "source_span": {
+            "repo_relative_path": "import_alias_change_updates_target/repo/src/use.ts",
+            "start_line": 4,
+            "start_column": 10,
+            "end_line": 4,
+            "end_column": 20
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "parser_verified",
+          "confidence": 1.0,
+          "derived": false,
+          "fact_classification": "base_exact",
+          "production_test_mock_context": "production_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "import_alias_change_updates_target/repo/src/use.ts",
+          "start_line": 4,
+          "start_column": 10,
+          "end_line": 4,
+          "end_column": 20
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/import_alias_change_updates_target/repo/src/use.ts",
+          "start_line": 2,
+          "end_line": 5,
+          "text": "2: \n3: export function run() {\n4:   return selected();\n5: }"
+        }
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 18,
+      "path_id": "generated://audit/edge-key:-9003926772312636661",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/d761b66ee661b4b41f607209710d3d2e -DEFINED_IN-> repo://e/d35b8c8a8a398c6063a17b843698622e",
+      "source": {
+        "id": "repo://e/d761b66ee661b4b41f607209710d3d2e",
+        "name": "runDefault",
+        "qualified_name": "barrel_export_default_export_resolution::repo::src::use.runDefault",
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/d35b8c8a8a398c6063a17b843698622e",
+        "name": "barrel_export_default_export_resolution::repo::src::use",
+        "qualified_name": "barrel_export_default_export_resolution::repo::src::use",
+        "kind": "Module"
+      },
+      "relation_sequence": [
+        "DEFINED_IN"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-9003926772312636661",
+          "head": {
+            "id": "repo://e/d761b66ee661b4b41f607209710d3d2e",
+            "name": "runDefault",
+            "qualified_name": "barrel_export_default_export_resolution::repo::src::use.runDefault",
+            "kind": "Function"
+          },
+          "relation": "DEFINED_IN",
+          "tail": {
+            "id": "repo://e/d35b8c8a8a398c6063a17b843698622e",
+            "name": "barrel_export_default_export_resolution::repo::src::use",
+            "qualified_name": "barrel_export_default_export_resolution::repo::src::use",
+            "kind": "Module"
+          },
+          "source_span": {
+            "repo_relative_path": "barrel_export_default_export_resolution/repo/src/use.ts",
+            "start_line": 3,
+            "start_column": 8,
+            "end_line": 5,
+            "end_column": 2
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "parser_verified",
+          "confidence": 1.0,
+          "derived": false,
+          "fact_classification": "base_exact",
+          "production_test_mock_context": "production_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "barrel_export_default_export_resolution/repo/src/use.ts",
+          "start_line": 3,
+          "start_column": 8,
+          "end_line": 5,
+          "end_column": 2
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/barrel_export_default_export_resolution/repo/src/use.ts",
+          "start_line": 1,
+          "end_line": 7,
+          "text": "1: import { defaultFeature, namedFeature } from \"./index\";\n2: \n3: export function runDefault() {\n4:   return defaultFeature();\n5: }\n6: \n7: export function runNamed() {"
+        }
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 19,
+      "path_id": "generated://audit/edge-key:-8968814412825094128",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/cfcf410ad684a71bcd537969a699a56d -FLOWS_TO-> repo://e/d427c2624c11d7876a35e3e5e0924529",
+      "source": {
+        "id": "repo://e/cfcf410ad684a71bcd537969a699a56d",
+        "name": "expr@167",
+        "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test.expr@167",
+        "kind": "Expression"
+      },
+      "target": {
+        "id": "repo://e/d427c2624c11d7876a35e3e5e0924529",
+        "name": "argument_1@167",
+        "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test.argument_1@167@167",
+        "kind": "Expression"
+      },
+      "relation_sequence": [
+        "FLOWS_TO"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-8968814412825094128",
+          "head": {
+            "id": "repo://e/cfcf410ad684a71bcd537969a699a56d",
+            "name": "expr@167",
+            "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test.expr@167",
+            "kind": "Expression"
+          },
+          "relation": "FLOWS_TO",
+          "tail": {
+            "id": "repo://e/d427c2624c11d7876a35e3e5e0924529",
+            "name": "argument_1@167",
+            "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test.argument_1@167@167",
+            "kind": "Expression"
+          },
+          "source_span": {
+            "repo_relative_path": "test_mock_not_production_call/repo/tests/checkout.test.ts",
+            "start_line": 5,
+            "start_column": 27,
+            "end_line": 7,
+            "end_column": 3
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "parser_verified",
+          "confidence": 1.0,
+          "derived": false,
+          "fact_classification": "test_or_mock",
+          "production_test_mock_context": "test_or_fixture_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing",
+            "metadata_empty"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "test_mock_not_production_call/repo/tests/checkout.test.ts",
+          "start_line": 5,
+          "start_column": 27,
+          "end_line": 7,
+          "end_column": 3
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/test_mock_not_production_call/repo/tests/checkout.test.ts",
+          "start_line": 3,
+          "end_line": 9,
+          "text": "3: import { chargeCard } from \"../src/service\";\n4: \n5: vi.mock(\"../src/service\", () => ({\n6:   chargeCard: vi.fn(() => \"mocked\")\n7: }));\n8: \n9: describe(\"checkout\", () => {"
+        }
+      ],
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "metadata": {},
+      "missing_metadata": [
+        "metadata_empty",
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 20,
+      "path_id": "generated://audit/edge-key:-8965697013326455734",
+      "generated_by_audit": true,
+      "task_or_query": null,
+      "summary": "Generated one-edge audit path: repo://e/5b7a9754c6efd7b41fee9d0d38d24ae2 -ASSERTS-> repo://e/3aa0e63195a6247173e37727d85a1d4b",
+      "source": {
+        "id": "repo://e/5b7a9754c6efd7b41fee9d0d38d24ae2",
+        "name": "uses a test double for chargeCard",
+        "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test.uses a test double for chargeCard",
+        "kind": "TestCase"
+      },
+      "target": {
+        "id": "repo://e/3aa0e63195a6247173e37727d85a1d4b",
+        "name": "expr@308",
+        "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test.expr@308",
+        "kind": "Expression"
+      },
+      "relation_sequence": [
+        "ASSERTS"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge-key:-8965697013326455734",
+          "head": {
+            "id": "repo://e/5b7a9754c6efd7b41fee9d0d38d24ae2",
+            "name": "uses a test double for chargeCard",
+            "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test.uses a test double for chargeCard",
+            "kind": "TestCase"
+          },
+          "relation": "ASSERTS",
+          "tail": {
+            "id": "repo://e/3aa0e63195a6247173e37727d85a1d4b",
+            "name": "expr@308",
+            "qualified_name": "test_mock_not_production_call::repo::tests::checkout.test.expr@308",
+            "kind": "Expression"
+          },
+          "source_span": {
+            "repo_relative_path": "test_mock_not_production_call/repo/tests/checkout.test.ts",
+            "start_line": 11,
+            "start_column": 5,
+            "end_line": 11,
+            "end_column": 24
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "static_heuristic",
+          "confidence": 0.66,
+          "derived": false,
+          "fact_classification": "test_or_mock",
+          "production_test_mock_context": "test_or_fixture_inferred",
+          "provenance_edges": [],
+          "missing_metadata": [
+            "repo_commit_missing"
+          ]
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "test_mock_not_production_call/repo/tests/checkout.test.ts",
+          "start_line": 11,
+          "start_column": 5,
+          "end_line": 11,
+          "end_column": 24
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/codegraph-mcp/benchmarks/graph_truth/fixtures/test_mock_not_production_call/repo/tests/checkout.test.ts",
+          "start_line": 9,
+          "end_line": 13,
+          "text": "9: describe(\"checkout\", () => {\n10:   it(\"uses a test double for chargeCard\", () => {\n11:     expect(checkout(5)).toBe(\"mocked\");\n12:   });\n13: });"
+        }
+      ],
+      "exactness": "static_heuristic",
+      "confidence": 0.66,
+      "derived_provenance_label": "base_or_heuristic_edges",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "metadata": {
+        "framework": "jest-vitest",
+        "heuristic": true,
+        "pattern": "assertion-call",
+        "phase": "07"
+      },
+      "missing_metadata": [
+        "repo_commit_missing"
+      ]
+    }
+  ],
+  "notes": [
+    "Classification fields are intentionally blank in markdown for human review.",
+    "PathEvidence rows are sampled from path_evidence when present; when the table is empty, this audit generates one-edge PathEvidence-shaped samples from existing edges without writing them to storage.",
+    "Stored PathEvidence samples used before fallback: 0."
+  ]
+}

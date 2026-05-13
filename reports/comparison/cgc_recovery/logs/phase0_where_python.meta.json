@@ -1,0 +1,12 @@
+{
+    "name":  "phase0_where_python",
+    "command":  "where.exe python",
+    "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+    "exit_code":  1,
+    "timed_out":  false,
+    "started_at":  "2026-05-13T07:56:25.3363238-05:00",
+    "ended_at":  "2026-05-13T07:56:25.3653206-05:00",
+    "duration_ms":  29,
+    "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase0_where_python.stdout.txt",
+    "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase0_where_python.stderr.txt"
+}

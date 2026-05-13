@@ -1,0 +1,647 @@
+{
+  "schema_version": 1,
+  "case_id": "admin_user_middleware_role_separation",
+  "description": "Admin and user middleware role checks must stay separate.",
+  "repo_fixture_path": "benchmarks/graph_truth/fixtures/admin_user_middleware_role_separation/repo",
+  "task_prompt": "Trace role checks for admin and user routes.",
+  "expected_entities": [
+    {
+      "selector": {
+        "qualified_name": "src/auth.requireAdmin",
+        "kind": "Middleware",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "kind": "Middleware",
+      "context": "production",
+      "source_file": "src/auth.ts"
+    },
+    {
+      "selector": {
+        "qualified_name": "src/auth.requireUser",
+        "kind": "Middleware",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "kind": "Middleware",
+      "context": "production",
+      "source_file": "src/auth.ts"
+    },
+    {
+      "selector": {
+        "qualified_name": "role:admin",
+        "kind": "Role",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "kind": "Role",
+      "context": "production",
+      "source_file": "src/auth.ts"
+    },
+    {
+      "selector": {
+        "qualified_name": "role:user",
+        "kind": "Role",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "kind": "Role",
+      "context": "production",
+      "source_file": "src/auth.ts"
+    }
+  ],
+  "expected_edges": [
+    {
+      "id": "edge://roles/admin-checks-admin",
+      "head": {
+        "qualified_name": "src/auth.requireAdmin",
+        "kind": "Middleware",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "relation": "CHECKS_ROLE",
+      "tail": {
+        "qualified_name": "role:admin",
+        "kind": "Role",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "source_file": "src/auth.ts",
+      "source_span": {
+        "start_line": 2,
+        "start_column": 10,
+        "end_line": 2,
+        "end_column": 34,
+        "expected_text": "checkRole(user, \"admin\")",
+        "syntax_role": "role_check"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "hand_labeled_fixture",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "hand_labeled_fixture",
+      "direction": "head_to_tail"
+    },
+    {
+      "id": "edge://roles/user-checks-user",
+      "head": {
+        "qualified_name": "src/auth.requireUser",
+        "kind": "Middleware",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "relation": "CHECKS_ROLE",
+      "tail": {
+        "qualified_name": "role:user",
+        "kind": "Role",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "source_file": "src/auth.ts",
+      "source_span": {
+        "start_line": 6,
+        "start_column": 10,
+        "end_line": 6,
+        "end_column": 33,
+        "expected_text": "checkRole(user, \"user\")",
+        "syntax_role": "role_check"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "hand_labeled_fixture",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "hand_labeled_fixture",
+      "direction": "head_to_tail"
+    }
+  ],
+  "forbidden_edges": [
+    {
+      "id": "edge://roles/admin-checks-user",
+      "head": {
+        "qualified_name": "src/auth.requireAdmin",
+        "kind": "Middleware",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "relation": "CHECKS_ROLE",
+      "tail": {
+        "qualified_name": "role:user",
+        "kind": "Role",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "source_file": "src/auth.ts",
+      "source_span": {
+        "start_line": 2,
+        "start_column": 10,
+        "end_line": 2,
+        "end_column": 34,
+        "expected_text": "checkRole(user, \"admin\")",
+        "syntax_role": "role_check"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "forbidden_role_conflation",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "forbidden_role_conflation",
+      "direction": "head_to_tail"
+    },
+    {
+      "id": "edge://roles/user-checks-admin",
+      "head": {
+        "qualified_name": "src/auth.requireUser",
+        "kind": "Middleware",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "relation": "CHECKS_ROLE",
+      "tail": {
+        "qualified_name": "role:admin",
+        "kind": "Role",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "source_file": "src/auth.ts",
+      "source_span": {
+        "start_line": 6,
+        "start_column": 10,
+        "end_line": 6,
+        "end_column": 33,
+        "expected_text": "checkRole(user, \"user\")",
+        "syntax_role": "role_check"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "forbidden_role_conflation",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "forbidden_role_conflation",
+      "direction": "head_to_tail"
+    }
+  ],
+  "expected_paths": [
+    {
+      "path_id": "path://roles/admin",
+      "description": "Admin middleware checks admin role.",
+      "source": {
+        "qualified_name": "src/auth.requireAdmin",
+        "kind": "Middleware",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "target": {
+        "qualified_name": "role:admin",
+        "kind": "Role",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "ordered_edges": [
+        {
+          "id": "edge://roles/admin-checks-admin",
+          "head": {
+            "qualified_name": "src/auth.requireAdmin",
+            "kind": "Middleware",
+            "source_file": "src/auth.ts",
+            "context": "production"
+          },
+          "relation": "CHECKS_ROLE",
+          "tail": {
+            "qualified_name": "role:admin",
+            "kind": "Role",
+            "source_file": "src/auth.ts",
+            "context": "production"
+          },
+          "source_file": "src/auth.ts",
+          "source_span": {
+            "start_line": 2,
+            "start_column": 10,
+            "end_line": 2,
+            "end_column": 34,
+            "expected_text": "checkRole(user, \"admin\")",
+            "syntax_role": "role_check"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "hand_labeled_fixture",
+          "exactness": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "hand_labeled_fixture",
+          "direction": "head_to_tail"
+        }
+      ],
+      "relation_sequence": [
+        "CHECKS_ROLE"
+      ],
+      "max_length": 1,
+      "source_span_required": true,
+      "production_only": true,
+      "derived_allowed": false,
+      "provenance_required": false,
+      "required_source_spans": [
+        {
+          "edge_ref": "edge://roles/admin-checks-admin",
+          "source_file": "src/auth.ts",
+          "span": {
+            "start_line": 2,
+            "start_column": 10,
+            "end_line": 2,
+            "end_column": 34,
+            "expected_text": "checkRole(user, \"admin\")",
+            "syntax_role": "role_check"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "checkRole(user, \"admin\")",
+          "syntax_role": "role_check"
+        }
+      ],
+      "context": "production",
+      "allow_test_mock_edges": false,
+      "derived_edges_require_provenance": true,
+      "proof_grade": true
+    },
+    {
+      "path_id": "path://roles/user",
+      "description": "User middleware checks user role.",
+      "source": {
+        "qualified_name": "src/auth.requireUser",
+        "kind": "Middleware",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "target": {
+        "qualified_name": "role:user",
+        "kind": "Role",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "ordered_edges": [
+        {
+          "id": "edge://roles/user-checks-user",
+          "head": {
+            "qualified_name": "src/auth.requireUser",
+            "kind": "Middleware",
+            "source_file": "src/auth.ts",
+            "context": "production"
+          },
+          "relation": "CHECKS_ROLE",
+          "tail": {
+            "qualified_name": "role:user",
+            "kind": "Role",
+            "source_file": "src/auth.ts",
+            "context": "production"
+          },
+          "source_file": "src/auth.ts",
+          "source_span": {
+            "start_line": 6,
+            "start_column": 10,
+            "end_line": 6,
+            "end_column": 33,
+            "expected_text": "checkRole(user, \"user\")",
+            "syntax_role": "role_check"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "hand_labeled_fixture",
+          "exactness": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "hand_labeled_fixture",
+          "direction": "head_to_tail"
+        }
+      ],
+      "relation_sequence": [
+        "CHECKS_ROLE"
+      ],
+      "max_length": 1,
+      "source_span_required": true,
+      "production_only": true,
+      "derived_allowed": false,
+      "provenance_required": false,
+      "required_source_spans": [
+        {
+          "edge_ref": "edge://roles/user-checks-user",
+          "source_file": "src/auth.ts",
+          "span": {
+            "start_line": 6,
+            "start_column": 10,
+            "end_line": 6,
+            "end_column": 33,
+            "expected_text": "checkRole(user, \"user\")",
+            "syntax_role": "role_check"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "checkRole(user, \"user\")",
+          "syntax_role": "role_check"
+        }
+      ],
+      "context": "production",
+      "allow_test_mock_edges": false,
+      "derived_edges_require_provenance": true,
+      "proof_grade": true
+    }
+  ],
+  "forbidden_paths": [
+    {
+      "path_id": "path://roles/admin-to-user",
+      "description": "Admin path must not check user role.",
+      "source": {
+        "qualified_name": "src/auth.requireAdmin",
+        "kind": "Middleware",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "target": {
+        "qualified_name": "role:user",
+        "kind": "Role",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "ordered_edges": [
+        {
+          "id": "edge://roles/admin-checks-user",
+          "head": {
+            "qualified_name": "src/auth.requireAdmin",
+            "kind": "Middleware",
+            "source_file": "src/auth.ts",
+            "context": "production"
+          },
+          "relation": "CHECKS_ROLE",
+          "tail": {
+            "qualified_name": "role:user",
+            "kind": "Role",
+            "source_file": "src/auth.ts",
+            "context": "production"
+          },
+          "source_file": "src/auth.ts",
+          "source_span": {
+            "start_line": 2,
+            "start_column": 10,
+            "end_line": 2,
+            "end_column": 34,
+            "expected_text": "checkRole(user, \"admin\")",
+            "syntax_role": "role_check"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "forbidden_role_conflation",
+          "exactness": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "forbidden_role_conflation",
+          "direction": "head_to_tail"
+        }
+      ],
+      "relation_sequence": [
+        "CHECKS_ROLE"
+      ],
+      "max_length": 1,
+      "source_span_required": true,
+      "production_only": true,
+      "derived_allowed": false,
+      "provenance_required": false,
+      "required_source_spans": [
+        {
+          "edge_ref": "edge://roles/admin-checks-user",
+          "source_file": "src/auth.ts",
+          "span": {
+            "start_line": 2,
+            "start_column": 10,
+            "end_line": 2,
+            "end_column": 34,
+            "expected_text": "checkRole(user, \"admin\")",
+            "syntax_role": "role_check"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "checkRole(user, \"admin\")",
+          "syntax_role": "role_check"
+        }
+      ],
+      "context": "production",
+      "allow_test_mock_edges": false,
+      "derived_edges_require_provenance": true,
+      "proof_grade": false
+    }
+  ],
+  "expected_source_spans": [
+    {
+      "edge_ref": "edge://roles/admin-checks-admin",
+      "source_file": "src/auth.ts",
+      "span": {
+        "start_line": 2,
+        "start_column": 10,
+        "end_line": 2,
+        "end_column": 34,
+        "expected_text": "checkRole(user, \"admin\")",
+        "syntax_role": "role_check"
+      },
+      "must_resolve_to_text": true,
+      "expected_text": "checkRole(user, \"admin\")",
+      "syntax_role": "role_check"
+    },
+    {
+      "edge_ref": "edge://roles/user-checks-user",
+      "source_file": "src/auth.ts",
+      "span": {
+        "start_line": 6,
+        "start_column": 10,
+        "end_line": 6,
+        "end_column": 33,
+        "expected_text": "checkRole(user, \"user\")",
+        "syntax_role": "role_check"
+      },
+      "must_resolve_to_text": true,
+      "expected_text": "checkRole(user, \"user\")",
+      "syntax_role": "role_check"
+    }
+  ],
+  "expected_context_symbols": [
+    {
+      "symbol": {
+        "qualified_name": "role:admin",
+        "kind": "Role",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "critical": true,
+      "source_file": "src/auth.ts",
+      "reason": "Admin role proof"
+    },
+    {
+      "symbol": {
+        "qualified_name": "role:user",
+        "kind": "Role",
+        "source_file": "src/auth.ts",
+        "context": "production"
+      },
+      "critical": true,
+      "source_file": "src/auth.ts",
+      "reason": "User role proof"
+    }
+  ],
+  "forbidden_context_symbols": [],
+  "expected_tests": [],
+  "forbidden_tests": [],
+  "mutation_steps": [],
+  "performance_expectations": {
+    "schema_validation_100_cases_max_ms": 1000,
+    "index_time_ms_max": 10000
+  },
+  "notes": [
+    "Covers CHECKS_ROLE role separation."
+  ],
+  "failure_rules": {
+    "missing_required_edge_fails": true,
+    "forbidden_edge_appearing_fails": true,
+    "wrong_direction_fails": true,
+    "missing_source_span_fails_for_proof_grade_edge": true,
+    "unresolved_name_labeled_exact_fails": true,
+    "mock_or_test_edge_in_production_proof_path_fails": true,
+    "derived_edge_without_provenance_fails": true,
+    "stale_edge_after_edit_fails": true,
+    "same_name_symbol_collision_fails": true,
+    "critical_symbol_missing_from_context_packet_fails": true,
+    "forbidden_context_symbol_included_fails": true,
+    "expected_test_omitted_fails": true,
+    "too_many_distractors_fail_if_threshold_specified": true
+  },
+  "distractor_policy": {
+    "max_context_distractors": 0,
+    "max_symbol_distractors": 0,
+    "distractor_symbols": [],
+    "count_scope": "context_packet"
+  }
+}

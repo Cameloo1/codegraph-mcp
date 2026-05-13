@@ -1,0 +1,540 @@
+{
+    "schema_version":  1,
+    "generated_at":  "2026-05-11 11:18:16 -05:00",
+    "run_id":  "20260511_105332",
+    "verdict":  "profiled_fail_targets_visible",
+    "semantic_behavior_changes":  "none; profiling-only instrumentation and report generation",
+    "db_path":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\audit\\artifacts\\perf_profile_autoresearch_20260511_105332.sqlite",
+    "repo_root":  "<REPO_ROOT>/Desktop\\development\\autoresearch-codexlab",
+    "artifacts":  {
+                      "cold_index_json":  "reports/audit/artifacts/perf_profile_autoresearch_cold_index_20260511_105332.json",
+                      "cold_index_raw":  "reports/audit/artifacts/perf_profile_autoresearch_cold_index_20260511_105332.raw.jsonl",
+                      "repeat_index_json":  "reports/audit/artifacts/perf_profile_autoresearch_repeat_index_20260511_105332.json",
+                      "repeat_index_raw":  "reports/audit/artifacts/perf_profile_autoresearch_repeat_index_20260511_105332.raw.jsonl",
+                      "update_integrity_json":  "reports/audit/artifacts/perf_profile_autoresearch_update_integrity_20260511_105332.json",
+                      "context_pack_json":  "reports/audit/artifacts/perf_profile_autoresearch_context_pack_20260511_105332.json",
+                      "storage_audit_json":  "reports/audit/artifacts/perf_profile_autoresearch_storage_20260511_105332.json",
+                      "storage_audit_markdown":  "reports/audit/artifacts/perf_profile_autoresearch_storage_20260511_105332.md"
+                  },
+    "required_spans":  [
+                           {
+                               "name":  "file_walk",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  324
+                           },
+                           {
+                               "name":  "metadata_diff",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  103.182
+                           },
+                           {
+                               "name":  "file_read",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  216.609
+                           },
+                           {
+                               "name":  "file_hash",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  48.332
+                           },
+                           {
+                               "name":  "parse",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  7991
+                           },
+                           {
+                               "name":  "local_fact_bundle_creation",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  9002
+                           },
+                           {
+                               "name":  "reducer",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  30753.467
+                           },
+                           {
+                               "name":  "symbol_interning",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  144145.086
+                           },
+                           {
+                               "name":  "dictionary_lookup_insert",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  144145.086
+                           },
+                           {
+                               "name":  "entity_insert",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  62562.981
+                           },
+                           {
+                               "name":  "edge_insert",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  164363.051
+                           },
+                           {
+                               "name":  "source_span_insert",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  0
+                           },
+                           {
+                               "name":  "path_evidence_generation",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  1333.486
+                           },
+                           {
+                               "name":  "fts_build",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  9653.623
+                           },
+                           {
+                               "name":  "index_creation",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  9653.759
+                           },
+                           {
+                               "name":  "graph_fact_hash",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  0
+                           },
+                           {
+                               "name":  "integrity_check",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  187289.601
+                           },
+                           {
+                               "name":  "storage_audit",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  0
+                           },
+                           {
+                               "name":  "sql_query_execution",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  18726.864
+                           },
+                           {
+                               "name":  "snippet_loading",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  0
+                           },
+                           {
+                               "name":  "json_serialization",
+                               "present_in_cold_profile":  true,
+                               "cold_elapsed_ms":  0
+                           }
+                       ],
+    "cold_index":  {
+                       "target_ms":  60000,
+                       "status":  "fail",
+                       "profile_wall_ms":  599595,
+                       "shell_wall_ms":  601465.917,
+                       "shell_delta":  {
+                                           "delta_ms":  1870.917,
+                                           "pct_shell":  0.31
+                                       },
+                       "files_walked":  8561,
+                       "files_read":  4975,
+                       "files_hashed":  4975,
+                       "files_parsed":  4975,
+                       "entities":  1630146,
+                       "edges":  3866431,
+                       "source_spans":  null,
+                       "duplicate_edges_upserted":  442,
+                       "atomic_finalize_ms":  146160.893,
+                       "inner_index_estimated_ms":  453434.107,
+                       "root_causes":  [
+                                           {
+                                               "name":  "integrity_check",
+                                               "elapsed_ms":  187289.601,
+                                               "count":  3,
+                                               "items":  0,
+                                               "pct_wall":  31.24,
+                                               "notes":  [
+                                                             "atomic cold temp DB full integrity gate before replacement",
+                                                             "atomic cold final DB full integrity gate after replacement"
+                                                         ]
+                                           },
+                                           {
+                                               "name":  "edge_insert",
+                                               "elapsed_ms":  164363.051,
+                                               "count":  3866873,
+                                               "items":  3866873,
+                                               "pct_wall":  27.41,
+                                               "notes":  {
+
+                                                         }
+                                           },
+                                           {
+                                               "name":  "dictionary_lookup_insert",
+                                               "elapsed_ms":  144145.086,
+                                               "count":  45618322,
+                                               "items":  45618322,
+                                               "pct_wall":  24.04,
+                                               "notes":  {
+
+                                                         }
+                                           },
+                                           {
+                                               "name":  "entity_insert",
+                                               "elapsed_ms":  62562.981,
+                                               "count":  1630529,
+                                               "items":  1630529,
+                                               "pct_wall":  10.43,
+                                               "notes":  {
+
+                                                         }
+                                           },
+                                           {
+                                               "name":  "reducer",
+                                               "elapsed_ms":  30753.467,
+                                               "count":  39,
+                                               "items":  4975,
+                                               "pct_wall":  5.13,
+                                               "notes":  {
+
+                                                         }
+                                           },
+                                           {
+                                               "name":  "extract_entities_and_relations",
+                                               "elapsed_ms":  23655,
+                                               "count":  4975,
+                                               "items":  4975,
+                                               "pct_wall":  3.95,
+                                               "notes":  {
+
+                                                         }
+                                           },
+                                           {
+                                               "name":  "index_creation",
+                                               "elapsed_ms":  9653.759,
+                                               "count":  2,
+                                               "items":  0,
+                                               "pct_wall":  1.61,
+                                               "notes":  {
+
+                                                         }
+                                           },
+                                           {
+                                               "name":  "file_read",
+                                               "elapsed_ms":  216.609,
+                                               "count":  4975,
+                                               "items":  62183978,
+                                               "pct_wall":  0.04,
+                                               "notes":  {
+
+                                                         }
+                                           }
+                                       ],
+                       "accounting_note":  "Cold spans include nested SQLite/dictionary timings; atomic finalize spans explain the prior profile-vs-shell gap."
+                   },
+    "repeat_unchanged_index":  {
+                                   "target_ms":  5000,
+                                   "status":  "fail",
+                                   "profile_wall_ms":  13060,
+                                   "shell_wall_ms":  15989.1683,
+                                   "shell_delta":  {
+                                                       "delta_ms":  2929.168,
+                                                       "pct_shell":  18.32
+                                                   },
+                                   "files_walked":  8561,
+                                   "files_metadata_unchanged":  4975,
+                                   "files_read":  0,
+                                   "files_hashed":  0,
+                                   "files_parsed":  0,
+                                   "entities_inserted":  0,
+                                   "edges_inserted":  0,
+                                   "duplicate_edges_upserted":  0,
+                                   "graph_fact_hash":  null,
+                                   "selected_span_ms":  12790.882,
+                                   "selected_unexplained_ms":  269.118,
+                                   "root_causes":  [
+                                                       {
+                                                           "name":  "open_store",
+                                                           "elapsed_ms":  9450.669,
+                                                           "count":  1,
+                                                           "items":  0,
+                                                           "pct_wall":  72.36,
+                                                           "notes":  {
+
+                                                                     }
+                                                       },
+                                                       {
+                                                           "name":  "integrity_check",
+                                                           "elapsed_ms":  2907.917,
+                                                           "count":  1,
+                                                           "items":  0,
+                                                           "pct_wall":  22.27,
+                                                           "notes":  {
+
+                                                                     }
+                                                       },
+                                                       {
+                                                           "name":  "file_walk",
+                                                           "elapsed_ms":  333,
+                                                           "count":  1,
+                                                           "items":  8561,
+                                                           "pct_wall":  2.55,
+                                                           "notes":  {
+
+                                                                     }
+                                                       },
+                                                       {
+                                                           "name":  "metadata_diff",
+                                                           "elapsed_ms":  92.547,
+                                                           "count":  4976,
+                                                           "items":  9950,
+                                                           "pct_wall":  0.71,
+                                                           "notes":  {
+
+                                                                     }
+                                                       },
+                                                       {
+                                                           "name":  "wal_checkpoint",
+                                                           "elapsed_ms":  6.749,
+                                                           "count":  1,
+                                                           "items":  0,
+                                                           "pct_wall":  0.05,
+                                                           "notes":  {
+
+                                                                     }
+                                                       }
+                                                   ]
+                               },
+    "single_file_update":  {
+                               "target_ms":  750,
+                               "status":  "fail",
+                               "mutation_file":  "python/autoresearch_utils/metrics_tools.py",
+                               "profile_wall_ms":  64020,
+                               "step_wall_ms":  65214,
+                               "profile_vs_step_delta_ms":  1194,
+                               "files_walked":  1,
+                               "files_read":  1,
+                               "files_hashed":  1,
+                               "files_parsed":  1,
+                               "changed_files":  [
+                                                     "python/autoresearch_utils/metrics_tools.py"
+                                                 ],
+                               "deleted_fact_files":  1,
+                               "inserted_entities":  18,
+                               "inserted_edges":  35,
+                               "duplicate_edges_upserted":  0,
+                               "dirty_path_evidence_count":  4096,
+                               "global_hash_check_ran":  true,
+                               "graph_fact_hash_ms":  15589.413,
+                               "integrity_check_ran":  true,
+                               "post_step_integrity_check_ms":  72233.629,
+                               "storage_audit_ran":  false,
+                               "selected_span_ms":  63811.756,
+                               "selected_unexplained_ms":  208.244,
+                               "root_causes":  [
+                                                   {
+                                                       "name":  "cache_refresh",
+                                                       "elapsed_ms":  33792.5,
+                                                       "count":  1,
+                                                       "items":  0,
+                                                       "pct_wall":  52.78,
+                                                       "notes":  {
+
+                                                                 }
+                                                   },
+                                                   {
+                                                       "name":  "sql_query_execution",
+                                                       "elapsed_ms":  13787.603,
+                                                       "count":  1,
+                                                       "items":  1000000,
+                                                       "pct_wall":  21.54,
+                                                       "notes":  {
+
+                                                                 }
+                                                   },
+                                                   {
+                                                       "name":  "open_store",
+                                                       "elapsed_ms":  8920.662,
+                                                       "count":  1,
+                                                       "items":  0,
+                                                       "pct_wall":  13.93,
+                                                       "notes":  {
+
+                                                                 }
+                                                   },
+                                                   {
+                                                       "name":  "integrity_check",
+                                                       "elapsed_ms":  5849.171,
+                                                       "count":  2,
+                                                       "items":  0,
+                                                       "pct_wall":  9.14,
+                                                       "notes":  {
+
+                                                                 }
+                                                   },
+                                                   {
+                                                       "name":  "path_evidence_generation",
+                                                       "elapsed_ms":  1252.221,
+                                                       "count":  1,
+                                                       "items":  4096,
+                                                       "pct_wall":  1.96,
+                                                       "notes":  {
+
+                                                                 }
+                                                   },
+                                                   {
+                                                       "name":  "stale_fact_delete",
+                                                       "elapsed_ms":  150.156,
+                                                       "count":  1,
+                                                       "items":  1,
+                                                       "pct_wall":  0.23,
+                                                       "notes":  {
+
+                                                                 }
+                                                   }
+                                               ]
+                           },
+    "context_pack":  {
+                         "target_ms":  2000,
+                         "status":  "fail",
+                         "profile_wall_ms":  28285.446,
+                         "shell_wall_ms":  29180.582,
+                         "shell_delta":  {
+                                             "delta_ms":  895.136,
+                                             "pct_shell":  3.07
+                                         },
+                         "candidate_seeds":  3,
+                         "candidate_paths_before_dedup":  0,
+                         "candidate_paths_after_filter":  0,
+                         "snippets_loaded":  4975,
+                         "source_bytes_loaded":  62183978,
+                         "selected_span_ms":  28273.906,
+                         "selected_unexplained_ms":  11.54,
+                         "root_causes":  [
+                                             {
+                                                 "name":  "sql_query_execution",
+                                                 "elapsed_ms":  15716.32,
+                                                 "count":  1,
+                                                 "items":  1000000,
+                                                 "pct_wall":  55.56,
+                                                 "notes":  null
+                                             },
+                                             {
+                                                 "name":  "open_store",
+                                                 "elapsed_ms":  10648.61,
+                                                 "count":  1,
+                                                 "items":  0,
+                                                 "pct_wall":  37.65,
+                                                 "notes":  null
+                                             },
+                                             {
+                                                 "name":  "context_engine_build",
+                                                 "elapsed_ms":  1628.296,
+                                                 "count":  1,
+                                                 "items":  1000000,
+                                                 "pct_wall":  5.76,
+                                                 "notes":  null
+                                             },
+                                             {
+                                                 "name":  "snippet_loading",
+                                                 "elapsed_ms":  280.536,
+                                                 "count":  4975,
+                                                 "items":  62183978,
+                                                 "pct_wall":  0.99,
+                                                 "notes":  null
+                                             },
+                                             {
+                                                 "name":  "context_pack_graph_and_packet",
+                                                 "elapsed_ms":  0.136,
+                                                 "count":  1,
+                                                 "items":  0,
+                                                 "pct_wall":  0,
+                                                 "notes":  null
+                                             },
+                                             {
+                                                 "name":  "json_serialization",
+                                                 "elapsed_ms":  0.008,
+                                                 "count":  1,
+                                                 "items":  1035,
+                                                 "pct_wall":  0,
+                                                 "notes":  null
+                                             }
+                                         ],
+                         "explain_query_plan":  [
+                                                    {
+                                                        "name":  "load_all_edges_for_context_pack",
+                                                        "plan":  [
+                                                                     {
+                                                                         "detail":  "SCAN e",
+                                                                         "id":  10,
+                                                                         "parent":  0
+                                                                     },
+                                                                     {
+                                                                         "detail":  "SEARCH exactness USING INTEGER PRIMARY KEY (rowid=?)",
+                                                                         "id":  12,
+                                                                         "parent":  0
+                                                                     },
+                                                                     {
+                                                                         "detail":  "SEARCH relation USING INTEGER PRIMARY KEY (rowid=?)",
+                                                                         "id":  15,
+                                                                         "parent":  0
+                                                                     },
+                                                                     {
+                                                                         "detail":  "SEARCH span_path USING INTEGER PRIMARY KEY (rowid=?)",
+                                                                         "id":  18,
+                                                                         "parent":  0
+                                                                     },
+                                                                     {
+                                                                         "detail":  "SEARCH head USING INTEGER PRIMARY KEY (rowid=?)",
+                                                                         "id":  21,
+                                                                         "parent":  0
+                                                                     },
+                                                                     {
+                                                                         "detail":  "SEARCH tail USING INTEGER PRIMARY KEY (rowid=?)",
+                                                                         "id":  24,
+                                                                         "parent":  0
+                                                                     },
+                                                                     {
+                                                                         "detail":  "SEARCH extractor USING INTEGER PRIMARY KEY (rowid=?)",
+                                                                         "id":  27,
+                                                                         "parent":  0
+                                                                     }
+                                                                 ],
+                                                        "sql":  "SELECT e.id_key FROM edges e LEFT JOIN object_id_dict oid ON oid.id = e.id_key JOIN object_id_dict head ON head.id = e.head_id_key JOIN relation_kind_dict relation ON relation.id = e.relation_id JOIN object_id_dict tail ON tail.id = e.tail_id_key JOIN path_dict span_path ON span_path.id = e.span_path_id JOIN extractor_dict extractor ON extractor.id = e.extractor_id JOIN exactness_dict exactness ON exactness.id = e.exactness_id LEFT JOIN edge_class_dict edge_class ON edge_class.id = e.edge_class_id LEFT JOIN edge_context_dict edge_context ON edge_context.id = e.context_id ORDER BY e.id_key LIMIT 1000000",
+                                                        "status":  "ok"
+                                                    },
+                                                    {
+                                                        "name":  "list_files_for_context_pack_sources",
+                                                        "plan":  [
+                                                                     {
+                                                                         "detail":  "SCAN path USING COVERING INDEX sqlite_autoindex_path_dict_1",
+                                                                         "id":  5,
+                                                                         "parent":  0
+                                                                     },
+                                                                     {
+                                                                         "detail":  "SEARCH f USING PRIMARY KEY (path_id=?)",
+                                                                         "id":  7,
+                                                                         "parent":  0
+                                                                     }
+                                                                 ],
+                                                        "sql":  "SELECT path.value FROM files f JOIN path_dict path ON path.id = f.path_id LEFT JOIN language_dict language ON language.id = f.language_id ORDER BY path.value LIMIT 10000",
+                                                        "status":  "ok"
+                                                    }
+                                                ],
+                         "rows_scanned_available":  false,
+                         "notes":  [
+                                       "SQLite row-scan counts are not exposed by rusqlite; EXPLAIN QUERY PLAN and rows_returned are emitted instead.",
+                                       "context_pack currently preloads all indexed edges and source files for the in-memory graph packet path."
+                                   ]
+                     },
+    "storage_audit":  {
+                          "profile_wall_ms":  80012.048,
+                          "db_bytes":  1712730112,
+                          "average_database_bytes_per_edge":  442.97,
+                          "edge_count":  3866431,
+                          "integrity_status":  "ok"
+                      },
+    "verification":  {
+                         "cargo_test":  "passed",
+                         "cargo_test_command":  "cargo test -q",
+                         "graph_truth_update_mode":  "passed",
+                         "graph_truth_cases":  "11/11",
+                         "graph_truth_json":  "reports/audit/artifacts/perf_profile_graph_truth_update_mode_20260511_105332.json",
+                         "graph_truth_note":  "A non-update-mode smoke produced 8/11 because mutation fixtures were intentionally not replayed; strict update-mode gate passed 11/11."
+                     }
+}

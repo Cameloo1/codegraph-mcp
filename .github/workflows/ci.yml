@@ -1,0 +1,134 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows-build-test-smoke:
+    name: windows build test smoke
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: cargo metadata --workspace
+        shell: pwsh
+        run: |
+          $output = & cmd /d /s /c "cargo metadata --workspace 2>&1"
+          $status = $LASTEXITCODE
+          $output | Write-Output
+          if ($status -ne 0) {
+            if ($output -match "unexpected argument|unrecognized option|Usage:") {
+              Write-Output "cargo metadata --workspace is unsupported by this Cargo; falling back to workspace-scoped metadata."
+              cargo metadata --format-version 1
+            } else {
+              exit $status
+            }
+          }
+
+      - name: cargo build --workspace
+        run: cargo build --workspace
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+      - name: codegraph-mcp --help
+        run: cargo run --bin codegraph-mcp -- --help
+
+      - name: fixture index smoke
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke_index.ps1 -SkipRepoIndex
+
+      - name: README artifact check
+        run: python scripts\check_readme_artifacts.py
+
+      - name: Markdown link check
+        run: python scripts\check_markdown_links.py
+
+  linux-build-test-smoke:
+    name: linux build test smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: cargo metadata --workspace
+        shell: bash
+        run: |
+          set +e
+          output="$(cargo metadata --workspace 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$status" -ne 0 ]; then
+            if printf '%s\n' "$output" | grep -Eiq 'unexpected argument|unrecognized option|Usage:'; then
+              echo "cargo metadata --workspace is unsupported by this Cargo; falling back to workspace-scoped metadata."
+              cargo metadata --format-version 1
+            else
+              exit "$status"
+            fi
+          fi
+
+      - name: cargo build --workspace
+        run: cargo build --workspace
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+      - name: codegraph-mcp --help
+        run: cargo run --bin codegraph-mcp -- --help
+
+      - name: fixture index smoke
+        shell: bash
+        run: bash scripts/smoke_index.sh --skip-repo-index
+
+      - name: README artifact check
+        run: python scripts/check_readme_artifacts.py
+
+      - name: Markdown link check
+        run: python scripts/check_markdown_links.py
+
+  docker-smoke:
+    name: docker smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: docker build .
+        run: docker build --progress=plain -t codegraph-mcp:ci .
+
+      - name: container help
+        run: docker run --rm codegraph-mcp:ci
+
+      - name: container fixture index smoke
+        run: docker run --rm codegraph-mcp:ci ./target/debug/codegraph-mcp index fixtures/smoke/basic_repo --db /tmp/codegraph-basic-repo-ci.sqlite --profile --json

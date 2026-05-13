@@ -1,0 +1,34 @@
+{
+    "schema_version":  1,
+    "generated_at":  "2026-05-13T08:49:31.3297896-05:00",
+    "phase":  "autoresearch_diagnostic",
+    "status":  "timeout",
+    "timeout_sec":  180,
+    "repo":  "<REPO_ROOT>/Desktop\\development\\autoresearch-codexlab",
+    "file_count":  9474,
+    "executable":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\.tools\\cgc_recovery\\venv312_compat\\Scripts\\cgc.exe",
+    "install_mode":  "stock_reinstall_compat_dependency",
+    "completed_under_180s":  false,
+    "extended_600s_run":  "not_run",
+    "db_size_bytes":  4096,
+    "partial_wal_bytes":  15675444,
+    "partial_artifact_comparable":  false,
+    "command":  {
+                    "name":  "phase7_autoresearch_index_180s",
+                    "command":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\.tools\\cgc_recovery\\venv312_compat\\Scripts\\cgc.exe \"--database\" \"kuzudb\" \"index\" \"<REPO_ROOT>/Desktop\\development\\autoresearch-codexlab\" \"--force\"",
+                    "cwd":  "<REPO_ROOT>/Desktop\\development\\autoresearch-codexlab",
+                    "exit_code":  null,
+                    "timed_out":  true,
+                    "started_at":  "2026-05-13T08:31:54.4711600-05:00",
+                    "ended_at":  "2026-05-13T08:34:54.5101579-05:00",
+                    "duration_ms":  180039,
+                    "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase7_autoresearch_index_180s.stdout.txt",
+                    "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase7_autoresearch_index_180s.stderr.txt"
+                },
+    "raw_logs":  [
+                     "reports/comparison/cgc_recovery/logs/phase7_autoresearch_index_180s.stdout.txt",
+                     "reports/comparison/cgc_recovery/logs/phase7_autoresearch_index_180s.stderr.txt",
+                     ".tools/cgc_recovery/home_autoresearch/cgc_debug.log"
+                 ],
+    "root_cause":  "CGC starts and parses Autoresearch, but indexing did not finish before the 180s cap; debug log tail shows it still processing per-file parse/directory relationship writes. The visible DB is only 4096 bytes plus partial WAL and is not comparable."
+}

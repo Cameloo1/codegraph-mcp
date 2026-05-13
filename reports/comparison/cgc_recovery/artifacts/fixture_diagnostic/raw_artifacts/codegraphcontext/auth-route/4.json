@@ -1,0 +1,19 @@
+{
+  "executable": "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\.tools\\cgc_recovery\\venv312_compat\\Scripts\\cgc.exe",
+  "args": [
+    "--database",
+    "kuzudb",
+    "analyze",
+    "chain",
+    "adminRoute",
+    "checkRole",
+    "--depth",
+    "10"
+  ],
+  "cwd": "reports\\comparison\\cgc_recovery\\artifacts\\fixture_diagnostic\\fixtures\\auth-route",
+  "stdout": "Resolving context...\r\nInitializing services and database connection...\r\nServices initialized.\r\n",
+  "stderr": "Warning: Could not load .env from current directory: name 'find_dotenv' is not \r\ndefined\r\nNo configuration file found. Using defaults.\r\nUsing database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))\r\nNo call chain found between 'adminRoute' and 'checkRole' within depth 10\r\n",
+  "exit_code": 0,
+  "latency_ms": 1023,
+  "timed_out": false
+}

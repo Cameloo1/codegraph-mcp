@@ -1,0 +1,254 @@
+{
+  "schema_version": 1,
+  "report_id": "compact_proof_db_gate",
+  "generated_at_local": "2026-05-12 06:21:33 -05:00",
+  "verdict": "fail",
+  "source_of_truth": "MVP.md",
+  "notes": [
+    "Graph Truth and Context Packet fixture gates currently index fixtures in audit mode by implementation; the large Autoresearch artifact was built and measured in proof mode.",
+    "Debug mode was not separately built as a physical DB family because the current implementation has not yet implemented separate proof/audit/debug sidecar files.",
+    "Manual relation precision remains unknown because samples were generated but not human-labeled."
+  ],
+  "artifacts": {
+    "proof_db": "reports/final/artifacts/compact_gate_autoresearch_proof.sqlite",
+    "audit_db": "reports/final/artifacts/compact_gate_autoresearch_audit.sqlite",
+    "graph_truth_json": "reports/final/artifacts/compact_gate_graph_truth.json",
+    "context_packet_json": "reports/final/artifacts/compact_gate_context_packet.json",
+    "proof_storage_json": "reports/final/artifacts/compact_gate_proof_storage.json",
+    "audit_storage_json": "reports/final/artifacts/compact_gate_audit_storage.json",
+    "relation_counts_json": "reports/final/artifacts/compact_gate_relation_counts.json",
+    "context_pack_latency_json": "reports/final/artifacts/compact_gate_context_pack_latency.json",
+    "unresolved_calls_latency_json": "reports/final/artifacts/compact_gate_unresolved_calls_latency.json",
+    "update_integrity_json": "reports/final/artifacts/compact_gate_update_integrity.json"
+  },
+  "gates": {
+    "graph_truth": {
+      "status": "passed",
+      "cases_total": 11,
+      "cases_passed": 11,
+      "cases_failed": 0,
+      "expected_entities": 29,
+      "matched_entities": 29,
+      "expected_edges": 20,
+      "matched_expected_edges": 20,
+      "forbidden_edges": 14,
+      "matched_forbidden_edges": 0,
+      "expected_paths": 11,
+      "matched_expected_paths": 11,
+      "forbidden_paths": 9,
+      "matched_forbidden_paths": 0,
+      "source_span_failures": 0,
+      "context_packet_failures": 0,
+      "stale_failures": 0,
+      "unresolved_exact_violations": 0,
+      "derived_without_provenance_violations": 0,
+      "test_mock_production_leakage": 0,
+      "runner_storage_mode_note": "fixture runner hardcodes audit-mode indexing"
+    },
+    "context_packet": {
+      "status": "passed",
+      "cases_total": 11,
+      "cases_passed": 11,
+      "critical_symbol_recall": 1.0,
+      "proof_path_coverage": 1.0,
+      "source_span_coverage": 1.0,
+      "critical_snippet_coverage": 1.0,
+      "expected_test_recall": 1.0,
+      "distractor_ratio": 0.0
+    },
+    "tests": {
+      "command": "cargo test --workspace",
+      "status": "passed",
+      "passed": 334,
+      "ignored": 3
+    }
+  },
+  "autoresearch": {
+    "repo": "<REPO_ROOT>/Desktop\\development\\autoresearch-codexlab",
+    "proof_build": {
+      "status": "completed",
+      "storage_policy": "proof:compact-proof-graph",
+      "wall_ms": 3001445,
+      "wall_minutes": 50.02,
+      "files_walked": 8561,
+      "files_read": 4975,
+      "files_hashed": 4975,
+      "files_parsed": 2555,
+      "duplicate_local_analyses_skipped": 2420,
+      "files_skipped": 3586,
+      "entities_reported": 743226,
+      "edges_reported": 339404,
+      "duplicate_edges_upserted": 443,
+      "db_write_ms": 2877316,
+      "integrity_check_ms": 12937.4035
+    },
+    "audit_build": {
+      "status": "completed",
+      "storage_policy": "audit:compact-proof-plus-diagnostic-sidecars",
+      "wall_ms": 3500365,
+      "wall_minutes": 58.34,
+      "db_family_bytes": 1063632896,
+      "db_family_mib": 1014.36,
+      "integrity_status": "ok"
+    },
+    "debug_build": {
+      "status": "not_separately_built",
+      "reason": "physical proof/audit/debug sidecar split is not implemented yet"
+    }
+  },
+  "storage": {
+    "proof": {
+      "database_bytes": 336203776,
+      "wal_bytes": 0,
+      "shm_bytes": 0,
+      "file_family_bytes": 336203776,
+      "file_family_mib": 320.63,
+      "target_bytes": 262144000,
+      "target_mib": 250.0,
+      "gap_bytes": 74059776,
+      "gap_mib": 70.63,
+      "target_status": "fail",
+      "integrity_status": "ok",
+      "physical_edge_rows": 31848,
+      "relation_compatible_facts": 170114,
+      "path_evidence_rows": 4096,
+      "heuristic_edges_rows": 0,
+      "unresolved_references_rows": 0,
+      "static_references_rows": 0,
+      "unknown_edge_class_rows": 180,
+      "unknown_edge_class_detail": [
+        {
+          "relation": "ALIASED_BY",
+          "edge_class": "unknown",
+          "exactness": "parser_verified",
+          "count": 180
+        }
+      ]
+    },
+    "audit": {
+      "file_family_bytes": 1063632896,
+      "file_family_mib": 1014.36,
+      "integrity_status": "ok",
+      "heuristic_edges_rows": 513757,
+      "unresolved_references_rows": 513752,
+      "static_references_rows": 123251,
+      "audit_only_sidecar_rows": 1150760
+    },
+    "top_remaining_proof_contributors": [
+      { "object": "template_entities", "rows": 653819, "bytes": 87523328 },
+      { "object": "template_edges", "rows": 169290, "bytes": 40804352 },
+      { "object": "symbol_dict", "rows": 696373, "bytes": 30392320 },
+      { "object": "qname_prefix_dict", "rows": 155741, "bytes": 22274048 },
+      { "object": "idx_template_edges_head_relation", "rows": null, "bytes": 16539648 },
+      { "object": "idx_template_edges_tail_relation", "rows": null, "bytes": 16539648 },
+      { "object": "idx_symbol_dict_hash", "rows": null, "bytes": 14602240 },
+      { "object": "idx_qualified_name_parts", "rows": null, "bytes": 12742656 },
+      { "object": "qualified_name_dict", "rows": 727372, "bytes": 12173312 },
+      { "object": "file_entities", "rows": 89407, "bytes": 10248192 }
+    ],
+    "savings_by_category": [
+      { "category": "structural_callsite_proof_edge_split", "reported_mib": 426.76 },
+      { "category": "dictionary_index_bloat_compaction", "reported_mib": 385.80 },
+      { "category": "file_hash_normalization", "reported_mib": 111.76 },
+      { "category": "metadata_json_compaction", "reported_mib": 56.29 },
+      { "category": "object_id_compaction", "reported_mib": 98.02 },
+      { "category": "heuristic_debug_sidecar_split", "reported_mib": 142.08 },
+      { "category": "structural_relation_compaction", "reported_mib": 53.97 },
+      { "category": "content_template_dedupe", "reported_mib": 38.08 }
+    ]
+  },
+  "relation_sampler": {
+    "status": "completed",
+    "sampled_edges": {
+      "CALLS": 50,
+      "READS": 50,
+      "WRITES": 50,
+      "FLOWS_TO": 50
+    },
+    "sampled_path_evidence": 20,
+    "stored_path_evidence_count": 4096,
+    "generated_path_evidence_count": 0,
+    "manual_precision": "unknown"
+  },
+  "query_latency": {
+    "context_pack": {
+      "status": "completed",
+      "iterations": 5,
+      "target_p95_ms": 2000,
+      "p95_profile_ms": 834.853,
+      "p95_shell_ms": 852.213,
+      "target_status": "pass",
+      "note": "sampled seed returned one bounded fallback edge and no verified path; fixture context packet gate still has 100% proof-path coverage"
+    },
+    "unresolved_calls_page": {
+      "status": "completed",
+      "iterations": 20,
+      "limit": 20,
+      "target_p95_ms": 1000,
+      "p95_shell_ms": 242.777,
+      "target_status": "pass"
+    }
+  },
+  "update_path": {
+    "repeat_unchanged": {
+      "status": "passed",
+      "target_ms": 5000,
+      "profile_wall_ms": 1674,
+      "shell_ms": 2502.523,
+      "target_status": "pass",
+      "files_walked": 8561,
+      "files_read": 0,
+      "files_hashed": 0,
+      "files_parsed": 0,
+      "duplicate_edges_upserted": 0,
+      "integrity_status": "ok"
+    },
+    "single_file_update": {
+      "status": "completed",
+      "target_ms": 750,
+      "wall_ms": 1694,
+      "target_status": "fail",
+      "files_walked": 1,
+      "files_read": 1,
+      "files_hashed": 1,
+      "files_parsed": 1,
+      "entities_inserted": 15,
+      "edges_inserted": 29,
+      "duplicate_edges_upserted": 0,
+      "dirty_path_evidence_count": 2,
+      "integrity_status": "ok",
+      "transaction_status": "committed"
+    },
+    "restore_update": {
+      "status": "completed",
+      "wall_ms": 1587,
+      "integrity_status": "ok",
+      "transaction_status": "committed"
+    }
+  },
+  "failed_targets": [
+    "proof_db_size_under_250_mib",
+    "single_file_update_under_750_ms"
+  ],
+  "passed_targets": [
+    "graph_truth_gate",
+    "context_packet_gate",
+    "forbidden_edges_paths_zero",
+    "proof_source_span_coverage_100",
+    "exact_labeled_unresolved_zero",
+    "derived_without_provenance_zero",
+    "test_mock_production_leakage_zero",
+    "stale_facts_zero",
+    "repeat_unchanged_under_5s",
+    "context_pack_p95_under_2s",
+    "unresolved_calls_page_under_1s",
+    "db_integrity"
+  ],
+  "next_required_work": [
+    "Shrink template_entities through local template IDs and qname reconstruction.",
+    "Re-evaluate template edge indexes, which cost 33.08 MiB together.",
+    "Compact remaining symbol/qname dictionary payload for template-only identities.",
+    "Reduce single-file update latency from 1.694s to <=750ms.",
+    "Add a proof-mode switch to Graph Truth and Context Packet fixture gates."
+  ]
+}

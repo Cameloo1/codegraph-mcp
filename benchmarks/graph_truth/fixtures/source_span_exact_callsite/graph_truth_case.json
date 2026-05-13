@@ -1,0 +1,283 @@
+{
+  "schema_version": 1,
+  "case_id": "source_span_exact_callsite",
+  "description": "run calls first and second nearby; the proof span for second must point to the exact second() callsite, not the adjacent first() call.",
+  "repo_fixture_path": "benchmarks/graph_truth/fixtures/source_span_exact_callsite/repo",
+  "task_prompt": "Find the exact callsite from run to second.",
+  "expected_entities": [
+    {
+      "selector": {
+        "qualified_name": "src/main.run",
+        "kind": "Function",
+        "source_file": "src/main.ts",
+        "context": "production"
+      },
+      "kind": "Function",
+      "context": "production",
+      "source_file": "src/main.ts"
+    },
+    {
+      "selector": {
+        "qualified_name": "src/actions.second",
+        "kind": "Function",
+        "source_file": "src/actions.ts",
+        "context": "production"
+      },
+      "kind": "Function",
+      "context": "production",
+      "source_file": "src/actions.ts"
+    }
+  ],
+  "expected_edges": [
+    {
+      "id": "edge://span/run-to-second",
+      "head": {
+        "qualified_name": "src/main.run",
+        "kind": "Function",
+        "source_file": "src/main.ts",
+        "context": "production"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "qualified_name": "src/actions.second",
+        "kind": "Function",
+        "source_file": "src/actions.ts",
+        "context": "production"
+      },
+      "source_file": "src/main.ts",
+      "source_span": {
+        "start_line": 6,
+        "start_column": 5,
+        "end_line": 6,
+        "end_column": 13,
+        "expected_text": "second()",
+        "syntax_role": "callsite"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "hand_labeled_fixture",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "hand_labeled_fixture",
+      "direction": "head_to_tail"
+    }
+  ],
+  "forbidden_edges": [
+    {
+      "id": "edge://span/run-to-second-at-first",
+      "head": {
+        "qualified_name": "src/main.run",
+        "kind": "Function",
+        "source_file": "src/main.ts",
+        "context": "production"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "qualified_name": "src/actions.second",
+        "kind": "Function",
+        "source_file": "src/actions.ts",
+        "context": "production"
+      },
+      "source_file": "src/main.ts",
+      "source_span": {
+        "start_line": 4,
+        "start_column": 3,
+        "end_line": 4,
+        "end_column": 10,
+        "expected_text": "first()",
+        "syntax_role": "callsite"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "forbidden_wrong_callsite_span",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "forbidden_wrong_callsite_span",
+      "direction": "head_to_tail"
+    }
+  ],
+  "expected_paths": [
+    {
+      "path_id": "path://span/run-to-second",
+      "description": "run calls second at the exact second() call expression.",
+      "source": {
+        "qualified_name": "src/main.run",
+        "kind": "Function",
+        "source_file": "src/main.ts",
+        "context": "production"
+      },
+      "target": {
+        "qualified_name": "src/actions.second",
+        "kind": "Function",
+        "source_file": "src/actions.ts",
+        "context": "production"
+      },
+      "ordered_edges": [
+        {
+          "id": "edge://span/run-to-second",
+          "head": {
+            "qualified_name": "src/main.run",
+            "kind": "Function",
+            "source_file": "src/main.ts",
+            "context": "production"
+          },
+          "relation": "CALLS",
+          "tail": {
+            "qualified_name": "src/actions.second",
+            "kind": "Function",
+            "source_file": "src/actions.ts",
+            "context": "production"
+          },
+          "source_file": "src/main.ts",
+          "source_span": {
+            "start_line": 6,
+            "start_column": 5,
+            "end_line": 6,
+            "end_column": 13,
+            "expected_text": "second()",
+            "syntax_role": "callsite"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "hand_labeled_fixture",
+          "exactness": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "hand_labeled_fixture",
+          "direction": "head_to_tail"
+        }
+      ],
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "max_length": 1,
+      "source_span_required": true,
+      "production_only": true,
+      "derived_allowed": false,
+      "provenance_required": false,
+      "required_source_spans": [
+        {
+          "edge_ref": "edge://span/run-to-second",
+          "source_file": "src/main.ts",
+          "span": {
+            "start_line": 6,
+            "start_column": 5,
+            "end_line": 6,
+            "end_column": 13,
+            "expected_text": "second()",
+            "syntax_role": "callsite"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "second()"
+        }
+      ],
+      "context": "production",
+      "allow_test_mock_edges": false,
+      "derived_edges_require_provenance": true,
+      "proof_grade": true
+    }
+  ],
+  "forbidden_paths": [],
+  "expected_source_spans": [
+    {
+      "edge_ref": "edge://span/run-to-second",
+      "source_file": "src/main.ts",
+      "span": {
+        "start_line": 6,
+        "start_column": 5,
+        "end_line": 6,
+        "end_column": 13,
+        "expected_text": "second()",
+        "syntax_role": "callsite"
+      },
+      "must_resolve_to_text": true,
+      "expected_text": "second()"
+    }
+  ],
+  "expected_context_symbols": [
+    {
+      "symbol": {
+        "qualified_name": "src/actions.second",
+        "kind": "Function",
+        "source_file": "src/actions.ts",
+        "context": "production"
+      },
+      "critical": true,
+      "source_file": "src/actions.ts",
+      "reason": "Exact second() callsite target"
+    }
+  ],
+  "forbidden_context_symbols": [],
+  "expected_tests": [],
+  "forbidden_tests": [],
+  "mutation_steps": [],
+  "performance_expectations": {
+    "schema_validation_100_cases_max_ms": 1000,
+    "index_time_ms_max": 10000
+  },
+  "notes": [
+    "Designed to catch source spans that point only to the containing function or wrong nearby call."
+  ],
+  "distractor_policy": {
+    "max_context_distractors": 0,
+    "max_symbol_distractors": 0,
+    "distractor_symbols": [],
+    "count_scope": "context_packet"
+  }
+}

@@ -1,0 +1,2176 @@
+{
+  "schema_version": 1,
+  "db_path": "reports/final/artifacts/comprehensive_proof_1778642765060.sqlite",
+  "limit": 20,
+  "seed": 13,
+  "include_snippets": true,
+  "mode": "proof",
+  "max_edge_load": 500,
+  "timeout_ms": 2000,
+  "stored_path_count": 4096,
+  "candidate_path_count": 20,
+  "loaded_path_edge_count": 20,
+  "edge_load_truncated": false,
+  "fallback_allowed": false,
+  "generated_path_count": 0,
+  "generated_fallback_used": false,
+  "timing": {
+    "total_ms": 27,
+    "open_db_ms": 0,
+    "repo_roots_ms": 5,
+    "count_ms": 0,
+    "candidate_select_ms": 0,
+    "path_rows_load_ms": 0,
+    "path_edges_load_ms": 0,
+    "endpoint_load_ms": 16,
+    "snippet_load_ms": 0,
+    "sample_build_ms": 0,
+    "explain_ms": 0,
+    "index_check_ms": 0
+  },
+  "explain_query_plan": [
+    {
+      "name": "candidate_path_ids_rowid",
+      "sql": "SELECT id FROM path_evidence WHERE rowid >= 1 ORDER BY rowid LIMIT 20",
+      "explain_query_plan": [
+        {
+          "id": 4,
+          "parent": 0,
+          "detail": "SEARCH path_evidence USING INTEGER PRIMARY KEY (rowid>?)"
+        }
+      ],
+      "query_plan_analysis": {
+        "uses_indexes": true,
+        "indexes_used": [
+          "rowid>?"
+        ],
+        "full_scans": []
+      }
+    },
+    {
+      "name": "endpoint_batch_lookup",
+      "sql": "SELECT lower(hex(e.entity_hash)) AS entity_hash_hex, name.value AS name, kind.value AS kind FROM entities e LEFT JOIN symbol_dict name ON name.id = e.name_id LEFT JOIN entity_kind_dict kind ON kind.id = e.kind_id WHERE e.entity_hash IN (X'00000000000000000000000000000000')",
+      "explain_query_plan": [
+        {
+          "id": 4,
+          "parent": 0,
+          "detail": "SCAN e"
+        },
+        {
+          "id": 8,
+          "parent": 0,
+          "detail": "SEARCH name USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN"
+        },
+        {
+          "id": 13,
+          "parent": 0,
+          "detail": "SEARCH kind USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN"
+        }
+      ],
+      "query_plan_analysis": {
+        "uses_indexes": true,
+        "indexes_used": [
+          "rowid=?"
+        ],
+        "full_scans": [
+          "SCAN e"
+        ]
+      }
+    },
+    {
+      "name": "path_edges_by_path_id",
+      "sql": "SELECT path_id, ordinal, edge_id, head_id, relation, tail_id, source_span_path, exactness, confidence, derived, edge_class, context, provenance_edges_json FROM path_evidence_edges WHERE path_id IN ('path://sample') ORDER BY path_id, ordinal LIMIT 500",
+      "explain_query_plan": [
+        {
+          "id": 4,
+          "parent": 0,
+          "detail": "SEARCH path_evidence_edges USING PRIMARY KEY (path_id=?)"
+        }
+      ],
+      "query_plan_analysis": {
+        "uses_indexes": true,
+        "indexes_used": [
+          "path_id=?"
+        ],
+        "full_scans": []
+      }
+    },
+    {
+      "name": "path_rows_by_id",
+      "sql": "SELECT id, source, target, summary, metapath_json, edges_json, source_spans_json, exactness, length, confidence, metadata_json FROM path_evidence WHERE id IN ('path://sample')",
+      "explain_query_plan": [
+        {
+          "id": 3,
+          "parent": 0,
+          "detail": "SEARCH path_evidence USING INDEX sqlite_autoindex_path_evidence_1 (id=?)"
+        }
+      ],
+      "query_plan_analysis": {
+        "uses_indexes": true,
+        "indexes_used": [
+          "sqlite_autoindex_path_evidence_1"
+        ],
+        "full_scans": []
+      }
+    }
+  ],
+  "index_status": [
+    {
+      "object": "path_evidence",
+      "required_shape": "path_evidence(id primary key; logical path_id)",
+      "present": true,
+      "satisfied_by": "sqlite_autoindex_path_evidence_1",
+      "columns": [
+        "id"
+      ],
+      "notes": "Candidate path IDs are selected before detail loading; path_evidence.id is the logical path_id."
+    },
+    {
+      "object": "path_evidence_edges",
+      "required_shape": "path_evidence_edges(path_id, ordinal)",
+      "present": true,
+      "satisfied_by": "idx_path_evidence_edges_path_ordinal",
+      "columns": [
+        "path_id",
+        "ordinal"
+      ],
+      "notes": "Used to load ordered edge rows for already selected path IDs."
+    },
+    {
+      "object": "path_evidence_symbols",
+      "required_shape": "path_evidence_symbols(path_id, entity_id)",
+      "present": true,
+      "satisfied_by": "idx_path_evidence_symbols_path",
+      "columns": [
+        "path_id",
+        "entity_id"
+      ],
+      "notes": "Used by context packet lookup and available for path-centered sampling joins."
+    },
+    {
+      "object": "path_evidence_files",
+      "required_shape": "path_evidence_files(file_id, path_id)",
+      "present": true,
+      "satisfied_by": "idx_path_evidence_files_file",
+      "columns": [
+        "file_id",
+        "path_id"
+      ],
+      "notes": "Used for file-scoped invalidation and file-centered path audits."
+    },
+    {
+      "object": "path_evidence_tests",
+      "required_shape": "path_evidence_tests(path_id, test_id)",
+      "present": true,
+      "satisfied_by": "sqlite_autoindex_path_evidence_tests_1",
+      "columns": [
+        "path_id",
+        "test_id",
+        "relation"
+      ],
+      "notes": "Primary key begins with path_id, test_id; this satisfies path-scoped test lookup."
+    }
+  ],
+  "manual_classification_options": [
+    "true_positive",
+    "false_positive",
+    "wrong_direction",
+    "wrong_target",
+    "wrong_span",
+    "stale",
+    "duplicate",
+    "unresolved_mislabeled_exact",
+    "test_mock_leaked",
+    "derived_missing_provenance",
+    "unsure"
+  ],
+  "samples": [
+    {
+      "ordinal": 1,
+      "path_id": "path://5fd81eb1d7fc0de5",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb reaches repo://e/f61aa8517c3f55fe79d1cce3cb5a08ec via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+        "name": "main",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/f61aa8517c3f55fe79d1cce3cb5a08ec",
+        "name": "localRg",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://12e614d74d68441a6bf49c9f053fd280",
+          "head": {
+            "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+            "name": "main",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/f61aa8517c3f55fe79d1cce3cb5a08ec",
+            "name": "localRg",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 680,
+            "start_column": 16,
+            "end_line": 680,
+            "end_column": 32
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://e1ca38fc3ce09c05646d8bca5f0e956b",
+            "edge://ed57da348e325b0dbdcc98f0c69931c3"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 680,
+          "start_column": 16,
+          "end_line": 680,
+          "end_column": 32
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 678,
+          "end_line": 682,
+          "text": "678:     ok = true;\n679:   } else if (command === \"doctor\") {\n680:     ok = await doctor(repoRoot);\n681:   } else if (command === \"preflight\") {\n682:     ok = await preflightCommand(repoRoot, [subcommand, ...rest].filter(Boolean));"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 2,
+      "path_id": "path://6c7f49e2c0ed6d18",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb reaches repo://e/ae32e56f090c463cf981593586ee94ba via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+        "name": "main",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/ae32e56f090c463cf981593586ee94ba",
+        "name": "expr@13424",
+        "qualified_name": null,
+        "kind": "Expression"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://132c2ae63dd285da5402a27155bdd74c",
+          "head": {
+            "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+            "name": "main",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/ae32e56f090c463cf981593586ee94ba",
+            "name": "expr@13424",
+            "qualified_name": null,
+            "kind": "Expression"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 699,
+            "start_column": 16,
+            "end_line": 699,
+            "end_column": 83
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://58fef6d741d6b840260e3fe088fd406a",
+            "edge://91f80e3a5d33837d985a416e7d52e96f"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 699,
+          "start_column": 16,
+          "end_line": 699,
+          "end_column": 83
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 697,
+          "end_line": 701,
+          "text": "697:     ok = await runsReplay(repoRoot, rest[0]);\n698:   } else if (command === \"runs\" && subcommand === \"cancel\") {\n699:     ok = await runsCancel(repoRoot, rest[0], rest.slice(1).join(\" \") || undefined);\n700:   } else if (command === \"approvals\" && subcommand === \"list\") {\n701:     ok = await approvalsList(repoRoot, rest);"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 3,
+      "path_id": "path://92744037395faecf",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb reaches repo://e/f00348c9c0daae03d60f14403cc63981 via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+        "name": "main",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/f00348c9c0daae03d60f14403cc63981",
+        "name": "model",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://14d02c236a2bd159e15f0c2e1ed69c83",
+          "head": {
+            "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+            "name": "main",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/f00348c9c0daae03d60f14403cc63981",
+            "name": "model",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 689,
+            "start_column": 16,
+            "end_line": 689,
+            "end_column": 75
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://a28cdb37e175697ce45b92d1ba7ed356",
+            "edge://e4bb1c8112aea4e04f95ff49e22578a6"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 689,
+          "start_column": 16,
+          "end_line": 689,
+          "end_column": 75
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 687,
+          "end_line": 691,
+          "text": "687:     ok = await validateCommand(repoRoot, rest[0]);\n688:   } else if (command === \"run\") {\n689:     ok = await runCommand(repoRoot, [subcommand, ...rest].filter(Boolean));\n690:   } else if (command === \"agent\" && subcommand === \"run\") {\n691:     ok = await agentRunCommand(repoRoot, rest);"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 4,
+      "path_id": "path://de1d9d007cc39534",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/aee2f7bdea85439bb2c8dec26ec8fbb9 reaches repo://e/4be8e06a4b2b2eea437c87e7be6a4af8 via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/aee2f7bdea85439bb2c8dec26ec8fbb9",
+        "name": "releasePackage",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/4be8e06a4b2b2eea437c87e7be6a4af8",
+        "name": "index",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://162ca41b797c042a9df2292286efd718",
+          "head": {
+            "id": "repo://e/aee2f7bdea85439bb2c8dec26ec8fbb9",
+            "name": "releasePackage",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/4be8e06a4b2b2eea437c87e7be6a4af8",
+            "name": "index",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 574,
+            "start_column": 26,
+            "end_line": 574,
+            "end_column": 62
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://1283e37350d6f95c912cdc3fef93b64e",
+            "edge://4831781750511076804f6183d2bc7830"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 574,
+          "start_column": 26,
+          "end_line": 574,
+          "end_column": 62
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 572,
+          "end_line": 576,
+          "text": "572:   const verify = args.includes(\"--verify\");\n573:   const signing = {};\n574:   const signThumbprint = flagValue(args, \"--sign-thumbprint\");\n575:   const timestampServer = flagValue(args, \"--timestamp-server\");\n576:   if (signThumbprint) signing.certThumbprint = signThumbprint;"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 5,
+      "path_id": "path://e8190d1fb7fce1a3",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb reaches repo://e/397a7588f2a6107c61cfc87a0fb4faf6 via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+        "name": "main",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/397a7588f2a6107c61cfc87a0fb4faf6",
+        "name": "reportPath",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://18af6dad0319719d16bb5310a5e28b93",
+          "head": {
+            "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+            "name": "main",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/397a7588f2a6107c61cfc87a0fb4faf6",
+            "name": "reportPath",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 709,
+            "start_column": 16,
+            "end_line": 709,
+            "end_column": 45
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://41ab1f5e982288395d30d91dadae2307",
+            "edge://f43b15b376785150e19873ec40313842"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 709,
+          "start_column": 16,
+          "end_line": 709,
+          "end_column": 45
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 707,
+          "end_line": 711,
+          "text": "707:     ok = await verifyCommand(repoRoot, subcommand);\n708:   } else if (command === \"report\" && subcommand === \"open\") {\n709:     ok = await reportOpen(repoRoot, rest[0]);\n710:   } else if (command === \"bundle\" && (subcommand === \"create\" || subcommand === \"validate\")) {\n711:     ok = await bundleCommand(repoRoot, subcommand, rest[0]);"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 6,
+      "path_id": "path://17228cc4d2de09fa",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb reaches repo://e/391683de6db88c36c0f2fc2010c50344 via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+        "name": "main",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/391683de6db88c36c0f2fc2010c50344",
+        "name": "execBinary",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://1a211b94ec67b00ad0eabe7326a7ff40",
+          "head": {
+            "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+            "name": "main",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/391683de6db88c36c0f2fc2010c50344",
+            "name": "execBinary",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 717,
+            "start_column": 16,
+            "end_line": 717,
+            "end_column": 49
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://e3a450a7f215c575cb7c542c4d2d46f3",
+            "edge://83bf6c503ba782af94f5e7ab9dac6355"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 717,
+          "start_column": 16,
+          "end_line": 717,
+          "end_column": 49
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 715,
+          "end_line": 719,
+          "text": "715:     ok = await runtimeVersions(repoRoot);\n716:   } else if (command === \"runtime\" && subcommand === \"install\") {\n717:     ok = await runtimeInstall(repoRoot, rest[0]);\n718:   } else if (command === \"runtime\" && subcommand === \"pin\") {\n719:     ok = await runtimePin(repoRoot, rest[0]);"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 7,
+      "path_id": "path://4648b519db8df937",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb reaches repo://e/daf3ee1523e4cf8fde373e1fa6c2042d via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+        "name": "main",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/daf3ee1523e4cf8fde373e1fa6c2042d",
+        "name": "runtimeDaemon",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://1be2f5d896b60ddc89ee4aae3203a7f6",
+          "head": {
+            "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+            "name": "main",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/daf3ee1523e4cf8fde373e1fa6c2042d",
+            "name": "runtimeDaemon",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 713,
+            "start_column": 16,
+            "end_line": 713,
+            "end_column": 32
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://15e91fce6bd8bc9fdc56a5a1c2ef656d",
+            "edge://25a8ce7bf8d74fd66aaa9001e6e86768"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 713,
+          "start_column": 16,
+          "end_line": 713,
+          "end_column": 32
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 711,
+          "end_line": 715,
+          "text": "711:     ok = await bundleCommand(repoRoot, subcommand, rest[0]);\n712:   } else if (command === \"runtime\" && subcommand === \"doctor\") {\n713:     ok = await doctor(repoRoot);\n714:   } else if (command === \"runtime\" && subcommand === \"versions\") {\n715:     ok = await runtimeVersions(repoRoot);"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 8,
+      "path_id": "path://4b4a13c1ea098150",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb reaches repo://e/8e00619b31839586e69789fa9ef2a558 via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+        "name": "main",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/8e00619b31839586e69789fa9ef2a558",
+        "name": "patchset",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://1bf31ddde5798a1083096eb345485e8e",
+          "head": {
+            "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+            "name": "main",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/8e00619b31839586e69789fa9ef2a558",
+            "name": "patchset",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 724,
+            "start_column": 16,
+            "end_line": 724,
+            "end_column": 48
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://cd6983b6c761af7f996b1384dbef53b1",
+            "edge://42581e3b28dfaa35efe8fb586aadf35b"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 724,
+          "start_column": 16,
+          "end_line": 724,
+          "end_column": 48
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 722,
+          "end_line": 726,
+          "text": "722:     ok = true;\n723:   } else if (command === \"codex\" && subcommand === \"patch-status\") {\n724:     ok = await codexPatchStatus(repoRoot, rest);\n725:   } else if (command === \"dashboard\" && subcommand === \"dev\") {\n726:     ok = await dashboardDev(repoRoot, rest);"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 9,
+      "path_id": "path://c076424954d40862",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/d07fbe86e774ae4ef3f100dcbed24854 reaches repo://e/4be8e06a4b2b2eea437c87e7be6a4af8 via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/d07fbe86e774ae4ef3f100dcbed24854",
+        "name": "releaseUpdateCheck",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/4be8e06a4b2b2eea437c87e7be6a4af8",
+        "name": "index",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://1f621db5c81407baca70743b641b80bc",
+          "head": {
+            "id": "repo://e/d07fbe86e774ae4ef3f100dcbed24854",
+            "name": "releaseUpdateCheck",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/4be8e06a4b2b2eea437c87e7be6a4af8",
+            "name": "index",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 621,
+            "start_column": 21,
+            "end_line": 621,
+            "end_column": 50
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://59406e345ff7ad88f7a3220baadbcef6",
+            "edge://4831781750511076804f6183d2bc7830"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 621,
+          "start_column": 21,
+          "end_line": 621,
+          "end_column": 50
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 619,
+          "end_line": 623,
+          "text": "619:   const result = await checkForUpdates({\n620:     repoRoot,\n621:     manifestSource: flagValue(args, \"--manifest\"),\n622:     currentVersion: flagValue(args, \"--current-version\")\n623:   });"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 10,
+      "path_id": "path://db23a7a8d39572be",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb reaches repo://e/cf30d9af83a42adcc4cdf65db1cc1612 via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+        "name": "main",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/cf30d9af83a42adcc4cdf65db1cc1612",
+        "name": "execBinary",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://1fbbe6b70a97493df46a2d0067e59f73",
+          "head": {
+            "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+            "name": "main",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/cf30d9af83a42adcc4cdf65db1cc1612",
+            "name": "execBinary",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 715,
+            "start_column": 16,
+            "end_line": 715,
+            "end_column": 41
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://ae18d50a8f4c0efedcf6417d2f0426fc",
+            "edge://3a84c3a7f3188e01017480b2b3d04727"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 715,
+          "start_column": 16,
+          "end_line": 715,
+          "end_column": 41
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 713,
+          "end_line": 717,
+          "text": "713:     ok = await doctor(repoRoot);\n714:   } else if (command === \"runtime\" && subcommand === \"versions\") {\n715:     ok = await runtimeVersions(repoRoot);\n716:   } else if (command === \"runtime\" && subcommand === \"install\") {\n717:     ok = await runtimeInstall(repoRoot, rest[0]);"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 11,
+      "path_id": "path://3a5d228c92056d38",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb reaches repo://e/d3dcfecfaea8426208720297b13c7918 via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+        "name": "main",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/d3dcfecfaea8426208720297b13c7918",
+        "name": "checks",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://20b37ff5de0c60458ed26436f92b7f63",
+          "head": {
+            "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+            "name": "main",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/d3dcfecfaea8426208720297b13c7918",
+            "name": "checks",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 680,
+            "start_column": 16,
+            "end_line": 680,
+            "end_column": 32
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://e1ca38fc3ce09c05646d8bca5f0e956b",
+            "edge://a7135feea88c4fa068b10a7913a0413e"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 680,
+          "start_column": 16,
+          "end_line": 680,
+          "end_column": 32
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 678,
+          "end_line": 682,
+          "text": "678:     ok = true;\n679:   } else if (command === \"doctor\") {\n680:     ok = await doctor(repoRoot);\n681:   } else if (command === \"preflight\") {\n682:     ok = await preflightCommand(repoRoot, [subcommand, ...rest].filter(Boolean));"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 12,
+      "path_id": "path://ae1430d2de355ac2",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb reaches repo://e/8dff277826599effc8318c57c6455fd1 via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+        "name": "main",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/8dff277826599effc8318c57c6455fd1",
+        "name": "expr@13341",
+        "qualified_name": null,
+        "kind": "Expression"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://21110e90278c242d74b9f4fdd568a127",
+          "head": {
+            "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+            "name": "main",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/8dff277826599effc8318c57c6455fd1",
+            "name": "expr@13341",
+            "qualified_name": null,
+            "kind": "Expression"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 699,
+            "start_column": 16,
+            "end_line": 699,
+            "end_column": 83
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://58fef6d741d6b840260e3fe088fd406a",
+            "edge://2c41399c08cbfb6a18c901f6f169ce18"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 699,
+          "start_column": 16,
+          "end_line": 699,
+          "end_column": 83
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 697,
+          "end_line": 701,
+          "text": "697:     ok = await runsReplay(repoRoot, rest[0]);\n698:   } else if (command === \"runs\" && subcommand === \"cancel\") {\n699:     ok = await runsCancel(repoRoot, rest[0], rest.slice(1).join(\" \") || undefined);\n700:   } else if (command === \"approvals\" && subcommand === \"list\") {\n701:     ok = await approvalsList(repoRoot, rest);"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 13,
+      "path_id": "path://de4888911cef4f4e",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/f0ac14429d544ef05a972c69cb7d794e reaches repo://e/4be8e06a4b2b2eea437c87e7be6a4af8 via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/f0ac14429d544ef05a972c69cb7d794e",
+        "name": "preflightCommand",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/4be8e06a4b2b2eea437c87e7be6a4af8",
+        "name": "index",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://22bf2c0da90f2d46fa529be4a2677e58",
+          "head": {
+            "id": "repo://e/f0ac14429d544ef05a972c69cb7d794e",
+            "name": "preflightCommand",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/4be8e06a4b2b2eea437c87e7be6a4af8",
+            "name": "index",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 533,
+            "start_column": 23,
+            "end_line": 533,
+            "end_column": 56
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://2f28d05aa564e16c74879a9bfce8149a",
+            "edge://4831781750511076804f6183d2bc7830"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 533,
+          "start_column": 23,
+          "end_line": 533,
+          "end_column": 56
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 531,
+          "end_line": 535,
+          "text": "531: \n532: async function preflightCommand(repoRoot, args) {\n533:   const releaseRoot = flagValue(args, \"--release-root\");\n534:   const result = await checkPreflight({ repoRoot, releaseRoot });\n535:   if (args.includes(\"--json\")) {"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 14,
+      "path_id": "path://bf1814aac72e0510",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb reaches repo://e/2069cb5baec9bc7a79156438dd5de96c via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+        "name": "main",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/2069cb5baec9bc7a79156438dd5de96c",
+        "name": "valueFlags",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://22d575c48e04736b7094800b1768d8cd",
+          "head": {
+            "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+            "name": "main",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/2069cb5baec9bc7a79156438dd5de96c",
+            "name": "valueFlags",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 689,
+            "start_column": 16,
+            "end_line": 689,
+            "end_column": 75
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://a28cdb37e175697ce45b92d1ba7ed356",
+            "edge://5ee24e98083dfaeb634d02a9949ca13d"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 689,
+          "start_column": 16,
+          "end_line": 689,
+          "end_column": 75
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 687,
+          "end_line": 691,
+          "text": "687:     ok = await validateCommand(repoRoot, rest[0]);\n688:   } else if (command === \"run\") {\n689:     ok = await runCommand(repoRoot, [subcommand, ...rest].filter(Boolean));\n690:   } else if (command === \"agent\" && subcommand === \"run\") {\n691:     ok = await agentRunCommand(repoRoot, rest);"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 15,
+      "path_id": "path://9559380196954c8f",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/00c50396d8ac0dd0744565489e86d2b6 reaches repo://e/4a41a6a600e6b319a77215de4abbebaf via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/00c50396d8ac0dd0744565489e86d2b6",
+        "name": "dashboardDev",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/4a41a6a600e6b319a77215de4abbebaf",
+        "name": "address",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://2421a245196ac6e02058919f3cc0b936",
+          "head": {
+            "id": "repo://e/00c50396d8ac0dd0744565489e86d2b6",
+            "name": "dashboardDev",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/4a41a6a600e6b319a77215de4abbebaf",
+            "name": "address",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 645,
+            "start_column": 33,
+            "end_line": 645,
+            "end_column": 73
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://791d519735221be7464e5ae607c21539",
+            "edge://9cb3315e059a4af833111c0546519862"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 645,
+          "start_column": 33,
+          "end_line": 645,
+          "end_column": 73
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 643,
+          "end_line": 647,
+          "text": "643:     return false;\n644:   }\n645:   const { server, url } = await startDashboardServer({ repoRoot, port });\n646:   console.log(`dashboard_url=${url}`);\n647:   console.log(\"Press Ctrl+C to stop.\");"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 16,
+      "path_id": "path://3f430432fb2f7969",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb reaches repo://e/cfba52750f09f33d51597925947e5423 via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+        "name": "main",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/cfba52750f09f33d51597925947e5423",
+        "name": "loaded",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://26606c6bfd5c852ffcc805a71c2c330d",
+          "head": {
+            "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+            "name": "main",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/cfba52750f09f33d51597925947e5423",
+            "name": "loaded",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 687,
+            "start_column": 16,
+            "end_line": 687,
+            "end_column": 50
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://9edf97b1443bc3a38230566f26420159",
+            "edge://7393fb16b7fc1e6bd682f766ae3e4f69"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 687,
+          "start_column": 16,
+          "end_line": 687,
+          "end_column": 50
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 685,
+          "end_line": 689,
+          "text": "685:     ok = true;\n686:   } else if (command === \"objective\" && subcommand === \"validate\") {\n687:     ok = await validateCommand(repoRoot, rest[0]);\n688:   } else if (command === \"run\") {\n689:     ok = await runCommand(repoRoot, [subcommand, ...rest].filter(Boolean));"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 17,
+      "path_id": "path://57ca6bfe3cd64f4b",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb reaches repo://e/72581de24a1b087abda605692c4d7a8c via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+        "name": "main",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/72581de24a1b087abda605692c4d7a8c",
+        "name": "manifest",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://2736a9e0c6951e14a867b2251a739b82",
+          "head": {
+            "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+            "name": "main",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/72581de24a1b087abda605692c4d7a8c",
+            "name": "manifest",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 697,
+            "start_column": 16,
+            "end_line": 697,
+            "end_column": 45
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://28b144c3bcc4444da2a563d45cdb31b3",
+            "edge://5ddf43cb37e53ae5bc6270a8d772b9af"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 697,
+          "start_column": 16,
+          "end_line": 697,
+          "end_column": 45
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 695,
+          "end_line": 699,
+          "text": "695:     ok = await runsShow(repoRoot, rest[0]);\n696:   } else if (command === \"runs\" && subcommand === \"replay\") {\n697:     ok = await runsReplay(repoRoot, rest[0]);\n698:   } else if (command === \"runs\" && subcommand === \"cancel\") {\n699:     ok = await runsCancel(repoRoot, rest[0], rest.slice(1).join(\" \") || undefined);"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 18,
+      "path_id": "path://0b839cf85c84d4dd",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb reaches repo://e/906b1a88b19bbc9f348776ca9c19c3b1 via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+        "name": "main",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/906b1a88b19bbc9f348776ca9c19c3b1",
+        "name": "blocked",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://273c6b997934eed42e83bee0f1df2352",
+          "head": {
+            "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+            "name": "main",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/906b1a88b19bbc9f348776ca9c19c3b1",
+            "name": "blocked",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 682,
+            "start_column": 16,
+            "end_line": 682,
+            "end_column": 81
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://5b20da893a06b001decdadd31e345c0f",
+            "edge://6a099381a6e693325253b9f1bc0d119c"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 682,
+          "start_column": 16,
+          "end_line": 682,
+          "end_column": 81
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 680,
+          "end_line": 684,
+          "text": "680:     ok = await doctor(repoRoot);\n681:   } else if (command === \"preflight\") {\n682:     ok = await preflightCommand(repoRoot, [subcommand, ...rest].filter(Boolean));\n683:   } else if (command === \"init\") {\n684:     console.log(\"Autoresearch workspace already initialized by repository scaffold.\");"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 19,
+      "path_id": "path://76f1be3a802213ba",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb reaches repo://e/36d16ef6047b2ee7e00694d38abfb2fd via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+        "name": "main",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/36d16ef6047b2ee7e00694d38abfb2fd",
+        "name": "model",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://28d736c3bdd7cef185bd96dca6d651c3",
+          "head": {
+            "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+            "name": "main",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/36d16ef6047b2ee7e00694d38abfb2fd",
+            "name": "model",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 689,
+            "start_column": 16,
+            "end_line": 689,
+            "end_column": 75
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://a28cdb37e175697ce45b92d1ba7ed356",
+            "edge://eb2f4822542c1c1cf718981df29a9492"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 689,
+          "start_column": 16,
+          "end_line": 689,
+          "end_column": 75
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 687,
+          "end_line": 691,
+          "text": "687:     ok = await validateCommand(repoRoot, rest[0]);\n688:   } else if (command === \"run\") {\n689:     ok = await runCommand(repoRoot, [subcommand, ...rest].filter(Boolean));\n690:   } else if (command === \"agent\" && subcommand === \"run\") {\n691:     ok = await agentRunCommand(repoRoot, rest);"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    },
+    {
+      "ordinal": 20,
+      "path_id": "path://1d37c3efe7a52730",
+      "generated_by_audit": false,
+      "task_or_query": "index://stored-path-evidence",
+      "summary": "repo://e/4a2278bc920360444b92b49ebca96a76 reaches repo://e/c6926aa7636338526c8f04974a3c09b8 via MAY_MUTATE",
+      "source": {
+        "id": "repo://e/4a2278bc920360444b92b49ebca96a76",
+        "name": "runCommand",
+        "qualified_name": null,
+        "kind": "Function"
+      },
+      "target": {
+        "id": "repo://e/c6926aa7636338526c8f04974a3c09b8",
+        "name": "validation",
+        "qualified_name": null,
+        "kind": "LocalVariable"
+      },
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "edge_list": [
+        {
+          "edge_id": "edge://28da6233516a2c4bd425ec876a23499d",
+          "head": {
+            "id": "repo://e/4a2278bc920360444b92b49ebca96a76",
+            "name": "runCommand",
+            "qualified_name": null,
+            "kind": "Function"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "id": "repo://e/c6926aa7636338526c8f04974a3c09b8",
+            "name": "validation",
+            "qualified_name": null,
+            "kind": "LocalVariable"
+          },
+          "source_span": {
+            "repo_relative_path": "packages/cli/src/arl.mjs",
+            "start_line": 192,
+            "start_column": 26,
+            "end_line": 192,
+            "end_column": 71
+          },
+          "relation_direction": "head_to_tail",
+          "exactness": "derived_from_verified_edges",
+          "confidence": 1.0,
+          "derived": true,
+          "fact_classification": "derived",
+          "production_test_mock_context": "production",
+          "provenance_edges": [
+            "edge://c67120505f0fd02d9b6e94292bc3ec57",
+            "edge://2bbbee57293268783f032faa626f46d6"
+          ],
+          "missing_metadata": []
+        }
+      ],
+      "source_spans": [
+        {
+          "repo_relative_path": "packages/cli/src/arl.mjs",
+          "start_line": 192,
+          "start_column": 26,
+          "end_line": 192,
+          "end_column": 71
+        }
+      ],
+      "source_snippets": [
+        {
+          "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+          "start_line": 190,
+          "end_line": 194,
+          "text": "190:   }\n191:   if (runtime === \"multi-agent-shim\") {\n192:     const result = await runMultiAgentFixture(objectivePath, repoRoot);\n193:     console.log(`run_id=${result.runId}`);\n194:     console.log(`run_root=${path.relative(repoRoot, result.runRoot)}`);"
+        }
+      ],
+      "exactness": "derived_from_verified_edges",
+      "confidence": 0.8695652173913044,
+      "derived_provenance_label": "derived_with_provenance",
+      "production_test_mock_context": "production_inferred",
+      "metadata": {
+        "cost": 1.0,
+        "derived_edges_have_provenance": true,
+        "materialized_tables": [
+          "path_evidence_edges",
+          "path_evidence_symbols",
+          "path_evidence_tests",
+          "path_evidence_files"
+        ],
+        "metadata_storage": "compact_materialized_rows",
+        "path_context": "production",
+        "path_storage_policy": "bounded_deterministic_single_edge_paths",
+        "production_proof_eligible": true,
+        "proof_grade_edge_classes": true,
+        "proof_scope": "production",
+        "source_span_validation": "not_validated_at_index_time",
+        "task_or_query": "index://stored-path-evidence",
+        "uncertainty": 0.15
+      },
+      "missing_metadata": []
+    }
+  ],
+  "notes": [
+    "Classification fields are intentionally blank in markdown for human review.",
+    "PathEvidence sampling is bounded: candidate path IDs are selected first, details are batch-loaded only for those IDs, and snippets are loaded only for sampled spans when requested.",
+    "Mode `proof` disables generated fallback paths.",
+    "Path edge materialization load cap: 500 rows; truncated: false.",
+    "Stored PathEvidence samples used before fallback: 20."
+  ]
+}

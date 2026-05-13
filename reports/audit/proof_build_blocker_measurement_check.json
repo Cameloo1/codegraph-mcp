@@ -1,0 +1,65 @@
+{
+    "schema_version":  1,
+    "generated_at":  "2026-05-13T00:56:13-05:00",
+    "source_of_truth":  "MVP.md",
+    "phase":  "proof_build_blocker_measurement_check",
+    "stale_gate_value_ms":  331868,
+    "current_fresh_comprehensive_proof_build_only_ms":  59414,
+    "independent_w64_profile_ms":  58991,
+    "target_ms":  60000,
+    "measurement_status":  "fresh_pass",
+    "conclusion":  "The 331,868 ms value was a real prior fresh proof-build-only measurement, but it is stale relative to the latest fresh comprehensive artifact. The current fresh comprehensive build records 59,414 ms with artifact_reuse=false, schema/migration 19, integrity ok, and claimable storage/cold-build metadata.",
+    "source_of_331868":  {
+                             "artifact":  "reports/final/artifacts/comprehensive_proof_1778642765060.artifact.json",
+                             "classification":  "prior fresh proof-build-only artifact metadata, not CGC or report-only timing"
+                         },
+    "contamination_check":  {
+                                "reused_stale_artifact":  false,
+                                "comprehensive_full_gate_counted_as_proof_build_only":  false,
+                                "validation_reporting_inside_proof_build_only":  false,
+                                "storage_audit_dbstat_inside_proof_build_only":  false,
+                                "relation_or_source_span_sampler_inside_proof_build_only":  false,
+                                "cgc_or_comparison_inside_proof_build_only":  false,
+                                "repeated_rebuilds_inside_proof_build_only":  false,
+                                "artifact_copy_or_compression_inside_proof_build_only":  false,
+                                "vacuum_analyze_inside_fast_path":  false,
+                                "proof_build_publish_quick_check_included":  true,
+                                "notes":  [
+                                              "Atomic hidden temp DB quick_check/publish safety is included; full validation/audit/CGC/report generation are separate."
+                                          ]
+                            },
+    "latest_artifact":  {
+                            "artifact_created_at":  1778650208146,
+                            "artifact_metadata_path":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\comprehensive_proof_proof_build_fix_20260513.artifact.json",
+                            "artifact_path":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\comprehensive_proof_proof_build_fix_20260513.sqlite",
+                            "artifact_reuse":  false,
+                            "benchmark_run_id":  "proof_build_fix_20260513",
+                            "build_command":  "codegraph-mcp index <REPO_ROOT>/Desktop\\development\\autoresearch-codexlab --db <REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\comprehensive_proof_proof_build_fix_20260513.sqlite --profile --storage-mode proof --build-mode proof-build-only --workers 16",
+                            "build_duration_ms":  59414,
+                            "cold_build_result_claimable":  true,
+                            "current_migration_version":  19,
+                            "current_schema_version":  19,
+                            "db_size_bytes":  179499008,
+                            "freshly_built":  true,
+                            "freshness_metadata_present":  true,
+                            "freshness_status":  "fresh",
+                            "git_commit":  "unknown",
+                            "integrity_status":  "ok",
+                            "migration_version":  19,
+                            "notes":  [
+                                          "Fresh proof DB built by comprehensive benchmark before storage and cold-build metrics were read."
+                                      ],
+                            "schema_version":  19,
+                            "stale":  false,
+                            "stale_reasons":  [
+
+                                              ],
+                            "storage_mode":  "proof",
+                            "storage_result_claimable":  true
+                        },
+    "evidence":  {
+                     "comprehensive_json":  "reports/final/comprehensive_benchmark_latest.json",
+                     "independent_profile_jsonl":  "reports/audit/artifacts/proof_build_only_profile_publish_skip_w64_20260513_004355.stdout.json",
+                     "cargo_test_workspace":  "pass"
+                 }
+}

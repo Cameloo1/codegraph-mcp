@@ -1,0 +1,16 @@
+{
+  "executable": "target\\cgc-fork-py312-wrapper.cmd",
+  "args": [
+    "--database",
+    "kuzudb",
+    "find",
+    "name",
+    "postInvoice"
+  ],
+  "cwd": "reports\\comparison\\cgc_fork_pr_readiness\\fixtures\\ts-call-chain",
+  "stdout": "Resolving context...\r\nInitializing services and database connection...\r\nServices initialized.\r\n",
+  "stderr": "No configuration file found. Using defaults.\r\nUsing database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))\r\nFound 1 matches for 'postInvoice':\r\n┌─────────────┬──────────┬────────────────────────────────────────────────────┐\r\n│ Name        │ Type     │ Location                                           │\r\n├─────────────┼──────────┼────────────────────────────────────────────────────┤\r\n│ postInvoice │ Function │ \\\\?\\<REPO_ROOT>/Desktop\\development\\codegraph-m │\r\n│             │          │ cp\\reports\\comparison\\cgc_fork_pr_readiness\\fixtur │\r\n│             │          │ es\\ts-call-chain\\src\\api.ts:3                      │\r\n└─────────────┴──────────┴────────────────────────────────────────────────────┘\r\n",
+  "exit_code": 0,
+  "latency_ms": 1050,
+  "timed_out": false
+}

@@ -1,0 +1,372 @@
+{
+  "schema_version": 1,
+  "report_id": "clean_autoresearch_rerun",
+  "generated_at_local": "2026-05-11 04:48:52 -05:00",
+  "source_of_truth": "MVP.md",
+  "repo": {
+    "name": "autoresearch-codexlab",
+    "path": "<REPO_ROOT>/Desktop\\development\\autoresearch-codexlab",
+    "db_path": "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\audit\\artifacts\\clean_autoresearch_rerun.sqlite",
+    "workers": 4
+  },
+  "inputs_read": [
+    "MVP.md",
+    "reports/audit/db_integrity_remediation.md",
+    "reports/audit/autoresearch_update_repro_fix.md",
+    "reports/audit/derived_provenance_fixture_fix.md",
+    "reports/audit/context_packet_remediation.md",
+    "reports/final/INTENDED_PERFORMANCE_GATE.md"
+  ],
+  "preconditions": {
+    "db_integrity_remediation_passed": true,
+    "autoresearch_repeat_update_failures_fixed": true,
+    "graph_truth_gate": {
+      "status": "passed",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "forbidden_edges_found": 0,
+      "forbidden_paths_found": 0,
+      "source_span_failures": 0,
+      "artifact_json": "reports/audit/artifacts/clean_autoresearch_pre_graph_truth.json",
+      "artifact_markdown": "reports/audit/artifacts/clean_autoresearch_pre_graph_truth.md"
+    },
+    "context_packet_gate": {
+      "status": "passed",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "critical_symbol_recall": 1.0,
+      "proof_path_coverage": 1.0,
+      "source_span_coverage": 1.0,
+      "expected_tests_recall": 1.0,
+      "distractor_ratio": 0.0,
+      "artifact_json": "reports/audit/artifacts/clean_autoresearch_pre_context_packet.json",
+      "artifact_markdown": "reports/audit/artifacts/clean_autoresearch_pre_context_packet.md"
+    }
+  },
+  "benchmarks": {
+    "cold_index": {
+      "status": "completed",
+      "target_ms": 60000,
+      "wall_ms_profile": 442145,
+      "wall_ms_shell": 676400,
+      "target_status": "fail",
+      "files_walked": 8561,
+      "files_read": 4975,
+      "files_hashed": 4975,
+      "files_parsed": 4975,
+      "files_skipped": 3586,
+      "files_metadata_unchanged": 0,
+      "entities": 1630146,
+      "edges": 3866431,
+      "source_spans": 5496577,
+      "duplicate_edges_upserted": 442,
+      "graph_fact_hash": "fnv64:bc69dbacfcb9987e",
+      "integrity_status": "ok",
+      "notes": [
+        "Cold index completed, but missed the intended 60 second target by a wide margin.",
+        "The first attempt with a relative --db path failed with access denied because it resolved under the external Autoresearch repo; the accepted run used an absolute DB path inside this workspace."
+      ]
+    },
+    "storage_audit_after_cold": {
+      "status": "ok",
+      "integrity_status": "ok",
+      "target_bytes": 262144000,
+      "database_bytes": 1712730112,
+      "file_family_bytes": 1712730112,
+      "file_family_mib": 1633.39,
+      "target_status": "fail",
+      "edge_count": 3866431,
+      "average_database_bytes_per_edge": 442.97,
+      "wal_bytes": 0,
+      "shm_bytes_observed_after_sampler": 32768,
+      "top_storage_contributors": [
+        {
+          "name": "edges",
+          "type": "table",
+          "bytes": 573857792
+        },
+        {
+          "name": "sqlite_autoindex_qualified_name_dict_1",
+          "type": "index",
+          "bytes": 218021888
+        },
+        {
+          "name": "qualified_name_dict",
+          "type": "table",
+          "bytes": 205287424
+        },
+        {
+          "name": "entities",
+          "type": "table",
+          "bytes": 117542912
+        },
+        {
+          "name": "sqlite_autoindex_object_id_dict_1",
+          "type": "index",
+          "bytes": 91865088
+        },
+        {
+          "name": "object_id_dict",
+          "type": "table",
+          "bytes": 82673664
+        },
+        {
+          "name": "idx_edges_tail_relation",
+          "type": "index",
+          "bytes": 73654272
+        },
+        {
+          "name": "idx_edges_head_relation",
+          "type": "index",
+          "bytes": 73617408
+        },
+        {
+          "name": "idx_edges_span_path",
+          "type": "index",
+          "bytes": 62033920
+        },
+        {
+          "name": "sqlite_autoindex_qname_prefix_dict_1",
+          "type": "index",
+          "bytes": 46792704
+        }
+      ],
+      "artifact_json": "reports/audit/artifacts/clean_autoresearch_storage.json",
+      "artifact_markdown": "reports/audit/artifacts/clean_autoresearch_storage.md"
+    },
+    "repeat_unchanged_index": {
+      "status": "completed",
+      "target_ms": 5000,
+      "wall_ms_profile": 13571,
+      "wall_ms_shell": 17100,
+      "target_status": "fail",
+      "files_walked": 8561,
+      "files_metadata_unchanged": 4975,
+      "files_read": 0,
+      "files_hashed": 0,
+      "files_parsed": 0,
+      "files_skipped": 8561,
+      "entities_inserted": 0,
+      "edges_inserted": 0,
+      "duplicate_edges_upserted": 0,
+      "graph_fact_hash": "fnv64:bc69dbacfcb9987e",
+      "integrity_status": "ok",
+      "artifact_storage_after_repeat_json": "reports/audit/artifacts/clean_autoresearch_storage_after_repeat.json",
+      "artifact_storage_after_repeat_markdown": "reports/audit/artifacts/clean_autoresearch_storage_after_repeat.md"
+    },
+    "single_file_update": {
+      "status": "completed",
+      "target_ms": 750,
+      "wall_ms": 80207,
+      "target_status": "fail",
+      "mutation_file": "python/autoresearch_utils/metrics_tools.py",
+      "files_walked": 1,
+      "files_read": 1,
+      "files_hashed": 1,
+      "files_parsed": 1,
+      "entities_inserted": 18,
+      "edges_inserted": 35,
+      "duplicate_edges_upserted": 0,
+      "transaction_status": "committed",
+      "integrity_status": "ok",
+      "graph_fact_hash_before": "fnv64:bc69dbacfcb9987e",
+      "graph_fact_hash_after_update": "fnv64:b3e3f999e13b467f",
+      "changed_hash_observed": true,
+      "restore_update": {
+        "wall_ms": 73249,
+        "target_status": "fail",
+        "files_walked": 1,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "entities_inserted": 17,
+        "edges_inserted": 32,
+        "duplicate_edges_upserted": 0,
+        "transaction_status": "committed",
+        "integrity_status": "ok",
+        "graph_fact_hash_after_restore": "fnv64:bc69dbacfcb9987e",
+        "restore_hash_matches_repeat": true
+      },
+      "artifact_json": "reports/audit/artifacts/clean_autoresearch_update_integrity.json",
+      "artifact_markdown": "reports/audit/artifacts/clean_autoresearch_update_integrity.md"
+    },
+    "query_latency": {
+      "context_pack": {
+        "status": "completed",
+        "target_p95_ms": 2000,
+        "p95_ms": 30315,
+        "target_status": "fail",
+        "iterations": 5,
+        "times_ms": [
+          30315,
+          27813,
+          27900,
+          27793,
+          27755
+        ],
+        "seed": "repo://e/22d1e82104748347633070eaa3072049"
+      },
+      "unresolved_calls_paginated": {
+        "status": "completed",
+        "target_p95_ms": 1000,
+        "p95_ms": 68,
+        "target_status": "pass",
+        "iterations": 20,
+        "limit": 20,
+        "times_ms": [
+          11,
+          28,
+          28,
+          30,
+          27,
+          28,
+          28,
+          28,
+          29,
+          68,
+          28,
+          30,
+          30,
+          33,
+          34,
+          73,
+          36,
+          41,
+          40,
+          61
+        ]
+      },
+      "artifact_json": "reports/audit/artifacts/clean_autoresearch_query_latency.json"
+    },
+    "relation_source_span_sampler": {
+      "status": "completed",
+      "relation_count": 43,
+      "total_edges": 3866431,
+      "sampled_relations": {
+        "CALLS": 50,
+        "READS": 50,
+        "WRITES": 50,
+        "FLOWS_TO": 50
+      },
+      "stored_path_evidence_count": 4096,
+      "sampled_path_evidence": 20,
+      "generated_path_evidence": 0,
+      "top_relation_counts": [
+        {
+          "relation": "CONTAINS",
+          "edges": 907236
+        },
+        {
+          "relation": "DEFINED_IN",
+          "edges": 897965
+        },
+        {
+          "relation": "CALLEE",
+          "edges": 524760
+        },
+        {
+          "relation": "CALLS",
+          "edges": 516392
+        },
+        {
+          "relation": "ARGUMENT_0",
+          "edges": 332104
+        },
+        {
+          "relation": "DECLARES",
+          "edges": 214406
+        },
+        {
+          "relation": "FLOWS_TO",
+          "edges": 163481
+        },
+        {
+          "relation": "ARGUMENT_1",
+          "edges": 73913
+        },
+        {
+          "relation": "DEFINES",
+          "edges": 72897
+        },
+        {
+          "relation": "IMPORTS",
+          "edges": 72626
+        }
+      ],
+      "artifacts": {
+        "relation_counts_json": "reports/audit/artifacts/clean_autoresearch_relation_counts.json",
+        "relation_counts_markdown": "reports/audit/artifacts/clean_autoresearch_relation_counts.md",
+        "sample_calls_json": "reports/audit/artifacts/clean_autoresearch_sample_CALLS.json",
+        "sample_calls_markdown": "reports/audit/artifacts/clean_autoresearch_sample_CALLS.md",
+        "sample_reads_json": "reports/audit/artifacts/clean_autoresearch_sample_READS.json",
+        "sample_reads_markdown": "reports/audit/artifacts/clean_autoresearch_sample_READS.md",
+        "sample_writes_json": "reports/audit/artifacts/clean_autoresearch_sample_WRITES.json",
+        "sample_writes_markdown": "reports/audit/artifacts/clean_autoresearch_sample_WRITES.md",
+        "sample_flows_to_json": "reports/audit/artifacts/clean_autoresearch_sample_FLOWS_TO.json",
+        "sample_flows_to_markdown": "reports/audit/artifacts/clean_autoresearch_sample_FLOWS_TO.md",
+        "sample_path_evidence_json": "reports/audit/artifacts/clean_autoresearch_sample_PathEvidence.json",
+        "sample_path_evidence_markdown": "reports/audit/artifacts/clean_autoresearch_sample_PathEvidence.md"
+      }
+    }
+  },
+  "target_results": [
+    {
+      "target": "cold_index_under_60s",
+      "status": "fail",
+      "observed": "442145 ms profile, 676400 ms shell"
+    },
+    {
+      "target": "repeat_unchanged_under_5s",
+      "status": "fail",
+      "observed": "13571 ms profile"
+    },
+    {
+      "target": "single_file_update_under_750ms",
+      "status": "fail",
+      "observed": "80207 ms"
+    },
+    {
+      "target": "db_family_under_250mib",
+      "status": "fail",
+      "observed": "1712730112 bytes"
+    },
+    {
+      "target": "context_pack_p95_under_2s",
+      "status": "fail",
+      "observed": "30315 ms"
+    },
+    {
+      "target": "unresolved_calls_page_p95_under_1s",
+      "status": "pass",
+      "observed": "68 ms"
+    },
+    {
+      "target": "db_integrity_clean",
+      "status": "pass",
+      "observed": "integrity_check ok after cold/repeat/update"
+    },
+    {
+      "target": "no_duplicate_insertion_failure",
+      "status": "pass",
+      "observed": "repeat/update duplicate_edges_upserted=0"
+    },
+    {
+      "target": "graph_truth_gate",
+      "status": "pass",
+      "observed": "11/11 fixtures passed"
+    },
+    {
+      "target": "context_packet_gate",
+      "status": "pass",
+      "observed": "11/11 fixtures passed"
+    }
+  ],
+  "verdict": "fail",
+  "verdict_reason": "The clean Autoresearch run is durability-clean and correctness/context preconditions pass, but intended large-repo indexing, update, storage, and context_pack latency targets fail.",
+  "next_required_work": [
+    "Profile cold index write time and path-evidence/source-span expansion on Autoresearch scale.",
+    "Fix context_pack large-repo source/snippet loading and path retrieval latency.",
+    "Reduce DB size only after preserving the current clean graph truth and integrity gates.",
+    "Optimize incremental single-file update transaction cost; the update is correct and clean but much too slow."
+  ]
+}

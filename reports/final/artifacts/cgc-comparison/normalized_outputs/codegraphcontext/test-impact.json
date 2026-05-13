@@ -1,0 +1,27 @@
+{
+  "files": [],
+  "symbols": [
+    "cgc",
+    "index",
+    "OPTIONS",
+    "Try",
+    "help",
+    "No",
+    "such",
+    "Got",
+    "unexpected",
+    "extra",
+    "argument",
+    "calculateTotal",
+    "arguments",
+    "adds",
+    "tax"
+  ],
+  "path_symbols": [],
+  "relation_sequence": [],
+  "source_spans": [],
+  "unsupported_fields": [],
+  "mode": "human_text",
+  "warnings": [],
+  "raw_json": null
+}

@@ -1,0 +1,1495 @@
+{
+  "db_path": "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\comprehensive_proof_cgc_recovery_20260513.sqlite",
+  "generated_at_unix_ms": 1778679815357,
+  "iterations": 20,
+  "notes": [
+    "Queries are executed against compact proof storage only.",
+    "Audit/debug sidecars are not used unless an individual query explicitly targets heuristic/debug evidence, such as unresolved-calls.",
+    "Each query includes SQL, EXPLAIN QUERY PLAN, and p50/p95/p99 timings when it compiles."
+  ],
+  "queries": [
+    {
+      "command": "codegraph-mcp query symbols <entity-name>",
+      "error": null,
+      "explain_query_plan": [
+        {
+          "detail": "CO-ROUTINE wanted_name",
+          "id": 2,
+          "parent": 0
+        },
+        {
+          "detail": "SCAN symbol_dict",
+          "id": 5,
+          "parent": 2
+        },
+        {
+          "detail": "SCAN wanted_name",
+          "id": 23,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH name USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 26,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH e USING INDEX idx_entities_name (name_id=?)",
+          "id": 32,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH qname USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 43,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH prefix USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 46,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH suffix USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 49,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH path USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 52,
+          "parent": 0
+        },
+        {
+          "detail": "USE TEMP B-TREE FOR ORDER BY",
+          "id": 88,
+          "parent": 0
+        }
+      ],
+      "id": "entity_name_lookup",
+      "notes": [
+        "Default entity-name lookup must compile and use compact proof entity dictionaries."
+      ],
+      "observed": {
+        "iterations": 20,
+        "p50_ms": 1.9463,
+        "p95_ms": 2.9471,
+        "p99_ms": 2.9471,
+        "rows_returned_last_iteration": 20,
+        "samples_ms": [
+          2.9471,
+          2.1181,
+          2.1372999999999998,
+          2.1349,
+          1.9143999999999999,
+          1.9002,
+          1.8777,
+          1.8575,
+          1.8446,
+          1.8522,
+          1.9463,
+          2.4334000000000002,
+          2.1673,
+          1.8902,
+          1.8844,
+          1.9082999999999999,
+          1.9182,
+          2.4758,
+          1.9485,
+          2.2198
+        ]
+      },
+      "query_plan_analysis": {
+        "full_scans": [
+          "SCAN symbol_dict",
+          "SCAN wanted_name"
+        ],
+        "indexes_used": [
+          "idx_entities_name",
+          "rowid=?"
+        ],
+        "uses_indexes": true
+      },
+      "sql": "WITH wanted_name AS (SELECT id FROM symbol_dict WHERE value = 'login' LIMIT 1) SELECT 'repo://e/' || lower(hex(e.entity_hash)) AS id, name.value AS name, qname.value AS qualified_name, path.value AS repo_relative_path FROM wanted_name JOIN entities e ON e.name_id = wanted_name.id JOIN symbol_dict name ON name.id = e.name_id JOIN qualified_name_lookup qname ON qname.id = e.qualified_name_id JOIN path_dict path ON path.id = e.path_id ORDER BY qname.value, e.entity_hash LIMIT 20",
+      "status": "pass",
+      "target": {
+        "p95_ms": 250.0
+      }
+    },
+    {
+      "command": "codegraph-mcp query symbols <symbol>",
+      "error": null,
+      "explain_query_plan": [
+        {
+          "detail": "CO-ROUTINE candidate_keys",
+          "id": 2,
+          "parent": 0
+        },
+        {
+          "detail": "COMPOUND QUERY",
+          "id": 3,
+          "parent": 2
+        },
+        {
+          "detail": "LEFT-MOST SUBQUERY",
+          "id": 4,
+          "parent": 3
+        },
+        {
+          "detail": "SCAN wanted",
+          "id": 8,
+          "parent": 4
+        },
+        {
+          "detail": "SEARCH e USING COVERING INDEX idx_entities_name (name_id=?)",
+          "id": 12,
+          "parent": 4
+        },
+        {
+          "detail": "UNION USING TEMP B-TREE",
+          "id": 21,
+          "parent": 3
+        },
+        {
+          "detail": "SCAN e USING COVERING INDEX idx_entities_qname",
+          "id": 26,
+          "parent": 21
+        },
+        {
+          "detail": "SEARCH qname USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 28,
+          "parent": 21
+        },
+        {
+          "detail": "SEARCH prefix USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 31,
+          "parent": 21
+        },
+        {
+          "detail": "SEARCH suffix USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 34,
+          "parent": 21
+        },
+        {
+          "detail": "SCAN e USING INDEX idx_entities_qname",
+          "id": 73,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH qname USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 77,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH suffix USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 80,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH name USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 83,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH prefix USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 86,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH path USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 89,
+          "parent": 0
+        },
+        {
+          "detail": "BLOOM FILTER ON candidate_keys (id_key=?)",
+          "id": 94,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH candidate_keys USING AUTOMATIC COVERING INDEX (id_key=?)",
+          "id": 105,
+          "parent": 0
+        },
+        {
+          "detail": "USE TEMP B-TREE FOR ORDER BY",
+          "id": 144,
+          "parent": 0
+        }
+      ],
+      "id": "symbol_lookup",
+      "notes": [
+        "Default symbol lookup must resolve object ID, name, and qualified-name paths without audit/debug sidecars."
+      ],
+      "observed": {
+        "iterations": 20,
+        "p50_ms": 191.9867,
+        "p95_ms": 226.81009999999998,
+        "p99_ms": 226.81009999999998,
+        "rows_returned_last_iteration": 20,
+        "samples_ms": [
+          191.9867,
+          191.94539999999998,
+          194.4682,
+          209.19570000000002,
+          192.281,
+          194.9388,
+          189.2237,
+          194.1553,
+          192.956,
+          199.5247,
+          226.81009999999998,
+          188.85940000000002,
+          191.7884,
+          187.441,
+          191.6149,
+          189.1498,
+          192.4639,
+          188.12789999999998,
+          190.78990000000002,
+          190.1909
+        ]
+      },
+      "query_plan_analysis": {
+        "full_scans": [
+          "SCAN wanted",
+          "SCAN e USING COVERING INDEX idx_entities_qname",
+          "SCAN e USING INDEX idx_entities_qname"
+        ],
+        "indexes_used": [
+          "idx_entities_name",
+          "idx_entities_qname",
+          "rowid=?"
+        ],
+        "uses_indexes": true
+      },
+      "sql": "WITH candidate_keys AS ( SELECT e.id_key FROM symbol_dict wanted JOIN entities e ON e.name_id = wanted.id WHERE wanted.value = 'login' UNION SELECT e.id_key FROM qualified_name_lookup wanted_qname JOIN entities e ON e.qualified_name_id = wanted_qname.id WHERE wanted_qname.value = 'login' ) SELECT 'repo://e/' || lower(hex(e.entity_hash)) AS id, name.value AS name, qname.value AS qualified_name, path.value AS repo_relative_path FROM candidate_keys JOIN entities e ON e.id_key = candidate_keys.id_key JOIN symbol_dict name ON name.id = e.name_id JOIN qualified_name_lookup qname ON qname.id = e.qualified_name_id JOIN path_dict path ON path.id = e.path_id ORDER BY qname.value, e.entity_hash LIMIT 20",
+      "status": "pass",
+      "target": {
+        "p95_ms": 250.0
+      }
+    },
+    {
+      "command": "codegraph-mcp query symbols <qualified-name>",
+      "error": null,
+      "explain_query_plan": [
+        {
+          "detail": "CO-ROUTINE wanted_qname",
+          "id": 2,
+          "parent": 0
+        },
+        {
+          "detail": "SCAN qname",
+          "id": 7,
+          "parent": 2
+        },
+        {
+          "detail": "SEARCH prefix USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 9,
+          "parent": 2
+        },
+        {
+          "detail": "SEARCH suffix USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 12,
+          "parent": 2
+        },
+        {
+          "detail": "SCAN wanted_qname",
+          "id": 60,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH e USING INDEX idx_entities_qname (qualified_name_id=?)",
+          "id": 63,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH name USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 71,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH path USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 74,
+          "parent": 0
+        },
+        {
+          "detail": "USE TEMP B-TREE FOR ORDER BY",
+          "id": 94,
+          "parent": 0
+        }
+      ],
+      "id": "qname_lookup",
+      "notes": [
+        "Default qname lookup must use compact qualified-name reconstruction."
+      ],
+      "observed": {
+        "iterations": 20,
+        "p50_ms": 19.1585,
+        "p95_ms": 19.9239,
+        "p99_ms": 19.9239,
+        "rows_returned_last_iteration": 1,
+        "samples_ms": [
+          18.8013,
+          19.5456,
+          19.1585,
+          19.9239,
+          18.5938,
+          18.8829,
+          18.6781,
+          19.4711,
+          19.219900000000003,
+          19.3342,
+          19.114099999999997,
+          18.8634,
+          18.6096,
+          19.0316,
+          19.2102,
+          19.199299999999997,
+          19.2888,
+          19.1411,
+          18.7475,
+          19.8686
+        ]
+      },
+      "query_plan_analysis": {
+        "full_scans": [
+          "SCAN qname",
+          "SCAN wanted_qname"
+        ],
+        "indexes_used": [
+          "idx_entities_qname",
+          "rowid=?"
+        ],
+        "uses_indexes": true
+      },
+      "sql": "WITH wanted_qname AS (SELECT id, value FROM qualified_name_lookup WHERE value = 'runtime::arl-codex::codex-rs::app-server::tests::suite::v2::account.set_auth_token_cancels_active_chatgpt_login.login' LIMIT 1) SELECT 'repo://e/' || lower(hex(e.entity_hash)) AS id, name.value AS name, wanted_qname.value AS qualified_name, path.value AS repo_relative_path FROM wanted_qname JOIN entities e ON e.qualified_name_id = wanted_qname.id JOIN symbol_dict name ON name.id = e.name_id JOIN path_dict path ON path.id = e.path_id ORDER BY e.entity_hash LIMIT 20",
+      "status": "pass",
+      "target": {
+        "p95_ms": 250.0
+      }
+    },
+    {
+      "command": "codegraph-mcp query text <query>",
+      "error": null,
+      "explain_query_plan": [
+        {
+          "detail": "SCAN stage0_fts VIRTUAL TABLE INDEX 0:M6",
+          "id": 4,
+          "parent": 0
+        },
+        {
+          "detail": "USE TEMP B-TREE FOR ORDER BY",
+          "id": 24,
+          "parent": 0
+        }
+      ],
+      "id": "text_fts_query",
+      "notes": [
+        "Proof-mode text query must use compact FTS or fail explicitly."
+      ],
+      "observed": {
+        "iterations": 20,
+        "p50_ms": 0.0474,
+        "p95_ms": 0.1939,
+        "p99_ms": 0.1939,
+        "rows_returned_last_iteration": 4,
+        "samples_ms": [
+          0.1939,
+          0.0709,
+          0.053,
+          0.05450000000000001,
+          0.0703,
+          0.0543,
+          0.0491,
+          0.0482,
+          0.047299999999999995,
+          0.0477,
+          0.0466,
+          0.0474,
+          0.0472,
+          0.046900000000000004,
+          0.0462,
+          0.0468,
+          0.0471,
+          0.047299999999999995,
+          0.0467,
+          0.0466
+        ]
+      },
+      "query_plan_analysis": {
+        "full_scans": [
+          "SCAN stage0_fts VIRTUAL TABLE INDEX 0:M6"
+        ],
+        "indexes_used": [],
+        "uses_indexes": false
+      },
+      "sql": "SELECT kind, id, repo_relative_path, line, title, bm25(stage0_fts) AS rank FROM stage0_fts WHERE stage0_fts MATCH '\"scripts\"' ORDER BY rank, kind, id LIMIT 20",
+      "status": "pass",
+      "target": {
+        "p95_ms": 500.0
+      }
+    },
+    {
+      "command": "codegraph-mcp query callers/callees <symbol>",
+      "error": null,
+      "explain_query_plan": [
+        {
+          "detail": "MATERIALIZE object_id_lookup",
+          "id": 3,
+          "parent": 0
+        },
+        {
+          "detail": "COMPOUND QUERY",
+          "id": 5,
+          "parent": 3
+        },
+        {
+          "detail": "LEFT-MOST SUBQUERY",
+          "id": 6,
+          "parent": 5
+        },
+        {
+          "detail": "SCAN e USING INDEX idx_entities_qname",
+          "id": 10,
+          "parent": 6
+        },
+        {
+          "detail": "SEARCH debug USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+          "id": 14,
+          "parent": 6
+        },
+        {
+          "detail": "UNION ALL",
+          "id": 33,
+          "parent": 5
+        },
+        {
+          "detail": "SCAN debug",
+          "id": 35,
+          "parent": 33
+        },
+        {
+          "detail": "CORRELATED SCALAR SUBQUERY 7",
+          "id": 38,
+          "parent": 33
+        },
+        {
+          "detail": "SEARCH e USING PRIMARY KEY (id_key=?)",
+          "id": 42,
+          "parent": 38
+        },
+        {
+          "detail": "UNION ALL",
+          "id": 56,
+          "parent": 5
+        },
+        {
+          "detail": "SCAN history",
+          "id": 58,
+          "parent": 56
+        },
+        {
+          "detail": "CORRELATED SCALAR SUBQUERY 4",
+          "id": 61,
+          "parent": 56
+        },
+        {
+          "detail": "SEARCH e USING PRIMARY KEY (id_key=?)",
+          "id": 65,
+          "parent": 61
+        },
+        {
+          "detail": "CORRELATED SCALAR SUBQUERY 5",
+          "id": 75,
+          "parent": 56
+        },
+        {
+          "detail": "SEARCH debug USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 79,
+          "parent": 75
+        },
+        {
+          "detail": "SCAN e",
+          "id": 103,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH span_path USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 105,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH relation USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 108,
+          "parent": 0
+        },
+        {
+          "detail": "BLOOM FILTER ON head (id=?)",
+          "id": 117,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH head USING AUTOMATIC COVERING INDEX (id=?)",
+          "id": 127,
+          "parent": 0
+        },
+        {
+          "detail": "BLOOM FILTER ON tail (id=?)",
+          "id": 135,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH tail USING AUTOMATIC COVERING INDEX (id=?)",
+          "id": 145,
+          "parent": 0
+        }
+      ],
+      "id": "relation_query_calls",
+      "notes": [
+        "Bounded CALLS relation lookup must use proof edges and compact compatibility views."
+      ],
+      "observed": {
+        "iterations": 20,
+        "p50_ms": 227.9569,
+        "p95_ms": 236.4741,
+        "p99_ms": 236.4741,
+        "rows_returned_last_iteration": 50,
+        "samples_ms": [
+          230.69410000000002,
+          225.53889999999998,
+          225.42319999999998,
+          229.7676,
+          236.4741,
+          231.933,
+          227.9967,
+          229.7522,
+          225.9813,
+          228.97590000000002,
+          225.0554,
+          222.8568,
+          224.0829,
+          228.089,
+          227.9569,
+          226.6607,
+          229.6992,
+          225.45399999999998,
+          227.1918,
+          225.21169999999998
+        ]
+      },
+      "query_plan_analysis": {
+        "full_scans": [
+          "SCAN e USING INDEX idx_entities_qname",
+          "SCAN debug",
+          "SCAN history",
+          "SCAN e"
+        ],
+        "indexes_used": [
+          "idx_entities_qname",
+          "rowid=?"
+        ],
+        "uses_indexes": true
+      },
+      "sql": "SELECT e.id_key, head.value AS head_id, tail.value AS tail_id, relation.value AS relation, span_path.value AS source_span_path, e.start_line, e.end_line FROM edges_compat e JOIN relation_kind_dict relation ON relation.id = e.relation_id JOIN object_id_lookup head ON head.id = e.head_id_key JOIN object_id_lookup tail ON tail.id = e.tail_id_key JOIN path_dict span_path ON span_path.id = e.span_path_id WHERE relation.value = 'CALLS' ORDER BY e.id_key LIMIT 50",
+      "status": "pass",
+      "target": {
+        "p95_ms": 500.0
+      }
+    },
+    {
+      "command": "codegraph-mcp query impact/proof relation READS|WRITES",
+      "error": null,
+      "explain_query_plan": [
+        {
+          "detail": "MATERIALIZE object_id_lookup",
+          "id": 3,
+          "parent": 0
+        },
+        {
+          "detail": "COMPOUND QUERY",
+          "id": 5,
+          "parent": 3
+        },
+        {
+          "detail": "LEFT-MOST SUBQUERY",
+          "id": 6,
+          "parent": 5
+        },
+        {
+          "detail": "SCAN e USING INDEX idx_entities_qname",
+          "id": 10,
+          "parent": 6
+        },
+        {
+          "detail": "SEARCH debug USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+          "id": 14,
+          "parent": 6
+        },
+        {
+          "detail": "UNION ALL",
+          "id": 33,
+          "parent": 5
+        },
+        {
+          "detail": "SCAN debug",
+          "id": 35,
+          "parent": 33
+        },
+        {
+          "detail": "CORRELATED SCALAR SUBQUERY 7",
+          "id": 38,
+          "parent": 33
+        },
+        {
+          "detail": "SEARCH e USING PRIMARY KEY (id_key=?)",
+          "id": 42,
+          "parent": 38
+        },
+        {
+          "detail": "UNION ALL",
+          "id": 56,
+          "parent": 5
+        },
+        {
+          "detail": "SCAN history",
+          "id": 58,
+          "parent": 56
+        },
+        {
+          "detail": "CORRELATED SCALAR SUBQUERY 4",
+          "id": 61,
+          "parent": 56
+        },
+        {
+          "detail": "SEARCH e USING PRIMARY KEY (id_key=?)",
+          "id": 65,
+          "parent": 61
+        },
+        {
+          "detail": "CORRELATED SCALAR SUBQUERY 5",
+          "id": 75,
+          "parent": 56
+        },
+        {
+          "detail": "SEARCH debug USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 79,
+          "parent": 75
+        },
+        {
+          "detail": "SCAN e",
+          "id": 103,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH span_path USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 105,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH relation USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 108,
+          "parent": 0
+        },
+        {
+          "detail": "BLOOM FILTER ON head (id=?)",
+          "id": 118,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH head USING AUTOMATIC COVERING INDEX (id=?)",
+          "id": 128,
+          "parent": 0
+        },
+        {
+          "detail": "BLOOM FILTER ON tail (id=?)",
+          "id": 136,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH tail USING AUTOMATIC COVERING INDEX (id=?)",
+          "id": 146,
+          "parent": 0
+        }
+      ],
+      "id": "relation_query_reads_writes",
+      "notes": [
+        "Bounded READS/WRITES lookup must compile against compact proof edges."
+      ],
+      "observed": {
+        "iterations": 20,
+        "p50_ms": 228.49249999999998,
+        "p95_ms": 238.2054,
+        "p99_ms": 238.2054,
+        "rows_returned_last_iteration": 50,
+        "samples_ms": [
+          230.79649999999998,
+          235.76659999999998,
+          228.5186,
+          238.2054,
+          231.2448,
+          228.49249999999998,
+          227.8069,
+          229.48250000000002,
+          225.0376,
+          227.3492,
+          225.8272,
+          226.7886,
+          229.79410000000001,
+          228.33120000000002,
+          226.5961,
+          227.2149,
+          227.7797,
+          228.18949999999998,
+          232.4307,
+          230.1967
+        ]
+      },
+      "query_plan_analysis": {
+        "full_scans": [
+          "SCAN e USING INDEX idx_entities_qname",
+          "SCAN debug",
+          "SCAN history",
+          "SCAN e"
+        ],
+        "indexes_used": [
+          "idx_entities_qname",
+          "rowid=?"
+        ],
+        "uses_indexes": true
+      },
+      "sql": "SELECT e.id_key, head.value AS head_id, tail.value AS tail_id, relation.value AS relation, span_path.value AS source_span_path, e.start_line, e.end_line FROM edges_compat e JOIN relation_kind_dict relation ON relation.id = e.relation_id JOIN object_id_lookup head ON head.id = e.head_id_key JOIN object_id_lookup tail ON tail.id = e.tail_id_key JOIN path_dict span_path ON span_path.id = e.span_path_id WHERE relation.value IN ('READS', 'WRITES') ORDER BY e.id_key LIMIT 50",
+      "status": "pass",
+      "target": {
+        "p95_ms": 500.0
+      }
+    },
+    {
+      "command": "context_pack stored PathEvidence lookup",
+      "error": null,
+      "explain_query_plan": [
+        {
+          "detail": "SCAN l USING INDEX sqlite_autoindex_path_evidence_lookup_1",
+          "id": 7,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH p USING INDEX sqlite_autoindex_path_evidence_1 (id=?)",
+          "id": 10,
+          "parent": 0
+        },
+        {
+          "detail": "USE TEMP B-TREE FOR ORDER BY",
+          "id": 32,
+          "parent": 0
+        }
+      ],
+      "id": "path_evidence_lookup",
+      "notes": [
+        "Stored PathEvidence lookup must use proof-mode materialized lookup tables."
+      ],
+      "observed": {
+        "iterations": 20,
+        "p50_ms": 2.5799,
+        "p95_ms": 4.4428,
+        "p99_ms": 4.4428,
+        "rows_returned_last_iteration": 50,
+        "samples_ms": [
+          4.4428,
+          2.5799,
+          2.4726000000000004,
+          2.4036999999999997,
+          2.5982000000000003,
+          2.6153999999999997,
+          2.7683,
+          2.4428,
+          2.4345,
+          2.4502,
+          2.5869999999999997,
+          2.9064,
+          3.106,
+          2.5397000000000003,
+          2.4589999999999996,
+          2.4339,
+          2.4702,
+          2.4129,
+          2.6181,
+          3.1123000000000003
+        ]
+      },
+      "query_plan_analysis": {
+        "full_scans": [
+          "SCAN l USING INDEX sqlite_autoindex_path_evidence_lookup_1"
+        ],
+        "indexes_used": [
+          "sqlite_autoindex_path_evidence_1",
+          "sqlite_autoindex_path_evidence_lookup_1"
+        ],
+        "uses_indexes": true
+      },
+      "sql": "SELECT l.path_id, p.source, p.target, l.relation_signature, l.length, l.confidence FROM path_evidence_lookup l JOIN path_evidence p ON p.id = l.path_id ORDER BY l.confidence DESC, l.length ASC, l.path_id LIMIT 50",
+      "status": "pass",
+      "target": {
+        "p95_ms": 500.0
+      }
+    },
+    {
+      "command": "context_pack source snippet batch load",
+      "error": null,
+      "explain_query_plan": [
+        {
+          "detail": "CO-ROUTINE (subquery-2)",
+          "id": 2,
+          "parent": 0
+        },
+        {
+          "detail": "COMPOUND QUERY",
+          "id": 3,
+          "parent": 2
+        },
+        {
+          "detail": "LEFT-MOST SUBQUERY",
+          "id": 4,
+          "parent": 3
+        },
+        {
+          "detail": "SCAN e",
+          "id": 7,
+          "parent": 4
+        },
+        {
+          "detail": "SEARCH path USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 11,
+          "parent": 4
+        },
+        {
+          "detail": "UNION ALL",
+          "id": 21,
+          "parent": 3
+        },
+        {
+          "detail": "SCAN s",
+          "id": 24,
+          "parent": 21
+        },
+        {
+          "detail": "SEARCH path USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 28,
+          "parent": 21
+        },
+        {
+          "detail": "SCAN (subquery-2)",
+          "id": 42,
+          "parent": 0
+        },
+        {
+          "detail": "USE TEMP B-TREE FOR DISTINCT",
+          "id": 64,
+          "parent": 0
+        },
+        {
+          "detail": "USE TEMP B-TREE FOR ORDER BY",
+          "id": 65,
+          "parent": 0
+        }
+      ],
+      "id": "source_snippet_batch_load",
+      "notes": [
+        "Source snippets must load from source files using proof-edge/source-span rows, not redundant SQLite snippet storage."
+      ],
+      "observed": {
+        "iterations": 20,
+        "p50_ms": 48.897999999999996,
+        "p95_ms": 51.3703,
+        "p99_ms": 51.3703,
+        "rows_returned_last_iteration": 50,
+        "samples_ms": [
+          49.8984,
+          51.3703,
+          48.804,
+          48.5036,
+          49.949,
+          49.503,
+          48.9645,
+          49.0902,
+          48.0854,
+          49.278099999999995,
+          48.897999999999996,
+          48.059999999999995,
+          49.604099999999995,
+          47.451899999999995,
+          48.4609,
+          48.3173,
+          48.0299,
+          47.6972,
+          48.1097,
+          49.2144
+        ]
+      },
+      "query_plan_analysis": {
+        "full_scans": [
+          "SCAN e",
+          "SCAN s",
+          "SCAN (subquery-2)"
+        ],
+        "indexes_used": [
+          "rowid=?"
+        ],
+        "uses_indexes": true
+      },
+      "sql": "SELECT DISTINCT repo_relative_path, start_line, start_column, end_line, end_column FROM ( SELECT path.value AS repo_relative_path, e.start_line, e.start_column, e.end_line, e.end_column FROM edges_compat e JOIN path_dict path ON path.id = e.span_path_id WHERE e.start_line > 0 UNION ALL SELECT path.value AS repo_relative_path, s.start_line, s.start_column, s.end_line, s.end_column FROM source_spans s JOIN path_dict path ON path.id = s.path_id WHERE s.start_line > 0 ) ORDER BY repo_relative_path, start_line, end_line LIMIT 50",
+      "status": "pass",
+      "target": {
+        "p95_ms": 500.0
+      }
+    },
+    {
+      "command": "codegraph-mcp context-pack --mode normal",
+      "error": null,
+      "explain_query_plan": [
+        {
+          "name": "load_stored_path_evidence_for_context_pack",
+          "plan": [
+            {
+              "detail": "SEARCH s USING COVERING INDEX idx_path_evidence_symbols_entity (entity_id=?)",
+              "id": 6,
+              "parent": 0
+            },
+            {
+              "detail": "SEARCH p USING INDEX sqlite_autoindex_path_evidence_1 (id=?)",
+              "id": 10,
+              "parent": 0
+            },
+            {
+              "detail": "USE TEMP B-TREE FOR ORDER BY",
+              "id": 28,
+              "parent": 0
+            }
+          ],
+          "sql": "SELECT p.id FROM path_evidence p JOIN path_evidence_symbols s ON s.path_id = p.id WHERE s.entity_id = 'repo://e/example' ORDER BY p.confidence DESC, p.length ASC, p.id LIMIT 256",
+          "status": "ok"
+        },
+        {
+          "name": "load_bounded_edges_for_context_pack_fallback",
+          "plan": [
+            {
+              "detail": "MATERIALIZE object_id_lookup",
+              "id": 3,
+              "parent": 0
+            },
+            {
+              "detail": "COMPOUND QUERY",
+              "id": 5,
+              "parent": 3
+            },
+            {
+              "detail": "LEFT-MOST SUBQUERY",
+              "id": 6,
+              "parent": 5
+            },
+            {
+              "detail": "SCAN e USING INDEX idx_entities_qname",
+              "id": 10,
+              "parent": 6
+            },
+            {
+              "detail": "SEARCH debug USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+              "id": 14,
+              "parent": 6
+            },
+            {
+              "detail": "UNION ALL",
+              "id": 33,
+              "parent": 5
+            },
+            {
+              "detail": "SCAN debug",
+              "id": 35,
+              "parent": 33
+            },
+            {
+              "detail": "CORRELATED SCALAR SUBQUERY 6",
+              "id": 38,
+              "parent": 33
+            },
+            {
+              "detail": "SEARCH e USING PRIMARY KEY (id_key=?)",
+              "id": 42,
+              "parent": 38
+            },
+            {
+              "detail": "UNION ALL",
+              "id": 56,
+              "parent": 5
+            },
+            {
+              "detail": "SCAN history",
+              "id": 58,
+              "parent": 56
+            },
+            {
+              "detail": "CORRELATED SCALAR SUBQUERY 3",
+              "id": 61,
+              "parent": 56
+            },
+            {
+              "detail": "SEARCH e USING PRIMARY KEY (id_key=?)",
+              "id": 65,
+              "parent": 61
+            },
+            {
+              "detail": "CORRELATED SCALAR SUBQUERY 4",
+              "id": 75,
+              "parent": 56
+            },
+            {
+              "detail": "SEARCH debug USING INTEGER PRIMARY KEY (rowid=?)",
+              "id": 79,
+              "parent": 75
+            },
+            {
+              "detail": "SCAN e USING INDEX idx_edges_head_relation",
+              "id": 103,
+              "parent": 0
+            },
+            {
+              "detail": "SEARCH relation USING INTEGER PRIMARY KEY (rowid=?)",
+              "id": 107,
+              "parent": 0
+            },
+            {
+              "detail": "BLOOM FILTER ON head (id=?)",
+              "id": 134,
+              "parent": 0
+            },
+            {
+              "detail": "SEARCH head USING AUTOMATIC COVERING INDEX (id=?)",
+              "id": 144,
+              "parent": 0
+            },
+            {
+              "detail": "BLOOM FILTER ON tail (id=?)",
+              "id": 152,
+              "parent": 0
+            },
+            {
+              "detail": "SEARCH tail USING AUTOMATIC COVERING INDEX (id=?)",
+              "id": 162,
+              "parent": 0
+            },
+            {
+              "detail": "USE TEMP B-TREE FOR ORDER BY",
+              "id": 185,
+              "parent": 0
+            }
+          ],
+          "sql": "SELECT e.id_key FROM edges e JOIN object_id_lookup head ON head.id = e.head_id_key JOIN object_id_lookup tail ON tail.id = e.tail_id_key JOIN relation_kind_dict relation ON relation.id = e.relation_id WHERE (head.value = 'repo://e/example' OR tail.value = 'repo://e/example') AND relation.value IN ('CALLS', 'READS', 'WRITES', 'FLOWS_TO') ORDER BY e.confidence DESC, e.id_key LIMIT 256",
+          "status": "ok"
+        }
+      ],
+      "id": "context_pack_normal",
+      "notes": [
+        "Normal context_pack must use proof-mode stored PathEvidence first and keep source-span labels."
+      ],
+      "observed": {
+        "iterations": 20,
+        "p50_ms": 128.7582,
+        "p95_ms": 140.2593,
+        "p99_ms": 140.2593,
+        "rows_returned_last_iteration": 1,
+        "samples_ms": [
+          131.8635,
+          130.0462,
+          132.6062,
+          140.2593,
+          130.9049,
+          127.67439999999999,
+          128.1177,
+          129.0222,
+          127.9708,
+          126.95899999999999,
+          128.7582,
+          128.2738,
+          128.795,
+          128.68959999999998,
+          128.46620000000001,
+          127.7953,
+          128.9243,
+          126.9691,
+          128.3719,
+          128.9653
+        ]
+      },
+      "query_plan_analysis": {
+        "full_scans": [],
+        "indexes_used": [],
+        "uses_indexes": false
+      },
+      "sql": "context_pack normal stored-PathEvidence query path",
+      "status": "pass",
+      "target": {
+        "p95_ms": 2000.0
+      }
+    },
+    {
+      "command": "codegraph-mcp query unresolved-calls --limit 20",
+      "error": null,
+      "explain_query_plan": [
+        {
+          "detail": "MATERIALIZE object_id_lookup",
+          "id": 3,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "COMPOUND QUERY",
+          "id": 5,
+          "notused": 0,
+          "parent": 3
+        },
+        {
+          "detail": "LEFT-MOST SUBQUERY",
+          "id": 6,
+          "notused": 0,
+          "parent": 5
+        },
+        {
+          "detail": "SCAN e USING INDEX idx_entities_qname",
+          "id": 10,
+          "notused": 0,
+          "parent": 6
+        },
+        {
+          "detail": "SEARCH debug USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+          "id": 14,
+          "notused": 0,
+          "parent": 6
+        },
+        {
+          "detail": "UNION ALL",
+          "id": 33,
+          "notused": 0,
+          "parent": 5
+        },
+        {
+          "detail": "SCAN debug",
+          "id": 35,
+          "notused": 0,
+          "parent": 33
+        },
+        {
+          "detail": "CORRELATED SCALAR SUBQUERY 6",
+          "id": 38,
+          "notused": 0,
+          "parent": 33
+        },
+        {
+          "detail": "SEARCH e USING PRIMARY KEY (id_key=?)",
+          "id": 42,
+          "notused": 0,
+          "parent": 38
+        },
+        {
+          "detail": "UNION ALL",
+          "id": 56,
+          "notused": 0,
+          "parent": 5
+        },
+        {
+          "detail": "SCAN history",
+          "id": 58,
+          "notused": 0,
+          "parent": 56
+        },
+        {
+          "detail": "CORRELATED SCALAR SUBQUERY 3",
+          "id": 61,
+          "notused": 0,
+          "parent": 56
+        },
+        {
+          "detail": "SEARCH e USING PRIMARY KEY (id_key=?)",
+          "id": 65,
+          "notused": 0,
+          "parent": 61
+        },
+        {
+          "detail": "CORRELATED SCALAR SUBQUERY 4",
+          "id": 75,
+          "notused": 0,
+          "parent": 56
+        },
+        {
+          "detail": "SEARCH debug USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 79,
+          "notused": 0,
+          "parent": 75
+        },
+        {
+          "detail": "MATERIALIZE qualified_name_lookup",
+          "id": 100,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SCAN qname",
+          "id": 105,
+          "notused": 0,
+          "parent": 100
+        },
+        {
+          "detail": "SEARCH prefix USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 107,
+          "notused": 0,
+          "parent": 100
+        },
+        {
+          "detail": "SEARCH suffix USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 110,
+          "notused": 0,
+          "parent": 100
+        },
+        {
+          "detail": "MATERIALIZE qualified_name_lookup",
+          "id": 139,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SCAN qname",
+          "id": 144,
+          "notused": 0,
+          "parent": 139
+        },
+        {
+          "detail": "SEARCH prefix USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 146,
+          "notused": 0,
+          "parent": 139
+        },
+        {
+          "detail": "SEARCH suffix USING INTEGER PRIMARY KEY (rowid=?)",
+          "id": 149,
+          "notused": 0,
+          "parent": 139
+        },
+        {
+          "detail": "SEARCH e USING INDEX idx_heuristic_edges_relation (relation=?)",
+          "id": 201,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "BLOOM FILTER ON head_oid (value=?)",
+          "id": 211,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH head_oid USING AUTOMATIC COVERING INDEX (value=?) LEFT-JOIN",
+          "id": 221,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "BLOOM FILTER ON tail_oid (value=?)",
+          "id": 230,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH tail_oid USING AUTOMATIC COVERING INDEX (value=?) LEFT-JOIN",
+          "id": 240,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH head USING PRIMARY KEY (id_key=?) LEFT-JOIN",
+          "id": 247,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH head_kind USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+          "id": 255,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH head_name USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+          "id": 260,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "BLOOM FILTER ON head_qname (id=?)",
+          "id": 269,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH head_qname USING AUTOMATIC COVERING INDEX (id=?) LEFT-JOIN",
+          "id": 281,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH head_path USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+          "id": 290,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH head_span_path USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+          "id": 295,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH head_extractor USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+          "id": 300,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SCAN head_static USING INDEX idx_static_references_path LEFT-JOIN",
+          "id": 305,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH tail USING PRIMARY KEY (id_key=?) LEFT-JOIN",
+          "id": 314,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH tail_kind USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+          "id": 322,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH tail_name USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+          "id": 327,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "BLOOM FILTER ON tail_qname (id=?)",
+          "id": 336,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH tail_qname USING AUTOMATIC COVERING INDEX (id=?) LEFT-JOIN",
+          "id": 348,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH tail_path USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+          "id": 357,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH tail_span_path USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+          "id": 362,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SEARCH tail_extractor USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+          "id": 367,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "SCAN tail_static USING INDEX idx_static_references_path LEFT-JOIN",
+          "id": 372,
+          "notused": 0,
+          "parent": 0
+        },
+        {
+          "detail": "USE TEMP B-TREE FOR ORDER BY",
+          "id": 607,
+          "notused": 0,
+          "parent": 0
+        }
+      ],
+      "id": "unresolved_calls_paginated",
+      "notes": [
+        "Unresolved-calls pagination may read the heuristic/debug sidecar by design, but it must remain explicit and bounded.",
+        "Query completed but returned zero rows on this artifact; latency is still measured."
+      ],
+      "observed": {
+        "iterations": 20,
+        "p50_ms": 92.0298,
+        "p95_ms": 98.3916,
+        "p99_ms": 98.3916,
+        "rows_returned_last_iteration": 0,
+        "samples_ms": [
+          92.4793,
+          92.0224,
+          93.808,
+          91.5488,
+          92.2761,
+          92.0298,
+          93.311,
+          91.0862,
+          92.3863,
+          92.2841,
+          91.7494,
+          91.933,
+          91.78890000000001,
+          89.8655,
+          91.0591,
+          98.3916,
+          90.56110000000001,
+          93.3375,
+          90.26639999999999,
+          93.429
+        ]
+      },
+      "query_plan_analysis": {
+        "full_scans": [
+          "SCAN e USING INDEX idx_entities_qname",
+          "SCAN debug",
+          "SCAN history",
+          "SCAN qname",
+          "SCAN qname",
+          "SCAN head_static USING INDEX idx_static_references_path LEFT-JOIN",
+          "SCAN tail_static USING INDEX idx_static_references_path LEFT-JOIN"
+        ],
+        "indexes_used": [
+          "idx_entities_qname",
+          "idx_heuristic_edges_relation",
+          "idx_static_references_path",
+          "rowid=?"
+        ],
+        "uses_indexes": true
+      },
+      "sql": "SELECT e.edge_id AS edge_id, e.head_id AS head_id, e.relation AS relation, e.tail_id AS tail_id, e.source_span_path AS span_repo_relative_path, e.start_line, e.start_column, e.end_line, e.end_column, e.repo_commit, e.file_hash AS file_hash, e.extractor AS extractor, e.confidence, e.exactness AS exactness, e.derived, e.provenance_edges_json, e.metadata_json AS edge_metadata_json, COALESCE(head_kind.value, head_static.kind, 'Function') AS head_kind, COALESCE(head_name.value, head_static.name, e.head_id) AS head_name, COALESCE(head_qname.value, head_static.qualified_name, e.head_id) AS head_qualified_name, COALESCE(head_path.value, head_static.repo_relative_path, e.source_span_path) AS head_repo_relative_path, COALESCE(head_span_path.value, head_static.source_span_path) AS head_span_repo_relative_path, head.start_line AS head_start_line, head.start_column AS head_start_column, head.end_line AS head_end_line, head.end_column AS head_end_column, COALESCE(head_extractor.value, head_static.created_from, 'heuristic_sidecar') AS head_created_from, COALESCE(head.confidence, head_static.confidence, e.confidence) AS head_confidence, COALESCE(head.metadata_json, head_static.metadata_json, '{}') AS head_metadata_json, COALESCE(tail_kind.value, tail_static.kind, 'Function') AS tail_kind, COALESCE(tail_name.value, tail_static.name, e.tail_id) AS tail_name, COALESCE(tail_qname.value, tail_static.qualified_name, e.tail_id) AS tail_qualified_name, COALESCE(tail_path.value, tail_static.repo_relative_path, e.source_span_path) AS tail_repo_relative_path, COALESCE(tail_span_path.value, tail_static.source_span_path) AS tail_span_repo_relative_path, COALESCE(tail.start_line, tail_static.start_line) AS tail_start_line, COALESCE(tail.start_column, tail_static.start_column) AS tail_start_column, COALESCE(tail.end_line, tail_static.end_line) AS tail_end_line, COALESCE(tail.end_column, tail_static.end_column) AS tail_end_column, COALESCE(tail_extractor.value, tail_static.created_from, 'heuristic_sidecar') AS tail_created_from, COALESCE(tail.confidence, tail_static.confidence, e.confidence) AS tail_confidence, COALESCE(tail.metadata_json, tail_static.metadata_json, '{}') AS tail_metadata_json FROM heuristic_edges e LEFT JOIN object_id_lookup head_oid ON head_oid.value = e.head_id LEFT JOIN object_id_lookup tail_oid ON tail_oid.value = e.tail_id LEFT JOIN entities head ON head.id_key = head_oid.id LEFT JOIN entity_kind_dict head_kind ON head_kind.id = head.kind_id LEFT JOIN symbol_dict head_name ON head_name.id = head.name_id LEFT JOIN qualified_name_lookup head_qname ON head_qname.id = head.qualified_name_id LEFT JOIN path_dict head_path ON head_path.id = head.path_id LEFT JOIN path_dict head_span_path ON head_span_path.id = head.span_path_id LEFT JOIN extractor_dict head_extractor ON head_extractor.id = head.created_from_id LEFT JOIN static_references head_static ON head_static.entity_id = e.head_id LEFT JOIN entities tail ON tail.id_key = tail_oid.id LEFT JOIN entity_kind_dict tail_kind ON tail_kind.id = tail.kind_id LEFT JOIN symbol_dict tail_name ON tail_name.id = tail.name_id LEFT JOIN qualified_name_lookup tail_qname ON tail_qname.id = tail.qualified_name_id LEFT JOIN path_dict tail_path ON tail_path.id = tail.path_id LEFT JOIN path_dict tail_span_path ON tail_span_path.id = tail.span_path_id LEFT JOIN extractor_dict tail_extractor ON tail_extractor.id = tail.created_from_id LEFT JOIN static_references tail_static ON tail_static.entity_id = e.tail_id WHERE e.relation = 'CALLS' AND ( e.exactness = 'static_heuristic' OR lower(COALESCE(e.metadata_json, '')) LIKE '%unresolved%' OR lower(COALESCE(tail_static.metadata_json, tail.metadata_json, '')) LIKE '%unresolved%' OR lower(COALESCE(tail_static.created_from, tail_extractor.value, '')) LIKE '%heuristic%' OR lower(COALESCE(tail_static.name, tail_name.value, '')) LIKE '%unknown_callee%' OR COALESCE(tail_static.qualified_name, tail_qname.value, '') LIKE 'static_reference:%' ) ORDER BY e.id_key LIMIT ?1 OFFSET ?2",
+      "status": "pass",
+      "target": {
+        "p95_ms": 1000.0
+      }
+    }
+  ],
+  "repo_root": "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\..\\autoresearch-codexlab",
+  "schema_version": 1,
+  "seeds": {
+    "context_seed": "repo://e/34aea3539f6507f9adc0d24e4f73dc17",
+    "entity_id": "repo://e/239cdc2027f7b21bb52f8ea49c5d7785",
+    "entity_name": "login",
+    "fts_query": "\"scripts\"",
+    "qname": "runtime::arl-codex::codex-rs::app-server::tests::suite::v2::account.set_auth_token_cancels_active_chatgpt_login.login",
+    "status": "ok",
+    "symbol_query": "login"
+  },
+  "status": "passed",
+  "storage_mode": "proof",
+  "summary": {
+    "all_default_queries_complete": true,
+    "elapsed_ms": 19213,
+    "failed_queries": 0,
+    "passed_queries": 10
+  }
+}

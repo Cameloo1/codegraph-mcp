@@ -1,0 +1,56 @@
+cgc.exe : +--------------------- Traceback (most recent call last) ---------------------+
+At line:11 char:180
++ ... name.meta.json"; $s=Get-Date; & $cgc @argList 1> $out 2> $err; $code= ...
++                                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (+--------------...--------------+:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+| <REPO_ROOT>/Desktop\development\codegraph-mcp\target\cgc-competitor\.ven |
+| v312-pypi\Lib\site-packages\codegraphcontext\cli\main.py:1094 in stats      |
+|                                                                             |
+|   1091     If a path is provided, shows stats for that specific repository. |
+|   1092     Otherwise, shows overall database statistics.                    |
+|   1093     """                                                              |
+| > 1094     _load_credentials()                                              |
+|   1095     if path:                                                         |
+|   1096         path = str(Path(path).resolve())                             |
+|   1097     stats_helper(path, context)                                      |
+|                                                                             |
+| <REPO_ROOT>/Desktop\development\codegraph-mcp\target\cgc-competitor\.ven |
+| v312-pypi\Lib\site-packages\codegraphcontext\cli\main.py:310 in             |
+| _load_credentials                                                           |
+|                                                                             |
+|    307     )                                                                |
+|    308                                                                      |
+|    309     # Ensure config directory exists (lazy initialization)           |
+| >  310     ensure_config_dir()                                              |
+|    311                                                                      |
+|    312     # Snapshot runtime environment BEFORE merging config files.      |
+|    313     # These values must remain highest priority.                     |
+|                                                                             |
+| <REPO_ROOT>/Desktop\development\codegraph-mcp\target\cgc-competitor\.ven |
+| v312-pypi\Lib\site-packages\codegraphcontext\cli\config_manager.py:178 in   |
+| ensure_config_dir                                                           |
+|                                                                             |
+|    175     Ensure that the configuration directory exists.                  |
+|    176     Creates the directory and a logs subdirectory if they do not     |
+|        already exist.                                                       |
+|    177     """                                                              |
+| >  178     path.mkdir(parents=True, exist_ok=True)                          |
+|    179     (path / "logs").mkdir(parents=True, exist_ok=True)               |
+|    180                                                                      |
+|    181                                                                      |
+|                                                                             |
+| <REPO_ROOT>/.cache\codex-runtimes\codex-primary-runtime\dependencies\pyt |
+| hon\Lib\pathlib.py:1311 in mkdir                                            |
+|                                                                             |
+|   1308         Create a new directory at this given path.                   |
+|   1309         """                                                          |
+|   1310         try:                                                         |
+| > 1311             os.mkdir(self, mode)                                     |
+|   1312         except FileNotFoundError:                                    |
+|   1313             if not parents or self.parent == self:                   |
+|   1314                 raise                                                |
++-----------------------------------------------------------------------------+
+PermissionError: [WinError 5] Access is denied: 
+'<REPO_ROOT>/.codegraphcontext'

@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "report_id": "content_template_dedupe",
+  "generated_at_local": "2026-05-12 03:56:17 -05:00",
+  "verdict": "correctness_passed_storage_target_failed",
+  "gates": {
+    "graph_truth": {
+      "status": "passed",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "artifact_json": "reports/audit/artifacts/content_template_dedupe_graph_truth.json"
+    },
+    "context_packet": {
+      "status": "passed",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "critical_symbol_recall": 1.0,
+      "proof_path_coverage": 1.0,
+      "source_span_coverage": 1.0,
+      "expected_test_recall": 1.0,
+      "artifact_json": "reports/audit/artifacts/content_template_dedupe_context_packet.json"
+    },
+    "full_rust_tests": {
+      "status": "passed",
+      "command": "cargo test"
+    }
+  },
+  "autoresearch": {
+    "repo_path": "<REPO_ROOT>/Desktop\\development\\autoresearch-codexlab",
+    "db_path": "reports/audit/artifacts/content_template_dedupe_autoresearch_v7.sqlite",
+    "workers": 4,
+    "files_seen": 8561,
+    "source_candidates": 4975,
+    "files_read": 4975,
+    "files_hashed": 4975,
+    "files_parsed": 2555,
+    "duplicate_local_analyses_skipped": 2420,
+    "files_indexed": 4975,
+    "source_content_templates": 2718,
+    "physical_entities": 89407,
+    "template_entities": 653819,
+    "physical_proof_edges": 31848,
+    "template_proof_edges": 169290,
+    "relation_compatible_facts": 170114,
+    "path_evidence_rows": 4096,
+    "cold_index_wall_ms": 2894484,
+    "db_family_bytes": 336203776,
+    "previous_compact_proof_bytes": 376135680,
+    "bytes_saved": 39931904,
+    "mib_saved": 38.08,
+    "target_savings_mib": 150.0,
+    "target_savings_status": "fail",
+    "target_db_bytes": 262144000,
+    "gap_to_target_bytes": 74059776,
+    "integrity_status": "ok"
+  },
+  "four_question_storage_rule": {
+    "graph_truth_still_passed": true,
+    "context_packet_still_passed": true,
+    "proof_db_size_decreased": true,
+    "removed_data_accounted_for": "partly: duplicate proof facts are templated and high-cardinality structural/callsite template edges are excluded as non-proof for current gates; duplicate structural relation compatibility remains a follow-up risk"
+  },
+  "artifacts": {
+    "storage_json": "reports/audit/artifacts/content_template_dedupe_storage.json",
+    "storage_markdown": "reports/audit/artifacts/content_template_dedupe_storage.md",
+    "relation_counts_json": "reports/audit/artifacts/content_template_dedupe_relation_counts.json",
+    "relation_counts_markdown": "reports/audit/artifacts/content_template_dedupe_relation_counts.md"
+  }
+}

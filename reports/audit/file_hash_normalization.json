@@ -1,0 +1,125 @@
+{
+  "generated_at": "2026-05-11 20:35:37 -05:00",
+  "verdict": "passed",
+  "storage_rule": {
+    "graph_truth_passed": true,
+    "context_packet_quality_passed": true,
+    "proof_db_size_decreased": true,
+    "removed_data_accounted_for": "repeated fact-row file_hash text moved to canonical files.content_hash referenced by file_id"
+  },
+  "schema_version": 10,
+  "canonical_file_table": {
+    "table": "files",
+    "columns": [
+      "file_id",
+      "path_id",
+      "content_hash",
+      "mtime_unix_ms",
+      "size_bytes",
+      "language_id",
+      "indexed_at_unix_ms",
+      "content_template_id",
+      "metadata_json"
+    ],
+    "hash_storage": "single canonical files.content_hash string per file snapshot"
+  },
+  "normalized_fact_tables": [
+    "entities",
+    "edges",
+    "structural_relations",
+    "callsites",
+    "callsite_args"
+  ],
+  "storage": {
+    "before_db": "reports/audit/artifacts/dictionary_index_compaction_autoresearch_sim.sqlite",
+    "after_db": "reports/audit/artifacts/file_hash_norm_storage_experiments/run-1778549197305/vacuum_analyze/codegraph.sqlite",
+    "before_database_bytes": 860700672,
+    "after_database_bytes": 743514112,
+    "saved_bytes": 117186560,
+    "saved_mib": 111.76,
+    "before_average_database_bytes_per_edge": 1006.54,
+    "after_average_database_bytes_per_edge": 869.54,
+    "integrity_before": "ok",
+    "integrity_after": "ok",
+    "table_deltas": [
+      {
+        "name": "entities",
+        "rows": 1630146,
+        "before_bytes": 119382016,
+        "after_bytes": 81223680,
+        "delta_bytes": -38158336
+      },
+      {
+        "name": "edges",
+        "rows": 855108,
+        "before_bytes": 131022848,
+        "after_bytes": 113274880,
+        "delta_bytes": -17747968
+      },
+      {
+        "name": "structural_relations",
+        "rows": 2019607,
+        "before_bytes": 139460608,
+        "after_bytes": 98189312,
+        "delta_bytes": -41271296
+      },
+      {
+        "name": "callsites",
+        "rows": 524760,
+        "before_bytes": 41451520,
+        "after_bytes": 30814208,
+        "delta_bytes": -10637312
+      },
+      {
+        "name": "callsite_args",
+        "rows": 466956,
+        "before_bytes": 33017856,
+        "after_bytes": 23576576,
+        "delta_bytes": -9441280
+      },
+      {
+        "name": "files",
+        "rows": 4975,
+        "before_bytes": 1466368,
+        "after_bytes": 1470464,
+        "delta_bytes": 4096
+      }
+    ]
+  },
+  "gates": {
+    "graph_truth": {
+      "status": "passed",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "matched_forbidden_edges": 0,
+      "matched_forbidden_paths": 0,
+      "source_span_failures": 0,
+      "stale_failures": 0,
+      "artifact_json": "reports/audit/artifacts/file_hash_normalization_graph_truth.json"
+    },
+    "context_packet": {
+      "status": "passed",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "critical_symbol_recall": 1.0,
+      "proof_path_coverage": 1.0,
+      "source_span_coverage": 1.0,
+      "expected_test_recall": 1.0,
+      "distractor_ratio": 0.0,
+      "artifact_json": "reports/audit/artifacts/file_hash_normalization_context_packet.json"
+    },
+    "update_integrity": {
+      "status": "passed",
+      "artifact_json": "reports/audit/artifacts/file_hash_normalization_update_integrity.json"
+    },
+    "rust_tests": {
+      "cargo_test": "passed",
+      "cargo_test_p_codegraph_store": "passed"
+    }
+  },
+  "notes": [
+    "The original Autoresearch artifact was not mutated.",
+    "Migration and VACUUM measurements used copied DBs only.",
+    "The canonical hash remains a string in files.content_hash for API compatibility; this removes the repeated fact-row payload while leaving optional BLOB encoding as a later small optimization."
+  ]
+}

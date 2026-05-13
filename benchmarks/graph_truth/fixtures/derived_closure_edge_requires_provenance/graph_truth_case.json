@@ -1,0 +1,631 @@
+{
+  "schema_version": 1,
+  "case_id": "derived_closure_edge_requires_provenance",
+  "description": "Derived closure edges require provenance.",
+  "repo_fixture_path": "benchmarks/graph_truth/fixtures/derived_closure_edge_requires_provenance/repo",
+  "task_prompt": "Explain whether submitOrder may mutate ordersTable.",
+  "expected_entities": [
+    {
+      "selector": {
+        "qualified_name": "src/service.submitOrder",
+        "kind": "Function",
+        "source_file": "src/service.ts",
+        "context": "production"
+      },
+      "kind": "Function",
+      "context": "production",
+      "source_file": "src/service.ts"
+    },
+    {
+      "selector": {
+        "qualified_name": "src/store.saveOrder",
+        "kind": "Function",
+        "source_file": "src/store.ts",
+        "context": "production"
+      },
+      "kind": "Function",
+      "context": "production",
+      "source_file": "src/store.ts"
+    },
+    {
+      "selector": {
+        "qualified_name": "src/store.ordersTable",
+        "kind": "Table",
+        "source_file": "src/store.ts",
+        "context": "production"
+      },
+      "kind": "Table",
+      "context": "production",
+      "source_file": "src/store.ts"
+    }
+  ],
+  "expected_edges": [
+    {
+      "id": "edge://derived/base-call",
+      "head": {
+        "qualified_name": "src/service.submitOrder",
+        "kind": "Function",
+        "source_file": "src/service.ts",
+        "context": "production"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "qualified_name": "src/store.saveOrder",
+        "kind": "Function",
+        "source_file": "src/store.ts",
+        "context": "production"
+      },
+      "source_file": "src/service.ts",
+      "source_span": {
+        "start_line": 4,
+        "start_column": 10,
+        "end_line": 4,
+        "end_column": 26,
+        "expected_text": "saveOrder(order)",
+        "syntax_role": "callsite"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "hand_labeled_fixture",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "hand_labeled_fixture",
+      "direction": "head_to_tail"
+    },
+    {
+      "id": "edge://derived/base-write",
+      "head": {
+        "qualified_name": "src/store.saveOrder",
+        "kind": "Function",
+        "source_file": "src/store.ts",
+        "context": "production"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "qualified_name": "src/store.ordersTable",
+        "kind": "Table",
+        "source_file": "src/store.ts",
+        "context": "production"
+      },
+      "source_file": "src/store.ts",
+      "source_span": {
+        "start_line": 4,
+        "start_column": 10,
+        "end_line": 4,
+        "end_column": 21,
+        "expected_text": "ordersTable",
+        "syntax_role": "mutation"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified",
+          "static_heuristic"
+        ],
+        "minimum": "static_heuristic",
+        "proof_grade_required": false,
+        "confidence_floor": 0.5
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "hand_labeled_fixture",
+      "exactness": {
+        "allowed": [
+          "parser_verified",
+          "static_heuristic"
+        ],
+        "minimum": "static_heuristic",
+        "proof_grade_required": false,
+        "confidence_floor": 0.5
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "hand_labeled_fixture",
+      "direction": "head_to_tail"
+    },
+    {
+      "id": "edge://derived/may-mutate",
+      "head": {
+        "qualified_name": "src/service.submitOrder",
+        "kind": "Function",
+        "source_file": "src/service.ts",
+        "context": "production"
+      },
+      "relation": "MAY_MUTATE",
+      "tail": {
+        "qualified_name": "src/store.ordersTable",
+        "kind": "Table",
+        "source_file": "src/store.ts",
+        "context": "production"
+      },
+      "source_file": "src/service.ts",
+      "source_span": {
+        "start_line": 4,
+        "start_column": 10,
+        "end_line": 4,
+        "end_column": 26,
+        "expected_text": "saveOrder(order)",
+        "syntax_role": "callsite"
+      },
+      "exactness_required": {
+        "allowed": [
+          "derived_from_verified_edges"
+        ],
+        "minimum": "derived_from_verified_edges",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": true,
+      "provenance_required": true,
+      "extractor_kind": "hand_labeled_derived_closure",
+      "exactness": {
+        "allowed": [
+          "derived_from_verified_edges"
+        ],
+        "minimum": "derived_from_verified_edges",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": true,
+      "provenance_edges": [
+        "edge://derived/base-call",
+        "edge://derived/base-write"
+      ],
+      "extractor": "hand_labeled_derived_closure",
+      "direction": "head_to_tail"
+    }
+  ],
+  "forbidden_edges": [
+    {
+      "id": "edge://derived/base-exact-shortcut",
+      "head": {
+        "qualified_name": "src/service.submitOrder",
+        "kind": "Function",
+        "source_file": "src/service.ts",
+        "context": "production"
+      },
+      "relation": "MAY_MUTATE",
+      "tail": {
+        "qualified_name": "src/store.ordersTable",
+        "kind": "Table",
+        "source_file": "src/store.ts",
+        "context": "production"
+      },
+      "source_file": "src/service.ts",
+      "source_span": {
+        "start_line": 4,
+        "start_column": 10,
+        "end_line": 4,
+        "end_column": 26,
+        "expected_text": "saveOrder(order)",
+        "syntax_role": "callsite"
+      },
+      "exactness_required": {
+        "allowed": [
+          "exact",
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "forbidden_base_shortcut",
+      "exactness": {
+        "allowed": [
+          "exact",
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "forbidden_base_shortcut",
+      "direction": "head_to_tail"
+    }
+  ],
+  "expected_paths": [
+    {
+      "path_id": "path://derived/provenance",
+      "description": "submitOrder reaches ordersTable through base edges.",
+      "source": {
+        "qualified_name": "src/service.submitOrder",
+        "kind": "Function",
+        "source_file": "src/service.ts",
+        "context": "production"
+      },
+      "target": {
+        "qualified_name": "src/store.ordersTable",
+        "kind": "Table",
+        "source_file": "src/store.ts",
+        "context": "production"
+      },
+      "ordered_edges": [
+        {
+          "id": "edge://derived/base-call",
+          "head": {
+            "qualified_name": "src/service.submitOrder",
+            "kind": "Function",
+            "source_file": "src/service.ts",
+            "context": "production"
+          },
+          "relation": "CALLS",
+          "tail": {
+            "qualified_name": "src/store.saveOrder",
+            "kind": "Function",
+            "source_file": "src/store.ts",
+            "context": "production"
+          },
+          "source_file": "src/service.ts",
+          "source_span": {
+            "start_line": 4,
+            "start_column": 10,
+            "end_line": 4,
+            "end_column": 26,
+            "expected_text": "saveOrder(order)",
+            "syntax_role": "callsite"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "hand_labeled_fixture",
+          "exactness": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "hand_labeled_fixture",
+          "direction": "head_to_tail"
+        },
+        {
+          "id": "edge://derived/base-write",
+          "head": {
+            "qualified_name": "src/store.saveOrder",
+            "kind": "Function",
+            "source_file": "src/store.ts",
+            "context": "production"
+          },
+          "relation": "WRITES",
+          "tail": {
+            "qualified_name": "src/store.ordersTable",
+            "kind": "Table",
+            "source_file": "src/store.ts",
+            "context": "production"
+          },
+          "source_file": "src/store.ts",
+          "source_span": {
+            "start_line": 4,
+            "start_column": 10,
+            "end_line": 4,
+            "end_column": 21,
+            "expected_text": "ordersTable",
+            "syntax_role": "mutation"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified",
+              "static_heuristic"
+            ],
+            "minimum": "static_heuristic",
+            "proof_grade_required": false,
+            "confidence_floor": 0.5
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "hand_labeled_fixture",
+          "exactness": {
+            "allowed": [
+              "parser_verified",
+              "static_heuristic"
+            ],
+            "minimum": "static_heuristic",
+            "proof_grade_required": false,
+            "confidence_floor": 0.5
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "hand_labeled_fixture",
+          "direction": "head_to_tail"
+        }
+      ],
+      "relation_sequence": [
+        "CALLS",
+        "WRITES"
+      ],
+      "max_length": 2,
+      "source_span_required": true,
+      "production_only": true,
+      "derived_allowed": false,
+      "provenance_required": false,
+      "required_source_spans": [
+        {
+          "edge_ref": "edge://derived/base-call",
+          "source_file": "src/service.ts",
+          "span": {
+            "start_line": 4,
+            "start_column": 10,
+            "end_line": 4,
+            "end_column": 26,
+            "expected_text": "saveOrder(order)",
+            "syntax_role": "callsite"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "saveOrder(order)",
+          "syntax_role": "callsite"
+        },
+        {
+          "edge_ref": "edge://derived/base-write",
+          "source_file": "src/store.ts",
+          "span": {
+            "start_line": 4,
+            "start_column": 10,
+            "end_line": 4,
+            "end_column": 21,
+            "expected_text": "ordersTable",
+            "syntax_role": "mutation"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "ordersTable",
+          "syntax_role": "mutation"
+        }
+      ],
+      "context": "production",
+      "allow_test_mock_edges": false,
+      "derived_edges_require_provenance": true,
+      "proof_grade": true
+    }
+  ],
+  "forbidden_paths": [
+    {
+      "path_id": "path://derived/base-shortcut",
+      "description": "MAY_MUTATE must not be a base exact fact.",
+      "source": {
+        "qualified_name": "src/service.submitOrder",
+        "kind": "Function",
+        "source_file": "src/service.ts",
+        "context": "production"
+      },
+      "target": {
+        "qualified_name": "src/store.ordersTable",
+        "kind": "Table",
+        "source_file": "src/store.ts",
+        "context": "production"
+      },
+      "ordered_edges": [
+        {
+          "id": "edge://derived/base-exact-shortcut",
+          "head": {
+            "qualified_name": "src/service.submitOrder",
+            "kind": "Function",
+            "source_file": "src/service.ts",
+            "context": "production"
+          },
+          "relation": "MAY_MUTATE",
+          "tail": {
+            "qualified_name": "src/store.ordersTable",
+            "kind": "Table",
+            "source_file": "src/store.ts",
+            "context": "production"
+          },
+          "source_file": "src/service.ts",
+          "source_span": {
+            "start_line": 4,
+            "start_column": 10,
+            "end_line": 4,
+            "end_column": 26,
+            "expected_text": "saveOrder(order)",
+            "syntax_role": "callsite"
+          },
+          "exactness_required": {
+            "allowed": [
+              "exact",
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "forbidden_base_shortcut",
+          "exactness": {
+            "allowed": [
+              "exact",
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "forbidden_base_shortcut",
+          "direction": "head_to_tail"
+        }
+      ],
+      "relation_sequence": [
+        "MAY_MUTATE"
+      ],
+      "max_length": 1,
+      "source_span_required": true,
+      "production_only": true,
+      "derived_allowed": false,
+      "provenance_required": false,
+      "required_source_spans": [
+        {
+          "edge_ref": "edge://derived/base-exact-shortcut",
+          "source_file": "src/service.ts",
+          "span": {
+            "start_line": 4,
+            "start_column": 10,
+            "end_line": 4,
+            "end_column": 26,
+            "expected_text": "saveOrder(order)",
+            "syntax_role": "callsite"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "saveOrder(order)",
+          "syntax_role": "callsite"
+        }
+      ],
+      "context": "production",
+      "allow_test_mock_edges": false,
+      "derived_edges_require_provenance": true,
+      "proof_grade": false
+    }
+  ],
+  "expected_source_spans": [
+    {
+      "edge_ref": "edge://derived/base-call",
+      "source_file": "src/service.ts",
+      "span": {
+        "start_line": 4,
+        "start_column": 10,
+        "end_line": 4,
+        "end_column": 26,
+        "expected_text": "saveOrder(order)",
+        "syntax_role": "callsite"
+      },
+      "must_resolve_to_text": true,
+      "expected_text": "saveOrder(order)",
+      "syntax_role": "callsite"
+    },
+    {
+      "edge_ref": "edge://derived/base-write",
+      "source_file": "src/store.ts",
+      "span": {
+        "start_line": 4,
+        "start_column": 10,
+        "end_line": 4,
+        "end_column": 21,
+        "expected_text": "ordersTable",
+        "syntax_role": "mutation"
+      },
+      "must_resolve_to_text": true,
+      "expected_text": "ordersTable",
+      "syntax_role": "mutation"
+    },
+    {
+      "edge_ref": "edge://derived/may-mutate",
+      "source_file": "src/service.ts",
+      "span": {
+        "start_line": 4,
+        "start_column": 10,
+        "end_line": 4,
+        "end_column": 26,
+        "expected_text": "saveOrder(order)",
+        "syntax_role": "callsite"
+      },
+      "must_resolve_to_text": true,
+      "expected_text": "saveOrder(order)",
+      "syntax_role": "callsite"
+    }
+  ],
+  "expected_context_symbols": [
+    {
+      "symbol": {
+        "qualified_name": "src/service.submitOrder",
+        "kind": "Function",
+        "source_file": "src/service.ts",
+        "context": "production"
+      },
+      "critical": true,
+      "source_file": "src/service.ts",
+      "reason": "Source of derived impact"
+    },
+    {
+      "symbol": {
+        "qualified_name": "src/store.ordersTable",
+        "kind": "Table",
+        "source_file": "src/store.ts",
+        "context": "production"
+      },
+      "critical": true,
+      "source_file": "src/store.ts",
+      "reason": "Mutation target"
+    }
+  ],
+  "forbidden_context_symbols": [],
+  "expected_tests": [],
+  "forbidden_tests": [],
+  "mutation_steps": [],
+  "performance_expectations": {
+    "schema_validation_100_cases_max_ms": 1000,
+    "index_time_ms_max": 10000
+  },
+  "notes": [
+    "Catches derived/cache fact inflation and missing provenance."
+  ],
+  "failure_rules": {
+    "missing_required_edge_fails": true,
+    "forbidden_edge_appearing_fails": true,
+    "wrong_direction_fails": true,
+    "missing_source_span_fails_for_proof_grade_edge": true,
+    "unresolved_name_labeled_exact_fails": true,
+    "mock_or_test_edge_in_production_proof_path_fails": true,
+    "derived_edge_without_provenance_fails": true,
+    "stale_edge_after_edit_fails": true,
+    "same_name_symbol_collision_fails": true,
+    "critical_symbol_missing_from_context_packet_fails": true,
+    "forbidden_context_symbol_included_fails": true,
+    "expected_test_omitted_fails": true,
+    "too_many_distractors_fail_if_threshold_specified": true
+  },
+  "distractor_policy": {
+    "max_context_distractors": 0,
+    "max_symbol_distractors": 0,
+    "distractor_symbols": [],
+    "count_scope": "context_packet"
+  }
+}

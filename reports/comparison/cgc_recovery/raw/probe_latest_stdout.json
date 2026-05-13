@@ -1,0 +1,248 @@
+{
+    "schema_version":  1,
+    "generated_at":  "2026-05-13T07:56:31.1859710-05:00",
+    "source_of_truth":  "MVP.md",
+    "os":  "Microsoft Windows NT 10.0.26200.0",
+    "shell":  "PowerShell",
+    "powershell":  "5.1.26100.8457",
+    "working_directory":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+    "codegraph_git_commit":  "",
+    "rust":  "rustc 1.95.0 (59807616e 2026-04-14)",
+    "cargo":  "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+    "python_versions":  {
+                            "python":  "Python 3.14.4",
+                            "python3":  "Python 3.14.4",
+                            "py_launcher_error":  "executable not found: py"
+                        },
+    "pip_versions":  {
+                         "python_pip":  "pip 26.0.1 from <REPO_ROOT>/AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\pip (python 3.14)"
+                     },
+    "cgc_executable_path":  "",
+    "codegraphcontext_executable_path":  "",
+    "env_CGC_COMPETITOR_BIN":  null,
+    "benchmark_timeout_ms":  60000,
+    "current_cgc_candidates":  [
+                                   {
+                                       "path":  "target/cgc-competitor/.venv312-pypi/Scripts/cgc.exe",
+                                       "exists":  true
+                                   },
+                                   {
+                                       "path":  "target/cgc-competitor/.venv312-pypi/Scripts/codegraphcontext.exe",
+                                       "exists":  true
+                                   },
+                                   {
+                                       "path":  ".tools/cgc_recovery/venv/Scripts/cgc.exe",
+                                       "exists":  false
+                                   },
+                                   {
+                                       "path":  ".tools/cgc_recovery/venv/Scripts/codegraphcontext.exe",
+                                       "exists":  false
+                                   }
+                               ],
+    "command_logs":  [
+                         {
+                             "name":  "phase0_rustc_version",
+                             "command":  "rustc --version",
+                             "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+                             "exit_code":  0,
+                             "timed_out":  false,
+                             "started_at":  "2026-05-13T07:56:25.1218071-05:00",
+                             "ended_at":  "2026-05-13T07:56:25.2388039-05:00",
+                             "duration_ms":  117,
+                             "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase0_rustc_version.stdout.txt",
+                             "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase0_rustc_version.stderr.txt"
+                         },
+                         {
+                             "name":  "phase0_cargo_version",
+                             "command":  "cargo --version",
+                             "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+                             "exit_code":  0,
+                             "timed_out":  false,
+                             "started_at":  "2026-05-13T07:56:25.3043242-05:00",
+                             "ended_at":  "2026-05-13T07:56:25.3343249-05:00",
+                             "duration_ms":  30,
+                             "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase0_cargo_version.stdout.txt",
+                             "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase0_cargo_version.stderr.txt"
+                         },
+                         {
+                             "name":  "phase0_where_python",
+                             "command":  "where.exe python",
+                             "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+                             "exit_code":  1,
+                             "timed_out":  false,
+                             "started_at":  "2026-05-13T07:56:25.3363238-05:00",
+                             "ended_at":  "2026-05-13T07:56:25.3653206-05:00",
+                             "duration_ms":  29,
+                             "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase0_where_python.stdout.txt",
+                             "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase0_where_python.stderr.txt"
+                         },
+                         {
+                             "name":  "phase0_python_version",
+                             "command":  "python --version",
+                             "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+                             "exit_code":  0,
+                             "timed_out":  false,
+                             "started_at":  "2026-05-13T07:56:25.3673222-05:00",
+                             "ended_at":  "2026-05-13T07:56:25.3793209-05:00",
+                             "duration_ms":  12,
+                             "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase0_python_version.stdout.txt",
+                             "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase0_python_version.stderr.txt"
+                         },
+                         {
+                             "name":  "phase0_python_pip_version",
+                             "command":  "python -m pip --version",
+                             "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+                             "exit_code":  0,
+                             "timed_out":  false,
+                             "started_at":  "2026-05-13T07:56:25.3813202-05:00",
+                             "ended_at":  "2026-05-13T07:56:26.0613277-05:00",
+                             "duration_ms":  680,
+                             "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase0_python_pip_version.stdout.txt",
+                             "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase0_python_pip_version.stderr.txt"
+                         },
+                         {
+                             "name":  "phase0_where_python3",
+                             "command":  "where.exe python3",
+                             "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+                             "exit_code":  1,
+                             "timed_out":  false,
+                             "started_at":  "2026-05-13T07:56:26.0633269-05:00",
+                             "ended_at":  "2026-05-13T07:56:26.0943290-05:00",
+                             "duration_ms":  31,
+                             "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase0_where_python3.stdout.txt",
+                             "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase0_where_python3.stderr.txt"
+                         },
+                         {
+                             "name":  "phase0_python3_version",
+                             "command":  "python3 --version",
+                             "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+                             "exit_code":  0,
+                             "timed_out":  false,
+                             "started_at":  "2026-05-13T07:56:26.0973283-05:00",
+                             "ended_at":  "2026-05-13T07:56:26.1083241-05:00",
+                             "duration_ms":  11,
+                             "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase0_python3_version.stdout.txt",
+                             "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase0_python3_version.stderr.txt"
+                         },
+                         {
+                             "name":  "phase0_py_launcher",
+                             "command":  "py -0p",
+                             "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+                             "exit_code":  127,
+                             "timed_out":  false,
+                             "started_at":  "2026-05-13T07:56:26.1103207-05:00",
+                             "ended_at":  "2026-05-13T07:56:26.9612076-05:00",
+                             "duration_ms":  851,
+                             "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase0_py_launcher.stdout.txt",
+                             "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase0_py_launcher.stderr.txt"
+                         },
+                         {
+                             "name":  "phase0_where_cgc",
+                             "command":  "where.exe cgc",
+                             "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+                             "exit_code":  1,
+                             "timed_out":  false,
+                             "started_at":  "2026-05-13T07:56:26.9632073-05:00",
+                             "ended_at":  "2026-05-13T07:56:26.9921998-05:00",
+                             "duration_ms":  29,
+                             "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase0_where_cgc.stdout.txt",
+                             "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase0_where_cgc.stderr.txt"
+                         },
+                         {
+                             "name":  "phase0_where_codegraphcontext",
+                             "command":  "where.exe codegraphcontext",
+                             "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+                             "exit_code":  1,
+                             "timed_out":  false,
+                             "started_at":  "2026-05-13T07:56:26.9942086-05:00",
+                             "ended_at":  "2026-05-13T07:56:27.0246318-05:00",
+                             "duration_ms":  30,
+                             "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase0_where_codegraphcontext.stdout.txt",
+                             "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase0_where_codegraphcontext.stderr.txt"
+                         },
+                         {
+                             "name":  "phase0_git_rev_parse_head",
+                             "command":  "git rev-parse HEAD",
+                             "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+                             "exit_code":  128,
+                             "timed_out":  false,
+                             "started_at":  "2026-05-13T07:56:27.0266460-05:00",
+                             "ended_at":  "2026-05-13T07:56:27.0546466-05:00",
+                             "duration_ms":  28,
+                             "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase0_git_rev_parse_head.stdout.txt",
+                             "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase0_git_rev_parse_head.stderr.txt"
+                         },
+                         {
+                             "name":  "phase1_existing_cgc_version",
+                             "command":  "target/cgc-competitor/.venv312-pypi/Scripts/cgc.exe --version",
+                             "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+                             "exit_code":  0,
+                             "timed_out":  false,
+                             "started_at":  "2026-05-13T07:56:27.0566466-05:00",
+                             "ended_at":  "2026-05-13T07:56:27.8388989-05:00",
+                             "duration_ms":  782,
+                             "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase1_existing_cgc_version.stdout.txt",
+                             "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase1_existing_cgc_version.stderr.txt"
+                         },
+                         {
+                             "name":  "phase1_existing_cgc_help",
+                             "command":  "target/cgc-competitor/.venv312-pypi/Scripts/cgc.exe --help",
+                             "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+                             "exit_code":  0,
+                             "timed_out":  false,
+                             "started_at":  "2026-05-13T07:56:27.8408980-05:00",
+                             "ended_at":  "2026-05-13T07:56:28.6164321-05:00",
+                             "duration_ms":  776,
+                             "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase1_existing_cgc_help.stdout.txt",
+                             "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase1_existing_cgc_help.stderr.txt"
+                         },
+                         {
+                             "name":  "phase1_existing_cgc_help_subcommand",
+                             "command":  "target/cgc-competitor/.venv312-pypi/Scripts/cgc.exe help",
+                             "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+                             "exit_code":  0,
+                             "timed_out":  false,
+                             "started_at":  "2026-05-13T07:56:28.6184402-05:00",
+                             "ended_at":  "2026-05-13T07:56:29.4522626-05:00",
+                             "duration_ms":  834,
+                             "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase1_existing_cgc_help_subcommand.stdout.txt",
+                             "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase1_existing_cgc_help_subcommand.stderr.txt"
+                         },
+                         {
+                             "name":  "phase1_existing_venv_python_version",
+                             "command":  "target/cgc-competitor/.venv312-pypi/Scripts/python.exe --version",
+                             "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+                             "exit_code":  0,
+                             "timed_out":  false,
+                             "started_at":  "2026-05-13T07:56:29.4542667-05:00",
+                             "ended_at":  "2026-05-13T07:56:29.4692572-05:00",
+                             "duration_ms":  15,
+                             "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase1_existing_venv_python_version.stdout.txt",
+                             "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase1_existing_venv_python_version.stderr.txt"
+                         },
+                         {
+                             "name":  "phase1_existing_venv_pip_show_cgc",
+                             "command":  "target/cgc-competitor/.venv312-pypi/Scripts/python.exe -m pip show cgc",
+                             "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+                             "exit_code":  1,
+                             "timed_out":  false,
+                             "started_at":  "2026-05-13T07:56:29.4712582-05:00",
+                             "ended_at":  "2026-05-13T07:56:29.7552580-05:00",
+                             "duration_ms":  284,
+                             "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase1_existing_venv_pip_show_cgc.stdout.txt",
+                             "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase1_existing_venv_pip_show_cgc.stderr.txt"
+                         },
+                         {
+                             "name":  "phase1_existing_venv_pip_freeze",
+                             "command":  "target/cgc-competitor/.venv312-pypi/Scripts/python.exe -m pip freeze",
+                             "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+                             "exit_code":  0,
+                             "timed_out":  false,
+                             "started_at":  "2026-05-13T07:56:29.7572611-05:00",
+                             "ended_at":  "2026-05-13T07:56:31.1819649-05:00",
+                             "duration_ms":  1425,
+                             "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase1_existing_venv_pip_freeze.stdout.txt",
+                             "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase1_existing_venv_pip_freeze.stderr.txt"
+                         }
+                     ]
+}

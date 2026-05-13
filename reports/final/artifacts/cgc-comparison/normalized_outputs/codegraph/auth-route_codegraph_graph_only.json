@@ -1,0 +1,67 @@
+{
+  "files": [
+    "src/routes.ts",
+    "src/security.ts"
+  ],
+  "symbols": [
+    "e/18dc811b2157fb4a743715b44c56a384",
+    "e/43c300869746264762b2cfda57f09805",
+    "e/485708e4be74db4b6da91b01754676a1",
+    "e/e2063857c455334c27277cace8072596",
+    "e/34c1dae51a82bf845072f1ef04042ac6",
+    "e/327e93fd499f2e1ca923f0fadec47a5e",
+    "e/61d7abd614e498b74d9f10196374830d",
+    "e/c4858063218562379c6d011c0a1b3fc5",
+    "e/b12bbe062e78956bae213cd3ac43dea1",
+    "e/3b9006bc0ba803bd346a440403170d5f",
+    "e/7cd9ed304ce29d6ddafea02a559aa6ef",
+    "e/1ef27cd17a41a775e07416b9007aaee3",
+    "e/3847e174de0f2a9bb693e058fa387ac9",
+    "e/1d88414bce87b1d1b7566dac391f2b07",
+    "e/2fd2ea58658b582d0bd6990f4b1b8e2b",
+    "e/2a4c7b768193c2e8be63b402cebe4b3e",
+    "e/c10d1407347080b0c8be6ca7486a4c86",
+    "e/7ceefe249785077c6d088b0359d5a202",
+    "e/72af2dd33550de9b3e1240f3e582f9b9",
+    "e/2425749a72f82bc97f30e6dd02b1ccff",
+    "e/9d355bdaa7123e07e9313f52704c28d5",
+    "e/e836b76f6af688a91273f5478966f1cb",
+    "e/d7117befca3ba464f50b1737b6a1aa82",
+    "e/540ae89ebd2fb530c550e9ba2161bb26",
+    "e/0aaf7ad7b58de7c19a7a84999e82cad3",
+    "e/12b87075b9c4bb882add72efb641143e",
+    "e/8ad9be182e1123cd9f016d6f9bab4853",
+    "e/03f21f8df4eb16836f35be7ed183b315"
+  ],
+  "path_symbols": [
+    "e/18dc811b2157fb4a743715b44c56a384",
+    "e/43c300869746264762b2cfda57f09805",
+    "e/485708e4be74db4b6da91b01754676a1",
+    "e/e2063857c455334c27277cace8072596",
+    "e/34c1dae51a82bf845072f1ef04042ac6",
+    "e/327e93fd499f2e1ca923f0fadec47a5e",
+    "e/61d7abd614e498b74d9f10196374830d",
+    "e/c4858063218562379c6d011c0a1b3fc5",
+    "e/b12bbe062e78956bae213cd3ac43dea1",
+    "e/3b9006bc0ba803bd346a440403170d5f",
+    "e/7cd9ed304ce29d6ddafea02a559aa6ef"
+  ],
+  "relation_sequence": [
+    "CALLS",
+    "READS",
+    "FLOWS_TO"
+  ],
+  "source_spans": [
+    "src/routes.ts:4:3-4:24",
+    "src/routes.ts:5:3-5:31",
+    "src/routes.ts:5:13-5:16",
+    "src/routes.ts:4:20-4:23",
+    "src/routes.ts:5:23-5:30",
+    "src/routes.ts:5:13-5:21",
+    "src/routes.ts:6:10-6:22"
+  ],
+  "unsupported_fields": [],
+  "mode": "json",
+  "warnings": [],
+  "raw_json": null
+}

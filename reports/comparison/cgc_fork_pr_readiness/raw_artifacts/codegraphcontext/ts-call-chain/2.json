@@ -1,0 +1,16 @@
+{
+  "executable": "target\\cgc-fork-py312-wrapper.cmd",
+  "args": [
+    "--database",
+    "kuzudb",
+    "analyze",
+    "callers",
+    "postInvoice"
+  ],
+  "cwd": "reports\\comparison\\cgc_fork_pr_readiness\\fixtures\\ts-call-chain",
+  "stdout": "Resolving context...\r\nInitializing services and database connection...\r\nServices initialized.\r\n",
+  "stderr": "No configuration file found. Using defaults.\r\nUsing database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))\r\nNo callers found for 'postInvoice'\r\n",
+  "exit_code": 0,
+  "latency_ms": 1044,
+  "timed_out": false
+}

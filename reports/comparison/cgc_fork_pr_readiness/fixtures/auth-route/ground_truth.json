@@ -1,0 +1,30 @@
+{
+  "task_id": "auth-route",
+  "query_text": "Find the auth and role-check path for adminRoute",
+  "expected_files": [
+    "src/routes.ts",
+    "src/security.ts"
+  ],
+  "expected_symbols": [
+    "adminRoute",
+    "authorizeRequest",
+    "checkRole"
+  ],
+  "expected_relation_sequence": [
+    "EXPOSES",
+    "CALLS",
+    "AUTHORIZES",
+    "CHECKS_ROLE"
+  ],
+  "expected_path_symbols": [
+    "adminRoute",
+    "authorizeRequest",
+    "checkRole"
+  ],
+  "critical_source_spans": [
+    "src/routes.ts:3-7"
+  ],
+  "unsupported_fields_allowed": [
+    "exact_relation_taxonomy"
+  ]
+}

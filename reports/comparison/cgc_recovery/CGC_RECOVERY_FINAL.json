@@ -1,0 +1,108 @@
+{
+    "schema_version":  1,
+    "generated_at":  "2026-05-13T08:49:31.3297896-05:00",
+    "source_of_truth":  "MVP.md",
+    "cgc":  {
+                "partial_artifact_comparable":  false,
+                "version":  "0.4.7",
+                "raw_artifacts":  [
+                                      "reports/comparison/cgc_recovery/artifacts/fixture_diagnostic/",
+                                      ".tools/cgc_recovery/home_autoresearch/.codegraphcontext/global/db/"
+                                  ],
+                "raw_logs":  "reports/comparison/cgc_recovery/logs/",
+                "run_attempted":  true,
+                "autoresearch_diagnostic":  {
+                                                "schema_version":  1,
+                                                "generated_at":  "2026-05-13T08:49:31.3297896-05:00",
+                                                "phase":  "autoresearch_diagnostic",
+                                                "status":  "timeout",
+                                                "timeout_sec":  180,
+                                                "repo":  "<REPO_ROOT>/Desktop\\development\\autoresearch-codexlab",
+                                                "file_count":  9474,
+                                                "executable":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\.tools\\cgc_recovery\\venv312_compat\\Scripts\\cgc.exe",
+                                                "install_mode":  "stock_reinstall_compat_dependency",
+                                                "completed_under_180s":  false,
+                                                "extended_600s_run":  "not_run",
+                                                "db_size_bytes":  4096,
+                                                "partial_wal_bytes":  15675444,
+                                                "partial_artifact_comparable":  false,
+                                                "command":  {
+                                                                "name":  "phase7_autoresearch_index_180s",
+                                                                "command":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\.tools\\cgc_recovery\\venv312_compat\\Scripts\\cgc.exe \"--database\" \"kuzudb\" \"index\" \"<REPO_ROOT>/Desktop\\development\\autoresearch-codexlab\" \"--force\"",
+                                                                "cwd":  "<REPO_ROOT>/Desktop\\development\\autoresearch-codexlab",
+                                                                "exit_code":  null,
+                                                                "timed_out":  true,
+                                                                "started_at":  "2026-05-13T08:31:54.4711600-05:00",
+                                                                "ended_at":  "2026-05-13T08:34:54.5101579-05:00",
+                                                                "duration_ms":  180039,
+                                                                "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase7_autoresearch_index_180s.stdout.txt",
+                                                                "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase7_autoresearch_index_180s.stderr.txt"
+                                                            },
+                                                "raw_logs":  [
+                                                                 "reports/comparison/cgc_recovery/logs/phase7_autoresearch_index_180s.stdout.txt",
+                                                                 "reports/comparison/cgc_recovery/logs/phase7_autoresearch_index_180s.stderr.txt",
+                                                                 ".tools/cgc_recovery/home_autoresearch/cgc_debug.log"
+                                                             ],
+                                                "root_cause":  "CGC starts and parses Autoresearch, but indexing did not finish before the 180s cap; debug log tail shows it still processing per-file parse/directory relationship writes. The visible DB is only 4096 bytes plus partial WAL and is not comparable."
+                                            },
+                "official_stock_comparable":  false,
+                "executable":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\.tools\\cgc_recovery\\venv312_compat\\Scripts\\cgc.exe",
+                "mode":  "stock_reinstall_compat_dependency",
+                "root_causes":  [
+                                    "Old comparison/harness discovery checked CGC_COMPETITOR_BIN and PATH but not the repo-local disposable CGC virtualenv, so current reports marked CGC unavailable even though target/cgc-competitor contained executables.",
+                                    "Older comparison artifacts invoked obsolete/guessed CGC syntax such as query symbols/query callers instead of the installed 0.4.7 CLI syntax: find name, find content, analyze calls, analyze callers, analyze chain.",
+                                    "The existing stock venv used tree-sitter-language-pack 1.8.0 with tree-sitter 0.25.2 and failed parser initialization; the diagnostic compatibility reinstall keeps codegraphcontext 0.4.7 but pins tree-sitter-language-pack==1.6.2.",
+                                    "Unisolated CGC commands tried to create <REPO_ROOT>/.codegraphcontext and hit WinError 5; the fixed harness sets a disposable CGC_COMPETITOR_HOME/USERPROFILE/LOCALAPPDATA/APPDATA.",
+                                    "Early fake-home isolation broke parser cache discovery; the final smoke run uses a Windows-profile-shaped disposable home with AppData\\Local parser cache.",
+                                    "Autoresearch CGC now starts correctly but times out at the 180s diagnostic cap while still parsing/writing; only a small DB file plus partial WAL is produced, so it is not comparable."
+                                ],
+                "smoke_test_passed":  true,
+                "python":  "Python 3.12.13",
+                "fixture_diagnostic":  {
+                                           "schema_version":  1,
+                                           "generated_at":  "2026-05-13T08:49:31.3297896-05:00",
+                                           "phase":  "fixture_diagnostic",
+                                           "status":  "completed_not_comparable",
+                                           "fixtures_attempted":  5,
+                                           "skipped":  0,
+                                           "total_index_latency_ms":  9289,
+                                           "total_query_latency_ms":  19034,
+                                           "file_recall_at_10":  0.0,
+                                           "symbol_recall_at_10":  0.4066666666666666,
+                                           "path_recall_at_10":  0.0,
+                                           "relation_f1":  0.0,
+                                           "comparable":  false,
+                                           "comparable_reason":  "CGC completed fixture commands but normalized output lacks comparable graph paths, relation/source-span proof evidence, and final DB artifact semantics.",
+                                           "artifacts":  [
+                                                             "reports/comparison/cgc_recovery/artifacts/fixture_diagnostic/run.json",
+                                                             "reports/comparison/cgc_recovery/artifacts/fixture_diagnostic/summary.md",
+                                                             "reports/comparison/cgc_recovery/artifacts/fixture_diagnostic/raw_artifacts/codegraphcontext/",
+                                                             "reports/comparison/cgc_recovery/artifacts/fixture_diagnostic/normalized_outputs/codegraphcontext/"
+                                                         ]
+                                       },
+                "completed_fairly":  false
+            },
+    "codegraph":  {
+                      "single_file_update_ms":  336.0,
+                      "graph_truth":  "11/11",
+                      "context_packet":  "11/11",
+                      "proof_db_mib":  171.184,
+                      "repeat_unchanged_ms":  1674.0,
+                      "cargo_test_workspace":  "pass",
+                      "db_integrity":  "ok",
+                      "intended_tool_quality_gate_verdict":  "fail",
+                      "comprehensive_verdict":  "fail",
+                      "proof_build_only_ms":  184297
+                  },
+    "official_comparison_allowed":  false,
+    "official_comparison_verdict":  "blocked_by_codegraph_gate_and_cgc_incomplete",
+    "diagnostic_cgc_recovery_verdict":  "partial_pass_install_smoke_fixture_autoresearch_timeout",
+    "no_superiority_claim":  true,
+    "reports":  {
+                    "comparison_latest_json":  "reports/comparison/codegraph_vs_cgc_latest.json",
+                    "recovery_final_md":  "reports/comparison/cgc_recovery/CGC_RECOVERY_FINAL.md",
+                    "intended_gate":  "reports/final/intended_tool_quality_gate.json",
+                    "comparison_latest_md":  "reports/comparison/codegraph_vs_cgc_latest.md",
+                    "recovery_final_json":  "reports/comparison/cgc_recovery/CGC_RECOVERY_FINAL.json"
+                }
+}

@@ -1,0 +1,251 @@
+{
+  "schema_version": 1,
+  "report": "cold_build_db_write_fix",
+  "generated_at": "2026-05-12 21:51:43 -05:00",
+  "source_of_truth": "MVP.md",
+  "verdict": "fail_improved",
+  "status": "completed",
+  "targets": {
+    "proof_build_only_ms": 60000,
+    "first_batch_db_write_ms_must_not_exceed": 60000,
+    "proof_db_mib": 250.0
+  },
+  "baseline": {
+    "persisted_cold_build_ms": 3001445,
+    "fresh_capped_run_timeout_after_ms": 94000,
+    "fresh_capped_first_batch_db_write_ms": 82209
+  },
+  "fresh_run": {
+    "repo": "<REPO_ROOT>/Desktop/development/autoresearch-codexlab",
+    "db_path": "reports/audit/artifacts/cold_build_db_write_fix_autoresearch_final_20260512_214058.sqlite",
+    "command": "cargo run -q -p codegraph-cli -- index <REPO_ROOT>/Desktop\\development\\autoresearch-codexlab --db <REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\audit\\artifacts\\cold_build_db_write_fix_autoresearch_final_20260512_214058.sqlite --profile --json --workers 16 --storage-mode proof --build-mode proof-build-only",
+    "storage_mode": "proof",
+    "build_mode": "proof-build-only",
+    "worker_count": 16,
+    "total_wall_ms": 297420,
+    "db_write_ms": 220766,
+    "first_batch_db_write_ms": 11430,
+    "batches_completed": 39,
+    "batches_total": 39,
+    "files_seen": 8564,
+    "files_indexed": 4975,
+    "files_parsed": 2555,
+    "files_read": 4975,
+    "files_hashed": 4975,
+    "entities_emitted": 743226,
+    "edges_emitted": 339331,
+    "duplicate_edges_upserted": 443
+  },
+  "improvements": {
+    "persisted_cold_build_ms_reduction": 2704025,
+    "persisted_cold_build_reduction_pct": 90.09,
+    "first_batch_db_write_ms_reduction": 70779,
+    "first_batch_db_write_reduction_pct": 86.10,
+    "first_batch_db_write_status": "passed"
+  },
+  "mode_separation": {
+    "measured_mode": "proof-build-only",
+    "excluded_from_proof_build_only": [
+      "storage_audit",
+      "dbstat",
+      "relation_sampler",
+      "path_evidence_audit_sampler",
+      "cgc_comparison",
+      "full_markdown_report_generation",
+      "manual_label_summary",
+      "repeated_db_rebuilds"
+    ],
+    "modes": [
+      "proof-build-only",
+      "proof-build-plus-validation",
+      "proof-build-plus-audit",
+      "full-comprehensive-gate"
+    ]
+  },
+  "top_profile_spans": [
+    {
+      "stage": "db_write_total",
+      "ms": 220766.0,
+      "share_of_wall_pct": 74.23,
+      "notes": "Profile bucket, not additive with nested write spans."
+    },
+    {
+      "stage": "extract_entities_and_relations",
+      "ms": 65581.0,
+      "share_of_wall_pct": 22.05
+    },
+    {
+      "stage": "reducer",
+      "ms": 46346.4072,
+      "share_of_wall_pct": 15.58
+    },
+    {
+      "stage": "edge_insert",
+      "ms": 44791.3985,
+      "share_of_wall_pct": 15.06
+    },
+    {
+      "stage": "reduce_security_edges",
+      "ms": 42780.2716,
+      "share_of_wall_pct": 14.38
+    },
+    {
+      "stage": "reduce_static_import_edges",
+      "ms": 42043.3953,
+      "share_of_wall_pct": 14.14
+    },
+    {
+      "stage": "reduce_test_edges",
+      "ms": 40908.2389,
+      "share_of_wall_pct": 13.75,
+      "notes": "Produced no useful Autoresearch test edges in this run; this is the highest priority reducer waste."
+    },
+    {
+      "stage": "local_fact_bundle_creation",
+      "ms": 36060.0,
+      "share_of_wall_pct": 12.12
+    },
+    {
+      "stage": "parse_extract_workers_wall",
+      "ms": 27510.0543,
+      "share_of_wall_pct": 9.25
+    },
+    {
+      "stage": "parse",
+      "ms": 18297.0,
+      "share_of_wall_pct": 6.15
+    },
+    {
+      "stage": "content_template_upsert",
+      "ms": 15699.0213,
+      "share_of_wall_pct": 5.28
+    },
+    {
+      "stage": "entity_insert",
+      "ms": 15405.6371,
+      "share_of_wall_pct": 5.18
+    },
+    {
+      "stage": "dictionary_lookup_insert",
+      "ms": 14738.1648,
+      "share_of_wall_pct": 4.96
+    }
+  ],
+  "db_write_path": {
+    "sqlite_edge_insert_sql_ms": 21309.4383,
+    "edge_insert_total_ms": 44791.3985,
+    "sqlite_entity_insert_sql_ms": 2620.4974,
+    "entity_insert_total_ms": 15405.6371,
+    "sqlite_template_entity_insert_sql_ms": 2801.6928,
+    "sqlite_template_edge_insert_sql_ms": 820.5121,
+    "dictionary_lookup_insert_ms": 14738.1648,
+    "path_evidence_insert_ms": 2360.5134,
+    "index_creation_ms": 336.9103,
+    "atomic_final_db_validate_ms": 503.9318,
+    "atomic_temp_db_finalize_ms": 476.3608
+  },
+  "storage": {
+    "storage_audit_json": "reports/audit/artifacts/cold_build_db_write_fix_storage.json",
+    "database_bytes": 179499008,
+    "wal_bytes": 0,
+    "shm_bytes": 0,
+    "file_family_bytes": 179499008,
+    "proof_db_mib": 171.18,
+    "target_mib": 250.0,
+    "status": "passed",
+    "integrity_check_status": "ok"
+  },
+  "correctness_gates": {
+    "graph_truth": {
+      "status": "passed",
+      "cases_total": 11,
+      "cases_passed": 11,
+      "forbidden_edges_found": 0,
+      "forbidden_paths_found": 0,
+      "source_span_failures": 0,
+      "stale_failures": 0,
+      "artifact_json": "reports/audit/artifacts/cold_build_db_write_fix_graph_truth.json"
+    },
+    "context_packet": {
+      "status": "passed",
+      "cases_total": 11,
+      "cases_passed": 11,
+      "critical_symbol_recall": 1.0,
+      "proof_path_coverage": 1.0,
+      "source_span_coverage": 1.0,
+      "expected_tests_recall": 1.0,
+      "distractor_ratio": 0.0,
+      "artifact_json": "reports/audit/artifacts/cold_build_db_write_fix_context_packet.json"
+    },
+    "db_integrity": {
+      "status": "ok",
+      "source": "storage audit integrity_check and atomic publish validation"
+    },
+    "default_query_surface": {
+      "status": "passed",
+      "iterations": 5,
+      "artifact_json": "reports/audit/artifacts/cold_build_db_write_fix_query_surface.json",
+      "p95_ms": {
+        "entity_name_lookup": 2.8547,
+        "symbol_lookup": 195.2518,
+        "qname_lookup": 19.9336,
+        "text_fts_query": 0.2109,
+        "relation_query_calls": 244.2106,
+        "relation_query_reads_writes": 237.7713,
+        "path_evidence_lookup": 3.4339,
+        "source_snippet_batch_load": 52.3585,
+        "context_pack_normal": 135.3731,
+        "unresolved_calls_paginated": 91.0363
+      }
+    },
+    "cargo_test_workspace": {
+      "status": "passed"
+    }
+  },
+  "storage_safety_questions": {
+    "graph_truth_still_passed": true,
+    "context_packet_quality_still_passed": true,
+    "proof_db_size_decreased": "not_applicable_build_time_phase_but_fresh_artifact_remains_171_18_mib_under_target",
+    "removed_data_policy": "No proof data was removed. The transient build index is build-only and dropped before publish; bounded PathEvidence candidate refresh preserves proof gate coverage and leaves audit/debug evidence outside proof-build-only."
+  },
+  "remaining_bottlenecks": [
+    {
+      "stage": "reduce_test_edges",
+      "ms": 40908.2389,
+      "priority": 1,
+      "recommended_fix": "Add a stronger file/source prefilter or share the static resolver snapshot so the test reducer does not scan a large repo when no supported test relations will be emitted."
+    },
+    {
+      "stage": "reduce_security_edges and reduce_static_import_edges",
+      "ms": 84823.6669,
+      "priority": 2,
+      "recommended_fix": "Build one reusable reducer snapshot for symbol/import/source context and feed both passes from it."
+    },
+    {
+      "stage": "edge_insert",
+      "ms": 44791.3985,
+      "priority": 3,
+      "recommended_fix": "Batch compact edge and reverse-map inserts with fewer per-row store calls."
+    },
+    {
+      "stage": "local_fact_bundle_creation",
+      "ms": 36060.0,
+      "priority": 4,
+      "recommended_fix": "Reduce high-cardinality payload cloning during bundle materialization."
+    },
+    {
+      "stage": "extract_entities_and_relations",
+      "ms": 65581.0,
+      "priority": 5,
+      "recommended_fix": "Profile extractor output by kind before altering semantics."
+    }
+  ],
+  "acceptance_criteria": {
+    "first_batch_db_write_no_longer_exceeds_60s": true,
+    "production_proof_build_only_decreased_materially": true,
+    "proof_build_only_under_60s": false,
+    "top_remaining_stage_identified": true,
+    "no_stage_over_5_percent_unknown": true,
+    "correctness_and_integrity_green": true
+  }
+}

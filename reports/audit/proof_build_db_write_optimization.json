@@ -1,0 +1,129 @@
+{
+    "schema_version":  1,
+    "generated_at":  "2026-05-13T00:56:13-05:00",
+    "source_of_truth":  "MVP.md",
+    "phase":  "proof_build_db_write_optimization",
+    "before_release_ms":  98812,
+    "before_release_db_write_ms":  70922,
+    "after_profile_ms":  58991,
+    "after_profile_db_write_ms":  35337,
+    "after_comprehensive_ms":  59414,
+    "target_ms":  60000,
+    "status":  "pass",
+    "changes":  [
+                    "single shared global resolver workspace for import/security/test reduction",
+                    "fast compact proof global-edge insertion path for proof-build-only",
+                    "single summary count reconciliation instead of per-edge/per-plan existence probes",
+                    "proof-build-only skips redundant post-rename quick_check after hidden temp DB quick_check passes",
+                    "file/entity reverse-map cache in SQLite store for hot proof-edge mapping",
+                    "explicit proof-build-only and proof-build-validated CLI benchmark modes"
+                ],
+    "stage_checks":  {
+                         "template_entities_insert_ms":  764.1944000000001,
+                         "template_edges_insert_ms":  241.50140000000002,
+                         "symbol_dict_insert_ms":  0.0,
+                         "qname_prefix_dict_insert_ms":  0.0,
+                         "qualified_name_dict_insert_ms":  0.0,
+                         "path_evidence_insert_ms":  2187.6020000000008,
+                         "index_creation_ms":  202.17780000000002,
+                         "transaction_commit_ms":  132.71720000000002
+                     },
+    "top_remaining_bottlenecks":  [
+                                      {
+                                          "name":  "extract_entities_and_relations",
+                                          "elapsed_ms":  21783,
+                                          "count":  4975,
+                                          "items":  4975,
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                                      {
+                                          "name":  "reducer",
+                                          "elapsed_ms":  16485.788,
+                                          "count":  39,
+                                          "items":  4975,
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                                      {
+                                          "name":  "edge_insert",
+                                          "elapsed_ms":  8879.595,
+                                          "count":  170484,
+                                          "items":  170484,
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                                      {
+                                          "name":  "local_fact_bundle_creation",
+                                          "elapsed_ms":  8282,
+                                          "count":  4975,
+                                          "items":  4975,
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                                      {
+                                          "name":  "global_resolver_workspace_load",
+                                          "elapsed_ms":  8132.441,
+                                          "count":  1,
+                                          "items":  1160,
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                                      {
+                                          "name":  "parse",
+                                          "elapsed_ms":  7993,
+                                          "count":  4975,
+                                          "items":  4975,
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                                      {
+                                          "name":  "parse_extract_workers_wall",
+                                          "elapsed_ms":  5224.666,
+                                          "count":  39,
+                                          "items":  4975,
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                                      {
+                                          "name":  "entity_insert",
+                                          "elapsed_ms":  4641.822,
+                                          "count":  89580,
+                                          "items":  89580,
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                                      {
+                                          "name":  "dictionary_lookup_insert",
+                                          "elapsed_ms":  4110.092,
+                                          "count":  1699517,
+                                          "items":  1699517,
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                                      {
+                                          "name":  "sqlite.dictionary_lookup_insert",
+                                          "elapsed_ms":  4110.092,
+                                          "count":  1699517,
+                                          "items":  1699517,
+                                          "notes":  [
+
+                                                    ]
+                                      }
+                                  ],
+    "correctness":  {
+                        "graph_truth":  "11/11",
+                        "context_packet":  "11/11",
+                        "db_integrity":  "ok",
+                        "cargo_test_workspace":  "pass"
+                    }
+}

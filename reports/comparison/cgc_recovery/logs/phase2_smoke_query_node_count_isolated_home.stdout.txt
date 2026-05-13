@@ -1,0 +1,8 @@
+Resolving context...
+Initializing services and database connection...
+Services initialized.
+[
+  {
+    "c": 7
+  }
+]

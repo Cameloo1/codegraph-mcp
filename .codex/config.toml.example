@@ -1,0 +1,9 @@
+# CodeGraph MCP template for a repository-local Codex config.
+# Copy this entry into `.codex/config.toml` for the repo you want Codex to use.
+# Keep the workflow single-agent only; this MCP server exposes evidence tools,
+# not subagent orchestration.
+
+[mcp_servers.codegraph-mcp]
+command = "codegraph-mcp"
+args = ["serve-mcp"]
+cwd = "C:\\path\\to\\your\\repo"

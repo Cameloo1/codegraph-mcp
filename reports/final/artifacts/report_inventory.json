@@ -1,0 +1,356 @@
+[
+    {
+        "path":  "reports\\audit\\01_benchmark_validity.md",
+        "bytes":  13825,
+        "title":  "# 01 Benchmark Validity Audit",
+        "verdict_lines":  "Verdict: not trustworthy for graph correctness claims."
+    },
+    {
+        "path":  "reports\\audit\\02_graph_schema_edge_taxonomy.md",
+        "bytes":  12915,
+        "title":  "# 02 Graph Schema and Edge Taxonomy Audit",
+        "verdict_lines":  "Verdict: graph facts are not proof-grade as a whole."
+    },
+    {
+        "path":  "reports\\audit\\02_graph_truth_manifest_schema.md",
+        "bytes":  4158,
+        "title":  "# 02 Graph Truth Manifest Schema",
+        "verdict_lines":  "## Verdict | Status: `complete`."
+    },
+    {
+        "path":  "reports\\audit\\03_adversarial_fixtures.md",
+        "bytes":  6336,
+        "title":  "# 03 Adversarial Hand-Labeled Fixture Repos",
+        "verdict_lines":  ""
+    },
+    {
+        "path":  "reports\\audit\\03_storage_forensics.md",
+        "bytes":  10542,
+        "title":  "# 03 Storage Forensics Audit",
+        "verdict_lines":  "Verdict: the compact-memory goal is partially met, but dictionary and index bloat is real."
+    },
+    {
+        "path":  "reports\\audit\\04_graph_truth_gate_initial_run.json",
+        "bytes":  43753,
+        "title":  null,
+        "verdict_lines":  ""
+    },
+    {
+        "path":  "reports\\audit\\04_graph_truth_gate_initial_run.md",
+        "bytes":  4656,
+        "title":  "# Graph Truth Gate",
+        "verdict_lines":  "Verdict: `failed`"
+    },
+    {
+        "path":  "reports\\audit\\04_relation_counts_and_samples.md",
+        "bytes":  8352,
+        "title":  "# 04 Relation Counts and Edge Samples",
+        "verdict_lines":  "Verdict: the 2.05M edges are structurally explainable, but the largest proof-sensitive relations need manual review before aggregate metrics are trusted."
+    },
+    {
+        "path":  "reports\\audit\\05_relation_source_span_audit.md",
+        "bytes":  7469,
+        "title":  "# Relation Source Span Audit",
+        "verdict_lines":  ""
+    },
+    {
+        "path":  "reports\\audit\\05_stable_symbol_identity.md",
+        "bytes":  8734,
+        "title":  "# 05 Stable Symbol Identity Audit",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\06_manifest_hashing_stale_updates.md",
+        "bytes":  8642,
+        "title":  "# 06 Manifest, Hashing, and Stale Update Audit",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\06_stable_symbol_identity_fix.md",
+        "bytes":  5321,
+        "title":  "# Stable Symbol Identity Fix",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\07_import_alias_call_resolution_fix.md",
+        "bytes":  5060,
+        "title":  "# Import Alias Call Resolution Fix",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\07_source_span_proof_gate.md",
+        "bytes":  7466,
+        "title":  "# 07 Source Span Proof Gate Audit",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\08_edge_classification_fix.md",
+        "bytes":  6004,
+        "title":  "# Edge Classification Fix",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\08_graph_truth_schema.md",
+        "bytes":  5977,
+        "title":  "# 08 Graph Truth Schema",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\09_graph_truth_gate.md",
+        "bytes":  8761,
+        "title":  "# 09 Graph Truth Gate",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\09_source_span_exactness_fix.md",
+        "bytes":  4836,
+        "title":  "# 09 Source Span Exactness Fix",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\10_stage_ablation.md",
+        "bytes":  7301,
+        "title":  "# 10 Retrieval Stage Ablation",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\10_stale_fact_update_fix.md",
+        "bytes":  4006,
+        "title":  "# Stale Fact Update Fix",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\11_auth_sanitizer_test_relation_fix.md",
+        "bytes":  4948,
+        "title":  "# Auth, Sanitizer, and Test Relation Fix",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\11_test_mock_leakage_fix.md",
+        "bytes":  4506,
+        "title":  "# 11 Test/Mock Leakage Fix",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\12_edge_classification_fix.md",
+        "bytes":  6557,
+        "title":  "# 12 Edge Classification Fix",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\12_semantic_correctness_gate.json",
+        "bytes":  17585,
+        "title":  null,
+        "verdict_lines":  ""
+    },
+    {
+        "path":  "reports\\audit\\12_semantic_correctness_gate.md",
+        "bytes":  9532,
+        "title":  "# Semantic Correctness Gate",
+        "verdict_lines":  "## Verdict | Verdict: `fail`"
+    },
+    {
+        "path":  "reports\\audit\\13_incremental_concurrent_indexer_design.md",
+        "bytes":  24035,
+        "title":  "# Incremental Concurrent Indexer Design",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\13_stale_update_fix.md",
+        "bytes":  7250,
+        "title":  "# 13 Stale Update Fix",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\14_call_resolution_fix.md",
+        "bytes":  4883,
+        "title":  "# 14 Call Resolution Fix",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\14_local_fact_bundle_reducer_skeleton.md",
+        "bytes":  6474,
+        "title":  "# LocalFactBundle and Reducer Skeleton",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\15_parallel_indexer_implementation.md",
+        "bytes":  6332,
+        "title":  "# Parallel Indexer Implementation",
+        "verdict_lines":  "## Verdict | Status: implemented for deterministic local parsing, bundle reduction, and single-process deterministic writing."
+    },
+    {
+        "path":  "reports\\audit\\15_source_span_precision_fix.md",
+        "bytes":  3746,
+        "title":  "# 15 Source Span Precision Fix",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\16_auth_security_extraction_fix.md",
+        "bytes":  7339,
+        "title":  "# 16 Auth And Security Extraction Fix",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\16_manifest_incremental_index_fix.md",
+        "bytes":  5027,
+        "title":  "# Manifest Incremental Index Fix",
+        "verdict_lines":  "## Verdict | Status: implemented."
+    },
+    {
+        "path":  "reports\\audit\\17_indexing_performance_gate.json",
+        "bytes":  11911,
+        "title":  null,
+        "verdict_lines":  ""
+    },
+    {
+        "path":  "reports\\audit\\17_indexing_performance_gate.md",
+        "bytes":  6015,
+        "title":  "# Indexing Performance Gate",
+        "verdict_lines":  "## Verdict | Verdict: `fail`."
+    },
+    {
+        "path":  "reports\\audit\\17_unresolved_calls_latency_fix.md",
+        "bytes":  5881,
+        "title":  "# 17 Unresolved Calls Latency Fix",
+        "verdict_lines":  "Verdict: fixed for agent-planning enumeration; still not optimized for full accounting."
+    },
+    {
+        "path":  "reports\\audit\\18_storage_experiments.md",
+        "bytes":  7090,
+        "title":  "# 18 Storage Experiments",
+        "verdict_lines":  "Verdict: safe experiment runner added; no production schema/index change applied."
+    },
+    {
+        "path":  "reports\\audit\\18_storage_index_forensics.md",
+        "bytes":  9737,
+        "title":  "# Storage And Index Forensics",
+        "verdict_lines":  "## Verdict | Status: `measured`."
+    },
+    {
+        "path":  "reports\\audit\\19_compact_storage_fix.md",
+        "bytes":  7900,
+        "title":  "# 19 Compact Storage Fix",
+        "verdict_lines":  "Verdict: implemented only the storage optimization proven safe by phase 18."
+    },
+    {
+        "path":  "reports\\audit\\19_storage_experiments.md",
+        "bytes":  6269,
+        "title":  "# Storage Experiments",
+        "verdict_lines":  "Status: completed on copied DBs only."
+    },
+    {
+        "path":  "reports\\audit\\20_context_packet_gate.md",
+        "bytes":  6582,
+        "title":  "# 20 Context Packet Gate",
+        "verdict_lines":  "Verdict: context packet gate added; current context packets are not yet strict-useful."
+    },
+    {
+        "path":  "reports\\audit\\20_storage_optimization_implementation.json",
+        "bytes":  4878,
+        "title":  null,
+        "verdict_lines":  ""
+    },
+    {
+        "path":  "reports\\audit\\20_storage_optimization_implementation.md",
+        "bytes":  7175,
+        "title":  "# Storage Optimization Implementation",
+        "verdict_lines":  "Status: conservative optimization applied. | ## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\21_real_repo_benchmark_hardening.md",
+        "bytes":  7527,
+        "title":  "# 21 Real-Repo Benchmark Hardening",
+        "verdict_lines":  "## Verdict | Overall real-repo superiority verdict: **unknown**."
+    },
+    {
+        "path":  "reports\\audit\\22_parallel_indexing_design.md",
+        "bytes":  9812,
+        "title":  "# 22 Parallel Indexing Design",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\23_parallel_indexing_implementation.md",
+        "bytes":  5864,
+        "title":  "# 23 Parallel Indexing Implementation",
+        "verdict_lines":  "## Verdict"
+    },
+    {
+        "path":  "reports\\audit\\24_final_gate.json",
+        "bytes":  17127,
+        "title":  null,
+        "verdict_lines":  ""
+    },
+    {
+        "path":  "reports\\audit\\24_final_gate.md",
+        "bytes":  12494,
+        "title":  "# Final Local Gate",
+        "verdict_lines":  "## Verdict | Verdict: **partial**. | Verdict: **bounded and usable for paged planning**, but still needs measured relation/exactness indexing before broad full accounting."
+    },
+    {
+        "path":  "reports\\audit\\audit_status.json",
+        "bytes":  29959,
+        "title":  null,
+        "verdict_lines":  ""
+    },
+    {
+        "path":  "reports\\audit\\AUDIT_STATUS.md",
+        "bytes":  22863,
+        "title":  "# Audit Status",
+        "verdict_lines":  ""
+    },
+    {
+        "path":  "reports\\audit\\README.md",
+        "bytes":  6303,
+        "title":  "# CodeGraph Audit Reports",
+        "verdict_lines":  ""
+    },
+    {
+        "path":  "reports\\baselines\\BASELINE_LATEST.json",
+        "bytes":  8005,
+        "title":  null,
+        "verdict_lines":  ""
+    },
+    {
+        "path":  "reports\\baselines\\BASELINE_LATEST.md",
+        "bytes":  10134,
+        "title":  "# Frozen Baseline 20260510_171911",
+        "verdict_lines":  "Verdict: `diagnostic_unknown`."
+    },
+    {
+        "path":  "reports\\baselines\\frozen_baseline_20260510_171911.json",
+        "bytes":  8005,
+        "title":  null,
+        "verdict_lines":  ""
+    },
+    {
+        "path":  "reports\\baselines\\frozen_baseline_20260510_171911.md",
+        "bytes":  10134,
+        "title":  "# Frozen Baseline 20260510_171911",
+        "verdict_lines":  "Verdict: `diagnostic_unknown`."
+    },
+    {
+        "path":  "reports\\comparison\\codegraph_vs_cgc_20260510_231314.json",
+        "bytes":  17388,
+        "title":  null,
+        "verdict_lines":  ""
+    },
+    {
+        "path":  "reports\\comparison\\codegraph_vs_cgc_20260510_231314.md",
+        "bytes":  6057,
+        "title":  "# CodeGraph vs CGC Comparison 20260510_231314",
+        "verdict_lines":  "## Verdict | Final verdict: fail. | Final verdict: fail with superiority unknown."
+    },
+    {
+        "path":  "reports\\comparison\\codegraph_vs_cgc_latest.json",
+        "bytes":  17388,
+        "title":  null,
+        "verdict_lines":  ""
+    },
+    {
+        "path":  "reports\\comparison\\codegraph_vs_cgc_latest.md",
+        "bytes":  6057,
+        "title":  "# CodeGraph vs CGC Comparison 20260510_231314",
+        "verdict_lines":  "## Verdict | Final verdict: fail. | Final verdict: fail with superiority unknown."
+    }
+]

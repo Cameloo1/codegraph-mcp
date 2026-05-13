@@ -1,0 +1,392 @@
+{
+  "schema_version": 1,
+  "phase": "24_final_gate",
+  "source_of_truth": "MVP.md",
+  "generated_at": "2026-05-10",
+  "workflow": "single-agent-only",
+  "reports_read": {
+    "directory": "reports/audit",
+    "direct_files_read_count": 26,
+    "notes": "MVP.md was read first. All direct report/status files under reports/audit were inspected before running this final gate."
+  },
+  "overall_verdict": "fail",
+  "production_readiness": false,
+  "mvp_claim_readiness": false,
+  "verdict_reasons": [
+    "Graph Truth Gate failed 4 of 10 adversarial fixtures.",
+    "Context Packet Gate failed 8 of 10 adversarial fixtures.",
+    "Stage ablation still reports forbidden-edge violations in graph_verification_only and full_context_packet modes.",
+    "Latest available Autoresearch SQLite DB family is about 803.5 MB decimal / 766.3 MiB and storage target is not explicitly waived.",
+    "Real-repo benchmark replay and CGC comparison are unavailable or unknown in this local offline run.",
+    "Fake-agent or dry-run evidence is not treated as model coding success."
+  ],
+  "readiness_rules": {
+    "no_forbidden_graph_truth_violations": true,
+    "proof_paths_have_source_spans": "partial",
+    "stale_update_tests_pass": true,
+    "context_packet_gate_passes": false,
+    "storage_target_met_or_waived": false,
+    "real_repo_benchmark_completes_honestly": false,
+    "fake_agent_dry_run_not_counted_as_model_success": true
+  },
+  "graph_truth_gate": {
+    "command": "cargo run -p codegraph-cli -- bench graph-truth --cases benchmarks\\graph_truth\\fixtures --fixture-root . --out-json reports\\audit\\artifacts\\24_graph_truth_gate.json --out-md reports\\audit\\artifacts\\24_graph_truth_gate.md --fail-on-forbidden --fail-on-missing-source-span",
+    "status": "failed",
+    "artifact_paths": [
+      "reports/audit/artifacts/24_graph_truth_gate.json",
+      "reports/audit/artifacts/24_graph_truth_gate.md"
+    ],
+    "cases_total": 10,
+    "cases_passed": 6,
+    "cases_failed": 4,
+    "failed_cases": [
+      "derived_edge_requires_provenance",
+      "dynamic_import_marked_heuristic",
+      "mock_call_not_production_call",
+      "sanitizer_exists_but_not_on_flow"
+    ],
+    "expected_entities": 16,
+    "matched_entities": 14,
+    "expected_edges": 17,
+    "matched_expected_edges": 12,
+    "forbidden_edges": 11,
+    "matched_forbidden_edges": 0,
+    "expected_paths": 5,
+    "matched_expected_paths": 4,
+    "path_recall": 0.8,
+    "forbidden_paths": 4,
+    "matched_forbidden_paths": 0,
+    "source_span_failures": 0,
+    "context_packet_failures": 2,
+    "stale_failures": 0,
+    "edge_class_counts": {
+      "base_exact": 345,
+      "base_heuristic": 24,
+      "inverse": 129,
+      "reified_callsite": 49,
+      "test_mock": 45
+    },
+    "relation_recall_gaps": {
+      "IMPORTS": 0.5,
+      "MAY_MUTATE": 0.0,
+      "MOCKS": 0.0,
+      "STUBS": 0.0,
+      "WRITES": 0.0
+    }
+  },
+  "source_span_proof": {
+    "graph_truth_source_span_failures": 0,
+    "source_span_exact_callsite_case": "passed",
+    "context_packet_proof_path_coverage": 0.0,
+    "context_packet_source_span_coverage": null,
+    "verdict": "partial",
+    "notes": "Graph Truth did not detect bad spans in the fresh run, but strict context packets did not include expected proof paths, so proof-path span coverage cannot be considered passed end to end."
+  },
+  "forbidden_violations": {
+    "graph_truth_forbidden_edge_hits": 0,
+    "graph_truth_forbidden_path_hits": 0,
+    "stage_ablation_graph_verification_forbidden_edge_violations": 1,
+    "stage_ablation_full_context_packet_forbidden_edge_violations": 1,
+    "verdict": "fail",
+    "notes": "The strict Graph Truth Gate avoided forbidden hits, but stage ablation still exposes a forbidden-edge violation in graph-verification surfaces."
+  },
+  "context_packet_gate": {
+    "command": "cargo run -p codegraph-cli -- bench context-packet --cases benchmarks\\graph_truth\\fixtures --fixture-root . --out-json reports\\audit\\artifacts\\24_context_packet_gate.json --out-md reports\\audit\\artifacts\\24_context_packet_gate.md --top-k 10",
+    "status": "failed",
+    "artifact_paths": [
+      "reports/audit/artifacts/24_context_packet_gate.json",
+      "reports/audit/artifacts/24_context_packet_gate.md"
+    ],
+    "cases_total": 10,
+    "cases_passed": 2,
+    "cases_failed": 8,
+    "context_symbol_recall_at_k": 0.36363636363636365,
+    "critical_symbol_missing_rate": 0.6363636363636364,
+    "distractor_ratio": 0.05405405405405406,
+    "proof_path_coverage": 0.0,
+    "source_span_coverage": null,
+    "critical_snippet_coverage": 0.6923076923076923,
+    "recommended_test_recall": 0.0,
+    "useful_facts_per_byte": 0.0002607195860575187,
+    "useful_facts_per_estimated_token": 0.0010482180293501049,
+    "failed_cases": [
+      "admin_user_roles_not_conflated",
+      "derived_edge_requires_provenance",
+      "import_alias_change_updates_target",
+      "mock_call_not_production_call",
+      "same_name_only_one_imported",
+      "sanitizer_exists_but_not_on_flow",
+      "source_span_exact_callsite",
+      "stale_cache_after_delete"
+    ]
+  },
+  "stage_ablation": {
+    "command": "cargo run -p codegraph-cli -- bench retrieval-ablation --cases benchmarks\\graph_truth\\fixtures --fixture-root . --out-json reports\\audit\\artifacts\\24_stage_ablation.json --out-md reports\\audit\\artifacts\\24_stage_ablation.md --top-k 10",
+    "status": "benchmarked",
+    "artifact_paths": [
+      "reports/audit/artifacts/24_stage_ablation.json",
+      "reports/audit/artifacts/24_stage_ablation.md"
+    ],
+    "modes": [
+      {
+        "mode": "stage0_exact_only",
+        "file_recall_at_k_mean": 0.7666666666666667,
+        "symbol_recall_at_k_mean": 0.6399999999999999,
+        "path_recall_at_k_mean": 0.0,
+        "false_positive_rate_mean": 0.014781609195402298,
+        "forbidden_edge_violations": 0,
+        "query_latency_p50_ms": 1,
+        "query_latency_p95_ms": 2,
+        "stage0_candidate_count_mean": 8.6,
+        "stage1_candidate_count_mean": 0.0,
+        "stage2_candidate_count_mean": 0.0,
+        "graph_verified_candidate_count_mean": 0.0
+      },
+      {
+        "mode": "stage1_binary_only",
+        "file_recall_at_k_mean": 1.0,
+        "symbol_recall_at_k_mean": 0.59,
+        "path_recall_at_k_mean": 0.0,
+        "false_positive_rate_mean": 0.017549857549857547,
+        "forbidden_edge_violations": 0,
+        "query_latency_p50_ms": 1,
+        "query_latency_p95_ms": 1,
+        "stage0_candidate_count_mean": 0.0,
+        "stage1_candidate_count_mean": 10.0,
+        "stage2_candidate_count_mean": 0.0,
+        "graph_verified_candidate_count_mean": 0.0
+      },
+      {
+        "mode": "stage2_int8_pq_only",
+        "file_recall_at_k_mean": 0.9666666666666668,
+        "symbol_recall_at_k_mean": 0.6533333333333333,
+        "path_recall_at_k_mean": 0.0,
+        "false_positive_rate_mean": 0.01829483670862981,
+        "forbidden_edge_violations": 0,
+        "query_latency_p50_ms": 18,
+        "query_latency_p95_ms": 88,
+        "stage0_candidate_count_mean": 0.0,
+        "stage1_candidate_count_mean": 0.0,
+        "stage2_candidate_count_mean": 10.0,
+        "graph_verified_candidate_count_mean": 0.0
+      },
+      {
+        "mode": "stage0_plus_stage1",
+        "file_recall_at_k_mean": 1.0,
+        "symbol_recall_at_k_mean": 0.5366666666666666,
+        "path_recall_at_k_mean": 0.0,
+        "false_positive_rate_mean": 0.015816685958694947,
+        "forbidden_edge_violations": 0,
+        "query_latency_p50_ms": 1,
+        "query_latency_p95_ms": 2,
+        "stage0_candidate_count_mean": 8.6,
+        "stage1_candidate_count_mean": 14.9,
+        "stage2_candidate_count_mean": 0.0,
+        "graph_verified_candidate_count_mean": 0.0
+      },
+      {
+        "mode": "stage0_plus_stage1_plus_stage2",
+        "file_recall_at_k_mean": 0.9666666666666668,
+        "symbol_recall_at_k_mean": 0.6199999999999999,
+        "path_recall_at_k_mean": 0.0,
+        "false_positive_rate_mean": 0.020959796599396154,
+        "forbidden_edge_violations": 0,
+        "query_latency_p50_ms": 16,
+        "query_latency_p95_ms": 30,
+        "stage0_candidate_count_mean": 8.6,
+        "stage1_candidate_count_mean": 22.6,
+        "stage2_candidate_count_mean": 10.0,
+        "graph_verified_candidate_count_mean": 0.0
+      },
+      {
+        "mode": "graph_verification_only",
+        "file_recall_at_k_mean": 0.8166666666666668,
+        "symbol_recall_at_k_mean": 0.6399999999999999,
+        "path_recall_at_k_mean": 0.7,
+        "relation_f1_mean": 0.5,
+        "false_positive_rate_mean": 0.01647019131539255,
+        "forbidden_edge_violations": 1,
+        "query_latency_p50_ms": 1,
+        "query_latency_p95_ms": 2,
+        "stage0_candidate_count_mean": 8.6,
+        "stage1_candidate_count_mean": 0.0,
+        "stage2_candidate_count_mean": 0.0,
+        "graph_verified_candidate_count_mean": 3.5
+      },
+      {
+        "mode": "full_context_packet",
+        "file_recall_at_k_mean": 0.7833333333333333,
+        "symbol_recall_at_k_mean": 0.5933333333333334,
+        "path_recall_at_k_mean": 0.7,
+        "relation_f1_mean": 0.5,
+        "false_positive_rate_mean": 0.027257799671592774,
+        "forbidden_edge_violations": 1,
+        "query_latency_p50_ms": 5,
+        "query_latency_p95_ms": 14,
+        "stage0_candidate_count_mean": 8.6,
+        "stage1_candidate_count_mean": 12.6,
+        "stage2_candidate_count_mean": 12.1,
+        "graph_verified_candidate_count_mean": 4.2,
+        "context_packet_symbol_count_mean": 4.2
+      }
+    ],
+    "interpretation": "Stage 0 is still the low-latency symbol seed carrier. Stage 2 adds fixture-scale latency and cannot claim proof paths. Exact graph verification is fast on fixtures but semantically incomplete."
+  },
+  "storage_inspection": {
+    "command": ".\\target\\debug\\codegraph-mcp.exe audit storage --db target\\codegraph-bench-report\\sweep-20260509-231456\\autoresearch-codegraph-attempt3\\codegraph.sqlite --json reports\\audit\\artifacts\\24_storage_large.json --markdown reports\\audit\\artifacts\\24_storage_large.md",
+    "status": "ok",
+    "artifact_paths": [
+      "reports/audit/artifacts/24_storage_large.json",
+      "reports/audit/artifacts/24_storage_large.md"
+    ],
+    "db_path": "target/codegraph-bench-report/sweep-20260509-231456/autoresearch-codegraph-attempt3/codegraph.sqlite",
+    "database_bytes": 803495936,
+    "file_family_bytes": 803528704,
+    "database_mib": 766.2734375,
+    "file_family_mib": 766.3046875,
+    "dbstat_available": true,
+    "top_storage_objects": [
+      {
+        "name": "edges",
+        "object_type": "table",
+        "bytes": 165593088,
+        "rows": 2050123
+      },
+      {
+        "name": "sqlite_autoindex_qualified_name_dict_1",
+        "object_type": "index",
+        "bytes": 125501440
+      },
+      {
+        "name": "qualified_name_dict",
+        "object_type": "table",
+        "bytes": 109445120
+      },
+      {
+        "name": "entities",
+        "object_type": "table",
+        "bytes": 62488576
+      },
+      {
+        "name": "sqlite_autoindex_object_id_dict_1",
+        "object_type": "index",
+        "bytes": 48812032
+      },
+      {
+        "name": "object_id_dict",
+        "object_type": "table",
+        "bytes": 43884544
+      },
+      {
+        "name": "idx_edges_head_relation",
+        "object_type": "index",
+        "bytes": 38608896
+      },
+      {
+        "name": "idx_edges_tail_relation",
+        "object_type": "index",
+        "bytes": 38608896
+      }
+    ],
+    "vacuum_analyze_measured": false,
+    "verdict": "fail_for_compact_large_repo_goal"
+  },
+  "unresolved_calls_latency": {
+    "command": ".\\target\\debug\\codegraph-mcp.exe query unresolved-calls --db target\\codegraph-bench-report\\sweep-20260509-231456\\autoresearch-codegraph-attempt3\\codegraph.sqlite --limit 100 --offset 0 --json --no-snippets",
+    "status": "ok",
+    "artifact_paths": [
+      "reports/audit/artifacts/24_unresolved_calls_latency.json",
+      "reports/audit/artifacts/24_unresolved_calls_latency_summary.json"
+    ],
+    "runs": 5,
+    "limit": 100,
+    "snippets_requested": false,
+    "count_total": "skipped_by_default",
+    "returned_rows": 100,
+    "total_ms_p50": 19,
+    "total_ms_p95": 20,
+    "page_query_ms_p50": 13,
+    "page_query_ms_p95": 14,
+    "query_plan_findings": [
+      "SCAN e"
+    ],
+    "verdict": "bounded_and_usable_for_paged_agent_planning"
+  },
+  "deterministic_indexing": {
+    "command": "cargo test -p codegraph-index full_index_worker_count_determinism_preserves_graph_facts --lib",
+    "status": "passed",
+    "output_summary": "1 test passed; 0 failed."
+  },
+  "index_time": {
+    "command": "cargo run -p codegraph-cli -- bench synthetic-index --output-dir reports\\audit\\artifacts\\24_synthetic_index --files 64",
+    "status": "benchmarked",
+    "artifact_path": "reports/audit/artifacts/24_synthetic_index/synthetic-index-run.json",
+    "files_seen": 66,
+    "files_indexed": 64,
+    "files_skipped": 2,
+    "entities": 3648,
+    "edges": 9280,
+    "total_wall_ms": 860,
+    "db_write_ms": 768,
+    "extraction_ms": 134,
+    "worker_count": 16,
+    "files_per_sec": 74.4186046511628
+  },
+  "real_repo_and_cgc": {
+    "real_repo_corpus_command": ".\\target\\debug\\codegraph-mcp.exe bench real-repo-corpus",
+    "real_repo_corpus_status": "unavailable",
+    "real_repo_artifact": "reports/audit/artifacts/24_real_repo_corpus.json",
+    "real_repo_reason": "network disabled; clone plan recorded but not executed",
+    "parity_report_command": ".\\target\\debug\\codegraph-mcp.exe bench parity-report --output-dir reports\\audit\\artifacts\\24_parity_report",
+    "parity_report_status": "reported",
+    "parity_report_artifacts": [
+      "reports/audit/artifacts/24_parity_report/summary.json",
+      "reports/audit/artifacts/24_parity_report/summary.md",
+      "reports/audit/artifacts/24_parity_report/per_task.jsonl"
+    ],
+    "builtin_final_gate_command": ".\\target\\debug\\codegraph-mcp.exe bench final-gate --output-dir reports\\audit\\artifacts\\24_builtin_final_gate --workspace-root .",
+    "builtin_final_gate_verdict": "unknown",
+    "builtin_final_gate_internal_verdict": "pass",
+    "builtin_final_gate_cgc_status": "skipped",
+    "builtin_final_gate_artifacts": [
+      "reports/audit/artifacts/24_builtin_final_gate/summary.json",
+      "reports/audit/artifacts/24_builtin_final_gate/summary.md"
+    ]
+  },
+  "unit_tests": {
+    "command": "cargo test --workspace",
+    "status": "passed",
+    "output_summary": "Workspace tests passed. Existing ignored tests remained ignored, including CGC live smoke, same-content rename identity mapping, optional TS semantic resolver, and targeted audit-gap tests."
+  },
+  "known_unsupported_patterns": [
+    "Runtime dynamic imports are not emitted as the expected unresolved IMPORTS fact in the graph-truth fixture.",
+    "Derived MAY_MUTATE proof shortcuts are not generated for the adversarial provenance fixture.",
+    "MOCKS and STUBS exact extraction is still missing for the mock-call fixture.",
+    "The sanitizer fixture still has a context-symbol scoring caveat, despite blocked false SANITIZES paths.",
+    "Context packet selection misses critical symbols and proof paths across most adversarial fixtures.",
+    "Barrel, package, namespace, dynamic, and broader TypeScript/JavaScript resolver patterns remain heuristic or unsupported without compiler/LSP proof.",
+    "Semantic rename identity mapping and full dependency closure remain incomplete beyond focused stale-cleanup cases.",
+    "Extended heuristic relations and multiline source-span patterns need stronger AST-backed validation.",
+    "Real-repo replay and CGC comparison are unavailable in this offline local run."
+  ],
+  "remaining_blockers": [
+    "Fix graph-truth failures for derived provenance, dynamic import heuristic fact emission, mock/stub extraction, and sanitizer context scoring.",
+    "Make context packets recover critical symbols, expected proof paths, source-span-backed snippets, and expected tests while suppressing distractors.",
+    "Resolve the stage-ablation forbidden-edge violation in graph-verification/full-context surfaces.",
+    "Measure and safely reduce dictionary/index storage bloat without deleting proof facts or needed indexes.",
+    "Run honest real-repo and CGC comparisons in an environment with required external dependencies and network/cache access."
+  ],
+  "optimization_safety": {
+    "safe_now": [
+      "Report-only analysis and copied-DB storage experiments.",
+      "Targeted correctness fixes for failing graph-truth and context-packet cases.",
+      "Additional instrumentation around query plans, candidate counts, and proof-path filtering."
+    ],
+    "not_safe_yet": [
+      "Removing facts, dictionaries, or edge indexes to hit storage targets.",
+      "Claiming storage victory from fixture-size DBs while the latest large DB remains around 803.5 MB decimal.",
+      "Optimizing retrieval/vector stages before graph truth and context packet correctness gates pass.",
+      "Treating fake-agent dry runs or incomplete CGC results as model-superiority evidence."
+    ]
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "task_id": "event-flow",
+  "query_text": "Trace user.created event from publisher to state mutation",
+  "expected_files": [
+    "src/events.ts",
+    "src/consumer.ts",
+    "src/state.ts"
+  ],
+  "expected_symbols": [
+    "publishUserCreated",
+    "emitEvent",
+    "onEvent",
+    "handleUserCreated",
+    "markUserActive"
+  ],
+  "expected_relation_sequence": [
+    "PUBLISHES",
+    "EMITS",
+    "LISTENS_TO",
+    "CALLS",
+    "MUTATES"
+  ],
+  "expected_path_symbols": [
+    "publishUserCreated",
+    "emitEvent",
+    "handleUserCreated",
+    "markUserActive"
+  ],
+  "critical_source_spans": [
+    "src/events.ts:4-10",
+    "src/consumer.ts:8-10"
+  ],
+  "unsupported_fields_allowed": [
+    "exact_relation_taxonomy"
+  ]
+}

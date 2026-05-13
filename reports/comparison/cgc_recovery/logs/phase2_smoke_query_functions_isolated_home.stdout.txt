@@ -1,0 +1,21 @@
+Resolving context...
+Initializing services and database connection...
+Services initialized.
+[
+  {
+    "name": "cgc_smoke_py_target",
+    "path": null
+  },
+  {
+    "name": "cgc_smoke_py_caller",
+    "path": null
+  },
+  {
+    "name": "cgc_smoke_target",
+    "path": null
+  },
+  {
+    "name": "cgc_smoke_caller",
+    "path": null
+  }
+]

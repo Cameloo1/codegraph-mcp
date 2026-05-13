@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-12 13:05:11 -05:00",
+  "source_of_truth": "MVP.md",
+  "status": "passed",
+  "original_artifact_mutated": false,
+  "source_artifact": "reports/final/artifacts/compact_gate_autoresearch_proof.sqlite",
+  "measurement_artifact": "reports/audit/artifacts/template_compaction_probe.sqlite",
+  "storage_mode": "proof",
+  "previous_proof_db_bytes": 336203776,
+  "previous_proof_db_mib": 320.62890625,
+  "after_migration_vacuum_db_bytes": 235778048,
+  "after_migration_vacuum_db_mib": 224.85546875,
+  "whole_db_savings_bytes": 100425728,
+  "whole_db_savings_mib": 95.7734375,
+  "target_proof_db_mib": 250.0,
+  "target_met_on_copied_artifact": true,
+  "template_storage_savings": {
+    "template_entities": {
+      "before_bytes": 87523328,
+      "after_bytes": 52879360,
+      "saved_bytes": 34643968,
+      "saved_mib": 33.0390625
+    },
+    "template_edges": {
+      "before_bytes": 40804352,
+      "after_bytes": 15372288,
+      "saved_bytes": 25432064,
+      "saved_mib": 24.25390625
+    },
+    "idx_template_edges_head_relation": {
+      "before_bytes": 16539648,
+      "after_bytes": 0,
+      "saved_bytes": 16539648,
+      "saved_mib": 15.7734375
+    },
+    "idx_template_edges_tail_relation": {
+      "before_bytes": 16539648,
+      "after_bytes": 0,
+      "saved_bytes": 16539648,
+      "saved_mib": 15.7734375
+    },
+    "total_saved_bytes": 93155328,
+    "total_saved_mib": 88.83984375
+  },
+  "storage_safety_rule": {
+    "graph_truth_still_passed": true,
+    "context_packet_quality_still_passed": true,
+    "proof_db_size_decreased": true,
+    "removed_data_disposition_clear": true,
+    "removed_data_disposition": "Wide synthetic template-local IDs are replaced by deterministic integer local IDs and are derivable from template row data; removed directional indexes had no mapped default workflow and current synthesized lookup filters after template materialization."
+  },
+  "validation": {
+    "cargo_test_workspace": "passed",
+    "targeted_template_overlay_test": "passed",
+    "migration_smoke_test": "passed",
+    "graph_truth_cases_total": 11,
+    "graph_truth_cases_passed": 11,
+    "context_cases_total": 11,
+    "context_cases_passed": 11,
+    "update_integrity_harness": "passed",
+    "copied_db_integrity_check": "ok",
+    "context_pack_smoke_ms": 672.743,
+    "comprehensive_benchmark_ran": true,
+    "comprehensive_benchmark_note": "The comprehensive command still reports the persisted compact-gate snapshot unless supplied a fresh compact-gate JSON; this report uses the copied migrated artifact for storage proof."
+  },
+  "files_changed": [
+    "crates/codegraph-store/src/sqlite.rs",
+    "reports/audit/template_table_compaction.md",
+    "reports/audit/template_table_compaction.json"
+  ]
+}

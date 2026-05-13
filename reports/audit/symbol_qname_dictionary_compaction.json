@@ -1,0 +1,131 @@
+{
+  "report": "symbol_qname_dictionary_compaction",
+  "timestamp": "2026-05-12 13:49:03 -05:00",
+  "verdict": "pass_for_phase",
+  "global_intended_performance_verdict": "fail",
+  "summary": {
+    "change": "Compact proof storage now stores source-derived template CallSite, Expression, and ReturnSite identities as kind plus deterministic local template entity ID instead of raw/collapsed display and qualified-name text.",
+    "removed_data_policy": "Removed proof-storage strings are derivable from content_template_id, file instance path, local_template_entity_id, entity kind, and source span; human-readable source text remains available by loading the source snippet for the stored span.",
+    "production_semantics_changed": false,
+    "proof_facts_removed": false
+  },
+  "storage_probe": {
+    "source_artifact": "reports/audit/artifacts/template_compaction_probe.sqlite",
+    "after_artifact": "reports/audit/artifacts/symbol_qname_compaction_probe_fast.sqlite",
+    "before_file_family_mib": 224.85546875,
+    "after_file_family_mib": 162.609375,
+    "saved_mib": 62.24609375,
+    "target_saved_mib": 25.0,
+    "target_status": "pass",
+    "integrity_check": "ok"
+  },
+  "dictionary_family": {
+    "before_mib": 88.25,
+    "after_mib": 25.92578125,
+    "saved_mib": 62.32421875,
+    "objects": [
+      {
+        "name": "symbol_dict",
+        "before_rows": 696373,
+        "after_rows": 175239,
+        "before_mib": 28.984375,
+        "after_mib": 7.6328125
+      },
+      {
+        "name": "idx_symbol_dict_hash",
+        "before_rows": null,
+        "after_rows": null,
+        "before_mib": 12.66796875,
+        "after_mib": 3.1796875
+      },
+      {
+        "name": "qname_prefix_dict",
+        "before_rows": 155741,
+        "after_rows": 48207,
+        "before_mib": 21.2421875,
+        "after_mib": 5.83203125
+      },
+      {
+        "name": "idx_qname_prefix_dict_hash",
+        "before_rows": null,
+        "after_rows": null,
+        "before_mib": 2.8671875,
+        "after_mib": 0.88671875
+      },
+      {
+        "name": "qualified_name_dict",
+        "before_rows": 727372,
+        "after_rows": 274171,
+        "before_mib": 11.609375,
+        "after_mib": 4.3359375
+      },
+      {
+        "name": "idx_qualified_name_parts",
+        "before_rows": null,
+        "after_rows": null,
+        "before_mib": 10.87890625,
+        "after_mib": 4.05859375
+      }
+    ]
+  },
+  "cardinality_probe": {
+    "source_derived_template_rows_compacted": 471932,
+    "symbol_rows_delta": -519815,
+    "symbol_value_bytes_delta": -11680780,
+    "qname_prefix_rows_delta": -107138,
+    "qname_prefix_value_bytes_delta": -13392126,
+    "qualified_name_rows_delta": -451541,
+    "new_compact_qname_keys": 16112
+  },
+  "correctness_gates": {
+    "graph_truth": {
+      "status": "passed",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "artifact_json": "reports/audit/artifacts/symbol_qname_compaction_graph_truth.json",
+      "artifact_md": "reports/audit/artifacts/symbol_qname_compaction_graph_truth.md"
+    },
+    "context_packet": {
+      "status": "passed",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "critical_symbol_recall": 1.0,
+      "proof_path_coverage": 1.0,
+      "source_span_coverage": 1.0,
+      "artifact_json": "reports/audit/artifacts/symbol_qname_compaction_context_packet.json",
+      "artifact_md": "reports/audit/artifacts/symbol_qname_compaction_context_packet.md"
+    },
+    "relation_sampler": {
+      "status": "ok",
+      "sample_count": 2,
+      "artifact_json": "reports/audit/artifacts/symbol_qname_compaction_sample_CALLS.json",
+      "artifact_md": "reports/audit/artifacts/symbol_qname_compaction_sample_CALLS.md"
+    },
+    "comprehensive_benchmark": {
+      "status": "reported",
+      "verdict": "fail",
+      "note": "The comprehensive benchmark was regenerated, but it aggregates the latest full compact proof gate artifacts and still records unrelated intended-performance failures until the long Autoresearch proof gate is rerun.",
+      "artifact_json": "reports/final/comprehensive_benchmark_symbol_qname_compaction.json",
+      "artifact_md": "reports/final/comprehensive_benchmark_symbol_qname_compaction.md"
+    }
+  },
+  "tests": {
+    "cargo_test_workspace": "passed",
+    "focused_tests": [
+      "codegraph-store::template_overlay_compacts_source_derived_symbol_and_qname_storage",
+      "codegraph-store::qname_and_prefix_length_validation_blocks_source_text_identity_bloat",
+      "codegraph-parser::taint_source_entity_uses_span_hash_identity_not_raw_expression_text",
+      "codegraph-index::audit_same_function_name_in_two_files_has_distinct_entity_ids",
+      "codegraph-index::audit_import_alias_change_updates_calls_target",
+      "codegraph-index::audit_barrel_reexport_resolves_default_and_named_targets_distinctly",
+      "codegraph-index::audit_default_import_resolves_to_default_export_when_supported",
+      "codegraph-index::audit_duplicate_file_content_keeps_separate_file_identity"
+    ]
+  },
+  "storage_rule_answers": {
+    "graph_truth_still_passed": true,
+    "context_packet_quality_still_passed": true,
+    "proof_db_size_decreased": true,
+    "removed_data_moved_or_derivable": "derivable from compact template-local identity plus source spans; debug source text is loaded from files rather than stored redundantly in proof dictionaries"
+  }
+}

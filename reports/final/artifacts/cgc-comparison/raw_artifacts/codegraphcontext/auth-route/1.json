@@ -1,0 +1,18 @@
+{
+  "executable": "target\\cgc-competitor\\.venv312-pypi\\Scripts\\cgc.exe",
+  "args": [
+    "--database",
+    "kuzudb",
+    "query",
+    "symbols",
+    "adminRoute",
+    "--top-k",
+    "10"
+  ],
+  "cwd": "reports\\final\\artifacts\\cgc-comparison\\fixtures\\auth-route",
+  "stdout": "",
+  "stderr": "Usage: cgc query [OPTIONS] QUERY\r\nTry 'cgc query --help' for help.\r\n┌─ Error ─────────────────────────────────────────────────────────────────────┐\r\n│ No such option: --top-k                                                     │\r\n└─────────────────────────────────────────────────────────────────────────────┘\r\n",
+  "exit_code": 2,
+  "latency_ms": 816,
+  "timed_out": false
+}

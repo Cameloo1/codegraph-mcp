@@ -1,0 +1,16 @@
+{
+  "executable": "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\.tools\\cgc_recovery\\venv312_compat\\Scripts\\cgc.exe",
+  "args": [
+    "--database",
+    "kuzudb",
+    "index",
+    "--force",
+    "\\\\?\\<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\comparison\\cgc_recovery\\artifacts\\fixture_diagnostic\\fixtures\\event-flow"
+  ],
+  "cwd": "reports\\comparison\\cgc_recovery\\artifacts\\fixture_diagnostic\\fixtures\\event-flow",
+  "stdout": "Resolving context...\r\nInitializing services and database connection...\r\nServices initialized.\r\nRe-indexing: \r\n\\\\?\\<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\comparison\\cgc_rec\r\novery\\artifacts\\fixture_diagnostic\\fixtures\\event-flow\r\n\r\nSuccessfully re-indexed: \r\n\\\\?\\<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\comparison\\cgc_rec\r\novery\\artifacts\\fixture_diagnostic\\fixtures\\event-flow in 0.97 seconds\r\n",
+  "stderr": "Warning: Could not load .env from current directory: name 'find_dotenv' is not \r\ndefined\r\nNo configuration file found. Using defaults.\r\nUsing database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))\r\nForce re-indexing (--force flag detected)\r\n",
+  "exit_code": 0,
+  "latency_ms": 1942,
+  "timed_out": false
+}

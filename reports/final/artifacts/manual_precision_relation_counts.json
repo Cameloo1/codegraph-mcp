@@ -1,0 +1,413 @@
+{
+  "schema_version": 1,
+  "db_path": "reports/final/artifacts/comprehensive_proof_1778642765060.sqlite",
+  "relation_count": 20,
+  "total_edges": 170041,
+  "relations": [
+    {
+      "relation": "CONTAINS",
+      "edge_count": 48532,
+      "source_span_count": 48532,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 48532
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "DEFINED_IN",
+      "edge_count": 48109,
+      "source_span_count": 48109,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 48109
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "ARGUMENT_0",
+      "edge_count": 19654,
+      "source_span_count": 19654,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 19654
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "FLOWS_TO",
+      "edge_count": 14801,
+      "source_span_count": 14801,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 14801
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "DECLARES",
+      "edge_count": 11468,
+      "source_span_count": 11468,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 11468
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "ARGUMENT_1",
+      "edge_count": 5225,
+      "source_span_count": 5225,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 5225
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "IMPORTS",
+      "edge_count": 3322,
+      "source_span_count": 3322,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 3322
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "DEFINES",
+      "edge_count": 3231,
+      "source_span_count": 3231,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 3231
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "ARGUMENT_N",
+      "edge_count": 3101,
+      "source_span_count": 3101,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 3101
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "CALLS",
+      "edge_count": 2363,
+      "source_span_count": 2363,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 2363
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "CALLEE",
+      "edge_count": 2177,
+      "source_span_count": 2177,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 2177
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "READS",
+      "edge_count": 1970,
+      "source_span_count": 1970,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 1970
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "ASSIGNED_FROM",
+      "edge_count": 1494,
+      "source_span_count": 1494,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 1494
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "MAY_MUTATE",
+      "edge_count": 1130,
+      "source_span_count": 1130,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 1130,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 1130
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "WRITES",
+      "edge_count": 1104,
+      "source_span_count": 1104,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 1104
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "EXPORTS",
+      "edge_count": 1103,
+      "source_span_count": 1103,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 1103
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "RETURNS",
+      "edge_count": 447,
+      "source_span_count": 447,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 447
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "RETURNS_TO",
+      "edge_count": 447,
+      "source_span_count": 447,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 447
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "ALIASED_BY",
+      "edge_count": 186,
+      "source_span_count": 186,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 186
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    },
+    {
+      "relation": "MUTATES",
+      "edge_count": 177,
+      "source_span_count": 177,
+      "missing_source_span_rows": 0,
+      "source_span_row_status": "not_measured_fast_path_inline_spans_present",
+      "duplicate_edge_count": 0,
+      "duplicate_edge_count_status": "not_measured_fast_path",
+      "derived_count": 0,
+      "exactness_counts": {},
+      "exactness_count_status": "not_measured_fast_path",
+      "context_breakdown": {
+        "test_or_fixture_inferred": 0,
+        "mock_or_stub_inferred": 0,
+        "unknown_not_first_class": 177
+      },
+      "top_head_entity_types": [],
+      "top_tail_entity_types": [],
+      "top_entity_type_status": "not_measured_fast_path"
+    }
+  ],
+  "notes": [
+    "Fast relation-counts reads only the edge table plus relation dictionary; inline source span columns are mandatory in the current schema.",
+    "Fast relation-counts intentionally skips source_spans row joins, exactness grouping, duplicate grouping, and top entity-type grouping on large DBs; those fields are marked not_measured_fast_path.",
+    "Context breakdown is not measured in the fast relation-count summary because runtime context is not a first-class edge column; inspect sampled edges for inferred production/test/mock labels."
+  ]
+}

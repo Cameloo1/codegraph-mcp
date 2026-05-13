@@ -1,0 +1,2378 @@
+{
+  "schema_version": 1,
+  "db_path": "reports/final/artifacts/compact_gate_autoresearch_proof.sqlite",
+  "relation_filter": "WRITES",
+  "limit": 50,
+  "seed": 44,
+  "include_snippets": true,
+  "manual_classification_options": [
+    "true_positive",
+    "false_positive",
+    "wrong_direction",
+    "wrong_target",
+    "wrong_span",
+    "stale",
+    "duplicate",
+    "unresolved_mislabeled_exact",
+    "test_mock_leaked",
+    "derived_missing_provenance",
+    "unsure"
+  ],
+  "samples": [
+    {
+      "ordinal": 1,
+      "edge_id": "edge-key:-9215340196587489650",
+      "head": {
+        "id": "repo://e/5e3a9c7b20f3d7718002b0dbfd34c2b7",
+        "name": "mapCodexEvent",
+        "qualified_name": "packages::core::src::codex-event-mapper.mapCodexEvent",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/4cb8712fc975fae910567846f97a2223",
+        "name": "expr@1318",
+        "qualified_name": "packages::core::src::codex-event-mapper.mapCodexEvent.expr@1318",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/codex-event-mapper.mjs",
+        "start_line": 40,
+        "start_column": 26,
+        "end_line": 40,
+        "end_column": 71
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:63e71cbf4a3bf24b",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/codex-event-mapper.mjs",
+        "start_line": 38,
+        "end_line": 42,
+        "text": "38:     event: codexEvent\n39:   });\n40:   if (evidenceCandidate) mapped.evidence_candidate = evidenceCandidate;\n41:   return mapped;\n42: }"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 2,
+      "edge_id": "edge-key:-9208564640050135149",
+      "head": {
+        "id": "repo://e/cd1163511c941bc1e83aeb9bd3e4243b",
+        "name": "codexPatchStatus",
+        "qualified_name": "packages::cli::src::arl.codexPatchStatus",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/8e00619b31839586e69789fa9ef2a558",
+        "name": "patchset",
+        "qualified_name": "packages::cli::src::arl.codexPatchStatus.patchset",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/arl.mjs",
+        "start_line": 502,
+        "start_column": 9,
+        "end_line": 502,
+        "end_column": 48
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:569fb7a80d03a924",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+        "start_line": 500,
+        "end_line": 504,
+        "text": "500:     return false;\n501:   }\n502:   const patchset = await readJson(patchsetPath);\n503:   if (args.includes(\"--json\")) {\n504:     console.log(JSON.stringify(patchset, null, 2));"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 3,
+      "edge_id": "edge-key:-9202905102190226028",
+      "head": {
+        "id": "repo://e/8d799aad3765ece9dbe32c5f532f60cb",
+        "name": "computeEvidenceHealth",
+        "qualified_name": "packages::core::src::evidence::index.computeEvidenceHealth",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/a8c98225d30e9237f174e05963713ee9",
+        "name": "weakEvidence",
+        "qualified_name": "packages::core::src::evidence::index.computeEvidenceHealth.weakEvidence",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/evidence/index.mjs",
+        "start_line": 143,
+        "start_column": 9,
+        "end_line": 143,
+        "end_column": 113
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:8860fed84f027108",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/evidence/index.mjs",
+        "start_line": 141,
+        "end_line": 145,
+        "text": "141: \n142:   const contradicted = claims.filter((claim) => claim.status === \"contradicted\").length;\n143:   const weakEvidence = evidence.filter((item) => item.strength === \"weak\" || item.strength === \"unknown\").length;\n144:   const label = issues.some((issue) => [\"missing_artifact\", \"hash_mismatch\", \"unsupported_supported_claim\"].includes(issue.kind))\n145:     ? \"invalid\""
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 4,
+      "edge_id": "edge-key:-9202542174198038300",
+      "head": {
+        "id": "repo://e/39feb7d8c786454817c6c43d93e1dcb6",
+        "name": "readObjectives",
+        "qualified_name": "packages::cli::src::dashboard-server.readObjectives",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/db98bf22857bd4dda97a08ed28e28f4b",
+        "name": "objectives",
+        "qualified_name": "packages::cli::src::dashboard-server.readObjectives.objectives",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/dashboard-server.mjs",
+        "start_line": 83,
+        "start_column": 9,
+        "end_line": 83,
+        "end_column": 24
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9453dc0bb38c212e",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/dashboard-server.mjs",
+        "start_line": 81,
+        "end_line": 85,
+        "text": "81:     path.join(repoRoot, \".arl\", \"objectives\")\n82:   ];\n83:   const objectives = [];\n84:   for (const root of roots) {\n85:     if (!(await pathExists(root))) continue;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 5,
+      "edge_id": "edge-key:-9200855074761782271",
+      "head": {
+        "id": "repo://e/fed901831c175728f877e68f803da562",
+        "name": "runOpenRouterAgentObjective",
+        "qualified_name": "services::orchestrator::src::run-manager.runOpenRouterAgentObjective",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/3f8d8430de2b5659c2717a1b93b7db27",
+        "name": "expr@1869",
+        "qualified_name": "services::orchestrator::src::run-manager.runOpenRouterAgentObjective.expr@1869",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "services/orchestrator/src/run-manager.mjs",
+        "start_line": 54,
+        "start_column": 3,
+        "end_line": 54,
+        "end_column": 52
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:67b86b73b8254b08",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/services/orchestrator/src/run-manager.mjs",
+        "start_line": 52,
+        "end_line": 56,
+        "text": "52:   const manifestPath = path.join(run.runRoot, \"manifest.json\");\n53:   const manifest = await readJson(manifestPath);\n54:   manifest.runtime.kind = \"openrouter_single_agent\";\n55:   manifest.runtime.codex_source = \"model_runtime\";\n56:   manifest.summary.single_agent = true;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 6,
+      "edge_id": "edge-key:-9192023821006431121",
+      "head": {
+        "id": "repo://e/ad34b4b3bfc2c20be5b17731d6039a29",
+        "name": "startDashboardAgentPromptRun",
+        "qualified_name": "packages::cli::src::dashboard-server.startDashboardAgentPromptRun",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/4e9b7652f8021233d2bee0cc731512c5",
+        "name": "cleanup",
+        "qualified_name": "packages::cli::src::dashboard-server.startDashboardAgentPromptRun.cleanup",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/dashboard-server.mjs",
+        "start_line": 872,
+        "start_column": 13,
+        "end_line": 872,
+        "end_column": 81
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9453dc0bb38c212e",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/dashboard-server.mjs",
+        "start_line": 870,
+        "end_line": 874,
+        "text": "870:       activeRun.done = true;\n871:       activeRun.finished_at = new Date().toISOString();\n872:       const cleanup = setTimeout(() => activeRuns.delete(started.runId), 300000);\n873:       cleanup.unref?.();\n874:     });"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 7,
+      "edge_id": "edge-key:-9180823349458361676",
+      "head": {
+        "id": "repo://e/7c92464e5b7b171e46d422cd54ad7844",
+        "name": "toggleDeveloper",
+        "qualified_name": "packages::ui-autoresearch::src::app.toggleDeveloper",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/ae0386960ba887e701cc9e2536fe3855",
+        "name": "drawer",
+        "qualified_name": "packages::ui-autoresearch::src::app.toggleDeveloper.drawer",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/ui-autoresearch/src/app.js",
+        "start_line": 532,
+        "start_column": 9,
+        "end_line": 532,
+        "end_column": 61
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:52a5b8c00049eaea",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/ui-autoresearch/src/app.js",
+        "start_line": 530,
+        "end_line": 534,
+        "text": "530: \n531: function toggleDeveloper(open) {\n532:   const drawer = document.getElementById(\"developer-drawer\");\n533:   drawer.classList.toggle(\"open\", open);\n534:   drawer.setAttribute(\"aria-hidden\", open ? \"false\" : \"true\");"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 8,
+      "edge_id": "edge-key:-9180652435139003731",
+      "head": {
+        "id": "repo://e/7af59e8a472dea9e968d7a1e82badaf4",
+        "name": "runBundledCodexObjective",
+        "qualified_name": "services::orchestrator::src::run-manager.runBundledCodexObjective",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/49f6b323a65103839569ba493bd28241",
+        "name": "claims",
+        "qualified_name": "services::orchestrator::src::run-manager.runBundledCodexObjective.claims",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "services/orchestrator/src/run-manager.mjs",
+        "start_line": 275,
+        "start_column": 9,
+        "end_line": 275,
+        "end_column": 71
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:67b86b73b8254b08",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/services/orchestrator/src/run-manager.mjs",
+        "start_line": 273,
+        "end_line": 277,
+        "text": "273:   const infoHash = await sha256File(path.join(run.runRoot, \"logs\", \"bundled-runtime-info.json\"));\n274:   const evidence = await readJson(path.join(run.runRoot, \"evidence.json\"));\n275:   const claims = await readJson(path.join(run.runRoot, \"claims.json\"));\n276:   evidence.push({\n277:     evidence_id: \"evidence_bundled_runtime_001\","
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 9,
+      "edge_id": "edge-key:-9174860681805008942",
+      "head": {
+        "id": "repo://e/be5f762336ae802e761e4cdb950539e0",
+        "name": "startFreeformAgentPrompt",
+        "qualified_name": "services::orchestrator::src::freeform-agent-runner.startFreeformAgentPrompt",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/375e6454803284f28d5e809599809a78",
+        "name": "preparedRunId",
+        "qualified_name": "services::orchestrator::src::freeform-agent-runner.startFreeformAgentPrompt.preparedRunId",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "services/orchestrator/src/freeform-agent-runner.mjs",
+        "start_line": 217,
+        "start_column": 9,
+        "end_line": 217,
+        "end_column": 43
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:0c57f99d30ac8b17",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/services/orchestrator/src/freeform-agent-runner.mjs",
+        "start_line": 215,
+        "end_line": 219,
+        "text": "215:   const created = await createFreeformObjectiveFile(prompt, repoRoot, { now });\n216:   const loaded = await loadObjective(created.path);\n217:   const preparedRunId = runId ?? undefined;\n218:   const runRoot = preparedRunId ? path.join(repoRoot, \".arl\", \"runs\", preparedRunId) : null;\n219:   const workspace = runRoot ? path.join(runRoot, \"workspace\") : null;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 10,
+      "edge_id": "edge-key:-9165705249699042036",
+      "head": {
+        "id": "repo://e/df6b6705e2f1a4b3d74851dc4dafddf9",
+        "name": "start",
+        "qualified_name": "packages::core::src::runtime-adapters::external-codex.ExternalCodexExecAdapter.start",
+        "kind": "Method"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/dcd952bb43cdfded29be7fada1f50d13",
+        "name": "manifestPath",
+        "qualified_name": "packages::core::src::runtime-adapters::external-codex.ExternalCodexExecAdapter.start.manifestPath",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/runtime-adapters/external-codex.mjs",
+        "start_line": 206,
+        "start_column": 11,
+        "end_line": 206,
+        "end_column": 61
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:6471ef598a00c183",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/runtime-adapters/external-codex.mjs",
+        "start_line": 204,
+        "end_line": 208,
+        "text": "204:     const pendingWrites = [];\n205: \n206:     const manifestPath = path.join(runRoot, \"manifest.json\");\n207:     const manifest = await readJson(manifestPath);\n208:     manifest.runtime.kind = \"external_codex_cli\";"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 11,
+      "edge_id": "edge-key:-9145116956986869643",
+      "head": {
+        "id": "repo://e/94e44b598f56da775171b69264b47e51",
+        "name": "resolveCurrentVersion",
+        "qualified_name": "packages::core::src::release::update-checker.resolveCurrentVersion",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/efc5d7903e5c963e1b32e2641d2262d8",
+        "name": "packageJson",
+        "qualified_name": "packages::core::src::release::update-checker.resolveCurrentVersion.packageJson",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/release/update-checker.mjs",
+        "start_line": 46,
+        "start_column": 9,
+        "end_line": 46,
+        "end_column": 50
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:e41f3f3805b4c45d",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/release/update-checker.mjs",
+        "start_line": 44,
+        "end_line": 48,
+        "text": "44:   const packagePath = path.join(repoRoot, \"package.json\");\n45:   if (!(await pathExists(packagePath))) return null;\n46:   const packageJson = await readJson(packagePath);\n47:   return packageJson.version ?? null;\n48: }"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 12,
+      "edge_id": "edge-key:-9133652800344259384",
+      "head": {
+        "id": "repo://e/df6b6705e2f1a4b3d74851dc4dafddf9",
+        "name": "start",
+        "qualified_name": "packages::core::src::runtime-adapters::external-codex.ExternalCodexExecAdapter.start",
+        "kind": "Method"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/d96a124c6ec57bb76028c8fb07c8685d",
+        "name": "stdoutBuffer",
+        "qualified_name": "packages::core::src::runtime-adapters::external-codex.ExternalCodexExecAdapter.start.stdoutBuffer",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/runtime-adapters/external-codex.mjs",
+        "start_line": 201,
+        "start_column": 9,
+        "end_line": 201,
+        "end_column": 26
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:6471ef598a00c183",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/runtime-adapters/external-codex.mjs",
+        "start_line": 199,
+        "end_line": 203,
+        "text": "199:     let sequence = 1000;\n200:     let cancelled = false;\n201:     let stdoutBuffer = \"\";\n202:     let mappedEvents = 0;\n203:     let parseFailureEmitted = false;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 13,
+      "edge_id": "edge-key:-9128238369934451022",
+      "head": {
+        "id": "repo://e/4469d79a5efe2d3aaa9b0f070fdff1ec",
+        "name": "loadLocalEnv",
+        "qualified_name": "packages::cli::src::arl.loadLocalEnv",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/dc2dab64f630a7dd445b21c9e6ccb413",
+        "name": "key",
+        "qualified_name": "packages::cli::src::arl.loadLocalEnv.key",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/arl.mjs",
+        "start_line": 86,
+        "start_column": 13,
+        "end_line": 86,
+        "end_column": 53
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:569fb7a80d03a924",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+        "start_line": 84,
+        "end_line": 88,
+        "text": "84:       const separator = trimmed.indexOf(\"=\");\n85:       if (separator === -1) continue;\n86:       const key = trimmed.slice(0, separator).trim();\n87:       let value = trimmed.slice(separator + 1).trim();\n88:       if ((value.startsWith(\"\\\"\") && value.endsWith(\"\\\"\")) || (value.startsWith(\"'\") && value.endsWith(\"'\"))) {"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 14,
+      "edge_id": "edge-key:-9120571736833999021",
+      "head": {
+        "id": "repo://e/baeefa615b9e301d5d2a1f9e8adb77c3",
+        "name": "writeReleaseManifest",
+        "qualified_name": "packages::core::src::release::index.writeReleaseManifest",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/313cc1675975346247a966707e1a9ca4",
+        "name": "manifest",
+        "qualified_name": "packages::core::src::release::index.writeReleaseManifest.manifest",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/release/index.mjs",
+        "start_line": 271,
+        "start_column": 9,
+        "end_line": 280,
+        "end_column": 4
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:dab331d28fc8723d",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/release/index.mjs",
+        "start_line": 269,
+        "end_line": 282,
+        "text": "269:   await writeText(path.join(releaseRoot, \"RELEASE_CHECKSUMS.txt\"), `${checksumLines}\\n`);\n270:   hashes[\"RELEASE_CHECKSUMS.txt\"] = await sha256File(path.join(releaseRoot, \"RELEASE_CHECKSUMS.txt\"));\n271:   const manifest = {\n272:     name: \"autoresearch-lab\",\n273:     version,\n274:     created_at: new Date().toISOString(),\n275:     source_root: repoRoot,\n276:     copied,\n277:     missing_optional: missingOptional,\n278:     files: Object.keys(hashes).sort(),\n279:     hashes\n280:   };\n281:   await writeJson(path.join(releaseRoot, \"RELEASE_MANIFEST.json\"), manifest);\n282:   return manifest;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 15,
+      "edge_id": "edge-key:-9106978301333808965",
+      "head": {
+        "id": "repo://e/be5f762336ae802e761e4cdb950539e0",
+        "name": "startFreeformAgentPrompt",
+        "qualified_name": "services::orchestrator::src::freeform-agent-runner.startFreeformAgentPrompt",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/cb558437d2162bafe9db415eda03d929",
+        "name": "loaded",
+        "qualified_name": "services::orchestrator::src::freeform-agent-runner.startFreeformAgentPrompt.loaded",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "services/orchestrator/src/freeform-agent-runner.mjs",
+        "start_line": 216,
+        "start_column": 9,
+        "end_line": 216,
+        "end_column": 51
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:0c57f99d30ac8b17",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/services/orchestrator/src/freeform-agent-runner.mjs",
+        "start_line": 214,
+        "end_line": 218,
+        "text": "214: ) {\n215:   const created = await createFreeformObjectiveFile(prompt, repoRoot, { now });\n216:   const loaded = await loadObjective(created.path);\n217:   const preparedRunId = runId ?? undefined;\n218:   const runRoot = preparedRunId ? path.join(repoRoot, \".arl\", \"runs\", preparedRunId) : null;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 16,
+      "edge_id": "edge-key:-9098133026961486043",
+      "head": {
+        "id": "repo://e/466845c5e7febbb213e0844ee060badc",
+        "name": "loadRunDetail",
+        "qualified_name": "packages::cli::src::dashboard-server.loadRunDetail",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/2514afbc2cf141dfd3bc3ea69584f9b5",
+        "name": "appserverEvents",
+        "qualified_name": "packages::cli::src::dashboard-server.loadRunDetail.appserverEvents",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/dashboard-server.mjs",
+        "start_line": 276,
+        "start_column": 9,
+        "end_line": 276,
+        "end_column": 101
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9453dc0bb38c212e",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/dashboard-server.mjs",
+        "start_line": 274,
+        "end_line": 278,
+        "text": "274:   const evidence = await maybeReadJson(path.join(runRoot, \"evidence.json\"), []);\n275:   const verifier = await maybeReadJson(path.join(runRoot, \"verifier_report.json\"), null);\n276:   const appserverEvents = await maybeReadJsonl(path.join(runRoot, \"logs\", \"appserver-events.jsonl\"));\n277:   const multiAgentPlan = await maybeReadJson(path.join(runRoot, \"artifacts\", \"multi_agent_plan.json\"), null);\n278:   const evidenceHealth = claims.length > 0 || evidence.length > 0"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 17,
+      "edge_id": "edge-key:-9097652859107275988",
+      "head": {
+        "id": "repo://e/df6b6705e2f1a4b3d74851dc4dafddf9",
+        "name": "start",
+        "qualified_name": "packages::core::src::runtime-adapters::external-codex.ExternalCodexExecAdapter.start",
+        "kind": "Method"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/328ac3a5394445d0626d6f3076404ee6",
+        "name": "expr@11684",
+        "qualified_name": "packages::core::src::runtime-adapters::external-codex.ExternalCodexExecAdapter.start.expr@11684",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/runtime-adapters/external-codex.mjs",
+        "start_line": 339,
+        "start_column": 9,
+        "end_line": 339,
+        "end_column": 93
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:6471ef598a00c183",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/runtime-adapters/external-codex.mjs",
+        "start_line": 337,
+        "end_line": 341,
+        "text": "337: \n338:         const finalManifest = await readJson(manifestPath);\n339:         finalManifest.status = cancelled ? \"cancelled\" : code === 0 ? \"completed\" : \"failed\";\n340:         finalManifest.summary.external_exit_code = code;\n341:         finalManifest.summary.external_signal = signal;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 18,
+      "edge_id": "edge-key:-9094927754688540153",
+      "head": {
+        "id": "repo://e/6135c46a53c2efb9db26e112df69e3d3",
+        "name": "createLocalReleasePackage",
+        "qualified_name": "packages::core::src::release::index.createLocalReleasePackage",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/bb009d6dc71a26b06e2bfa91345f9902",
+        "name": "root",
+        "qualified_name": "packages::core::src::release::index.createLocalReleasePackage.root",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/release/index.mjs",
+        "start_line": 353,
+        "start_column": 9,
+        "end_line": 353,
+        "end_column": 55
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:dab331d28fc8723d",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/release/index.mjs",
+        "start_line": 351,
+        "end_line": 355,
+        "text": "351: \n352: export async function createLocalReleasePackage({ repoRoot, outRoot, clean = true, signing = null } = {}) {\n353:   const root = path.resolve(repoRoot ?? process.cwd());\n354:   const plan = await planLocalReleasePackage({ repoRoot, outRoot });\n355:   assertSafeReleaseRoot(plan.output_root, plan.release_root);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 19,
+      "edge_id": "edge-key:-9092542865943923434",
+      "head": {
+        "id": "repo://e/785b03f7c0fdd87c331e09b97cc61606",
+        "name": "planLocalReleasePackage",
+        "qualified_name": "packages::core::src::release::index.planLocalReleasePackage",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/e2d0dcf255e77ae72ba55baae3ecb23d",
+        "name": "version",
+        "qualified_name": "packages::core::src::release::index.planLocalReleasePackage.version",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/release/index.mjs",
+        "start_line": 331,
+        "start_column": 9,
+        "end_line": 331,
+        "end_column": 38
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:dab331d28fc8723d",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/release/index.mjs",
+        "start_line": 329,
+        "end_line": 333,
+        "text": "329:   const root = path.resolve(repoRoot ?? process.cwd());\n330:   const packageJson = await readJson(path.join(root, \"package.json\"));\n331:   const version = packageJson.version;\n332:   const outputRoot = path.resolve(outRoot ?? path.join(root, \"dist\"));\n333:   const releaseRoot = path.join(outputRoot, releaseDirName(version));"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 20,
+      "edge_id": "edge-key:-9090993692629347788",
+      "head": {
+        "id": "repo://e/a9cb13629807385d928f76eac994babf",
+        "name": "parseKeyValue",
+        "qualified_name": "packages::core::src::simple-yaml.parseKeyValue",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/338b4aeaa7dac78e5211d38a1c0c10c8",
+        "name": "key",
+        "qualified_name": "packages::core::src::simple-yaml.parseKeyValue.key",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/simple-yaml.mjs",
+        "start_line": 37,
+        "start_column": 9,
+        "end_line": 37,
+        "end_column": 42
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:7441dc47b2a509a8",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/simple-yaml.mjs",
+        "start_line": 35,
+        "end_line": 39,
+        "text": "35:     return [text, undefined];\n36:   }\n37:   const key = text.slice(0, colon).trim();\n38:   const rest = text.slice(colon + 1).trim();\n39:   return [key, rest.length === 0 ? undefined : parseScalar(rest)];"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 21,
+      "edge_id": "edge-key:-9089622480571185939",
+      "head": {
+        "id": "repo://e/4a2278bc920360444b92b49ebca96a76",
+        "name": "runCommand",
+        "qualified_name": "packages::cli::src::arl.runCommand",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/471c5907a5f0607dfa744387b33d9f23",
+        "name": "reasoningEffort",
+        "qualified_name": "packages::cli::src::arl.runCommand.reasoningEffort",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/arl.mjs",
+        "start_line": 204,
+        "start_column": 11,
+        "end_line": 204,
+        "end_column": 59
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:569fb7a80d03a924",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+        "start_line": 202,
+        "end_line": 206,
+        "text": "202:     const model = flagValue(args, \"--model\") ?? process.env.OPENROUTER_MODEL;\n203:     const endpoint = flagValue(args, \"--endpoint\") ?? process.env.OPENROUTER_BASE_URL;\n204:     const reasoningEffort = flagValue(args, \"--reasoning\");\n205:     const adapter = new OpenRouterRuntimeAdapter({ model, endpoint });\n206:     const located = adapter.locate();"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 22,
+      "edge_id": "edge-key:-9083576562086082197",
+      "head": {
+        "id": "repo://e/81fadbac75286413785474f905f73a65",
+        "name": "startDashboardLiveRun",
+        "qualified_name": "packages::cli::src::dashboard-server.startDashboardLiveRun",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/fb2b8f912d53f1f9c986a23beab3c4c7",
+        "name": "loaded",
+        "qualified_name": "packages::cli::src::dashboard-server.startDashboardLiveRun.loaded",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/dashboard-server.mjs",
+        "start_line": 768,
+        "start_column": 9,
+        "end_line": 768,
+        "end_column": 60
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9453dc0bb38c212e",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/dashboard-server.mjs",
+        "start_line": 766,
+        "end_line": 770,
+        "text": "766:     throw new Error(`objective path escapes workspace: ${objectivePath}`);\n767:   }\n768:   const loaded = await loadObjective(absoluteObjectivePath);\n769:   const validation = await validateObjective(loaded.data, repoRoot);\n770:   if (!validation.valid) {"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 23,
+      "edge_id": "edge-key:-9081117072560275925",
+      "head": {
+        "id": "repo://e/b2391f6afb3aebab03c902195ca9aff1",
+        "name": "streamRunEvents",
+        "qualified_name": "packages::cli::src::dashboard-server.streamRunEvents",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/ec5fb0f5de50d64c33c2d13b45163f6e",
+        "name": "closed",
+        "qualified_name": "packages::cli::src::dashboard-server.streamRunEvents.closed",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/dashboard-server.mjs",
+        "start_line": 374,
+        "start_column": 11,
+        "end_line": 374,
+        "end_column": 24
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9453dc0bb38c212e",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/dashboard-server.mjs",
+        "start_line": 372,
+        "end_line": 376,
+        "text": "372:         const cleanup = () => {\n373:           if (closed) return;\n374:           closed = true;\n375:           activeRun.listeners?.delete(listener);\n376:           resolve();"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 24,
+      "edge_id": "edge-key:-9077241256724152616",
+      "head": {
+        "id": "repo://e/a834d4979bd40b385462a7c8de111366",
+        "name": "runAppServerObjective",
+        "qualified_name": "services::orchestrator::src::run-manager.runAppServerObjective",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/a8a5d31f1520246c5ac8ac66f218c5ea",
+        "name": "hashes",
+        "qualified_name": "services::orchestrator::src::run-manager.runAppServerObjective.hashes",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "services/orchestrator/src/run-manager.mjs",
+        "start_line": 212,
+        "start_column": 11,
+        "end_line": 212,
+        "end_column": 22
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:67b86b73b8254b08",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/services/orchestrator/src/run-manager.mjs",
+        "start_line": 210,
+        "end_line": 214,
+        "text": "210:     }));\n211: \n212:     const hashes = {};\n213:     for (const file of await walkFiles(run.runRoot)) {\n214:       const relative = path.relative(run.runRoot, file).replaceAll(\"\\\\\", \"/\");"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 25,
+      "edge_id": "edge-key:-9063180648632075272",
+      "head": {
+        "id": "repo://e/81fadbac75286413785474f905f73a65",
+        "name": "startDashboardLiveRun",
+        "qualified_name": "packages::cli::src::dashboard-server.startDashboardLiveRun",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/5cd8e3f2bc7a5200af5fd28a813a8e12",
+        "name": "liveRuntimes",
+        "qualified_name": "packages::cli::src::dashboard-server.startDashboardLiveRun.liveRuntimes",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/dashboard-server.mjs",
+        "start_line": 774,
+        "start_column": 9,
+        "end_line": 789,
+        "end_column": 5
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9453dc0bb38c212e",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/dashboard-server.mjs",
+        "start_line": 772,
+        "end_line": 791,
+        "text": "772:   }\n773:   const runtime = body.runtime ?? \"dry_run\";\n774:   const liveRuntimes = new Set([\n775:     \"dry_run\",\n776:     \"app_server_shim\",\n777:     \"bundled_codex\",\n778:     \"bundled-codex\",\n779:     \"arl_codexd\",\n780:     \"arl-codexd\",\n781:     \"multi_agent_shim\",\n782:     \"external_codex_cli\",\n783:     \"external-codex\",\n784:     \"openrouter\",\n785:     \"openrouter_model\",\n786:     \"openrouter_single_agent\",\n787:     \"openrouter-agent\",\n788:     \"openrouter_agent\"\n789:   ]);\n790:   if (!liveRuntimes.has(runtime)) {\n791:     throw new Error(`unsupported live dashboard runtime: ${runtime}`);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 26,
+      "edge_id": "edge-key:-9047897783447882203",
+      "head": {
+        "id": "repo://e/0413dbfce237f6db4ab555ac375169f1",
+        "name": "verifyLocalReleasePackage",
+        "qualified_name": "packages::core::src::release::index.verifyLocalReleasePackage",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/6601becf269c36c842849209a8f79b02",
+        "name": "signing",
+        "qualified_name": "packages::core::src::release::index.verifyLocalReleasePackage.signing",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/release/index.mjs",
+        "start_line": 316,
+        "start_column": 9,
+        "end_line": 318,
+        "end_column": 82
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:dab331d28fc8723d",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/release/index.mjs",
+        "start_line": 314,
+        "end_line": 320,
+        "text": "314:   }\n315:   const signingPath = path.join(root, \"SIGNING_STATUS.json\");\n316:   const signing = await pathExists(signingPath)\n317:     ? await readJson(signingPath)\n318:     : { status: \"missing\", signed: false, reason: \"SIGNING_STATUS.json missing\" };\n319:   return {\n320:     valid: errors.length === 0,"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 27,
+      "edge_id": "edge-key:-9032001772324398413",
+      "head": {
+        "id": "repo://e/7af59e8a472dea9e968d7a1e82badaf4",
+        "name": "runBundledCodexObjective",
+        "qualified_name": "services::orchestrator::src::run-manager.runBundledCodexObjective",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/a0f60d72dec78b035c6f7b107b794229",
+        "name": "verification",
+        "qualified_name": "services::orchestrator::src::run-manager.runBundledCodexObjective.verification",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "services/orchestrator/src/run-manager.mjs",
+        "start_line": 300,
+        "start_column": 9,
+        "end_line": 300,
+        "end_column": 109
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:67b86b73b8254b08",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/services/orchestrator/src/run-manager.mjs",
+        "start_line": 298,
+        "end_line": 302,
+        "text": "298:   await writeJson(path.join(run.runRoot, \"claims.json\"), claims);\n299: \n300:   const verification = await refreshRunArtifacts({ runRoot: run.runRoot, objective: loaded.data, manifest });\n301:   return { ...run, manifest, runtimeInfo, verification };\n302: }"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 28,
+      "edge_id": "edge-key:-9015413048156194913",
+      "head": {
+        "id": "repo://e/593402e83ab3c00b67d06fb02128254d",
+        "name": "runExternalCodexObjective",
+        "qualified_name": "services::orchestrator::src::run-manager.runExternalCodexObjective",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/d87d040c4d70dc3ab777164f84d31034",
+        "name": "adapter",
+        "qualified_name": "services::orchestrator::src::run-manager.runExternalCodexObjective.adapter",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "services/orchestrator/src/run-manager.mjs",
+        "start_line": 117,
+        "start_column": 9,
+        "end_line": 117,
+        "end_column": 49
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:67b86b73b8254b08",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/services/orchestrator/src/run-manager.mjs",
+        "start_line": 115,
+        "end_line": 119,
+        "text": "115:     throw new Error(validation.errors.join(\"\\n\"));\n116:   }\n117:   const adapter = new ExternalCodexExecAdapter();\n118:   return adapter.run({\n119:     objective: loaded.data,"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 29,
+      "edge_id": "edge-key:-9011741606627076278",
+      "head": {
+        "id": "repo://e/b7ed1c10439a9633f97ad8d8b21b603d",
+        "name": "runsShow",
+        "qualified_name": "packages::cli::src::arl.runsShow",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/d792ccf38cb0640f64ba5f7d9d48de85",
+        "name": "manifestPath",
+        "qualified_name": "packages::cli::src::arl.runsShow.manifestPath",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/arl.mjs",
+        "start_line": 267,
+        "start_column": 9,
+        "end_line": 267,
+        "end_column": 83
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:569fb7a80d03a924",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+        "start_line": 265,
+        "end_line": 269,
+        "text": "265: \n266: async function runsShow(repoRoot, runId) {\n267:   const manifestPath = path.join(repoRoot, \".arl\", \"runs\", runId, \"manifest.json\");\n268:   if (!(await pathExists(manifestPath))) {\n269:     console.error(`run not found: ${runId}`);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 30,
+      "edge_id": "edge-key:-8999559970389029821",
+      "head": {
+        "id": "repo://e/df10a5807c4516d00e4abfeb6866c37e",
+        "name": "readPromptRegistrySummary",
+        "qualified_name": "packages::cli::src::dashboard-server.readPromptRegistrySummary",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/ad76175782f62b5f3e11772bad32e005",
+        "name": "prompts",
+        "qualified_name": "packages::cli::src::dashboard-server.readPromptRegistrySummary.prompts",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/dashboard-server.mjs",
+        "start_line": 558,
+        "start_column": 9,
+        "end_line": 558,
+        "end_column": 86
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9453dc0bb38c212e",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/dashboard-server.mjs",
+        "start_line": 556,
+        "end_line": 560,
+        "text": "556: \n557: async function readPromptRegistrySummary(repoRoot) {\n558:   const prompts = await readRegistryJsonFiles(path.join(repoRoot, \".arl\", \"prompts\"));\n559:   return {\n560:     prompts: prompts.map(({ path: promptPath, record }) => ({"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 31,
+      "edge_id": "edge-key:-8997187641966570880",
+      "head": {
+        "id": "repo://e/1544a636541b7add226fe4fa49064947",
+        "name": "startFakeOpenRouter",
+        "qualified_name": "tests::openrouter-adapter.test.startFakeOpenRouter",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/9fd325703580aaa5dfcfb37eaaf90cf3",
+        "name": "address",
+        "qualified_name": "tests::openrouter-adapter.test.startFakeOpenRouter.address",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "tests/openrouter-adapter.test.mjs",
+        "start_line": 44,
+        "start_column": 13,
+        "end_line": 44,
+        "end_column": 39
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:62aed147c51df242",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/tests/openrouter-adapter.test.mjs",
+        "start_line": 42,
+        "end_line": 46,
+        "text": "42:   return new Promise((resolve) => {\n43:     server.listen(0, \"127.0.0.1\", () => {\n44:       const address = server.address();\n45:       resolve({\n46:         server,"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 32,
+      "edge_id": "edge-key:-8972474331098962160",
+      "head": {
+        "id": "repo://e/afb22024d68b612c5c6ee74d2771a1b2",
+        "name": "renderList",
+        "qualified_name": "packages::ui-autoresearch::src::app.renderList",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/a686093f16d531077152957ab88adf99",
+        "name": "target",
+        "qualified_name": "packages::ui-autoresearch::src::app.renderList.target",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/ui-autoresearch/src/app.js",
+        "start_line": 74,
+        "start_column": 9,
+        "end_line": 74,
+        "end_column": 45
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:52a5b8c00049eaea",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/ui-autoresearch/src/app.js",
+        "start_line": 72,
+        "end_line": 76,
+        "text": "72: \n73: function renderList(id, rows, formatter) {\n74:   const target = document.getElementById(id);\n75:   if (!target) return;\n76:   target.innerHTML = rows.length === 0 ? \"<div class=\\\"empty\\\">None</div>\" : rows.map(formatter).join(\"\");"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 33,
+      "edge_id": "edge-key:-8967458845026127082",
+      "head": {
+        "id": "repo://e/65cd7e8e450b406dc4f0203c711c09c3",
+        "name": "refreshRunArtifacts",
+        "qualified_name": "services::orchestrator::src::multi-agent-runner.refreshRunArtifacts",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/aa7b68f99ce52096cfbbcbc163677364",
+        "name": "relative",
+        "qualified_name": "services::orchestrator::src::multi-agent-runner.refreshRunArtifacts.relative",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "services/orchestrator/src/multi-agent-runner.mjs",
+        "start_line": 63,
+        "start_column": 11,
+        "end_line": 63,
+        "end_column": 72
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:515d478182d71479",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/services/orchestrator/src/multi-agent-runner.mjs",
+        "start_line": 61,
+        "end_line": 65,
+        "text": "61:   const hashes = {};\n62:   for (const file of await walkFiles(runRoot)) {\n63:     const relative = path.relative(runRoot, file).replaceAll(\"\\\\\", \"/\");\n64:     if (relative === \"hashes.json\") continue;\n65:     if (!(await pathExists(file))) continue;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 34,
+      "edge_id": "edge-key:-8965308638854400202",
+      "head": {
+        "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+        "name": "main",
+        "qualified_name": "packages::cli::src::arl.main",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/4445deeb8c986e4cc85277d92de614de",
+        "name": "ok",
+        "qualified_name": "packages::cli::src::arl.main.ok",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/arl.mjs",
+        "start_line": 693,
+        "start_column": 5,
+        "end_line": 693,
+        "end_column": 34
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:569fb7a80d03a924",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+        "start_line": 691,
+        "end_line": 695,
+        "text": "691:     ok = await agentRunCommand(repoRoot, rest);\n692:   } else if (command === \"runs\" && subcommand === \"list\") {\n693:     ok = await runsList(repoRoot);\n694:   } else if (command === \"runs\" && subcommand === \"show\") {\n695:     ok = await runsShow(repoRoot, rest[0]);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 35,
+      "edge_id": "edge-key:-8953577217891063241",
+      "head": {
+        "id": "repo://e/2cbc2b6a0e14781c9fe0a936243da302",
+        "name": "compareVersions",
+        "qualified_name": "packages::core::src::release::update-checker.compareVersions",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/cf35f3505ad2747383b9ac18db5788cd",
+        "name": "width",
+        "qualified_name": "packages::core::src::release::update-checker.compareVersions.width",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/release/update-checker.mjs",
+        "start_line": 14,
+        "start_column": 9,
+        "end_line": 14,
+        "end_column": 62
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:e41f3f3805b4c45d",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/release/update-checker.mjs",
+        "start_line": 12,
+        "end_line": 16,
+        "text": "12:   const leftParts = versionParts(left);\n13:   const rightParts = versionParts(right);\n14:   const width = Math.max(leftParts.length, rightParts.length);\n15:   for (let index = 0; index < width; index += 1) {\n16:     const leftPart = leftParts[index] ?? 0;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 36,
+      "edge_id": "edge-key:-8953425695233741466",
+      "head": {
+        "id": "repo://e/a834d4979bd40b385462a7c8de111366",
+        "name": "runAppServerObjective",
+        "qualified_name": "services::orchestrator::src::run-manager.runAppServerObjective",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/9fb53f1ab57f2161f2059c18aea4cb0b",
+        "name": "eventLogHash",
+        "qualified_name": "services::orchestrator::src::run-manager.runAppServerObjective.eventLogHash",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "services/orchestrator/src/run-manager.mjs",
+        "start_line": 161,
+        "start_column": 11,
+        "end_line": 161,
+        "end_column": 52
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:67b86b73b8254b08",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/services/orchestrator/src/run-manager.mjs",
+        "start_line": 159,
+        "end_line": 163,
+        "text": "159:     await session.drain();\n160:     const eventLog = path.join(run.runRoot, \"logs\", \"appserver-events.jsonl\");\n161:     const eventLogHash = await sha256File(eventLog);\n162:     const evidence = await readJson(path.join(run.runRoot, \"evidence.json\"));\n163:     const claims = await readJson(path.join(run.runRoot, \"claims.json\"));"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 37,
+      "edge_id": "edge-key:-8952414981480967847",
+      "head": {
+        "id": "repo://e/6cc104eab113bce8cfd8e4f32771e0ea",
+        "name": "start",
+        "qualified_name": "packages::appserver-client::src::jsonrpc-client.JsonRpcClient.start",
+        "kind": "Method"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/0e35e484fb14121cd3d59063550187ca",
+        "name": "rl",
+        "qualified_name": "packages::appserver-client::src::jsonrpc-client.JsonRpcClient.start.rl",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/appserver-client/src/jsonrpc-client.mjs",
+        "start_line": 22,
+        "start_column": 11,
+        "end_line": 22,
+        "end_column": 72
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9f5ceab056a85bfc",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/appserver-client/src/jsonrpc-client.mjs",
+        "start_line": 20,
+        "end_line": 24,
+        "text": "20:       stdio: [\"pipe\", \"pipe\", \"pipe\"]\n21:     });\n22:     const rl = readline.createInterface({ input: this.process.stdout });\n23:     rl.on(\"line\", (line) => {\n24:       if (!line.trim()) return;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 38,
+      "edge_id": "edge-key:-8944346721100125203",
+      "head": {
+        "id": "repo://e/2993c700973004d60a10ea15d1379e18",
+        "name": "evidenceCheck",
+        "qualified_name": "packages::cli::src::arl.evidenceCheck",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/340bee055ecbfe05c22dafb2d72ee57f",
+        "name": "claims",
+        "qualified_name": "packages::cli::src::arl.evidenceCheck.claims",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/arl.mjs",
+        "start_line": 365,
+        "start_column": 9,
+        "end_line": 365,
+        "end_column": 67
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:569fb7a80d03a924",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+        "start_line": 363,
+        "end_line": 367,
+        "text": "363: async function evidenceCheck(repoRoot, runId) {\n364:   const runRoot = path.join(repoRoot, \".arl\", \"runs\", runId);\n365:   const claims = await readJson(path.join(runRoot, \"claims.json\"));\n366:   const evidence = await readJson(path.join(runRoot, \"evidence.json\"));\n367:   const health = await computeEvidenceHealth({ claims, evidence, runRoot });"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 39,
+      "edge_id": "edge-key:-8943212322656166210",
+      "head": {
+        "id": "repo://e/9dbd5ce7b7f975e0c58de4e139d2ed96",
+        "name": "validateToolPolicy",
+        "qualified_name": "packages::core::src::permissions::policy.validateToolPolicy",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/d566bedff7704e79d4b60751ee9642f3",
+        "name": "toolId",
+        "qualified_name": "packages::core::src::permissions::policy.validateToolPolicy.toolId",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/permissions/policy.mjs",
+        "start_line": 87,
+        "start_column": 9,
+        "end_line": 87,
+        "end_column": 55
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:911cf7048e46e0e8",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/permissions/policy.mjs",
+        "start_line": 85,
+        "end_line": 89,
+        "text": "85:     require_manifests: true\n86:   };\n87:   const toolId = request.tool_id ?? request.name ?? \"\";\n88:   if ((tools.deny ?? []).includes(toolId)) {\n89:     return { allowed: false, reason: `tool ${toolId || \"unknown\"} is denied` };"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 40,
+      "edge_id": "edge-key:-8919897977830147980",
+      "head": {
+        "id": "repo://e/7ffd3503439db213c215f55c1fa418ad",
+        "name": "bundleCommand",
+        "qualified_name": "packages::cli::src::arl.bundleCommand",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/9a03c389988a03eb8e1f5f4daae16145",
+        "name": "manifest",
+        "qualified_name": "packages::cli::src::arl.bundleCommand.manifest",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/arl.mjs",
+        "start_line": 396,
+        "start_column": 11,
+        "end_line": 396,
+        "end_column": 57
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:569fb7a80d03a924",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+        "start_line": 394,
+        "end_line": 398,
+        "text": "394:   }\n395:   if (action === \"create\") {\n396:     const manifest = await createBundleManifest(runRoot);\n397:     console.log(`bundle_manifest=${path.relative(repoRoot, path.join(runRoot, \"bundle_manifest.json\"))}`);\n398:     console.log(`files=${manifest.files.length}`);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 41,
+      "edge_id": "edge-key:-8919476110978504447",
+      "head": {
+        "id": "repo://e/ea34faff8dff2f52fca08295aa9e2174",
+        "name": "buildReproducibilitySummary",
+        "qualified_name": "packages::core::src::reproducibility::index.buildReproducibilitySummary",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/4e16613ac4d169e10e58491e3681849b",
+        "name": "claims",
+        "qualified_name": "packages::core::src::reproducibility::index.buildReproducibilitySummary.claims",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/reproducibility/index.mjs",
+        "start_line": 75,
+        "start_column": 9,
+        "end_line": 75,
+        "end_column": 79
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:fe8b58ac616f91b1",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/reproducibility/index.mjs",
+        "start_line": 73,
+        "end_line": 77,
+        "text": "73: async function buildReproducibilitySummary(runRoot) {\n74:   const manifest = await readOptionalJson(path.join(runRoot, \"manifest.json\"), {});\n75:   const claims = await readOptionalJson(path.join(runRoot, \"claims.json\"), []);\n76:   const verifierReport = await readOptionalJson(path.join(runRoot, \"verifier_report.json\"), {});\n77:   const claimCounts = countClaims(Array.isArray(claims) ? claims : []);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 42,
+      "edge_id": "edge-key:-8906806787292127771",
+      "head": {
+        "id": "repo://e/3d0dc448bebd8592894074a6dd2f4ebc",
+        "name": "serveStatic",
+        "qualified_name": "packages::cli::src::dashboard-server.serveStatic",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/c0e865d37abe2c1b788453ebce1e0e71",
+        "name": "relative",
+        "qualified_name": "packages::cli::src::dashboard-server.serveStatic.relative",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/dashboard-server.mjs",
+        "start_line": 924,
+        "start_column": 9,
+        "end_line": 924,
+        "end_column": 97
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9453dc0bb38c212e",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/dashboard-server.mjs",
+        "start_line": 922,
+        "end_line": 926,
+        "text": "922: async function serveStatic(repoRoot, requestPath, response) {\n923:   const uiRoot = path.join(repoRoot, \"packages\", \"ui-autoresearch\");\n924:   const relative = requestPath === \"/\" ? \"index.html\" : decodeURIComponent(requestPath.slice(1));\n925:   const target = path.join(uiRoot, relative);\n926:   if (!isPathInside(uiRoot, target) || !(await pathExists(target))) {"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 43,
+      "edge_id": "edge-key:-8903775164370378693",
+      "head": {
+        "id": "repo://e/4bb4520ae6ec7c94b8660e5d9d61c9da",
+        "name": "createObjectiveFromFreeformPrompt",
+        "qualified_name": "services::orchestrator::src::freeform-agent-runner.createObjectiveFromFreeformPrompt",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/b92ba42224e157a2a5df2b529a4c2964",
+        "name": "networkMode",
+        "qualified_name": "services::orchestrator::src::freeform-agent-runner.createObjectiveFromFreeformPrompt.networkMode",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "services/orchestrator/src/freeform-agent-runner.mjs",
+        "start_line": 39,
+        "start_column": 9,
+        "end_line": 39,
+        "end_column": 67
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:0c57f99d30ac8b17",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/services/orchestrator/src/freeform-agent-runner.mjs",
+        "start_line": 37,
+        "end_line": 41,
+        "text": "37:   if (!trimmed) throw new Error(\"prompt is required\");\n38:   const id = `${slugify(trimmed, \"agent-objective\")}-${shortHash(trimmed)}`;\n39:   const networkMode = wantsNetwork(trimmed) ? \"allowlist\" : \"none\";\n40:   return {\n41:     id,"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 44,
+      "edge_id": "edge-key:-8901578736393364825",
+      "head": {
+        "id": "repo://e/194374fdc015ef33d9755a3b74941b89",
+        "name": "verifyRun",
+        "qualified_name": "packages::core::src::verifier::index.verifyRun",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/24d73ba9a4e1ae2d975e90853ef077f7",
+        "name": "evidence",
+        "qualified_name": "packages::core::src::verifier::index.verifyRun.evidence",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/verifier/index.mjs",
+        "start_line": 7,
+        "start_column": 9,
+        "end_line": 7,
+        "end_column": 71
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:09d3127b96919f09",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/verifier/index.mjs",
+        "start_line": 5,
+        "end_line": 9,
+        "text": "5: export async function verifyRun(runRoot) {\n6:   const claims = await readJson(path.join(runRoot, \"claims.json\"));\n7:   const evidence = await readJson(path.join(runRoot, \"evidence.json\"));\n8:   const manifest = await readJson(path.join(runRoot, \"manifest.json\"));\n9:   const required = ["
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 45,
+      "edge_id": "edge-key:-8901544956913911669",
+      "head": {
+        "id": "repo://e/ad34b4b3bfc2c20be5b17731d6039a29",
+        "name": "startDashboardAgentPromptRun",
+        "qualified_name": "packages::cli::src::dashboard-server.startDashboardAgentPromptRun",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/9df759b5c06a31a261185fec6e21bbd0",
+        "name": "expr@29342",
+        "qualified_name": "packages::cli::src::dashboard-server.startDashboardAgentPromptRun.expr@29342",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/dashboard-server.mjs",
+        "start_line": 870,
+        "start_column": 7,
+        "end_line": 870,
+        "end_column": 28
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9453dc0bb38c212e",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/dashboard-server.mjs",
+        "start_line": 868,
+        "end_line": 872,
+        "text": "868:     })\n869:     .finally(() => {\n870:       activeRun.done = true;\n871:       activeRun.finished_at = new Date().toISOString();\n872:       const cleanup = setTimeout(() => activeRuns.delete(started.runId), 300000);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 46,
+      "edge_id": "edge-key:-8889412470864569422",
+      "head": {
+        "id": "repo://e/81fadbac75286413785474f905f73a65",
+        "name": "startDashboardLiveRun",
+        "qualified_name": "packages::cli::src::dashboard-server.startDashboardLiveRun",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/56881a60e4d741a5742041c4b599a763",
+        "name": "objectivePath",
+        "qualified_name": "packages::cli::src::dashboard-server.startDashboardLiveRun.objectivePath",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/dashboard-server.mjs",
+        "start_line": 763,
+        "start_column": 9,
+        "end_line": 763,
+        "end_column": 86
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9453dc0bb38c212e",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/dashboard-server.mjs",
+        "start_line": 761,
+        "end_line": 765,
+        "text": "761: \n762: async function startDashboardLiveRun(repoRoot, body, activeRuns) {\n763:   const objectivePath = body.objective_path ?? \"examples/objectives/code-bugfix.yaml\";\n764:   const absoluteObjectivePath = path.resolve(repoRoot, objectivePath);\n765:   if (!isPathInside(repoRoot, absoluteObjectivePath)) {"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 47,
+      "edge_id": "edge-key:-8871751888364828719",
+      "head": {
+        "id": "repo://e/aee2f7bdea85439bb2c8dec26ec8fbb9",
+        "name": "releasePackage",
+        "qualified_name": "packages::cli::src::arl.releasePackage",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/24dd3eda6acbcf4ce9cd5df39a8f677a",
+        "name": "verification",
+        "qualified_name": "packages::cli::src::arl.releasePackage.verification",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/arl.mjs",
+        "start_line": 594,
+        "start_column": 9,
+        "end_line": 594,
+        "end_column": 109
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:569fb7a80d03a924",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+        "start_line": 592,
+        "end_line": 596,
+        "text": "592:     signing: Object.keys(signing).length > 0 ? signing : null\n593:   });\n594:   const verification = verify ? await verifyLocalReleasePackage({ releaseRoot: result.release_root }) : null;\n595:   console.log(`release_root=${path.relative(repoRoot, result.release_root)}`);\n596:   console.log(`files=${result.manifest.files.length}`);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 48,
+      "edge_id": "edge-key:-8859665890066271334",
+      "head": {
+        "id": "repo://e/7f536bc0546080420a1dbfb8d727fc50",
+        "name": "summarizeResult",
+        "qualified_name": "scripts::package-local-release.summarizeResult",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/1093ce268359610d2acc9c1e732602ab",
+        "name": "lines",
+        "qualified_name": "scripts::package-local-release.summarizeResult.lines",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "scripts/package-local-release.mjs",
+        "start_line": 71,
+        "start_column": 9,
+        "end_line": 76,
+        "end_column": 4
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:2a30e7e72f3ab481",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/scripts/package-local-release.mjs",
+        "start_line": 69,
+        "end_line": 78,
+        "text": "69: \n70: function summarizeResult(result) {\n71:   const lines = [\n72:     `release_root=${path.relative(process.cwd(), result.release_root) || \".\"}`,\n73:     `files=${result.manifest.files.length}`,\n74:     `missing_optional=${result.missing_optional.length === 0 ? \"none\" : result.missing_optional.join(\",\")}`,\n75:     \"status=packaged\"\n76:   ];\n77:   if (result.verification) {\n78:     lines.push(`verified=${result.verification.valid}`);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 49,
+      "edge_id": "edge-key:-8844447273245716914",
+      "head": {
+        "id": "repo://e/eedb6020cc98bbc557c1b9aabc1f9c37",
+        "name": "emitAvailableEvents",
+        "qualified_name": "packages::cli::src::dashboard-server.streamRunEvents.emitAvailableEvents",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/607d7b676b23afd095fec9f0ccead546",
+        "name": "index",
+        "qualified_name": "packages::cli::src::dashboard-server.streamRunEvents.emitAvailableEvents.index",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/dashboard-server.mjs",
+        "start_line": 346,
+        "start_column": 14,
+        "end_line": 346,
+        "end_column": 23
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9453dc0bb38c212e",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/dashboard-server.mjs",
+        "start_line": 344,
+        "end_line": 348,
+        "text": "344:   async function emitAvailableEvents() {\n345:     const events = await readRunEvents(repoRoot, runId);\n346:     for (let index = 0; index < events.length; index += 1) {\n347:       const event = events[index];\n348:       const key = eventKey(event, index);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 50,
+      "edge_id": "edge-key:-8830616634248625129",
+      "head": {
+        "id": "repo://e/3bf1afc4e9ca7f0fd72cd9eaab7fdaf1",
+        "name": "proposeDashboardTool",
+        "qualified_name": "packages::cli::src::dashboard-server.proposeDashboardTool",
+        "kind": "Function"
+      },
+      "relation": "WRITES",
+      "tail": {
+        "id": "repo://e/7373068a504833d21d7bcc87301e1fd8",
+        "name": "tool",
+        "qualified_name": "packages::cli::src::dashboard-server.proposeDashboardTool.tool",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/dashboard-server.mjs",
+        "start_line": 540,
+        "start_column": 9,
+        "end_line": 549,
+        "end_column": 4
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9453dc0bb38c212e",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/dashboard-server.mjs",
+        "start_line": 538,
+        "end_line": 551,
+        "text": "538: \n539: async function proposeDashboardTool(repoRoot, body) {\n540:   const tool = {\n541:     tool_id: body.tool_id,\n542:     name: body.name ?? body.tool_id,\n543:     input_schema: body.input_schema ?? {},\n544:     output_schema: body.output_schema ?? {},\n545:     permission_manifest: body.permission_manifest ?? defaultPermissionManifest(),\n546:     tests: body.tests ?? [],\n547:     docs: body.docs ?? \"\",\n548:     verifier_approved: body.verifier_approved === true\n549:   };\n550:   return proposeTool({ registryRoot: path.join(repoRoot, \".arl\", \"tools\"), tool });\n551: }"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    }
+  ],
+  "notes": [
+    "Classification fields are intentionally blank in markdown for human review.",
+    "Sampling is deterministic for a seed and starts at a seeded edge primary-key range, wrapping once if needed.",
+    "production_test_mock_context is inferred from relation/path/id text because context is not first-class in the current edge schema."
+  ]
+}

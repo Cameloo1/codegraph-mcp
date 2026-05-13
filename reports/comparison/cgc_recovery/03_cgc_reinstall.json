@@ -1,0 +1,20 @@
+{
+    "schema_version":  1,
+    "generated_at":  "2026-05-13T08:49:31.3297896-05:00",
+    "phase":  "cgc_reinstall",
+    "install_mode":  "stock_reinstall_compat_dependency",
+    "executable":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\.tools\\cgc_recovery\\venv312_compat\\Scripts\\cgc.exe",
+    "python":  ".tools/cgc_recovery/venv312_compat/Scripts/python.exe",
+    "source":  "created from existing Python 3.12 venv runtime; installed codegraphcontext==0.4.7 with parser compatibility pin",
+    "package_version":  "0.4.7",
+    "tree_sitter_language_pack":  "tree-sitter-language-pack==1.6.2",
+    "semantics_patched":  false,
+    "raw_logs":  [
+                     "phase3_compat_python_version",
+                     "phase3_compat_pip_show_codegraphcontext",
+                     "phase3_compat_pip_freeze",
+                     "phase3_compat_cgc_version",
+                     "phase3_compat_cgc_help"
+                 ],
+    "smoke_passed_after_reinstall":  true
+}

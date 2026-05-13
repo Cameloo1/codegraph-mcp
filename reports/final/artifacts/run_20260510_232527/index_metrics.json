@@ -1,0 +1,28 @@
+{
+    "run_dir":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\run_20260510_232527",
+    "repo":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\benchmarks\\graph_truth\\fixtures",
+    "cold_workers1":  {
+                          "status":  "passed",
+                          "exit_code":  0,
+                          "wall_ms":  226,
+                          "db_path":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\run_20260510_232527\\fixture_workers1.sqlite",
+                          "workers":  1,
+                          "stdout_events":  "index_workers1.events.jsonl"
+                      },
+    "cold_workers4":  {
+                          "status":  "passed",
+                          "exit_code":  0,
+                          "wall_ms":  204,
+                          "db_path":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\run_20260510_232527\\fixture_workers4.sqlite",
+                          "workers":  4,
+                          "stdout_events":  "index_workers4.events.jsonl"
+                      },
+    "repeat_workers4":  {
+                            "status":  "passed",
+                            "exit_code":  0,
+                            "wall_ms":  110,
+                            "db_path":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\run_20260510_232527\\fixture_workers4.sqlite",
+                            "workers":  4,
+                            "stdout_events":  "index_repeat_workers4.events.jsonl"
+                        }
+}

@@ -1,0 +1,64 @@
+{
+    "status":  "completed",
+    "db":  "reports/final/artifacts/compact_gate_autoresearch_proof.sqlite",
+    "repo":  "<REPO_ROOT>/Desktop\\development\\autoresearch-codexlab",
+    "task":  "Assess metrics_tools impact",
+    "mode":  "normal",
+    "iterations":  5,
+    "target_p95_ms":  2000,
+    "p95_profile_ms":  834.853,
+    "p95_shell_ms":  852.213,
+    "target_status":  "pass",
+    "results":  [
+                    {
+                        "iteration":  1,
+                        "status":  "ok",
+                        "shell_ms":  804.173,
+                        "profile_ms":  790.566,
+                        "verified_paths":  0,
+                        "snippets":  1,
+                        "stored_path_rows":  0,
+                        "fallback_edge_rows":  1
+                    },
+                    {
+                        "iteration":  2,
+                        "status":  "ok",
+                        "shell_ms":  852.213,
+                        "profile_ms":  787.421,
+                        "verified_paths":  0,
+                        "snippets":  1,
+                        "stored_path_rows":  0,
+                        "fallback_edge_rows":  1
+                    },
+                    {
+                        "iteration":  3,
+                        "status":  "ok",
+                        "shell_ms":  824.677,
+                        "profile_ms":  786.626,
+                        "verified_paths":  0,
+                        "snippets":  1,
+                        "stored_path_rows":  0,
+                        "fallback_edge_rows":  1
+                    },
+                    {
+                        "iteration":  4,
+                        "status":  "ok",
+                        "shell_ms":  845.006,
+                        "profile_ms":  834.853,
+                        "verified_paths":  0,
+                        "snippets":  1,
+                        "stored_path_rows":  0,
+                        "fallback_edge_rows":  1
+                    },
+                    {
+                        "iteration":  5,
+                        "status":  "ok",
+                        "shell_ms":  777.475,
+                        "profile_ms":  766.489,
+                        "verified_paths":  0,
+                        "snippets":  1,
+                        "stored_path_rows":  0,
+                        "fallback_edge_rows":  1
+                    }
+                ]
+}

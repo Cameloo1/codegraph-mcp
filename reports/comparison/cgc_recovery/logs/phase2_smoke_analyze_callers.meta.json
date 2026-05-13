@@ -1,0 +1,14 @@
+{
+    "name":  "phase2_smoke_analyze_callers",
+    "command":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\target\\cgc-competitor\\.venv312-pypi\\Scripts\\cgc.exe --database kuzudb analyze callers cgc_smoke_target",
+    "cwd":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp",
+    "exit_code":  1,
+    "timed_out":  false,
+    "started_at":  "2026-05-13T08:00:38.9413883-05:00",
+    "ended_at":  "2026-05-13T08:00:39.9709076-05:00",
+    "duration_ms":  1030,
+    "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase2_smoke_analyze_callers.stdout.txt",
+    "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase2_smoke_analyze_callers.stderr.txt",
+    "home":  "<REPO_ROOT>",
+    "repo":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\comparison\\cgc_recovery\\artifacts\\smoke_repo"
+}

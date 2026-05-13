@@ -1,0 +1,12 @@
+{
+    "name":  "phase7_autoresearch_version",
+    "command":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\.tools\\cgc_recovery\\venv312_compat\\Scripts\\cgc.exe \"--version\"",
+    "cwd":  "<REPO_ROOT>/Desktop\\development\\autoresearch-codexlab",
+    "exit_code":  0,
+    "timed_out":  false,
+    "started_at":  "2026-05-13T08:31:53.5729372-05:00",
+    "ended_at":  "2026-05-13T08:31:54.4111646-05:00",
+    "duration_ms":  838,
+    "stdout":  "reports\\comparison\\cgc_recovery\\logs\\phase7_autoresearch_version.stdout.txt",
+    "stderr":  "reports\\comparison\\cgc_recovery\\logs\\phase7_autoresearch_version.stderr.txt"
+}

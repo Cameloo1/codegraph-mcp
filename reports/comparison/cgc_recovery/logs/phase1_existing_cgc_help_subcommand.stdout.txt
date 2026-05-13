@@ -1,0 +1,68 @@
+                                                                               
+ Usage: cgc [OPTIONS] COMMAND [ARGS]...                                        
+                                                                               
+ CodeGraphContext: An MCP server for AI-powered code analysis.                 
+                                                                               
+ [DEPRECATED] 'cgc start' is deprecated. Use 'cgc mcp start' instead.          
+                                                                               
++- Options -------------------------------------------------------------------+
+| --database,--db       -db      TEXT  [Global] Temporarily override database |
+|                                      backend (falkordb, falkordb-remote,    |
+|                                      neo4j, or kuzudb) for any command      |
+| --visual,--viz        -V             [Global] Show results as interactive   |
+|                                      graph visualization in browser         |
+| --version             -v             [Root-level only] Show version and     |
+|                                      exit                                   |
+| --help                -h             [Root-level only] Show help and exit   |
+| --install-completion                 Install completion for the current     |
+|                                      shell.                                 |
+| --show-completion                    Show completion for the current shell, |
+|                                      to copy it or customize the            |
+|                                      installation.                          |
++-----------------------------------------------------------------------------+
++- Commands ------------------------------------------------------------------+
+| doctor       Run diagnostics to check system health and configuration.      |
+| start        [DEPRECATED] Use 'cgc mcp start' instead. This command will be |
+|              removed in a future version.                                   |
+| index        Indexes a directory or file by adding it to the code graph.    |
+|              If no path is provided, it indexes the current directory.      |
+| clean        Remove orphaned nodes and relationships from the database.     |
+| stats        Show indexing statistics.                                      |
+| delete       Deletes a repository from the code graph.                      |
+| report       Generate a CGC_REPORT.md with god nodes, complexity,           |
+|              cross-module connections, and suggested queries.               |
+| visualize    Launches the interactive UI to visualize the code graph.       |
+| list         List all indexed repositories.                                 |
+| add-package  Adds a package to the code graph.                              |
+| watch        Watch a directory for file changes and automatically update    |
+|              the code graph.                                                |
+| unwatch      Stop watching a directory for changes.                         |
+| watching     List all directories currently being watched for changes.      |
+| query        Execute a custom Cypher query on the code graph.               |
+| help         Show the main help message and exit.                           |
+| version      Show the application version.                                  |
+| mcp          MCP client configuration commands                              |
+| neo4j        Neo4j database configuration commands                          |
+| context      Manage Contexts (logical workspaces) and Mode                  |
+| config       Manage configuration settings                                  |
+| bundle       Create and load pre-indexed graph bundles                      |
+| registry     Browse and download bundles from the registry                  |
+| find         Find and search code elements                                  |
+| analyze      Analyze code relationships, dependencies, and quality          |
+| datasource   Index external data sources (Redis, Cassandra, Aurora MySQL)   |
+|              into the code graph                                            |
++-----------------------------------------------------------------------------+
++- Shortcuts -----------------------------------------------------------------+
+| m            Shortcut for 'cgc mcp setup'                                   |
+| n            Shortcut for 'cgc neo4j setup'                                 |
+| i            Shortcut for 'cgc index'                                       |
+| ls           Shortcut for 'cgc list'                                        |
+| rm           Shortcut for 'cgc delete'                                      |
+| v            Shortcut for 'cgc visualize'                                   |
+| w            Shortcut for 'cgc watch'                                       |
++-----------------------------------------------------------------------------+
++- Bundle Shortcuts ----------------------------------------------------------+
+| export       Shortcut for 'cgc bundle export'                               |
+| load         Shortcut for 'cgc bundle load'                                 |
++-----------------------------------------------------------------------------+
+

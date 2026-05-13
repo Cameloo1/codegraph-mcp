@@ -1,0 +1,31 @@
+{
+  "task_id": "mutation-impact",
+  "query_text": "Find callers and downstream mutations for addToCart",
+  "expected_files": [
+    "src/cart.ts",
+    "src/repo.ts"
+  ],
+  "expected_symbols": [
+    "checkout",
+    "addToCart",
+    "cartState",
+    "persistCart"
+  ],
+  "expected_relation_sequence": [
+    "CALLS",
+    "MUTATES",
+    "CALLS"
+  ],
+  "expected_path_symbols": [
+    "checkout",
+    "addToCart",
+    "cartState",
+    "persistCart"
+  ],
+  "critical_source_spans": [
+    "src/cart.ts:5-8"
+  ],
+  "unsupported_fields_allowed": [
+    "mutation_relation"
+  ]
+}

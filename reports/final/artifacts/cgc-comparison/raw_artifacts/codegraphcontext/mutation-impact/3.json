@@ -1,0 +1,16 @@
+{
+  "executable": "target\\cgc-competitor\\.venv312-pypi\\Scripts\\cgc.exe",
+  "args": [
+    "--database",
+    "kuzudb",
+    "query",
+    "callees",
+    "checkout"
+  ],
+  "cwd": "reports\\final\\artifacts\\cgc-comparison\\fixtures\\mutation-impact",
+  "stdout": "",
+  "stderr": "Usage: cgc query [OPTIONS] QUERY\r\nTry 'cgc query --help' for help.\r\n┌─ Error ─────────────────────────────────────────────────────────────────────┐\r\n│ Got unexpected extra argument (checkout)                                    │\r\n└─────────────────────────────────────────────────────────────────────────────┘\r\n",
+  "exit_code": 2,
+  "latency_ms": 813,
+  "timed_out": false
+}

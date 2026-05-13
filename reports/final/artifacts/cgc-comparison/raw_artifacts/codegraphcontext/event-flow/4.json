@@ -1,0 +1,17 @@
+{
+  "executable": "target\\cgc-competitor\\.venv312-pypi\\Scripts\\cgc.exe",
+  "args": [
+    "--database",
+    "kuzudb",
+    "query",
+    "path",
+    "publishUserCreated",
+    "markUserActive"
+  ],
+  "cwd": "reports\\final\\artifacts\\cgc-comparison\\fixtures\\event-flow",
+  "stdout": "",
+  "stderr": "Usage: cgc query [OPTIONS] QUERY\r\nTry 'cgc query --help' for help.\r\n┌─ Error ─────────────────────────────────────────────────────────────────────┐\r\n│ Got unexpected extra arguments (publishUserCreated markUserActive)          │\r\n└─────────────────────────────────────────────────────────────────────────────┘\r\n",
+  "exit_code": 2,
+  "latency_ms": 812,
+  "timed_out": false
+}

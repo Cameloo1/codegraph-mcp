@@ -1,0 +1,135 @@
+{
+  "status": "completed_with_semantic_gate_failures",
+  "verdict": "conservative_storage_optimization_applied",
+  "implemented_optimizations": [
+    {
+      "name": "delay_bulk_index_finish_until_all_index_writes_complete",
+      "category": "delay index creation until after bulk load",
+      "safe_experiment_source": "reports/audit/19_storage_experiments.md",
+      "details": "Full indexing now commits local bulk batches, performs stale cleanup, resolver writes, and repo state writes, then recreates the same default secondary indexes and runs ANALYZE/PRAGMA optimize/VACUUM."
+    },
+    {
+      "name": "final_vacuum_analyze_after_bulk_index_load",
+      "category": "VACUUM/ANALYZE after bulk load",
+      "safe_experiment_source": "reports/audit/19_storage_experiments.md",
+      "details": "Uses the existing store finish_bulk_index_load maintenance path at the true end of the full changed-file run."
+    }
+  ],
+  "rejected_optimizations": [
+    "qualified_name_text_compaction",
+    "broad_index_removal",
+    "partial_relation_indexes",
+    "exact_base_partition",
+    "fts_disable_or_snippet_removal"
+  ],
+  "schema_changes": {
+    "changed": false,
+    "migration_required": false,
+    "notes": "No schema or migration change was made because report 19 only recommended maintenance and bulk-load ordering as production-safe."
+  },
+  "fixture_storage_before_after": {
+    "baseline_db": "reports/audit/artifacts/17_fixture_workers4.sqlite",
+    "optimized_db": "reports/audit/artifacts/20_fixture_storage_optimized.sqlite",
+    "file_family_bytes_before": 671744,
+    "file_family_bytes_after": 618496,
+    "file_family_delta_bytes": -53248,
+    "database_bytes_before": 638976,
+    "database_bytes_after": 618496,
+    "edge_count_before": 833,
+    "edge_count_after": 833,
+    "average_database_bytes_per_edge_before": 806.42,
+    "average_database_bytes_per_edge_after": 742.49,
+    "source_span_count_before": 0,
+    "source_span_count_after": 0,
+    "notes": "The compact schema stores proof spans inline on edges/entities for this fixture DB; source_span table row count remains zero."
+  },
+  "storage_category_delta": {
+    "dictionary_table_bytes": {
+      "before": 114688,
+      "after": 114688,
+      "delta": 0
+    },
+    "unique_text_index_bytes": {
+      "before": 122880,
+      "after": 110592,
+      "delta": -12288
+    },
+    "edge_index_bytes": {
+      "before": 57344,
+      "after": 57344,
+      "delta": 0
+    },
+    "fts_bytes": {
+      "before": 28672,
+      "after": 28672,
+      "delta": 0
+    },
+    "source_span_bytes": {
+      "before": 8192,
+      "after": 8192,
+      "delta": 0
+    }
+  },
+  "query_latency_smoke": {
+    "db": "reports/audit/artifacts/20_fixture_storage_optimized.sqlite",
+    "source": "reports/audit/artifacts/20_storage_latency_smoke.json",
+    "all_measured_queries_status_ok": true,
+    "max_elapsed_ms": 0,
+    "queries": [
+      "entity_name_lookup",
+      "entity_qname_lookup",
+      "edge_head_relation_lookup",
+      "edge_tail_relation_lookup",
+      "edge_span_path_lookup",
+      "relation_count_scan",
+      "text_query_fts",
+      "relation_query_calls",
+      "context_pack_outbound",
+      "impact_inbound",
+      "unresolved_calls_paginated"
+    ]
+  },
+  "graph_truth": {
+    "status": "failed",
+    "cases_passed": 7,
+    "cases_failed": 4,
+    "cases_total": 11,
+    "missing_edges": 5,
+    "forbidden_edges_found": 2,
+    "missing_paths": 4,
+    "forbidden_paths_found": 2,
+    "source_span_failures": 2,
+    "unresolved_exact_violations": 0,
+    "derived_or_provenance_failures": 3,
+    "artifact": "reports/audit/artifacts/20_graph_truth_storage_optimization.json",
+    "notes": "This matches the known post-report-19 semantic failure class; no storage optimization readiness claim is made."
+  },
+  "context_packet_gate": {
+    "status": "failed",
+    "cases_passed": 0,
+    "cases_failed": 11,
+    "cases_total": 11,
+    "artifact": "reports/audit/artifacts/20_context_packet_storage_optimization.json"
+  },
+  "source_span_proof_validation": {
+    "status": "passed",
+    "tests_passed": 11,
+    "tests_failed": 0,
+    "command": "cargo test -q -p codegraph-query proof_span_validation"
+  },
+  "tests": {
+    "full_unit_tests": "passed",
+    "schema_migration_tests": "passed via cargo test -q",
+    "storage_before_after_fixture_test": "passed via fixture storage inspection and compact storage index test",
+    "query_latency_smoke": "passed",
+    "existing_tests": "passed"
+  },
+  "remaining_storage_gap": {
+    "fixture_bytes_per_edge_after": 742.49,
+    "target_bytes_per_edge": 120,
+    "fixture_gap_bytes_per_edge": 622.49,
+    "autoresearch_target_mib": 250,
+    "autoresearch_after_not_reindexed": true,
+    "notes": "Autoresearch-scale production reindex was not rerun in this phase; report 19 frozen-baseline safe experiment predicted about 56.09 MiB from maintenance only."
+  }
+}

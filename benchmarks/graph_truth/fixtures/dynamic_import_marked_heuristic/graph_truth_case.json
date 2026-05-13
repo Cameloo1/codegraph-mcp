@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "case_id": "dynamic_import_marked_heuristic",
+  "description": "Dynamic import must stay heuristic unless proven.",
+  "repo_fixture_path": "benchmarks/graph_truth/fixtures/dynamic_import_marked_heuristic/repo",
+  "task_prompt": "Trace loadPlugin dynamic import behavior.",
+  "expected_entities": [
+    {
+      "selector": {
+        "qualified_name": "src/loader.loadPlugin",
+        "kind": "Function",
+        "source_file": "src/loader.ts",
+        "context": "production"
+      },
+      "kind": "Function",
+      "context": "production",
+      "source_file": "src/loader.ts"
+    },
+    {
+      "selector": {
+        "qualified_name": "dynamic_import:./plugins/+name",
+        "kind": "Import",
+        "source_file": "src/loader.ts",
+        "context": "unknown"
+      },
+      "kind": "Import",
+      "context": "unknown",
+      "source_file": "src/loader.ts"
+    }
+  ],
+  "expected_edges": [
+    {
+      "id": "edge://dynamic-import/runtime-specifier",
+      "head": {
+        "qualified_name": "src/loader.loadPlugin",
+        "kind": "Function",
+        "source_file": "src/loader.ts",
+        "context": "production"
+      },
+      "relation": "IMPORTS",
+      "tail": {
+        "qualified_name": "dynamic_import:./plugins/+name",
+        "kind": "Import",
+        "source_file": "src/loader.ts",
+        "context": "unknown"
+      },
+      "source_file": "src/loader.ts",
+      "source_span": {
+        "start_line": 2,
+        "start_column": 21,
+        "end_line": 2,
+        "end_column": 48,
+        "expected_text": "import(\"./plugins/\" + name)",
+        "syntax_role": "import"
+      },
+      "exactness_required": {
+        "allowed": [
+          "static_heuristic"
+        ],
+        "minimum": "static_heuristic",
+        "proof_grade_required": false,
+        "confidence_floor": 0
+      },
+      "context_kind": "unknown",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "hand_labeled_dynamic_import",
+      "exactness": {
+        "allowed": [
+          "static_heuristic"
+        ],
+        "minimum": "static_heuristic",
+        "proof_grade_required": false,
+        "confidence_floor": 0
+      },
+      "context": "unknown",
+      "resolution": "unresolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "hand_labeled_dynamic_import",
+      "direction": "head_to_tail"
+    }
+  ],
+  "forbidden_edges": [
+    {
+      "id": "edge://dynamic-import/guessed-alpha",
+      "head": {
+        "qualified_name": "src/loader.loadPlugin",
+        "kind": "Function",
+        "source_file": "src/loader.ts",
+        "context": "production"
+      },
+      "relation": "IMPORTS",
+      "tail": {
+        "qualified_name": "src/plugins/alpha.default",
+        "kind": "Function",
+        "source_file": "src/plugins/alpha.ts",
+        "context": "production"
+      },
+      "source_file": "src/loader.ts",
+      "source_span": {
+        "start_line": 2,
+        "start_column": 21,
+        "end_line": 2,
+        "end_column": 48,
+        "expected_text": "import(\"./plugins/\" + name)",
+        "syntax_role": "import"
+      },
+      "exactness_required": {
+        "allowed": [
+          "exact",
+          "compiler_verified",
+          "lsp_verified",
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "forbidden_guessed_dynamic_import",
+      "exactness": {
+        "allowed": [
+          "exact",
+          "compiler_verified",
+          "lsp_verified",
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "forbidden_guessed_dynamic_import",
+      "direction": "head_to_tail"
+    }
+  ],
+  "expected_paths": [],
+  "forbidden_paths": [],
+  "expected_source_spans": [
+    {
+      "edge_ref": "edge://dynamic-import/runtime-specifier",
+      "source_file": "src/loader.ts",
+      "span": {
+        "start_line": 2,
+        "start_column": 21,
+        "end_line": 2,
+        "end_column": 48,
+        "expected_text": "import(\"./plugins/\" + name)",
+        "syntax_role": "import"
+      },
+      "must_resolve_to_text": true,
+      "expected_text": "import(\"./plugins/\" + name)",
+      "syntax_role": "import"
+    }
+  ],
+  "expected_context_symbols": [
+    {
+      "symbol": {
+        "qualified_name": "dynamic_import:./plugins/+name",
+        "kind": "Import",
+        "source_file": "src/loader.ts",
+        "context": "unknown"
+      },
+      "critical": true,
+      "source_file": "src/loader.ts",
+      "reason": "Runtime import specifier should be explicit"
+    }
+  ],
+  "forbidden_context_symbols": [
+    {
+      "symbol": {
+        "qualified_name": "src/plugins/alpha.default",
+        "kind": "Function",
+        "source_file": "src/plugins/alpha.ts",
+        "context": "production"
+      },
+      "critical": true,
+      "source_file": "src/plugins/alpha.ts",
+      "reason": "Unproven guessed target"
+    }
+  ],
+  "expected_tests": [],
+  "forbidden_tests": [],
+  "mutation_steps": [],
+  "performance_expectations": {
+    "schema_validation_100_cases_max_ms": 1000,
+    "index_time_ms_max": 10000
+  },
+  "notes": [
+    "Catches exact labels on unresolved dynamic imports."
+  ],
+  "failure_rules": {
+    "missing_required_edge_fails": true,
+    "forbidden_edge_appearing_fails": true,
+    "wrong_direction_fails": true,
+    "missing_source_span_fails_for_proof_grade_edge": true,
+    "unresolved_name_labeled_exact_fails": true,
+    "mock_or_test_edge_in_production_proof_path_fails": true,
+    "derived_edge_without_provenance_fails": true,
+    "stale_edge_after_edit_fails": true,
+    "same_name_symbol_collision_fails": true,
+    "critical_symbol_missing_from_context_packet_fails": true,
+    "forbidden_context_symbol_included_fails": true,
+    "expected_test_omitted_fails": true,
+    "too_many_distractors_fail_if_threshold_specified": true
+  },
+  "distractor_policy": {
+    "max_context_distractors": 0,
+    "max_symbol_distractors": 0,
+    "distractor_symbols": [],
+    "count_scope": "context_packet"
+  }
+}

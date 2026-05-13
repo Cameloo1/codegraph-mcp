@@ -1,0 +1,20 @@
+[package]
+name = "codegraph-vector"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+sqlite = []
+rocksdb = []
+qdrant = []
+faiss = []
+ui = []
+mcp = []
+
+[lints]
+workspace = true

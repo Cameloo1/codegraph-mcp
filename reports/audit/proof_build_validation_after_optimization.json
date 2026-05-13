@@ -1,0 +1,60 @@
+{
+    "schema_version":  1,
+    "generated_at":  "2026-05-13T00:56:13-05:00",
+    "source_of_truth":  "MVP.md",
+    "phase":  "proof_build_validation_after_optimization",
+    "artifact":  {
+                     "artifact_created_at":  1778650208146,
+                     "artifact_metadata_path":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\comprehensive_proof_proof_build_fix_20260513.artifact.json",
+                     "artifact_path":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\comprehensive_proof_proof_build_fix_20260513.sqlite",
+                     "artifact_reuse":  false,
+                     "benchmark_run_id":  "proof_build_fix_20260513",
+                     "build_command":  "codegraph-mcp index <REPO_ROOT>/Desktop\\development\\autoresearch-codexlab --db <REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\comprehensive_proof_proof_build_fix_20260513.sqlite --profile --storage-mode proof --build-mode proof-build-only --workers 16",
+                     "build_duration_ms":  59414,
+                     "cold_build_result_claimable":  true,
+                     "current_migration_version":  19,
+                     "current_schema_version":  19,
+                     "db_size_bytes":  179499008,
+                     "freshly_built":  true,
+                     "freshness_metadata_present":  true,
+                     "freshness_status":  "fresh",
+                     "git_commit":  "unknown",
+                     "integrity_status":  "ok",
+                     "migration_version":  19,
+                     "notes":  [
+                                   "Fresh proof DB built by comprehensive benchmark before storage and cold-build metrics were read."
+                               ],
+                     "schema_version":  19,
+                     "stale":  false,
+                     "stale_reasons":  [
+
+                                       ],
+                     "storage_mode":  "proof",
+                     "storage_result_claimable":  true
+                 },
+    "proof_build_only_ms":  59414,
+    "target_ms":  60000,
+    "status":  "pass",
+    "checks":  {
+                   "quick_check":  "ok",
+                   "integrity_check":  "ok",
+                   "graph_truth":  "11/11",
+                   "context_packet":  "11/11",
+                   "proof_db_mib":  171.184,
+                   "proof_db_target_mib":  250,
+                   "repeat_unchanged_p95_ms":  3215,
+                   "single_file_update_p95_ms":  512,
+                   "context_pack_p95_ms":  158.5654,
+                   "unresolved_calls_p95_ms":  115.4499,
+                   "path_evidence_sample_20_ms":  27,
+                   "path_evidence_sample_100_ms":  35,
+                   "artifact_stale":  false,
+                   "cargo_test_workspace":  "pass"
+               },
+    "evidence":  {
+                     "comprehensive":  "reports/final/comprehensive_benchmark_latest.json",
+                     "graph_truth":  "reports/audit/artifacts/graph_truth_after_proof_build_fix.json",
+                     "context_packet":  "reports/audit/artifacts/context_packet_after_proof_build_fix.json",
+                     "storage":  "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\comprehensive_proof_storage_proof_build_fix_20260513.json"
+                 }
+}

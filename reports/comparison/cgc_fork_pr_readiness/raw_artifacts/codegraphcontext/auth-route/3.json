@@ -1,0 +1,16 @@
+{
+  "executable": "target\\cgc-fork-py312-wrapper.cmd",
+  "args": [
+    "--database",
+    "kuzudb",
+    "analyze",
+    "calls",
+    "adminRoute"
+  ],
+  "cwd": "reports\\comparison\\cgc_fork_pr_readiness\\fixtures\\auth-route",
+  "stdout": "Resolving context...\r\nInitializing services and database connection...\r\nServices initialized.\r\n",
+  "stderr": "No configuration file found. Using defaults.\r\nUsing database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))\r\n\r\nFunction 'adminRoute' calls:\r\n┌──────────────────┬─────────────────────────────────────────────┬────────────┐\r\n│ Called Function  │ Location                                    │ Type       │\r\n├──────────────────┼─────────────────────────────────────────────┼────────────┤\r\n│ authorizeRequest │ \\\\?\\<REPO_ROOT>/Desktop\\development\\code │ 📝 Project │\r\n│                  │ graph-mcp\\reports\\comparison\\cgc_fork_pr_re │            │\r\n│                  │ adiness\\fixtures\\auth-route\\src\\security.ts │            │\r\n│                  │ :1                                          │            │\r\n│ checkRole        │ \\\\?\\<REPO_ROOT>/Desktop\\development\\code │ 📝 Project │\r\n│                  │ graph-mcp\\reports\\comparison\\cgc_fork_pr_re │            │\r\n│                  │ adiness\\fixtures\\auth-route\\src\\security.ts │            │\r\n│                  │ :5                                          │            │\r\n└──────────────────┴─────────────────────────────────────────────┴────────────┘\r\n\r\nTotal: 2 function(s)\r\n",
+  "exit_code": 0,
+  "latency_ms": 1029,
+  "timed_out": false
+}

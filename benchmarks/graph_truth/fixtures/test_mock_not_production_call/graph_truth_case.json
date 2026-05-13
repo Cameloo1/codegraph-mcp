@@ -1,0 +1,642 @@
+{
+  "schema_version": 1,
+  "case_id": "test_mock_not_production_call",
+  "description": "Mock/test evidence must not become production proof.",
+  "repo_fixture_path": "benchmarks/graph_truth/fixtures/test_mock_not_production_call/repo",
+  "task_prompt": "Find checkout impact and test double evidence.",
+  "expected_entities": [
+    {
+      "selector": {
+        "qualified_name": "src/checkout.checkout",
+        "kind": "Function",
+        "source_file": "src/checkout.ts",
+        "context": "production"
+      },
+      "kind": "Function",
+      "context": "production",
+      "source_file": "src/checkout.ts"
+    },
+    {
+      "selector": {
+        "qualified_name": "src/service.chargeCard",
+        "kind": "Function",
+        "source_file": "src/service.ts",
+        "context": "production"
+      },
+      "kind": "Function",
+      "context": "production",
+      "source_file": "src/service.ts"
+    },
+    {
+      "selector": {
+        "qualified_name": "tests/checkout.test.uses a test double for chargeCard",
+        "kind": "TestCase",
+        "source_file": "tests/checkout.test.ts",
+        "context": "test"
+      },
+      "kind": "TestCase",
+      "context": "test",
+      "source_file": "tests/checkout.test.ts"
+    },
+    {
+      "selector": {
+        "qualified_name": "tests/checkout.test.chargeCardMock",
+        "kind": "Mock",
+        "source_file": "tests/checkout.test.ts",
+        "context": "mock"
+      },
+      "kind": "Mock",
+      "context": "mock",
+      "source_file": "tests/checkout.test.ts"
+    }
+  ],
+  "expected_edges": [
+    {
+      "id": "edge://mock/prod-calls-charge",
+      "head": {
+        "qualified_name": "src/checkout.checkout",
+        "kind": "Function",
+        "source_file": "src/checkout.ts",
+        "context": "production"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "qualified_name": "src/service.chargeCard",
+        "kind": "Function",
+        "source_file": "src/service.ts",
+        "context": "production"
+      },
+      "source_file": "src/checkout.ts",
+      "source_span": {
+        "start_line": 4,
+        "start_column": 10,
+        "end_line": 4,
+        "end_column": 27,
+        "expected_text": "chargeCard(total)",
+        "syntax_role": "callsite"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "hand_labeled_fixture",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "hand_labeled_fixture",
+      "direction": "head_to_tail"
+    },
+    {
+      "id": "edge://mock/test-mocks-charge",
+      "head": {
+        "qualified_name": "tests/checkout.test.uses a test double for chargeCard",
+        "kind": "TestCase",
+        "source_file": "tests/checkout.test.ts",
+        "context": "test"
+      },
+      "relation": "MOCKS",
+      "tail": {
+        "qualified_name": "src/service.chargeCard",
+        "kind": "Function",
+        "source_file": "src/service.ts",
+        "context": "production"
+      },
+      "source_file": "tests/checkout.test.ts",
+      "source_span": {
+        "start_line": 5,
+        "start_column": 1,
+        "end_line": 7,
+        "end_column": 5,
+        "expected_text": "vi.mock(\"../src/service\"",
+        "syntax_role": "test_double"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "test",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "hand_labeled_fixture",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "test",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "hand_labeled_fixture",
+      "direction": "head_to_tail"
+    },
+    {
+      "id": "edge://mock/stubs-charge",
+      "head": {
+        "qualified_name": "tests/checkout.test.chargeCardMock",
+        "kind": "Mock",
+        "source_file": "tests/checkout.test.ts",
+        "context": "mock"
+      },
+      "relation": "STUBS",
+      "tail": {
+        "qualified_name": "src/service.chargeCard",
+        "kind": "Function",
+        "source_file": "src/service.ts",
+        "context": "production"
+      },
+      "source_file": "tests/checkout.test.ts",
+      "source_span": {
+        "start_line": 5,
+        "start_column": 1,
+        "end_line": 7,
+        "end_column": 5,
+        "expected_text": "vi.mock(\"../src/service\"",
+        "syntax_role": "test_double"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "mock",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "hand_labeled_fixture",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "mock",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "hand_labeled_fixture",
+      "direction": "head_to_tail"
+    },
+    {
+      "id": "edge://mock/asserts-checkout",
+      "head": {
+        "qualified_name": "tests/checkout.test.uses a test double for chargeCard",
+        "kind": "TestCase",
+        "source_file": "tests/checkout.test.ts",
+        "context": "test"
+      },
+      "relation": "ASSERTS",
+      "tail": {
+        "qualified_name": "src/checkout.checkout",
+        "kind": "Function",
+        "source_file": "src/checkout.ts",
+        "context": "production"
+      },
+      "source_file": "tests/checkout.test.ts",
+      "source_span": {
+        "start_line": 11,
+        "start_column": 5,
+        "end_line": 11,
+        "end_column": 39,
+        "expected_text": "expect(checkout(5)).toBe(\"mocked\")",
+        "syntax_role": "assertion"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "test",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "hand_labeled_fixture",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "test",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "hand_labeled_fixture",
+      "direction": "head_to_tail"
+    }
+  ],
+  "forbidden_edges": [
+    {
+      "id": "edge://mock/prod-calls-mock",
+      "head": {
+        "qualified_name": "src/checkout.checkout",
+        "kind": "Function",
+        "source_file": "src/checkout.ts",
+        "context": "production"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "qualified_name": "tests/checkout.test.chargeCardMock",
+        "kind": "Mock",
+        "source_file": "tests/checkout.test.ts",
+        "context": "mock"
+      },
+      "source_file": "src/checkout.ts",
+      "source_span": {
+        "start_line": 4,
+        "start_column": 10,
+        "end_line": 4,
+        "end_column": 27,
+        "expected_text": "chargeCard(total)",
+        "syntax_role": "callsite"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "forbidden_mock_leak",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "forbidden_mock_leak",
+      "direction": "head_to_tail"
+    }
+  ],
+  "expected_paths": [
+    {
+      "path_id": "path://mock/test-impact",
+      "description": "Test case asserts checkout while mocking chargeCard.",
+      "source": {
+        "qualified_name": "tests/checkout.test.uses a test double for chargeCard",
+        "kind": "TestCase",
+        "source_file": "tests/checkout.test.ts",
+        "context": "test"
+      },
+      "target": {
+        "qualified_name": "src/checkout.checkout",
+        "kind": "Function",
+        "source_file": "src/checkout.ts",
+        "context": "production"
+      },
+      "ordered_edges": [
+        {
+          "id": "edge://mock/asserts-checkout",
+          "head": {
+            "qualified_name": "tests/checkout.test.uses a test double for chargeCard",
+            "kind": "TestCase",
+            "source_file": "tests/checkout.test.ts",
+            "context": "test"
+          },
+          "relation": "ASSERTS",
+          "tail": {
+            "qualified_name": "src/checkout.checkout",
+            "kind": "Function",
+            "source_file": "src/checkout.ts",
+            "context": "production"
+          },
+          "source_file": "tests/checkout.test.ts",
+          "source_span": {
+            "start_line": 11,
+            "start_column": 5,
+            "end_line": 11,
+            "end_column": 39,
+            "expected_text": "expect(checkout(5)).toBe(\"mocked\")",
+            "syntax_role": "assertion"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context_kind": "test",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "hand_labeled_fixture",
+          "exactness": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context": "test",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "hand_labeled_fixture",
+          "direction": "head_to_tail"
+        }
+      ],
+      "relation_sequence": [
+        "ASSERTS"
+      ],
+      "max_length": 1,
+      "source_span_required": true,
+      "production_only": false,
+      "derived_allowed": false,
+      "provenance_required": false,
+      "required_source_spans": [
+        {
+          "edge_ref": "edge://mock/asserts-checkout",
+          "source_file": "tests/checkout.test.ts",
+          "span": {
+            "start_line": 11,
+            "start_column": 5,
+            "end_line": 11,
+            "end_column": 39,
+            "expected_text": "expect(checkout(5)).toBe(\"mocked\")",
+            "syntax_role": "assertion"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "expect(checkout(5)).toBe(\"mocked\")",
+          "syntax_role": "assertion"
+        }
+      ],
+      "context": "test",
+      "allow_test_mock_edges": true,
+      "derived_edges_require_provenance": true,
+      "proof_grade": true
+    }
+  ],
+  "forbidden_paths": [
+    {
+      "path_id": "path://mock/production-leak",
+      "description": "Production checkout must not call the mock object.",
+      "source": {
+        "qualified_name": "src/checkout.checkout",
+        "kind": "Function",
+        "source_file": "src/checkout.ts",
+        "context": "production"
+      },
+      "target": {
+        "qualified_name": "tests/checkout.test.chargeCardMock",
+        "kind": "Mock",
+        "source_file": "tests/checkout.test.ts",
+        "context": "mock"
+      },
+      "ordered_edges": [
+        {
+          "id": "edge://mock/prod-calls-mock",
+          "head": {
+            "qualified_name": "src/checkout.checkout",
+            "kind": "Function",
+            "source_file": "src/checkout.ts",
+            "context": "production"
+          },
+          "relation": "CALLS",
+          "tail": {
+            "qualified_name": "tests/checkout.test.chargeCardMock",
+            "kind": "Mock",
+            "source_file": "tests/checkout.test.ts",
+            "context": "mock"
+          },
+          "source_file": "src/checkout.ts",
+          "source_span": {
+            "start_line": 4,
+            "start_column": 10,
+            "end_line": 4,
+            "end_column": 27,
+            "expected_text": "chargeCard(total)",
+            "syntax_role": "callsite"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "forbidden_mock_leak",
+          "exactness": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "forbidden_mock_leak",
+          "direction": "head_to_tail"
+        }
+      ],
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "max_length": 1,
+      "source_span_required": true,
+      "production_only": true,
+      "derived_allowed": false,
+      "provenance_required": false,
+      "required_source_spans": [
+        {
+          "edge_ref": "edge://mock/prod-calls-mock",
+          "source_file": "src/checkout.ts",
+          "span": {
+            "start_line": 4,
+            "start_column": 10,
+            "end_line": 4,
+            "end_column": 27,
+            "expected_text": "chargeCard(total)",
+            "syntax_role": "callsite"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "chargeCard(total)",
+          "syntax_role": "callsite"
+        }
+      ],
+      "context": "production",
+      "allow_test_mock_edges": false,
+      "derived_edges_require_provenance": true,
+      "proof_grade": false
+    }
+  ],
+  "expected_source_spans": [
+    {
+      "edge_ref": "edge://mock/prod-calls-charge",
+      "source_file": "src/checkout.ts",
+      "span": {
+        "start_line": 4,
+        "start_column": 10,
+        "end_line": 4,
+        "end_column": 27,
+        "expected_text": "chargeCard(total)",
+        "syntax_role": "callsite"
+      },
+      "must_resolve_to_text": true,
+      "expected_text": "chargeCard(total)",
+      "syntax_role": "callsite"
+    },
+    {
+      "edge_ref": "edge://mock/test-mocks-charge",
+      "source_file": "tests/checkout.test.ts",
+      "span": {
+        "start_line": 5,
+        "start_column": 1,
+        "end_line": 7,
+        "end_column": 5,
+        "expected_text": "vi.mock(\"../src/service\"",
+        "syntax_role": "test_double"
+      },
+      "must_resolve_to_text": true,
+      "expected_text": "vi.mock(\"../src/service\"",
+      "syntax_role": "test_double"
+    },
+    {
+      "edge_ref": "edge://mock/asserts-checkout",
+      "source_file": "tests/checkout.test.ts",
+      "span": {
+        "start_line": 11,
+        "start_column": 5,
+        "end_line": 11,
+        "end_column": 39,
+        "expected_text": "expect(checkout(5)).toBe(\"mocked\")",
+        "syntax_role": "assertion"
+      },
+      "must_resolve_to_text": true,
+      "expected_text": "expect(checkout(5)).toBe(\"mocked\")",
+      "syntax_role": "assertion"
+    }
+  ],
+  "expected_context_symbols": [
+    {
+      "symbol": {
+        "qualified_name": "src/checkout.checkout",
+        "kind": "Function",
+        "source_file": "src/checkout.ts",
+        "context": "production"
+      },
+      "critical": true,
+      "source_file": "src/checkout.ts",
+      "reason": "Production function under test"
+    },
+    {
+      "symbol": {
+        "qualified_name": "tests/checkout.test.uses a test double for chargeCard",
+        "kind": "TestCase",
+        "source_file": "tests/checkout.test.ts",
+        "context": "test"
+      },
+      "critical": true,
+      "source_file": "tests/checkout.test.ts",
+      "reason": "Relevant test case"
+    }
+  ],
+  "forbidden_context_symbols": [
+    {
+      "symbol": {
+        "qualified_name": "tests/checkout.test.chargeCardMock",
+        "kind": "Mock",
+        "source_file": "tests/checkout.test.ts",
+        "context": "mock"
+      },
+      "critical": true,
+      "source_file": "tests/checkout.test.ts",
+      "reason": "Mock must be labeled test/mock, not production proof"
+    }
+  ],
+  "expected_tests": [
+    {
+      "name": "checkout uses a test double for chargeCard",
+      "command": "npm test -- checkout.test.ts",
+      "source_file": "tests/checkout.test.ts",
+      "context": "test",
+      "reason": "Covers mocked checkout behavior"
+    }
+  ],
+  "forbidden_tests": [
+    {
+      "name": "unrelated payment gateway live test",
+      "source_file": "tests/live-gateway.test.ts",
+      "context": "test",
+      "reason": "Distractor test"
+    }
+  ],
+  "mutation_steps": [],
+  "performance_expectations": {
+    "schema_validation_100_cases_max_ms": 1000,
+    "index_time_ms_max": 10000
+  },
+  "notes": [
+    "Covers TEST/MOCK/STUB/ASSERT path separation."
+  ],
+  "failure_rules": {
+    "missing_required_edge_fails": true,
+    "forbidden_edge_appearing_fails": true,
+    "wrong_direction_fails": true,
+    "missing_source_span_fails_for_proof_grade_edge": true,
+    "unresolved_name_labeled_exact_fails": true,
+    "mock_or_test_edge_in_production_proof_path_fails": true,
+    "derived_edge_without_provenance_fails": true,
+    "stale_edge_after_edit_fails": true,
+    "same_name_symbol_collision_fails": true,
+    "critical_symbol_missing_from_context_packet_fails": true,
+    "forbidden_context_symbol_included_fails": true,
+    "expected_test_omitted_fails": true,
+    "too_many_distractors_fail_if_threshold_specified": true
+  },
+  "distractor_policy": {
+    "max_context_distractors": 0,
+    "max_symbol_distractors": 0,
+    "distractor_symbols": [],
+    "count_scope": "context_packet"
+  }
+}

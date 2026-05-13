@@ -1,0 +1,2379 @@
+{
+  "schema_version": 1,
+  "db_path": "reports/final/artifacts/compact_gate_autoresearch_proof.sqlite",
+  "relation_filter": "FLOWS_TO",
+  "limit": 50,
+  "seed": 20260512,
+  "include_snippets": true,
+  "manual_classification_options": [
+    "true_positive",
+    "false_positive",
+    "wrong_direction",
+    "wrong_target",
+    "wrong_span",
+    "stale",
+    "duplicate",
+    "unresolved_mislabeled_exact",
+    "test_mock_leaked",
+    "derived_missing_provenance",
+    "unsure"
+  ],
+  "samples": [
+    {
+      "ordinal": 1,
+      "edge_id": "edge-key:-9222375146152285250",
+      "head": {
+        "id": "repo://e/4d1adf9fe5d3002ba6965ab435207269",
+        "name": "expr@10700",
+        "qualified_name": "tests::dashboard-pathguard.test.expr@10700",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/ab1a0c4d914223190cba39a7ad64e1f7",
+        "name": "argument_0@10700",
+        "qualified_name": "tests::dashboard-pathguard.test.argument_0@10700@10700",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "tests/dashboard-pathguard.test.mjs",
+        "start_line": 232,
+        "start_column": 15,
+        "end_line": 232,
+        "end_column": 51
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:3e82e66e8bd26ae4",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/tests/dashboard-pathguard.test.mjs",
+        "start_line": 230,
+        "end_line": 234,
+        "text": "230:     const body = await stream.text();\n231:     assert.ok(body.includes(\"event: arl-event\"));\n232:     assert.ok(body.includes(\"objective.validated\"));\n233:     assert.ok(body.includes(\"runtime.turn_completed\"));\n234:     assert.ok(body.includes(\"event: arl-stream-end\"));"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 2,
+      "edge_id": "edge-key:-9221931757814997061",
+      "head": {
+        "id": "repo://e/b3b0f286d2997efbbc6876e230fe1d25",
+        "name": "expr@19303",
+        "qualified_name": "packages::cli::src::arl.runtimeVersions.expr@19303",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/4071e04458c05c816379cbbe6bc4fe53",
+        "name": "argument_0@19303",
+        "qualified_name": "packages::cli::src::arl.runtimeVersions.argument_0@19303@19303",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/arl.mjs",
+        "start_line": 478,
+        "start_column": 94,
+        "end_line": 478,
+        "end_column": 98
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:569fb7a80d03a924",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+        "start_line": 476,
+        "end_line": 480,
+        "text": "476:   console.log(`app_server_shim: ${daemonBinary ? path.relative(repoRoot, daemonBinary).replaceAll(\"\\\\\", \"/\") : \"missing\"}`);\n477:   console.log(`bundled_upstream_codex: ${execBinary ? path.relative(repoRoot, execBinary).replaceAll(\"\\\\\", \"/\") : \"missing\"}`);\n478:   console.log(`arl_codexd: ${daemonBinary ? path.relative(repoRoot, daemonBinary).replaceAll(\"\\\\\", \"/\") : \"missing\"}`);\n479:   console.log(`multi_agent_shim: ${daemonBinary ? path.relative(repoRoot, daemonBinary).replaceAll(\"\\\\\", \"/\") : \"missing\"}`);\n480:   console.log(`openrouter_model: ${process.env.OPENROUTER_MODEL ?? \"openai/gpt-5.4-mini\"}`);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 3,
+      "edge_id": "edge-key:-9219109558606463493",
+      "head": {
+        "id": "repo://e/61bcdd3121cbae33fe37bffea5e71729",
+        "name": "turn_context",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::tests.handle_output_item_done_records_image_save_history_message.turn_context",
+        "kind": "LocalVariable"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/fbfbfecac47462353bf82aed162fa3f7",
+        "name": "argument_0@243817",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::tests.handle_output_item_done_records_image_save_history_message.argument_0@243817@243817",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 6549,
+        "start_column": 74,
+        "end_line": 6549,
+        "end_column": 87
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9ef4f9f90c663f41",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 6547,
+        "end_line": 6551,
+        "text": "6547:         sess: Arc::clone(&session),\n6548:         turn_context: Arc::clone(&turn_context),\n6549:         tool_runtime: test_tool_runtime(Arc::clone(&session), Arc::clone(&turn_context)),\n6550:         cancellation_token: CancellationToken::new(),\n6551:     };"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 4,
+      "edge_id": "edge-key:-9218944060473864450",
+      "head": {
+        "id": "repo://e/e619730e13e7251ec5e8779d1690c68c",
+        "name": "expr@8747",
+        "qualified_name": "tests::appserver-orchestrator.test.expr@8747",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/f7cf781ba4759e5c68164958bef4c882",
+        "name": "argument_0@8747",
+        "qualified_name": "tests::appserver-orchestrator.test.argument_0@8747@8747",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "tests/appserver-orchestrator.test.mjs",
+        "start_line": 179,
+        "start_column": 20,
+        "end_line": 182,
+        "end_column": 5
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:da6d9e5370713a1f",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/tests/appserver-orchestrator.test.mjs",
+        "start_line": 177,
+        "end_line": 184,
+        "text": "177: test(\"agent planner enforces budgets and rejects handoff cycles\", () => {\n178:   assert.throws(() => enforceAgentBudget({ budgets: { max_agent_turns: 2 } }, [\"A\", \"B\", \"C\"]));\n179:   assert.deepEqual(validateAcyclicHandoffs([\n180:     { from: \"a\", to: \"b\" },\n181:     { from: \"b\", to: \"c\" }\n182:   ]), { valid: true, error: null });\n183:   assert.equal(validateAcyclicHandoffs([\n184:     { from: \"a\", to: \"b\" },"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 5,
+      "edge_id": "edge-key:-9218612296043580410",
+      "head": {
+        "id": "repo://e/c7128619a479dd26e36a8f406489b104",
+        "name": "expr@4408",
+        "qualified_name": "tests::runtime-shim-binaries.test.expr@4408",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/24b7b5c87ffb0010b0fb911690213aee",
+        "name": "argument_2@4408",
+        "qualified_name": "tests::runtime-shim-binaries.test.argument_2@4408@4408",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "tests/runtime-shim-binaries.test.mjs",
+        "start_line": 98,
+        "start_column": 78,
+        "end_line": 98,
+        "end_column": 98
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:a0697d447128e0b9",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/tests/runtime-shim-binaries.test.mjs",
+        "start_line": 96,
+        "end_line": 100,
+        "text": "96: \n97:   const cli = path.join(repoRoot, \"packages\", \"cli\", \"src\", \"arl.mjs\");\n98:   const status = spawnSync(process.execPath, [cli, \"codex\", \"patch-status\"], { encoding: \"utf8\" });\n99:   assert.equal(status.status, 0, status.stderr);\n100:   assert.match(status.stdout, /patches=8/);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 6,
+      "edge_id": "edge-key:-9218312691263397029",
+      "head": {
+        "id": "repo://e/ab12abc2fba0cf7c5ac9c8961e59dd5a",
+        "name": "issue_reaction_events",
+        "qualified_name": "upstream::openai-codex::.codex::skills::codex-issue-digest::scripts::collect_issue_digest.summarize_issue.param:issue_reaction_events",
+        "kind": "Parameter"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/dbdfcd686894ea38a77b9e2dca9e9aae",
+        "name": "argument_0@19121",
+        "qualified_name": "upstream::openai-codex::.codex::skills::codex-issue-digest::scripts::collect_issue_digest.summarize_issue.argument_0@19121@19121",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/.codex/skills/codex-issue-digest/scripts/collect_issue_digest.py",
+        "start_line": 596,
+        "start_column": 9,
+        "end_line": 596,
+        "end_column": 30
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:6eebdf094d0b4da9",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/.codex/skills/codex-issue-digest/scripts/collect_issue_digest.py",
+        "start_line": 594,
+        "end_line": 598,
+        "text": "594:     issue_reactions = reaction_summary(issue)\n595:     issue_reaction_events_summary = reaction_event_summary(\n596:         issue_reaction_events, since, until\n597:     )\n598:     comment_reaction_events_summary = reaction_event_summary("
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 7,
+      "edge_id": "edge-key:-9217511199534045108",
+      "head": {
+        "id": "repo://e/7a314adec294c5997182322d3c28832f",
+        "name": "path",
+        "qualified_name": "upstream::openai-codex::codex-rs::protocol::src::protocol.tests.sandbox_policy_allows_write.param:path",
+        "kind": "Parameter"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/4d45eff87355520dbd2395ed650cf3cf",
+        "name": "argument_0@143022",
+        "qualified_name": "upstream::openai-codex::codex-rs::protocol::src::protocol.tests.sandbox_policy_allows_write.argument_0@143022@143022",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/protocol/src/protocol.rs",
+        "start_line": 3961,
+        "start_column": 47,
+        "end_line": 3961,
+        "end_column": 51
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:314a8b7e209ff04e",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/protocol/src/protocol.rs",
+        "start_line": 3959,
+        "end_line": 3963,
+        "text": "3959:             .get_writable_roots_with_cwd(cwd)\n3960:             .iter()\n3961:             .any(|root| root.is_path_writable(path))\n3962:     }\n3963: "
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 8,
+      "edge_id": "edge-key:-9217311191821069100",
+      "head": {
+        "id": "repo://e/e2e67c24081ec2f9c788286e96157e0f",
+        "name": "request_id",
+        "qualified_name": "runtime::arl-codex::codex-rs::app-server::src::message_processor.handle_arl_jsonrpc_request.param:request_id",
+        "kind": "Parameter"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/82be5778b31ae3541136b0bf267448a6",
+        "name": "argument_0@30011",
+        "qualified_name": "runtime::arl-codex::codex-rs::app-server::src::message_processor.handle_arl_jsonrpc_request.argument_0@30011@30011",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/app-server/src/message_processor.rs",
+        "start_line": 765,
+        "start_column": 43,
+        "end_line": 765,
+        "end_column": 53
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:0a0a002075bc73fa",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/app-server/src/message_processor.rs",
+        "start_line": 763,
+        "end_line": 767,
+        "text": "763:         let result = handle_arl_request(&request.method, params)\n764:             .ok_or_else(|| invalid_request(format!(\"Unknown ARL method: {}\", request.method)))?;\n765:         self.outgoing.send_jsonrpc_result(request_id, result).await;\n766:         Ok(())\n767:     }"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 9,
+      "edge_id": "edge-key:-9217224678085383670",
+      "head": {
+        "id": "repo://e/86475d5418e85bba1af41cd1b377b020",
+        "name": "host",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::mod.persist_network_policy_amendment.host",
+        "kind": "LocalVariable"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/c47cd4c392d4ac34e3314a7436f0a0e2",
+        "name": "argument_1@71917",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::mod.persist_network_policy_amendment.argument_1@71917@71917",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/core/src/session/mod.rs",
+        "start_line": 1830,
+        "start_column": 17,
+        "end_line": 1830,
+        "end_column": 22
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:cfb27d495e18c3a4",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/core/src/session/mod.rs",
+        "start_line": 1828,
+        "end_line": 1832,
+        "text": "1828:             .append_network_rule_and_update(\n1829:                 &codex_home,\n1830:                 &host,\n1831:                 execpolicy_amendment.protocol,\n1832:                 execpolicy_amendment.decision,"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 10,
+      "edge_id": "edge-key:-9216610074181141715",
+      "head": {
+        "id": "repo://e/9628a3b9cb418f795d73d57893c48043",
+        "name": "expr@10575",
+        "qualified_name": "tests::dashboard-pathguard.test.expr@10575",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/2345c879300a99413a5320a240c1eee3",
+        "name": "argument_1@10575",
+        "qualified_name": "tests::dashboard-pathguard.test.argument_1@10575@10575",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "tests/dashboard-pathguard.test.mjs",
+        "start_line": 229,
+        "start_column": 60,
+        "end_line": 229,
+        "end_column": 80
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:3e82e66e8bd26ae4",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/tests/dashboard-pathguard.test.mjs",
+        "start_line": 227,
+        "end_line": 231,
+        "text": "227:     const stream = await fetch(`${url}api/runs/${encodeURIComponent(runId)}/events/stream`);\n228:     assert.equal(stream.status, 200);\n229:     assert.match(stream.headers.get(\"content-type\") ?? \"\", /text\\/event-stream/);\n230:     const body = await stream.text();\n231:     assert.ok(body.includes(\"event: arl-event\"));"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 11,
+      "edge_id": "edge-key:-9215539168597013560",
+      "head": {
+        "id": "repo://e/67c9a4f5e4f7643608e1edf58aa24278",
+        "name": "expr@6031",
+        "qualified_name": "services::orchestrator::src::freeform-agent-runner.createFreeformObjectiveFile.expr@6031",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/4daa38679147a6bb3b9daaef5a6e18a5",
+        "name": "validation",
+        "qualified_name": "services::orchestrator::src::freeform-agent-runner.createFreeformObjectiveFile.validation",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "services/orchestrator/src/freeform-agent-runner.mjs",
+        "start_line": 165,
+        "start_column": 22,
+        "end_line": 165,
+        "end_column": 66
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:0c57f99d30ac8b17",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/services/orchestrator/src/freeform-agent-runner.mjs",
+        "start_line": 163,
+        "end_line": 167,
+        "text": "163:   await ensureDir(root);\n164:   await writeJson(objectivePath, objective);\n165:   const validation = await validateObjective(objective, repoRoot);\n166:   if (!validation.valid) throw new Error(validation.errors.join(\"\\n\"));\n167:   return {"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 12,
+      "edge_id": "edge-key:-9214376014152742481",
+      "head": {
+        "id": "repo://e/7937cfe8834dfc99660653bd7e504cbf",
+        "name": "codex_home",
+        "qualified_name": "runtime::arl-codex::codex-rs::app-server::tests::suite::v2::account.get_account_no_auth.codex_home",
+        "kind": "LocalVariable"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/ee200fc9ec2caf228ddac15907c8a330",
+        "name": "argument_0@51360",
+        "qualified_name": "runtime::arl-codex::codex-rs::app-server::tests::suite::v2::account.get_account_no_auth.argument_0@51360@51360",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/app-server/tests/suite/v2/account.rs",
+        "start_line": 1481,
+        "start_column": 44,
+        "end_line": 1481,
+        "end_column": 61
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:8ddb33a432c2923f",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/app-server/tests/suite/v2/account.rs",
+        "start_line": 1479,
+        "end_line": 1483,
+        "text": "1479:     )?;\n1480: \n1481:     let mut mcp = McpProcess::new_with_env(codex_home.path(), &[(\"OPENAI_API_KEY\", None)]).await?;\n1482:     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;\n1483: "
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 13,
+      "edge_id": "edge-key:-9214038049252098376",
+      "head": {
+        "id": "repo://e/1414b30e0ba10b092fdb195dbd043d6b",
+        "name": "expr@9036",
+        "qualified_name": "services::orchestrator::src::run-manager.runBundledCodexObjective.expr@9036",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/ff8865060f42cc46b256ebe188b5b8f0",
+        "name": "adapter",
+        "qualified_name": "services::orchestrator::src::run-manager.runBundledCodexObjective.adapter",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "services/orchestrator/src/run-manager.mjs",
+        "start_line": 241,
+        "start_column": 19,
+        "end_line": 241,
+        "end_column": 45
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:67b86b73b8254b08",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/services/orchestrator/src/run-manager.mjs",
+        "start_line": 239,
+        "end_line": 243,
+        "text": "239:   }\n240: \n241:   const adapter = new DryRunRuntimeAdapter();\n242:   const run = await adapter.run({ objective: loaded.data, objectiveRaw: loaded.raw, repoRoot, ...(runId ? { runId } : {}) });\n243:   const runtimeBinary = await locateRuntimeBinary(repoRoot, \"arl-codex-exec\");"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 14,
+      "edge_id": "edge-key:-9213706667613585830",
+      "head": {
+        "id": "repo://e/ce0782bf6f12b7c162780ad6d01e5b83",
+        "name": "pr_spec",
+        "qualified_name": "upstream::openai-codex::.codex::skills::babysit-pr::scripts::gh_pr_watch.resolve_pr.param:pr_spec",
+        "kind": "Parameter"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/c091d5ed866c08da45749886bcf877b0",
+        "name": "argument_0@4767",
+        "qualified_name": "upstream::openai-codex::.codex::skills::babysit-pr::scripts::gh_pr_watch.resolve_pr.argument_0@4767@4767",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/.codex/skills/babysit-pr/scripts/gh_pr_watch.py",
+        "start_line": 157,
+        "start_column": 28,
+        "end_line": 157,
+        "end_column": 35
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:6b773bf0ddf94c00",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/.codex/skills/babysit-pr/scripts/gh_pr_watch.py",
+        "start_line": 155,
+        "end_line": 159,
+        "text": "155: \n156: def resolve_pr(pr_spec, repo_override=None):\n157:     parsed = parse_pr_spec(pr_spec)\n158:     cmd = [\"pr\", \"view\"]\n159:     if parsed[\"value\"] is not None:"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 15,
+      "edge_id": "edge-key:-9213626568789383071",
+      "head": {
+        "id": "repo://e/f187973a5e9390a4312bf5be9c89c962",
+        "name": "expr@5541",
+        "qualified_name": "services::orchestrator::src::run-manager.runAppServerObjective.expr@5541",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/af8e18e2a630bc823b5a26b628700660",
+        "name": "argument_0@5541",
+        "qualified_name": "services::orchestrator::src::run-manager.runAppServerObjective.argument_0@5541@5541",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "services/orchestrator/src/run-manager.mjs",
+        "start_line": 145,
+        "start_column": 51,
+        "end_line": 149,
+        "end_column": 4
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:67b86b73b8254b08",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/services/orchestrator/src/run-manager.mjs",
+        "start_line": 143,
+        "end_line": 151,
+        "text": "143:   await writeJson(manifestPath, manifest);\n144: \n145:   const session = await createAppServerRunSession({\n146:     repoRoot,\n147:     runRoot: run.runRoot,\n148:     runId: run.runId\n149:   });\n150:   try {\n151:     const completed = session.waitForNotification(\"turn/completed\");"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 16,
+      "edge_id": "edge-key:-9213424926998488073",
+      "head": {
+        "id": "repo://e/1a3f989d2fd569eb0ce37bcb30bd0995",
+        "name": "expr@5995",
+        "qualified_name": "packages::core::src::run-ledger::index.createDryRunFolder.expr@5995",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/234e1dc6ea6e3f0f18da690d783e5f71",
+        "name": "argument_1@5995",
+        "qualified_name": "packages::core::src::run-ledger::index.createDryRunFolder.argument_1@5995@5995",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/run-ledger/index.mjs",
+        "start_line": 155,
+        "start_column": 38,
+        "end_line": 155,
+        "end_column": 49
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:c546747cf6f02fba",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/run-ledger/index.mjs",
+        "start_line": 153,
+        "end_line": 157,
+        "text": "153:   const verifierReport = await verifyRun(runRoot);\n154:   const report = buildReport({ objective, manifest, hypotheses, experimentPlan, claims, evidence, evidenceHealth, verifierReport });\n155:   await writeText(path.join(runRoot, \"report.md\"), report);\n156: \n157:   const graph = buildResearchGraph({ objective, manifest, hypotheses, experimentPlan, claims, evidence });"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 17,
+      "edge_id": "edge-key:-9212674550788966966",
+      "head": {
+        "id": "repo://e/a3c804188f8a30e0498b270685e5880e",
+        "name": "runRoot",
+        "qualified_name": "packages::core::src::preflight::index.findLatestOpenRouterLiveSmoke.runRoot",
+        "kind": "LocalVariable"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/d0a92c19ca64fe35de01b7a5a31216ff",
+        "name": "argument_0@4166",
+        "qualified_name": "packages::core::src::preflight::index.findLatestOpenRouterLiveSmoke.argument_0@4166@4166",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/preflight/index.mjs",
+        "start_line": 115,
+        "start_column": 47,
+        "end_line": 115,
+        "end_column": 54
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:e5d2731bd32d3ab1",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/preflight/index.mjs",
+        "start_line": 113,
+        "end_line": 117,
+        "text": "113:     if (!requiredArtifactsPresent) continue;\n114:     const claims = await readJson(path.join(runRoot, \"claims.json\"));\n115:     const evidence = await readJson(path.join(runRoot, \"evidence.json\"));\n116:     const health = await computeEvidenceHealth({ claims, evidence, runRoot });\n117:     if (health.label === \"invalid\") continue;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 18,
+      "edge_id": "edge-key:-9211222613764542937",
+      "head": {
+        "id": "repo://e/f106cccdd2afd86daa3bd42fadfc13ab",
+        "name": "decision",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::mod.notify_approval.param:decision",
+        "kind": "Parameter"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/eb8d7381991c7ded541f23344d7650cf",
+        "name": "argument_0@94968",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::mod.notify_approval.argument_0@94968@94968",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/core/src/session/mod.rs",
+        "start_line": 2420,
+        "start_column": 33,
+        "end_line": 2420,
+        "end_column": 41
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:cfb27d495e18c3a4",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/core/src/session/mod.rs",
+        "start_line": 2418,
+        "end_line": 2422,
+        "text": "2418:         match entry {\n2419:             Some(tx_approve) => {\n2420:                 tx_approve.send(decision).ok();\n2421:             }\n2422:             None => {"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 19,
+      "edge_id": "edge-key:-9210910364687852929",
+      "head": {
+        "id": "repo://e/81ae1bcd5030083c673fd92bc932b2c2",
+        "name": "expr@14169",
+        "qualified_name": "packages::ui-autoresearch::src::app.renderApprovals.expr@14169",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/595c04ad2e143634994327d6471200f2",
+        "name": "argument_2@14169",
+        "qualified_name": "packages::ui-autoresearch::src::app.renderApprovals.argument_2@14169@14169",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/ui-autoresearch/src/app.js",
+        "start_line": 320,
+        "start_column": 38,
+        "end_line": 333,
+        "end_column": 4
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:52a5b8c00049eaea",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/ui-autoresearch/src/app.js",
+        "start_line": 318,
+        "end_line": 335,
+        "text": "318: function renderApprovals(approvals) {\n319:   currentApprovals = approvals;\n320:   renderList(\"approvals\", approvals, (approval) => `\n321:     <div class=\"row\">\n322:       <b>${escapeHtml(approval.status)}</b>\n323:       <span>\n324:         ${escapeHtml(approval.command_or_tool)} ${escapeHtml(approval.policy_reason)}\n325:         ${approval.status === \"pending\" ? `\n326:           <span class=\"approval-actions\">\n327:             <button type=\"button\" data-approval=\"${escapeHtml(approval.approval_id)}\" data-decision=\"approve_once\">Approve</button>\n328:             <button type=\"button\" data-approval=\"${escapeHtml(approval.approval_id)}\" data-decision=\"deny\">Deny</button>\n329:           </span>\n330:         ` : \"\"}\n331:       </span>\n332:     </div>\n333:   `);\n334: }\n335: "
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 20,
+      "edge_id": "edge-key:-9210083010549630671",
+      "head": {
+        "id": "repo://e/22156f9f9ec4493b447af9e2c1ec216d",
+        "name": "expr@20346",
+        "qualified_name": "packages::cli::src::dashboard-server.nextEventSequence.expr@20346",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/87ced54b7a8759afa891d4aa6b620659",
+        "name": "argument_0@20346",
+        "qualified_name": "packages::cli::src::dashboard-server.nextEventSequence.argument_0@20346@20346",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/dashboard-server.mjs",
+        "start_line": 624,
+        "start_column": 68,
+        "end_line": 624,
+        "end_column": 100
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9453dc0bb38c212e",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/dashboard-server.mjs",
+        "start_line": 622,
+        "end_line": 626,
+        "text": "622:   const eventsPath = path.join(runRoot, \"events.jsonl\");\n623:   if (!(await pathExists(eventsPath))) return 0;\n624:   const lines = (await readText(eventsPath)).split(/\\r?\\n/).filter((line) => line.trim().length > 0);\n625:   let max = -1;\n626:   for (const line of lines) {"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 21,
+      "edge_id": "edge-key:-9209467631585878767",
+      "head": {
+        "id": "repo://e/89f9e2a43563f4cf1196b0eade4bb101",
+        "name": "turn_context",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::turn.try_run_sampling_request.param:turn_context",
+        "kind": "Parameter"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/14f09cb3b756073d4e8a3ea8cfe7293f",
+        "name": "argument_0@83169",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::turn.try_run_sampling_request.argument_0@83169@83169",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/core/src/session/turn.rs",
+        "start_line": 2092,
+        "start_column": 50,
+        "end_line": 2092,
+        "end_column": 63
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:b5f252d6223a2cf5",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/core/src/session/turn.rs",
+        "start_line": 2090,
+        "end_line": 2094,
+        "text": "2090:                     .swap(true, Ordering::Relaxed)\n2091:                 {\n2092:                     sess.emit_model_verification(&turn_context, verifications)\n2093:                         .await;\n2094:                 }"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 22,
+      "edge_id": "edge-key:-9208946067807989222",
+      "head": {
+        "id": "repo://e/33a7cb3b4e466c7ff693dfb8e17b3535",
+        "name": "options",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::agent::control.spawn_forked_thread.param:options",
+        "kind": "Parameter"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/96b07b737a806eab8c0e0c4ce0fd3461",
+        "name": "argument_10@17446",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::agent::control.spawn_forked_thread.argument_10@17446@17446",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/src/agent/control.rs",
+        "start_line": 444,
+        "start_column": 17,
+        "end_line": 444,
+        "end_column": 45
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:d148db64013f7322",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/src/agent/control.rs",
+        "start_line": 442,
+        "end_line": 446,
+        "text": "442:                 inherited_shell_snapshot,\n443:                 inherited_exec_policy,\n444:                 options.environments.clone(),\n445:             )\n446:             .await"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 23,
+      "edge_id": "edge-key:-9208247948990924910",
+      "head": {
+        "id": "repo://e/c1e15535ef3fec4413f1ee317056ba02",
+        "name": "expr@20555",
+        "qualified_name": "packages::ui-autoresearch::src::app.runAgentPrompt.expr@20555",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/7353e5e07c69ef598d1a66edf43115db",
+        "name": "consoleEvents",
+        "qualified_name": "packages::ui-autoresearch::src::app.consoleEvents",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/ui-autoresearch/src/app.js",
+        "start_line": 464,
+        "start_column": 3,
+        "end_line": 464,
+        "end_column": 21
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:52a5b8c00049eaea",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/ui-autoresearch/src/app.js",
+        "start_line": 462,
+        "end_line": 466,
+        "text": "462:   const prompt = document.getElementById(\"agent-prompt\").value.trim();\n463:   if (!prompt) return;\n464:   consoleEvents = [];\n465:   addConsoleEvent({\n466:     event_id: `event_ui_start_${Date.now()}`,"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 24,
+      "edge_id": "edge-key:-9207402759074389164",
+      "head": {
+        "id": "repo://e/297fbedeed77761c64bce7b16567f6ea",
+        "name": "output",
+        "qualified_name": "upstream::openai-codex::codex-rs::exec::tests::suite::resume.exec_resume_preserves_cli_configuration_overrides.output",
+        "kind": "LocalVariable"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/9973117aa87bcdf8797ec5676be849a6",
+        "name": "argument_0@15636",
+        "qualified_name": "upstream::openai-codex::codex-rs::exec::tests::suite::resume.exec_resume_preserves_cli_configuration_overrides.argument_0@15636@15636",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/exec/tests/suite/resume.rs",
+        "start_line": 460,
+        "start_column": 36,
+        "end_line": 460,
+        "end_column": 49
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:90edadff41114b91",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/exec/tests/suite/resume.rs",
+        "start_line": 458,
+        "end_line": 462,
+        "text": "458:     assert!(output.status.success(), \"resume run failed: {output:?}\");\n459: \n460:     let stderr = String::from_utf8(output.stderr)?;\n461:     assert!(\n462:         stderr.contains(\"model: gpt-5.1-high\"),"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 25,
+      "edge_id": "edge-key:-9207347629358524289",
+      "head": {
+        "id": "repo://e/4b935d52043ae8f625862bde44fdba44",
+        "name": "expr@18502",
+        "qualified_name": "tests::dashboard-pathguard.test.expr@18502",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/ec23f24349c5f71d698d124ba69ce22f",
+        "name": "title",
+        "qualified_name": "tests::dashboard-pathguard.test.title",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "tests/dashboard-pathguard.test.mjs",
+        "start_line": 406,
+        "start_column": 17,
+        "end_line": 406,
+        "end_column": 52
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:3e82e66e8bd26ae4",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/tests/dashboard-pathguard.test.mjs",
+        "start_line": 404,
+        "end_line": 408,
+        "text": "404: test(\"dashboard API creates objectives and handles approval decisions\", async () => {\n405:   const { server, url } = await startDashboardServer({ repoRoot, port: 0 });\n406:   const title = `Dashboard Objective ${Date.now()}`;\n407:   const objectiveId = title.toLowerCase().replace(/[^a-z0-9_-]+/g, \"-\").replace(/^-+|-+$/g, \"\");\n408:   const objectivePath = path.join(repoRoot, \".arl\", \"objectives\", `${objectiveId}.yaml`);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 26,
+      "edge_id": "edge-key:-9206683191710999248",
+      "head": {
+        "id": "repo://e/561d59bb36b1bbf92ac0f28eaf1c87e3",
+        "name": "connection_id",
+        "qualified_name": "upstream::openai-codex::codex-rs::app-server::src::outgoing_message.send_response_as.connection_id",
+        "kind": "LocalVariable"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/e520cd672226356563defd85a8b252f7",
+        "name": "argument_1@17553",
+        "qualified_name": "upstream::openai-codex::codex-rs::app-server::src::outgoing_message.send_response_as.argument_1@17553@17553",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/app-server/src/outgoing_message.rs",
+        "start_line": 501,
+        "start_column": 21,
+        "end_line": 501,
+        "end_column": 34
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:fa10a97b8a4a53e7",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/app-server/src/outgoing_message.rs",
+        "start_line": 499,
+        "end_line": 503,
+        "text": "499:                 self.send_outgoing_message_to_connection(\n500:                     request_context,\n501:                     connection_id,\n502:                     outgoing_message,\n503:                     \"response\","
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 27,
+      "edge_id": "edge-key:-9205910137624642660",
+      "head": {
+        "id": "repo://e/5fb2c7c76c049d8bc3da40961de05c4d",
+        "name": "expr@5931",
+        "qualified_name": "tests::preflight.test.expr@5931",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/ee23c1243c5b5c6bf0e6b4474aefbcd5",
+        "name": "argument_0@5931",
+        "qualified_name": "tests::preflight.test.argument_0@5931@5931",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "tests/preflight.test.mjs",
+        "start_line": 120,
+        "start_column": 21,
+        "end_line": 120,
+        "end_column": 56
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:14f6cd50d43e1b35",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/tests/preflight.test.mjs",
+        "start_line": 118,
+        "end_line": 122,
+        "text": "118:     await mkdir(path.join(runRoot, \"logs\"), { recursive: true });\n119:     await mkdir(path.join(runRoot, \"artifacts\"), { recursive: true });\n120:     await writeFile(path.join(runRoot, \"manifest.json\"), JSON.stringify({\n121:       updated_at: \"2026-05-08T03:00:00.000Z\",\n122:       runtime: {"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 28,
+      "edge_id": "edge-key:-9205447429075263982",
+      "head": {
+        "id": "repo://e/536565cf3d973ad62d4826f90acd42e0",
+        "name": "marketplace_root",
+        "qualified_name": "upstream::openai-codex::codex-rs::app-server::src::config::external_agent_config_tests.import_plugins_supports_project_relative_external_agent_plugin_marketplace_path.marketplace_root",
+        "kind": "LocalVariable"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/b035644a640e5ea63d078ae21a250928",
+        "name": "argument_0@84288",
+        "qualified_name": "upstream::openai-codex::codex-rs::app-server::src::config::external_agent_config_tests.import_plugins_supports_project_relative_external_agent_plugin_marketplace_path.argument_0@84288@84288",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/app-server/src/config/external_agent_config_tests.rs",
+        "start_line": 2386,
+        "start_column": 9,
+        "end_line": 2388,
+        "end_column": 38
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:8d6d3d8225093ff3",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/app-server/src/config/external_agent_config_tests.rs",
+        "start_line": 2384,
+        "end_line": 2390,
+        "text": "2384:     .expect(\"write settings\");\n2385:     fs::write(\n2386:         marketplace_root\n2387:             .join(EXTERNAL_AGENT_PLUGIN_MANIFEST_DIR)\n2388:             .join(\"marketplace.json\"),\n2389:         r#\"{\n2390:           \"name\": \"my-plugins\","
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 29,
+      "edge_id": "edge-key:-9205036870288983649",
+      "head": {
+        "id": "repo://e/58b5722668753485f318df17149dfe37",
+        "name": "expr@8814",
+        "qualified_name": "tests::dashboard-pathguard.test.expr@8814",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/f94bd847052ac42d4fc576078e286f7f",
+        "name": "argument_0@8814",
+        "qualified_name": "tests::dashboard-pathguard.test.argument_0@8814@8814",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "tests/dashboard-pathguard.test.mjs",
+        "start_line": 189,
+        "start_column": 28,
+        "end_line": 192,
+        "end_column": 8
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:3e82e66e8bd26ae4",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/tests/dashboard-pathguard.test.mjs",
+        "start_line": 187,
+        "end_line": 194,
+        "text": "187:       method: \"POST\",\n188:       headers: { \"content-type\": \"application/json\" },\n189:       body: JSON.stringify({\n190:         role: \"Reviewer\",\n191:         input: \"Check local evidence links.\"\n192:       })\n193:     });\n194:     assert.equal(steered.status, 200);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 30,
+      "edge_id": "edge-key:-9204501170391386997",
+      "head": {
+        "id": "repo://e/befc52008fa7ce23bae00111ba861f99",
+        "name": "sess",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::tests.thread_rollback_fails_when_num_turns_is_zero.sess",
+        "kind": "LocalVariable"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/32f979fe4e9d9ab4789d2d66926051f6",
+        "name": "argument_0@92202",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::tests.thread_rollback_fails_when_num_turns_is_zero.argument_0@92202@92202",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 2534,
+        "start_column": 31,
+        "end_line": 2534,
+        "end_column": 36
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:3df730b4b3fcd1f0",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 2532,
+        "end_line": 2536,
+        "text": "2532:         .await;\n2533: \n2534:     handlers::thread_rollback(&sess, \"sub-1\".to_string(), /*num_turns*/ 0).await;\n2535: \n2536:     let error_event = wait_for_thread_rollback_failed(&rx).await;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 31,
+      "edge_id": "edge-key:-9202398831853818219",
+      "head": {
+        "id": "repo://e/078a32dd7ec67175c28eedac5f578e67",
+        "name": "expr@1034",
+        "qualified_name": "tests::dry-run.test.expr@1034",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/d12845d50817607b1fe6385b51d9854d",
+        "name": "argument_1@1034",
+        "qualified_name": "tests::dry-run.test.argument_1@1034@1034",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "tests/dry-run.test.mjs",
+        "start_line": 23,
+        "start_column": 63,
+        "end_line": 23,
+        "end_column": 85
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:8eda92805ec416ac",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/tests/dry-run.test.mjs",
+        "start_line": 21,
+        "end_line": 25,
+        "text": "21:     const claims = await readJson(path.join(result.runRoot, \"claims.json\"));\n22:     const evidence = await readJson(path.join(result.runRoot, \"evidence.json\"));\n23:     const verifier = await readJson(path.join(result.runRoot, \"verifier_report.json\"));\n24:     assert.equal(manifest.runtime.kind, \"dry_run\");\n25:     assert.equal(manifest.summary.codex_execution, false);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 32,
+      "edge_id": "edge-key:-9201487267676835882",
+      "head": {
+        "id": "repo://e/ba20cfd1fa351198a087b9d06e2d505e",
+        "name": "expr@5417",
+        "qualified_name": "tests::release-package.test.expr@5417",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/474f4ec1fac109e2b7188853ee8ca6d0",
+        "name": "argument_0@5417",
+        "qualified_name": "tests::release-package.test.argument_0@5417@5417",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "tests/release-package.test.mjs",
+        "start_line": 75,
+        "start_column": 42,
+        "end_line": 75,
+        "end_column": 95
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:f5d3c5a55f45de2f",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/tests/release-package.test.mjs",
+        "start_line": 73,
+        "end_line": 77,
+        "text": "73:       true\n74:     );\n75:     const updateChannel = await readJson(path.join(result.release_root, \"UPDATE_CHANNEL.json\"));\n76:     assert.equal(updateChannel.latest_version, \"0.1.0\");\n77:     assert.equal(updateChannel.update_policy.automatic_installs, false);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 33,
+      "edge_id": "edge-key:-9201393005633830236",
+      "head": {
+        "id": "repo://e/8322ea4b75fc1f41c4d6a3c5824ee5d3",
+        "name": "expr@7597",
+        "qualified_name": "services::orchestrator::src::run-manager.runAppServerObjective.expr@7597",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/82eda123256993d32647cfa5d68597ed",
+        "name": "verifierReport",
+        "qualified_name": "services::orchestrator::src::run-manager.runAppServerObjective.verifierReport",
+        "kind": "LocalVariable"
+      },
+      "source_span": {
+        "repo_relative_path": "services/orchestrator/src/run-manager.mjs",
+        "start_line": 191,
+        "start_column": 28,
+        "end_line": 191,
+        "end_column": 56
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:67b86b73b8254b08",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/services/orchestrator/src/run-manager.mjs",
+        "start_line": 189,
+        "end_line": 193,
+        "text": "189:     const experimentPlan = await readJson(path.join(run.runRoot, \"artifacts\", \"experiment_plan.json\"));\n190:     const evidenceHealth = await computeEvidenceHealth({ claims, evidence, runRoot: run.runRoot });\n191:     const verifierReport = await verifyRun(run.runRoot);\n192:     const report = buildReport({\n193:       objective: loaded.data,"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 34,
+      "edge_id": "edge-key:-9201119517240278568",
+      "head": {
+        "id": "repo://e/1de4ac7a0b38a7448e397cd7d0b43db6",
+        "name": "sess",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::turn.run_turn.param:sess",
+        "kind": "Parameter"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/437238e784c979766212c253831f3458",
+        "name": "argument_0@13019",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::turn.run_turn.argument_0@13019@13019",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/src/session/turn.rs",
+        "start_line": 314,
+        "start_column": 13,
+        "end_line": 314,
+        "end_column": 18
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:ba16f39d3aae7e75",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/src/session/turn.rs",
+        "start_line": 312,
+        "end_line": 316,
+        "text": "312:         let response_item: ResponseItem = initial_input_for_turn.clone().into();\n313:         let user_prompt_submit_outcome = run_user_prompt_submit_hooks(\n314:             &sess,\n315:             &turn_context,\n316:             UserMessageItem::new(&input).message(),"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 35,
+      "edge_id": "edge-key:-9201094684161368044",
+      "head": {
+        "id": "repo://e/bd17c8af5d7b49fe5965ed097e114148",
+        "name": "marketplace_root",
+        "qualified_name": "upstream::openai-codex::codex-rs::app-server::src::config::external_agent_config_tests.detect_repo_filters_plugins_against_installed_marketplace.marketplace_root",
+        "kind": "LocalVariable"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/60f158aade7197d473c0682aeac55146",
+        "name": "argument_0@63379",
+        "qualified_name": "upstream::openai-codex::codex-rs::app-server::src::config::external_agent_config_tests.detect_repo_filters_plugins_against_installed_marketplace.argument_0@63379@63379",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/app-server/src/config/external_agent_config_tests.rs",
+        "start_line": 1770,
+        "start_column": 9,
+        "end_line": 1773,
+        "end_column": 35
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:8d6d3d8225093ff3",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/app-server/src/config/external_agent_config_tests.rs",
+        "start_line": 1768,
+        "end_line": 1775,
+        "text": "1768:     .expect(\"create sample plugin\");\n1769:     fs::create_dir_all(\n1770:         marketplace_root\n1771:             .join(\"plugins\")\n1772:             .join(\"available\")\n1773:             .join(\".codex-plugin\"),\n1774:     )\n1775:     .expect(\"create available plugin\");"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 36,
+      "edge_id": "edge-key:-9200668780656543823",
+      "head": {
+        "id": "repo://e/d4f73e4134ff4ea244dc9ad6ae06fce0",
+        "name": "expr@5642",
+        "qualified_name": "tests::release-package.test.expr@5642",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/55b3a27fc0265c08bf080cb6530e6466",
+        "name": "argument_0@5642",
+        "qualified_name": "tests::release-package.test.argument_0@5642@5642",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "tests/release-package.test.mjs",
+        "start_line": 78,
+        "start_column": 40,
+        "end_line": 78,
+        "end_column": 86
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:f5d3c5a55f45de2f",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/tests/release-package.test.mjs",
+        "start_line": 76,
+        "end_line": 80,
+        "text": "76:     assert.equal(updateChannel.latest_version, \"0.1.0\");\n77:     assert.equal(updateChannel.update_policy.automatic_installs, false);\n78:     const packageJson = await readJson(path.join(result.release_root, \"package.json\"));\n79:     assert.equal(packageJson.bin.arl, \"./packages/cli/src/arl.mjs\");\n80: "
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 37,
+      "edge_id": "edge-key:-9200032258411943600",
+      "head": {
+        "id": "repo://e/96c8532956d0e6f1605e9233fe37ccc3",
+        "name": "harness",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::tests::suite::shell_command.multi_line_output_with_login.harness",
+        "kind": "LocalVariable"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/e1aaa7ee084f968c34cefd23e3f2ab76",
+        "name": "argument_0@5421",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::tests::suite::shell_command.multi_line_output_with_login.argument_0@5421@5421",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/tests/suite/shell_command.rs",
+        "start_line": 170,
+        "start_column": 9,
+        "end_line": 170,
+        "end_column": 17
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:004403fc2e3281d0",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/tests/suite/shell_command.rs",
+        "start_line": 168,
+        "end_line": 172,
+        "text": "168:     let call_id = \"shell-command-call-first-extra-login\";\n169:     mount_shell_responses(\n170:         &harness,\n171:         call_id,\n172:         \"echo 'first line\\nsecond line'\","
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 38,
+      "edge_id": "edge-key:-9199228076898234834",
+      "head": {
+        "id": "repo://e/e8311f4ebaddb60cc81d76d4b4e153f6",
+        "name": "repoRoot",
+        "qualified_name": "packages::cli::src::arl.main.repoRoot",
+        "kind": "LocalVariable"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/9d52ce65a1d8f80a72f7e94c1b98be84",
+        "name": "runsList",
+        "qualified_name": "packages::cli::src::arl.runsList",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/arl.mjs",
+        "start_line": 693,
+        "start_column": 16,
+        "end_line": 693,
+        "end_column": 34
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:569fb7a80d03a924",
+      "derived": false,
+      "extractor": "codegraph-index-security-resolver",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {
+        "resolution": "resolved"
+      },
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+        "start_line": 691,
+        "end_line": 695,
+        "text": "691:     ok = await agentRunCommand(repoRoot, rest);\n692:   } else if (command === \"runs\" && subcommand === \"list\") {\n693:     ok = await runsList(repoRoot);\n694:   } else if (command === \"runs\" && subcommand === \"show\") {\n695:     ok = await runsShow(repoRoot, rest[0]);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 39,
+      "edge_id": "edge-key:-9199007952973338522",
+      "head": {
+        "id": "repo://e/f5e54054a57791fe50a3e066f7aaaeb8",
+        "name": "data",
+        "qualified_name": "upstream::openai-codex::.codex::skills::babysit-pr::scripts::gh_pr_watch.get_workflow_runs_for_sha.data",
+        "kind": "LocalVariable"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/7c351f37b4585c74959aee0ccbaf2432",
+        "name": "argument_0@9808",
+        "qualified_name": "upstream::openai-codex::.codex::skills::babysit-pr::scripts::gh_pr_watch.get_workflow_runs_for_sha.argument_0@9808@9808",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/.codex/skills/babysit-pr/scripts/gh_pr_watch.py",
+        "start_line": 310,
+        "start_column": 23,
+        "end_line": 310,
+        "end_column": 27
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:6b773bf0ddf94c00",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/.codex/skills/babysit-pr/scripts/gh_pr_watch.py",
+        "start_line": 308,
+        "end_line": 312,
+        "text": "308:         repo=repo,\n309:     )\n310:     if not isinstance(data, dict):\n311:         raise GhCommandError(\"Unexpected payload from actions runs API\")\n312:     runs = data.get(\"workflow_runs\") or []"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 40,
+      "edge_id": "edge-key:-9198069804142456098",
+      "head": {
+        "id": "repo://e/ae0819ae08e0145ac9b62e8738b922f0",
+        "name": "expr@2124",
+        "qualified_name": "tests::dashboard-pathguard.test.startFakeOpenRouter.expr@2124",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/ec78031611d4e8662bb760dd9c2652ac",
+        "name": "argument_0@2124",
+        "qualified_name": "tests::dashboard-pathguard.test.startFakeOpenRouter.argument_0@2124@2124",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "tests/dashboard-pathguard.test.mjs",
+        "start_line": 52,
+        "start_column": 48,
+        "end_line": 52,
+        "end_column": 49
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:3e82e66e8bd26ae4",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/tests/dashboard-pathguard.test.mjs",
+        "start_line": 50,
+        "end_line": 54,
+        "text": "50:     }));\n51:   });\n52:   await new Promise((resolve) => server.listen(0, \"127.0.0.1\", resolve));\n53:   const address = server.address();\n54:   return {"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 41,
+      "edge_id": "edge-key:-9197812045896575897",
+      "head": {
+        "id": "repo://e/c6928085ea2c5d2436eb98af34865372",
+        "name": "skill_items",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::tests.collect_explicit_app_ids_from_skill_items_includes_linked_mentions.skill_items",
+        "kind": "LocalVariable"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/80bbe5bb9e12ef6ccacf04e6b6709dba",
+        "name": "argument_0@54103",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::tests.collect_explicit_app_ids_from_skill_items_includes_linked_mentions.argument_0@54103@54103",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 1519,
+        "start_column": 51,
+        "end_line": 1519,
+        "end_column": 63
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:3df730b4b3fcd1f0",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 1517,
+        "end_line": 1521,
+        "text": "1517: \n1518:     let connector_ids =\n1519:         collect_explicit_app_ids_from_skill_items(&skill_items, &connectors, &HashMap::new());\n1520: \n1521:     assert_eq!(connector_ids, HashSet::from([\"calendar\".to_string()]));"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 42,
+      "edge_id": "edge-key:-9196204684331236374",
+      "head": {
+        "id": "repo://e/9bc837c65a26a585b1fef5ccf44641cf",
+        "name": "marker",
+        "qualified_name": "upstream::openai-codex::codex-rs::exec::tests::suite::resume.exec_resume_last_appends_to_existing_file.marker",
+        "kind": "LocalVariable"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/17ea590a2a98caea4612c8eaf817747c",
+        "name": "argument_1@4739",
+        "qualified_name": "upstream::openai-codex::codex-rs::exec::tests::suite::resume.exec_resume_last_appends_to_existing_file.argument_1@4739@4739",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/exec/tests/suite/resume.rs",
+        "start_line": 136,
+        "start_column": 67,
+        "end_line": 136,
+        "end_column": 74
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:90edadff41114b91",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/exec/tests/suite/resume.rs",
+        "start_line": 134,
+        "end_line": 138,
+        "text": "134:     // Find the created session file containing the marker.\n135:     let sessions_dir = test.home_path().join(\"sessions\");\n136:     let path = find_session_file_containing_marker(&sessions_dir, &marker)\n137:         .expect(\"no session file found after first run\");\n138: "
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 43,
+      "edge_id": "edge-key:-9195615041322030625",
+      "head": {
+        "id": "repo://e/3e5843eaba4f9bd29839cc68dc25b418",
+        "name": "expr@13737",
+        "qualified_name": "packages::cli::src::dashboard-server.listRunArtifacts.expr@13737",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/82fbfe5882538a185d3fe79d5b6d0502",
+        "name": "return@13730",
+        "qualified_name": "packages::cli::src::dashboard-server.listRunArtifacts.return@13730",
+        "kind": "ReturnSite"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/dashboard-server.mjs",
+        "start_line": 442,
+        "start_column": 12,
+        "end_line": 442,
+        "end_column": 14
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9453dc0bb38c212e",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/dashboard-server.mjs",
+        "start_line": 440,
+        "end_line": 444,
+        "text": "440:   const runRoot = path.join(runsRoot, runId);\n441:   if (!isPathInside(runsRoot, runRoot)) {\n442:     return [];\n443:   }\n444:   const artifactRoots = ["
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 44,
+      "edge_id": "edge-key:-9195410717298753584",
+      "head": {
+        "id": "repo://e/a82006d4db3ac907ab0ecba2169c1cfd",
+        "name": "config",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::agent::control.resume_agent_from_rollout.param:config",
+        "kind": "Parameter"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/30267d0e2321c23ccb9ef0504e695c02",
+        "name": "argument_0@19859",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::agent::control.resume_agent_from_rollout.argument_0@19859@19859",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/core/src/agent/control.rs",
+        "start_line": 504,
+        "start_column": 29,
+        "end_line": 504,
+        "end_column": 43
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:1ad2e3c3306c4f37",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/core/src/agent/control.rs",
+        "start_line": 502,
+        "end_line": 506,
+        "text": "502:                     match self\n503:                         .resume_single_agent_from_rollout(\n504:                             config.clone(),\n505:                             child_thread_id,\n506:                             child_session_source,"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 45,
+      "edge_id": "edge-key:-9194389825111649952",
+      "head": {
+        "id": "repo://e/b45cc2ed49be8854215bb7a045cafdaa",
+        "name": "expr@1077",
+        "qualified_name": "tests::dry-run.test.expr@1077",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/3dcb10f330816534b4777ab87355ea0a",
+        "name": "argument_0@1077",
+        "qualified_name": "tests::dry-run.test.argument_0@1077@1077",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "tests/dry-run.test.mjs",
+        "start_line": 24,
+        "start_column": 18,
+        "end_line": 24,
+        "end_column": 39
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:8eda92805ec416ac",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/tests/dry-run.test.mjs",
+        "start_line": 22,
+        "end_line": 26,
+        "text": "22:     const evidence = await readJson(path.join(result.runRoot, \"evidence.json\"));\n23:     const verifier = await readJson(path.join(result.runRoot, \"verifier_report.json\"));\n24:     assert.equal(manifest.runtime.kind, \"dry_run\");\n25:     assert.equal(manifest.summary.codex_execution, false);\n26:     assert.equal(claims.some((claim) => claim.status === \"not_tested\"), true);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 46,
+      "edge_id": "edge-key:-9194239277081897287",
+      "head": {
+        "id": "repo://e/17cd30e50ae24aa4e2e3b565a3cd188e",
+        "name": "expr@19488",
+        "qualified_name": "packages::ui-autoresearch::src::app.loadArtifactContent.expr@19488",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/379f25d411890a9a667584adc8b06bcc",
+        "name": "argument_0@19488",
+        "qualified_name": "packages::ui-autoresearch::src::app.loadArtifactContent.argument_0@19488@19488",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/ui-autoresearch/src/app.js",
+        "start_line": 440,
+        "start_column": 26,
+        "end_line": 440,
+        "end_column": 32
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:52a5b8c00049eaea",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/ui-autoresearch/src/app.js",
+        "start_line": 438,
+        "end_line": 442,
+        "text": "438:   const lowerPath = artifactPath.toLowerCase();\n439:   const rawUrl = `/api/runs/${encodeURIComponent(runId)}/artifact-raw?path=${encodeURIComponent(artifactPath)}`;\n440:   if (lowerPath.endsWith(\".svg\") || lowerPath.endsWith(\".png\") || lowerPath.endsWith(\".jpg\") || lowerPath.endsWith(\".jpeg\") || lowerPath.endsWith(\".gif\")) {\n441:     preview.innerHTML = `<img class=\"artifact-media\" src=\"${escapeHtml(rawUrl)}\" alt=\"${escapeHtml(artifactPath)}\">`;\n442:     return;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 47,
+      "edge_id": "edge-key:-9193421849802213931",
+      "head": {
+        "id": "repo://e/c4299fd352028f537e67b47883720741",
+        "name": "requested_permissions",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::mod.normalize_request_permissions_response.param:requested_permissions",
+        "kind": "Parameter"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/f550fd8e5b347b5504f6d57a64a425bf",
+        "name": "argument_0@91252",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::mod.normalize_request_permissions_response.argument_0@91252@91252",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/src/session/mod.rs",
+        "start_line": 2319,
+        "start_column": 17,
+        "end_line": 2319,
+        "end_column": 45
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:c800723a11df89d4",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/src/session/mod.rs",
+        "start_line": 2317,
+        "end_line": 2321,
+        "text": "2317:         RequestPermissionsResponse {\n2318:             permissions: intersect_permission_profiles(\n2319:                 requested_permissions.into(),\n2320:                 response.permissions.into(),\n2321:                 cwd,"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 48,
+      "edge_id": "edge-key:-9192743492400450984",
+      "head": {
+        "id": "repo://e/c3376e97f9d7de50d0d0d79f8ebab8ae",
+        "name": "expr@1062",
+        "qualified_name": "packages::core::src::simple-yaml.parseKeyValue.expr@1062",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/537f17dd2cf1a15210e41a4e290ddf4c",
+        "name": "return@1055",
+        "qualified_name": "packages::core::src::simple-yaml.parseKeyValue.return@1055",
+        "kind": "ReturnSite"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/simple-yaml.mjs",
+        "start_line": 39,
+        "start_column": 10,
+        "end_line": 39,
+        "end_column": 66
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:7441dc47b2a509a8",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/simple-yaml.mjs",
+        "start_line": 37,
+        "end_line": 41,
+        "text": "37:   const key = text.slice(0, colon).trim();\n38:   const rest = text.slice(colon + 1).trim();\n39:   return [key, rest.length === 0 ? undefined : parseScalar(rest)];\n40: }\n41: "
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 49,
+      "edge_id": "edge-key:-9192618089609539689",
+      "head": {
+        "id": "repo://e/b515664e55fc51960c14a3d94d8a457c",
+        "name": "expr@6521",
+        "qualified_name": "tests::preflight.test.expr@6521",
+        "kind": "Expression"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/bb3df4c12603787a9357576c844d51e0",
+        "name": "argument_2@6521",
+        "qualified_name": "tests::preflight.test.argument_2@6521@6521",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "tests/preflight.test.mjs",
+        "start_line": 130,
+        "start_column": 48,
+        "end_line": 130,
+        "end_column": 74
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:14f6cd50d43e1b35",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/tests/preflight.test.mjs",
+        "start_line": 128,
+        "end_line": 132,
+        "text": "128:     }), \"utf8\");\n129:     await writeFile(path.join(runRoot, \"logs\", \"openrouter-request.json\"), JSON.stringify({ endpoint: \"https://openrouter.ai/api/v1/chat/completions\" }), \"utf8\");\n130:     await writeFile(path.join(runRoot, \"logs\", \"openrouter-response.json\"), JSON.stringify({ model: \"openai/gpt-5.4-mini\" }), \"utf8\");\n131:     await writeFile(path.join(runRoot, \"artifacts\", \"final-message.md\"), \"mock agent live smoke response\\n\", \"utf8\");\n132:     await writeFile(path.join(runRoot, \"evidence.json\"), JSON.stringify(["
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 50,
+      "edge_id": "edge-key:-9192103583244113947",
+      "head": {
+        "id": "repo://e/9f750a16029c8d2df2cdae04fa34448b",
+        "name": "turn_context",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::turn.emit_agent_message_in_plan_mode.param:turn_context",
+        "kind": "Parameter"
+      },
+      "relation": "FLOWS_TO",
+      "tail": {
+        "id": "repo://e/d8bc50b278d618ea45d186039df0a7b0",
+        "name": "argument_0@67772",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::turn.emit_agent_message_in_plan_mode.argument_0@67772@67772",
+        "kind": "Expression"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/src/session/turn.rs",
+        "start_line": 1728,
+        "start_column": 37,
+        "end_line": 1728,
+        "end_column": 49
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:ba16f39d3aae7e75",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/src/session/turn.rs",
+        "start_line": 1726,
+        "end_line": 1730,
+        "text": "1726:                 })\n1727:             });\n1728:         sess.emit_turn_item_started(turn_context, &start_item).await;\n1729:         state\n1730:             .started_agent_message_items"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    }
+  ],
+  "notes": [
+    "Classification fields are intentionally blank in markdown for human review.",
+    "Sampling is deterministic for a seed and starts at a seeded edge primary-key range, wrapping once if needed.",
+    "production_test_mock_context is inferred from relation/path/id text because context is not first-class in the current edge schema."
+  ]
+}

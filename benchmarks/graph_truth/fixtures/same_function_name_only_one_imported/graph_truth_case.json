@@ -1,0 +1,533 @@
+{
+  "schema_version": 1,
+  "case_id": "same_function_name_only_one_imported",
+  "description": "Two files export chooseUser; main imports only one target.",
+  "repo_fixture_path": "benchmarks/graph_truth/fixtures/same_function_name_only_one_imported/repo",
+  "task_prompt": "Find the chooseUser call used by handler.",
+  "expected_entities": [
+    {
+      "selector": {
+        "qualified_name": "src/main.handler",
+        "kind": "Function",
+        "source_file": "src/main.ts",
+        "context": "production"
+      },
+      "kind": "Function",
+      "context": "production",
+      "source_file": "src/main.ts",
+      "source_span": {
+        "start_line": 4,
+        "start_column": 1,
+        "end_line": 7,
+        "end_column": 2,
+        "expected_text": "export function handler",
+        "syntax_role": "declaration"
+      }
+    },
+    {
+      "selector": {
+        "qualified_name": "src/a.chooseUser",
+        "kind": "Function",
+        "source_file": "src/a.ts",
+        "context": "production"
+      },
+      "kind": "Function",
+      "context": "production",
+      "source_file": "src/a.ts"
+    }
+  ],
+  "expected_edges": [
+    {
+      "id": "edge://same-function/imports-a",
+      "head": {
+        "qualified_name": "src/main",
+        "kind": "File",
+        "source_file": "src/main.ts",
+        "context": "production"
+      },
+      "relation": "IMPORTS",
+      "tail": {
+        "qualified_name": "src/a.chooseUser",
+        "kind": "Function",
+        "source_file": "src/a.ts",
+        "context": "production"
+      },
+      "source_file": "src/main.ts",
+      "source_span": {
+        "start_line": 1,
+        "start_column": 1,
+        "end_line": 1,
+        "end_column": 34,
+        "expected_text": "import { chooseUser } from \"./a\"",
+        "syntax_role": "import"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "hand_labeled_fixture",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "hand_labeled_fixture",
+      "direction": "head_to_tail"
+    },
+    {
+      "id": "edge://same-function/calls-a",
+      "head": {
+        "qualified_name": "src/main.handler",
+        "kind": "Function",
+        "source_file": "src/main.ts",
+        "context": "production"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "qualified_name": "src/a.chooseUser",
+        "kind": "Function",
+        "source_file": "src/a.ts",
+        "context": "production"
+      },
+      "source_file": "src/main.ts",
+      "source_span": {
+        "start_line": 6,
+        "start_column": 10,
+        "end_line": 6,
+        "end_column": 24,
+        "expected_text": "chooseUser(id)",
+        "syntax_role": "callsite"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "hand_labeled_fixture",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "hand_labeled_fixture",
+      "direction": "head_to_tail"
+    }
+  ],
+  "forbidden_edges": [
+    {
+      "id": "edge://same-function/calls-b",
+      "head": {
+        "qualified_name": "src/main.handler",
+        "kind": "Function",
+        "source_file": "src/main.ts",
+        "context": "production"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "qualified_name": "src/b.chooseUser",
+        "kind": "Function",
+        "source_file": "src/b.ts",
+        "context": "production"
+      },
+      "source_file": "src/main.ts",
+      "source_span": {
+        "start_line": 6,
+        "start_column": 10,
+        "end_line": 6,
+        "end_column": 24,
+        "expected_text": "chooseUser(id)",
+        "syntax_role": "callsite"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "forbidden_same_name_fallback",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "forbidden_same_name_fallback",
+      "direction": "head_to_tail"
+    },
+    {
+      "id": "edge://same-function/broad-span",
+      "head": {
+        "qualified_name": "src/main.handler",
+        "kind": "Function",
+        "source_file": "src/main.ts",
+        "context": "production"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "qualified_name": "src/a.chooseUser",
+        "kind": "Function",
+        "source_file": "src/a.ts",
+        "context": "production"
+      },
+      "source_file": "src/main.ts",
+      "source_span": {
+        "start_line": 4,
+        "start_column": 1,
+        "end_line": 7,
+        "end_column": 2,
+        "expected_text": "export function handler",
+        "syntax_role": "declaration"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "forbidden_broad_span",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "forbidden_broad_span",
+      "direction": "head_to_tail"
+    }
+  ],
+  "expected_paths": [
+    {
+      "path_id": "path://same-function/handler-to-a",
+      "description": "handler calls the imported chooseUser from src/a.ts.",
+      "source": {
+        "qualified_name": "src/main.handler",
+        "kind": "Function",
+        "source_file": "src/main.ts",
+        "context": "production"
+      },
+      "target": {
+        "qualified_name": "src/a.chooseUser",
+        "kind": "Function",
+        "source_file": "src/a.ts",
+        "context": "production"
+      },
+      "ordered_edges": [
+        {
+          "id": "edge://same-function/calls-a",
+          "head": {
+            "qualified_name": "src/main.handler",
+            "kind": "Function",
+            "source_file": "src/main.ts",
+            "context": "production"
+          },
+          "relation": "CALLS",
+          "tail": {
+            "qualified_name": "src/a.chooseUser",
+            "kind": "Function",
+            "source_file": "src/a.ts",
+            "context": "production"
+          },
+          "source_file": "src/main.ts",
+          "source_span": {
+            "start_line": 6,
+            "start_column": 10,
+            "end_line": 6,
+            "end_column": 24,
+            "expected_text": "chooseUser(id)",
+            "syntax_role": "callsite"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "hand_labeled_fixture",
+          "exactness": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "hand_labeled_fixture",
+          "direction": "head_to_tail"
+        }
+      ],
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "max_length": 1,
+      "source_span_required": true,
+      "production_only": true,
+      "derived_allowed": false,
+      "provenance_required": false,
+      "required_source_spans": [
+        {
+          "edge_ref": "edge://same-function/calls-a",
+          "source_file": "src/main.ts",
+          "span": {
+            "start_line": 6,
+            "start_column": 10,
+            "end_line": 6,
+            "end_column": 24,
+            "expected_text": "chooseUser(id)",
+            "syntax_role": "callsite"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "chooseUser(id)",
+          "syntax_role": "callsite"
+        }
+      ],
+      "context": "production",
+      "allow_test_mock_edges": false,
+      "derived_edges_require_provenance": true,
+      "proof_grade": true
+    }
+  ],
+  "forbidden_paths": [
+    {
+      "path_id": "path://same-function/handler-to-b",
+      "description": "Same-name fallback to src/b.ts must fail.",
+      "source": {
+        "qualified_name": "src/main.handler",
+        "kind": "Function",
+        "source_file": "src/main.ts",
+        "context": "production"
+      },
+      "target": {
+        "qualified_name": "src/b.chooseUser",
+        "kind": "Function",
+        "source_file": "src/b.ts",
+        "context": "production"
+      },
+      "ordered_edges": [
+        {
+          "id": "edge://same-function/calls-b",
+          "head": {
+            "qualified_name": "src/main.handler",
+            "kind": "Function",
+            "source_file": "src/main.ts",
+            "context": "production"
+          },
+          "relation": "CALLS",
+          "tail": {
+            "qualified_name": "src/b.chooseUser",
+            "kind": "Function",
+            "source_file": "src/b.ts",
+            "context": "production"
+          },
+          "source_file": "src/main.ts",
+          "source_span": {
+            "start_line": 6,
+            "start_column": 10,
+            "end_line": 6,
+            "end_column": 24,
+            "expected_text": "chooseUser(id)",
+            "syntax_role": "callsite"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "forbidden_same_name_fallback",
+          "exactness": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "forbidden_same_name_fallback",
+          "direction": "head_to_tail"
+        }
+      ],
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "max_length": 1,
+      "source_span_required": true,
+      "production_only": true,
+      "derived_allowed": false,
+      "provenance_required": false,
+      "required_source_spans": [
+        {
+          "edge_ref": "edge://same-function/calls-b",
+          "source_file": "src/main.ts",
+          "span": {
+            "start_line": 6,
+            "start_column": 10,
+            "end_line": 6,
+            "end_column": 24,
+            "expected_text": "chooseUser(id)",
+            "syntax_role": "callsite"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "chooseUser(id)",
+          "syntax_role": "callsite"
+        }
+      ],
+      "context": "production",
+      "allow_test_mock_edges": false,
+      "derived_edges_require_provenance": true,
+      "proof_grade": false
+    }
+  ],
+  "expected_source_spans": [
+    {
+      "edge_ref": "edge://same-function/calls-a",
+      "source_file": "src/main.ts",
+      "span": {
+        "start_line": 6,
+        "start_column": 10,
+        "end_line": 6,
+        "end_column": 24,
+        "expected_text": "chooseUser(id)",
+        "syntax_role": "callsite"
+      },
+      "must_resolve_to_text": true,
+      "expected_text": "chooseUser(id)",
+      "syntax_role": "callsite"
+    }
+  ],
+  "expected_context_symbols": [
+    {
+      "symbol": {
+        "qualified_name": "src/a.chooseUser",
+        "kind": "Function",
+        "source_file": "src/a.ts",
+        "context": "production"
+      },
+      "critical": true,
+      "source_file": "src/a.ts",
+      "reason": "Only imported target"
+    }
+  ],
+  "forbidden_context_symbols": [
+    {
+      "symbol": {
+        "qualified_name": "src/b.chooseUser",
+        "kind": "Function",
+        "source_file": "src/b.ts",
+        "context": "production"
+      },
+      "critical": true,
+      "source_file": "src/b.ts",
+      "reason": "Same-name distractor"
+    }
+  ],
+  "expected_tests": [],
+  "forbidden_tests": [],
+  "mutation_steps": [],
+  "performance_expectations": {
+    "schema_validation_100_cases_max_ms": 1000,
+    "index_time_ms_max": 10000
+  },
+  "notes": [
+    "Catches broad same-name CALLS linking and broad source-span proof."
+  ],
+  "failure_rules": {
+    "missing_required_edge_fails": true,
+    "forbidden_edge_appearing_fails": true,
+    "wrong_direction_fails": true,
+    "missing_source_span_fails_for_proof_grade_edge": true,
+    "unresolved_name_labeled_exact_fails": true,
+    "mock_or_test_edge_in_production_proof_path_fails": true,
+    "derived_edge_without_provenance_fails": true,
+    "stale_edge_after_edit_fails": true,
+    "same_name_symbol_collision_fails": true,
+    "critical_symbol_missing_from_context_packet_fails": true,
+    "forbidden_context_symbol_included_fails": true,
+    "expected_test_omitted_fails": true,
+    "too_many_distractors_fail_if_threshold_specified": true
+  },
+  "distractor_policy": {
+    "max_context_distractors": 0,
+    "max_symbol_distractors": 0,
+    "distractor_symbols": [
+      {
+        "symbol": {
+          "qualified_name": "src/b.chooseUser",
+          "kind": "Function",
+          "source_file": "src/b.ts",
+          "context": "production"
+        },
+        "critical": true,
+        "source_file": "src/b.ts",
+        "reason": "Wrong same-name function"
+      }
+    ],
+    "count_scope": "context_packet"
+  }
+}

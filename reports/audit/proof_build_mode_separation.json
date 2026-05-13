@@ -1,0 +1,59 @@
+{
+    "schema_version":  1,
+    "generated_at":  "2026-05-13T00:56:13-05:00",
+    "source_of_truth":  "MVP.md",
+    "phase":  "proof_build_mode_separation",
+    "status":  "pass",
+    "cgc_autorun_from_proof_build_only":  false,
+    "commands":  [
+                     {
+                         "command":  "codegraph-mcp bench proof-build-only",
+                         "measures":  "production proof DB build only",
+                         "excludes":  [
+                                          "storage_audit",
+                                          "dbstat",
+                                          "samplers",
+                                          "CGC",
+                                          "manual labeling",
+                                          "comprehensive markdown",
+                                          "compression",
+                                          "VACUUM",
+                                          "ANALYZE",
+                                          "full integrity_check"
+                                      ]
+                     },
+                     {
+                         "command":  "codegraph-mcp bench proof-build-validated",
+                         "measures":  "proof build plus validation",
+                         "includes":  [
+                                          "quick_check",
+                                          "integrity_check",
+                                          "queryable DB validation"
+                                      ]
+                     },
+                     {
+                         "command":  "codegraph-mcp bench comprehensive",
+                         "measures":  "full master gate",
+                         "includes":  [
+                                          "correctness",
+                                          "context",
+                                          "storage",
+                                          "latency",
+                                          "repeat/update",
+                                          "reports"
+                                      ]
+                     },
+                     {
+                         "command":  "codegraph-mcp bench cgc-comparison",
+                         "measures":  "competitor comparison",
+                         "gate":  "may run only after intended quality gate pass"
+                     }
+                 ],
+    "latest_comprehensive_separation":  {
+                                            "proof_build_only_ms":  59414,
+                                            "validation_ms":  0,
+                                            "audit_ms":  "reported separately in storage/query/sampler sections",
+                                            "report_generation_ms":  "not included in proof_build_only_ms",
+                                            "comparison_ms":  0
+                                        }
+}

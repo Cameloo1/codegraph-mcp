@@ -1,0 +1,16 @@
+{
+  "executable": "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\.tools\\cgc_recovery\\venv312_compat\\Scripts\\cgc.exe",
+  "args": [
+    "--database",
+    "kuzudb",
+    "find",
+    "name",
+    "postInvoice"
+  ],
+  "cwd": "reports\\comparison\\cgc_recovery\\artifacts\\fixture_diagnostic\\fixtures\\ts-call-chain",
+  "stdout": "Resolving context...\r\nInitializing services and database connection...\r\nServices initialized.\r\n",
+  "stderr": "Warning: Could not load .env from current directory: name 'find_dotenv' is not \r\ndefined\r\nNo configuration file found. Using defaults.\r\nUsing database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))\r\nFound 1 matches for 'postInvoice':\r\n┌─────────────┬──────────┬──────────┐\r\n│ Name        │ Type     │ Location │\r\n├─────────────┼──────────┼──────────┤\r\n│ postInvoice │ Function │ :3       │\r\n└─────────────┴──────────┴──────────┘\r\n",
+  "exit_code": 0,
+  "latency_ms": 966,
+  "timed_out": false
+}

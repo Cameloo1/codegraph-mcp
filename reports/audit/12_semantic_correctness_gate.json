@@ -1,0 +1,516 @@
+{
+  "schema_version": "semantic_correctness_gate.v1",
+  "generated_at": "2026-05-10 20:19:46 -05:00",
+  "verdict": "fail",
+  "allowed_to_proceed_to_indexing_storage_work": false,
+  "gate_rule": "Do not proceed unless all current graph-truth fixtures pass, or every remaining failure is explicitly unsupported and not mislabeled exact/proof-grade.",
+  "gate_rule_result": "failed: 10 of 11 current fixture directories pass, but derived_closure_edge_requires_provenance is a supported semantic/provenance gap, not an explicitly unsupported pattern.",
+  "fixture_count_note": "The current repository contains 11 graph-truth fixture directories; the prompt refers to 10.",
+  "commands": [
+    {
+      "name": "full unit tests",
+      "command": "cargo test -q",
+      "status": "passed",
+      "summary": "All reported test crates passed; ignored tests remained ignored."
+    },
+    {
+      "name": "strict graph truth gate",
+      "command": "cargo run -q -p codegraph-cli -- bench graph-truth --cases benchmarks/graph_truth/fixtures --fixture-root <REPO_ROOT>/Desktop\\development\\codegraph-mcp --out-json reports/audit/artifacts/12_graph_truth_semantic_gate.json --out-md reports/audit/artifacts/12_graph_truth_semantic_gate.md --fail-on-forbidden --fail-on-missing-source-span --fail-on-unresolved-exact --fail-on-derived-without-provenance --fail-on-test-mock-production-leak --update-mode --verbose",
+      "status": "failed",
+      "artifact_json": "reports/audit/artifacts/12_graph_truth_semantic_gate.json",
+      "artifact_markdown": "reports/audit/artifacts/12_graph_truth_semantic_gate.md"
+    },
+    {
+      "name": "source-span proof validation tests",
+      "command": "cargo test -q -p codegraph-query proof_span_validation",
+      "status": "passed",
+      "summary": "11 passed; 0 failed."
+    },
+    {
+      "name": "context packet gate",
+      "command": "cargo run -q -p codegraph-cli -- bench context-packet --cases benchmarks/graph_truth/fixtures --fixture-root <REPO_ROOT>/Desktop\\development\\codegraph-mcp --out-json reports/audit/artifacts/12_context_packet_gate.json --out-md reports/audit/artifacts/12_context_packet_gate.md --top-k 5 --budget 2000",
+      "status": "failed",
+      "artifact_json": "reports/audit/artifacts/12_context_packet_gate.json",
+      "artifact_markdown": "reports/audit/artifacts/12_context_packet_gate.md"
+    },
+    {
+      "name": "small fixture relation/source-span sampler",
+      "command": "index small corpus; audit relation-counts; audit sample-edges for CALLS, CHECKS_ROLE, FLOWS_TO, ASSERTS, MOCKS, EXPOSES; audit sample-paths",
+      "status": "passed",
+      "artifact_prefix": "reports/audit/artifacts/12_*_small_fixture.*"
+    },
+    {
+      "name": "stale mutation tests",
+      "command": "targeted codegraph-index/codegraph-store stale cleanup tests",
+      "status": "passed",
+      "summary": "edit, delete, rename, import alias retargeting, duplicate path identity, and store deletion tests passed."
+    }
+  ],
+  "graph_truth": {
+    "status": "failed",
+    "cases_total": 11,
+    "cases_passed": 10,
+    "cases_failed": 1,
+    "required_edge_pass_rate": {
+      "matched": 18,
+      "expected": 20,
+      "rate": 0.9
+    },
+    "forbidden_edge_violation_count": 0,
+    "expected_path_pass_rate": {
+      "matched": 10,
+      "expected": 11,
+      "rate": 0.9090909090909091
+    },
+    "forbidden_path_violation_count": 0,
+    "source_span_failure_count": 0,
+    "unresolved_exact_violation_count": 0,
+    "derived_without_provenance_violation_count": 0,
+    "test_mock_production_leakage_count": 0,
+    "stale_fact_count_after_mutations": 0,
+    "critical_context_symbol_missing_count": 1,
+    "entity_pass_rate": {
+      "matched": 28,
+      "expected": 29,
+      "rate": 0.9655172413793104
+    },
+    "timing_ms": {
+      "total": 854,
+      "index": 673,
+      "query": 139,
+      "evaluation": 1
+    },
+    "observed_counts": {
+      "entities": 426,
+      "edges": 827,
+      "source_spans": 1253,
+      "base_edges": 827,
+      "derived_edges": 0,
+      "edge_classes": {
+        "base_exact": 477,
+        "base_heuristic": 34,
+        "reified_callsite": 73,
+        "test": 65,
+        "mock": 3,
+        "unknown": 175
+      }
+    },
+    "relation_metrics": [
+      {
+        "relation": "ASSERTS",
+        "expected_edges": 1,
+        "matched_expected_edges": 1,
+        "forbidden_edges": 0,
+        "matched_forbidden_edges": 0,
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      {
+        "relation": "CALLS",
+        "expected_edges": 9,
+        "matched_expected_edges": 9,
+        "forbidden_edges": 9,
+        "matched_forbidden_edges": 0,
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      {
+        "relation": "CHECKS_ROLE",
+        "expected_edges": 2,
+        "matched_expected_edges": 2,
+        "forbidden_edges": 2,
+        "matched_forbidden_edges": 0,
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      {
+        "relation": "FLOWS_TO",
+        "expected_edges": 1,
+        "matched_expected_edges": 1,
+        "forbidden_edges": 0,
+        "matched_forbidden_edges": 0,
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      {
+        "relation": "IMPORTS",
+        "expected_edges": 3,
+        "matched_expected_edges": 3,
+        "forbidden_edges": 1,
+        "matched_forbidden_edges": 0,
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      {
+        "relation": "MAY_MUTATE",
+        "expected_edges": 1,
+        "matched_expected_edges": 0,
+        "forbidden_edges": 1,
+        "matched_forbidden_edges": 0,
+        "precision": null,
+        "recall": 0.0
+      },
+      {
+        "relation": "MOCKS",
+        "expected_edges": 1,
+        "matched_expected_edges": 1,
+        "forbidden_edges": 0,
+        "matched_forbidden_edges": 0,
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      {
+        "relation": "SANITIZES",
+        "expected_edges": 0,
+        "matched_expected_edges": 0,
+        "forbidden_edges": 1,
+        "matched_forbidden_edges": 0,
+        "precision": null,
+        "recall": null
+      },
+      {
+        "relation": "STUBS",
+        "expected_edges": 1,
+        "matched_expected_edges": 1,
+        "forbidden_edges": 0,
+        "matched_forbidden_edges": 0,
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      {
+        "relation": "WRITES",
+        "expected_edges": 1,
+        "matched_expected_edges": 0,
+        "forbidden_edges": 0,
+        "matched_forbidden_edges": 0,
+        "precision": null,
+        "recall": 0.0
+      }
+    ],
+    "fixtures": [
+      {
+        "case_id": "admin_user_middleware_role_separation",
+        "status": "passed",
+        "expected_edges": 2,
+        "matched_expected_edges": 2,
+        "forbidden_edges_found": 0,
+        "expected_paths": 2,
+        "matched_expected_paths": 2,
+        "source_span_failures": 0,
+        "stale_failures": 0
+      },
+      {
+        "case_id": "barrel_export_default_export_resolution",
+        "status": "passed",
+        "expected_edges": 2,
+        "matched_expected_edges": 2,
+        "forbidden_edges_found": 0,
+        "expected_paths": 2,
+        "matched_expected_paths": 2,
+        "source_span_failures": 0,
+        "stale_failures": 0
+      },
+      {
+        "case_id": "derived_closure_edge_requires_provenance",
+        "status": "failed",
+        "expected_edges": 3,
+        "matched_expected_edges": 1,
+        "forbidden_edges_found": 0,
+        "expected_paths": 1,
+        "matched_expected_paths": 0,
+        "source_span_failures": 0,
+        "stale_failures": 0,
+        "missing_entities": [
+          "src/store.ordersTable"
+        ],
+        "missing_edges": [
+          "src/store.saveOrder -WRITES-> src/store.ordersTable at src/store.ts:4",
+          "src/service.submitOrder -MAY_MUTATE-> src/store.ordersTable at src/service.ts:4"
+        ],
+        "missing_paths": [
+          "path://derived/provenance"
+        ],
+        "context_symbol_failures": [
+          "src/store.ordersTable"
+        ]
+      },
+      {
+        "case_id": "dynamic_import_marked_heuristic",
+        "status": "passed",
+        "expected_edges": 1,
+        "matched_expected_edges": 1,
+        "forbidden_edges_found": 0,
+        "expected_paths": 0,
+        "matched_expected_paths": 0,
+        "source_span_failures": 0,
+        "stale_failures": 0
+      },
+      {
+        "case_id": "file_rename_prunes_old_path",
+        "status": "passed",
+        "expected_edges": 1,
+        "matched_expected_edges": 1,
+        "forbidden_edges_found": 0,
+        "expected_paths": 1,
+        "matched_expected_paths": 1,
+        "source_span_failures": 0,
+        "stale_failures": 0
+      },
+      {
+        "case_id": "import_alias_change_updates_target",
+        "status": "passed",
+        "expected_edges": 2,
+        "matched_expected_edges": 2,
+        "forbidden_edges_found": 0,
+        "expected_paths": 1,
+        "matched_expected_paths": 1,
+        "source_span_failures": 0,
+        "stale_failures": 0
+      },
+      {
+        "case_id": "same_function_name_only_one_imported",
+        "status": "passed",
+        "expected_edges": 2,
+        "matched_expected_edges": 2,
+        "forbidden_edges_found": 0,
+        "expected_paths": 1,
+        "matched_expected_paths": 1,
+        "source_span_failures": 0,
+        "stale_failures": 0
+      },
+      {
+        "case_id": "sanitizer_exists_but_not_on_flow",
+        "status": "passed",
+        "expected_edges": 1,
+        "matched_expected_edges": 1,
+        "forbidden_edges_found": 0,
+        "expected_paths": 0,
+        "matched_expected_paths": 0,
+        "source_span_failures": 0,
+        "stale_failures": 0
+      },
+      {
+        "case_id": "source_span_exact_callsite",
+        "status": "passed",
+        "expected_edges": 1,
+        "matched_expected_edges": 1,
+        "forbidden_edges_found": 0,
+        "expected_paths": 1,
+        "matched_expected_paths": 1,
+        "source_span_failures": 0,
+        "stale_failures": 0
+      },
+      {
+        "case_id": "stale_graph_cache_after_edit_delete",
+        "status": "passed",
+        "expected_edges": 1,
+        "matched_expected_edges": 1,
+        "forbidden_edges_found": 0,
+        "expected_paths": 1,
+        "matched_expected_paths": 1,
+        "source_span_failures": 0,
+        "stale_failures": 0
+      },
+      {
+        "case_id": "test_mock_not_production_call",
+        "status": "passed",
+        "expected_edges": 4,
+        "matched_expected_edges": 4,
+        "forbidden_edges_found": 0,
+        "expected_paths": 1,
+        "matched_expected_paths": 1,
+        "source_span_failures": 0,
+        "stale_failures": 0
+      }
+    ],
+    "exact_false_positives": [],
+    "exact_false_negatives": [
+      "derived_closure_edge_requires_provenance: missing expected entity src/store.ordersTable",
+      "derived_closure_edge_requires_provenance: missing required edge src/store.saveOrder -WRITES-> src/store.ordersTable at src/store.ts:4",
+      "derived_closure_edge_requires_provenance: missing required edge src/service.submitOrder -MAY_MUTATE-> src/store.ordersTable at src/service.ts:4",
+      "derived_closure_edge_requires_provenance: missing expected path path://derived/provenance"
+    ]
+  },
+  "context_packet_gate": {
+    "status": "failed",
+    "cases_total": 11,
+    "cases_passed": 0,
+    "cases_failed": 11,
+    "expected_context_symbols": 15,
+    "matched_context_symbols_at_k": 3,
+    "critical_context_symbol_missing_count": 12,
+    "context_symbol_recall_at_k": 0.2,
+    "forbidden_context_symbols": 7,
+    "matched_forbidden_context_symbols": 2,
+    "expected_proof_paths": 11,
+    "matched_proof_paths": 0,
+    "proof_path_coverage": 0.0,
+    "proof_paths_with_source_spans": 0,
+    "source_span_coverage": null,
+    "expected_critical_snippets": 17,
+    "matched_critical_snippets": 3,
+    "critical_snippet_coverage": 0.17647058823529413,
+    "expected_tests": 1,
+    "matched_tests": 0,
+    "recommended_test_recall": 0.0,
+    "useful_facts": 6,
+    "useful_facts_per_byte": 0.00015335463258785942
+  },
+  "sampler_small_fixture_corpus": {
+    "index": {
+      "db": "reports/audit/artifacts/12_small_fixture_corpus.sqlite",
+      "files_indexed": 7,
+      "entities": 216,
+      "edges": 372,
+      "parse_errors": 0,
+      "total_wall_ms": 99,
+      "db_write_ms": 68
+    },
+    "relation_counts": {
+      "total_edges": 372,
+      "relation_count": 26,
+      "top_relations": [
+        {
+          "relation": "CONTAINS",
+          "edge_count": 80,
+          "source_span_count": 80
+        },
+        {
+          "relation": "DEFINED_IN",
+          "edge_count": 73,
+          "source_span_count": 73
+        },
+        {
+          "relation": "FLOWS_TO",
+          "edge_count": 44,
+          "source_span_count": 44
+        },
+        {
+          "relation": "DEFINES",
+          "edge_count": 18,
+          "source_span_count": 18
+        },
+        {
+          "relation": "DECLARES",
+          "edge_count": 17,
+          "source_span_count": 17
+        },
+        {
+          "relation": "CALLEE",
+          "edge_count": 16,
+          "source_span_count": 16
+        },
+        {
+          "relation": "ARGUMENT_0",
+          "edge_count": 15,
+          "source_span_count": 15
+        },
+        {
+          "relation": "READS",
+          "edge_count": 15,
+          "source_span_count": 15
+        },
+        {
+          "relation": "IMPORTS",
+          "edge_count": 12,
+          "source_span_count": 12
+        },
+        {
+          "relation": "RETURNS",
+          "edge_count": 11,
+          "source_span_count": 11
+        }
+      ]
+    },
+    "edge_samples": [
+      {
+        "relation": "CALLS",
+        "samples": 8,
+        "spans_loaded": 8,
+        "missing_source_span": 0,
+        "missing_snippet": 0,
+        "missing_exactness": 0,
+        "metadata_empty": 7,
+        "repo_commit_missing": 8
+      },
+      {
+        "relation": "CHECKS_ROLE",
+        "samples": 6,
+        "spans_loaded": 6,
+        "missing_source_span": 0,
+        "missing_snippet": 0,
+        "missing_exactness": 0,
+        "metadata_empty": 0,
+        "repo_commit_missing": 6
+      },
+      {
+        "relation": "FLOWS_TO",
+        "samples": 20,
+        "spans_loaded": 20,
+        "missing_source_span": 0,
+        "missing_snippet": 0,
+        "missing_exactness": 0,
+        "metadata_empty": 20,
+        "repo_commit_missing": 20
+      },
+      {
+        "relation": "ASSERTS",
+        "samples": 2,
+        "spans_loaded": 2,
+        "missing_source_span": 0,
+        "missing_snippet": 0,
+        "missing_exactness": 0,
+        "metadata_empty": 0,
+        "repo_commit_missing": 2
+      },
+      {
+        "relation": "MOCKS",
+        "samples": 3,
+        "spans_loaded": 3,
+        "missing_source_span": 0,
+        "missing_snippet": 0,
+        "missing_exactness": 0,
+        "metadata_empty": 0,
+        "repo_commit_missing": 3
+      },
+      {
+        "relation": "EXPOSES",
+        "samples": 2,
+        "spans_loaded": 2,
+        "missing_source_span": 0,
+        "missing_snippet": 0,
+        "missing_exactness": 0,
+        "metadata_empty": 0,
+        "repo_commit_missing": 2
+      }
+    ],
+    "path_evidence_samples": {
+      "stored_path_count": 0,
+      "generated_path_count": 20,
+      "sample_count": 20,
+      "generated_by_audit": 20,
+      "missing_snippet": 0,
+      "metadata_empty": 19,
+      "repo_commit_missing": 20,
+      "derived_missing_provenance": 0
+    }
+  },
+  "current_unsupported_patterns": [
+    "Dynamic or computed roles are not exact.",
+    "Role checks inferred only from comments, strings, or nearby literals are ignored as exact facts.",
+    "Sanitizer existence or unused sanitizer imports do not create SANITIZES.",
+    "Complex interprocedural sanitizer/dataflow paths remain unsupported unless represented by direct local patterns.",
+    "Unsupported authorize(req.user)-style calls remain heuristic evidence, not exact proof.",
+    "Framework-specific route syntaxes beyond the supported route factory and existing parser heuristics remain heuristic/unsupported unless a syntax pattern is added.",
+    "Stored PathEvidence is absent in the small-corpus sampler; audit generated one-edge fallback paths.",
+    "Context packet assembly currently does not recover graph-truth proof paths."
+  ],
+  "blockers_before_indexing_storage_optimization": [
+    "derived_closure_edge_requires_provenance is failing due to missing ordersTable entity, base WRITES edge, MAY_MUTATE edge, and expected provenance path.",
+    "Context Packet Gate failed 0/11 cases with 12 of 15 critical symbols missing and 0 of 11 expected proof paths recovered.",
+    "No stored PathEvidence objects were present in the sampler corpus; all 20 sampled paths were audit-generated fallback paths.",
+    "Sampler shows repo_commit missing on all sampled edge/path records and metadata_empty on many CALLS/FLOWS_TO/path samples."
+  ],
+  "highest_priority_remaining_bug": "Implement provenance-backed persistence/dataflow semantics for table-like sinks: create src/store.ordersTable, base WRITES, and derived MAY_MUTATE with provenance so derived_closure_edge_requires_provenance can pass without heuristic/proof-grade contamination.",
+  "trustworthiness": "Not yet trustworthy as a strict semantic proof layer. Supported call/import/auth/sanitizer/test/mock/stale fixtures are clean with zero forbidden hits and zero source-span failures, but the graph is incomplete for derived persistence provenance and context packets do not yet surface proof evidence reliably."
+}

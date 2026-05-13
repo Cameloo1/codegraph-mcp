@@ -1,0 +1,21 @@
+{
+  "files": [
+    "src/routes.ts",
+    "src/security.ts"
+  ],
+  "symbols": [
+    "adminRoute",
+    "Called",
+    "authorizeRequest",
+    "checkRole"
+  ],
+  "path_symbols": [],
+  "relation_sequence": [],
+  "source_spans": [
+    "src/routes.ts:3"
+  ],
+  "unsupported_fields": [],
+  "mode": "human_text",
+  "warnings": [],
+  "raw_json": null
+}

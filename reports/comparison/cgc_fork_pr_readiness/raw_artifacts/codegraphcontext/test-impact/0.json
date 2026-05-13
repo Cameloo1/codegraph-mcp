@@ -1,0 +1,16 @@
+{
+  "executable": "target\\cgc-fork-py312-wrapper.cmd",
+  "args": [
+    "--database",
+    "kuzudb",
+    "index",
+    "--force",
+    "\\\\?\\<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\comparison\\cgc_fork_pr_readiness\\fixtures\\test-impact"
+  ],
+  "cwd": "reports\\comparison\\cgc_fork_pr_readiness\\fixtures\\test-impact",
+  "stdout": "Resolving context...\r\nInitializing services and database connection...\r\nServices initialized.\r\nRe-indexing: \r\n\\\\?\\<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\comparison\\cgc_for\r\nk_pr_readiness\\fixtures\\test-impact\r\n\r\nSuccessfully re-indexed: \r\n\\\\?\\<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\comparison\\cgc_for\r\nk_pr_readiness\\fixtures\\test-impact in 1.02 seconds\r\n",
+  "stderr": "No configuration file found. Using defaults.\r\nUsing database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))\r\nForce re-indexing (--force flag detected)\r\n",
+  "exit_code": 0,
+  "latency_ms": 2078,
+  "timed_out": false
+}

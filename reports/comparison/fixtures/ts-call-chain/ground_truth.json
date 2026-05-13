@@ -1,0 +1,34 @@
+{
+  "task_id": "ts-call-chain",
+  "query_text": "Trace how postInvoice reaches the database write",
+  "expected_files": [
+    "src/api.ts",
+    "src/service.ts",
+    "src/repo.ts",
+    "src/db.ts"
+  ],
+  "expected_symbols": [
+    "postInvoice",
+    "createInvoice",
+    "saveInvoice",
+    "writeDatabase"
+  ],
+  "expected_relation_sequence": [
+    "CALLS",
+    "CALLS",
+    "CALLS"
+  ],
+  "expected_path_symbols": [
+    "postInvoice",
+    "createInvoice",
+    "saveInvoice",
+    "writeDatabase"
+  ],
+  "critical_source_spans": [
+    "src/api.ts:3-5",
+    "src/repo.ts:3-5"
+  ],
+  "unsupported_fields_allowed": [
+    "exact_relation_taxonomy"
+  ]
+}

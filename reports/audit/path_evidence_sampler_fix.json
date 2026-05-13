@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-12T20:11:12.3834014-05:00",
+  "status": "passed",
+  "goal": "Fix PathEvidence sampling timeout on compact proof DB.",
+  "root_cause": {
+    "summary": "The previous sampler ordered path_evidence with a computed expression and then performed per-edge/per-entity graph lookups for every sampled path.",
+    "specific_causes": [
+      "Candidate selection used ORDER BY ((length(id) + seed) % N), which could not use the path_evidence primary key or rowid order.",
+      "Stored PathEvidence expansion used N+1 edge lookups through edges_compat and object_id_lookup.",
+      "Endpoint lookup joined object_id_lookup and qualified_name_lookup before the sample candidate set was fully bounded.",
+      "Proof mode could generate fallback paths from edges when stored PathEvidence was missing."
+    ]
+  },
+  "implementation": {
+    "cli": "codegraph-mcp audit sample-paths",
+    "new_options": [
+      "--max-edge-load <N>",
+      "--timeout-ms <N>",
+      "--mode proof|audit|debug"
+    ],
+    "behavior": [
+      "Default sample-paths limit is now 20.",
+      "Proof mode disables generated fallback paths.",
+      "The sampler selects bounded path IDs first with a seeded rowid range and one wraparound pass.",
+      "Path rows are batch-loaded by sampled path IDs.",
+      "path_evidence_edges rows are batch-loaded by sampled path IDs and capped by --max-edge-load.",
+      "Edge exactness, confidence, provenance, context, and source-span labels are read from stored PathEvidence metadata/materialized rows instead of re-querying the full edge graph.",
+      "Source snippets are loaded only for sampled source spans when --include-snippets is set.",
+      "Sampler reports include EXPLAIN QUERY PLAN, timing spans, index checks, fallback status, and truncation status."
+    ],
+    "storage_semantics": {
+      "graph_truth_still_passed": true,
+      "context_packet_quality_still_passed": true,
+      "proof_db_size_decreased": false,
+      "removed_data_moved_or_derivable": "No proof data was removed. This was a sampler/query-path change plus reporting; compact proof storage semantics were unchanged."
+    }
+  },
+  "index_checks": {
+    "path_evidence_path_id": "satisfied by path_evidence.id primary key / rowid candidate selection",
+    "path_evidence_edges_path_ordinal": "satisfied by idx_path_evidence_edges_path_ordinal and WITHOUT ROWID primary key",
+    "path_evidence_symbols_path_entity": "satisfied by idx_path_evidence_symbols_path",
+    "path_evidence_files_file_path": "satisfied by idx_path_evidence_files_file and primary key",
+    "path_evidence_tests_path_test": "satisfied by path_evidence_tests primary key prefix path_id,test_id"
+  },
+  "compact_proof_db_validation": {
+    "db_path": "reports/final/artifacts/compact_gate_autoresearch_proof.sqlite",
+    "stored_path_evidence_rows": 4096,
+    "sample_20": {
+      "status": "passed",
+      "limit": 20,
+      "elapsed_ms": 26,
+      "target_ms": 2000,
+      "sample_count": 20,
+      "generated_fallback_count": 0,
+      "loaded_path_edge_count": 20,
+      "artifact_json": "reports/audit/artifacts/path_evidence_sampler_fix_20.json",
+      "artifact_markdown": "reports/audit/artifacts/path_evidence_sampler_fix_20.md"
+    },
+    "sample_100": {
+      "status": "passed",
+      "limit": 100,
+      "elapsed_ms": 49,
+      "target_ms": 10000,
+      "sample_count": 100,
+      "generated_fallback_count": 0,
+      "loaded_path_edge_count": 100,
+      "artifact_json": "reports/audit/artifacts/path_evidence_sampler_fix_100.json",
+      "artifact_markdown": "reports/audit/artifacts/path_evidence_sampler_fix_100.md"
+    }
+  },
+  "correctness_gates": {
+    "cargo_test_workspace": "passed",
+    "graph_truth_gate": {
+      "status": "passed",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "artifact_json": "reports/audit/artifacts/path_sampler_graph_truth.json",
+      "artifact_markdown": "reports/audit/artifacts/path_sampler_graph_truth.md"
+    },
+    "context_packet_gate": {
+      "status": "passed",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "critical_symbol_recall": 1.0,
+      "proof_path_coverage": 1.0,
+      "source_span_coverage": 1.0,
+      "artifact_json": "reports/audit/artifacts/path_sampler_context_packet.json",
+      "artifact_markdown": "reports/audit/artifacts/path_sampler_context_packet.md"
+    }
+  },
+  "remaining_notes": [
+    "The endpoint batch lookup no longer expands object_id_lookup and qualified_name_lookup for normal repo://e/<hash> IDs. It resolves names by bounded entity_hash lookup and leaves qualified_name null in compact proof samples when reconstructing qnames would require expensive debug-style joins.",
+    "The sampler emits source spans, exactness labels, provenance edges, production/test/mock context labels, and snippets where source files are available.",
+    "No fallback paths are used in proof mode."
+  ]
+}

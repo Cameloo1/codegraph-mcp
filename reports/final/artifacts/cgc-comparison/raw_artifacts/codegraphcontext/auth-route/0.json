@@ -1,0 +1,16 @@
+{
+  "executable": "target\\cgc-competitor\\.venv312-pypi\\Scripts\\cgc.exe",
+  "args": [
+    "--database",
+    "kuzudb",
+    "index",
+    "--path",
+    "\\\\?\\<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\cgc-comparison\\fixtures\\auth-route"
+  ],
+  "cwd": "reports\\final\\artifacts\\cgc-comparison\\fixtures\\auth-route",
+  "stdout": "",
+  "stderr": "Usage: cgc index [OPTIONS] [PATH]\r\nTry 'cgc index --help' for help.\r\n┌─ Error ─────────────────────────────────────────────────────────────────────┐\r\n│ No such option: --path                                                      │\r\n└─────────────────────────────────────────────────────────────────────────────┘\r\n",
+  "exit_code": 2,
+  "latency_ms": 819,
+  "timed_out": false
+}

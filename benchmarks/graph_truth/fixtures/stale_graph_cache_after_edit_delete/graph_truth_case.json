@@ -1,0 +1,448 @@
+{
+  "schema_version": 1,
+  "case_id": "stale_graph_cache_after_edit_delete",
+  "description": "Deleted symbols and stale call edges must disappear.",
+  "repo_fixture_path": "benchmarks/graph_truth/fixtures/stale_graph_cache_after_edit_delete/repo",
+  "task_prompt": "After deleting stale.ts, find live run dependencies.",
+  "expected_entities": [
+    {
+      "selector": {
+        "qualified_name": "src/use.run",
+        "kind": "Function",
+        "source_file": "src/use.ts",
+        "context": "production"
+      },
+      "kind": "Function",
+      "context": "production",
+      "source_file": "src/use.ts"
+    },
+    {
+      "selector": {
+        "qualified_name": "src/live.liveTarget",
+        "kind": "Function",
+        "source_file": "src/live.ts",
+        "context": "production"
+      },
+      "kind": "Function",
+      "context": "production",
+      "source_file": "src/live.ts"
+    }
+  ],
+  "expected_edges": [
+    {
+      "id": "edge://stale/calls-live",
+      "head": {
+        "qualified_name": "src/use.run",
+        "kind": "Function",
+        "source_file": "src/use.ts",
+        "context": "production"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "qualified_name": "src/live.liveTarget",
+        "kind": "Function",
+        "source_file": "src/live.ts",
+        "context": "production"
+      },
+      "source_file": "src/use.ts",
+      "source_span": {
+        "start_line": 4,
+        "start_column": 3,
+        "end_line": 4,
+        "end_column": 15,
+        "expected_text": "liveTarget()",
+        "syntax_role": "callsite"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "hand_labeled_fixture",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "hand_labeled_fixture",
+      "direction": "head_to_tail"
+    }
+  ],
+  "forbidden_edges": [
+    {
+      "id": "edge://stale/calls-deleted",
+      "head": {
+        "qualified_name": "src/use.run",
+        "kind": "Function",
+        "source_file": "src/use.ts",
+        "context": "production"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "qualified_name": "src/stale.staleTarget",
+        "kind": "Function",
+        "source_file": "src/stale.ts",
+        "context": "production"
+      },
+      "source_file": "src/use.ts",
+      "source_span": {
+        "start_line": 5,
+        "start_column": 3,
+        "end_line": 5,
+        "end_column": 16,
+        "expected_text": "staleTarget()",
+        "syntax_role": "callsite"
+      },
+      "exactness_required": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context_kind": "production",
+      "derived_allowed": false,
+      "provenance_required": false,
+      "extractor_kind": "forbidden_deleted_symbol_cache",
+      "exactness": {
+        "allowed": [
+          "parser_verified"
+        ],
+        "minimum": "parser_verified",
+        "proof_grade_required": true,
+        "confidence_floor": 1
+      },
+      "context": "production",
+      "resolution": "resolved",
+      "derived": false,
+      "provenance_edges": [],
+      "extractor": "forbidden_deleted_symbol_cache",
+      "direction": "head_to_tail"
+    }
+  ],
+  "expected_paths": [
+    {
+      "path_id": "path://stale/run-live",
+      "description": "run calls only liveTarget after delete.",
+      "source": {
+        "qualified_name": "src/use.run",
+        "kind": "Function",
+        "source_file": "src/use.ts",
+        "context": "production"
+      },
+      "target": {
+        "qualified_name": "src/live.liveTarget",
+        "kind": "Function",
+        "source_file": "src/live.ts",
+        "context": "production"
+      },
+      "ordered_edges": [
+        {
+          "id": "edge://stale/calls-live",
+          "head": {
+            "qualified_name": "src/use.run",
+            "kind": "Function",
+            "source_file": "src/use.ts",
+            "context": "production"
+          },
+          "relation": "CALLS",
+          "tail": {
+            "qualified_name": "src/live.liveTarget",
+            "kind": "Function",
+            "source_file": "src/live.ts",
+            "context": "production"
+          },
+          "source_file": "src/use.ts",
+          "source_span": {
+            "start_line": 4,
+            "start_column": 3,
+            "end_line": 4,
+            "end_column": 15,
+            "expected_text": "liveTarget()",
+            "syntax_role": "callsite"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "hand_labeled_fixture",
+          "exactness": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "hand_labeled_fixture",
+          "direction": "head_to_tail"
+        }
+      ],
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "max_length": 1,
+      "source_span_required": true,
+      "production_only": true,
+      "derived_allowed": false,
+      "provenance_required": false,
+      "required_source_spans": [
+        {
+          "edge_ref": "edge://stale/calls-live",
+          "source_file": "src/use.ts",
+          "span": {
+            "start_line": 4,
+            "start_column": 3,
+            "end_line": 4,
+            "end_column": 15,
+            "expected_text": "liveTarget()",
+            "syntax_role": "callsite"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "liveTarget()",
+          "syntax_role": "callsite"
+        }
+      ],
+      "context": "production",
+      "allow_test_mock_edges": false,
+      "derived_edges_require_provenance": true,
+      "proof_grade": true
+    }
+  ],
+  "forbidden_paths": [
+    {
+      "path_id": "path://stale/run-deleted",
+      "description": "Deleted staleTarget must not remain queryable.",
+      "source": {
+        "qualified_name": "src/use.run",
+        "kind": "Function",
+        "source_file": "src/use.ts",
+        "context": "production"
+      },
+      "target": {
+        "qualified_name": "src/stale.staleTarget",
+        "kind": "Function",
+        "source_file": "src/stale.ts",
+        "context": "production"
+      },
+      "ordered_edges": [
+        {
+          "id": "edge://stale/calls-deleted",
+          "head": {
+            "qualified_name": "src/use.run",
+            "kind": "Function",
+            "source_file": "src/use.ts",
+            "context": "production"
+          },
+          "relation": "CALLS",
+          "tail": {
+            "qualified_name": "src/stale.staleTarget",
+            "kind": "Function",
+            "source_file": "src/stale.ts",
+            "context": "production"
+          },
+          "source_file": "src/use.ts",
+          "source_span": {
+            "start_line": 5,
+            "start_column": 3,
+            "end_line": 5,
+            "end_column": 16,
+            "expected_text": "staleTarget()",
+            "syntax_role": "callsite"
+          },
+          "exactness_required": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context_kind": "production",
+          "derived_allowed": false,
+          "provenance_required": false,
+          "extractor_kind": "forbidden_deleted_symbol_cache",
+          "exactness": {
+            "allowed": [
+              "parser_verified"
+            ],
+            "minimum": "parser_verified",
+            "proof_grade_required": true,
+            "confidence_floor": 1
+          },
+          "context": "production",
+          "resolution": "resolved",
+          "derived": false,
+          "provenance_edges": [],
+          "extractor": "forbidden_deleted_symbol_cache",
+          "direction": "head_to_tail"
+        }
+      ],
+      "relation_sequence": [
+        "CALLS"
+      ],
+      "max_length": 1,
+      "source_span_required": true,
+      "production_only": true,
+      "derived_allowed": false,
+      "provenance_required": false,
+      "required_source_spans": [
+        {
+          "edge_ref": "edge://stale/calls-deleted",
+          "source_file": "src/use.ts",
+          "span": {
+            "start_line": 5,
+            "start_column": 3,
+            "end_line": 5,
+            "end_column": 16,
+            "expected_text": "staleTarget()",
+            "syntax_role": "callsite"
+          },
+          "must_resolve_to_text": true,
+          "expected_text": "staleTarget()",
+          "syntax_role": "callsite"
+        }
+      ],
+      "context": "production",
+      "allow_test_mock_edges": false,
+      "derived_edges_require_provenance": true,
+      "proof_grade": false
+    }
+  ],
+  "expected_source_spans": [
+    {
+      "edge_ref": "edge://stale/calls-live",
+      "source_file": "src/use.ts",
+      "span": {
+        "start_line": 4,
+        "start_column": 3,
+        "end_line": 4,
+        "end_column": 15,
+        "expected_text": "liveTarget()",
+        "syntax_role": "callsite"
+      },
+      "must_resolve_to_text": true,
+      "expected_text": "liveTarget()",
+      "syntax_role": "callsite"
+    }
+  ],
+  "expected_context_symbols": [
+    {
+      "symbol": {
+        "qualified_name": "src/live.liveTarget",
+        "kind": "Function",
+        "source_file": "src/live.ts",
+        "context": "production"
+      },
+      "critical": true,
+      "source_file": "src/live.ts",
+      "reason": "Remaining live dependency"
+    }
+  ],
+  "forbidden_context_symbols": [
+    {
+      "symbol": {
+        "qualified_name": "src/stale.staleTarget",
+        "kind": "Function",
+        "source_file": "src/stale.ts",
+        "context": "production"
+      },
+      "critical": true,
+      "source_file": "src/stale.ts",
+      "reason": "Deleted stale dependency"
+    }
+  ],
+  "expected_tests": [],
+  "forbidden_tests": [],
+  "mutation_steps": [
+    {
+      "type": "add_file",
+      "path": "src/stale.ts",
+      "content": "export function staleTarget() {\n  return \"stale\";\n}\n"
+    },
+    {
+      "type": "edit_file",
+      "path": "src/use.ts",
+      "content": "import { liveTarget } from \"./live\";\nimport { staleTarget } from \"./stale\";\n\nexport function run() {\n  liveTarget();\n  staleTarget();\n}\n"
+    },
+    {
+      "type": "reindex"
+    },
+    {
+      "type": "delete_file",
+      "path": "src/stale.ts"
+    },
+    {
+      "type": "edit_file",
+      "path": "src/use.ts",
+      "find": "import { staleTarget } from \"./stale\";\n",
+      "replace": ""
+    },
+    {
+      "type": "edit_file",
+      "path": "src/use.ts",
+      "find": "  staleTarget();\n",
+      "replace": ""
+    },
+    {
+      "type": "reindex"
+    },
+    {
+      "type": "query_again",
+      "query_prompt": "Find staleTarget after delete."
+    }
+  ],
+  "performance_expectations": {
+    "schema_validation_100_cases_max_ms": 1000,
+    "index_time_ms_max": 10000
+  },
+  "notes": [
+    "Mutation fixture for stale delete cleanup."
+  ],
+  "failure_rules": {
+    "missing_required_edge_fails": true,
+    "forbidden_edge_appearing_fails": true,
+    "wrong_direction_fails": true,
+    "missing_source_span_fails_for_proof_grade_edge": true,
+    "unresolved_name_labeled_exact_fails": true,
+    "mock_or_test_edge_in_production_proof_path_fails": true,
+    "derived_edge_without_provenance_fails": true,
+    "stale_edge_after_edit_fails": true,
+    "same_name_symbol_collision_fails": true,
+    "critical_symbol_missing_from_context_packet_fails": true,
+    "forbidden_context_symbol_included_fails": true,
+    "expected_test_omitted_fails": true,
+    "too_many_distractors_fail_if_threshold_specified": true
+  },
+  "distractor_policy": {
+    "max_context_distractors": 0,
+    "max_symbol_distractors": 0,
+    "distractor_symbols": [],
+    "count_scope": "context_packet"
+  }
+}

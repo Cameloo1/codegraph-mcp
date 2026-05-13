@@ -1,0 +1,15 @@
+Warning: Could not load .env from current directory: name 'find_dotenv' is not 
+defined
+No configuration file found. Using defaults.
+Using database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))
+2026-05-13 08:23:02,458 - INFO - codegraphcontext.utils.debug_log - Using KùzuDB (explicit) at <REPO_ROOT>/Desktop\development\codegraph-mcp\.tools\cgc_recovery\home_shared\.codegraphcontext\global\db\kuzudb
+2026-05-13 08:23:02,464 - INFO - codegraphcontext.utils.debug_log - Initializing KùzuDB at <REPO_ROOT>/Desktop\development\codegraph-mcp\.tools\cgc_recovery\home_shared\.codegraphcontext\global\db\kuzudb
+2026-05-13 08:23:02,542 - INFO - codegraphcontext.utils.debug_log - KùzuDB connection established and schema verified
+2026-05-13 08:23:02,580 - INFO - codegraphcontext.utils.debug_log - Database schema verified/created successfully
+Found 1 matches for 'cgc_smoke_caller':
+┌──────────────────┬──────────┬──────────┐
+│ Name             │ Type     │ Location │
+├──────────────────┼──────────┼──────────┤
+│ cgc_smoke_caller │ Function │ :5       │
+└──────────────────┴──────────┴──────────┘
+2026-05-13 08:23:02,607 - INFO - codegraphcontext.utils.debug_log - Closing KùzuDB connection

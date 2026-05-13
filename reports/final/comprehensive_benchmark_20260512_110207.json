@@ -1,0 +1,1954 @@
+{
+  "benchmark_id": "comprehensive_benchmark",
+  "execution_mode": "latest_artifact_snapshot",
+  "execution_mode_notes": "This command aggregates the latest persisted gates/artifacts. It does not rerun the long Autoresearch cold build by default.",
+  "generated_at_unix_ms": 1778601727882,
+  "inputs": {
+    "audit_storage_json": "reports/final/artifacts/compact_gate_audit_storage.json",
+    "baseline_json": "reports\\baselines\\compact_proof_baseline_latest.json",
+    "compact_gate_json": "reports\\final\\compact_proof_db_gate.json",
+    "comparison_latest_json": "reports/comparison/codegraph_vs_cgc_latest.json",
+    "manual_label_summary_json": "reports/audit/manual_relation_labeling_summary.json",
+    "previous_json": "reports\\final\\comprehensive_benchmark_latest.json",
+    "proof_storage_json": "reports/final/artifacts/compact_gate_proof_storage.json"
+  },
+  "notes": [
+    "Unknown values are preserved as unknown and are not reported as passes.",
+    "The benchmark fails if graph/context correctness regresses, proof DB exceeds 250 MiB, single-file update exceeds 750 ms, cold proof build exceeds 60 seconds, context_pack p95 exceeds 2 seconds, or DB integrity is not ok.",
+    "Storage/debug sidecars are reported separately; audit/debug size is not counted against the proof DB target."
+  ],
+  "phase": "30",
+  "schema_version": 1,
+  "sections": {
+    "cgc_competitor_comparison_readiness": {
+      "cgc_available": true,
+      "cgc_completed": false,
+      "cgc_db_artifact_size_bytes": null,
+      "cgc_timeout": true,
+      "cgc_version": "0.4.7",
+      "codegraph_vs_cgc_quality": "unknown",
+      "codegraph_vs_cgc_speed": "unknown",
+      "codegraph_vs_cgc_storage": "unknown",
+      "notes": [
+        "Latest comparison predates the compact proof baseline and is not a basis for a current CodeGraph win.",
+        "CGC timeout/skipped/incomplete remains incomplete, not a CodeGraph win.",
+        "Fake-agent dry runs are not model superiority evidence.",
+        "CodeGraph internal storage failure remains failure even if CGC is incomplete."
+      ],
+      "verdict": "incomplete"
+    },
+    "cold_proof_build_profile": {
+      "metrics": [
+        {
+          "id": "cold_proof_build_total_wall_ms",
+          "notes": [
+            "Cold proof build intended target is <=60 seconds."
+          ],
+          "observed": 3001445.0,
+          "status": "fail",
+          "target": 60000.0
+        },
+        {
+          "id": "cold_proof_build_total_profile_ms",
+          "notes": [
+            "Profile total from compact proof baseline."
+          ],
+          "observed": 3001445.0,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "file_walk_time_ms",
+          "notes": [
+            "Not persisted in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "metadata_diff_time_ms",
+          "notes": [
+            "Not persisted in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "read_time_ms",
+          "notes": [
+            "Not persisted in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "hash_time_ms",
+          "notes": [
+            "Not persisted in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "parse_time_ms",
+          "notes": [
+            "Not persisted in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "local_fact_bundle_creation_time_ms",
+          "notes": [
+            "Not persisted in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "content_template_dedupe_time_ms",
+          "notes": [
+            "Not persisted in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "reducer_time_ms",
+          "notes": [
+            "Not persisted in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "symbol_interning_time_ms",
+          "notes": [
+            "Not persisted in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "qname_prefix_interning_time_ms",
+          "notes": [
+            "Not persisted separately in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "template_entity_insert_time_ms",
+          "notes": [
+            "Not persisted separately in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "template_edge_insert_time_ms",
+          "notes": [
+            "Not persisted separately in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "proof_entity_insert_time_ms",
+          "notes": [
+            "Not persisted separately in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "proof_edge_insert_time_ms",
+          "notes": [
+            "Not persisted separately in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "source_span_insert_time_ms",
+          "notes": [
+            "Not persisted separately in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "path_evidence_generation_time_ms",
+          "notes": [
+            "Not persisted separately in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "db_write_time_ms",
+          "notes": [
+            "Known dominant cold-build stage."
+          ],
+          "observed": 2877316.0,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "index_creation_time_ms",
+          "notes": [
+            "Not persisted separately in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "fts_build_time_ms",
+          "notes": [
+            "Not persisted separately in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "vacuum_time_ms",
+          "notes": [
+            "Not persisted separately in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "analyze_time_ms",
+          "notes": [
+            "Not persisted separately in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "integrity_check_time_ms",
+          "notes": [
+            "Cold proof DB integrity-check duration."
+          ],
+          "observed": 12937.4035,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "graph_hash_time_ms",
+          "notes": [
+            "Not persisted separately in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "report_generation_time_ms",
+          "notes": [
+            "Not persisted separately in compact proof cold-build profile."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        }
+      ],
+      "top_10_slowest_stages": [
+        {
+          "elapsed_ms": 3001445.0,
+          "notes": [
+            "Cold proof build intended target is <=60 seconds."
+          ],
+          "stage": "cold_proof_build_total_wall_ms",
+          "status": "fail"
+        },
+        {
+          "elapsed_ms": 2877316.0,
+          "notes": [
+            "Known dominant cold-build stage."
+          ],
+          "stage": "db_write_time_ms",
+          "status": "pass"
+        },
+        {
+          "elapsed_ms": 12937.4035,
+          "notes": [
+            "Cold proof DB integrity-check duration."
+          ],
+          "stage": "integrity_check_time_ms",
+          "status": "pass"
+        }
+      ]
+    },
+    "context_packet_gate": {
+      "metrics": [
+        {
+          "id": "context_cases_total",
+          "notes": [
+            "Context Packet Gate fixture count."
+          ],
+          "observed": 11,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "context_cases_passed",
+          "notes": [
+            "Context Packet Gate must pass all cases."
+          ],
+          "observed": 11,
+          "status": "pass",
+          "target": "all cases"
+        },
+        {
+          "id": "critical_symbol_recall",
+          "notes": [
+            "Critical symbol recall must be 100%."
+          ],
+          "observed": 1.0,
+          "status": "pass",
+          "target": 1.0
+        },
+        {
+          "id": "proof_path_coverage",
+          "notes": [
+            "Proof-path coverage must be 100%."
+          ],
+          "observed": 1.0,
+          "status": "pass",
+          "target": 1.0
+        },
+        {
+          "id": "proof_path_source_span_coverage",
+          "notes": [
+            "Source-span coverage for proof paths must be 100%."
+          ],
+          "observed": 1.0,
+          "status": "pass",
+          "target": 1.0
+        },
+        {
+          "id": "expected_tests_recall",
+          "notes": [
+            "Expected test recall target is >=90%."
+          ],
+          "observed": 1.0,
+          "status": "pass",
+          "target": 0.9
+        },
+        {
+          "id": "distractor_ratio",
+          "notes": [
+            "Distractor ratio target is <=25%."
+          ],
+          "observed": 0.0,
+          "status": "pass",
+          "target": 0.25
+        },
+        {
+          "id": "stored_path_evidence_rows",
+          "notes": [
+            "Stored PathEvidence rows must exist for proof paths."
+          ],
+          "observed": 4096,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "generated_fallback_path_count",
+          "notes": [
+            "Normal proof cases should use stored PathEvidence instead of generated fallback paths."
+          ],
+          "observed": 0,
+          "status": "pass",
+          "target": 0
+        }
+      ]
+    },
+    "correctness_gates": {
+      "metrics": [
+        {
+          "id": "graph_truth_cases_total",
+          "notes": [
+            "All adversarial graph-truth fixtures must be present."
+          ],
+          "observed": 11,
+          "status": "pass",
+          "target": 11
+        },
+        {
+          "id": "graph_truth_cases_passed",
+          "notes": [
+            "Graph Truth Gate must be 100% pass."
+          ],
+          "observed": 11,
+          "status": "pass",
+          "target": "all cases"
+        },
+        {
+          "id": "expected_entities_matched",
+          "notes": [
+            "Every expected entity must be present."
+          ],
+          "observed": 29,
+          "status": "pass",
+          "target": 29
+        },
+        {
+          "id": "expected_edges_matched",
+          "notes": [
+            "Every required edge must be present."
+          ],
+          "observed": 20,
+          "status": "pass",
+          "target": 20
+        },
+        {
+          "id": "expected_paths_matched",
+          "notes": [
+            "Every expected proof path must be present."
+          ],
+          "observed": 11,
+          "status": "pass",
+          "target": 11
+        },
+        {
+          "id": "forbidden_edges_found",
+          "notes": [
+            "Forbidden edge hits must remain zero."
+          ],
+          "observed": 0,
+          "status": "pass",
+          "target": 0
+        },
+        {
+          "id": "forbidden_paths_found",
+          "notes": [
+            "Forbidden proof paths must remain zero."
+          ],
+          "observed": 0,
+          "status": "pass",
+          "target": 0
+        },
+        {
+          "id": "source_span_failures",
+          "notes": [
+            "Proof-grade facts must have valid source spans."
+          ],
+          "observed": 0,
+          "status": "pass",
+          "target": 0
+        },
+        {
+          "id": "unresolved_exact_count",
+          "notes": [
+            "Unresolved relations must not be labeled exact."
+          ],
+          "observed": 0,
+          "status": "pass",
+          "target": 0
+        },
+        {
+          "id": "derived_without_provenance_count",
+          "notes": [
+            "Derived edges must retain provenance."
+          ],
+          "observed": 0,
+          "status": "pass",
+          "target": 0
+        },
+        {
+          "id": "test_mock_production_leakage_count",
+          "notes": [
+            "Production proof paths must not include test/mock edges."
+          ],
+          "observed": 0,
+          "status": "pass",
+          "target": 0
+        },
+        {
+          "id": "stale_fact_failures",
+          "notes": [
+            "Mutation fixtures must not leave stale current facts."
+          ],
+          "observed": 0,
+          "status": "pass",
+          "target": 0
+        }
+      ]
+    },
+    "db_integrity": {
+      "metrics": [
+        {
+          "id": "integrity_check_status",
+          "notes": [
+            "Cold proof DB must pass PRAGMA integrity_check."
+          ],
+          "observed": "ok",
+          "status": "pass",
+          "target": "ok"
+        },
+        {
+          "id": "quick_check_status",
+          "notes": [
+            "Repeat/update quick_check status was not separately persisted in the compact gate."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "ok"
+        },
+        {
+          "id": "foreign_key_check_status",
+          "notes": [
+            "Foreign-key check is reported only when the schema/gate persists it."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "ok or not_applicable"
+        },
+        {
+          "id": "wal_size_bytes",
+          "notes": [
+            "WAL file size is reported separately."
+          ],
+          "observed": 0,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "rollback_failure_simulation_status",
+          "notes": [
+            "No explicit failed-update simulation artifact is attached to the compact proof gate; do not infer a pass."
+          ],
+          "observed": "not persisted in compact proof gate; update harness integrity remained ok",
+          "status": "unknown",
+          "target": "rollback cleanly"
+        }
+      ]
+    },
+    "executive_verdict": {
+      "comparison_claims_allowed": false,
+      "comparison_claims_notes": "No superiority claim is allowed while internal targets fail or CGC artifacts are incomplete/stale.",
+      "exact_failed_targets": [
+        "bytes_per_proof_edge",
+        "cold_proof_build_total_wall_ms",
+        "proof_db_mib",
+        "proof_db_mib_stretch",
+        "single_file_update_total_ms",
+        "update_global_work_accidentally_triggered"
+      ],
+      "exact_passed_targets": [
+        "audit_debug_db_bytes",
+        "bytes_per_edge_table_plus_index",
+        "bytes_per_entity",
+        "bytes_per_path_evidence_row",
+        "bytes_per_source_span",
+        "bytes_per_template_edge",
+        "bytes_per_template_entity",
+        "cold_proof_build_total_profile_ms",
+        "context_cases_passed",
+        "context_cases_total",
+        "context_pack_normal",
+        "critical_symbol_recall",
+        "db_write_time_ms",
+        "derived_without_provenance_count",
+        "distractor_ratio",
+        "expected_edges_matched",
+        "expected_entities_matched",
+        "expected_paths_matched",
+        "expected_tests_recall",
+        "forbidden_edges_found",
+        "forbidden_paths_found",
+        "generated_fallback_path_count",
+        "graph_truth_cases_passed",
+        "graph_truth_cases_total",
+        "index_bytes",
+        "integrity_check_status",
+        "integrity_check_time_ms",
+        "proof_db_bytes",
+        "proof_path_coverage",
+        "proof_path_source_span_coverage",
+        "repeat_db_writes_performed",
+        "repeat_files_hashed",
+        "repeat_files_parsed",
+        "repeat_files_read",
+        "repeat_files_walked",
+        "repeat_graph_fact_hash_changed",
+        "repeat_integrity_check_included",
+        "repeat_metadata_unchanged",
+        "repeat_unchanged_total_ms",
+        "repeat_validation_work_integrity_ms",
+        "source_snippets_not_stored_redundantly",
+        "source_span_failures",
+        "stale_fact_failures",
+        "stored_path_evidence_rows",
+        "table_bytes",
+        "test_mock_production_leakage_count",
+        "total_artifact_bytes",
+        "unresolved_calls_paginated",
+        "unresolved_exact_count",
+        "update_dirty_path_evidence_count",
+        "update_file_walk_time_ms",
+        "update_graph_hash_update_time_ms",
+        "update_hash_time_ms",
+        "update_index_maintenance_time_ms",
+        "update_integrity_or_quick_check_time_ms",
+        "update_integrity_remains_ok",
+        "update_parse_time_ms",
+        "update_path_evidence_regeneration_time_ms",
+        "update_proof_edge_update_time_ms",
+        "update_proof_entity_update_time_ms",
+        "update_read_time_ms",
+        "update_restore_time_ms",
+        "update_rows_deleted",
+        "update_rows_inserted",
+        "update_stale_delete_time_ms",
+        "wal_bytes",
+        "wal_size_bytes"
+      ],
+      "optimization_may_continue": true,
+      "optimization_may_continue_notes": "Yes, but only behind the do-not-regress gates: graph truth, context packet quality, DB integrity, context_pack latency, unresolved-calls latency, and repeat unchanged must stay green.",
+      "reason_for_failure": "failed targets: bytes_per_proof_edge, cold_proof_build_total_wall_ms, proof_db_mib, proof_db_mib_stretch, single_file_update_total_ms, update_global_work_accidentally_triggered",
+      "verdict": "fail"
+    },
+    "manual_relation_quality": {
+      "edges_labeled": 0,
+      "real_relation_precision": "unknown",
+      "reason": "sample files exist, but no human labels are filled in",
+      "relations": [],
+      "status": "unknown"
+    },
+    "query_latency": {
+      "notes": [
+        "Only context_pack normal and unresolved-calls page have persisted compact-proof Autoresearch measurements.",
+        "Missing latency probes are unknown and must not be counted as passes.",
+        "Context-pack artifact note: sampled seed returned one bounded fallback edge and no verified path; fixture context packet gate still has 100% proof-path coverage"
+      ],
+      "queries": [
+        {
+          "id": "entity_name_lookup",
+          "notes": [
+            "Entity lookup p95 was not measured in the compact proof gate."
+          ],
+          "observed": {
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null
+          },
+          "status": "unknown",
+          "target": {
+            "p95_ms": 250.0
+          }
+        },
+        {
+          "id": "symbol_lookup",
+          "notes": [
+            "Symbol lookup p95 was not measured in the compact proof gate."
+          ],
+          "observed": {
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null
+          },
+          "status": "unknown",
+          "target": {
+            "p95_ms": 250.0
+          }
+        },
+        {
+          "id": "qname_lookup",
+          "notes": [
+            "QName lookup p95 was not measured in the compact proof gate."
+          ],
+          "observed": {
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null
+          },
+          "status": "unknown",
+          "target": {
+            "p95_ms": 250.0
+          }
+        },
+        {
+          "id": "text_fts_query",
+          "notes": [
+            "Text/FTS p95 was not measured in the compact proof gate."
+          ],
+          "observed": {
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null
+          },
+          "status": "unknown",
+          "target": {
+            "p95_ms": 500.0
+          }
+        },
+        {
+          "id": "relation_query_calls",
+          "notes": [
+            "CALLS relation p95 was not measured in the compact proof gate."
+          ],
+          "observed": {
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null
+          },
+          "status": "unknown",
+          "target": {
+            "p95_ms": 500.0
+          }
+        },
+        {
+          "id": "relation_query_reads_writes",
+          "notes": [
+            "READS/WRITES relation p95 was not measured in the compact proof gate."
+          ],
+          "observed": {
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null
+          },
+          "status": "unknown",
+          "target": {
+            "p95_ms": 500.0
+          }
+        },
+        {
+          "id": "context_pack_normal",
+          "notes": [
+            "context_pack normal p95 from compact proof latency artifact."
+          ],
+          "observed": {
+            "iterations": 5,
+            "p50_ms": 824.677,
+            "p95_ms": 852.213,
+            "p99_ms": 852.213
+          },
+          "status": "pass",
+          "target": {
+            "p95_ms": 2000.0
+          }
+        },
+        {
+          "id": "context_pack_impact",
+          "notes": [
+            "Impact mode context_pack p95 was not measured in the compact proof gate."
+          ],
+          "observed": {
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null
+          },
+          "status": "unknown",
+          "target": {
+            "p95_ms": 5000.0
+          }
+        },
+        {
+          "id": "unresolved_calls_paginated",
+          "notes": [
+            "Paginated unresolved-calls p95 from compact proof latency artifact."
+          ],
+          "observed": {
+            "iterations": 20,
+            "p50_ms": 154.422,
+            "p95_ms": 242.777,
+            "p99_ms": 262.974
+          },
+          "status": "pass",
+          "target": {
+            "p95_ms": 1000.0
+          }
+        },
+        {
+          "id": "impact_file",
+          "notes": [
+            "impact <file> p95 was not measured in the compact proof gate."
+          ],
+          "observed": {
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null
+          },
+          "status": "unknown",
+          "target": {
+            "p95_ms": 5000.0
+          }
+        },
+        {
+          "id": "path_evidence_lookup",
+          "notes": [
+            "PathEvidence lookup p95 was not measured as a standalone query."
+          ],
+          "observed": {
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null
+          },
+          "status": "unknown",
+          "target": {
+            "p95_ms": 500.0
+          }
+        },
+        {
+          "id": "source_snippet_batch_load",
+          "notes": [
+            "Source snippet batch-load p95 was not measured as a standalone query."
+          ],
+          "observed": {
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null
+          },
+          "status": "unknown",
+          "target": {
+            "p95_ms": 500.0
+          }
+        }
+      ]
+    },
+    "regression_summary": {
+      "metrics": [
+        {
+          "current_value": 320.63,
+          "delta": -1312.75671875,
+          "id": "proof_db_mib_vs_clean_1_63_gib",
+          "previous_value": 1633.38671875,
+          "status": "improved"
+        },
+        {
+          "current_value": 834.853,
+          "delta": -29480.147,
+          "id": "context_pack_p95_ms_vs_clean_30s",
+          "previous_value": 30315.0,
+          "status": "improved"
+        },
+        {
+          "current_value": 1694.0,
+          "delta": -78513.0,
+          "id": "single_file_update_ms_vs_clean_80s",
+          "previous_value": 80207.0,
+          "status": "improved"
+        },
+        {
+          "current_value": 1674.0,
+          "delta": -11897.0,
+          "id": "repeat_unchanged_ms_vs_clean_13s",
+          "previous_value": 13571.0,
+          "status": "improved"
+        },
+        {
+          "current_value": 3001445.0,
+          "delta": 0.0,
+          "id": "cold_proof_build_ms_vs_compact_baseline",
+          "previous_value": 3001445.0,
+          "status": "unchanged"
+        },
+        {
+          "current_value": 320.63,
+          "delta": 0.0,
+          "id": "proof_db_mib_vs_compact_baseline",
+          "previous_value": 320.63,
+          "status": "unchanged"
+        },
+        {
+          "current_value": 320.63,
+          "delta": 0.0,
+          "id": "proof_db_mib_vs_previous_comprehensive",
+          "previous_value": 320.63,
+          "status": "unchanged"
+        }
+      ],
+      "notes": [
+        "Historical clean Autoresearch values come from INTENDED_PERFORMANCE_GATE when available.",
+        "First comprehensive run compares primarily against the compact proof baseline; later runs compare against comprehensive_benchmark_latest.json."
+      ]
+    },
+    "repeat_unchanged_index": {
+      "metrics": [
+        {
+          "id": "repeat_unchanged_total_ms",
+          "notes": [
+            "Repeat unchanged index must complete within 5 seconds."
+          ],
+          "observed": 1674.0,
+          "status": "pass",
+          "target": 5000.0
+        },
+        {
+          "id": "repeat_files_walked",
+          "notes": [
+            "Repeat unchanged files walked."
+          ],
+          "observed": 8561,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "repeat_metadata_unchanged",
+          "notes": [
+            "Files skipped by metadata prefilter."
+          ],
+          "observed": 4975,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "repeat_files_read",
+          "notes": [
+            "Unchanged repeat should not read source files."
+          ],
+          "observed": 0,
+          "status": "pass",
+          "target": 0
+        },
+        {
+          "id": "repeat_files_hashed",
+          "notes": [
+            "Unchanged repeat should not hash source files."
+          ],
+          "observed": 0,
+          "status": "pass",
+          "target": 0
+        },
+        {
+          "id": "repeat_files_parsed",
+          "notes": [
+            "Unchanged repeat should not parse source files."
+          ],
+          "observed": 0,
+          "status": "pass",
+          "target": 0
+        },
+        {
+          "id": "repeat_entities_inserted",
+          "notes": [
+            "Unchanged repeat should not insert proof entities."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": 0
+        },
+        {
+          "id": "repeat_edges_inserted",
+          "notes": [
+            "Unchanged repeat should not insert proof edges."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": 0
+        },
+        {
+          "id": "repeat_templates_inserted",
+          "notes": [
+            "Template insert count is not persisted in compact proof repeat artifact."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "repeat_graph_fact_hash_changed",
+          "notes": [
+            "Unchanged repeat graph fact hash must remain stable."
+          ],
+          "observed": false,
+          "status": "pass",
+          "target": false
+        },
+        {
+          "id": "repeat_db_writes_performed",
+          "notes": [
+            "Metadata/checkpoint writes may occur; proof graph rows must not mutate."
+          ],
+          "observed": false,
+          "status": "pass",
+          "target": "no proof graph mutations"
+        },
+        {
+          "id": "repeat_validation_work_integrity_ms",
+          "notes": [
+            "Validation work duration if the artifact persisted it."
+          ],
+          "observed": 744,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "repeat_integrity_check_included",
+          "notes": [
+            "Repeat artifact reports integrity status separately."
+          ],
+          "observed": "ok",
+          "status": "pass",
+          "target": "reported"
+        }
+      ]
+    },
+    "row_counts_and_cardinality": {
+      "metrics": [
+        {
+          "id": "files_walked",
+          "notes": [
+            "Cold proof build files walked."
+          ],
+          "observed": 8561,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "files_parsed",
+          "notes": [
+            "Cold proof build files parsed."
+          ],
+          "observed": 2555,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "content_templates",
+          "notes": [
+            "Source content templates."
+          ],
+          "observed": 2718,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "file_instances",
+          "notes": [
+            "Path-specific file instances."
+          ],
+          "observed": 4975,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "duplicate_content_templates",
+          "notes": [
+            "Duplicate local analyses skipped by content-template dedupe."
+          ],
+          "observed": 2420,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "template_entities",
+          "notes": [
+            "Template entity rows."
+          ],
+          "observed": 653819,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "template_edges",
+          "notes": [
+            "Template edge rows."
+          ],
+          "observed": 169290,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "proof_entities",
+          "notes": [
+            "Proof entity rows."
+          ],
+          "observed": 89407,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "proof_edges",
+          "notes": [
+            "Physical proof edge rows."
+          ],
+          "observed": 31848,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "structural_records",
+          "notes": [
+            "Generic structural relation rows."
+          ],
+          "observed": 0,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "callsites",
+          "notes": [
+            "Callsite rows."
+          ],
+          "observed": 2177,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "callsite_args",
+          "notes": [
+            "Callsite argument rows."
+          ],
+          "observed": 27980,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "symbols",
+          "notes": [
+            "Symbol dictionary rows."
+          ],
+          "observed": 696373,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "qname_prefixes",
+          "notes": [
+            "QName prefix dictionary rows."
+          ],
+          "observed": 155741,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "source_spans",
+          "notes": [
+            "File/source-span mapping rows."
+          ],
+          "observed": 62005,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "path_evidence_rows",
+          "notes": [
+            "Stored PathEvidence rows."
+          ],
+          "observed": 4096,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "heuristic_debug_rows",
+          "notes": [
+            "Audit/debug sidecar rows preserved outside compact proof facts."
+          ],
+          "observed": 1150760,
+          "status": "pass",
+          "target": "reported"
+        }
+      ]
+    },
+    "single_file_update": {
+      "metrics": [
+        {
+          "id": "single_file_update_total_ms",
+          "notes": [
+            "Single-file update p95 target is <=750 ms."
+          ],
+          "observed": 1694.0,
+          "status": "fail",
+          "target": 750.0
+        },
+        {
+          "id": "update_file_walk_time_ms",
+          "notes": [
+            "File walk span."
+          ],
+          "observed": 0.0,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "update_read_time_ms",
+          "notes": [
+            "File read span."
+          ],
+          "observed": 0.0477,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "update_hash_time_ms",
+          "notes": [
+            "File hash span."
+          ],
+          "observed": 0.0065,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "update_parse_time_ms",
+          "notes": [
+            "Parse span."
+          ],
+          "observed": 0.5188,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "update_stale_delete_time_ms",
+          "notes": [
+            "Indexed stale fact cleanup span."
+          ],
+          "observed": 279.7232,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "update_template_invalidation_time_ms",
+          "notes": [
+            "Template invalidation is not persisted as a separate span."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "update_template_insert_update_time_ms",
+          "notes": [
+            "Template insert/update time is not persisted separately."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "update_proof_entity_update_time_ms",
+          "notes": [
+            "Proof entity insertion/update span."
+          ],
+          "observed": 131.1959,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "update_proof_edge_update_time_ms",
+          "notes": [
+            "Proof edge insertion/update span."
+          ],
+          "observed": 154.84290000000004,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "update_dirty_path_evidence_count",
+          "notes": [
+            "Dirty PathEvidence rows regenerated."
+          ],
+          "observed": 2,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "update_path_evidence_regeneration_time_ms",
+          "notes": [
+            "PathEvidence regeneration span."
+          ],
+          "observed": 1.3706,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "update_index_maintenance_time_ms",
+          "notes": [
+            "Index maintenance span."
+          ],
+          "observed": 0.0,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "update_transaction_commit_time_ms",
+          "notes": [
+            "Transaction commit time is not persisted separately."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "update_integrity_or_quick_check_time_ms",
+          "notes": [
+            "Validation integrity duration captured outside the fast path."
+          ],
+          "observed": 4419.5278,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "update_graph_hash_update_time_ms",
+          "notes": [
+            "Graph fact hash measurement; current harness still runs a global check."
+          ],
+          "observed": 462.7498,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "update_restore_time_ms",
+          "notes": [
+            "Restore update duration from update-integrity harness."
+          ],
+          "observed": 1587.0,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "update_rows_deleted",
+          "notes": [
+            "Current artifact persists deleted fact files, not exact row count."
+          ],
+          "observed": 1,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "update_rows_inserted",
+          "notes": [
+            "Inserted proof entity + edge rows."
+          ],
+          "observed": 44,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "update_indexes_touched",
+          "notes": [
+            "Indexes touched are not persisted in the artifact."
+          ],
+          "observed": null,
+          "status": "unknown",
+          "target": "reported"
+        },
+        {
+          "id": "update_global_work_accidentally_triggered",
+          "notes": [
+            "Fast path should avoid full graph hash scans unless validation mode explicitly requests them."
+          ],
+          "observed": true,
+          "status": "fail",
+          "target": false
+        },
+        {
+          "id": "update_integrity_remains_ok",
+          "notes": [
+            "DB integrity must remain ok after update."
+          ],
+          "observed": "ok",
+          "status": "pass",
+          "target": "ok"
+        }
+      ]
+    },
+    "storage_contributors": {
+      "contributors": [
+        {
+          "bytes": 87523328,
+          "classification": "template",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 83.46875,
+          "name": "template_entities",
+          "previous_baseline_bytes": 87523328,
+          "rows": 653819,
+          "share_of_proof_db": 0.26032821237558024
+        },
+        {
+          "bytes": 40804352,
+          "classification": "template",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 38.9140625,
+          "name": "template_edges",
+          "previous_baseline_bytes": 40804352,
+          "rows": 169290,
+          "share_of_proof_db": 0.12136791705754073
+        },
+        {
+          "bytes": 30392320,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 28.984375,
+          "name": "symbol_dict",
+          "previous_baseline_bytes": 30392320,
+          "rows": 696373,
+          "share_of_proof_db": 0.09039850879009759
+        },
+        {
+          "bytes": 22274048,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 21.2421875,
+          "name": "qname_prefix_dict",
+          "previous_baseline_bytes": 22274048,
+          "rows": 155741,
+          "share_of_proof_db": 0.06625162948794483
+        },
+        {
+          "bytes": 16539648,
+          "classification": "template",
+          "delta_bytes": 0,
+          "kind": "index",
+          "mib": 15.7734375,
+          "name": "idx_template_edges_head_relation",
+          "previous_baseline_bytes": 16539648,
+          "rows": null,
+          "share_of_proof_db": 0.04919530707471888
+        },
+        {
+          "bytes": 16539648,
+          "classification": "template",
+          "delta_bytes": 0,
+          "kind": "index",
+          "mib": 15.7734375,
+          "name": "idx_template_edges_tail_relation",
+          "previous_baseline_bytes": 16539648,
+          "rows": null,
+          "share_of_proof_db": 0.04919530707471888
+        },
+        {
+          "bytes": 14602240,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "index",
+          "mib": 13.92578125,
+          "name": "idx_symbol_dict_hash",
+          "previous_baseline_bytes": 14602240,
+          "rows": null,
+          "share_of_proof_db": 0.0434327067165361
+        },
+        {
+          "bytes": 12742656,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "index",
+          "mib": 12.15234375,
+          "name": "idx_qualified_name_parts",
+          "previous_baseline_bytes": 12742656,
+          "rows": null,
+          "share_of_proof_db": 0.037901585019675686
+        },
+        {
+          "bytes": 12173312,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 11.609375,
+          "name": "qualified_name_dict",
+          "previous_baseline_bytes": 12173312,
+          "rows": 727372,
+          "share_of_proof_db": 0.03620813586579111
+        },
+        {
+          "bytes": 10248192,
+          "classification": "proof_optional",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 9.7734375,
+          "name": "file_entities",
+          "previous_baseline_bytes": 10248192,
+          "rows": 89407,
+          "share_of_proof_db": 0.030482084769922393
+        },
+        {
+          "bytes": 9097216,
+          "classification": "proof_optional",
+          "delta_bytes": 0,
+          "kind": "index",
+          "mib": 8.67578125,
+          "name": "idx_file_entities_entity",
+          "previous_baseline_bytes": 9097216,
+          "rows": null,
+          "share_of_proof_db": 0.027058637199839183
+        },
+        {
+          "bytes": 8519680,
+          "classification": "derived_cache",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 8.125,
+          "name": "path_evidence",
+          "previous_baseline_bytes": 8519680,
+          "rows": 4096,
+          "share_of_proof_db": 0.02534082187107857
+        },
+        {
+          "bytes": 6914048,
+          "classification": "proof_optional",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 6.59375,
+          "name": "file_edges",
+          "previous_baseline_bytes": 6914048,
+          "rows": 62959,
+          "share_of_proof_db": 0.0205650515953753
+        },
+        {
+          "bytes": 6803456,
+          "classification": "proof_required",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 6.48828125,
+          "name": "entities",
+          "previous_baseline_bytes": 6803456,
+          "rows": 89407,
+          "share_of_proof_db": 0.0202361082345488
+        },
+        {
+          "bytes": 6795264,
+          "classification": "proof_required",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 6.48046875,
+          "name": "file_source_spans",
+          "previous_baseline_bytes": 6795264,
+          "rows": 62005,
+          "share_of_proof_db": 0.02021174205967276
+        },
+        {
+          "bytes": 6168576,
+          "classification": "proof_optional",
+          "delta_bytes": 0,
+          "kind": "index",
+          "mib": 5.8828125,
+          "name": "idx_file_edges_edge",
+          "previous_baseline_bytes": 6168576,
+          "rows": null,
+          "share_of_proof_db": 0.018347729681655926
+        },
+        {
+          "bytes": 6094848,
+          "classification": "proof_optional",
+          "delta_bytes": 0,
+          "kind": "index",
+          "mib": 5.8125,
+          "name": "idx_file_source_spans_span",
+          "previous_baseline_bytes": 6094848,
+          "rows": null,
+          "share_of_proof_db": 0.018128434107771593
+        },
+        {
+          "bytes": 3309568,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "index",
+          "mib": 3.15625,
+          "name": "idx_qname_prefix_dict_hash",
+          "previous_baseline_bytes": 3309568,
+          "rows": null,
+          "share_of_proof_db": 0.009843934649918982
+        },
+        {
+          "bytes": 2105344,
+          "classification": "proof_required",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 2.0078125,
+          "name": "edges",
+          "previous_baseline_bytes": 2105344,
+          "rows": 31848,
+          "share_of_proof_db": 0.006262106943141531
+        },
+        {
+          "bytes": 1695744,
+          "classification": "proof_required",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 1.6171875,
+          "name": "files",
+          "previous_baseline_bytes": 1695744,
+          "rows": 4975,
+          "share_of_proof_db": 0.005043798199339677
+        },
+        {
+          "bytes": 1540096,
+          "classification": "structural",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 1.46875,
+          "name": "callsite_args",
+          "previous_baseline_bytes": 1540096,
+          "rows": 27980,
+          "share_of_proof_db": 0.004580840876694972
+        },
+        {
+          "bytes": 1028096,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "index",
+          "mib": 0.98046875,
+          "name": "idx_entities_qname",
+          "previous_baseline_bytes": 1028096,
+          "rows": null,
+          "share_of_proof_db": 0.0030579549469426544
+        },
+        {
+          "bytes": 1015808,
+          "classification": "proof_optional",
+          "delta_bytes": 0,
+          "kind": "index",
+          "mib": 0.96875,
+          "name": "idx_entities_name",
+          "previous_baseline_bytes": 1015808,
+          "rows": null,
+          "share_of_proof_db": 0.0030214056846285986
+        },
+        {
+          "bytes": 397312,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 0.37890625,
+          "name": "path_dict",
+          "previous_baseline_bytes": 397312,
+          "rows": 4975,
+          "share_of_proof_db": 0.0011817594814877987
+        },
+        {
+          "bytes": 200704,
+          "classification": "template",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 0.19140625,
+          "name": "source_content_template",
+          "previous_baseline_bytes": 200704,
+          "rows": 2718,
+          "share_of_proof_db": 0.0005969712844629086
+        },
+        {
+          "bytes": 196608,
+          "classification": "template",
+          "delta_bytes": 0,
+          "kind": "index",
+          "mib": 0.1875,
+          "name": "sqlite_autoindex_source_content_template_1",
+          "previous_baseline_bytes": 196608,
+          "rows": null,
+          "share_of_proof_db": 0.00058478819702489
+        },
+        {
+          "bytes": 126976,
+          "classification": "structural",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 0.12109375,
+          "name": "callsites",
+          "previous_baseline_bytes": 126976,
+          "rows": 2177,
+          "share_of_proof_db": 0.0003776757105785748
+        },
+        {
+          "bytes": 118784,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 0.11328125,
+          "name": "edge_provenance_dict",
+          "previous_baseline_bytes": 118784,
+          "rows": 1204,
+          "share_of_proof_db": 0.0003533095357025377
+        },
+        {
+          "bytes": 102400,
+          "classification": "template",
+          "delta_bytes": 0,
+          "kind": "index",
+          "mib": 0.09765625,
+          "name": "idx_files_content_template",
+          "previous_baseline_bytes": 102400,
+          "rows": null,
+          "share_of_proof_db": 0.00030457718595046357
+        },
+        {
+          "bytes": 4096,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 0.00390625,
+          "name": "edge_class_dict",
+          "previous_baseline_bytes": 4096,
+          "rows": 5,
+          "share_of_proof_db": 0.000012183087438018543
+        },
+        {
+          "bytes": 4096,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 0.00390625,
+          "name": "edge_context_dict",
+          "previous_baseline_bytes": 4096,
+          "rows": 2,
+          "share_of_proof_db": 0.000012183087438018543
+        },
+        {
+          "bytes": 4096,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 0.00390625,
+          "name": "entity_kind_dict",
+          "previous_baseline_bytes": 4096,
+          "rows": 31,
+          "share_of_proof_db": 0.000012183087438018543
+        },
+        {
+          "bytes": 4096,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 0.00390625,
+          "name": "exactness_dict",
+          "previous_baseline_bytes": 4096,
+          "rows": 2,
+          "share_of_proof_db": 0.000012183087438018543
+        },
+        {
+          "bytes": 4096,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 0.00390625,
+          "name": "extractor_dict",
+          "previous_baseline_bytes": 4096,
+          "rows": 6,
+          "share_of_proof_db": 0.000012183087438018543
+        },
+        {
+          "bytes": 4096,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 0.00390625,
+          "name": "language_dict",
+          "previous_baseline_bytes": 4096,
+          "rows": 6,
+          "share_of_proof_db": 0.000012183087438018543
+        },
+        {
+          "bytes": 4096,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 0.00390625,
+          "name": "object_id_dict",
+          "previous_baseline_bytes": 4096,
+          "rows": 0,
+          "share_of_proof_db": 0.000012183087438018543
+        },
+        {
+          "bytes": 4096,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 0.00390625,
+          "name": "relation_kind_dict",
+          "previous_baseline_bytes": 4096,
+          "rows": 20,
+          "share_of_proof_db": 0.000012183087438018543
+        },
+        {
+          "bytes": 4096,
+          "classification": "dictionary",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 0.00390625,
+          "name": "resolution_kind_dict",
+          "previous_baseline_bytes": 4096,
+          "rows": 7,
+          "share_of_proof_db": 0.000012183087438018543
+        },
+        {
+          "bytes": 4096,
+          "classification": "proof_required",
+          "delta_bytes": 0,
+          "kind": "table",
+          "mib": 0.00390625,
+          "name": "source_spans",
+          "previous_baseline_bytes": 4096,
+          "rows": 0,
+          "share_of_proof_db": 0.000012183087438018543
+        }
+      ]
+    },
+    "storage_summary": {
+      "metrics": [
+        {
+          "id": "proof_db_bytes",
+          "notes": [
+            "Proof DB family size in bytes."
+          ],
+          "observed": 336203776,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "proof_db_mib",
+          "notes": [
+            "Proof DB family must be <=250 MiB."
+          ],
+          "observed": 320.63,
+          "status": "fail",
+          "target": 250.0
+        },
+        {
+          "id": "proof_db_mib_stretch",
+          "notes": [
+            "Stretch target is <=150 MiB."
+          ],
+          "observed": 320.63,
+          "status": "fail",
+          "target": 150.0
+        },
+        {
+          "id": "audit_debug_db_bytes",
+          "notes": [
+            "Audit/debug DB bytes are reported separately and not counted against proof target."
+          ],
+          "observed": 1063632896,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "total_artifact_bytes",
+          "notes": [
+            "Proof + audit artifact bytes for operator planning."
+          ],
+          "observed": 1399836672,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "wal_bytes",
+          "notes": [
+            "WAL bytes are reported separately."
+          ],
+          "observed": 0,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "table_bytes",
+          "notes": [
+            "dbstat table bytes."
+          ],
+          "observed": 241885184,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "index_bytes",
+          "notes": [
+            "dbstat index bytes."
+          ],
+          "observed": 94285824,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "bytes_per_proof_edge",
+          "notes": [
+            "Whole proof DB bytes divided by physical proof-edge rows; this remains a bloat signal."
+          ],
+          "observed": 10556.51,
+          "status": "fail",
+          "target": 120.0
+        },
+        {
+          "id": "bytes_per_edge_table_plus_index",
+          "notes": [
+            "Physical edge table plus edge indexes per proof edge."
+          ],
+          "observed": 119.22,
+          "status": "pass",
+          "target": 120.0
+        },
+        {
+          "id": "bytes_per_entity",
+          "notes": [
+            "Average total bytes per entity row."
+          ],
+          "observed": 76.1,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "bytes_per_template_entity",
+          "notes": [
+            "Average total bytes per template entity row."
+          ],
+          "observed": 133.86,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "bytes_per_template_edge",
+          "notes": [
+            "Average total bytes per template edge row."
+          ],
+          "observed": 241.03,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "bytes_per_source_span",
+          "notes": [
+            "Average total bytes per file_source_spans row."
+          ],
+          "observed": 109.59,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "bytes_per_path_evidence_row",
+          "notes": [
+            "Average total bytes per PathEvidence row."
+          ],
+          "observed": 2080.0,
+          "status": "pass",
+          "target": "reported"
+        },
+        {
+          "id": "source_snippets_not_stored_redundantly",
+          "notes": [
+            "Source snippets should be loaded from source files, not redundantly stored in SQLite."
+          ],
+          "observed": true,
+          "status": "pass",
+          "target": true
+        }
+      ]
+    }
+  },
+  "source_of_truth": "MVP.md",
+  "timestamp": "20260512_110207"
+}

@@ -1,0 +1,190 @@
+{
+  "generated_at": "2026-05-12 15:07:49 -05:00",
+  "source_of_truth": "MVP.md",
+  "verdict": "fail",
+  "target_ms": 60000,
+  "production_proof_build_only_status": "timeout",
+  "production_proof_build_only_observed_ms": ">244000",
+  "summary": {
+    "graph_truth_gate": {
+      "status": "passed",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "artifact_json": "reports/audit/artifacts/cold_proof_build_graph_truth.json",
+      "artifact_md": "reports/audit/artifacts/cold_proof_build_graph_truth.md"
+    },
+    "context_packet_gate": {
+      "status": "passed",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "critical_symbol_recall": 1.0,
+      "proof_path_coverage": 1.0,
+      "source_span_coverage": 1.0,
+      "artifact_json": "reports/audit/artifacts/cold_proof_build_context_packet.json",
+      "artifact_md": "reports/audit/artifacts/cold_proof_build_context_packet.md"
+    },
+    "db_integrity": {
+      "fixture_validation_mode": "passed",
+      "autoresearch_completed_db": false,
+      "notes": "Autoresearch proof-build-only did not complete within the measurement cap, so no new large completed DB integrity result exists for this phase."
+    },
+    "full_workspace_tests": {
+      "command": "cargo test --workspace",
+      "status": "passed"
+    },
+    "comprehensive_benchmark": {
+      "command": "codegraph-mcp bench comprehensive --timestamp cold_proof_build_optimization",
+      "status": "reported_fail",
+      "artifact_json": "reports/final/comprehensive_benchmark_cold_proof_build_optimization.json",
+      "artifact_md": "reports/final/comprehensive_benchmark_cold_proof_build_optimization.md",
+      "notes": "The comprehensive benchmark intentionally still uses the persisted Autoresearch cold-build artifact and keeps the cold-build/storage failures visible."
+    }
+  },
+  "modes_confirmed": [
+    {
+      "mode": "proof-build-only",
+      "command": "codegraph-mcp index <repo> --build-mode proof-build-only --storage-mode proof --profile --json",
+      "purpose": "Production proof DB build path. Excludes storage audit, relation sampler, CGC comparison, manual label processing, repeated DB rebuild, and full markdown report generation.",
+      "post_index_check": "quick_check publish gate"
+    },
+    {
+      "mode": "proof-build-plus-validation",
+      "command": "codegraph-mcp index <repo> --build-mode proof-build-plus-validation --storage-mode proof --profile --json",
+      "purpose": "Proof DB build plus full integrity validation.",
+      "post_index_check": "integrity_check publish gate"
+    },
+    {
+      "mode": "proof-build-plus-audit",
+      "command": "full gate or explicit audit/debug sidecar build",
+      "purpose": "Separate audit/debug sidecar work. Not counted as production proof-build-only."
+    },
+    {
+      "mode": "full-comprehensive-gate",
+      "command": "codegraph-mcp bench comprehensive",
+      "purpose": "Aggregated correctness, context, storage, indexing, latency, and comparison-readiness reporting. Not the production cold-build target."
+    }
+  ],
+  "implementation_changes": [
+    "Added explicit index build modes and CLI parsing for proof-build-only and proof-build-plus-validation.",
+    "Cold indexes build into a hidden temp DB and publish only after the configured gate passes.",
+    "Proof-build-only uses hidden-temp bulk-load pragmas during the temp build, then restores durable WAL/FULL settings before publish.",
+    "Proof-build-only skips the in-transaction quick_check and relies on hidden-temp and final publish quick checks after commit.",
+    "Proof-build-plus-validation keeps the full integrity gate.",
+    "Proof-build-only fast bulk finish avoids ANALYZE and WAL checkpoint work in the build phase.",
+    "Template entity and edge writes use prepared statements and a store-local dictionary cache."
+  ],
+  "autoresearch_partial_benchmark": {
+    "repo": "<REPO_ROOT>/Desktop/development/autoresearch-codexlab",
+    "command": "codegraph-mcp index <autoresearch> --db reports/audit/artifacts/cold_proof_build_fast_autoresearch_after_pragmas.sqlite --profile --json --workers 16 --storage-mode proof --build-mode proof-build-only",
+    "status": "timeout",
+    "timeout_ms": 244000,
+    "completed_batches": 9,
+    "target_met": false,
+    "comparable_first_9_batches": {
+      "before_db_write_ms": 209128,
+      "after_db_write_ms": 151785,
+      "delta_ms": 57343,
+      "delta_pct": 27.42
+    },
+    "batch_write_comparison": [
+      {
+        "batch": 1,
+        "before_ms": 107936,
+        "after_ms": 81335,
+        "delta_ms": 26601,
+        "delta_pct": 24.65,
+        "entities": 51240,
+        "edges": 41263
+      },
+      {
+        "batch": 2,
+        "before_ms": 28337,
+        "after_ms": 16426,
+        "delta_ms": 11911,
+        "delta_pct": 42.03,
+        "entities": 47590,
+        "edges": 14112
+      },
+      {
+        "batch": 8,
+        "before_ms": 23298,
+        "after_ms": 13050,
+        "delta_ms": 10248,
+        "delta_pct": 43.99,
+        "entities": 29200,
+        "edges": 10917
+      },
+      {
+        "batch": 9,
+        "before_ms": 47637,
+        "after_ms": 39268,
+        "delta_ms": 8369,
+        "delta_pct": 17.57,
+        "entities": 51994,
+        "edges": 17722
+      }
+    ],
+    "artifacts": {
+      "before_progress": "reports/audit/artifacts/cold_proof_build_fast_autoresearch_cmd.stderr.log",
+      "after_progress": "reports/audit/artifacts/cold_proof_build_fast_autoresearch_after_pragmas.stderr.log"
+    }
+  },
+  "fixture_benchmarks": {
+    "proof_build_only": {
+      "status": "completed",
+      "total_wall_ms": 928,
+      "db_write_ms": 61,
+      "build_mode": "proof-build-only",
+      "quick_check_spans": 2,
+      "integrity_check_spans": 0,
+      "artifact_json": "reports/audit/artifacts/cold_proof_build_fixture_proof_only.json"
+    },
+    "proof_build_plus_validation": {
+      "status": "completed",
+      "total_wall_ms": 985,
+      "db_write_ms": 117,
+      "build_mode": "proof-build-plus-validation",
+      "integrity_check_spans": 2,
+      "artifact_json": "reports/audit/artifacts/cold_proof_build_fixture_validation.json"
+    }
+  },
+  "remaining_bottlenecks": [
+    {
+      "rank": 1,
+      "stage": "template and dictionary persistence inside large batches",
+      "evidence": "After the fast-temp changes, batch 1 still spent 81.335s in db_write_ms for 51,240 entities and 41,263 edges."
+    },
+    {
+      "rank": 2,
+      "stage": "large generated/source-heavy templates",
+      "evidence": "Batches with tens of thousands of template entities dominate write time; small batches complete in tens of milliseconds."
+    },
+    {
+      "rank": 3,
+      "stage": "per-row dictionary and template table writes",
+      "evidence": "Fixture profile shows dictionary lookup/insert remains the dominant profiled insert span even on a tiny fixture."
+    },
+    {
+      "rank": 4,
+      "stage": "template table materialization model",
+      "evidence": "The system still writes hundreds of thousands of template rows during cold proof build rather than bulk-loading from compact columnar buffers."
+    },
+    {
+      "rank": 5,
+      "stage": "post-build index creation and validation",
+      "evidence": "No longer the primary suspect for the timeout, but still separated so validation/audit are not counted as production proof-build-only."
+    }
+  ],
+  "storage_change_safety_questions": {
+    "did_graph_truth_still_pass": true,
+    "did_context_packet_quality_still_pass": true,
+    "did_proof_db_size_decrease": "not measured as a completed Autoresearch DB in this phase; no storage optimization was claimed",
+    "removed_data_destination": "no proof data was removed; this phase changed build-time durability/profile behavior only"
+  },
+  "next_required_work": [
+    "Split template/dictionary persistence profile further inside db_write_ms for completed large batches.",
+    "Replace per-row dictionary lookup/insert with batch interning for symbols, qname prefixes, qualified names, and provenance IDs.",
+    "Bulk-load template_entities and template_edges through temporary staging tables or prepared multi-row chunks.",
+    "Keep validation/audit/reporting out of proof-build-only measurements."
+  ]
+}

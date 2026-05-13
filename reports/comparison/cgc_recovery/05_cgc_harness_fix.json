@@ -1,0 +1,21 @@
+{
+    "schema_version":  1,
+    "generated_at":  "2026-05-13T08:51:32.8206026-05:00",
+    "phase":  "harness_fix",
+    "files_changed":  [
+                          "crates/codegraph-bench/src/competitors/codegraphcontext.rs"
+                      ],
+    "changes":  [
+                    "discover repo-local .tools/cgc_recovery/venv312_compat/Scripts/cgc.exe",
+                    "discover legacy target/cgc-competitor CGC executables",
+                    "support isolated CGC_COMPETITOR_HOME/home_override",
+                    "set HOME/USERPROFILE/LOCALAPPDATA/APPDATA and deterministic env for CGC child process",
+                    "add repo-local discovery test"
+                ],
+    "semantics_changed":  false,
+    "parser_or_scoring_changed":  false,
+    "tests":  [
+                  "cargo test -p codegraph-bench competitors::codegraphcontext --lib passed earlier",
+                  "cargo test --workspace passed"
+              ]
+}

@@ -1,0 +1,22 @@
+{
+    "schema_version":  1,
+    "generated_at":  "2026-05-13T08:49:31.3297896-05:00",
+    "phase":  "fixture_diagnostic",
+    "status":  "completed_not_comparable",
+    "fixtures_attempted":  5,
+    "skipped":  0,
+    "total_index_latency_ms":  9289,
+    "total_query_latency_ms":  19034,
+    "file_recall_at_10":  0.0,
+    "symbol_recall_at_10":  0.4066666666666666,
+    "path_recall_at_10":  0.0,
+    "relation_f1":  0.0,
+    "comparable":  false,
+    "comparable_reason":  "CGC completed fixture commands but normalized output lacks comparable graph paths, relation/source-span proof evidence, and final DB artifact semantics.",
+    "artifacts":  [
+                      "reports/comparison/cgc_recovery/artifacts/fixture_diagnostic/run.json",
+                      "reports/comparison/cgc_recovery/artifacts/fixture_diagnostic/summary.md",
+                      "reports/comparison/cgc_recovery/artifacts/fixture_diagnostic/raw_artifacts/codegraphcontext/",
+                      "reports/comparison/cgc_recovery/artifacts/fixture_diagnostic/normalized_outputs/codegraphcontext/"
+                  ]
+}

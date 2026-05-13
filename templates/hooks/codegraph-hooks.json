@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "source_of_truth": "MVP.md",
+  "workflow": "single-agent-only",
+  "rules": [
+    "Read MVP.md if present; treat it as the source of truth.",
+    "Do not use subagents.",
+    "Call codegraph.context_pack before non-trivial edits.",
+    "Prefer verified relation paths over semantic similarity.",
+    "Use exact source spans from CodeGraph.",
+    "After edits, call codegraph.update_changed_files.",
+    "Run recommended tests when practical.",
+    "Use codegraph-mcp trace append for shell_command, file_edit, test_run, context_pack_used, and run_end events."
+  ],
+  "hooks": [
+    {
+      "event": "SessionStart",
+      "template": "SessionStart.md",
+      "purpose": "Detect CodeGraph index and add a compact context reminder.",
+      "tools": [
+        "codegraph.status",
+        "codegraph.context_pack"
+      ]
+    },
+    {
+      "event": "UserPromptSubmit",
+      "template": "UserPromptSubmit.md",
+      "purpose": "Classify prompt mode and select the appropriate CodeGraph tool.",
+      "modes": [
+        "small-edit",
+        "large-codebase",
+        "auth",
+        "security",
+        "dataflow",
+        "migration",
+        "event-flow",
+        "test-impact"
+      ]
+    },
+    {
+      "event": "PreToolUse",
+      "template": "PreToolUse.md",
+      "purpose": "Warn before risky destructive commands, broad edits without context, or secret exposure."
+    },
+    {
+      "event": "PostToolUse",
+      "template": "PostToolUse.md",
+      "purpose": "Update changed files after edits and record failing test traces after shell commands.",
+      "tools": [
+        "codegraph.update_changed_files",
+        "codegraph-mcp trace append"
+      ]
+    },
+    {
+      "event": "Stop",
+      "template": "Stop.md",
+      "purpose": "Record task, retrieved paths, edited files, tests, pass/fail status, trace metrics, and replay validation.",
+      "tools": [
+        "codegraph-mcp trace append",
+        "codegraph-mcp trace replay"
+      ]
+    }
+  ]
+}

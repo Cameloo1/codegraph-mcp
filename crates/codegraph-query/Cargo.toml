@@ -1,0 +1,25 @@
+[package]
+name = "codegraph-query"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+sqlite = []
+rocksdb = []
+qdrant = []
+faiss = []
+ui = []
+mcp = []
+
+[lints]
+workspace = true
+
+[dependencies]
+codegraph-core = { version = "0.0.0", path = "../codegraph-core" }
+codegraph-vector = { version = "0.0.0", path = "../codegraph-vector" }
+serde_json = "1"

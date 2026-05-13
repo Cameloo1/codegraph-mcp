@@ -1,0 +1,2392 @@
+{
+  "schema_version": 1,
+  "db_path": "reports/final/artifacts/comprehensive_proof_1778642765060.sqlite",
+  "relation_filter": "CALLS",
+  "limit": 50,
+  "seed": 41,
+  "include_snippets": true,
+  "manual_classification_options": [
+    "true_positive",
+    "false_positive",
+    "wrong_direction",
+    "wrong_target",
+    "wrong_span",
+    "stale",
+    "duplicate",
+    "unresolved_mislabeled_exact",
+    "test_mock_leaked",
+    "derived_missing_provenance",
+    "unsure"
+  ],
+  "samples": [
+    {
+      "ordinal": 1,
+      "edge_id": "edge-key:-9219686753999769194",
+      "head": {
+        "id": "repo://e/f353f7a021403b74753342fee5fb79aa",
+        "name": "respondApprovalRequest",
+        "qualified_name": "services::orchestrator::src::approval-store.respondApprovalRequest",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/af75cf852a747d194ec30a236ff188b7",
+        "name": "listApprovalRequests",
+        "qualified_name": "services::orchestrator::src::approval-store.listApprovalRequests",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "services/orchestrator/src/approval-store.mjs",
+        "start_line": 43,
+        "start_column": 27,
+        "end_line": 43,
+        "end_column": 57
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:485f29268cd8e8eb",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/services/orchestrator/src/approval-store.mjs",
+        "start_line": 41,
+        "end_line": 45,
+        "text": "41: \n42: export async function respondApprovalRequest(repoRoot, approvalId, decision, reason = \"\") {\n43:   const approvals = await listApprovalRequests(repoRoot);\n44:   const index = approvals.findIndex((item) => item.approval_id === approvalId);\n45:   if (index === -1) {"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 2,
+      "edge_id": "edge-key:-9218329364481355278",
+      "head": {
+        "id": "repo://e/df4541a73c7c7ecdfab2b77f013df3db",
+        "name": "pre_sampling_compact_runs_on_switch_to_smaller_context_model",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::tests::suite::compact.pre_sampling_compact_runs_on_switch_to_smaller_context_model",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/f91751499a70ff441a9e002f367e6cf6",
+        "name": "assert_compaction_uses_turn_lifecycle_id",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::tests::suite::compact.assert_compaction_uses_turn_lifecycle_id",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/tests/suite/compact.rs",
+        "start_line": 2048,
+        "start_column": 5,
+        "end_line": 2048,
+        "end_column": 58
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:1b0601dd0410e139",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/tests/suite/compact.rs",
+        "start_line": 2046,
+        "end_line": 2050,
+        "text": "2046:         .await\n2047:         .expect(\"submit second user turn\");\n2048:     assert_compaction_uses_turn_lifecycle_id(&test.codex).await;\n2049: \n2050:     let requests = request_log.requests();"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 3,
+      "edge_id": "edge-key:-9207033643377571536",
+      "head": {
+        "id": "repo://e/f8c031010d77b297257b26248308ae49",
+        "name": "manual_compact_uses_custom_prompt",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::tests::suite::compact.manual_compact_uses_custom_prompt",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/47e31767d0dbb3eff725331fd9c83239",
+        "name": "non_openai_model_provider",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::tests::suite::compact.non_openai_model_provider",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/tests/suite/compact.rs",
+        "start_line": 703,
+        "start_column": 26,
+        "end_line": 703,
+        "end_column": 60
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:1b0601dd0410e139",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/tests/suite/compact.rs",
+        "start_line": 701,
+        "end_line": 705,
+        "text": "701:     let custom_prompt = \"Use this compact prompt instead\";\n702: \n703:     let model_provider = non_openai_model_provider(&server);\n704:     let mut builder = test_codex().with_config(move |config| {\n705:         config.model_provider = model_provider;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 4,
+      "edge_id": "edge-key:-9204612225682906844",
+      "head": {
+        "id": "repo://e/27656b159d54d78d111f2fb148e040ab",
+        "name": "thread_rollback_recomputes_previous_turn_settings_and_reference_context_from_replay",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::tests.thread_rollback_recomputes_previous_turn_settings_and_reference_context_from_replay",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/3f1602df5fe97e53d17d17be955890c5",
+        "name": "assistant_message",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::tests.assistant_message",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 2224,
+        "start_column": 30,
+        "end_line": 2224,
+        "end_column": 67
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9ef4f9f90c663f41",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 2222,
+        "end_line": 2226,
+        "text": "2222:         .expect(\"turn context should have turn_id\");\n2223:     let turn_one_user = user_message(\"turn 1 user\");\n2224:     let turn_one_assistant = assistant_message(\"turn 1 assistant\");\n2225:     let turn_two_user = user_message(\"turn 2 user\");\n2226:     let turn_two_assistant = assistant_message(\"turn 2 assistant\");"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 5,
+      "edge_id": "edge-key:-9203917153979327882",
+      "head": {
+        "id": "repo://e/452c512aea4ba41584a962f30cc8421b",
+        "name": "ensure_source_prerequisites",
+        "qualified_name": "upstream::openai-codex::tools::argument-comment-lint::wrapper_common.ensure_source_prerequisites",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/d013e611173856997770c0b76164cc9b",
+        "name": "require_command",
+        "qualified_name": "upstream::openai-codex::tools::argument-comment-lint::wrapper_common.require_command",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/tools/argument-comment-lint/wrapper_common.py",
+        "start_line": 189,
+        "start_column": 5,
+        "end_line": 197,
+        "end_column": 6
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:5d8a582c9b31529f",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/tools/argument-comment-lint/wrapper_common.py",
+        "start_line": 187,
+        "end_line": 199,
+        "text": "187:         \"  cargo install --locked cargo-dylint dylint-link\",\n188:     )\n189:     require_command(\n190:         \"rustup\",\n191:         \"argument-comment-lint source wrapper requires rustup.\\n\"\n192:         f\"Install the {TOOLCHAIN_CHANNEL} toolchain with:\\n\"\n193:         f\"  rustup toolchain install {TOOLCHAIN_CHANNEL} \\\\\\n\"\n194:         \"    --component llvm-tools-preview \\\\\\n\"\n195:         \"    --component rustc-dev \\\\\\n\"\n196:         \"    --component rust-src\",\n197:     )\n198:     toolchains = run_capture([\"rustup\", \"toolchain\", \"list\"], env=env)\n199:     if not any(line.startswith(TOOLCHAIN_CHANNEL) for line in toolchains.splitlines()):"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 6,
+      "edge_id": "edge-key:-9203193041256805099",
+      "head": {
+        "id": "repo://e/4dde9772c13d887f6158b3cb23f05e51",
+        "name": "emit_turn_item_in_plan_mode",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::turn.emit_turn_item_in_plan_mode",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/9e08a923bfb19c490651902c569246f7",
+        "name": "emit_agent_message_in_plan_mode",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::turn.emit_agent_message_in_plan_mode",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/src/session/turn.rs",
+        "start_line": 1749,
+        "start_column": 13,
+        "end_line": 1749,
+        "end_column": 86
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:ba16f39d3aae7e75",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/src/session/turn.rs",
+        "start_line": 1747,
+        "end_line": 1751,
+        "text": "1747:     match turn_item {\n1748:         TurnItem::AgentMessage(agent_message) => {\n1749:             emit_agent_message_in_plan_mode(sess, turn_context, agent_message, state).await;\n1750:         }\n1751:         _ => {"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 7,
+      "edge_id": "edge-key:-9200221164749853995",
+      "head": {
+        "id": "repo://e/a834d4979bd40b385462a7c8de111366",
+        "name": "runAppServerObjective",
+        "qualified_name": "services::orchestrator::src::run-manager.runAppServerObjective",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/c47b432c50a38310098e107afa661dca",
+        "name": "walkFiles",
+        "qualified_name": "packages::core::src::fs-utils.walkFiles",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "services/orchestrator/src/run-manager.mjs",
+        "start_line": 213,
+        "start_column": 30,
+        "end_line": 213,
+        "end_column": 52
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:67b86b73b8254b08",
+      "derived": false,
+      "extractor": "codegraph-index-static-import-resolver",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {
+        "resolution": "resolved_static_import",
+        "resolver": "static_import_call_target"
+      },
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/services/orchestrator/src/run-manager.mjs",
+        "start_line": 211,
+        "end_line": 215,
+        "text": "211: \n212:     const hashes = {};\n213:     for (const file of await walkFiles(run.runRoot)) {\n214:       const relative = path.relative(run.runRoot, file).replaceAll(\"\\\\\", \"/\");\n215:       if (relative === \"hashes.json\") continue;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 8,
+      "edge_id": "edge-key:-9194174111317313219",
+      "head": {
+        "id": "repo://e/aee869929cad097078054296d1bc8be2",
+        "name": "connection_closed_clears_registered_request_contexts",
+        "qualified_name": "runtime::arl-codex::codex-rs::app-server::src::outgoing_message.tests.connection_closed_clears_registered_request_contexts",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/79f829d4591c37c53e72203556bf944b",
+        "name": "register_request_context",
+        "qualified_name": "runtime::arl-codex::codex-rs::app-server::src::outgoing_message.register_request_context",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/app-server/src/outgoing_message.rs",
+        "start_line": 1122,
+        "start_column": 9,
+        "end_line": 1127,
+        "end_column": 15
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:ce36408d6991fa2d",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/app-server/src/outgoing_message.rs",
+        "start_line": 1120,
+        "end_line": 1129,
+        "text": "1120:         };\n1121: \n1122:         outgoing\n1123:             .register_request_context(RequestContext::new(\n1124:                 closed_connection_request,\n1125:                 tracing::info_span!(\"app_server.request\", rpc.method = \"turn/interrupt\"),\n1126:                 /*parent_trace*/ None,\n1127:             ))\n1128:             .await;\n1129:         outgoing"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 9,
+      "edge_id": "edge-key:-9191016095031720750",
+      "head": {
+        "id": "repo://e/d2f28d388b8d6b456368202203ceb0cf",
+        "name": "manual_compact_retries_after_context_window_error",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::tests::suite::compact.manual_compact_retries_after_context_window_error",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/57d691bcfa1187b91384cc6275c69473",
+        "name": "set_test_compact_prompt",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::tests::suite::compact.set_test_compact_prompt",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/tests/suite/compact.rs",
+        "start_line": 2378,
+        "start_column": 9,
+        "end_line": 2378,
+        "end_column": 40
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:1b0601dd0410e139",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/tests/suite/compact.rs",
+        "start_line": 2376,
+        "end_line": 2380,
+        "text": "2376:     let mut builder = test_codex().with_config(move |config| {\n2377:         config.model_provider = model_provider;\n2378:         set_test_compact_prompt(config);\n2379:         config.model_auto_compact_token_limit = Some(200_000);\n2380:     });"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 10,
+      "edge_id": "edge-key:-9189397946054752705",
+      "head": {
+        "id": "repo://e/55c2be7a3b816ed8a709ed88e8c11936",
+        "name": "test_environment_rejects_sandboxed_filesystem_without_runtime_paths",
+        "qualified_name": "upstream::openai-codex::codex-rs::exec-server::src::environment.tests.test_environment_rejects_sandboxed_filesystem_without_runtime_paths",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/a12fabda04a7334d3907a5bb79d0e897",
+        "name": "get_filesystem",
+        "qualified_name": "upstream::openai-codex::codex-rs::exec-server::src::environment.get_filesystem",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/exec-server/src/environment.rs",
+        "start_line": 567,
+        "start_column": 19,
+        "end_line": 568,
+        "end_column": 30
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:6dbf4f6e17fd9efd",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/exec-server/src/environment.rs",
+        "start_line": 565,
+        "end_line": 570,
+        "text": "565:         );\n566: \n567:         let err = environment\n568:             .get_filesystem()\n569:             .read_file(&path, Some(&sandbox))\n570:             .await"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 11,
+      "edge_id": "edge-key:-9188943476723159600",
+      "head": {
+        "id": "repo://e/82981122f21b1c7c271bf4f71dff4a1e",
+        "name": "render",
+        "qualified_name": "packages::ui-autoresearch::src::app.render",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/afb22024d68b612c5c6ee74d2771a1b2",
+        "name": "renderList",
+        "qualified_name": "packages::ui-autoresearch::src::app.renderList",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/ui-autoresearch/src/app.js",
+        "start_line": 147,
+        "start_column": 3,
+        "end_line": 152,
+        "end_column": 109
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:52a5b8c00049eaea",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/ui-autoresearch/src/app.js",
+        "start_line": 145,
+        "end_line": 154,
+        "text": "145:   `;\n146: \n147:   renderList(\"evidence-health-detail\", [\n148:     { label: \"label\", value: detail.evidence_health?.label ?? \"unknown\" },\n149:     { label: \"unknowns\", value: unknownClaimCount(detail) },\n150:     { label: \"claims\", value: detail.claims?.length ?? 0 },\n151:     { label: \"evidence\", value: detail.evidence?.length ?? 0 }\n152:   ], (row) => `<div class=\"row\"><b>${escapeHtml(row.label)}</b><span>${escapeHtml(row.value)}</span></div>`);\n153:   renderList(\"claims\", detail.claims ?? [], (claim) => `<div class=\"row\"><b>${escapeHtml(claim.status)}</b><span>${escapeHtml(claim.text)}</span></div>`);\n154:   renderList(\"evidence\", detail.evidence ?? [], (item) => `<div class=\"row\"><b>${escapeHtml(item.evidence_id)}</b><span>${escapeHtml(item.summary)} (${escapeHtml(item.strength)})</span></div>`);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 12,
+      "edge_id": "edge-key:-9180476430850508159",
+      "head": {
+        "id": "repo://e/a9ff49a6db1f03f97e72eef0139e1dcb",
+        "name": "histogram_sum",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::tests.histogram_sum",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/9aba5d174a51897a4425341cecd4add8",
+        "name": "find_metric",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::tests.find_metric",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 238,
+        "start_column": 18,
+        "end_line": 238,
+        "end_column": 53
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:3df730b4b3fcd1f0",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 236,
+        "end_line": 240,
+        "text": "236: \n237: fn histogram_sum(resource_metrics: &ResourceMetrics, name: &str) -> u64 {\n238:     let metric = find_metric(resource_metrics, name);\n239:     match metric.data() {\n240:         AggregatedMetrics::F64(data) => match data {"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 13,
+      "edge_id": "edge-key:-9175448200043001236",
+      "head": {
+        "id": "repo://e/0c1ccdf49c1e9aeeb79d78e378415710",
+        "name": "legacy_non_tty_powershell_emits_output",
+        "qualified_name": "runtime::arl-codex::codex-rs::windows-sandbox-rs::src::unified_exec::tests.legacy_non_tty_powershell_emits_output",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/9c656e690399dd0e70249a476165f5c4",
+        "name": "collect_stdout_and_exit",
+        "qualified_name": "runtime::arl-codex::codex-rs::windows-sandbox-rs::src::unified_exec::tests.collect_stdout_and_exit",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs",
+        "start_line": 218,
+        "start_column": 13,
+        "end_line": 218,
+        "end_column": 89
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:adb1bc7ba0597be9",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs",
+        "start_line": 216,
+        "end_line": 220,
+        "text": "216:         println!(\"pwsh spawn returned\");\n217:         let (stdout, exit_code) =\n218:             collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(10)).await;\n219:         println!(\"pwsh collect returned exit_code={exit_code}\");\n220:         let stdout = String::from_utf8_lossy(&stdout);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 14,
+      "edge_id": "edge-key:-9173920181625997413",
+      "head": {
+        "id": "repo://e/82981122f21b1c7c271bf4f71dff4a1e",
+        "name": "render",
+        "qualified_name": "packages::ui-autoresearch::src::app.render",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/6070032f045615e1f8f660209494ae43",
+        "name": "runRows",
+        "qualified_name": "packages::ui-autoresearch::src::app.runRows",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/ui-autoresearch/src/app.js",
+        "start_line": 138,
+        "start_column": 114,
+        "end_line": 138,
+        "end_column": 127
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:52a5b8c00049eaea",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/ui-autoresearch/src/app.js",
+        "start_line": 136,
+        "end_line": 140,
+        "text": "136:     </dl>\n137:   `;\n138:   document.getElementById(\"run-list\").innerHTML = runs.length === 0 ? \"<div class=\\\"empty\\\">No runs yet</div>\" : runRows(runs);\n139:   document.getElementById(\"objective-detail-panel\").innerHTML = `\n140:     <dl>"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 15,
+      "edge_id": "edge-key:-9173892207857001214",
+      "head": {
+        "id": "repo://e/7222436ec99b2a2b0a6160f8227ae759",
+        "name": "make_session_with_history_source_and_agent_control_and_rx",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::tests.make_session_with_history_source_and_agent_control_and_rx",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/d7c94fe6402d241308c79d3cd958202d",
+        "name": "build_test_config",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::tests.build_test_config",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 4084,
+        "start_column": 22,
+        "end_line": 4084,
+        "end_column": 58
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:3df730b4b3fcd1f0",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 4082,
+        "end_line": 4086,
+        "text": "4082: ) -> anyhow::Result<(Arc<Session>, async_channel::Receiver<Event>)> {\n4083:     let codex_home = tempfile::tempdir().expect(\"create temp dir\");\n4084:     let mut config = build_test_config(codex_home.path()).await;\n4085:     config.ephemeral = true;\n4086:     let config = Arc::new(config);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 16,
+      "edge_id": "edge-key:-9157570605903685370",
+      "head": {
+        "id": "repo://e/306274c0e8bba5338a8951669d32c635",
+        "name": "external_goal_mutation_accounts_active_turn_before_status_change",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::tests.external_goal_mutation_accounts_active_turn_before_status_change",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/34802c2349b413668514916807278800",
+        "name": "set_total_token_usage",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::tests.set_total_token_usage",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 7966,
+        "start_column": 5,
+        "end_line": 7966,
+        "end_column": 58
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:3df730b4b3fcd1f0",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 7964,
+        "end_line": 7968,
+        "text": "7964:     )\n7965:     .await;\n7966:     set_total_token_usage(&sess, post_goal_token_usage()).await;\n7967: \n7968:     sess.goal_runtime_apply(GoalRuntimeEvent::ExternalMutationStarting)"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 17,
+      "edge_id": "edge-key:-9155260334438884468",
+      "head": {
+        "id": "repo://e/1c51ecf7122d1f0803d9b358e87aee06",
+        "name": "exec_resume_accepts_images_after_subcommand",
+        "qualified_name": "runtime::arl-codex::codex-rs::exec::tests::suite::resume.exec_resume_accepts_images_after_subcommand",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/f8cdbb07b82e54259e39a7bee0c9f6e7",
+        "name": "exec_repo_root",
+        "qualified_name": "runtime::arl-codex::codex-rs::exec::tests::suite::resume.exec_repo_root",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/exec/tests/suite/resume.rs",
+        "start_line": 490,
+        "start_column": 21,
+        "end_line": 490,
+        "end_column": 37
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:f86492bec41b5865",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/exec/tests/suite/resume.rs",
+        "start_line": 488,
+        "end_line": 492,
+        "text": "488:     let test = test_codex_exec();\n489:     let fixture = exec_fixture()?;\n490:     let repo_root = exec_repo_root()?;\n491: \n492:     let marker = format!(\"resume-image-{}\", Uuid::new_v4());"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 18,
+      "edge_id": "edge-key:-9154203036610331841",
+      "head": {
+        "id": "repo://e/aee869929cad097078054296d1bc8be2",
+        "name": "connection_closed_clears_registered_request_contexts",
+        "qualified_name": "runtime::arl-codex::codex-rs::app-server::src::outgoing_message.tests.connection_closed_clears_registered_request_contexts",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/23984f32a37c6749497aa019139a6893",
+        "name": "connection_closed",
+        "qualified_name": "runtime::arl-codex::codex-rs::app-server::src::outgoing_message.connection_closed",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/app-server/src/outgoing_message.rs",
+        "start_line": 1138,
+        "start_column": 9,
+        "end_line": 1138,
+        "end_column": 52
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:ce36408d6991fa2d",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/app-server/src/outgoing_message.rs",
+        "start_line": 1136,
+        "end_line": 1140,
+        "text": "1136:         assert_eq!(outgoing.request_context_count().await, 2);\n1137: \n1138:         outgoing.connection_closed(ConnectionId(9)).await;\n1139: \n1140:         assert_eq!(outgoing.request_context_count().await, 1);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 19,
+      "edge_id": "edge-key:-9152681992855170393",
+      "head": {
+        "id": "repo://e/2ce98b1fd830a81db10215877da41cf3",
+        "name": "createDashboardObjective",
+        "qualified_name": "packages::cli::src::dashboard-server.createDashboardObjective",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/7f66eaa097d2b28f55465d38defbf959",
+        "name": "yamlString",
+        "qualified_name": "packages::cli::src::dashboard-server.yamlString",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/dashboard-server.mjs",
+        "start_line": 156,
+        "start_column": 18,
+        "end_line": 156,
+        "end_column": 51
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9453dc0bb38c212e",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/dashboard-server.mjs",
+        "start_line": 154,
+        "end_line": 158,
+        "text": "154:     throw new Error(`objective already exists: ${id}`);\n155:   }\n156:   const domain = yamlString(body.domain ?? \"code\") || \"code\";\n157:   const riskLevel = yamlString(body.risk_level ?? \"low\") || \"low\";\n158:   const title = yamlString(body.title ?? id) || id;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 20,
+      "edge_id": "edge-key:-9152578509063404769",
+      "head": {
+        "id": "repo://e/c7140c01e274147e3291557d11392a08",
+        "name": "record_context_updates_and_set_reference_context_item",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::mod.record_context_updates_and_set_reference_context_item",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/daa6c38ab6d6c9ac800cced52ee1916e",
+        "name": "record_conversation_items",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::mod.record_conversation_items",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/src/session/mod.rs",
+        "start_line": 2848,
+        "start_column": 13,
+        "end_line": 2848,
+        "end_column": 73
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:c800723a11df89d4",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/src/session/mod.rs",
+        "start_line": 2846,
+        "end_line": 2850,
+        "text": "2846:         let turn_context_item = turn_context.to_turn_context_item();\n2847:         if !context_items.is_empty() {\n2848:             self.record_conversation_items(turn_context, &context_items)\n2849:                 .await;\n2850:         }"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 21,
+      "edge_id": "edge-key:-9141581984135587689",
+      "head": {
+        "id": "repo://e/4a2278bc920360444b92b49ebca96a76",
+        "name": "runCommand",
+        "qualified_name": "packages::cli::src::arl.runCommand",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/94299cf089dadff9c7f593e158039b57",
+        "name": "runMultiAgentFixture",
+        "qualified_name": "services::orchestrator::src::multi-agent-runner.runMultiAgentFixture",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/arl.mjs",
+        "start_line": 192,
+        "start_column": 26,
+        "end_line": 192,
+        "end_column": 71
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:569fb7a80d03a924",
+      "derived": false,
+      "extractor": "codegraph-index-static-import-resolver",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {
+        "resolution": "resolved_static_import",
+        "resolver": "static_import_call_target"
+      },
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+        "start_line": 190,
+        "end_line": 194,
+        "text": "190:   }\n191:   if (runtime === \"multi-agent-shim\") {\n192:     const result = await runMultiAgentFixture(objectivePath, repoRoot);\n193:     console.log(`run_id=${result.runId}`);\n194:     console.log(`run_root=${path.relative(repoRoot, result.runRoot)}`);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 22,
+      "edge_id": "edge-key:-9138460836748129052",
+      "head": {
+        "id": "repo://e/cbfdecc8a82c1898741c5e15535fba66",
+        "name": "doctor",
+        "qualified_name": "packages::cli::src::arl.doctor",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/94289fdce685c8c13821b17dc218485b",
+        "name": "pathExists",
+        "qualified_name": "packages::core::src::fs-utils.pathExists",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/arl.mjs",
+        "start_line": 107,
+        "start_column": 34,
+        "end_line": 107,
+        "end_column": 57
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:569fb7a80d03a924",
+      "derived": false,
+      "extractor": "codegraph-index-static-import-resolver",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {
+        "resolution": "resolved_static_import",
+        "resolver": "static_import_call_target"
+      },
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+        "start_line": 105,
+        "end_line": 109,
+        "text": "105:     [\"schemas\", await pathExists(path.join(repoRoot, \"schemas\", \"objective.schema.json\")), true],\n106:     [\"local_rg\", await pathExists(localRg), await pathExists(path.join(repoRoot, \".codex-tools\"))],\n107:     [\"upstream_codex_pin\", await pathExists(upstreamRev), true],\n108:     [\"dry_run_adapter\", true, true],\n109:     [\"arl_codex_exec_binary\", Boolean(runtimeExec), true],"
+      },
+      "missing_metadata": [
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 23,
+      "edge_id": "edge-key:-9130907523969240159",
+      "head": {
+        "id": "repo://e/361f02fa936d8a6dbf41037d332a191f",
+        "name": "createDryRunFolder",
+        "qualified_name": "packages::core::src::run-ledger::index.createDryRunFolder",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/598117e31f42dad0761ef656c8dc7772",
+        "name": "ensureDir",
+        "qualified_name": "packages::core::src::fs-utils.ensureDir",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/run-ledger/index.mjs",
+        "start_line": 36,
+        "start_column": 9,
+        "end_line": 36,
+        "end_column": 33
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:c546747cf6f02fba",
+      "derived": false,
+      "extractor": "codegraph-index-static-import-resolver",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {
+        "resolution": "resolved_static_import",
+        "resolver": "static_import_call_target"
+      },
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/run-ledger/index.mjs",
+        "start_line": 34,
+        "end_line": 38,
+        "text": "34:   const artifactsRoot = path.join(runRoot, \"artifacts\");\n35:   const logsRoot = path.join(runRoot, \"logs\");\n36:   await ensureDir(workspaceRoot);\n37:   await ensureDir(artifactsRoot);\n38:   await ensureDir(logsRoot);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 24,
+      "edge_id": "edge-key:-9126065031123564016",
+      "head": {
+        "id": "repo://e/71c7e766218a84a169139915dd24cc2b",
+        "name": "make_session_and_context_with_auth_config_home_and_rx",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::tests.make_session_and_context_with_auth_config_home_and_rx",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/d524cdb358439de179cf875ab35cfb3b",
+        "name": "build_test_config",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::tests.build_test_config",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 5487,
+        "start_column": 22,
+        "end_line": 5487,
+        "end_column": 51
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9ef4f9f90c663f41",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 5485,
+        "end_line": 5489,
+        "text": "5485: {\n5486:     let (tx_event, rx_event) = async_channel::unbounded();\n5487:     let mut config = build_test_config(codex_home).await;\n5488:     configure_config(&mut config);\n5489:     let state_db = if config.features.enabled(Feature::Goals) {"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 25,
+      "edge_id": "edge-key:-9120489193624736370",
+      "head": {
+        "id": "repo://e/f038b485046ddd592e1105c9e7c30893",
+        "name": "cancel_requests_for_thread_cancels_all_thread_requests",
+        "qualified_name": "upstream::openai-codex::codex-rs::app-server::src::outgoing_message.tests.cancel_requests_for_thread_cancels_all_thread_requests",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/d2055b54d2a15bd61a9e0fbf525abcb0",
+        "name": "cancel_requests_for_thread",
+        "qualified_name": "upstream::openai-codex::codex-rs::app-server::src::outgoing_message.cancel_requests_for_thread",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/app-server/src/outgoing_message.rs",
+        "start_line": 1255,
+        "start_column": 9,
+        "end_line": 1256,
+        "end_column": 72
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:fa10a97b8a4a53e7",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/app-server/src/outgoing_message.rs",
+        "start_line": 1253,
+        "end_line": 1258,
+        "text": "1253:         let error = internal_error(\"tracked request cancelled\");\n1254: \n1255:         outgoing\n1256:             .cancel_requests_for_thread(thread_id, Some(error.clone()))\n1257:             .await;\n1258: "
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 26,
+      "edge_id": "edge-key:-9112745193504538070",
+      "head": {
+        "id": "repo://e/830d58f1fe45cdee6cd23b825910c4b8",
+        "name": "refresh_mcp_servers_is_deferred_until_next_turn",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::tests.refresh_mcp_servers_is_deferred_until_next_turn",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/59da69ab780b97862e581864e6826530",
+        "name": "make_session_and_context",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::tests.make_session_and_context",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 5783,
+        "start_column": 35,
+        "end_line": 5783,
+        "end_column": 61
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9ef4f9f90c663f41",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 5781,
+        "end_line": 5785,
+        "text": "5781: #[tokio::test]\n5782: async fn refresh_mcp_servers_is_deferred_until_next_turn() {\n5783:     let (session, turn_context) = make_session_and_context().await;\n5784:     let old_token = session.mcp_startup_cancellation_token().await;\n5785:     assert!(!old_token.is_cancelled());"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 27,
+      "edge_id": "edge-key:-9106514634442348822",
+      "head": {
+        "id": "repo://e/310919a015ba1de4d8b1fd471820456a",
+        "name": "exec_resume_accepts_global_flags_after_subcommand",
+        "qualified_name": "runtime::arl-codex::codex-rs::exec::tests::suite::resume.exec_resume_accepts_global_flags_after_subcommand",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/a9172846c0a4bff14cb68403701c917b",
+        "name": "exec_fixture",
+        "qualified_name": "runtime::arl-codex::codex-rs::exec::tests::suite::resume.exec_fixture",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/exec/tests/suite/resume.rs",
+        "start_line": 329,
+        "start_column": 19,
+        "end_line": 329,
+        "end_column": 33
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:f86492bec41b5865",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/exec/tests/suite/resume.rs",
+        "start_line": 327,
+        "end_line": 331,
+        "text": "327: fn exec_resume_accepts_global_flags_after_subcommand() -> anyhow::Result<()> {\n328:     let test = test_codex_exec();\n329:     let fixture = exec_fixture()?;\n330: \n331:     // Seed a session."
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 28,
+      "edge_id": "edge-key:-9104049820924482317",
+      "head": {
+        "id": "repo://e/df6b6705e2f1a4b3d74851dc4dafddf9",
+        "name": "start",
+        "qualified_name": "packages::core::src::runtime-adapters::external-codex.ExternalCodexExecAdapter.start",
+        "kind": "Method"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/b4cce79cb3d9fb2a8f1aa80ad9e4208c",
+        "name": "writeJson",
+        "qualified_name": "packages::core::src::fs-utils.writeJson",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/runtime-adapters/external-codex.mjs",
+        "start_line": 217,
+        "start_column": 11,
+        "end_line": 217,
+        "end_column": 44
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:6471ef598a00c183",
+      "derived": false,
+      "extractor": "codegraph-index-static-import-resolver",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {
+        "resolution": "resolved_static_import",
+        "resolver": "static_import_call_target"
+      },
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/runtime-adapters/external-codex.mjs",
+        "start_line": 215,
+        "end_line": 219,
+        "text": "215:     manifest.summary.run_artifacts_dir = path.relative(repoRoot, runArtifactsDir).replaceAll(\"\\\\\", \"/\");\n216:     manifest.updated_at = new Date().toISOString();\n217:     await writeJson(manifestPath, manifest);\n218: \n219:     await this.appendEvent({"
+      },
+      "missing_metadata": [
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 29,
+      "edge_id": "edge-key:-9103749106578594669",
+      "head": {
+        "id": "repo://e/d47f3e303b17f719a467c372a5a50277",
+        "name": "_handle_connection",
+        "qualified_name": "upstream::openai-codex::scripts::mock_responses_websocket_server._handle_connection",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/0a4e7333dada7c893c4c2dc686c84ff3",
+        "name": "recv_json",
+        "qualified_name": "upstream::openai-codex::scripts::mock_responses_websocket_server._handle_connection.recv_json",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/scripts/mock_responses_websocket_server.py",
+        "start_line": 119,
+        "start_column": 11,
+        "end_line": 119,
+        "end_column": 28
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:464388bfd4fe2d93",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "unknown_not_first_class",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/scripts/mock_responses_websocket_server.py",
+        "start_line": 117,
+        "end_line": 121,
+        "text": "117: \n118:     # Request 2: expect appended tool output; send final assistant message.\n119:     await recv_json(\"req2\")\n120:     await send_event(_event_response_created(\"resp-2\"))\n121:     await send_event(_event_assistant_message(\"msg-1\", ASSISTANT_TEXT))"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 30,
+      "edge_id": "edge-key:-9100751433761581788",
+      "head": {
+        "id": "repo://e/cc889cc8f82a59b18e3abb3dfa54dddb",
+        "name": "main",
+        "qualified_name": "packages::cli::src::arl.main",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/0093d78d0bf2639aeb1d0699485665f0",
+        "name": "verifyCommand",
+        "qualified_name": "packages::cli::src::arl.verifyCommand",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/arl.mjs",
+        "start_line": 707,
+        "start_column": 16,
+        "end_line": 707,
+        "end_column": 51
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:569fb7a80d03a924",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/arl.mjs",
+        "start_line": 705,
+        "end_line": 709,
+        "text": "705:     ok = await evidenceCheck(repoRoot, rest[0]);\n706:   } else if (command === \"verify\") {\n707:     ok = await verifyCommand(repoRoot, subcommand);\n708:   } else if (command === \"report\" && subcommand === \"open\") {\n709:     ok = await reportOpen(repoRoot, rest[0]);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 31,
+      "edge_id": "edge-key:-9094616922695647144",
+      "head": {
+        "id": "repo://e/b179fba10a081e94cc35f6b2f486a4d2",
+        "name": "handle_jsonrpc_stdio",
+        "qualified_name": "runtime::arl-codex::shim::src::lib.handle_jsonrpc_stdio",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/0c4f86f89e2371fb5ec578b0cedd8fe9",
+        "name": "json_string_field",
+        "qualified_name": "runtime::arl-codex::shim::src::lib.json_string_field",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/shim/src/lib.rs",
+        "start_line": 209,
+        "start_column": 32,
+        "end_line": 209,
+        "end_column": 72
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:e7ca90f3674e3e89",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/shim/src/lib.rs",
+        "start_line": 207,
+        "end_line": 211,
+        "text": "207:         if json_method(&line, \"thread/start\") || json_method(&line, \"arl.thread.create_for_role\") {\n208:             let role = json_string_field(&line, \"role\").unwrap_or_else(|| \"agent\".to_string());\n209:             let objective_id = json_string_field(&line, \"objective_id\").unwrap_or_else(|| \"objective\".to_string());\n210:             let thread_id = format!(\"arl-thread-{}-{}\", objective_id, thread_counter);\n211:             thread_counter += 1;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 32,
+      "edge_id": "edge-key:-9084986007038172354",
+      "head": {
+        "id": "repo://e/89fa1db9a1d6bdae12614899385040e8",
+        "name": "environment_manager_carries_local_runtime_paths",
+        "qualified_name": "upstream::openai-codex::codex-rs::exec-server::src::environment.tests.environment_manager_carries_local_runtime_paths",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/fab8fa3cbe59678831dc28d9b669a5ea",
+        "name": "default_environment",
+        "qualified_name": "upstream::openai-codex::codex-rs::exec-server::src::environment.default_environment",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/exec-server/src/environment.rs",
+        "start_line": 484,
+        "start_column": 27,
+        "end_line": 484,
+        "end_column": 56
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:6dbf4f6e17fd9efd",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/exec-server/src/environment.rs",
+        "start_line": 482,
+        "end_line": 486,
+        "text": "482:         .await;\n483: \n484:         let environment = manager.default_environment().expect(\"default environment\");\n485: \n486:         assert_eq!(environment.local_runtime_paths(), Some(&runtime_paths));"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 33,
+      "edge_id": "edge-key:-9079661291070287650",
+      "head": {
+        "id": "repo://e/6a4e029cd55feae500eb32329da1d05b",
+        "name": "thread_rollback_persists_marker_and_replays_cumulatively",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::tests.thread_rollback_persists_marker_and_replays_cumulatively",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/3f1602df5fe97e53d17d17be955890c5",
+        "name": "assistant_message",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::tests.assistant_message",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 2451,
+        "start_column": 35,
+        "end_line": 2451,
+        "end_column": 72
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9ef4f9f90c663f41",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 2449,
+        "end_line": 2453,
+        "text": "2449:         RolloutItem::TurnContext(turn_context_item.clone()),\n2450:         RolloutItem::ResponseItem(user_message(\"turn 1 user\")),\n2451:         RolloutItem::ResponseItem(assistant_message(\"turn 1 assistant\")),\n2452:         RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {\n2453:             turn_id: \"turn-1\".to_string(),"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 34,
+      "edge_id": "edge-key:-9079232366376572273",
+      "head": {
+        "id": "repo://e/0adf36ba28e917588f7acf5126fc6afa",
+        "name": "refreshRunArtifacts",
+        "qualified_name": "packages::core::src::run-ledger::finalize.refreshRunArtifacts",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/e31966b4c2aac33b96763852a5994845",
+        "name": "readJson",
+        "qualified_name": "packages::core::src::fs-utils.readJson",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/run-ledger/finalize.mjs",
+        "start_line": 31,
+        "start_column": 32,
+        "end_line": 31,
+        "end_column": 97
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:4a367677c0432073",
+      "derived": false,
+      "extractor": "codegraph-index-static-import-resolver",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {
+        "resolution": "resolved_static_import",
+        "resolver": "static_import_call_target"
+      },
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/run-ledger/finalize.mjs",
+        "start_line": 29,
+        "end_line": 33,
+        "text": "29:   }\n30:   const hypotheses = await readJson(path.join(runRoot, \"artifacts\", \"hypotheses.json\"));\n31:   const experimentPlan = await readJson(path.join(runRoot, \"artifacts\", \"experiment_plan.json\"));\n32:   const evidenceHealth = await computeEvidenceHealth({ claims, evidence, runRoot });\n33:   const verifierReport = await verifyRun(runRoot);"
+      },
+      "missing_metadata": [
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 35,
+      "edge_id": "edge-key:-9072974522009405318",
+      "head": {
+        "id": "repo://e/4c76da96cbc9b710fbd350cc52825ab6",
+        "name": "thread_start_jsonrpc_span_exports_server_span_and_parents_children",
+        "qualified_name": "runtime::arl-codex::codex-rs::app-server::src::message_processor_tracing_tests.thread_start_jsonrpc_span_exports_server_span_and_parents_children",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/32f82373dab6755a18c8eae6743e6950",
+        "name": "span_attr",
+        "qualified_name": "runtime::arl-codex::codex-rs::app-server::src::message_processor_tracing_tests.span_attr",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/app-server/src/message_processor_tracing_tests.rs",
+        "start_line": 610,
+        "start_column": 28,
+        "end_line": 610,
+        "end_column": 57
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:c4e09e8213d08dbd",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/app-server/src/message_processor_tracing_tests.rs",
+        "start_line": 608,
+        "end_line": 612,
+        "text": "608:                 spans.iter().any(|span| {\n609:                     span.span_kind == SpanKind::Server\n610:                         && span_attr(span, \"rpc.method\") == Some(\"thread/start\")\n611:                 })\n612:             })"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 36,
+      "edge_id": "edge-key:-9064041375540811618",
+      "head": {
+        "id": "repo://e/3063cd96eee6aaed9e338b5ce3f8014b",
+        "name": "auto_compact_persists_rollout_entries",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::tests::suite::compact.auto_compact_persists_rollout_entries",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/d992ce7093765c57b178368221d5fab1",
+        "name": "body_contains_text",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::tests::suite::compact.body_contains_text",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/tests/suite/compact.rs",
+        "start_line": 2232,
+        "start_column": 17,
+        "end_line": 2232,
+        "end_column": 63
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:1b0601dd0410e139",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/tests/suite/compact.rs",
+        "start_line": 2230,
+        "end_line": 2234,
+        "text": "2230:         body.contains(FIRST_AUTO_MSG)\n2231:             && !body.contains(SECOND_AUTO_MSG)\n2232:             && !body_contains_text(body, SUMMARIZATION_PROMPT)\n2233:     };\n2234:     mount_sse_once_match(&server, first_matcher, sse1).await;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 37,
+      "edge_id": "edge-key:-9059168678235437306",
+      "head": {
+        "id": "repo://e/b0310d06dd2e039dad0d22ddd62f876b",
+        "name": "thread_start_jsonrpc_span_exports_server_span_and_parents_children",
+        "qualified_name": "upstream::openai-codex::codex-rs::app-server::src::message_processor_tracing_tests.thread_start_jsonrpc_span_exports_server_span_and_parents_children",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/f5a6a655a85ad0e1d87851c5d44a1d9f",
+        "name": "span_attr",
+        "qualified_name": "upstream::openai-codex::codex-rs::app-server::src::message_processor_tracing_tests.span_attr",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/app-server/src/message_processor_tracing_tests.rs",
+        "start_line": 601,
+        "start_column": 28,
+        "end_line": 601,
+        "end_column": 57
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:f019e1cb6e1969fd",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/app-server/src/message_processor_tracing_tests.rs",
+        "start_line": 599,
+        "end_line": 603,
+        "text": "599:                 spans.iter().any(|span| {\n600:                     span.span_kind == SpanKind::Server\n601:                         && span_attr(span, \"rpc.method\") == Some(\"thread/start\")\n602:                         && span.span_context.trace_id() == remote_trace_id\n603:                 }) && spans.iter().any(|span| {"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 38,
+      "edge_id": "edge-key:-9057137899338545144",
+      "head": {
+        "id": "repo://e/b5516c43f4d05a6671612cb2e9e9e2bc",
+        "name": "main",
+        "qualified_name": "upstream::openai-codex::scripts::mock_responses_websocket_server.main",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/d7a306194d826f23220f8826d5920fd9",
+        "name": "_serve",
+        "qualified_name": "upstream::openai-codex::scripts::mock_responses_websocket_server._serve",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/scripts/mock_responses_websocket_server.py",
+        "start_line": 189,
+        "start_column": 28,
+        "end_line": 189,
+        "end_column": 45
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:464388bfd4fe2d93",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "unknown_not_first_class",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/scripts/mock_responses_websocket_server.py",
+        "start_line": 187,
+        "end_line": 191,
+        "text": "187: \n188:     try:\n189:         return asyncio.run(_serve(args.port))\n190:     except KeyboardInterrupt:\n191:         return 0"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 39,
+      "edge_id": "edge-key:-9053502937740038339",
+      "head": {
+        "id": "repo://e/d47f3e303b17f719a467c372a5a50277",
+        "name": "_handle_connection",
+        "qualified_name": "upstream::openai-codex::scripts::mock_responses_websocket_server._handle_connection",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/e681fdf8c5715ed071b9d5313454e446",
+        "name": "_utc_iso",
+        "qualified_name": "upstream::openai-codex::scripts::mock_responses_websocket_server._utc_iso",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/scripts/mock_responses_websocket_server.py",
+        "start_line": 124,
+        "start_column": 32,
+        "end_line": 124,
+        "end_column": 42
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:464388bfd4fe2d93",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "unknown_not_first_class",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/scripts/mock_responses_websocket_server.py",
+        "start_line": 122,
+        "end_line": 126,
+        "text": "122:     await send_event(_event_response_completed(\"resp-2\"))\n123: \n124:     sys.stdout.write(f\"[conn] {_utc_iso()} closing\\n\")\n125:     sys.stdout.flush()\n126:     await websocket.close()"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 40,
+      "edge_id": "edge-key:-9052519494226975129",
+      "head": {
+        "id": "repo://e/0953a74b92e8d20c6e80485332c6cc9e",
+        "name": "build_initial_context_emits_thread_start_skill_warning_on_repeated_builds",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::tests.build_initial_context_emits_thread_start_skill_warning_on_repeated_builds",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/e45426aca7659c6ca5c1e437d784fd06",
+        "name": "make_session_and_context_with_rx",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::tests.make_session_and_context_with_rx",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 6474,
+        "start_column": 39,
+        "end_line": 6474,
+        "end_column": 73
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9ef4f9f90c663f41",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 6472,
+        "end_line": 6476,
+        "text": "6472: #[tokio::test]\n6473: async fn build_initial_context_emits_thread_start_skill_warning_on_repeated_builds() {\n6474:     let (session, turn_context, rx) = make_session_and_context_with_rx().await;\n6475:     let mut turn_context = Arc::into_inner(turn_context).expect(\"sole turn context owner\");\n6476:     let mut outcome = SkillLoadOutcome::default();"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 41,
+      "edge_id": "edge-key:-9050224252766646807",
+      "head": {
+        "id": "repo://e/df4541a73c7c7ecdfab2b77f013df3db",
+        "name": "pre_sampling_compact_runs_on_switch_to_smaller_context_model",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::tests::suite::compact.pre_sampling_compact_runs_on_switch_to_smaller_context_model",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/260c096cd686fd12d30bbe672a103f48",
+        "name": "disabled_permission_user_turn",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::tests::suite::compact.disabled_permission_user_turn",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/tests/suite/compact.rs",
+        "start_line": 2041,
+        "start_column": 17,
+        "end_line": 2045,
+        "end_column": 10
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:1b0601dd0410e139",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/tests/suite/compact.rs",
+        "start_line": 2039,
+        "end_line": 2047,
+        "text": "2039: \n2040:     test.codex\n2041:         .submit(disabled_permission_user_turn(\n2042:             \"after switch\",\n2043:             test.cwd.path().to_path_buf(),\n2044:             next_model.to_string(),\n2045:         ))\n2046:         .await\n2047:         .expect(\"submit second user turn\");"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 42,
+      "edge_id": "edge-key:-9048160255253830301",
+      "head": {
+        "id": "repo://e/b179fba10a081e94cc35f6b2f486a4d2",
+        "name": "handle_jsonrpc_stdio",
+        "qualified_name": "runtime::arl-codex::shim::src::lib.handle_jsonrpc_stdio",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/af9a53755cad0ba2f3a9b64277eedd84",
+        "name": "json_method",
+        "qualified_name": "runtime::arl-codex::shim::src::lib.json_method",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/shim/src/lib.rs",
+        "start_line": 226,
+        "start_column": 12,
+        "end_line": 226,
+        "end_column": 44
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:e7ca90f3674e3e89",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/shim/src/lib.rs",
+        "start_line": 224,
+        "end_line": 228,
+        "text": "224:             continue;\n225:         }\n226:         if json_method(&line, \"turn/start\") {\n227:             let thread_id = json_string_field(&line, \"thread_id\").unwrap_or_else(|| \"arl-thread-unknown\".to_string());\n228:             let role = json_string_field(&line, \"role\").unwrap_or_else(|| \"agent\".to_string());"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 43,
+      "edge_id": "edge-key:-9046347112424857064",
+      "head": {
+        "id": "repo://e/cfd3be5da4874cbf44804738b38d8229",
+        "name": "build_settings_update_items_emits_realtime_end_when_session_stops_being_live",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::tests.build_settings_update_items_emits_realtime_end_when_session_stops_being_live",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/59da69ab780b97862e581864e6826530",
+        "name": "make_session_and_context",
+        "qualified_name": "runtime::arl-codex::codex-rs::core::src::session::tests.make_session_and_context",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 6063,
+        "start_column": 43,
+        "end_line": 6063,
+        "end_column": 69
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9ef4f9f90c663f41",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 6061,
+        "end_line": 6065,
+        "text": "6061: #[tokio::test]\n6062: async fn build_settings_update_items_emits_realtime_end_when_session_stops_being_live() {\n6063:     let (session, mut previous_context) = make_session_and_context().await;\n6064:     previous_context.realtime_active = true;\n6065:     let mut current_context = previous_context"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 44,
+      "edge_id": "edge-key:-9038502750529297448",
+      "head": {
+        "id": "repo://e/1b3fb031b810207a3f4f4b0371c36df8",
+        "name": "createDashboardServer",
+        "qualified_name": "packages::cli::src::dashboard-server.createDashboardServer",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/76f03199eccb024f07c40f3f563314c5",
+        "name": "readBody",
+        "qualified_name": "packages::cli::src::dashboard-server.readBody",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/cli/src/dashboard-server.mjs",
+        "start_line": 982,
+        "start_column": 82,
+        "end_line": 982,
+        "end_column": 99
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9453dc0bb38c212e",
+      "derived": false,
+      "extractor": "tree-sitter-basic",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/cli/src/dashboard-server.mjs",
+        "start_line": 980,
+        "end_line": 984,
+        "text": "980:       if (url.pathname === \"/api/tool-forge\") {\n981:         if (request.method === \"POST\") {\n982:           json(response, 200, { tool: await proposeDashboardTool(repoRoot, await readBody(request)) });\n983:           return;\n984:         }"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 45,
+      "edge_id": "edge-key:-9037548711169898310",
+      "head": {
+        "id": "repo://e/01b45dbc9f2fb75d0ba28f4a6cb59673",
+        "name": "summarize_context_three_requests_and_instructions",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::tests::suite::compact.summarize_context_three_requests_and_instructions",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/807bed54d1bc86b51698d6df480f8ea3",
+        "name": "non_openai_model_provider",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::tests::suite::compact.non_openai_model_provider",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/core/tests/suite/compact.rs",
+        "start_line": 362,
+        "start_column": 26,
+        "end_line": 362,
+        "end_column": 60
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:9dcd56b047063dfb",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/core/tests/suite/compact.rs",
+        "start_line": 360,
+        "end_line": 364,
+        "text": "360: \n361:     // Build config pointing to the mock server and spawn Codex.\n362:     let model_provider = non_openai_model_provider(&server);\n363:     let mut builder = test_codex().with_config(move |config| {\n364:         config.model_provider = model_provider;"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 46,
+      "edge_id": "edge-key:-9035728481260840138",
+      "head": {
+        "id": "repo://e/8667d8fb1cadbc2f6100461987ca09f5",
+        "name": "subscribe_running_assistant_turn_count",
+        "qualified_name": "runtime::arl-codex::codex-rs::app-server::src::message_processor.subscribe_running_assistant_turn_count",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/8667d8fb1cadbc2f6100461987ca09f5",
+        "name": "subscribe_running_assistant_turn_count",
+        "qualified_name": "runtime::arl-codex::codex-rs::app-server::src::message_processor.subscribe_running_assistant_turn_count",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "runtime/arl-codex/codex-rs/app-server/src/message_processor.rs",
+        "start_line": 692,
+        "start_column": 9,
+        "end_line": 693,
+        "end_column": 54
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:0a0a002075bc73fa",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/runtime/arl-codex/codex-rs/app-server/src/message_processor.rs",
+        "start_line": 690,
+        "end_line": 695,
+        "text": "690: \n691:     pub(crate) fn subscribe_running_assistant_turn_count(&self) -> watch::Receiver<usize> {\n692:         self.thread_processor\n693:             .subscribe_running_assistant_turn_count()\n694:     }\n695: "
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 47,
+      "edge_id": "edge-key:-9031276788898217171",
+      "head": {
+        "id": "repo://e/b307a5a2e89893bee70346ba24999998",
+        "name": "build_initial_context_uses_previous_realtime_state",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::tests.build_initial_context_uses_previous_realtime_state",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/3158761d11f2230e4fcb29dcf45f4b4c",
+        "name": "developer_input_texts",
+        "qualified_name": "upstream::openai-codex::codex-rs::core::src::session::tests.developer_input_texts",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 6108,
+        "start_column": 35,
+        "end_line": 6108,
+        "end_column": 74
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:3df730b4b3fcd1f0",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "test_or_mock",
+      "production_test_mock_context": "test_or_fixture_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/codex-rs/core/src/session/tests.rs",
+        "start_line": 6106,
+        "end_line": 6110,
+        "text": "6106:     }\n6107:     let resumed_context = session.build_initial_context(&turn_context).await;\n6108:     let resumed_developer_texts = developer_input_texts(&resumed_context);\n6109:     assert!(\n6110:         !resumed_developer_texts"
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 48,
+      "edge_id": "edge-key:-9028314406606205006",
+      "head": {
+        "id": "repo://e/361f02fa936d8a6dbf41037d332a191f",
+        "name": "createDryRunFolder",
+        "qualified_name": "packages::core::src::run-ledger::index.createDryRunFolder",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/b4cce79cb3d9fb2a8f1aa80ad9e4208c",
+        "name": "writeJson",
+        "qualified_name": "packages::core::src::fs-utils.writeJson",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "packages/core/src/run-ledger/index.mjs",
+        "start_line": 96,
+        "start_column": 9,
+        "end_line": 96,
+        "end_column": 75
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:c546747cf6f02fba",
+      "derived": false,
+      "extractor": "codegraph-index-static-import-resolver",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {
+        "resolution": "resolved_static_import",
+        "resolver": "static_import_call_target"
+      },
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/packages/core/src/run-ledger/index.mjs",
+        "start_line": 94,
+        "end_line": 98,
+        "text": "94:   };\n95: \n96:   await writeJson(path.join(artifactsRoot, \"hypotheses.json\"), hypotheses);\n97:   await writeJson(path.join(artifactsRoot, \"experiment_plan.json\"), experimentPlan);\n98:   await writeText(path.join(artifactsRoot, \"final-message.md\"), \"Dry-run completed. No Codex or shell execution occurred.\\n\");"
+      },
+      "missing_metadata": [
+        "repo_commit_missing"
+      ]
+    },
+    {
+      "ordinal": 49,
+      "edge_id": "edge-key:-9027935844295319503",
+      "head": {
+        "id": "repo://e/0a4e7333dada7c893c4c2dc686c84ff3",
+        "name": "recv_json",
+        "qualified_name": "upstream::openai-codex::scripts::mock_responses_websocket_server._handle_connection.recv_json",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/f7df04396e77c4311d205b24411cb803",
+        "name": "_print_request",
+        "qualified_name": "upstream::openai-codex::scripts::mock_responses_websocket_server._print_request",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/scripts/mock_responses_websocket_server.py",
+        "start_line": 105,
+        "start_column": 9,
+        "end_line": 105,
+        "end_column": 51
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:464388bfd4fe2d93",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "unknown_not_first_class",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/scripts/mock_responses_websocket_server.py",
+        "start_line": 103,
+        "end_line": 107,
+        "text": "103:         else:\n104:             payload = json.loads(msg)\n105:         _print_request(f\"[{label}] recv\", payload)\n106:         return payload\n107: "
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    },
+    {
+      "ordinal": 50,
+      "edge_id": "edge-key:-9024713504740049076",
+      "head": {
+        "id": "repo://e/820a9f22b558409a725753aafc843e7c",
+        "name": "fetch_new_review_items",
+        "qualified_name": "upstream::openai-codex::.codex::skills::babysit-pr::scripts::gh_pr_watch.fetch_new_review_items",
+        "kind": "Function"
+      },
+      "relation": "CALLS",
+      "tail": {
+        "id": "repo://e/8d1ac2e64628bc509f45f3d9ed66594e",
+        "name": "gh_api_list_paginated",
+        "qualified_name": "upstream::openai-codex::.codex::skills::babysit-pr::scripts::gh_pr_watch.gh_api_list_paginated",
+        "kind": "Function"
+      },
+      "source_span": {
+        "repo_relative_path": "upstream/openai-codex/.codex/skills/babysit-pr/scripts/gh_pr_watch.py",
+        "start_line": 533,
+        "start_column": 30,
+        "end_line": 533,
+        "end_column": 91
+      },
+      "relation_direction": "head_to_tail",
+      "exactness": "parser_verified",
+      "confidence": 1.0,
+      "repo_commit": null,
+      "file_hash": "fnv64:6b773bf0ddf94c00",
+      "derived": false,
+      "extractor": "tree-sitter-language-frontend",
+      "fact_classification": "base_exact",
+      "production_test_mock_context": "production_inferred",
+      "provenance_edges": [],
+      "metadata": {},
+      "span_loaded": true,
+      "span_load_error": null,
+      "source_snippet": {
+        "path": "//?/<REPO_ROOT>/Desktop/development/autoresearch-codexlab/upstream/openai-codex/.codex/skills/babysit-pr/scripts/gh_pr_watch.py",
+        "start_line": 531,
+        "end_line": 535,
+        "text": "531: \n532:     issue_payload = gh_api_list_paginated(endpoints[\"issue_comment\"], repo=repo)\n533:     review_comment_payload = gh_api_list_paginated(endpoints[\"review_comment\"], repo=repo)\n534:     review_payload = gh_api_list_paginated(endpoints[\"review\"], repo=repo)\n535: "
+      },
+      "missing_metadata": [
+        "repo_commit_missing",
+        "metadata_empty"
+      ]
+    }
+  ],
+  "notes": [
+    "Classification fields are intentionally blank in markdown for human review.",
+    "Sampling is deterministic for a seed and starts at a seeded edge primary-key range, wrapping once if needed.",
+    "production_test_mock_context is inferred from relation/path/id text because context is not first-class in the current edge schema."
+  ]
+}

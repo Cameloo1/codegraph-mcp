@@ -1,0 +1,7 @@
+Resolving context...
+Initializing services and database connection...
+Services initialized.
+Deleting existing index for: 
+<REPO_ROOT>/Desktop\development\autoresearch-codexlab
+✓ Deleted old index
+Re-indexing: <REPO_ROOT>/Desktop\development\autoresearch-codexlab

@@ -1,0 +1,38 @@
+name: release-dry-run
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  package-dry-run:
+    name: package metadata dry run
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build -p codegraph-cli --bin codegraph-mcp --release
+
+      - name: Validate release metadata
+        run: cargo run -p codegraph-cli --bin codegraph-mcp -- config release-metadata --json
+
+      - name: Validate archive manifest
+        run: python -m json.tool dist/archive-manifest.json
+
+      - name: Installer dry run
+        run: sh install/install.sh --dry-run
+
+      - name: Generate checksums dry run
+        run: |
+          mkdir -p target/release-dry-run
+          cp target/release/codegraph-mcp target/release-dry-run/codegraph-mcp
+          sha256sum target/release-dry-run/codegraph-mcp > target/release-dry-run/codegraph-mcp.sha256
+

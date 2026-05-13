@@ -1,0 +1,26 @@
+[package]
+name = "codegraph-store"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+codegraph-core = { path = "../codegraph-core" }
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+default = ["sqlite"]
+sqlite = []
+rocksdb = []
+qdrant = []
+faiss = []
+ui = []
+mcp = []
+
+[lints]
+workspace = true

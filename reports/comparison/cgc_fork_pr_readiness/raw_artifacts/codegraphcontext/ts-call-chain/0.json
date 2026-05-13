@@ -1,0 +1,16 @@
+{
+  "executable": "target\\cgc-fork-py312-wrapper.cmd",
+  "args": [
+    "--database",
+    "kuzudb",
+    "index",
+    "--force",
+    "\\\\?\\<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\comparison\\cgc_fork_pr_readiness\\fixtures\\ts-call-chain"
+  ],
+  "cwd": "reports\\comparison\\cgc_fork_pr_readiness\\fixtures\\ts-call-chain",
+  "stdout": "\r\nWelcome to CodeGraphContext!\r\n\r\nCGC organises your code graphs using contexts:\r\n  global    - One shared graph for all projects (default)\r\n  per-repo  - Each repo gets its own .codegraphcontext/ folder\r\n  named     - Create named workspaces (e.g. cgc index . --context MyProject)\r\n\r\nSwitch modes anytime:  cgc context mode <global|per-repo|named>\r\nOr:                    cgc config set mode <global|per-repo|named>\r\n\r\nResolving context...\r\nInitializing services and database connection...\r\nServices initialized.\r\nRe-indexing: \r\n\\\\?\\<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\comparison\\cgc_for\r\nk_pr_readiness\\fixtures\\ts-call-chain\r\n\r\nSuccessfully re-indexed: \r\n\\\\?\\<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\comparison\\cgc_for\r\nk_pr_readiness\\fixtures\\ts-call-chain in 1.25 seconds\r\n",
+  "stderr": "No configuration file found. Using defaults.\r\nUsing database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))\r\nForce re-indexing (--force flag detected)\r\n",
+  "exit_code": 0,
+  "latency_ms": 2272,
+  "timed_out": false
+}

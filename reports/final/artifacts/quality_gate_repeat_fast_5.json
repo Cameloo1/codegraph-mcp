@@ -1,0 +1,1811 @@
+{
+  "autoresearch_iterations_requested": 5,
+  "command_output_timings": {
+    "json_serialization_ms": 1,
+    "json_write_ms": 0,
+    "markdown_render_ms": 0,
+    "markdown_write_ms": 0
+  },
+  "generated_at_unix_ms": 1778643194426,
+  "iterations_requested": 20,
+  "loop_kind": "repeat-fast",
+  "phase": "30",
+  "repos": [
+    {
+      "all_integrity_checks_passed": true,
+      "changed_file_updates_graph_fact_hash": true,
+      "cold": {
+        "db_family_size_bytes": 179499008,
+        "duplicate_edges_upserted": null,
+        "edge_count": null,
+        "edges_inserted": null,
+        "entities_inserted": null,
+        "entity_count": null,
+        "files_hashed": null,
+        "files_parsed": null,
+        "files_read": null,
+        "files_walked": null,
+        "graph_counts_ran": false,
+        "graph_fact_hash": "fnv64:006bde538917d375",
+        "graph_fact_hash_ms": 442.0611,
+        "integrity_check_kind": "quick_check_setup",
+        "integrity_check_ms": 499.19599999999997,
+        "integrity_status": "ok",
+        "repo_root": "<REPO_ROOT>/Desktop\\development\\autoresearch-codexlab",
+        "schema_version": 19,
+        "seed_db": "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\comprehensive_proof_1778642765060.sqlite",
+        "setup_timings": {
+          "artifact_copy_ms": 41,
+          "artifact_open_ms": 7,
+          "graph_fact_hash_ms": 442.0611,
+          "schema_validation_ms": 7,
+          "validation_ms": 499.19599999999997
+        },
+        "source": "seed_db_copy",
+        "source_span_count": null,
+        "status": "seeded",
+        "step": "cold_index",
+        "transaction_status": "seeded_copy_integrity_checked",
+        "wall_ms": 948
+      },
+      "db_path": "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\quality_gate_repeat_fast_work\\dbs\\autoresearch.sqlite",
+      "graph_fact_hash_stable_on_repeat": true,
+      "iteration_results": [],
+      "iterations": 5,
+      "loop_kind": "repeat-fast",
+      "mutation_file": "python/autoresearch_utils/metrics_tools.py",
+      "name": "autoresearch",
+      "repeat_iterations": [
+        {
+          "iteration": 1,
+          "repeat": {
+            "db_family_size_bytes": 179499008,
+            "duplicate_edges_upserted": 0,
+            "edge_count": null,
+            "edges_inserted": 0,
+            "entities_inserted": 0,
+            "entity_count": null,
+            "files_hashed": 0,
+            "files_parsed": 0,
+            "files_read": 0,
+            "files_walked": 8564,
+            "global_hash_check_ran": false,
+            "graph_counts_ran": false,
+            "graph_digest_kind": "incremental_graph_digest",
+            "graph_fact_hash": "fnv64:006bde538917d375",
+            "graph_fact_hash_ms": 4.2345999999999995,
+            "integrity_check_kind": "quick_check_post_measurement",
+            "integrity_check_ms": 759.7817,
+            "integrity_status": "ok",
+            "mode": "update-fast",
+            "profile": {
+              "db_write_ms": 914,
+              "edges_per_sec": 0.0,
+              "entities_per_sec": 0.0,
+              "extraction_ms": 0,
+              "file_discovery_ms": 579,
+              "files_per_sec": 0.0,
+              "fts_search_index_ms": 914,
+              "memory_bytes": null,
+              "parse_ms": 0,
+              "semantic_resolver_ms": 0,
+              "skipped_unchanged_files": 4975,
+              "spans": [
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "atomic_db_replace",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "atomic_final_db_validate",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "atomic_temp_db_finalize",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "cache_refresh",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "dictionary_lookup_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "edge_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "entity_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "file_hash",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "file_read",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 579.0,
+                  "items": 8564,
+                  "name": "file_walk",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "fts_build",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "graph_fact_hash",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "index_creation",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "integrity_check",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "json_serialization",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "local_fact_bundle_creation",
+                  "notes": []
+                },
+                {
+                  "count": 4976,
+                  "elapsed_ms": 171.3310000000001,
+                  "items": 9950,
+                  "name": "metadata_diff",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 3.2296,
+                  "items": 0,
+                  "name": "open_store",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "parse",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "path_evidence_generation",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 588.3718,
+                  "items": 0,
+                  "name": "quick_check",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "reducer",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "snippet_loading",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "source_span_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "sql_query_execution",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 1.6992,
+                  "items": 1,
+                  "name": "sqlite.configure_pragmas",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 1.1529,
+                  "items": 1,
+                  "name": "sqlite.migrate_schema",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 0.3482,
+                  "items": 1,
+                  "name": "sqlite.open_connection",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 0.1137,
+                  "items": 1,
+                  "name": "sqlite.repo_index_state_upsert_sql",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "stale_fact_delete",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "storage_audit",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "symbol_interning",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 4.9796,
+                  "items": 0,
+                  "name": "wal_checkpoint",
+                  "notes": []
+                }
+              ],
+              "total_wall_ms": 1682,
+              "vector_signature_ms": 0,
+              "worker_count": 1
+            },
+            "source_span_count": null,
+            "status": "ok",
+            "step": "repeat_unchanged_index",
+            "timings": {
+              "artifact_open_ms": 3.2296,
+              "db_write_ms": 914.0,
+              "file_hash_ms": 0.0,
+              "file_read_ms": 0.0,
+              "graph_hash_ms": 4.2345999999999995,
+              "json_output_creation_ms": null,
+              "metadata_diff_ms": 171.3310000000001,
+              "repo_walk_ms": 579.0,
+              "report_generation_ms": null,
+              "validation_ms": 759.7817
+            },
+            "transaction_status": "committed",
+            "wall_ms": 2289
+          }
+        },
+        {
+          "iteration": 2,
+          "repeat": {
+            "db_family_size_bytes": 179499008,
+            "duplicate_edges_upserted": 0,
+            "edge_count": null,
+            "edges_inserted": 0,
+            "entities_inserted": 0,
+            "entity_count": null,
+            "files_hashed": 0,
+            "files_parsed": 0,
+            "files_read": 0,
+            "files_walked": 8564,
+            "global_hash_check_ran": false,
+            "graph_counts_ran": false,
+            "graph_digest_kind": "incremental_graph_digest",
+            "graph_fact_hash": "fnv64:006bde538917d375",
+            "graph_fact_hash_ms": 4.4033,
+            "integrity_check_kind": "quick_check_post_measurement",
+            "integrity_check_ms": 740.6648,
+            "integrity_status": "ok",
+            "mode": "update-fast",
+            "profile": {
+              "db_write_ms": 1344,
+              "edges_per_sec": 0.0,
+              "entities_per_sec": 0.0,
+              "extraction_ms": 0,
+              "file_discovery_ms": 793,
+              "files_per_sec": 0.0,
+              "fts_search_index_ms": 1344,
+              "memory_bytes": null,
+              "parse_ms": 0,
+              "semantic_resolver_ms": 0,
+              "skipped_unchanged_files": 4975,
+              "spans": [
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "atomic_db_replace",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "atomic_final_db_validate",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "atomic_temp_db_finalize",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "cache_refresh",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "dictionary_lookup_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "edge_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "entity_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "file_hash",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "file_read",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 793.0,
+                  "items": 8564,
+                  "name": "file_walk",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "fts_build",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "graph_fact_hash",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "index_creation",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "integrity_check",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "json_serialization",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "local_fact_bundle_creation",
+                  "notes": []
+                },
+                {
+                  "count": 4976,
+                  "elapsed_ms": 269.7411999999998,
+                  "items": 9950,
+                  "name": "metadata_diff",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 3.4501000000000004,
+                  "items": 0,
+                  "name": "open_store",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "parse",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "path_evidence_generation",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 730.9705,
+                  "items": 0,
+                  "name": "quick_check",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "reducer",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "snippet_loading",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "source_span_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "sql_query_execution",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 1.7225000000000001,
+                  "items": 1,
+                  "name": "sqlite.configure_pragmas",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 1.5402,
+                  "items": 1,
+                  "name": "sqlite.migrate_schema",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 0.1786,
+                  "items": 1,
+                  "name": "sqlite.open_connection",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 0.0961,
+                  "items": 1,
+                  "name": "sqlite.repo_index_state_upsert_sql",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "stale_fact_delete",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "storage_audit",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "symbol_interning",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 2.9523,
+                  "items": 0,
+                  "name": "wal_checkpoint",
+                  "notes": []
+                }
+              ],
+              "total_wall_ms": 2434,
+              "vector_signature_ms": 0,
+              "worker_count": 1
+            },
+            "source_span_count": null,
+            "status": "ok",
+            "step": "repeat_unchanged_index",
+            "timings": {
+              "artifact_open_ms": 3.4501000000000004,
+              "db_write_ms": 1344.0,
+              "file_hash_ms": 0.0,
+              "file_read_ms": 0.0,
+              "graph_hash_ms": 4.4033,
+              "json_output_creation_ms": null,
+              "metadata_diff_ms": 269.7411999999998,
+              "repo_walk_ms": 793.0,
+              "report_generation_ms": null,
+              "validation_ms": 740.6648
+            },
+            "transaction_status": "committed",
+            "wall_ms": 3180
+          }
+        },
+        {
+          "iteration": 3,
+          "repeat": {
+            "db_family_size_bytes": 179499008,
+            "duplicate_edges_upserted": 0,
+            "edge_count": null,
+            "edges_inserted": 0,
+            "entities_inserted": 0,
+            "entity_count": null,
+            "files_hashed": 0,
+            "files_parsed": 0,
+            "files_read": 0,
+            "files_walked": 8564,
+            "global_hash_check_ran": false,
+            "graph_counts_ran": false,
+            "graph_digest_kind": "incremental_graph_digest",
+            "graph_fact_hash": "fnv64:006bde538917d375",
+            "graph_fact_hash_ms": 3.8684000000000003,
+            "integrity_check_kind": "quick_check_post_measurement",
+            "integrity_check_ms": 804.9482,
+            "integrity_status": "ok",
+            "mode": "update-fast",
+            "profile": {
+              "db_write_ms": 1329,
+              "edges_per_sec": 0.0,
+              "entities_per_sec": 0.0,
+              "extraction_ms": 0,
+              "file_discovery_ms": 799,
+              "files_per_sec": 0.0,
+              "fts_search_index_ms": 1329,
+              "memory_bytes": null,
+              "parse_ms": 0,
+              "semantic_resolver_ms": 0,
+              "skipped_unchanged_files": 4975,
+              "spans": [
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "atomic_db_replace",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "atomic_final_db_validate",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "atomic_temp_db_finalize",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "cache_refresh",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "dictionary_lookup_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "edge_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "entity_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "file_hash",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "file_read",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 799.0,
+                  "items": 8564,
+                  "name": "file_walk",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "fts_build",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "graph_fact_hash",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "index_creation",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "integrity_check",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "json_serialization",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "local_fact_bundle_creation",
+                  "notes": []
+                },
+                {
+                  "count": 4976,
+                  "elapsed_ms": 262.9219000000007,
+                  "items": 9950,
+                  "name": "metadata_diff",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 2.5287,
+                  "items": 0,
+                  "name": "open_store",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "parse",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "path_evidence_generation",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 756.9046999999999,
+                  "items": 0,
+                  "name": "quick_check",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "reducer",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "snippet_loading",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "source_span_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "sql_query_execution",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 1.3444,
+                  "items": 1,
+                  "name": "sqlite.configure_pragmas",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 1.0173999999999999,
+                  "items": 1,
+                  "name": "sqlite.migrate_schema",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 0.15689999999999998,
+                  "items": 1,
+                  "name": "sqlite.open_connection",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 0.0934,
+                  "items": 1,
+                  "name": "sqlite.repo_index_state_upsert_sql",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "stale_fact_delete",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "storage_audit",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "symbol_interning",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 3.0967,
+                  "items": 0,
+                  "name": "wal_checkpoint",
+                  "notes": []
+                }
+              ],
+              "total_wall_ms": 2417,
+              "vector_signature_ms": 0,
+              "worker_count": 1
+            },
+            "source_span_count": null,
+            "status": "ok",
+            "step": "repeat_unchanged_index",
+            "timings": {
+              "artifact_open_ms": 2.5287,
+              "db_write_ms": 1329.0,
+              "file_hash_ms": 0.0,
+              "file_read_ms": 0.0,
+              "graph_hash_ms": 3.8684000000000003,
+              "json_output_creation_ms": null,
+              "metadata_diff_ms": 262.9219000000007,
+              "repo_walk_ms": 799.0,
+              "report_generation_ms": null,
+              "validation_ms": 804.9482
+            },
+            "transaction_status": "committed",
+            "wall_ms": 3186
+          }
+        },
+        {
+          "iteration": 4,
+          "repeat": {
+            "db_family_size_bytes": 179499008,
+            "duplicate_edges_upserted": 0,
+            "edge_count": null,
+            "edges_inserted": 0,
+            "entities_inserted": 0,
+            "entity_count": null,
+            "files_hashed": 0,
+            "files_parsed": 0,
+            "files_read": 0,
+            "files_walked": 8564,
+            "global_hash_check_ran": false,
+            "graph_counts_ran": false,
+            "graph_digest_kind": "incremental_graph_digest",
+            "graph_fact_hash": "fnv64:006bde538917d375",
+            "graph_fact_hash_ms": 4.2376000000000005,
+            "integrity_check_kind": "quick_check_post_measurement",
+            "integrity_check_ms": 755.7751999999999,
+            "integrity_status": "ok",
+            "mode": "update-fast",
+            "profile": {
+              "db_write_ms": 1337,
+              "edges_per_sec": 0.0,
+              "entities_per_sec": 0.0,
+              "extraction_ms": 0,
+              "file_discovery_ms": 804,
+              "files_per_sec": 0.0,
+              "fts_search_index_ms": 1337,
+              "memory_bytes": null,
+              "parse_ms": 0,
+              "semantic_resolver_ms": 0,
+              "skipped_unchanged_files": 4975,
+              "spans": [
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "atomic_db_replace",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "atomic_final_db_validate",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "atomic_temp_db_finalize",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "cache_refresh",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "dictionary_lookup_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "edge_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "entity_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "file_hash",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "file_read",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 804.0,
+                  "items": 8564,
+                  "name": "file_walk",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "fts_build",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "graph_fact_hash",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "index_creation",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "integrity_check",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "json_serialization",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "local_fact_bundle_creation",
+                  "notes": []
+                },
+                {
+                  "count": 4976,
+                  "elapsed_ms": 270.591,
+                  "items": 9950,
+                  "name": "metadata_diff",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 3.4912,
+                  "items": 0,
+                  "name": "open_store",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "parse",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "path_evidence_generation",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 737.2915,
+                  "items": 0,
+                  "name": "quick_check",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "reducer",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "snippet_loading",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "source_span_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "sql_query_execution",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 1.736,
+                  "items": 1,
+                  "name": "sqlite.configure_pragmas",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 1.5691,
+                  "items": 1,
+                  "name": "sqlite.migrate_schema",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 0.17670000000000002,
+                  "items": 1,
+                  "name": "sqlite.open_connection",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 0.10450000000000001,
+                  "items": 1,
+                  "name": "sqlite.repo_index_state_upsert_sql",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "stale_fact_delete",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "storage_audit",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "symbol_interning",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 3.1725,
+                  "items": 0,
+                  "name": "wal_checkpoint",
+                  "notes": []
+                }
+              ],
+              "total_wall_ms": 2439,
+              "vector_signature_ms": 0,
+              "worker_count": 1
+            },
+            "source_span_count": null,
+            "status": "ok",
+            "step": "repeat_unchanged_index",
+            "timings": {
+              "artifact_open_ms": 3.4912,
+              "db_write_ms": 1337.0,
+              "file_hash_ms": 0.0,
+              "file_read_ms": 0.0,
+              "graph_hash_ms": 4.2376000000000005,
+              "json_output_creation_ms": null,
+              "metadata_diff_ms": 270.591,
+              "repo_walk_ms": 804.0,
+              "report_generation_ms": null,
+              "validation_ms": 755.7751999999999
+            },
+            "transaction_status": "committed",
+            "wall_ms": 3191
+          }
+        },
+        {
+          "iteration": 5,
+          "repeat": {
+            "db_family_size_bytes": 179499008,
+            "duplicate_edges_upserted": 0,
+            "edge_count": null,
+            "edges_inserted": 0,
+            "entities_inserted": 0,
+            "entity_count": null,
+            "files_hashed": 0,
+            "files_parsed": 0,
+            "files_read": 0,
+            "files_walked": 8564,
+            "global_hash_check_ran": false,
+            "graph_counts_ran": false,
+            "graph_digest_kind": "incremental_graph_digest",
+            "graph_fact_hash": "fnv64:006bde538917d375",
+            "graph_fact_hash_ms": 3.815,
+            "integrity_check_kind": "quick_check_post_measurement",
+            "integrity_check_ms": 727.9819,
+            "integrity_status": "ok",
+            "mode": "update-fast",
+            "profile": {
+              "db_write_ms": 1367,
+              "edges_per_sec": 0.0,
+              "entities_per_sec": 0.0,
+              "extraction_ms": 0,
+              "file_discovery_ms": 786,
+              "files_per_sec": 0.0,
+              "fts_search_index_ms": 1367,
+              "memory_bytes": null,
+              "parse_ms": 0,
+              "semantic_resolver_ms": 0,
+              "skipped_unchanged_files": 4975,
+              "spans": [
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "atomic_db_replace",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "atomic_final_db_validate",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "atomic_temp_db_finalize",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "cache_refresh",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "dictionary_lookup_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "edge_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "entity_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "file_hash",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "file_read",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 786.0,
+                  "items": 8564,
+                  "name": "file_walk",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "fts_build",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "graph_fact_hash",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "index_creation",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "integrity_check",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "json_serialization",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "local_fact_bundle_creation",
+                  "notes": []
+                },
+                {
+                  "count": 4976,
+                  "elapsed_ms": 265.9214000000006,
+                  "items": 9950,
+                  "name": "metadata_diff",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 2.4440999999999997,
+                  "items": 0,
+                  "name": "open_store",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "parse",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "path_evidence_generation",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 754.8749,
+                  "items": 0,
+                  "name": "quick_check",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "reducer",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "snippet_loading",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "source_span_insert",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "sql_query_execution",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 1.2987,
+                  "items": 1,
+                  "name": "sqlite.configure_pragmas",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 1.0162,
+                  "items": 1,
+                  "name": "sqlite.migrate_schema",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 0.1226,
+                  "items": 1,
+                  "name": "sqlite.open_connection",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 0.0949,
+                  "items": 1,
+                  "name": "sqlite.repo_index_state_upsert_sql",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "stale_fact_delete",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "storage_audit",
+                  "notes": []
+                },
+                {
+                  "count": 0,
+                  "elapsed_ms": 0.0,
+                  "items": 0,
+                  "name": "symbol_interning",
+                  "notes": []
+                },
+                {
+                  "count": 1,
+                  "elapsed_ms": 3.1153999999999997,
+                  "items": 0,
+                  "name": "wal_checkpoint",
+                  "notes": []
+                }
+              ],
+              "total_wall_ms": 2444,
+              "vector_signature_ms": 0,
+              "worker_count": 1
+            },
+            "source_span_count": null,
+            "status": "ok",
+            "step": "repeat_unchanged_index",
+            "timings": {
+              "artifact_open_ms": 2.4440999999999997,
+              "db_write_ms": 1367.0,
+              "file_hash_ms": 0.0,
+              "file_read_ms": 0.0,
+              "graph_hash_ms": 3.815,
+              "json_output_creation_ms": null,
+              "metadata_diff_ms": 265.9214000000006,
+              "repo_walk_ms": 786.0,
+              "report_generation_ms": null,
+              "validation_ms": 727.9819
+            },
+            "transaction_status": "committed",
+            "wall_ms": 3215
+          }
+        }
+      ],
+      "repeat_unchanged": {
+        "db_family_size_bytes": 179499008,
+        "duplicate_edges_upserted": 0,
+        "edge_count": null,
+        "edges_inserted": 0,
+        "entities_inserted": 0,
+        "entity_count": null,
+        "files_hashed": 0,
+        "files_parsed": 0,
+        "files_read": 0,
+        "files_walked": 8564,
+        "global_hash_check_ran": false,
+        "graph_counts_ran": false,
+        "graph_digest_kind": "incremental_graph_digest",
+        "graph_fact_hash": "fnv64:006bde538917d375",
+        "graph_fact_hash_ms": 3.815,
+        "integrity_check_kind": "quick_check_post_measurement",
+        "integrity_check_ms": 727.9819,
+        "integrity_status": "ok",
+        "mode": "update-fast",
+        "profile": {
+          "db_write_ms": 1367,
+          "edges_per_sec": 0.0,
+          "entities_per_sec": 0.0,
+          "extraction_ms": 0,
+          "file_discovery_ms": 786,
+          "files_per_sec": 0.0,
+          "fts_search_index_ms": 1367,
+          "memory_bytes": null,
+          "parse_ms": 0,
+          "semantic_resolver_ms": 0,
+          "skipped_unchanged_files": 4975,
+          "spans": [
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "atomic_db_replace",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "atomic_final_db_validate",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "atomic_temp_db_finalize",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "cache_refresh",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "dictionary_lookup_insert",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "edge_insert",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "entity_insert",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "file_hash",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "file_read",
+              "notes": []
+            },
+            {
+              "count": 1,
+              "elapsed_ms": 786.0,
+              "items": 8564,
+              "name": "file_walk",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "fts_build",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "graph_fact_hash",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "index_creation",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "integrity_check",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "json_serialization",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "local_fact_bundle_creation",
+              "notes": []
+            },
+            {
+              "count": 4976,
+              "elapsed_ms": 265.9214000000006,
+              "items": 9950,
+              "name": "metadata_diff",
+              "notes": []
+            },
+            {
+              "count": 1,
+              "elapsed_ms": 2.4440999999999997,
+              "items": 0,
+              "name": "open_store",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "parse",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "path_evidence_generation",
+              "notes": []
+            },
+            {
+              "count": 1,
+              "elapsed_ms": 754.8749,
+              "items": 0,
+              "name": "quick_check",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "reducer",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "snippet_loading",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "source_span_insert",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "sql_query_execution",
+              "notes": []
+            },
+            {
+              "count": 1,
+              "elapsed_ms": 1.2987,
+              "items": 1,
+              "name": "sqlite.configure_pragmas",
+              "notes": []
+            },
+            {
+              "count": 1,
+              "elapsed_ms": 1.0162,
+              "items": 1,
+              "name": "sqlite.migrate_schema",
+              "notes": []
+            },
+            {
+              "count": 1,
+              "elapsed_ms": 0.1226,
+              "items": 1,
+              "name": "sqlite.open_connection",
+              "notes": []
+            },
+            {
+              "count": 1,
+              "elapsed_ms": 0.0949,
+              "items": 1,
+              "name": "sqlite.repo_index_state_upsert_sql",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "stale_fact_delete",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "storage_audit",
+              "notes": []
+            },
+            {
+              "count": 0,
+              "elapsed_ms": 0.0,
+              "items": 0,
+              "name": "symbol_interning",
+              "notes": []
+            },
+            {
+              "count": 1,
+              "elapsed_ms": 3.1153999999999997,
+              "items": 0,
+              "name": "wal_checkpoint",
+              "notes": []
+            }
+          ],
+          "total_wall_ms": 2444,
+          "vector_signature_ms": 0,
+          "worker_count": 1
+        },
+        "source_span_count": null,
+        "status": "ok",
+        "step": "repeat_unchanged_index",
+        "timings": {
+          "artifact_open_ms": 2.4440999999999997,
+          "db_write_ms": 1367.0,
+          "file_hash_ms": 0.0,
+          "file_read_ms": 0.0,
+          "graph_hash_ms": 3.815,
+          "json_output_creation_ms": null,
+          "metadata_diff_ms": 265.9214000000006,
+          "repo_walk_ms": 786.0,
+          "report_generation_ms": null,
+          "validation_ms": 727.9819
+        },
+        "transaction_status": "committed",
+        "wall_ms": 3215
+      },
+      "repo_path": "<REPO_ROOT>/Desktop\\development\\autoresearch-codexlab",
+      "restore_returns_to_repeat_graph_fact_hash": true,
+      "status": "passed",
+      "update_mode": "update-fast",
+      "update_repo_path": "<REPO_ROOT>/Desktop\\development\\autoresearch-codexlab"
+    }
+  ],
+  "schema_version": 1,
+  "status": "passed",
+  "timeout_ms": 600000,
+  "update_mode": "update-fast",
+  "verdict": "passed",
+  "workdir": "<REPO_ROOT>/Desktop\\development\\codegraph-mcp\\reports\\final\\artifacts\\quality_gate_repeat_fast_work",
+  "workers": 16
+}

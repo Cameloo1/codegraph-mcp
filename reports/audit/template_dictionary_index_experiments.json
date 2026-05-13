@@ -1,0 +1,963 @@
+{
+  "report": "template_dictionary_index_experiments",
+  "source_db": "reports\\audit\\artifacts\\symbol_qname_compaction_probe_fast.sqlite",
+  "source_db_bytes": 170508288,
+  "copied_db_only": true,
+  "original_db_mutated": false,
+  "baseline_latency": {
+    "symbol_lookup": {
+      "p50_ms": 0.004200001058052294,
+      "p95_ms": 0.005900001269765198,
+      "max_ms": 0.028899999961140566,
+      "runs": 120
+    },
+    "qname_lookup": {
+      "p50_ms": 0.019699999938893598,
+      "p95_ms": 0.02769999991869554,
+      "max_ms": 0.08349999916390516,
+      "runs": 120
+    },
+    "content_template_instances": {
+      "p50_ms": 0.00399999953515362,
+      "p95_ms": 0.006199999916134402,
+      "max_ms": 0.03400000059627928,
+      "runs": 120
+    },
+    "duplicate_template_instances_scan": {
+      "p50_ms": 0.09300000056100544,
+      "p95_ms": 0.1021999996737577,
+      "max_ms": 0.5196999991312623,
+      "runs": 80
+    },
+    "template_entities_by_template": {
+      "p50_ms": 0.06595000013476238,
+      "p95_ms": 0.08199999865610152,
+      "max_ms": 0.1249999986612238,
+      "runs": 120
+    },
+    "template_edges_by_template": {
+      "p50_ms": 0.06519999988086056,
+      "p95_ms": 0.08580000030633528,
+      "max_ms": 0.161899999511661,
+      "runs": 120
+    },
+    "relation_lookup": {
+      "p50_ms": 0.004100000296602957,
+      "p95_ms": 0.004500001523410901,
+      "max_ms": 0.04310000076657161,
+      "runs": 120
+    },
+    "path_evidence_lookup": {
+      "p50_ms": 0.004300000000512227,
+      "p95_ms": 0.006299998858594336,
+      "max_ms": 0.03730000025825575,
+      "runs": 120
+    },
+    "single_file_update_stale_lookup": {
+      "p50_ms": 0.010300000212737359,
+      "p95_ms": 0.012000000424450263,
+      "max_ms": 0.12040000001434237,
+      "runs": 120
+    },
+    "repeat_manifest_lookup": {
+      "p50_ms": 0.004300000000512227,
+      "p95_ms": 0.004600000465870835,
+      "max_ms": 0.016099998902063817,
+      "runs": 120
+    }
+  },
+  "baseline_plans": {
+    "symbol_lookup": [
+      "3 | 0 | 44 | SEARCH symbol_dict USING INDEX idx_symbol_dict_hash (value_hash=? AND value_len=?)"
+    ],
+    "qname_prefix_lookup": [
+      "3 | 0 | 43 | SEARCH qname_prefix_dict USING INDEX idx_qname_prefix_dict_hash (value_hash=? AND value_len=?)"
+    ],
+    "qname_parts_lookup": [
+      "2 | 0 | 39 | SEARCH qualified_name_dict USING COVERING INDEX idx_qualified_name_parts (prefix_id=? AND suffix_id=?)"
+    ],
+    "content_template_instances": [
+      "3 | 0 | 40 | SEARCH f USING COVERING INDEX idx_files_content_template (content_template_id=?)"
+    ],
+    "template_entities_by_template": [
+      "4 | 0 | 95 | SEARCH template_entities USING PRIMARY KEY (content_template_id=?)"
+    ],
+    "template_edges_by_template": [
+      "4 | 0 | 76 | SEARCH template_edges USING PRIMARY KEY (content_template_id=?)"
+    ],
+    "relation_lookup": [
+      "4 | 0 | 46 | SEARCH edges USING INDEX idx_edges_head_relation (head_id_key=? AND relation_id=?)"
+    ],
+    "path_evidence_lookup": [
+      "5 | 0 | 49 | SEARCH path_evidence_lookup USING INDEX idx_path_evidence_lookup_source (source_id=? AND task_class=? AND relation_signature=?)"
+    ],
+    "single_file_update_stale_lookup": [
+      "3 | 0 | 100 | SEARCH file_edges USING PRIMARY KEY (file_id=?)"
+    ],
+    "repeat_manifest_lookup": [
+      "3 | 0 | 39 | SEARCH files USING INDEX sqlite_autoindex_files_1 (path_id=?)"
+    ]
+  },
+  "experiments": [
+    {
+      "index": "idx_symbol_dict_hash",
+      "table": "symbol_dict",
+      "kind": "dictionary",
+      "index_bytes": 3334144,
+      "existed_on_copy": true,
+      "integrity_after_drop": "ok",
+      "vacuum_ms": 1030.5184999997437,
+      "size_after_drop_without_vacuum_bytes": 170508288,
+      "size_after_drop_vacuum_bytes": 167030784,
+      "saved_bytes_after_vacuum": 3477504,
+      "latency_with_index": {
+        "symbol_lookup": {
+          "p50_ms": 0.004200001058052294,
+          "p95_ms": 0.005900001269765198,
+          "max_ms": 0.028899999961140566,
+          "runs": 120
+        },
+        "qname_lookup": {
+          "p50_ms": 0.019699999938893598,
+          "p95_ms": 0.02769999991869554,
+          "max_ms": 0.08349999916390516,
+          "runs": 120
+        },
+        "content_template_instances": {
+          "p50_ms": 0.00399999953515362,
+          "p95_ms": 0.006199999916134402,
+          "max_ms": 0.03400000059627928,
+          "runs": 120
+        },
+        "duplicate_template_instances_scan": {
+          "p50_ms": 0.09300000056100544,
+          "p95_ms": 0.1021999996737577,
+          "max_ms": 0.5196999991312623,
+          "runs": 80
+        },
+        "template_entities_by_template": {
+          "p50_ms": 0.06595000013476238,
+          "p95_ms": 0.08199999865610152,
+          "max_ms": 0.1249999986612238,
+          "runs": 120
+        },
+        "template_edges_by_template": {
+          "p50_ms": 0.06519999988086056,
+          "p95_ms": 0.08580000030633528,
+          "max_ms": 0.161899999511661,
+          "runs": 120
+        },
+        "relation_lookup": {
+          "p50_ms": 0.004100000296602957,
+          "p95_ms": 0.004500001523410901,
+          "max_ms": 0.04310000076657161,
+          "runs": 120
+        },
+        "path_evidence_lookup": {
+          "p50_ms": 0.004300000000512227,
+          "p95_ms": 0.006299998858594336,
+          "max_ms": 0.03730000025825575,
+          "runs": 120
+        },
+        "single_file_update_stale_lookup": {
+          "p50_ms": 0.010300000212737359,
+          "p95_ms": 0.012000000424450263,
+          "max_ms": 0.12040000001434237,
+          "runs": 120
+        },
+        "repeat_manifest_lookup": {
+          "p50_ms": 0.004300000000512227,
+          "p95_ms": 0.004600000465870835,
+          "max_ms": 0.016099998902063817,
+          "runs": 120
+        }
+      },
+      "latency_without_index": {
+        "symbol_lookup": {
+          "p50_ms": 3.6793999997826177,
+          "p95_ms": 4.057000000102562,
+          "max_ms": 5.309699999997974,
+          "runs": 120
+        },
+        "qname_lookup": {
+          "p50_ms": 4.142899999351357,
+          "p95_ms": 4.9641999994491925,
+          "max_ms": 5.4490999991685385,
+          "runs": 120
+        },
+        "content_template_instances": {
+          "p50_ms": 0.004200001058052294,
+          "p95_ms": 0.0073999999585794285,
+          "max_ms": 0.11050000102841295,
+          "runs": 120
+        },
+        "duplicate_template_instances_scan": {
+          "p50_ms": 0.09499999941908754,
+          "p95_ms": 0.12659999993047677,
+          "max_ms": 0.809899998785113,
+          "runs": 80
+        },
+        "template_entities_by_template": {
+          "p50_ms": 0.06614999983867165,
+          "p95_ms": 0.10339999971620273,
+          "max_ms": 0.2929999991465593,
+          "runs": 120
+        },
+        "template_edges_by_template": {
+          "p50_ms": 0.06540000049426453,
+          "p95_ms": 0.09529999988444615,
+          "max_ms": 0.14799999917158857,
+          "runs": 120
+        },
+        "relation_lookup": {
+          "p50_ms": 0.004100000296602957,
+          "p95_ms": 0.004300000000512227,
+          "max_ms": 0.03839999953925144,
+          "runs": 120
+        },
+        "path_evidence_lookup": {
+          "p50_ms": 0.004399998942972161,
+          "p95_ms": 0.004600000465870835,
+          "max_ms": 0.03470000046945643,
+          "runs": 120
+        },
+        "single_file_update_stale_lookup": {
+          "p50_ms": 0.010600000678095967,
+          "p95_ms": 0.011100000847363845,
+          "max_ms": 0.10780000047816429,
+          "runs": 120
+        },
+        "repeat_manifest_lookup": {
+          "p50_ms": 0.004399998942972161,
+          "p95_ms": 0.004800000169780105,
+          "max_ms": 0.015999999959603883,
+          "runs": 120
+        }
+      },
+      "plans_with_index": {
+        "symbol_lookup": [
+          "3 | 0 | 44 | SEARCH symbol_dict USING INDEX idx_symbol_dict_hash (value_hash=? AND value_len=?)"
+        ],
+        "qname_prefix_lookup": [
+          "3 | 0 | 43 | SEARCH qname_prefix_dict USING INDEX idx_qname_prefix_dict_hash (value_hash=? AND value_len=?)"
+        ],
+        "qname_parts_lookup": [
+          "2 | 0 | 39 | SEARCH qualified_name_dict USING COVERING INDEX idx_qualified_name_parts (prefix_id=? AND suffix_id=?)"
+        ],
+        "content_template_instances": [
+          "3 | 0 | 40 | SEARCH f USING COVERING INDEX idx_files_content_template (content_template_id=?)"
+        ],
+        "template_entities_by_template": [
+          "4 | 0 | 95 | SEARCH template_entities USING PRIMARY KEY (content_template_id=?)"
+        ],
+        "template_edges_by_template": [
+          "4 | 0 | 76 | SEARCH template_edges USING PRIMARY KEY (content_template_id=?)"
+        ],
+        "relation_lookup": [
+          "4 | 0 | 46 | SEARCH edges USING INDEX idx_edges_head_relation (head_id_key=? AND relation_id=?)"
+        ],
+        "path_evidence_lookup": [
+          "5 | 0 | 49 | SEARCH path_evidence_lookup USING INDEX idx_path_evidence_lookup_source (source_id=? AND task_class=? AND relation_signature=?)"
+        ],
+        "single_file_update_stale_lookup": [
+          "3 | 0 | 100 | SEARCH file_edges USING PRIMARY KEY (file_id=?)"
+        ],
+        "repeat_manifest_lookup": [
+          "3 | 0 | 39 | SEARCH files USING INDEX sqlite_autoindex_files_1 (path_id=?)"
+        ]
+      },
+      "plans_without_index": {
+        "symbol_lookup": [
+          "2 | 0 | 216 | SCAN symbol_dict"
+        ],
+        "qname_prefix_lookup": [
+          "3 | 0 | 43 | SEARCH qname_prefix_dict USING INDEX idx_qname_prefix_dict_hash (value_hash=? AND value_len=?)"
+        ],
+        "qname_parts_lookup": [
+          "2 | 0 | 39 | SEARCH qualified_name_dict USING COVERING INDEX idx_qualified_name_parts (prefix_id=? AND suffix_id=?)"
+        ],
+        "content_template_instances": [
+          "3 | 0 | 40 | SEARCH f USING COVERING INDEX idx_files_content_template (content_template_id=?)"
+        ],
+        "template_entities_by_template": [
+          "4 | 0 | 95 | SEARCH template_entities USING PRIMARY KEY (content_template_id=?)"
+        ],
+        "template_edges_by_template": [
+          "4 | 0 | 76 | SEARCH template_edges USING PRIMARY KEY (content_template_id=?)"
+        ],
+        "relation_lookup": [
+          "4 | 0 | 46 | SEARCH edges USING INDEX idx_edges_head_relation (head_id_key=? AND relation_id=?)"
+        ],
+        "path_evidence_lookup": [
+          "5 | 0 | 49 | SEARCH path_evidence_lookup USING INDEX idx_path_evidence_lookup_source (source_id=? AND task_class=? AND relation_signature=?)"
+        ],
+        "single_file_update_stale_lookup": [
+          "3 | 0 | 100 | SEARCH file_edges USING PRIMARY KEY (file_id=?)"
+        ],
+        "repeat_manifest_lookup": [
+          "3 | 0 | 39 | SEARCH files USING INDEX sqlite_autoindex_files_1 (path_id=?)"
+        ]
+      },
+      "regressions": [
+        {
+          "query": "symbol_lookup",
+          "baseline_p95_ms": 0.005900001269765198,
+          "without_p95_ms": 4.057000000102562,
+          "ratio": 687.6269706741975
+        },
+        {
+          "query": "qname_lookup",
+          "baseline_p95_ms": 0.02769999991869554,
+          "without_p95_ms": 4.9641999994491925,
+          "ratio": 179.21299689602918
+        }
+      ],
+      "safe_to_drop": false,
+      "decision": "keep"
+    },
+    {
+      "index": "idx_qname_prefix_dict_hash",
+      "table": "qname_prefix_dict",
+      "kind": "dictionary",
+      "index_bytes": 929792,
+      "existed_on_copy": true,
+      "integrity_after_drop": "ok",
+      "vacuum_ms": 1106.2758000007307,
+      "size_after_drop_without_vacuum_bytes": 170508288,
+      "size_after_drop_vacuum_bytes": 169435136,
+      "saved_bytes_after_vacuum": 1073152,
+      "latency_with_index": {
+        "symbol_lookup": {
+          "p50_ms": 0.004200001058052294,
+          "p95_ms": 0.005900001269765198,
+          "max_ms": 0.028899999961140566,
+          "runs": 120
+        },
+        "qname_lookup": {
+          "p50_ms": 0.019699999938893598,
+          "p95_ms": 0.02769999991869554,
+          "max_ms": 0.08349999916390516,
+          "runs": 120
+        },
+        "content_template_instances": {
+          "p50_ms": 0.00399999953515362,
+          "p95_ms": 0.006199999916134402,
+          "max_ms": 0.03400000059627928,
+          "runs": 120
+        },
+        "duplicate_template_instances_scan": {
+          "p50_ms": 0.09300000056100544,
+          "p95_ms": 0.1021999996737577,
+          "max_ms": 0.5196999991312623,
+          "runs": 80
+        },
+        "template_entities_by_template": {
+          "p50_ms": 0.06595000013476238,
+          "p95_ms": 0.08199999865610152,
+          "max_ms": 0.1249999986612238,
+          "runs": 120
+        },
+        "template_edges_by_template": {
+          "p50_ms": 0.06519999988086056,
+          "p95_ms": 0.08580000030633528,
+          "max_ms": 0.161899999511661,
+          "runs": 120
+        },
+        "relation_lookup": {
+          "p50_ms": 0.004100000296602957,
+          "p95_ms": 0.004500001523410901,
+          "max_ms": 0.04310000076657161,
+          "runs": 120
+        },
+        "path_evidence_lookup": {
+          "p50_ms": 0.004300000000512227,
+          "p95_ms": 0.006299998858594336,
+          "max_ms": 0.03730000025825575,
+          "runs": 120
+        },
+        "single_file_update_stale_lookup": {
+          "p50_ms": 0.010300000212737359,
+          "p95_ms": 0.012000000424450263,
+          "max_ms": 0.12040000001434237,
+          "runs": 120
+        },
+        "repeat_manifest_lookup": {
+          "p50_ms": 0.004300000000512227,
+          "p95_ms": 0.004600000465870835,
+          "max_ms": 0.016099998902063817,
+          "runs": 120
+        }
+      },
+      "latency_without_index": {
+        "symbol_lookup": {
+          "p50_ms": 0.0050499993449193425,
+          "p95_ms": 0.0073999999585794285,
+          "max_ms": 0.02919999860750977,
+          "runs": 120
+        },
+        "qname_lookup": {
+          "p50_ms": 2.1964500001558918,
+          "p95_ms": 3.7754999993921956,
+          "max_ms": 8.778499999607448,
+          "runs": 120
+        },
+        "content_template_instances": {
+          "p50_ms": 0.006650000614172313,
+          "p95_ms": 0.012500000593718141,
+          "max_ms": 0.0976999999693362,
+          "runs": 120
+        },
+        "duplicate_template_instances_scan": {
+          "p50_ms": 0.11070000073232222,
+          "p95_ms": 0.22170000011101365,
+          "max_ms": 0.9256999983335845,
+          "runs": 80
+        },
+        "template_entities_by_template": {
+          "p50_ms": 0.0809499997558305,
+          "p95_ms": 0.1511999998911051,
+          "max_ms": 0.3522000006341841,
+          "runs": 120
+        },
+        "template_edges_by_template": {
+          "p50_ms": 0.09409999984200113,
+          "p95_ms": 0.16789999972388614,
+          "max_ms": 0.2793000003293855,
+          "runs": 120
+        },
+        "relation_lookup": {
+          "p50_ms": 0.006450000910263043,
+          "p95_ms": 0.009499999578110874,
+          "max_ms": 0.11330000052112155,
+          "runs": 120
+        },
+        "path_evidence_lookup": {
+          "p50_ms": 0.006999999641266186,
+          "p95_ms": 0.009700001101009548,
+          "max_ms": 0.06100000064179767,
+          "runs": 120
+        },
+        "single_file_update_stale_lookup": {
+          "p50_ms": 0.016449999748147093,
+          "p95_ms": 0.023100001271814108,
+          "max_ms": 0.1638000012462726,
+          "runs": 120
+        },
+        "repeat_manifest_lookup": {
+          "p50_ms": 0.00650000038149301,
+          "p95_ms": 0.010100000508828089,
+          "max_ms": 0.03990000004705507,
+          "runs": 120
+        }
+      },
+      "plans_with_index": {
+        "symbol_lookup": [
+          "3 | 0 | 44 | SEARCH symbol_dict USING INDEX idx_symbol_dict_hash (value_hash=? AND value_len=?)"
+        ],
+        "qname_prefix_lookup": [
+          "3 | 0 | 43 | SEARCH qname_prefix_dict USING INDEX idx_qname_prefix_dict_hash (value_hash=? AND value_len=?)"
+        ],
+        "qname_parts_lookup": [
+          "2 | 0 | 39 | SEARCH qualified_name_dict USING COVERING INDEX idx_qualified_name_parts (prefix_id=? AND suffix_id=?)"
+        ],
+        "content_template_instances": [
+          "3 | 0 | 40 | SEARCH f USING COVERING INDEX idx_files_content_template (content_template_id=?)"
+        ],
+        "template_entities_by_template": [
+          "4 | 0 | 95 | SEARCH template_entities USING PRIMARY KEY (content_template_id=?)"
+        ],
+        "template_edges_by_template": [
+          "4 | 0 | 76 | SEARCH template_edges USING PRIMARY KEY (content_template_id=?)"
+        ],
+        "relation_lookup": [
+          "4 | 0 | 46 | SEARCH edges USING INDEX idx_edges_head_relation (head_id_key=? AND relation_id=?)"
+        ],
+        "path_evidence_lookup": [
+          "5 | 0 | 49 | SEARCH path_evidence_lookup USING INDEX idx_path_evidence_lookup_source (source_id=? AND task_class=? AND relation_signature=?)"
+        ],
+        "single_file_update_stale_lookup": [
+          "3 | 0 | 100 | SEARCH file_edges USING PRIMARY KEY (file_id=?)"
+        ],
+        "repeat_manifest_lookup": [
+          "3 | 0 | 39 | SEARCH files USING INDEX sqlite_autoindex_files_1 (path_id=?)"
+        ]
+      },
+      "plans_without_index": {
+        "symbol_lookup": [
+          "3 | 0 | 44 | SEARCH symbol_dict USING INDEX idx_symbol_dict_hash (value_hash=? AND value_len=?)"
+        ],
+        "qname_prefix_lookup": [
+          "2 | 0 | 216 | SCAN qname_prefix_dict"
+        ],
+        "qname_parts_lookup": [
+          "2 | 0 | 39 | SEARCH qualified_name_dict USING COVERING INDEX idx_qualified_name_parts (prefix_id=? AND suffix_id=?)"
+        ],
+        "content_template_instances": [
+          "3 | 0 | 40 | SEARCH f USING COVERING INDEX idx_files_content_template (content_template_id=?)"
+        ],
+        "template_entities_by_template": [
+          "4 | 0 | 95 | SEARCH template_entities USING PRIMARY KEY (content_template_id=?)"
+        ],
+        "template_edges_by_template": [
+          "4 | 0 | 76 | SEARCH template_edges USING PRIMARY KEY (content_template_id=?)"
+        ],
+        "relation_lookup": [
+          "4 | 0 | 46 | SEARCH edges USING INDEX idx_edges_head_relation (head_id_key=? AND relation_id=?)"
+        ],
+        "path_evidence_lookup": [
+          "5 | 0 | 49 | SEARCH path_evidence_lookup USING INDEX idx_path_evidence_lookup_source (source_id=? AND task_class=? AND relation_signature=?)"
+        ],
+        "single_file_update_stale_lookup": [
+          "3 | 0 | 100 | SEARCH file_edges USING PRIMARY KEY (file_id=?)"
+        ],
+        "repeat_manifest_lookup": [
+          "3 | 0 | 39 | SEARCH files USING INDEX sqlite_autoindex_files_1 (path_id=?)"
+        ]
+      },
+      "regressions": [
+        {
+          "query": "qname_lookup",
+          "baseline_p95_ms": 0.02769999991869554,
+          "without_p95_ms": 3.7754999993921956,
+          "ratio": 136.29963936729112
+        }
+      ],
+      "safe_to_drop": false,
+      "decision": "keep"
+    },
+    {
+      "index": "idx_qualified_name_parts",
+      "table": "qualified_name_dict",
+      "kind": "dictionary",
+      "index_bytes": 4255744,
+      "existed_on_copy": true,
+      "integrity_after_drop": "ok",
+      "vacuum_ms": 1124.333800000386,
+      "size_after_drop_without_vacuum_bytes": 170508288,
+      "size_after_drop_vacuum_bytes": 166109184,
+      "saved_bytes_after_vacuum": 4399104,
+      "latency_with_index": {
+        "symbol_lookup": {
+          "p50_ms": 0.004200001058052294,
+          "p95_ms": 0.005900001269765198,
+          "max_ms": 0.028899999961140566,
+          "runs": 120
+        },
+        "qname_lookup": {
+          "p50_ms": 0.019699999938893598,
+          "p95_ms": 0.02769999991869554,
+          "max_ms": 0.08349999916390516,
+          "runs": 120
+        },
+        "content_template_instances": {
+          "p50_ms": 0.00399999953515362,
+          "p95_ms": 0.006199999916134402,
+          "max_ms": 0.03400000059627928,
+          "runs": 120
+        },
+        "duplicate_template_instances_scan": {
+          "p50_ms": 0.09300000056100544,
+          "p95_ms": 0.1021999996737577,
+          "max_ms": 0.5196999991312623,
+          "runs": 80
+        },
+        "template_entities_by_template": {
+          "p50_ms": 0.06595000013476238,
+          "p95_ms": 0.08199999865610152,
+          "max_ms": 0.1249999986612238,
+          "runs": 120
+        },
+        "template_edges_by_template": {
+          "p50_ms": 0.06519999988086056,
+          "p95_ms": 0.08580000030633528,
+          "max_ms": 0.161899999511661,
+          "runs": 120
+        },
+        "relation_lookup": {
+          "p50_ms": 0.004100000296602957,
+          "p95_ms": 0.004500001523410901,
+          "max_ms": 0.04310000076657161,
+          "runs": 120
+        },
+        "path_evidence_lookup": {
+          "p50_ms": 0.004300000000512227,
+          "p95_ms": 0.006299998858594336,
+          "max_ms": 0.03730000025825575,
+          "runs": 120
+        },
+        "single_file_update_stale_lookup": {
+          "p50_ms": 0.010300000212737359,
+          "p95_ms": 0.012000000424450263,
+          "max_ms": 0.12040000001434237,
+          "runs": 120
+        },
+        "repeat_manifest_lookup": {
+          "p50_ms": 0.004300000000512227,
+          "p95_ms": 0.004600000465870835,
+          "max_ms": 0.016099998902063817,
+          "runs": 120
+        }
+      },
+      "latency_without_index": {
+        "symbol_lookup": {
+          "p50_ms": 0.004200001058052294,
+          "p95_ms": 0.005600000804406591,
+          "max_ms": 0.022199999875738285,
+          "runs": 120
+        },
+        "qname_lookup": {
+          "p50_ms": 5.265349999717728,
+          "p95_ms": 8.073500001046341,
+          "max_ms": 8.830299999317504,
+          "runs": 120
+        },
+        "content_template_instances": {
+          "p50_ms": 0.006800000846851617,
+          "p95_ms": 0.013099999705445953,
+          "max_ms": 0.1142999990406679,
+          "runs": 120
+        },
+        "duplicate_template_instances_scan": {
+          "p50_ms": 0.1679500001046108,
+          "p95_ms": 0.2953000002889894,
+          "max_ms": 0.7652000003872672,
+          "runs": 80
+        },
+        "template_entities_by_template": {
+          "p50_ms": 0.09764999958861154,
+          "p95_ms": 0.16239999968092889,
+          "max_ms": 0.7508999988203868,
+          "runs": 120
+        },
+        "template_edges_by_template": {
+          "p50_ms": 0.12900000092486152,
+          "p95_ms": 0.22600000011152588,
+          "max_ms": 0.4109999990760116,
+          "runs": 120
+        },
+        "relation_lookup": {
+          "p50_ms": 0.004399998942972161,
+          "p95_ms": 0.007200000254670158,
+          "max_ms": 0.07170000026235357,
+          "runs": 120
+        },
+        "path_evidence_lookup": {
+          "p50_ms": 0.00470000031782547,
+          "p95_ms": 0.01359999987471383,
+          "max_ms": 0.05509999937203247,
+          "runs": 120
+        },
+        "single_file_update_stale_lookup": {
+          "p50_ms": 0.01680000059423037,
+          "p95_ms": 0.04090000038559083,
+          "max_ms": 0.11550000090210233,
+          "runs": 120
+        },
+        "repeat_manifest_lookup": {
+          "p50_ms": 0.004599998646881431,
+          "p95_ms": 0.008900000466383062,
+          "max_ms": 0.03719999949680641,
+          "runs": 120
+        }
+      },
+      "plans_with_index": {
+        "symbol_lookup": [
+          "3 | 0 | 44 | SEARCH symbol_dict USING INDEX idx_symbol_dict_hash (value_hash=? AND value_len=?)"
+        ],
+        "qname_prefix_lookup": [
+          "3 | 0 | 43 | SEARCH qname_prefix_dict USING INDEX idx_qname_prefix_dict_hash (value_hash=? AND value_len=?)"
+        ],
+        "qname_parts_lookup": [
+          "2 | 0 | 39 | SEARCH qualified_name_dict USING COVERING INDEX idx_qualified_name_parts (prefix_id=? AND suffix_id=?)"
+        ],
+        "content_template_instances": [
+          "3 | 0 | 40 | SEARCH f USING COVERING INDEX idx_files_content_template (content_template_id=?)"
+        ],
+        "template_entities_by_template": [
+          "4 | 0 | 95 | SEARCH template_entities USING PRIMARY KEY (content_template_id=?)"
+        ],
+        "template_edges_by_template": [
+          "4 | 0 | 76 | SEARCH template_edges USING PRIMARY KEY (content_template_id=?)"
+        ],
+        "relation_lookup": [
+          "4 | 0 | 46 | SEARCH edges USING INDEX idx_edges_head_relation (head_id_key=? AND relation_id=?)"
+        ],
+        "path_evidence_lookup": [
+          "5 | 0 | 49 | SEARCH path_evidence_lookup USING INDEX idx_path_evidence_lookup_source (source_id=? AND task_class=? AND relation_signature=?)"
+        ],
+        "single_file_update_stale_lookup": [
+          "3 | 0 | 100 | SEARCH file_edges USING PRIMARY KEY (file_id=?)"
+        ],
+        "repeat_manifest_lookup": [
+          "3 | 0 | 39 | SEARCH files USING INDEX sqlite_autoindex_files_1 (path_id=?)"
+        ]
+      },
+      "plans_without_index": {
+        "symbol_lookup": [
+          "3 | 0 | 44 | SEARCH symbol_dict USING INDEX idx_symbol_dict_hash (value_hash=? AND value_len=?)"
+        ],
+        "qname_prefix_lookup": [
+          "3 | 0 | 43 | SEARCH qname_prefix_dict USING INDEX idx_qname_prefix_dict_hash (value_hash=? AND value_len=?)"
+        ],
+        "qname_parts_lookup": [
+          "2 | 0 | 216 | SCAN qualified_name_dict"
+        ],
+        "content_template_instances": [
+          "3 | 0 | 40 | SEARCH f USING COVERING INDEX idx_files_content_template (content_template_id=?)"
+        ],
+        "template_entities_by_template": [
+          "4 | 0 | 95 | SEARCH template_entities USING PRIMARY KEY (content_template_id=?)"
+        ],
+        "template_edges_by_template": [
+          "4 | 0 | 76 | SEARCH template_edges USING PRIMARY KEY (content_template_id=?)"
+        ],
+        "relation_lookup": [
+          "4 | 0 | 46 | SEARCH edges USING INDEX idx_edges_head_relation (head_id_key=? AND relation_id=?)"
+        ],
+        "path_evidence_lookup": [
+          "5 | 0 | 49 | SEARCH path_evidence_lookup USING INDEX idx_path_evidence_lookup_source (source_id=? AND task_class=? AND relation_signature=?)"
+        ],
+        "single_file_update_stale_lookup": [
+          "3 | 0 | 100 | SEARCH file_edges USING PRIMARY KEY (file_id=?)"
+        ],
+        "repeat_manifest_lookup": [
+          "3 | 0 | 39 | SEARCH files USING INDEX sqlite_autoindex_files_1 (path_id=?)"
+        ]
+      },
+      "regressions": [
+        {
+          "query": "qname_lookup",
+          "baseline_p95_ms": 0.02769999991869554,
+          "without_p95_ms": 8.073500001046341,
+          "ratio": 291.4620947560834
+        }
+      ],
+      "safe_to_drop": false,
+      "decision": "keep"
+    },
+    {
+      "index": "idx_files_content_template",
+      "table": "files",
+      "kind": "content_template",
+      "index_bytes": 102400,
+      "existed_on_copy": true,
+      "integrity_after_drop": "ok",
+      "vacuum_ms": 1198.93680000132,
+      "size_after_drop_without_vacuum_bytes": 170508288,
+      "size_after_drop_vacuum_bytes": 170262528,
+      "saved_bytes_after_vacuum": 245760,
+      "latency_with_index": {
+        "symbol_lookup": {
+          "p50_ms": 0.004200001058052294,
+          "p95_ms": 0.005900001269765198,
+          "max_ms": 0.028899999961140566,
+          "runs": 120
+        },
+        "qname_lookup": {
+          "p50_ms": 0.019699999938893598,
+          "p95_ms": 0.02769999991869554,
+          "max_ms": 0.08349999916390516,
+          "runs": 120
+        },
+        "content_template_instances": {
+          "p50_ms": 0.00399999953515362,
+          "p95_ms": 0.006199999916134402,
+          "max_ms": 0.03400000059627928,
+          "runs": 120
+        },
+        "duplicate_template_instances_scan": {
+          "p50_ms": 0.09300000056100544,
+          "p95_ms": 0.1021999996737577,
+          "max_ms": 0.5196999991312623,
+          "runs": 80
+        },
+        "template_entities_by_template": {
+          "p50_ms": 0.06595000013476238,
+          "p95_ms": 0.08199999865610152,
+          "max_ms": 0.1249999986612238,
+          "runs": 120
+        },
+        "template_edges_by_template": {
+          "p50_ms": 0.06519999988086056,
+          "p95_ms": 0.08580000030633528,
+          "max_ms": 0.161899999511661,
+          "runs": 120
+        },
+        "relation_lookup": {
+          "p50_ms": 0.004100000296602957,
+          "p95_ms": 0.004500001523410901,
+          "max_ms": 0.04310000076657161,
+          "runs": 120
+        },
+        "path_evidence_lookup": {
+          "p50_ms": 0.004300000000512227,
+          "p95_ms": 0.006299998858594336,
+          "max_ms": 0.03730000025825575,
+          "runs": 120
+        },
+        "single_file_update_stale_lookup": {
+          "p50_ms": 0.010300000212737359,
+          "p95_ms": 0.012000000424450263,
+          "max_ms": 0.12040000001434237,
+          "runs": 120
+        },
+        "repeat_manifest_lookup": {
+          "p50_ms": 0.004300000000512227,
+          "p95_ms": 0.004600000465870835,
+          "max_ms": 0.016099998902063817,
+          "runs": 120
+        }
+      },
+      "latency_without_index": {
+        "symbol_lookup": {
+          "p50_ms": 0.004499999704421498,
+          "p95_ms": 0.006099999154685065,
+          "max_ms": 0.09999999929277692,
+          "runs": 120
+        },
+        "qname_lookup": {
+          "p50_ms": 0.020399999812070746,
+          "p95_ms": 0.03590000051190145,
+          "max_ms": 0.12570000035339035,
+          "runs": 120
+        },
+        "content_template_instances": {
+          "p50_ms": 0.6855999999970663,
+          "p95_ms": 0.9938000002875924,
+          "max_ms": 2.034099999946193,
+          "runs": 120
+        },
+        "duplicate_template_instances_scan": {
+          "p50_ms": 0.10120000024471665,
+          "p95_ms": 0.27570000020205043,
+          "max_ms": 0.604300001214142,
+          "runs": 80
+        },
+        "template_entities_by_template": {
+          "p50_ms": 0.0682500003676978,
+          "p95_ms": 0.0915000000532018,
+          "max_ms": 0.17099999968195334,
+          "runs": 120
+        },
+        "template_edges_by_template": {
+          "p50_ms": 0.11634999918896938,
+          "p95_ms": 0.15759999951114878,
+          "max_ms": 0.31239999952958897,
+          "runs": 120
+        },
+        "relation_lookup": {
+          "p50_ms": 0.005100000635138713,
+          "p95_ms": 0.005500000042957254,
+          "max_ms": 0.07110000115062576,
+          "runs": 120
+        },
+        "path_evidence_lookup": {
+          "p50_ms": 0.004200000148557592,
+          "p95_ms": 0.005399999281507917,
+          "max_ms": 0.054499998441315256,
+          "runs": 120
+        },
+        "single_file_update_stale_lookup": {
+          "p50_ms": 0.01089999932446517,
+          "p95_ms": 0.022100000933278352,
+          "max_ms": 0.07709999954386149,
+          "runs": 120
+        },
+        "repeat_manifest_lookup": {
+          "p50_ms": 0.004400000761961564,
+          "p95_ms": 0.00650000038149301,
+          "max_ms": 0.031100000342121348,
+          "runs": 120
+        }
+      },
+      "plans_with_index": {
+        "symbol_lookup": [
+          "3 | 0 | 44 | SEARCH symbol_dict USING INDEX idx_symbol_dict_hash (value_hash=? AND value_len=?)"
+        ],
+        "qname_prefix_lookup": [
+          "3 | 0 | 43 | SEARCH qname_prefix_dict USING INDEX idx_qname_prefix_dict_hash (value_hash=? AND value_len=?)"
+        ],
+        "qname_parts_lookup": [
+          "2 | 0 | 39 | SEARCH qualified_name_dict USING COVERING INDEX idx_qualified_name_parts (prefix_id=? AND suffix_id=?)"
+        ],
+        "content_template_instances": [
+          "3 | 0 | 40 | SEARCH f USING COVERING INDEX idx_files_content_template (content_template_id=?)"
+        ],
+        "template_entities_by_template": [
+          "4 | 0 | 95 | SEARCH template_entities USING PRIMARY KEY (content_template_id=?)"
+        ],
+        "template_edges_by_template": [
+          "4 | 0 | 76 | SEARCH template_edges USING PRIMARY KEY (content_template_id=?)"
+        ],
+        "relation_lookup": [
+          "4 | 0 | 46 | SEARCH edges USING INDEX idx_edges_head_relation (head_id_key=? AND relation_id=?)"
+        ],
+        "path_evidence_lookup": [
+          "5 | 0 | 49 | SEARCH path_evidence_lookup USING INDEX idx_path_evidence_lookup_source (source_id=? AND task_class=? AND relation_signature=?)"
+        ],
+        "single_file_update_stale_lookup": [
+          "3 | 0 | 100 | SEARCH file_edges USING PRIMARY KEY (file_id=?)"
+        ],
+        "repeat_manifest_lookup": [
+          "3 | 0 | 39 | SEARCH files USING INDEX sqlite_autoindex_files_1 (path_id=?)"
+        ]
+      },
+      "plans_without_index": {
+        "symbol_lookup": [
+          "3 | 0 | 44 | SEARCH symbol_dict USING INDEX idx_symbol_dict_hash (value_hash=? AND value_len=?)"
+        ],
+        "qname_prefix_lookup": [
+          "3 | 0 | 43 | SEARCH qname_prefix_dict USING INDEX idx_qname_prefix_dict_hash (value_hash=? AND value_len=?)"
+        ],
+        "qname_parts_lookup": [
+          "2 | 0 | 39 | SEARCH qualified_name_dict USING COVERING INDEX idx_qualified_name_parts (prefix_id=? AND suffix_id=?)"
+        ],
+        "content_template_instances": [
+          "4 | 0 | 145 | SCAN f USING INDEX sqlite_autoindex_files_1"
+        ],
+        "template_entities_by_template": [
+          "4 | 0 | 95 | SEARCH template_entities USING PRIMARY KEY (content_template_id=?)"
+        ],
+        "template_edges_by_template": [
+          "4 | 0 | 76 | SEARCH template_edges USING PRIMARY KEY (content_template_id=?)"
+        ],
+        "relation_lookup": [
+          "4 | 0 | 46 | SEARCH edges USING INDEX idx_edges_head_relation (head_id_key=? AND relation_id=?)"
+        ],
+        "path_evidence_lookup": [
+          "5 | 0 | 49 | SEARCH path_evidence_lookup USING INDEX idx_path_evidence_lookup_source (source_id=? AND task_class=? AND relation_signature=?)"
+        ],
+        "single_file_update_stale_lookup": [
+          "3 | 0 | 100 | SEARCH file_edges USING PRIMARY KEY (file_id=?)"
+        ],
+        "repeat_manifest_lookup": [
+          "3 | 0 | 39 | SEARCH files USING INDEX sqlite_autoindex_files_1 (path_id=?)"
+        ]
+      },
+      "regressions": [],
+      "safe_to_drop": true,
+      "decision": "drop"
+    }
+  ],
+  "safe_changes": [
+    "idx_files_content_template"
+  ],
+  "unsafe_or_kept": [
+    {
+      "index": "idx_symbol_dict_hash",
+      "reason": "latency regression or required lookup path"
+    },
+    {
+      "index": "idx_qname_prefix_dict_hash",
+      "reason": "latency regression or required lookup path"
+    },
+    {
+      "index": "idx_qualified_name_parts",
+      "reason": "latency regression or required lookup path"
+    }
+  ],
+  "notes": [
+    "Primary-key autoindexes for template_entities/template_edges/files/source_content_template were not dropped because they enforce table identity and are not safe index-only optimizations.",
+    "No partial/composite replacement was recommended: dictionary hash/parts indexes are already compact hash/int lookup indexes, and the only safe drop was an unused/low-value content-template scan helper."
+  ]
+}

@@ -1,0 +1,81 @@
+{
+    "schema_version":  1,
+    "generated_at":  "2026-05-13T08:49:31.3297896-05:00",
+    "source_of_truth":  "MVP.md",
+    "verdict":  "fail",
+    "reason":  "Fresh comprehensive gate fails proof_build_only_ms target; official CGC comparison remains blocked/diagnostic only.",
+    "comprehensive_benchmark":  "reports/final/comprehensive_benchmark_latest.json",
+    "cgc_comparison_may_run":  false,
+    "cgc_superiority_claim_allowed":  false,
+    "required_metrics":  [
+                             {
+                                 "observed":  "pass",
+                                 "target":  "pass",
+                                 "status":  "pass",
+                                 "id":  "cargo_test_workspace"
+                             },
+                             {
+                                 "observed":  "11/11",
+                                 "target":  "11/11",
+                                 "status":  "pass",
+                                 "id":  "graph_truth_cases"
+                             },
+                             {
+                                 "observed":  "11/11",
+                                 "target":  "11/11",
+                                 "status":  "pass",
+                                 "id":  "context_packet_cases"
+                             },
+                             {
+                                 "observed":  "ok",
+                                 "target":  "ok",
+                                 "status":  "pass",
+                                 "id":  "db_integrity"
+                             },
+                             {
+                                 "observed":  171.184,
+                                 "target":  250,
+                                 "status":  "pass",
+                                 "id":  "proof_db_mib"
+                             },
+                             {
+                                 "observed":  184297,
+                                 "target":  60000,
+                                 "status":  "fail",
+                                 "id":  "proof_build_only_ms"
+                             },
+                             {
+                                 "observed":  1674.0,
+                                 "target":  5000,
+                                 "status":  "pass",
+                                 "id":  "repeat_unchanged_ms"
+                             },
+                             {
+                                 "observed":  336.0,
+                                 "target":  750,
+                                 "status":  "pass",
+                                 "id":  "single_file_update_ms"
+                             },
+                             {
+                                 "observed":  "fresh",
+                                 "target":  "fresh",
+                                 "status":  "pass",
+                                 "id":  "artifact_freshness"
+                             }
+                         ],
+    "failed_targets":  [
+                           "proof_build_only_ms"
+                       ],
+    "passed_targets":  [
+                           "cargo_test_workspace",
+                           "graph_truth_cases",
+                           "context_packet_cases",
+                           "db_integrity",
+                           "proof_db_mib",
+                           "repeat_unchanged_ms",
+                           "single_file_update_ms",
+                           "artifact_freshness"
+                       ],
+    "manual_relation_precision":  "reported_partial",
+    "cgc_status":  "diagnostic attempted; Autoresearch timeout; official comparison blocked"
+}

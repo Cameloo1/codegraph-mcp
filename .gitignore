@@ -1,0 +1,81 @@
+# Rust
+/target/
+**/target/
+**/*.rs.bk
+
+# Local CodeGraph state and indexes
+/.codegraph/
+/.codegraph-index/
+*.cgc-bundle
+*.cgc-bundle.tmp
+
+# SQLite and local database files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Node and UI artifacts
+dist/
+/dist/
+node_modules/
+codegraph-ui/node_modules/
+codegraph-ui/.next/
+codegraph-ui/.nuxt/
+codegraph-ui/dist/
+codegraph-ui/build/
+codegraph-ui/coverage/
+codegraph-ui/.vite/
+codegraph-ui/.turbo/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Logs and coverage
+*.log
+coverage/
+__pycache__/
+*.pyc
+
+# Generated benchmark reports and local competitor checkouts
+/reports/cgc-comparison/
+codegraph-competitors/
+/codegraph-competitors/
+/.codegraph-competitors/
+/.codegraph-bench-cache/
+/reports/smoke/fresh_clone/windows_*/
+/reports/smoke/fresh_clone/linux_*/
+/reports/smoke/index/windows_*/
+/reports/smoke/index/linux_*/
+/reports/smoke/docker/run_*/
+
+# Internal planning/status docs not intended for the public repo
+/MVP.md
+/TODO_PHASES.md
+/docs/mvp-acceptance.md
+/reports/audit/AUDIT_STATUS*.md
+/reports/audit/audit_status*.json
+
+# Local environment files
+.env
+.env.*
+!.env.example
+.codex/config.toml
+!.codex/config.toml.example
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Workspace-local tooling seeded for Codex sessions
+.codex-tools/
+.tools/

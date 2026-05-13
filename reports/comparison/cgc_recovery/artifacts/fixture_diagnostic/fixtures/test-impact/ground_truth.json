@@ -1,0 +1,26 @@
+{
+  "task_id": "test-impact",
+  "query_text": "Find tests impacted by calculateTotal",
+  "expected_files": [
+    "src/price.ts",
+    "tests/price.test.ts"
+  ],
+  "expected_symbols": [
+    "calculateTotal"
+  ],
+  "expected_relation_sequence": [
+    "TESTS",
+    "ASSERTS"
+  ],
+  "expected_path_symbols": [
+    "calculateTotal",
+    "calculateTotal adds tax"
+  ],
+  "critical_source_spans": [
+    "src/price.ts:1-3",
+    "tests/price.test.ts:3-5"
+  ],
+  "unsupported_fields_allowed": [
+    "test_relation"
+  ]
+}

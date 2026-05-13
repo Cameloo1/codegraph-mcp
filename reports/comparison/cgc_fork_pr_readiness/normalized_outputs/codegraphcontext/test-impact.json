@@ -1,0 +1,17 @@
+{
+  "files": [
+    "src/price.ts"
+  ],
+  "symbols": [
+    "calculateTotal"
+  ],
+  "path_symbols": [],
+  "relation_sequence": [],
+  "source_spans": [
+    "src/price.ts:1"
+  ],
+  "unsupported_fields": [],
+  "mode": "human_text",
+  "warnings": [],
+  "raw_json": null
+}

@@ -1,0 +1,152 @@
+﻿{
+    "status":  "completed",
+    "db":  "reports/final/artifacts/compact_gate_autoresearch_proof.sqlite",
+    "iterations":  20,
+    "limit":  20,
+    "offset":  0,
+    "target_p95_ms":  1000,
+    "p95_shell_ms":  242.777,
+    "target_status":  "pass",
+    "results":  [
+                    {
+                        "iteration":  1,
+                        "status":  "ok",
+                        "shell_ms":  159.574,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  2,
+                        "status":  "ok",
+                        "shell_ms":  242.777,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  3,
+                        "status":  "ok",
+                        "shell_ms":  146.189,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  4,
+                        "status":  "ok",
+                        "shell_ms":  139.918,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  5,
+                        "status":  "ok",
+                        "shell_ms":  146.609,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  6,
+                        "status":  "ok",
+                        "shell_ms":  154.151,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  7,
+                        "status":  "ok",
+                        "shell_ms":  163.436,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  8,
+                        "status":  "ok",
+                        "shell_ms":  167.529,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  9,
+                        "status":  "ok",
+                        "shell_ms":  149.204,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  10,
+                        "status":  "ok",
+                        "shell_ms":  152.404,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  11,
+                        "status":  "ok",
+                        "shell_ms":  154.391,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  12,
+                        "status":  "ok",
+                        "shell_ms":  262.974,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  13,
+                        "status":  "ok",
+                        "shell_ms":  191.664,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  14,
+                        "status":  "ok",
+                        "shell_ms":  150.914,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  15,
+                        "status":  "ok",
+                        "shell_ms":  154.422,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  16,
+                        "status":  "ok",
+                        "shell_ms":  163.155,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  17,
+                        "status":  "ok",
+                        "shell_ms":  171.31,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  18,
+                        "status":  "ok",
+                        "shell_ms":  166.464,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  19,
+                        "status":  "ok",
+                        "shell_ms":  145.029,
+                        "result_count":  1,
+                        "total":  null
+                    },
+                    {
+                        "iteration":  20,
+                        "status":  "ok",
+                        "shell_ms":  151.87,
+                        "result_count":  1,
+                        "total":  null
+                    }
+                ]
+}

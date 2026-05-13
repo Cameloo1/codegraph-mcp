@@ -1,0 +1,16 @@
+{
+  "executable": "target\\cgc-fork-py312-wrapper.cmd",
+  "args": [
+    "--database",
+    "kuzudb",
+    "find",
+    "name",
+    "calculateTotal"
+  ],
+  "cwd": "reports\\comparison\\cgc_fork_pr_readiness\\fixtures\\test-impact",
+  "stdout": "Resolving context...\r\nInitializing services and database connection...\r\nServices initialized.\r\n",
+  "stderr": "No configuration file found. Using defaults.\r\nUsing database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))\r\nFound 1 matches for 'calculateTotal':\r\n┌────────────────┬──────────┬─────────────────────────────────────────────────┐\r\n│ Name           │ Type     │ Location                                        │\r\n├────────────────┼──────────┼─────────────────────────────────────────────────┤\r\n│ calculateTotal │ Function │ \\\\?\\<REPO_ROOT>/Desktop\\development\\codegrap │\r\n│                │          │ h-mcp\\reports\\comparison\\cgc_fork_pr_readiness\\ │\r\n│                │          │ fixtures\\test-impact\\src\\price.ts:1             │\r\n└────────────────┴──────────┴─────────────────────────────────────────────────┘\r\n",
+  "exit_code": 0,
+  "latency_ms": 1035,
+  "timed_out": false
+}

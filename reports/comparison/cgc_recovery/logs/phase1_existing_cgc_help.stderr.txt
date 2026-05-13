@@ -1,0 +1,22 @@
+\U0001f44b Welcome to CodeGraphContext (cgc)!
+
+CodeGraphContext is both an MCP server and a CLI toolkit for code analysis.
+
+\U0001f916 For MCP Server Mode (AI assistants):
+   1. Run cgc mcp setup (or cgc m) to configure your IDE
+   2. Run cgc mcp start to launch the server
+
+\U0001f6e0\ufe0f  For CLI Toolkit Mode (direct usage):
+   � cgc index . - Index your current directory
+   � cgc list - List indexed repositories
+
+\U0001f4ca Using Neo4j instead of FalkorDB?
+     Run cgc neo4j setup (or cgc n) to configure Neo4j
+
+\U0001f4c8 Want visual graph output?
+     Add -V or --visual to any analyze/find command
+
+\U0001f449 Run cgc help to see all available commands
+\U0001f449 Run cgc --version to check the version
+
+\U0001f449 Running codegraphcontext works the same as using cgc

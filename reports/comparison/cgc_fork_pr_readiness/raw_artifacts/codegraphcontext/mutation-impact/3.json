@@ -1,0 +1,16 @@
+{
+  "executable": "target\\cgc-fork-py312-wrapper.cmd",
+  "args": [
+    "--database",
+    "kuzudb",
+    "analyze",
+    "calls",
+    "checkout"
+  ],
+  "cwd": "reports\\comparison\\cgc_fork_pr_readiness\\fixtures\\mutation-impact",
+  "stdout": "Resolving context...\r\nInitializing services and database connection...\r\nServices initialized.\r\n",
+  "stderr": "No configuration file found. Using defaults.\r\nUsing database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))\r\n\r\nFunction 'checkout' calls:\r\n┌─────────────────┬──────────────────────────────────────────────┬────────────┐\r\n│ Called Function │ Location                                     │ Type       │\r\n├─────────────────┼──────────────────────────────────────────────┼────────────┤\r\n│ addToCart       │ \\\\?\\<REPO_ROOT>/Desktop\\development\\codeg │ 📝 Project │\r\n│                 │ raph-mcp\\reports\\comparison\\cgc_fork_pr_read │            │\r\n│                 │ iness\\fixtures\\mutation-impact\\src\\cart.ts:5 │            │\r\n└─────────────────┴──────────────────────────────────────────────┴────────────┘\r\n\r\nTotal: 1 function(s)\r\n",
+  "exit_code": 0,
+  "latency_ms": 1040,
+  "timed_out": false
+}

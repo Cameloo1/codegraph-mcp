@@ -1,0 +1,1239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codegraph.local/schemas/graph_truth_case.schema.json",
+  "title": "CodeGraph graph-truth benchmark case",
+  "description": "Strict graph-truth case schema for MVP.md proof-grade benchmark fixtures. This schema describes expected and forbidden graph facts; it does not define a runner.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "case_id",
+    "description",
+    "repo_fixture_path",
+    "task_prompt",
+    "expected_entities",
+    "expected_edges",
+    "forbidden_edges",
+    "expected_paths",
+    "forbidden_paths",
+    "expected_source_spans",
+    "expected_context_symbols",
+    "forbidden_context_symbols",
+    "expected_tests",
+    "forbidden_tests",
+    "mutation_steps",
+    "performance_expectations",
+    "notes"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Optional schema version for generated cases. Omitted cases are interpreted as version 1 by the future runner."
+    },
+    "case_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repo_fixture_path": {
+      "$ref": "#/$defs/repoPath"
+    },
+    "task_prompt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expected_entities": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/entityExpectation"
+      }
+    },
+    "expected_edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/edgeExpectation"
+      }
+    },
+    "forbidden_edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/edgeExpectation"
+      }
+    },
+    "expected_paths": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/pathExpectation"
+      }
+    },
+    "forbidden_paths": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/pathExpectation"
+      }
+    },
+    "expected_source_spans": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sourceSpanExpectation"
+      }
+    },
+    "expected_context_symbols": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/contextSymbolExpectation"
+      }
+    },
+    "forbidden_context_symbols": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/contextSymbolExpectation"
+      }
+    },
+    "expected_tests": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/testExpectation"
+      }
+    },
+    "forbidden_tests": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/testExpectation"
+      }
+    },
+    "mutation_steps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/mutationStep"
+      },
+      "description": "Ordered fixture mutations used by update-mode gates. Empty for static fixtures."
+    },
+    "performance_expectations": {
+      "$ref": "#/$defs/performanceExpectations",
+      "description": "Optional per-case limits. Empty object means no per-case performance assertion."
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "failure_rules": {
+      "$ref": "#/$defs/failureRules",
+      "description": "Optional explicit copy of the default failure rules. Future runners must apply these rules even when this object is omitted."
+    },
+    "distractor_policy": {
+      "$ref": "#/$defs/distractorPolicy"
+    }
+  },
+  "$defs": {
+    "repoPath": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "pattern": "^[A-Za-z]:|^/|^\\\\\\\\"
+      },
+      "description": "Repository-relative path. Absolute paths are forbidden so fixtures remain portable."
+    },
+    "entityKind": {
+      "type": "string",
+      "enum": [
+        "Repository",
+        "Package",
+        "Module",
+        "Directory",
+        "File",
+        "Class",
+        "Interface",
+        "Trait",
+        "Enum",
+        "Function",
+        "Method",
+        "Constructor",
+        "Parameter",
+        "LocalVariable",
+        "GlobalVariable",
+        "Field",
+        "Property",
+        "Type",
+        "GenericType",
+        "Expression",
+        "Assignment",
+        "CallSite",
+        "ReturnSite",
+        "Import",
+        "Export",
+        "Route",
+        "Endpoint",
+        "Middleware",
+        "AuthPolicy",
+        "Role",
+        "Permission",
+        "Sanitizer",
+        "Validator",
+        "Database",
+        "Table",
+        "Column",
+        "Migration",
+        "Event",
+        "Topic",
+        "Queue",
+        "Job",
+        "Promise",
+        "Task",
+        "TestFile",
+        "TestSuite",
+        "TestCase",
+        "Fixture",
+        "Mock",
+        "Stub",
+        "Assertion",
+        "ConfigKey",
+        "EnvVar",
+        "Dependency",
+        "PathEvidence",
+        "DerivedClosureEdge"
+      ]
+    },
+    "relation": {
+      "type": "string",
+      "enum": [
+        "CONTAINS",
+        "DEFINED_IN",
+        "DEFINES",
+        "DECLARES",
+        "EXPORTS",
+        "IMPORTS",
+        "REEXPORTS",
+        "BELONGS_TO",
+        "CONFIGURES",
+        "TYPE_OF",
+        "RETURNS",
+        "IMPLEMENTS",
+        "EXTENDS",
+        "OVERRIDES",
+        "INSTANTIATES",
+        "INJECTS",
+        "ALIASED_BY",
+        "ALIAS_OF",
+        "CALLS",
+        "CALLED_BY",
+        "CALLEE",
+        "ARGUMENT_0",
+        "ARGUMENT_1",
+        "ARGUMENT_N",
+        "RETURNS_TO",
+        "SPAWNS",
+        "AWAITS",
+        "LISTENS_TO",
+        "READS",
+        "WRITES",
+        "MUTATES",
+        "MUTATED_BY",
+        "FLOWS_TO",
+        "REACHING_DEF",
+        "ASSIGNED_FROM",
+        "CONTROL_DEPENDS_ON",
+        "DATA_DEPENDS_ON",
+        "AUTHORIZES",
+        "CHECKS_ROLE",
+        "CHECKS_PERMISSION",
+        "SANITIZES",
+        "VALIDATES",
+        "EXPOSES",
+        "TRUST_BOUNDARY",
+        "SOURCE_OF_TAINT",
+        "SINKS_TO",
+        "PUBLISHES",
+        "EMITS",
+        "CONSUMES",
+        "SUBSCRIBES_TO",
+        "HANDLES",
+        "MIGRATES",
+        "READS_TABLE",
+        "WRITES_TABLE",
+        "ALTERS_COLUMN",
+        "DEPENDS_ON_SCHEMA",
+        "TESTS",
+        "ASSERTS",
+        "MOCKS",
+        "STUBS",
+        "COVERS",
+        "FIXTURES_FOR",
+        "MAY_MUTATE",
+        "MAY_READ",
+        "API_REACHES",
+        "ASYNC_REACHES",
+        "SCHEMA_IMPACT"
+      ]
+    },
+    "exactness": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "compiler_verified",
+        "lsp_verified",
+        "parser_verified",
+        "static_heuristic",
+        "dynamic_trace",
+        "inferred",
+        "derived_from_verified_edges"
+      ]
+    },
+    "executionContext": {
+      "type": "string",
+      "enum": [
+        "production",
+        "test",
+        "mock",
+        "fixture",
+        "generated",
+        "unknown"
+      ]
+    },
+    "contextKind": {
+      "type": "string",
+      "enum": [
+        "production",
+        "test",
+        "mock",
+        "mixed",
+        "unknown"
+      ],
+      "description": "Canonical proof-context classification for benchmark assertions."
+    },
+    "resolutionStatus": {
+      "type": "string",
+      "enum": [
+        "resolved",
+        "unresolved",
+        "unknown",
+        "not_applicable"
+      ]
+    },
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start_line",
+        "start_column",
+        "end_line",
+        "end_column"
+      ],
+      "properties": {
+        "start_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "start_column": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "end_column": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expected_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "syntax_role": {
+          "type": "string",
+          "enum": [
+            "declaration",
+            "callsite",
+            "import",
+            "export",
+            "role_check",
+            "authorization",
+            "sanitizer",
+            "validation",
+            "mutation",
+            "dataflow",
+            "event_publish",
+            "event_consume",
+            "assertion",
+            "test_double",
+            "schema_change",
+            "unknown"
+          ]
+        }
+      }
+    },
+    "entityRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "anyOf": [
+        {
+          "required": [
+            "id"
+          ]
+        },
+        {
+          "required": [
+            "qualified_name"
+          ]
+        },
+        {
+          "required": [
+            "name",
+            "source_file"
+          ]
+        }
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "qualified_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "$ref": "#/$defs/entityKind"
+        },
+        "source_file": {
+          "$ref": "#/$defs/repoPath"
+        },
+        "language": {
+          "type": "string",
+          "minLength": 1
+        },
+        "signature": {
+          "type": "string",
+          "minLength": 1
+        },
+        "declaration_fingerprint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "context": {
+          "$ref": "#/$defs/executionContext"
+        }
+      }
+    },
+    "entityExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selector",
+        "kind",
+        "context"
+      ],
+      "properties": {
+        "selector": {
+          "$ref": "#/$defs/entityRef"
+        },
+        "kind": {
+          "$ref": "#/$defs/entityKind"
+        },
+        "context": {
+          "$ref": "#/$defs/executionContext"
+        },
+        "source_file": {
+          "$ref": "#/$defs/repoPath"
+        },
+        "source_span": {
+          "$ref": "#/$defs/span"
+        },
+        "must_be_stable_across_rename": {
+          "type": "boolean"
+        },
+        "must_not_collide_with": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entityRef"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "edgeRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "exactnessRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed",
+        "minimum"
+      ],
+      "properties": {
+        "allowed": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/exactness"
+          }
+        },
+        "minimum": {
+          "$ref": "#/$defs/exactness"
+        },
+        "proof_grade_required": {
+          "type": "boolean"
+        },
+        "confidence_floor": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "edgeExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "head",
+        "relation",
+        "tail",
+        "source_file",
+        "source_span",
+        "exactness_required",
+        "context_kind",
+        "derived_allowed",
+        "provenance_required",
+        "exactness",
+        "context",
+        "resolution",
+        "derived",
+        "provenance_edges"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/edgeRef"
+        },
+        "head": {
+          "$ref": "#/$defs/entityRef"
+        },
+        "relation": {
+          "$ref": "#/$defs/relation"
+        },
+        "tail": {
+          "$ref": "#/$defs/entityRef"
+        },
+        "source_file": {
+          "$ref": "#/$defs/repoPath"
+        },
+        "source_span": {
+          "$ref": "#/$defs/span"
+        },
+        "exactness_required": {
+          "$ref": "#/$defs/exactnessRequirement"
+        },
+        "context_kind": {
+          "$ref": "#/$defs/contextKind"
+        },
+        "derived_allowed": {
+          "type": "boolean"
+        },
+        "provenance_required": {
+          "type": "boolean"
+        },
+        "extractor_kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exactness": {
+          "$ref": "#/$defs/exactnessRequirement"
+        },
+        "context": {
+          "$ref": "#/$defs/executionContext"
+        },
+        "resolution": {
+          "$ref": "#/$defs/resolutionStatus"
+        },
+        "derived": {
+          "type": "boolean"
+        },
+        "provenance_edges": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/edgeRef"
+          }
+        },
+        "extractor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "head_to_tail"
+          ]
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "derived": {
+                "const": true
+              }
+            },
+            "required": [
+              "derived"
+            ]
+          },
+          "then": {
+            "properties": {
+              "provenance_edges": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "provenance_required": {
+                "const": true
+              }
+            },
+            "required": [
+              "provenance_required"
+            ]
+          },
+          "then": {
+            "properties": {
+              "provenance_edges": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "resolution": {
+                "const": "unresolved"
+              }
+            },
+            "required": [
+              "resolution"
+            ]
+          },
+          "then": {
+            "properties": {
+              "exactness": {
+                "properties": {
+                  "allowed": {
+                    "not": {
+                      "contains": {
+                        "enum": [
+                          "exact",
+                          "compiler_verified",
+                          "lsp_verified",
+                          "parser_verified"
+                        ]
+                      }
+                    }
+                  }
+                }
+              },
+              "exactness_required": {
+                "properties": {
+                  "allowed": {
+                    "not": {
+                      "contains": {
+                        "enum": [
+                          "exact",
+                          "compiler_verified",
+                          "lsp_verified",
+                          "parser_verified"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "sourceSpanExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_file",
+        "span",
+        "must_resolve_to_text"
+      ],
+      "properties": {
+        "edge_ref": {
+          "$ref": "#/$defs/edgeRef"
+        },
+        "source_file": {
+          "$ref": "#/$defs/repoPath"
+        },
+        "span": {
+          "$ref": "#/$defs/span"
+        },
+        "must_resolve_to_text": {
+          "type": "boolean",
+          "const": true
+        },
+        "expected_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "syntax_role": {
+          "type": "string",
+          "enum": [
+            "declaration",
+            "callsite",
+            "import",
+            "export",
+            "role_check",
+            "authorization",
+            "sanitizer",
+            "validation",
+            "mutation",
+            "dataflow",
+            "event_publish",
+            "event_consume",
+            "assertion",
+            "test_double",
+            "schema_change",
+            "unknown"
+          ]
+        }
+      }
+    },
+    "pathExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "target",
+        "ordered_edges",
+        "relation_sequence",
+        "max_length",
+        "source_span_required",
+        "production_only",
+        "derived_allowed",
+        "provenance_required",
+        "required_source_spans",
+        "context",
+        "allow_test_mock_edges",
+        "derived_edges_require_provenance"
+      ],
+      "properties": {
+        "path_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/entityRef"
+        },
+        "target": {
+          "$ref": "#/$defs/entityRef"
+        },
+        "ordered_edges": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/edgeExpectation"
+          }
+        },
+        "relation_sequence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/relation"
+          }
+        },
+        "max_length": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_span_required": {
+          "type": "boolean"
+        },
+        "production_only": {
+          "type": "boolean"
+        },
+        "derived_allowed": {
+          "type": "boolean"
+        },
+        "provenance_required": {
+          "type": "boolean"
+        },
+        "required_source_spans": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/sourceSpanExpectation"
+          }
+        },
+        "context": {
+          "$ref": "#/$defs/executionContext"
+        },
+        "allow_test_mock_edges": {
+          "type": "boolean"
+        },
+        "derived_edges_require_provenance": {
+          "type": "boolean",
+          "const": true
+        },
+        "proof_grade": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "production_only": {
+                "const": true
+              }
+            },
+            "required": [
+              "production_only"
+            ]
+          },
+          "then": {
+            "properties": {
+              "context": {
+                "const": "production"
+              },
+              "allow_test_mock_edges": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "source_span_required": {
+                "const": true
+              }
+            },
+            "required": [
+              "source_span_required"
+            ]
+          },
+          "then": {
+            "properties": {
+              "required_source_spans": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "context": {
+                "const": "production"
+              }
+            },
+            "required": [
+              "context"
+            ]
+          },
+          "then": {
+            "properties": {
+              "allow_test_mock_edges": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "proof_grade": {
+                "const": true
+              }
+            },
+            "required": [
+              "proof_grade"
+            ]
+          },
+          "then": {
+            "properties": {
+              "required_source_spans": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "mutationStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "edit_file",
+            "rename_file",
+            "delete_file",
+            "change_import_alias",
+            "add_file",
+            "remove_file",
+            "reindex",
+            "query_again"
+          ]
+        },
+        "path": {
+          "$ref": "#/$defs/repoPath"
+        },
+        "from": {
+          "$ref": "#/$defs/repoPath"
+        },
+        "to": {
+          "$ref": "#/$defs/repoPath"
+        },
+        "content": {
+          "type": "string"
+        },
+        "find": {
+          "type": "string",
+          "minLength": 1
+        },
+        "replace": {
+          "type": "string"
+        },
+        "import_from": {
+          "type": "string",
+          "minLength": 1
+        },
+        "old_alias": {
+          "type": "string",
+          "minLength": 1
+        },
+        "new_alias": {
+          "type": "string",
+          "minLength": 1
+        },
+        "query_prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "edit_file",
+                  "delete_file",
+                  "add_file",
+                  "remove_file"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "path"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "rename_file"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "from",
+              "to"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "change_import_alias"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "path",
+              "old_alias",
+              "new_alias"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "query_again"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "query_prompt"
+            ]
+          }
+        }
+      ]
+    },
+    "performanceExpectations": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_validation_100_cases_max_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1000
+        },
+        "index_time_ms_max": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "query_time_ms_max": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "context_packet_time_ms_max": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "db_size_bytes_max": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "contextSymbolExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "symbol"
+      ],
+      "properties": {
+        "symbol": {
+          "$ref": "#/$defs/entityRef"
+        },
+        "critical": {
+          "type": "boolean"
+        },
+        "source_file": {
+          "$ref": "#/$defs/repoPath"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "max_distractors": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "testExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_file": {
+          "$ref": "#/$defs/repoPath"
+        },
+        "context": {
+          "$ref": "#/$defs/executionContext"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "failureRules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "missing_required_edge_fails",
+        "forbidden_edge_appearing_fails",
+        "wrong_direction_fails",
+        "missing_source_span_fails_for_proof_grade_edge",
+        "unresolved_name_labeled_exact_fails",
+        "mock_or_test_edge_in_production_proof_path_fails",
+        "derived_edge_without_provenance_fails",
+        "stale_edge_after_edit_fails",
+        "same_name_symbol_collision_fails",
+        "critical_symbol_missing_from_context_packet_fails",
+        "forbidden_context_symbol_included_fails",
+        "expected_test_omitted_fails",
+        "too_many_distractors_fail_if_threshold_specified"
+      ],
+      "properties": {
+        "missing_required_edge_fails": {
+          "type": "boolean",
+          "const": true
+        },
+        "forbidden_edge_appearing_fails": {
+          "type": "boolean",
+          "const": true
+        },
+        "wrong_direction_fails": {
+          "type": "boolean",
+          "const": true
+        },
+        "missing_source_span_fails_for_proof_grade_edge": {
+          "type": "boolean",
+          "const": true
+        },
+        "unresolved_name_labeled_exact_fails": {
+          "type": "boolean",
+          "const": true
+        },
+        "mock_or_test_edge_in_production_proof_path_fails": {
+          "type": "boolean",
+          "const": true
+        },
+        "derived_edge_without_provenance_fails": {
+          "type": "boolean",
+          "const": true
+        },
+        "stale_edge_after_edit_fails": {
+          "type": "boolean",
+          "const": true
+        },
+        "same_name_symbol_collision_fails": {
+          "type": "boolean",
+          "const": true
+        },
+        "critical_symbol_missing_from_context_packet_fails": {
+          "type": "boolean",
+          "const": true
+        },
+        "forbidden_context_symbol_included_fails": {
+          "type": "boolean",
+          "const": true
+        },
+        "expected_test_omitted_fails": {
+          "type": "boolean",
+          "const": true
+        },
+        "too_many_distractors_fail_if_threshold_specified": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "distractorPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_context_distractors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_symbol_distractors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "distractor_symbols": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/contextSymbolExpectation"
+          }
+        },
+        "count_scope": {
+          "type": "string",
+          "enum": [
+            "context_packet",
+            "ranked_results",
+            "proof_path"
+          ]
+        }
+      }
+    }
+  }
+}

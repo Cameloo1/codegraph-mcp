@@ -1,0 +1,10 @@
+{
+    "schema_version":  1,
+    "generated_at":  "2026-05-13T08:49:31.3297896-05:00",
+    "phase":  "clone_or_fork",
+    "needed":  false,
+    "upstream_url":  "https://github.com/Shashankss1205/CodeGraphContext",
+    "reason":  "Package reinstall worked; no clone/fork patch was required.",
+    "patched_local_cgc":  false,
+    "patch_diff":  null
+}

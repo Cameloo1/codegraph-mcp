@@ -1,0 +1,1704 @@
+{
+  "schema_version": 1,
+  "db_path": "<REPO_ROOT>/Desktop/development/codegraph-mcp/reports/final/artifacts/run_20260510_232527/fixture_workers4.sqlite",
+  "dbstat_available": true,
+  "integrity_check": {
+    "checked": true,
+    "max_errors": 20,
+    "messages": [
+      "ok"
+    ],
+    "status": "ok"
+  },
+  "file_family": {
+    "database_bytes": 630784,
+    "wal_bytes": 0,
+    "shm_bytes": 32768,
+    "total_bytes": 663552
+  },
+  "page_metrics": {
+    "page_size_bytes": 4096,
+    "page_count": 154,
+    "freelist_count": 3,
+    "live_page_bytes": 618496,
+    "free_page_bytes": 12288
+  },
+  "objects": [
+    {
+      "name": "edges",
+      "object_type": "table",
+      "row_count": 833,
+      "pages": 17,
+      "total_bytes": 69632,
+      "payload_bytes": 59730,
+      "unused_bytes": 7136,
+      "percent_of_database_file": 11.04
+    },
+    {
+      "name": "qualified_name_dict",
+      "object_type": "table",
+      "row_count": 408,
+      "pages": 10,
+      "total_bytes": 40960,
+      "payload_bytes": 32380,
+      "unused_bytes": 6493,
+      "percent_of_database_file": 6.49
+    },
+    {
+      "name": "sqlite_stat4",
+      "object_type": "table",
+      "row_count": 288,
+      "pages": 10,
+      "total_bytes": 40960,
+      "payload_bytes": 25752,
+      "unused_bytes": 13653,
+      "percent_of_database_file": 6.49
+    },
+    {
+      "name": "sqlite_autoindex_qualified_name_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 9,
+      "total_bytes": 36864,
+      "payload_bytes": 31109,
+      "unused_bytes": 4405,
+      "percent_of_database_file": 5.84
+    },
+    {
+      "name": "entities",
+      "object_type": "table",
+      "row_count": 429,
+      "pages": 8,
+      "total_bytes": 32768,
+      "payload_bytes": 26052,
+      "unused_bytes": 5320,
+      "percent_of_database_file": 5.19
+    },
+    {
+      "name": "object_id_dict",
+      "object_type": "table",
+      "row_count": 487,
+      "pages": 7,
+      "total_bytes": 28672,
+      "payload_bytes": 21312,
+      "unused_bytes": 4953,
+      "percent_of_database_file": 4.55
+    },
+    {
+      "name": "sqlite_autoindex_object_id_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 7,
+      "total_bytes": 28672,
+      "payload_bytes": 22158,
+      "unused_bytes": 4973,
+      "percent_of_database_file": 4.55
+    },
+    {
+      "name": "idx_edges_head_relation",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 5,
+      "total_bytes": 20480,
+      "payload_bytes": 11727,
+      "unused_bytes": 6198,
+      "percent_of_database_file": 3.25
+    },
+    {
+      "name": "idx_edges_tail_relation",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 5,
+      "total_bytes": 20480,
+      "payload_bytes": 11725,
+      "unused_bytes": 6200,
+      "percent_of_database_file": 3.25
+    },
+    {
+      "name": "qname_prefix_dict",
+      "object_type": "table",
+      "row_count": 165,
+      "pages": 5,
+      "total_bytes": 20480,
+      "payload_bytes": 11891,
+      "unused_bytes": 7816,
+      "percent_of_database_file": 3.25
+    },
+    {
+      "name": "sqlite_autoindex_qname_prefix_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 5,
+      "total_bytes": 20480,
+      "payload_bytes": 12093,
+      "unused_bytes": 7824,
+      "percent_of_database_file": 3.25
+    },
+    {
+      "name": "sqlite_autoindex_symbol_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 5,
+      "total_bytes": 20480,
+      "payload_bytes": 11219,
+      "unused_bytes": 7915,
+      "percent_of_database_file": 3.25
+    },
+    {
+      "name": "symbol_dict",
+      "object_type": "table",
+      "row_count": 430,
+      "pages": 5,
+      "total_bytes": 20480,
+      "payload_bytes": 10487,
+      "unused_bytes": 7902,
+      "percent_of_database_file": 3.25
+    },
+    {
+      "name": "idx_edges_span_path",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 4,
+      "total_bytes": 16384,
+      "payload_bytes": 9567,
+      "unused_bytes": 4274,
+      "percent_of_database_file": 2.6
+    },
+    {
+      "name": "sqlite_schema",
+      "object_type": "schema",
+      "row_count": null,
+      "pages": 4,
+      "total_bytes": 16384,
+      "payload_bytes": 7786,
+      "unused_bytes": 8200,
+      "percent_of_database_file": 2.6
+    },
+    {
+      "name": "files",
+      "object_type": "table",
+      "row_count": 28,
+      "pages": 3,
+      "total_bytes": 12288,
+      "payload_bytes": 7733,
+      "unused_bytes": 4411,
+      "percent_of_database_file": 1.95
+    },
+    {
+      "name": "stage0_fts_content",
+      "object_type": "table",
+      "row_count": 17,
+      "pages": 3,
+      "total_bytes": 12288,
+      "payload_bytes": 5226,
+      "unused_bytes": 6942,
+      "percent_of_database_file": 1.95
+    },
+    {
+      "name": "bench_runs",
+      "object_type": "table",
+      "row_count": 0,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "unused_bytes": 4088,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "bench_tasks",
+      "object_type": "table",
+      "row_count": 0,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "unused_bytes": 4088,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "derived_edges",
+      "object_type": "table",
+      "row_count": 0,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "unused_bytes": 4088,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "edge_class_dict",
+      "object_type": "table",
+      "row_count": 7,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 83,
+      "unused_bytes": 3977,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "edge_context_dict",
+      "object_type": "table",
+      "row_count": 4,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 37,
+      "unused_bytes": 4035,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "entity_kind_dict",
+      "object_type": "table",
+      "row_count": 22,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 234,
+      "unused_bytes": 3766,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "exactness_dict",
+      "object_type": "table",
+      "row_count": 2,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 37,
+      "unused_bytes": 4043,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "extractor_dict",
+      "object_type": "table",
+      "row_count": 7,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 235,
+      "unused_bytes": 3825,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "idx_entities_name",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 2727,
+      "unused_bytes": 74,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "idx_entities_path",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 2403,
+      "unused_bytes": 398,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "idx_entities_qname",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 2738,
+      "unused_bytes": 63,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "idx_retrieval_traces_created",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "unused_bytes": 4088,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "idx_source_spans_path",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "unused_bytes": 4088,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "language_dict",
+      "object_type": "table",
+      "row_count": 1,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 13,
+      "unused_bytes": 4071,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "path_dict",
+      "object_type": "table",
+      "row_count": 28,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 1569,
+      "unused_bytes": 2407,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "path_evidence",
+      "object_type": "table",
+      "row_count": 0,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "unused_bytes": 4088,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "relation_kind_dict",
+      "object_type": "table",
+      "row_count": 27,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 290,
+      "unused_bytes": 3690,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "repo_index_state",
+      "object_type": "table",
+      "row_count": 1,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 201,
+      "unused_bytes": 3882,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "retrieval_traces",
+      "object_type": "table",
+      "row_count": 0,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "unused_bytes": 4088,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "source_spans",
+      "object_type": "table",
+      "row_count": 0,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "unused_bytes": 4088,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "sqlite_autoindex_bench_runs_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "unused_bytes": 4088,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "sqlite_autoindex_bench_tasks_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "unused_bytes": 4088,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "sqlite_autoindex_derived_edges_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "unused_bytes": 4088,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "sqlite_autoindex_edge_class_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 89,
+      "unused_bytes": 3978,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "sqlite_autoindex_edge_context_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 40,
+      "unused_bytes": 4036,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "sqlite_autoindex_entity_kind_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 255,
+      "unused_bytes": 3767,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "sqlite_autoindex_exactness_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 38,
+      "unused_bytes": 4044,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "sqlite_autoindex_extractor_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 241,
+      "unused_bytes": 3826,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "sqlite_autoindex_language_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 13,
+      "unused_bytes": 4072,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "sqlite_autoindex_path_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 1596,
+      "unused_bytes": 2408,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "sqlite_autoindex_path_evidence_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "unused_bytes": 4088,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "sqlite_autoindex_relation_kind_dict_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 316,
+      "unused_bytes": 3691,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "sqlite_autoindex_repo_index_state_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 95,
+      "unused_bytes": 3990,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "sqlite_autoindex_retrieval_traces_1",
+      "object_type": "index",
+      "row_count": null,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "unused_bytes": 4088,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "sqlite_stat1",
+      "object_type": "table",
+      "row_count": 24,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 1047,
+      "unused_bytes": 2945,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "stage0_fts_config",
+      "object_type": "table",
+      "row_count": 1,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 11,
+      "unused_bytes": 4074,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "stage0_fts_data",
+      "object_type": "table",
+      "row_count": 8,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 3685,
+      "unused_bytes": 335,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "stage0_fts_docsize",
+      "object_type": "table",
+      "row_count": 17,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 153,
+      "unused_bytes": 3867,
+      "percent_of_database_file": 0.65
+    },
+    {
+      "name": "stage0_fts_idx",
+      "object_type": "table",
+      "row_count": 6,
+      "pages": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 35,
+      "unused_bytes": 4035,
+      "percent_of_database_file": 0.65
+    }
+  ],
+  "categories": {
+    "dictionary_table_bytes": 114688,
+    "unique_text_index_bytes": 110592,
+    "edge_index_bytes": 57344,
+    "fts_bytes": 28672,
+    "source_span_bytes": 8192,
+    "snippet_like_bytes": 0
+  },
+  "table_row_metrics": [
+    {
+      "table": "edges",
+      "row_count": 833,
+      "total_bytes": 69632,
+      "payload_bytes": 59730,
+      "average_total_bytes_per_row": 83.59,
+      "average_payload_bytes_per_row": 71.7
+    },
+    {
+      "table": "qualified_name_dict",
+      "row_count": 408,
+      "total_bytes": 40960,
+      "payload_bytes": 32380,
+      "average_total_bytes_per_row": 100.39,
+      "average_payload_bytes_per_row": 79.36
+    },
+    {
+      "table": "sqlite_stat4",
+      "row_count": 288,
+      "total_bytes": 40960,
+      "payload_bytes": 25752,
+      "average_total_bytes_per_row": 142.22,
+      "average_payload_bytes_per_row": 89.42
+    },
+    {
+      "table": "entities",
+      "row_count": 429,
+      "total_bytes": 32768,
+      "payload_bytes": 26052,
+      "average_total_bytes_per_row": 76.38,
+      "average_payload_bytes_per_row": 60.73
+    },
+    {
+      "table": "object_id_dict",
+      "row_count": 487,
+      "total_bytes": 28672,
+      "payload_bytes": 21312,
+      "average_total_bytes_per_row": 58.87,
+      "average_payload_bytes_per_row": 43.76
+    },
+    {
+      "table": "qname_prefix_dict",
+      "row_count": 165,
+      "total_bytes": 20480,
+      "payload_bytes": 11891,
+      "average_total_bytes_per_row": 124.12,
+      "average_payload_bytes_per_row": 72.07
+    },
+    {
+      "table": "symbol_dict",
+      "row_count": 430,
+      "total_bytes": 20480,
+      "payload_bytes": 10487,
+      "average_total_bytes_per_row": 47.63,
+      "average_payload_bytes_per_row": 24.39
+    },
+    {
+      "table": "files",
+      "row_count": 28,
+      "total_bytes": 12288,
+      "payload_bytes": 7733,
+      "average_total_bytes_per_row": 438.86,
+      "average_payload_bytes_per_row": 276.18
+    },
+    {
+      "table": "stage0_fts_content",
+      "row_count": 17,
+      "total_bytes": 12288,
+      "payload_bytes": 5226,
+      "average_total_bytes_per_row": 722.82,
+      "average_payload_bytes_per_row": 307.41
+    },
+    {
+      "table": "bench_runs",
+      "row_count": 0,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "average_total_bytes_per_row": 0.0,
+      "average_payload_bytes_per_row": 0.0
+    },
+    {
+      "table": "bench_tasks",
+      "row_count": 0,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "average_total_bytes_per_row": 0.0,
+      "average_payload_bytes_per_row": 0.0
+    },
+    {
+      "table": "derived_edges",
+      "row_count": 0,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "average_total_bytes_per_row": 0.0,
+      "average_payload_bytes_per_row": 0.0
+    },
+    {
+      "table": "edge_class_dict",
+      "row_count": 7,
+      "total_bytes": 4096,
+      "payload_bytes": 83,
+      "average_total_bytes_per_row": 585.14,
+      "average_payload_bytes_per_row": 11.86
+    },
+    {
+      "table": "edge_context_dict",
+      "row_count": 4,
+      "total_bytes": 4096,
+      "payload_bytes": 37,
+      "average_total_bytes_per_row": 1024.0,
+      "average_payload_bytes_per_row": 9.25
+    },
+    {
+      "table": "entity_kind_dict",
+      "row_count": 22,
+      "total_bytes": 4096,
+      "payload_bytes": 234,
+      "average_total_bytes_per_row": 186.18,
+      "average_payload_bytes_per_row": 10.64
+    },
+    {
+      "table": "exactness_dict",
+      "row_count": 2,
+      "total_bytes": 4096,
+      "payload_bytes": 37,
+      "average_total_bytes_per_row": 2048.0,
+      "average_payload_bytes_per_row": 18.5
+    },
+    {
+      "table": "extractor_dict",
+      "row_count": 7,
+      "total_bytes": 4096,
+      "payload_bytes": 235,
+      "average_total_bytes_per_row": 585.14,
+      "average_payload_bytes_per_row": 33.57
+    },
+    {
+      "table": "language_dict",
+      "row_count": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 13,
+      "average_total_bytes_per_row": 4096.0,
+      "average_payload_bytes_per_row": 13.0
+    },
+    {
+      "table": "path_dict",
+      "row_count": 28,
+      "total_bytes": 4096,
+      "payload_bytes": 1569,
+      "average_total_bytes_per_row": 146.29,
+      "average_payload_bytes_per_row": 56.04
+    },
+    {
+      "table": "path_evidence",
+      "row_count": 0,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "average_total_bytes_per_row": 0.0,
+      "average_payload_bytes_per_row": 0.0
+    },
+    {
+      "table": "relation_kind_dict",
+      "row_count": 27,
+      "total_bytes": 4096,
+      "payload_bytes": 290,
+      "average_total_bytes_per_row": 151.7,
+      "average_payload_bytes_per_row": 10.74
+    },
+    {
+      "table": "repo_index_state",
+      "row_count": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 201,
+      "average_total_bytes_per_row": 4096.0,
+      "average_payload_bytes_per_row": 201.0
+    },
+    {
+      "table": "retrieval_traces",
+      "row_count": 0,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "average_total_bytes_per_row": 0.0,
+      "average_payload_bytes_per_row": 0.0
+    },
+    {
+      "table": "source_spans",
+      "row_count": 0,
+      "total_bytes": 4096,
+      "payload_bytes": 0,
+      "average_total_bytes_per_row": 0.0,
+      "average_payload_bytes_per_row": 0.0
+    },
+    {
+      "table": "sqlite_stat1",
+      "row_count": 24,
+      "total_bytes": 4096,
+      "payload_bytes": 1047,
+      "average_total_bytes_per_row": 170.67,
+      "average_payload_bytes_per_row": 43.63
+    },
+    {
+      "table": "stage0_fts_config",
+      "row_count": 1,
+      "total_bytes": 4096,
+      "payload_bytes": 11,
+      "average_total_bytes_per_row": 4096.0,
+      "average_payload_bytes_per_row": 11.0
+    },
+    {
+      "table": "stage0_fts_data",
+      "row_count": 8,
+      "total_bytes": 4096,
+      "payload_bytes": 3685,
+      "average_total_bytes_per_row": 512.0,
+      "average_payload_bytes_per_row": 460.63
+    },
+    {
+      "table": "stage0_fts_docsize",
+      "row_count": 17,
+      "total_bytes": 4096,
+      "payload_bytes": 153,
+      "average_total_bytes_per_row": 240.94,
+      "average_payload_bytes_per_row": 9.0
+    },
+    {
+      "table": "stage0_fts_idx",
+      "row_count": 6,
+      "total_bytes": 4096,
+      "payload_bytes": 35,
+      "average_total_bytes_per_row": 682.67,
+      "average_payload_bytes_per_row": 5.83
+    }
+  ],
+  "aggregate_metrics": {
+    "table_count": 29,
+    "index_count": 26,
+    "total_rows_observed": 3240,
+    "edge_count": 833,
+    "edge_table_bytes": 69632,
+    "edge_index_bytes": 57344,
+    "average_database_bytes_per_edge": 796.58,
+    "average_edge_table_bytes_per_edge": 83.59,
+    "average_edge_table_plus_index_bytes_per_edge": 152.43,
+    "source_span_count": 0,
+    "source_span_table_bytes": 4096,
+    "average_source_span_bytes_per_row": 0.0
+  },
+  "dictionary_metrics": [
+    {
+      "table": "qualified_name_dict",
+      "row_count": 408,
+      "value_bytes": 28898,
+      "unique_index_bytes": 36864
+    },
+    {
+      "table": "object_id_dict",
+      "row_count": 487,
+      "value_bytes": 19851,
+      "unique_index_bytes": 28672
+    },
+    {
+      "table": "qname_prefix_dict",
+      "row_count": 165,
+      "value_bytes": 11307,
+      "unique_index_bytes": 20480
+    },
+    {
+      "table": "symbol_dict",
+      "row_count": 430,
+      "value_bytes": 9161,
+      "unique_index_bytes": 20480
+    },
+    {
+      "table": "path_dict",
+      "row_count": 28,
+      "value_bytes": 1481,
+      "unique_index_bytes": 4096
+    }
+  ],
+  "qualified_name_metric": {
+    "row_count": 408,
+    "full_value_bytes": 28898,
+    "prefix_value_bytes": 22554,
+    "suffix_value_bytes": 5986,
+    "unique_index_bytes": 36864,
+    "stores_full_qualified_name_text": true
+  },
+  "fts_storage": {
+    "total_bytes": 28672,
+    "row_count": 17,
+    "payload_bytes": 4951,
+    "kind_counts": {
+      "entity": 17
+    },
+    "stores_source_snippets": false
+  },
+  "edge_fact_mix": {
+    "total_edges": 833,
+    "derived_edges": 0,
+    "exactness_counts": {
+      "parser_verified": 765,
+      "static_heuristic": 68
+    },
+    "edge_class_counts": {
+      "base_exact": 480,
+      "base_heuristic": 35,
+      "mock": 3,
+      "reified_callsite": 74,
+      "test": 65,
+      "unknown": 176
+    },
+    "context_counts": {
+      "mock": 3,
+      "production": 764,
+      "test": 65,
+      "unknown": 1
+    },
+    "heuristic_or_unknown_edges": 279
+  },
+  "index_usage": [
+    {
+      "name": "sqlite_autoindex_qualified_name_dict_1",
+      "table": "qualified_name_dict",
+      "columns": [
+        "value"
+      ],
+      "unique": true,
+      "origin": "u",
+      "partial": false,
+      "total_bytes": 36864,
+      "sql": null,
+      "default_query_usage": [
+        "qualified-name dictionary lookup for exact symbol resolution",
+        "also backs joins that expose qualified names in query output"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_object_id_dict_1",
+      "table": "object_id_dict",
+      "columns": [
+        "value"
+      ],
+      "unique": true,
+      "origin": "u",
+      "partial": false,
+      "total_bytes": 28672,
+      "sql": null,
+      "default_query_usage": [
+        "compact object id dictionary value lookup during writes and id resolution",
+        "entity/edge joins usually use the INTEGER primary key after lookup"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "idx_edges_head_relation",
+      "table": "edges",
+      "columns": [
+        "head_id_key",
+        "relation_id"
+      ],
+      "unique": false,
+      "origin": "c",
+      "partial": false,
+      "total_bytes": 20480,
+      "sql": "CREATE INDEX idx_edges_head_relation ON edges(head_id_key, relation_id)",
+      "default_query_usage": [
+        "context-pack outbound proof expansion",
+        "impact/callees/path traversal from a seed entity"
+      ],
+      "used_by_core_query_plans": [
+        "context_pack_outbound"
+      ]
+    },
+    {
+      "name": "idx_edges_tail_relation",
+      "table": "edges",
+      "columns": [
+        "tail_id_key",
+        "relation_id"
+      ],
+      "unique": false,
+      "origin": "c",
+      "partial": false,
+      "total_bytes": 20480,
+      "sql": "CREATE INDEX idx_edges_tail_relation ON edges(tail_id_key, relation_id)",
+      "default_query_usage": [
+        "impact/callers/test-impact reverse traversal",
+        "reverse proof expansion by target entity"
+      ],
+      "used_by_core_query_plans": [
+        "impact_inbound"
+      ]
+    },
+    {
+      "name": "sqlite_autoindex_qname_prefix_dict_1",
+      "table": "qname_prefix_dict",
+      "columns": [
+        "value"
+      ],
+      "unique": true,
+      "origin": "u",
+      "partial": false,
+      "total_bytes": 20480,
+      "sql": null,
+      "default_query_usage": [
+        "qualified-name prefix interning during indexing",
+        "not directly used by default read workflows"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_symbol_dict_1",
+      "table": "symbol_dict",
+      "columns": [
+        "value"
+      ],
+      "unique": true,
+      "origin": "u",
+      "partial": false,
+      "total_bytes": 20480,
+      "sql": null,
+      "default_query_usage": [
+        "symbol dictionary lookup for exact symbol resolution and indexed writes"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "idx_edges_span_path",
+      "table": "edges",
+      "columns": [
+        "span_path_id"
+      ],
+      "unique": false,
+      "origin": "c",
+      "partial": false,
+      "total_bytes": 16384,
+      "sql": "CREATE INDEX idx_edges_span_path ON edges(span_path_id)",
+      "default_query_usage": [
+        "edge lookup by source-span file for audit/UI/source-span workflows",
+        "not observed in the main symbol/text/context/impact query plans unless path-scoped edge lookup is requested"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "idx_entities_name",
+      "table": "entities",
+      "columns": [
+        "name_id"
+      ],
+      "unique": false,
+      "origin": "c",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": "CREATE INDEX idx_entities_name ON entities(name_id)",
+      "default_query_usage": [
+        "query symbols exact-name lookup",
+        "definitions/callers/callees/context-pack/impact seed resolution"
+      ],
+      "used_by_core_query_plans": [
+        "symbol_query_exact_name"
+      ]
+    },
+    {
+      "name": "idx_entities_path",
+      "table": "entities",
+      "columns": [
+        "path_id"
+      ],
+      "unique": false,
+      "origin": "c",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": "CREATE INDEX idx_entities_path ON entities(path_id)",
+      "default_query_usage": [
+        "list_entities_by_file during symbol FTS fallback and file-scoped expansion",
+        "stale cleanup and file lifecycle maintenance by path"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "idx_entities_qname",
+      "table": "entities",
+      "columns": [
+        "qualified_name_id"
+      ],
+      "unique": false,
+      "origin": "c",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": "CREATE INDEX idx_entities_qname ON entities(qualified_name_id)",
+      "default_query_usage": [
+        "query symbols exact qualified-name lookup",
+        "definitions/callers/callees/context-pack/impact seed resolution"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "idx_retrieval_traces_created",
+      "table": "retrieval_traces",
+      "columns": [
+        "created_at_unix_ms"
+      ],
+      "unique": false,
+      "origin": "c",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": "CREATE INDEX idx_retrieval_traces_created ON retrieval_traces(created_at_unix_ms)",
+      "default_query_usage": [
+        "trace/history recency lookup",
+        "not part of default symbol/text/context/impact graph queries"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "idx_source_spans_path",
+      "table": "source_spans",
+      "columns": [
+        "path_id"
+      ],
+      "unique": false,
+      "origin": "c",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": "CREATE INDEX idx_source_spans_path ON source_spans(path_id)",
+      "default_query_usage": [
+        "source-span lookup and cleanup by file path",
+        "not used for most proof edges because edge spans are inline in the compact edge table"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_bench_runs_1",
+      "table": "bench_runs",
+      "columns": [
+        "id"
+      ],
+      "unique": true,
+      "origin": "pk",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": null,
+      "default_query_usage": [
+        "benchmark artifact lookup by id"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_bench_tasks_1",
+      "table": "bench_tasks",
+      "columns": [
+        "id"
+      ],
+      "unique": true,
+      "origin": "pk",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": null,
+      "default_query_usage": [
+        "benchmark artifact lookup by id"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_derived_edges_1",
+      "table": "derived_edges",
+      "columns": [
+        "id"
+      ],
+      "unique": true,
+      "origin": "pk",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": null,
+      "default_query_usage": [
+        "stored derived-edge lookup by id when persisted"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_edge_class_dict_1",
+      "table": "edge_class_dict",
+      "columns": [
+        "value"
+      ],
+      "unique": true,
+      "origin": "u",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": null,
+      "default_query_usage": [
+        "edge class lookup for context/audit/proof labeling"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_edge_context_dict_1",
+      "table": "edge_context_dict",
+      "columns": [
+        "value"
+      ],
+      "unique": true,
+      "origin": "u",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": null,
+      "default_query_usage": [
+        "edge context lookup for production/test/mock labeling"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_entity_kind_dict_1",
+      "table": "entity_kind_dict",
+      "columns": [
+        "value"
+      ],
+      "unique": true,
+      "origin": "u",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": null,
+      "default_query_usage": [
+        "automatic unique/primary-key constraint; usage requires case-by-case verification"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_exactness_dict_1",
+      "table": "exactness_dict",
+      "columns": [
+        "value"
+      ],
+      "unique": true,
+      "origin": "u",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": null,
+      "default_query_usage": [
+        "exactness lookup for unresolved-calls and proof/heuristic filtering"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_extractor_dict_1",
+      "table": "extractor_dict",
+      "columns": [
+        "value"
+      ],
+      "unique": true,
+      "origin": "u",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": null,
+      "default_query_usage": [
+        "automatic unique/primary-key constraint; usage requires case-by-case verification"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_language_dict_1",
+      "table": "language_dict",
+      "columns": [
+        "value"
+      ],
+      "unique": true,
+      "origin": "u",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": null,
+      "default_query_usage": [
+        "file language lookup for status and manifest reporting"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_path_dict_1",
+      "table": "path_dict",
+      "columns": [
+        "value"
+      ],
+      "unique": true,
+      "origin": "u",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": null,
+      "default_query_usage": [
+        "path dictionary lookup during indexing, file cleanup, and source-span resolution"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_path_evidence_1",
+      "table": "path_evidence",
+      "columns": [
+        "id"
+      ],
+      "unique": true,
+      "origin": "pk",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": null,
+      "default_query_usage": [
+        "stored PathEvidence lookup by id when persisted"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_relation_kind_dict_1",
+      "table": "relation_kind_dict",
+      "columns": [
+        "value"
+      ],
+      "unique": true,
+      "origin": "u",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": null,
+      "default_query_usage": [
+        "relation name lookup for relation filters such as CALLS and IMPORTS"
+      ],
+      "used_by_core_query_plans": [
+        "relation_query_calls",
+        "unresolved_calls_paginated"
+      ]
+    },
+    {
+      "name": "sqlite_autoindex_repo_index_state_1",
+      "table": "repo_index_state",
+      "columns": [
+        "repo_id"
+      ],
+      "unique": true,
+      "origin": "pk",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": null,
+      "default_query_usage": [
+        "repo status lookup by repo id"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_retrieval_traces_1",
+      "table": "retrieval_traces",
+      "columns": [
+        "id"
+      ],
+      "unique": true,
+      "origin": "pk",
+      "partial": false,
+      "total_bytes": 4096,
+      "sql": null,
+      "default_query_usage": [
+        "trace lookup by id"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_edges_1",
+      "table": "edges",
+      "columns": [
+        "id_key"
+      ],
+      "unique": true,
+      "origin": "pk",
+      "partial": false,
+      "total_bytes": 0,
+      "sql": null,
+      "default_query_usage": [
+        "automatic unique/primary-key constraint; usage requires case-by-case verification"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_entities_1",
+      "table": "entities",
+      "columns": [
+        "id_key"
+      ],
+      "unique": true,
+      "origin": "pk",
+      "partial": false,
+      "total_bytes": 0,
+      "sql": null,
+      "default_query_usage": [
+        "automatic unique/primary-key constraint; usage requires case-by-case verification"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_files_1",
+      "table": "files",
+      "columns": [
+        "path_id"
+      ],
+      "unique": true,
+      "origin": "pk",
+      "partial": false,
+      "total_bytes": 0,
+      "sql": null,
+      "default_query_usage": [
+        "automatic unique/primary-key constraint; usage requires case-by-case verification"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_source_spans_1",
+      "table": "source_spans",
+      "columns": [
+        "id_key"
+      ],
+      "unique": true,
+      "origin": "pk",
+      "partial": false,
+      "total_bytes": 0,
+      "sql": null,
+      "default_query_usage": [
+        "automatic unique/primary-key constraint; usage requires case-by-case verification"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_stage0_fts_config_1",
+      "table": "stage0_fts_config",
+      "columns": [
+        "k"
+      ],
+      "unique": true,
+      "origin": "pk",
+      "partial": false,
+      "total_bytes": 0,
+      "sql": null,
+      "default_query_usage": [
+        "automatic unique/primary-key constraint; usage requires case-by-case verification"
+      ],
+      "used_by_core_query_plans": []
+    },
+    {
+      "name": "sqlite_autoindex_stage0_fts_idx_1",
+      "table": "stage0_fts_idx",
+      "columns": [
+        "segid",
+        "term"
+      ],
+      "unique": true,
+      "origin": "pk",
+      "partial": false,
+      "total_bytes": 0,
+      "sql": null,
+      "default_query_usage": [
+        "automatic unique/primary-key constraint; usage requires case-by-case verification"
+      ],
+      "used_by_core_query_plans": []
+    }
+  ],
+  "core_query_plans": [
+    {
+      "name": "symbol_query_exact_name",
+      "default_workflow": "query symbols / definitions / seed resolution",
+      "sql": "SELECT e.id_key FROM entities e WHERE e.name_id = (SELECT name_id FROM entities ORDER BY id_key LIMIT 1) ORDER BY e.id_key LIMIT 20",
+      "status": "ok",
+      "error": null,
+      "explain_query_plan": [
+        {
+          "id": 4,
+          "parent": 0,
+          "detail": "SEARCH e USING COVERING INDEX idx_entities_name (name_id=?)"
+        },
+        {
+          "id": 7,
+          "parent": 0,
+          "detail": "SCALAR SUBQUERY 1"
+        },
+        {
+          "id": 16,
+          "parent": 7,
+          "detail": "SCAN entities"
+        }
+      ],
+      "query_plan_analysis": {
+        "uses_indexes": true,
+        "indexes_used": [
+          "idx_entities_name"
+        ],
+        "full_scans": [
+          "SCAN entities"
+        ]
+      }
+    },
+    {
+      "name": "text_query_fts",
+      "default_workflow": "query text / query files / symbol FTS fallback",
+      "sql": "SELECT rowid, kind, id, repo_relative_path, line, title, body, bm25(stage0_fts) AS rank FROM stage0_fts WHERE stage0_fts MATCH 'login' ORDER BY rank LIMIT 20",
+      "status": "ok",
+      "error": null,
+      "explain_query_plan": [
+        {
+          "id": 4,
+          "parent": 0,
+          "detail": "SCAN stage0_fts VIRTUAL TABLE INDEX 0:M6"
+        },
+        {
+          "id": 26,
+          "parent": 0,
+          "detail": "USE TEMP B-TREE FOR ORDER BY"
+        }
+      ],
+      "query_plan_analysis": {
+        "uses_indexes": false,
+        "indexes_used": [],
+        "full_scans": [
+          "SCAN stage0_fts VIRTUAL TABLE INDEX 0:M6"
+        ]
+      }
+    },
+    {
+      "name": "relation_query_calls",
+      "default_workflow": "query relation/path samples by relation",
+      "sql": "SELECT e.id_key FROM edges e WHERE e.relation_id = (SELECT id FROM relation_kind_dict WHERE value = 'CALLS') ORDER BY e.id_key LIMIT 20",
+      "status": "ok",
+      "error": null,
+      "explain_query_plan": [
+        {
+          "id": 4,
+          "parent": 0,
+          "detail": "SCAN e"
+        },
+        {
+          "id": 9,
+          "parent": 0,
+          "detail": "SCALAR SUBQUERY 1"
+        },
+        {
+          "id": 13,
+          "parent": 9,
+          "detail": "SEARCH relation_kind_dict USING COVERING INDEX sqlite_autoindex_relation_kind_dict_1 (value=?)"
+        }
+      ],
+      "query_plan_analysis": {
+        "uses_indexes": true,
+        "indexes_used": [
+          "sqlite_autoindex_relation_kind_dict_1"
+        ],
+        "full_scans": [
+          "SCAN e"
+        ]
+      }
+    },
+    {
+      "name": "context_pack_outbound",
+      "default_workflow": "context-pack proof path expansion from a seed",
+      "sql": "SELECT e.id_key FROM edges e WHERE e.head_id_key = (SELECT head_id_key FROM edges ORDER BY id_key LIMIT 1) AND e.relation_id = (SELECT relation_id FROM edges ORDER BY id_key LIMIT 1) ORDER BY e.id_key LIMIT 64",
+      "status": "ok",
+      "error": null,
+      "explain_query_plan": [
+        {
+          "id": 4,
+          "parent": 0,
+          "detail": "SEARCH e USING COVERING INDEX idx_edges_head_relation (head_id_key=? AND relation_id=?)"
+        },
+        {
+          "id": 7,
+          "parent": 0,
+          "detail": "SCALAR SUBQUERY 1"
+        },
+        {
+          "id": 16,
+          "parent": 7,
+          "detail": "SCAN edges"
+        },
+        {
+          "id": 26,
+          "parent": 0,
+          "detail": "SCALAR SUBQUERY 2"
+        },
+        {
+          "id": 35,
+          "parent": 26,
+          "detail": "SCAN edges"
+        }
+      ],
+      "query_plan_analysis": {
+        "uses_indexes": true,
+        "indexes_used": [
+          "idx_edges_head_relation"
+        ],
+        "full_scans": [
+          "SCAN edges",
+          "SCAN edges"
+        ]
+      }
+    },
+    {
+      "name": "impact_inbound",
+      "default_workflow": "impact/callers/test-impact reverse traversal",
+      "sql": "SELECT e.id_key FROM edges e WHERE e.tail_id_key = (SELECT tail_id_key FROM edges ORDER BY id_key LIMIT 1) AND e.relation_id = (SELECT relation_id FROM edges ORDER BY id_key LIMIT 1) ORDER BY e.id_key LIMIT 64",
+      "status": "ok",
+      "error": null,
+      "explain_query_plan": [
+        {
+          "id": 4,
+          "parent": 0,
+          "detail": "SEARCH e USING COVERING INDEX idx_edges_tail_relation (tail_id_key=? AND relation_id=?)"
+        },
+        {
+          "id": 7,
+          "parent": 0,
+          "detail": "SCALAR SUBQUERY 1"
+        },
+        {
+          "id": 16,
+          "parent": 7,
+          "detail": "SCAN edges"
+        },
+        {
+          "id": 26,
+          "parent": 0,
+          "detail": "SCALAR SUBQUERY 2"
+        },
+        {
+          "id": 35,
+          "parent": 26,
+          "detail": "SCAN edges"
+        }
+      ],
+      "query_plan_analysis": {
+        "uses_indexes": true,
+        "indexes_used": [
+          "idx_edges_tail_relation"
+        ],
+        "full_scans": [
+          "SCAN edges",
+          "SCAN edges"
+        ]
+      }
+    },
+    {
+      "name": "unresolved_calls_paginated",
+      "default_workflow": "query unresolved-calls paginated",
+      "sql": "SELECT e.id_key FROM edges e JOIN exactness_dict exactness ON exactness.id = e.exactness_id JOIN entities tail ON tail.id_key = e.tail_id_key JOIN symbol_dict tail_name ON tail_name.id = tail.name_id JOIN qualified_name_dict tail_qname ON tail_qname.id = tail.qualified_name_id JOIN extractor_dict tail_extractor ON tail_extractor.id = tail.created_from_id WHERE e.relation_id = (SELECT id FROM relation_kind_dict WHERE value = 'CALLS') AND (exactness.value = 'static_heuristic' OR lower(COALESCE(e.metadata_json, '')) LIKE '%unresolved%' OR lower(COALESCE(tail.metadata_json, '')) LIKE '%unresolved%' OR lower(tail_extractor.value) LIKE '%heuristic%' OR lower(tail_name.value) LIKE '%unknown_callee%' OR tail_qname.value LIKE 'static_reference:%') ORDER BY e.id_key LIMIT 20 OFFSET 0",
+      "status": "ok",
+      "error": null,
+      "explain_query_plan": [
+        {
+          "id": 12,
+          "parent": 0,
+          "detail": "SCAN e"
+        },
+        {
+          "id": 17,
+          "parent": 0,
+          "detail": "SCALAR SUBQUERY 1"
+        },
+        {
+          "id": 21,
+          "parent": 17,
+          "detail": "SEARCH relation_kind_dict USING COVERING INDEX sqlite_autoindex_relation_kind_dict_1 (value=?)"
+        },
+        {
+          "id": 29,
+          "parent": 0,
+          "detail": "SEARCH tail USING PRIMARY KEY (id_key=?)"
+        },
+        {
+          "id": 34,
+          "parent": 0,
+          "detail": "SEARCH tail_name USING INTEGER PRIMARY KEY (rowid=?)"
+        },
+        {
+          "id": 37,
+          "parent": 0,
+          "detail": "SEARCH exactness USING INTEGER PRIMARY KEY (rowid=?)"
+        },
+        {
+          "id": 40,
+          "parent": 0,
+          "detail": "SEARCH tail_qname USING INTEGER PRIMARY KEY (rowid=?)"
+        },
+        {
+          "id": 43,
+          "parent": 0,
+          "detail": "SEARCH tail_extractor USING INTEGER PRIMARY KEY (rowid=?)"
+        }
+      ],
+      "query_plan_analysis": {
+        "uses_indexes": true,
+        "indexes_used": [
+          "sqlite_autoindex_relation_kind_dict_1",
+          "id_key=?",
+          "rowid=?"
+        ],
+        "full_scans": [
+          "SCAN e"
+        ]
+      }
+    }
+  ],
+  "vacuum_analyze_measurement": {
+    "analyze_run": false,
+    "reason": "This phase is audit-only; measure VACUUM/ANALYZE on a copied DB before changing production artifacts.",
+    "vacuum_run": false
+  },
+  "notes": [
+    "Read-only audit: no VACUUM, ANALYZE, index drop, or storage rewrite was applied.",
+    "dbstat byte totals include SQLite b-tree pages and FTS shadow objects when available."
+  ]
+}

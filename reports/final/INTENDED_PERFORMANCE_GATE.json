@@ -1,0 +1,270 @@
+{
+  "schema_version": 2,
+  "report_id": "intended_performance_gate",
+  "generated_at_local": "2026-05-11 04:48:52 -05:00",
+  "source_of_truth": "MVP.md",
+  "verdict": "fail",
+  "verdict_reason": "Correctness, context, and DB durability gates pass, but the clean Autoresearch run fails intended cold index, repeat unchanged, single-file update, storage, and context_pack latency targets.",
+  "artifacts": {
+    "markdown": "reports/final/INTENDED_PERFORMANCE_GATE.md",
+    "json": "reports/final/INTENDED_PERFORMANCE_GATE.json",
+    "clean_autoresearch_rerun_markdown": "reports/audit/clean_autoresearch_rerun.md",
+    "clean_autoresearch_rerun_json": "reports/audit/clean_autoresearch_rerun.json",
+    "clean_autoresearch_db": "reports/audit/artifacts/clean_autoresearch_rerun.sqlite"
+  },
+  "correctness": {
+    "fixture_pass_fail": "11/11 passed",
+    "forbidden_edge_count": 0,
+    "forbidden_path_count": 0,
+    "source_span_failure_count": 0,
+    "proof_grade_source_span_coverage": 1.0,
+    "derived_without_provenance_count": 0,
+    "exact_labeled_unresolved_count": 0,
+    "test_mock_production_leakage_count": 0,
+    "stale_fact_count_after_mutations": 0,
+    "required_edge_pass_rate": "20/20",
+    "expected_path_pass_rate": "11/11",
+    "graph_truth_artifact": "reports/audit/artifacts/clean_autoresearch_pre_graph_truth.json"
+  },
+  "context_packet_quality": {
+    "fixture_pass_fail": "11/11 passed",
+    "critical_symbol_recall": 1.0,
+    "proof_path_coverage": 1.0,
+    "source_span_coverage": 1.0,
+    "critical_snippet_coverage": 1.0,
+    "expected_tests_recall": 1.0,
+    "distractor_ratio": 0.0,
+    "stored_path_evidence_rows_clean_autoresearch": 4096,
+    "context_gate_artifact": "reports/audit/artifacts/clean_autoresearch_pre_context_packet.json"
+  },
+  "indexing": {
+    "cold_index": {
+      "status": "completed",
+      "target_ms": 60000,
+      "observed_ms_profile": 442145,
+      "observed_ms_shell": 676400,
+      "target_status": "fail",
+      "files_walked": 8561,
+      "files_read": 4975,
+      "files_hashed": 4975,
+      "files_parsed": 4975,
+      "entities": 1630146,
+      "edges": 3866431,
+      "source_spans": 5496577,
+      "graph_fact_hash": "fnv64:bc69dbacfcb9987e",
+      "integrity_status": "ok"
+    },
+    "unchanged_repeat": {
+      "status": "completed",
+      "target_ms": 5000,
+      "observed_ms_profile": 13571,
+      "target_status": "fail",
+      "files_walked": 8561,
+      "files_read": 0,
+      "files_hashed": 0,
+      "files_parsed": 0,
+      "duplicate_edges_upserted": 0,
+      "graph_fact_hash": "fnv64:bc69dbacfcb9987e",
+      "integrity_status": "ok"
+    },
+    "single_file_update": {
+      "status": "completed",
+      "target_ms": 750,
+      "observed_ms": 80207,
+      "restore_ms": 73249,
+      "target_status": "fail",
+      "files_walked": 1,
+      "files_read": 1,
+      "files_hashed": 1,
+      "files_parsed": 1,
+      "duplicate_edges_upserted": 0,
+      "transaction_status": "committed",
+      "integrity_status": "ok"
+    },
+    "worker_count_determinism": {
+      "status": "not_rerun_on_autoresearch_clean_pass",
+      "fixture_status": "covered by prior tests and gates",
+      "large_repo_claim": "unknown"
+    }
+  },
+  "storage": {
+    "target_bytes": 262144000,
+    "db_family_bytes": 1712730112,
+    "target_status": "fail",
+    "average_database_bytes_per_edge": 442.97,
+    "source_snippet_storage_policy": "snippets loaded from source files; not stored redundantly in SQLite by default",
+    "integrity_status": "ok",
+    "top_storage_contributors": [
+      {
+        "name": "edges",
+        "type": "table",
+        "bytes": 573857792
+      },
+      {
+        "name": "sqlite_autoindex_qualified_name_dict_1",
+        "type": "index",
+        "bytes": 218021888
+      },
+      {
+        "name": "qualified_name_dict",
+        "type": "table",
+        "bytes": 205287424
+      },
+      {
+        "name": "entities",
+        "type": "table",
+        "bytes": 117542912
+      },
+      {
+        "name": "sqlite_autoindex_object_id_dict_1",
+        "type": "index",
+        "bytes": 91865088
+      },
+      {
+        "name": "object_id_dict",
+        "type": "table",
+        "bytes": 82673664
+      },
+      {
+        "name": "idx_edges_tail_relation",
+        "type": "index",
+        "bytes": 73654272
+      },
+      {
+        "name": "idx_edges_head_relation",
+        "type": "index",
+        "bytes": 73617408
+      },
+      {
+        "name": "idx_edges_span_path",
+        "type": "index",
+        "bytes": 62033920
+      },
+      {
+        "name": "sqlite_autoindex_qname_prefix_dict_1",
+        "type": "index",
+        "bytes": 46792704
+      }
+    ]
+  },
+  "query_latency": {
+    "context_pack": {
+      "target_p95_ms": 2000,
+      "observed_p95_ms": 30315,
+      "target_status": "fail",
+      "iterations": 5
+    },
+    "unresolved_calls_paginated": {
+      "target_p95_ms": 1000,
+      "observed_p95_ms": 68,
+      "target_status": "pass",
+      "iterations": 20
+    },
+    "artifact": "reports/audit/artifacts/clean_autoresearch_query_latency.json"
+  },
+  "relation_quality": {
+    "manual_sample_audit_status": "samples exported but not manually labeled",
+    "real_relation_precision": "unknown",
+    "sample_artifacts": [
+      "reports/audit/artifacts/clean_autoresearch_sample_CALLS.json",
+      "reports/audit/artifacts/clean_autoresearch_sample_READS.json",
+      "reports/audit/artifacts/clean_autoresearch_sample_WRITES.json",
+      "reports/audit/artifacts/clean_autoresearch_sample_FLOWS_TO.json",
+      "reports/audit/artifacts/clean_autoresearch_sample_PathEvidence.json"
+    ]
+  },
+  "codegraph_vs_cgc": {
+    "status": "not_rerun",
+    "verdict": "unknown",
+    "notes": "No CGC comparison was rerun in the clean Autoresearch pass; no superiority claim is made."
+  },
+  "pass_fail_criteria": [
+    {
+      "criterion": "all_adversarial_fixtures_pass",
+      "status": "pass",
+      "observed": "11/11"
+    },
+    {
+      "criterion": "forbidden_edges_paths_zero",
+      "status": "pass",
+      "observed": "edges=0, paths=0"
+    },
+    {
+      "criterion": "proof_grade_source_span_coverage",
+      "status": "pass",
+      "observed": "100%"
+    },
+    {
+      "criterion": "unresolved_exact_zero",
+      "status": "pass",
+      "observed": 0
+    },
+    {
+      "criterion": "derived_without_provenance_zero",
+      "status": "pass",
+      "observed": 0
+    },
+    {
+      "criterion": "test_mock_leakage_zero",
+      "status": "pass",
+      "observed": 0
+    },
+    {
+      "criterion": "stale_fact_zero",
+      "status": "pass",
+      "observed": 0
+    },
+    {
+      "criterion": "context_critical_symbol_recall_100",
+      "status": "pass",
+      "observed": "100%"
+    },
+    {
+      "criterion": "context_proof_path_coverage_100",
+      "status": "pass",
+      "observed": "100%"
+    },
+    {
+      "criterion": "autoresearch_cold_index_under_60s",
+      "status": "fail",
+      "observed": "442145 ms profile"
+    },
+    {
+      "criterion": "autoresearch_unchanged_repeat_under_5s",
+      "status": "fail",
+      "observed": "13571 ms profile"
+    },
+    {
+      "criterion": "autoresearch_single_file_update_under_750ms",
+      "status": "fail",
+      "observed": "80207 ms"
+    },
+    {
+      "criterion": "autoresearch_db_family_under_250mib",
+      "status": "fail",
+      "observed": "1712730112 bytes"
+    },
+    {
+      "criterion": "context_pack_p95_under_2s",
+      "status": "fail",
+      "observed": "30315 ms"
+    },
+    {
+      "criterion": "unresolved_calls_page_under_1s",
+      "status": "pass",
+      "observed": "68 ms"
+    },
+    {
+      "criterion": "no_cgc_win_claim_on_incomplete",
+      "status": "pass",
+      "observed": "no CGC rerun, no win claimed"
+    }
+  ],
+  "next_required_work": [
+    "Profile and reduce cold index write/FTS/indexing time.",
+    "Reduce large-repo context_pack p95 from 30315 ms to <=2000 ms.",
+    "Reduce single-file update from 80207 ms to <=750 ms p95.",
+    "Resume storage optimization from clean DB evidence only.",
+    "Complete manual relation labeling before claiming real relation precision."
+  ]
+}
