@@ -1,0 +1,175 @@
+{
+  "phase": "cgc_fork_smoke",
+  "fixture": "fixtures/cgc_smoke/basic_repo",
+  "cgc_home": "reports/comparison/cgc_full_run/cgc/home_smoke",
+  "index_exit_code": 0,
+  "index_timed_out": false,
+  "query_outputs_meaningful": true,
+  "status": "pass",
+  "failure_classification": null,
+  "artifact_size_bytes": 13058440,
+  "commands": [
+    {
+      "name": "phase3_cgc_smoke_help",
+      "command": [
+        "<REPO_ROOT>\\target\\cgc-competitor\\cgc-fork-venv\\Scripts\\cgc.exe",
+        "--help"
+      ],
+      "cwd": "<REPO_ROOT>",
+      "exit_code": 0,
+      "timed_out": false,
+      "started_at": "2026-05-14T00:38:56-05:00",
+      "ended_at": "2026-05-14T00:38:57-05:00",
+      "duration_ms": 890,
+      "stdout": "reports/comparison/cgc_full_run/logs/phase3_cgc_smoke_help.stdout.txt",
+      "stderr": "reports/comparison/cgc_full_run/logs/phase3_cgc_smoke_help.stderr.txt",
+      "stdout_bytes": 6805,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "phase3_cgc_smoke_index",
+      "command": [
+        "<REPO_ROOT>\\target\\cgc-competitor\\cgc-fork-venv\\Scripts\\cgc.exe",
+        "--database",
+        "kuzudb",
+        "index",
+        "<REPO_ROOT>\\fixtures\\cgc_smoke\\basic_repo",
+        "--force"
+      ],
+      "cwd": "<REPO_ROOT>\\fixtures\\cgc_smoke\\basic_repo",
+      "exit_code": 0,
+      "timed_out": false,
+      "started_at": "2026-05-14T00:38:57-05:00",
+      "ended_at": "2026-05-14T00:39:00-05:00",
+      "duration_ms": 2781,
+      "stdout": "reports/comparison/cgc_full_run/logs/phase3_cgc_smoke_index.stdout.txt",
+      "stderr": "reports/comparison/cgc_full_run/logs/phase3_cgc_smoke_index.stderr.txt",
+      "stdout_bytes": 737,
+      "stderr_bytes": 157
+    },
+    {
+      "name": "phase3_cgc_smoke_find_content",
+      "command": [
+        "<REPO_ROOT>\\target\\cgc-competitor\\cgc-fork-venv\\Scripts\\cgc.exe",
+        "--database",
+        "kuzudb",
+        "find",
+        "content",
+        "CGC_SMOKE_SENTINEL"
+      ],
+      "cwd": "<REPO_ROOT>\\fixtures\\cgc_smoke\\basic_repo",
+      "exit_code": 0,
+      "timed_out": false,
+      "started_at": "2026-05-14T00:39:00-05:00",
+      "ended_at": "2026-05-14T00:39:01-05:00",
+      "duration_ms": 1071,
+      "stdout": "reports/comparison/cgc_full_run/logs/phase3_cgc_smoke_find_content.stdout.txt",
+      "stderr": "reports/comparison/cgc_full_run/logs/phase3_cgc_smoke_find_content.stderr.txt",
+      "stdout_bytes": 95,
+      "stderr_bytes": 1240
+    },
+    {
+      "name": "phase3_cgc_smoke_find_name",
+      "command": [
+        "<REPO_ROOT>\\target\\cgc-competitor\\cgc-fork-venv\\Scripts\\cgc.exe",
+        "--database",
+        "kuzudb",
+        "find",
+        "name",
+        "cgc_smoke_target"
+      ],
+      "cwd": "<REPO_ROOT>\\fixtures\\cgc_smoke\\basic_repo",
+      "exit_code": 0,
+      "timed_out": false,
+      "started_at": "2026-05-14T00:39:01-05:00",
+      "ended_at": "2026-05-14T00:39:02-05:00",
+      "duration_ms": 1028,
+      "stdout": "reports/comparison/cgc_full_run/logs/phase3_cgc_smoke_find_name.stdout.txt",
+      "stderr": "reports/comparison/cgc_full_run/logs/phase3_cgc_smoke_find_name.stderr.txt",
+      "stdout_bytes": 95,
+      "stderr_bytes": 1228
+    },
+    {
+      "name": "phase3_cgc_smoke_find_pattern",
+      "command": [
+        "<REPO_ROOT>\\target\\cgc-competitor\\cgc-fork-venv\\Scripts\\cgc.exe",
+        "--database",
+        "kuzudb",
+        "find",
+        "pattern",
+        "cgc_smoke"
+      ],
+      "cwd": "<REPO_ROOT>\\fixtures\\cgc_smoke\\basic_repo",
+      "exit_code": 0,
+      "timed_out": false,
+      "started_at": "2026-05-14T00:39:02-05:00",
+      "ended_at": "2026-05-14T00:39:03-05:00",
+      "duration_ms": 1056,
+      "stdout": "reports/comparison/cgc_full_run/logs/phase3_cgc_smoke_find_pattern.stdout.txt",
+      "stderr": "reports/comparison/cgc_full_run/logs/phase3_cgc_smoke_find_pattern.stderr.txt",
+      "stdout_bytes": 95,
+      "stderr_bytes": 1514
+    },
+    {
+      "name": "phase3_cgc_smoke_analyze_calls",
+      "command": [
+        "<REPO_ROOT>\\target\\cgc-competitor\\cgc-fork-venv\\Scripts\\cgc.exe",
+        "--database",
+        "kuzudb",
+        "analyze",
+        "calls",
+        "cgc_smoke_caller"
+      ],
+      "cwd": "<REPO_ROOT>\\fixtures\\cgc_smoke\\basic_repo",
+      "exit_code": 0,
+      "timed_out": false,
+      "started_at": "2026-05-14T00:39:03-05:00",
+      "ended_at": "2026-05-14T00:39:04-05:00",
+      "duration_ms": 1068,
+      "stdout": "reports/comparison/cgc_full_run/logs/phase3_cgc_smoke_analyze_calls.stdout.txt",
+      "stderr": "reports/comparison/cgc_full_run/logs/phase3_cgc_smoke_analyze_calls.stderr.txt",
+      "stdout_bytes": 95,
+      "stderr_bytes": 1251
+    },
+    {
+      "name": "phase3_cgc_smoke_analyze_callers",
+      "command": [
+        "<REPO_ROOT>\\target\\cgc-competitor\\cgc-fork-venv\\Scripts\\cgc.exe",
+        "--database",
+        "kuzudb",
+        "analyze",
+        "callers",
+        "cgc_smoke_target"
+      ],
+      "cwd": "<REPO_ROOT>\\fixtures\\cgc_smoke\\basic_repo",
+      "exit_code": 0,
+      "timed_out": false,
+      "started_at": "2026-05-14T00:39:04-05:00",
+      "ended_at": "2026-05-14T00:39:05-05:00",
+      "duration_ms": 1047,
+      "stdout": "reports/comparison/cgc_full_run/logs/phase3_cgc_smoke_analyze_callers.stdout.txt",
+      "stderr": "reports/comparison/cgc_full_run/logs/phase3_cgc_smoke_analyze_callers.stderr.txt",
+      "stdout_bytes": 95,
+      "stderr_bytes": 1078
+    },
+    {
+      "name": "phase3_cgc_smoke_stats",
+      "command": [
+        "<REPO_ROOT>\\target\\cgc-competitor\\cgc-fork-venv\\Scripts\\cgc.exe",
+        "--database",
+        "kuzudb",
+        "stats"
+      ],
+      "cwd": "<REPO_ROOT>\\fixtures\\cgc_smoke\\basic_repo",
+      "exit_code": 0,
+      "timed_out": false,
+      "started_at": "2026-05-14T00:39:05-05:00",
+      "ended_at": "2026-05-14T00:39:06-05:00",
+      "duration_ms": 1025,
+      "stdout": "reports/comparison/cgc_full_run/logs/phase3_cgc_smoke_stats.stdout.txt",
+      "stderr": "reports/comparison/cgc_full_run/logs/phase3_cgc_smoke_stats.stderr.txt",
+      "stdout_bytes": 545,
+      "stderr_bytes": 114
+    }
+  ]
+}

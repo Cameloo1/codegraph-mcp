@@ -1,0 +1,3 @@
+warn: could not canonicalize path <USER_HOME>
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src\lib.rs (target\debug\deps\codegraph_bench-076779d40a094485.exe)

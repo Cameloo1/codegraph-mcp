@@ -1,0 +1,2 @@
+pip 25.0.1 from <REPO_ROOT>\target\cgc-competitor\cgc-fork-venv\Lib\site-packages\pip (python 3.12)
+

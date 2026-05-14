@@ -1,0 +1,14 @@
+Resolving context...
+Initializing services and database connection...
+Services initialized.
+📊 Overall Database Statistics
+
+┌──────────────┬───────┐
+│ Metric       │ Count │
+├──────────────┼───────┤
+│ Repositories │     1 │
+│ Files        │     2 │
+│ Functions    │     2 │
+│ Classes      │     0 │
+│ Modules      │     0 │
+└──────────────┴───────┘

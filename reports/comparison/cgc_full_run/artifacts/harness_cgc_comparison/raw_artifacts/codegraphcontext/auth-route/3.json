@@ -1,0 +1,16 @@
+{
+  "executable": "<REPO_ROOT>\\target\\cgc-competitor\\cgc-fork-venv\\Scripts\\cgc.exe",
+  "args": [
+    "--database",
+    "kuzudb",
+    "analyze",
+    "calls",
+    "adminRoute"
+  ],
+  "cwd": "<REPO_ROOT>\\reports\\comparison\\cgc_full_run\\artifacts\\harness_cgc_comparison\\fixtures\\auth-route",
+  "stdout": "Resolving context...\r\nInitializing services and database connection...\r\nServices initialized.\r\n",
+  "stderr": "No configuration file found. Using defaults.\r\nUsing database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))\r\n\r\nFunction 'adminRoute' calls:\r\n┌──────────────────┬─────────────────────────────────────────────┬────────────┐\r\n│ Called Function  │ Location                                    │ Type       │\r\n├──────────────────┼─────────────────────────────────────────────┼────────────┤\r\n│ authorizeRequest │ \\\\?\\<USER_HOME>\\Desktop\\development\\code │ 📝 Project │\r\n│                  │ graph-mcp\\reports\\comparison\\cgc_full_run\\a │            │\r\n│                  │ rtifacts\\harness_cgc_comparison\\fixtures\\au │            │\r\n│                  │ th-route\\src\\security.ts:1                  │            │\r\n│ checkRole        │ \\\\?\\<USER_HOME>\\Desktop\\development\\code │ 📝 Project │\r\n│                  │ graph-mcp\\reports\\comparison\\cgc_full_run\\a │            │\r\n│                  │ rtifacts\\harness_cgc_comparison\\fixtures\\au │            │\r\n│                  │ th-route\\src\\security.ts:5                  │            │\r\n└──────────────────┴─────────────────────────────────────────────┴────────────┘\r\n\r\nTotal: 2 function(s)\r\n",
+  "exit_code": 0,
+  "latency_ms": 1011,
+  "timed_out": false
+}

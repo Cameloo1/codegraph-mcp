@@ -1,38 +1,24 @@
 # CodeGraph vs CGC Latest
 
-Generated: 2026-05-13 08:51:00 -05:00
+This is a diagnostic fixed-fork CGC run. It is not a CodeGraph superiority claim.
+Official comparison is blocked if CodeGraph intended gate fails or CGC does not complete comparable standard artifacts.
 
-## Verdict
-
-Official comparison: blocked_by_codegraph_gate_and_cgc_incomplete.
-
-Diagnostic recovery: partial_pass_install_smoke_fixture_autoresearch_timeout.
-
-No CodeGraph superiority claim is made.
-
-## CodeGraph Status
-
-- Fresh comprehensive verdict: fail
-- Blocking target: proof-build-only 184297 ms > 60,000 ms
-- Graph Truth: 11/11
-- Context Packet: 11/11
-- DB integrity: ok
-- Proof DB: 171.184 MiB
-- cargo test --workspace: pass
-
-## CGC Status
-
-- Mode: stock_reinstall_compat_dependency
-- Executable: <REPO_ROOT>/Desktop\development\codegraph-mcp\.tools\cgc_recovery\venv312_compat\Scripts\cgc.exe
-- Smoke test: pass
-- Fixture diagnostic: completed_not_comparable
-- Autoresearch 180s: timeout
-- Extended diagnostic: not run
-- Partial artifacts comparable: false
-
-## Why This Is Not A Win Claim
-
-- CodeGraph current fresh comprehensive gate fails the proof-build-only target.
-- CGC Autoresearch did not complete under the controlled 180s cap.
-- CGC fixture output is not graph-truth/source-span/path comparable.
-- Partial CGC DB/WAL files are not final artifacts.
+| Field | Value |
+|---|---|
+| `schema_version` | 1 |
+| `generated_at` | 2026-05-14T01:07:26-05:00 |
+| `official_comparison` | blocked_by_codegraph_gate |
+| `official_comparison_allowed` | False |
+| `diagnostic_cgc_status` | partial_pass_smoke_and_fixture_diagnostic_autoresearch_incomplete |
+| `fixed_fork_used` | True |
+| `fixed_fork_path` | <CGC_FORK_ROOT> |
+| `fixed_fork_commit` | fcf03925f640541eed4a69e085af22a778bdaf30 |
+| `fixed_fork_version` | 0.4.8 |
+| `cgc_smoke_test_passed` | True |
+| `cgc_fixture_diagnostic_run` | True |
+| `cgc_normal_repo_diagnostic_run` | True |
+| `cgc_autoresearch_180s_completed` | False |
+| `cgc_autoresearch_600s_completed` | False |
+| `codegraph_gate` | `{"cargo_build": "pass", "cargo_test": "pass", "intended_gate_passed": false, "proof_build_only_ms": 184297, "known_blocker": "proof_build_only_ms target failure remains visible"}` |
+| `fairness` | `{"partial_cgc_artifacts_compared_as_final": false, "superiority_claim_made": false, "manual_relation_precision_boundary": "320 labeled samples, sampled precision only, recall unknown, no precision claim for absent proof-mode relations."}` |
+| `source_reports` | `{"status_md": "reports/comparison/cgc_full_run/CGC_FULL_RUN_STATUS.md", "status_json": "reports/comparison/cgc_full_run/cgc_full_run_status.json", "fork_inspection_md": "reports/comparison/cgc_full_run/01_fork_inspection.md", "fork_inspection_json": "reports/comparison/cgc_full_run/01_fork_inspection.json", "fork_install_md": "reports/comparison/cgc_full_run/02_fork_install.md", "fork_install_json": "reports/comparison/cgc_full_run/02_fork_install.json", "smoke_md": "reports/comparison/cgc_full_` |

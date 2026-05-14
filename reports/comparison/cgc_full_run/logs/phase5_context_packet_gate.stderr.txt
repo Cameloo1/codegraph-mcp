@@ -1,0 +1,3 @@
+warn: could not canonicalize path <USER_HOME>
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running `target\debug\codegraph-mcp.exe bench context-packet --cases <REPO_ROOT>\benchmarks\graph_truth\fixtures --fixture-root . --out-json <REPO_ROOT>\reports\comparison\cgc_full_run\codegraph\context_packet.json --out-md <REPO_ROOT>\reports\comparison\cgc_full_run\codegraph\context_packet.md --top-k 8 --budget 1800`

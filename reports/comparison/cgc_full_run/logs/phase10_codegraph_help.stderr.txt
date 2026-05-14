@@ -1,0 +1,3 @@
+warn: could not canonicalize path <USER_HOME>
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running `target\debug\codegraph-mcp.exe --help`

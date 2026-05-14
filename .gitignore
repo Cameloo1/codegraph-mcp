@@ -56,6 +56,11 @@ codegraph-competitors/
 /reports/smoke/index/windows_*/
 /reports/smoke/index/linux_*/
 /reports/smoke/docker/run_*/
+/reports/comparison/cgc_full_run/cgc/home_*/
+/reports/comparison/cgc_full_run/codegraph/artifacts/
+/reports/comparison/cgc_full_run/tmp/
+/reports/comparison/cgc_full_run/artifacts/harness_cgc_comparison/fixtures/
+/fixtures/cgc_smoke/
 
 # Internal planning/status docs not intended for the public repo
 /MVP.md

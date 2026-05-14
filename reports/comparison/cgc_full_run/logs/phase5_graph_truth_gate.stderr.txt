@@ -1,0 +1,3 @@
+warn: could not canonicalize path <USER_HOME>
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running `target\debug\codegraph-mcp.exe bench graph-truth --cases <REPO_ROOT>\benchmarks\graph_truth\fixtures --fixture-root . --out-json <REPO_ROOT>\reports\comparison\cgc_full_run\codegraph\graph_truth.json --out-md <REPO_ROOT>\reports\comparison\cgc_full_run\codegraph\graph_truth.md --fail-on-forbidden --fail-on-missing-source-span --fail-on-unresolved-exact --fail-on-derived-without-provenance --fail-on-test-mock-production-leak`

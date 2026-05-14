@@ -1,0 +1,18 @@
+                                                                               
+ Usage: cgc index [OPTIONS] [PATH]                                             
+                                                                               
+ Indexes a directory or file by adding it to the code graph. If no path is     
+ provided, it indexes the current directory.                                   
+                                                                               
+ Use --force to delete the existing index and rebuild from scratch.            
+                                                                               
+┌─ Arguments ─────────────────────────────────────────────────────────────────┐
+│   path      [PATH]  Path to the directory or file to index. Defaults to the │
+│                     current directory.                                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+┌─ Options ───────────────────────────────────────────────────────────────────┐
+│ --force    -f            Force re-index (delete existing and rebuild)       │
+│ --context  -c      TEXT  Specific context to use (overrides mode/default)   │
+│ --help                   Show this message and exit.                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+

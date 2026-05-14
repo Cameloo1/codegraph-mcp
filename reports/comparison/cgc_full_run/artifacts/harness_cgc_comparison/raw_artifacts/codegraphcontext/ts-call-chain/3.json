@@ -1,0 +1,16 @@
+{
+  "executable": "<REPO_ROOT>\\target\\cgc-competitor\\cgc-fork-venv\\Scripts\\cgc.exe",
+  "args": [
+    "--database",
+    "kuzudb",
+    "analyze",
+    "calls",
+    "postInvoice"
+  ],
+  "cwd": "<REPO_ROOT>\\reports\\comparison\\cgc_full_run\\artifacts\\harness_cgc_comparison\\fixtures\\ts-call-chain",
+  "stdout": "Resolving context...\r\nInitializing services and database connection...\r\nServices initialized.\r\n",
+  "stderr": "No configuration file found. Using defaults.\r\nUsing database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))\r\n\r\nFunction 'postInvoice' calls:\r\n┌─────────────────┬──────────────────────────────────────────────┬────────────┐\r\n│ Called Function │ Location                                     │ Type       │\r\n├─────────────────┼──────────────────────────────────────────────┼────────────┤\r\n│ createInvoice   │ \\\\?\\<USER_HOME>\\Desktop\\development\\codeg │ 📝 Project │\r\n│                 │ raph-mcp\\reports\\comparison\\cgc_full_run\\art │            │\r\n│                 │ ifacts\\harness_cgc_comparison\\fixtures\\ts-ca │            │\r\n│                 │ ll-chain\\src\\service.ts:3                    │            │\r\n└─────────────────┴──────────────────────────────────────────────┴────────────┘\r\n\r\nTotal: 1 function(s)\r\n",
+  "exit_code": 0,
+  "latency_ms": 948,
+  "timed_out": false
+}

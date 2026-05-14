@@ -1,0 +1,16 @@
+{
+  "executable": "<REPO_ROOT>\\target\\cgc-competitor\\cgc-fork-venv\\Scripts\\cgc.exe",
+  "args": [
+    "--database",
+    "kuzudb",
+    "index",
+    "--force",
+    "\\\\?\\<REPO_ROOT>\\reports\\comparison\\cgc_full_run\\artifacts\\harness_cgc_comparison\\fixtures\\test-impact"
+  ],
+  "cwd": "<REPO_ROOT>\\reports\\comparison\\cgc_full_run\\artifacts\\harness_cgc_comparison\\fixtures\\test-impact",
+  "stdout": "Resolving context...\r\nInitializing services and database connection...\r\nServices initialized.\r\nRe-indexing: \r\n\\\\?\\<REPO_ROOT>\\reports\\comparison\\cgc_ful\r\nl_run\\artifacts\\harness_cgc_comparison\\fixtures\\test-impact\r\n\r\nSuccessfully re-indexed: \r\n\\\\?\\<REPO_ROOT>\\reports\\comparison\\cgc_ful\r\nl_run\\artifacts\\harness_cgc_comparison\\fixtures\\test-impact in 1.00 seconds\r\n",
+  "stderr": "No configuration file found. Using defaults.\r\nUsing database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))\r\nForce re-indexing (--force flag detected)\r\n",
+  "exit_code": 0,
+  "latency_ms": 2002,
+  "timed_out": false
+}

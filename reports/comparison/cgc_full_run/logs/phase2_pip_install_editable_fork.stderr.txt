@@ -1,0 +1,6 @@
+WARNING: Cache entry deserialization failed, entry ignored
+WARNING: Cache entry deserialization failed, entry ignored
+WARNING: Cache entry deserialization failed, entry ignored
+
+[notice] A new release of pip is available: 25.0.1 -> 26.1.1
+[notice] To update, run: <REPO_ROOT>\target\cgc-competitor\cgc-fork-venv\Scripts\python.exe -m pip install --upgrade pip

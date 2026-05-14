@@ -1,0 +1,13 @@
+No configuration file found. Using defaults.
+Using database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))
+Found 2 matches for pattern 'cgc_smoke':
+┌──────────────────┬──────────┬──────────────────────────────────┬────────────┐
+│ Name             │ Type     │ Location                         │ Source     │
+├──────────────────┼──────────┼──────────────────────────────────┼────────────┤
+│ cgc_smoke_caller │ Function │ <USER_HOME>\Desktop\developme │ 📝 Project │
+│                  │          │ nt\codegraph-mcp\fixtures\cgc_sm │            │
+│                  │          │ oke\basic_repo\src\smoke.ts:5    │            │
+│ cgc_smoke_target │ Function │ <USER_HOME>\Desktop\developme │ 📝 Project │
+│                  │          │ nt\codegraph-mcp\fixtures\cgc_sm │            │
+│                  │          │ oke\basic_repo\src\smoke.ts:1    │            │
+└──────────────────┴──────────┴──────────────────────────────────┴────────────┘

@@ -1,0 +1,20 @@
+{
+  "files": [
+    "src/events.ts"
+  ],
+  "symbols": [
+    "publishUserCreated",
+    "Called",
+    "emitEvent"
+  ],
+  "path_symbols": [],
+  "relation_sequence": [],
+  "source_spans": [
+    "src/events.ts:4",
+    "src/events.ts:8"
+  ],
+  "unsupported_fields": [],
+  "mode": "human_text",
+  "warnings": [],
+  "raw_json": null
+}

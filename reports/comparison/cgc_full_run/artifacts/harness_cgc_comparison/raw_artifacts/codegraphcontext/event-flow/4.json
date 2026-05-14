@@ -1,0 +1,19 @@
+{
+  "executable": "<REPO_ROOT>\\target\\cgc-competitor\\cgc-fork-venv\\Scripts\\cgc.exe",
+  "args": [
+    "--database",
+    "kuzudb",
+    "analyze",
+    "chain",
+    "publishUserCreated",
+    "markUserActive",
+    "--depth",
+    "10"
+  ],
+  "cwd": "<REPO_ROOT>\\reports\\comparison\\cgc_full_run\\artifacts\\harness_cgc_comparison\\fixtures\\event-flow",
+  "stdout": "Resolving context...\r\nInitializing services and database connection...\r\nServices initialized.\r\n",
+  "stderr": "No configuration file found. Using defaults.\r\nUsing database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))\r\nNo call chain found between 'publishUserCreated' and 'markUserActive' within \r\ndepth 10\r\n",
+  "exit_code": 0,
+  "latency_ms": 1017,
+  "timed_out": false
+}

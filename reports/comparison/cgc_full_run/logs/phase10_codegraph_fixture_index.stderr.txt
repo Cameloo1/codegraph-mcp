@@ -1,0 +1,3 @@
+warn: could not canonicalize path <USER_HOME>
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running `target\debug\codegraph-mcp.exe index <REPO_ROOT>\fixtures\smoke\basic_repo`

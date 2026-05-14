@@ -1,0 +1,13 @@
+No configuration file found. Using defaults.
+Using database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))
+
+Function 'cgc_smoke_caller' calls:
+┌──────────────────┬─────────────────────────────────────────────┬────────────┐
+│ Called Function  │ Location                                    │ Type       │
+├──────────────────┼─────────────────────────────────────────────┼────────────┤
+│ cgc_smoke_target │ <USER_HOME>\Desktop\development\codegrap │ 📝 Project │
+│                  │ h-mcp\fixtures\cgc_smoke\basic_repo\src\smo │            │
+│                  │ ke.ts:1                                     │            │
+└──────────────────┴─────────────────────────────────────────────┴────────────┘
+
+Total: 1 function(s)

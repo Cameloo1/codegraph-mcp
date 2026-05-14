@@ -1,0 +1,3 @@
+No configuration file found. Using defaults.
+Using database: kuzudb (source: runtime-env (CGC_RUNTIME_DB_TYPE))
+No content matches found for 'codegraph_smoke_target'
