@@ -31,11 +31,13 @@ use codegraph_core::{
 };
 pub use codegraph_index::{
     collect_repo_files, default_db_path, index_repo, index_repo_to_db_with_options,
-    index_repo_with_options, parse_extract_pending_files, should_ignore_path,
+    index_repo_with_options, inspect_repo_db_passport, parse_extract_pending_files,
+    require_reusable_db_passport, scope_policy_hash, should_ignore_path,
     should_start_new_index_batch, update_changed_files, update_changed_files_to_db,
-    update_changed_files_with_cache, IncrementalIndexCache, IncrementalIndexSummary,
-    IndexBuildMode, IndexError, IndexIssue, IndexOptions, IndexProfile, IndexScopeOptions,
-    IndexSummary, LocalFactBundle, PendingIndexFile, StorageMode, DEFAULT_INDEX_BATCH_MAX_FILES,
+    update_changed_files_with_cache, DbLifecyclePolicy, IncrementalIndexCache,
+    IncrementalIndexSummary, IndexBuildMode, IndexError, IndexIssue, IndexOptions,
+    IndexProfile, IndexScopeOptions, IndexSummary, LocalFactBundle, PendingIndexFile, StorageMode,
+    DEFAULT_INDEX_BATCH_MAX_FILES,
     DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY, UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::{
@@ -46,7 +48,10 @@ use codegraph_query::{
     extract_prompt_seeds, ContextPackRequest, ExactGraphQueryEngine, GraphPath, QueryLimits,
     SymbolSearchHit, SymbolSearchIndex, TraversalDirection, TraversalStep,
 };
-use codegraph_store::{GraphStore, SqliteGraphStore, TextSearchKind, SCHEMA_VERSION};
+use codegraph_store::{
+    DbPassport, DbPreflightReport, GraphStore, SqliteGraphStore, TextSearchKind,
+    DB_PASSPORT_VERSION, SCHEMA_VERSION,
+};
 use codegraph_trace::{
     append_trace_event, replay_trace_file, TraceAppendEvent, TraceConfig, TraceEventType,
     DEFAULT_TRACE_ROOT,
@@ -79,7 +84,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "index",
-        usage: "codegraph-mcp index <repo> [--db <path>] [--profile] [--json] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]",
+        usage: "codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]",
         description: "Index a repository into the local graph store.",
     },
     CommandSpec {
@@ -814,6 +819,17 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
         }));
     }
 
+    let preflight = inspect_read_db_passport(&repo_root, &db_path)?;
+    if !preflight.valid {
+        return Ok(json!({
+            "status": "db_problem",
+            "repo_root": path_string(&repo_root),
+            "db_path": path_string(&db_path),
+            "db_health": preflight,
+            "next_command": "codegraph-mcp index . --fresh",
+        }));
+    }
+
     let store = SqliteGraphStore::open(&db_path).map_err(|error| error.to_string())?;
     let files = store
         .list_files(10_000)
@@ -844,6 +860,7 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
         "db_path": path_string(&db_path),
         "db_size_bytes": sqlite_family_size_bytes(&db_path).map_err(|error| error.to_string())?,
         "storage_policy": DEFAULT_STORAGE_POLICY,
+        "db_health": preflight,
         "schema_version": store.schema_version().map_err(|error| error.to_string())?,
         "files": store.count_files().map_err(|error| error.to_string())?,
         "entities": store.count_entities().map_err(|error| error.to_string())?,
@@ -1064,6 +1081,30 @@ fn yes_no(value: bool) -> &'static str {
 }
 
 fn run_query_command(args: &[String]) -> Result<Value, String> {
+    let mut args = args.to_vec();
+    let allow_stale_read = remove_flag(&mut args, "--allow-stale-read");
+    let previous_allow_stale = std::env::var("CODEGRAPH_ALLOW_STALE_READ").ok();
+    if allow_stale_read {
+        std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", "1");
+    }
+    let result = run_query_command_inner(&args);
+    match previous_allow_stale {
+        Some(value) => std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", value),
+        None => std::env::remove_var("CODEGRAPH_ALLOW_STALE_READ"),
+    }
+    let mut value = result?;
+    if let Some(object) = value.as_object_mut() {
+        let repo_root = current_repo_root()?;
+        let db_path = default_db_path(&repo_root);
+        object.insert(
+            "db_lifecycle_read".to_string(),
+            read_db_lifecycle_guard(&repo_root, &db_path, allow_stale_read)?,
+        );
+    }
+    Ok(value)
+}
+
+fn run_query_command_inner(args: &[String]) -> Result<Value, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         return Err("Usage: codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]".to_string());
     };
@@ -1137,6 +1178,12 @@ fn run_query_command(args: &[String]) -> Result<Value, String> {
     }
 }
 
+fn remove_flag(args: &mut Vec<String>, flag: &str) -> bool {
+    let before = args.len();
+    args.retain(|arg| arg != flag);
+    args.len() != before
+}
+
 fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
     let options = parse_context_pack_args(args)?;
     let profile_enabled = options.profile;
@@ -1144,6 +1191,8 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
     let total_start = Instant::now();
     let mut profile_spans = Vec::new();
     let db_path = default_db_path(&repo_root);
+    let db_lifecycle_read =
+        read_db_lifecycle_guard(&repo_root, &db_path, options.allow_stale_read)?;
     let open_start = Instant::now();
     let connection = open_context_pack_connection(&db_path)?;
     profile_spans.push(profile_span_json(
@@ -1348,6 +1397,7 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
         "mode": options.mode,
         "packet": packet,
         "profile": profile,
+        "db_lifecycle_read": db_lifecycle_read,
         "proof": "Context packet is built from local graph/source evidence.",
     }))
 }
@@ -2935,6 +2985,7 @@ fn inspect_existing_comprehensive_proof_artifact(
     let synthetic_summary = IndexSummary {
         repo_root: "unknown".to_string(),
         db_path: path_string(db_path),
+        db_lifecycle: None,
         build_mode: "proof-build-only".to_string(),
         files_seen: 0,
         files_walked: 0,
@@ -7986,6 +8037,14 @@ fn run_bundle_import(args: &[String]) -> Result<Value, String> {
             Ok(())
         })
         .map_err(|error| error.to_string())?;
+    store.quick_integrity_gate().map_err(|error| error.to_string())?;
+    upsert_cli_db_passport(
+        &store,
+        &repo_root,
+        StorageMode::Proof,
+        bundle.manifest.file_count,
+        bundle.manifest.file_count,
+    )?;
 
     Ok(json!({
         "status": "imported",
@@ -7993,6 +8052,42 @@ fn run_bundle_import(args: &[String]) -> Result<Value, String> {
         "repo_root": path_string(&repo_root),
         "manifest": bundle.manifest,
     }))
+}
+
+fn upsert_cli_db_passport(
+    store: &SqliteGraphStore,
+    repo_root: &Path,
+    storage_mode: StorageMode,
+    files_seen: usize,
+    files_indexed: usize,
+) -> Result<(), String> {
+    let canonical_repo_root = resolve_repo_root(repo_root)?;
+    let scope = IndexScopeOptions::default();
+    let now = unix_time_ms();
+    let passport = DbPassport {
+        passport_version: DB_PASSPORT_VERSION,
+        codegraph_schema_version: SCHEMA_VERSION,
+        storage_mode: storage_mode.as_str().to_string(),
+        index_scope_policy_hash: scope_policy_hash(&scope).map_err(|error| error.to_string())?,
+        scope_policy_json: serde_json::to_string(&scope).map_err(|error| error.to_string())?,
+        canonical_repo_root: path_string(&canonical_repo_root),
+        git_remote: None,
+        worktree_root: Some(path_string(&canonical_repo_root)),
+        repo_head: None,
+        source_discovery_policy_version: "scope-policy-v1".to_string(),
+        codegraph_build_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        last_successful_index_timestamp: Some(now),
+        last_completed_run_id: Some(format!("cli-import-{now}-{}", std::process::id())),
+        last_run_status: "completed".to_string(),
+        integrity_gate_result: "ok".to_string(),
+        files_seen: files_seen as u64,
+        files_indexed: files_indexed as u64,
+        created_at_unix_ms: now,
+        updated_at_unix_ms: now,
+    };
+    store
+        .upsert_db_passport(&passport)
+        .map_err(|error| error.to_string())
 }
 
 fn query_symbols(repo_root: &Path, query: &str, limit: usize) -> Result<Value, String> {
@@ -9410,6 +9505,19 @@ fn parse_index_options(args: &[String]) -> Result<(String, Option<PathBuf>, Inde
                     return Err("--db requires a path".to_string());
                 };
                 db = Some(PathBuf::from(raw));
+                options.db_lifecycle.explicit_db_path = true;
+            }
+            "--fresh" | "--rebuild" => {
+                options.db_lifecycle.policy = DbLifecyclePolicy::FreshRebuild;
+            }
+            "--incremental" => {
+                options.db_lifecycle.policy = DbLifecyclePolicy::IncrementalRequired;
+            }
+            "--fail-on-db-problem" => {
+                options.db_lifecycle.policy = DbLifecyclePolicy::FailOnDbProblem;
+            }
+            "--allow-stale-reuse" => {
+                options.db_lifecycle.policy = DbLifecyclePolicy::DiagnosticStaleReuse;
             }
             "--workers" => {
                 index += 1;
@@ -9478,7 +9586,7 @@ fn parse_index_options(args: &[String]) -> Result<(String, Option<PathBuf>, Inde
     }
     Ok((
         repo.ok_or_else(|| {
-            "Usage: codegraph-mcp index <repo> [--db <path>] [--profile] [--json] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]".to_string()
+            "Usage: codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]".to_string()
         })?,
         db,
         options,
@@ -10531,6 +10639,7 @@ struct ContextPackOptions {
     seeds: Vec<String>,
     stage0_candidates: Vec<String>,
     profile: bool,
+    allow_stale_read: bool,
 }
 
 fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String> {
@@ -10540,6 +10649,7 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
     let mut seeds = Vec::new();
     let mut stage0_candidates = Vec::new();
     let mut profile = false;
+    let mut allow_stale_read = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -10580,6 +10690,9 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
             "--profile" => {
                 profile = true;
             }
+            "--allow-stale-read" => {
+                allow_stale_read = true;
+            }
             other => return Err(format!("unknown context-pack option: {other}")),
         }
         index += 1;
@@ -10597,6 +10710,7 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
         seeds,
         stage0_candidates,
         profile,
+        allow_stale_read,
     })
 }
 
@@ -10680,7 +10794,71 @@ fn open_existing_store(repo_root: &Path) -> Result<SqliteGraphStore, String> {
             db_path.display()
         ));
     }
+    let _ = read_db_lifecycle_guard(repo_root, &db_path, allow_stale_read_enabled())?;
     SqliteGraphStore::open(db_path).map_err(|error| error.to_string())
+}
+
+fn allow_stale_read_enabled() -> bool {
+    std::env::var("CODEGRAPH_ALLOW_STALE_READ")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn inspect_read_db_passport(repo_root: &Path, db_path: &Path) -> Result<DbPreflightReport, String> {
+    let default_options = IndexOptions::default();
+    let preflight = inspect_repo_db_passport(repo_root, db_path, &default_options)
+        .map_err(|error| error.to_string())?;
+    if preflight.valid {
+        return Ok(preflight);
+    }
+
+    let Some(passport) = preflight.passport.as_ref() else {
+        return Ok(preflight);
+    };
+    let storage_mode_mismatch = preflight
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("storage mode mismatch"));
+    if !storage_mode_mismatch {
+        return Ok(preflight);
+    }
+
+    let mut options = IndexOptions::default();
+    options.storage_mode = match passport.storage_mode.parse::<StorageMode>() {
+        Ok(storage_mode) => storage_mode,
+        Err(_) => return Ok(preflight),
+    };
+    inspect_repo_db_passport(repo_root, db_path, &options).map_err(|error| error.to_string())
+}
+
+fn read_db_lifecycle_guard(
+    repo_root: &Path,
+    db_path: &Path,
+    allow_stale_read: bool,
+) -> Result<Value, String> {
+    let preflight = inspect_read_db_passport(repo_root, db_path)?;
+    if preflight.valid {
+        return Ok(json!({
+            "decision": "read_reuse",
+            "passport_status": preflight.passport_status,
+            "claimable": true,
+            "reasons": preflight.reasons,
+        }));
+    }
+    if allow_stale_read {
+        return Ok(json!({
+            "decision": "diagnostic_stale_reuse",
+            "passport_status": preflight.passport_status,
+            "claimable": false,
+            "contaminated": true,
+            "reasons": preflight.reasons,
+        }));
+    }
+    Err(format!(
+        "CodeGraph DB is not safe to read at {}: {}; run `codegraph-mcp index . --fresh` or pass --allow-stale-read for diagnostic-only output",
+        db_path.display(),
+        preflight.reasons.join("; ")
+    ))
 }
 
 fn query_engine(store: &SqliteGraphStore) -> Result<ExactGraphQueryEngine, String> {

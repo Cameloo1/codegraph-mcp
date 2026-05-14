@@ -12,7 +12,8 @@ mod traits;
 
 pub use error::{StoreError, StoreResult};
 pub use sqlite::{
-    reset_sqlite_profile, take_sqlite_profile, SqliteGraphStore, SqliteProfileSpan,
-    StorageAccountingRow, SCHEMA_VERSION,
+    inspect_db_preflight, reset_sqlite_profile, take_sqlite_profile, DbPassport,
+    DbPreflightReport, ExpectedDbPassport, SqliteGraphStore, SqliteProfileSpan,
+    StorageAccountingRow, DB_PASSPORT_VERSION, SCHEMA_VERSION,
 };
 pub use traits::{GraphStore, RetrievalTraceRecord, TextSearchHit, TextSearchKind};

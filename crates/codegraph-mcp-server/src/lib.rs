@@ -19,7 +19,8 @@ use std::{
 
 use codegraph_core::{Edge, Entity, FileRecord, RelationKind, SourceSpan};
 use codegraph_index::{
-    default_db_path, index_repo_to_db, update_changed_files_to_db, UNBOUNDED_STORE_READ_LIMIT,
+    default_db_path, index_repo_to_db_with_options, inspect_repo_db_passport,
+    update_changed_files_to_db, IndexOptions, UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::language_frontends;
 use codegraph_query::{
@@ -888,7 +889,10 @@ impl McpServer {
     fn index_repo(&self, args: &Map<String, Value>) -> Result<Value, ToolCallError> {
         let repo_root = self.repo_root(args)?;
         let db_path = self.db_path(args, &repo_root)?;
-        let summary = index_repo_to_db(&repo_root, &db_path).map_err(ToolCallError::from)?;
+        let mut options = IndexOptions::default();
+        options.db_lifecycle.explicit_db_path = args.contains_key("db_path");
+        let summary = index_repo_to_db_with_options(&repo_root, &db_path, options)
+            .map_err(ToolCallError::from)?;
         let mut value = serde_json::to_value(summary).map_err(|error| {
             ToolCallError::new(
                 "serialization_failed",
@@ -1325,6 +1329,18 @@ impl McpServer {
                 format!(
                     "CodeGraph index does not exist yet at {}; call codegraph.index_repo first",
                     db_path.display()
+                ),
+            ));
+        }
+        let preflight = inspect_repo_db_passport(&repo_root, &db_path, &IndexOptions::default())
+            .map_err(ToolCallError::from)?;
+        if !preflight.valid {
+            return Err(ToolCallError::new(
+                "db_lifecycle_blocked",
+                format!(
+                    "CodeGraph DB is not safe to read at {}: {}; call codegraph.index_repo to rebuild",
+                    db_path.display(),
+                    preflight.reasons.join("; ")
                 ),
             ));
         }
@@ -2853,7 +2869,8 @@ mod tests {
         let repo = fixture_repo();
         let cli_db = repo.join("target").join("shared-cli.sqlite");
         let mcp_db = repo.join("external-db").join("shared-mcp.sqlite");
-        let cli_summary = index_repo_to_db(&repo, &cli_db).expect("shared cli index");
+        let cli_summary = codegraph_index::index_repo_to_db(&repo, &cli_db)
+            .expect("shared cli index");
         let server = McpServer::new(
             McpServerConfig::for_repo(&repo)
                 .with_db_path(&mcp_db)

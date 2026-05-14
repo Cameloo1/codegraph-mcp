@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
-    path::Path,
+    path::{Path, PathBuf},
     str::FromStr,
     time::{Duration, Instant},
 };
@@ -11,15 +11,18 @@ use codegraph_core::{
     stable_entity_id_for_kind, DerivedClosureEdge, Edge, EdgeClass, EdgeContext, Entity,
     EntityKind, Exactness, FileRecord, PathEvidence, RelationKind, RepoIndexState, SourceSpan,
 };
-use rusqlite::{functions::FunctionFlags, params, types::Type, Connection, OptionalExtension, Row};
-use serde::{de::DeserializeOwned, Serialize};
+use rusqlite::{
+    functions::FunctionFlags, params, types::Type, Connection, OpenFlags, OptionalExtension, Row,
+};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
     GraphStore, RetrievalTraceRecord, StoreError, StoreResult, TextSearchHit, TextSearchKind,
 };
 
-pub const SCHEMA_VERSION: u32 = 19;
+pub const SCHEMA_VERSION: u32 = 20;
+pub const DB_PASSPORT_VERSION: u32 = 1;
 pub const MAX_SYMBOL_VALUE_BYTES: usize = 512;
 pub const MAX_QUALIFIED_NAME_BYTES: usize = 1024;
 pub const MAX_QNAME_PREFIX_BYTES: usize = 768;
@@ -96,6 +99,66 @@ pub struct StorageAccountingRow {
     pub name: String,
     pub row_count: u64,
     pub payload_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DbPassport {
+    pub passport_version: u32,
+    pub codegraph_schema_version: u32,
+    pub storage_mode: String,
+    pub index_scope_policy_hash: String,
+    pub scope_policy_json: String,
+    pub canonical_repo_root: String,
+    pub git_remote: Option<String>,
+    pub worktree_root: Option<String>,
+    pub repo_head: Option<String>,
+    pub source_discovery_policy_version: String,
+    pub codegraph_build_version: Option<String>,
+    pub last_successful_index_timestamp: Option<u64>,
+    pub last_completed_run_id: Option<String>,
+    pub last_run_status: String,
+    pub integrity_gate_result: String,
+    pub files_seen: u64,
+    pub files_indexed: u64,
+    pub created_at_unix_ms: u64,
+    pub updated_at_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectedDbPassport {
+    pub canonical_repo_root: String,
+    pub storage_mode: String,
+    pub index_scope_policy_hash: String,
+    pub git_remote: Option<String>,
+    pub worktree_root: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DbPreflightReport {
+    pub db_path: String,
+    pub passport_status: String,
+    pub valid: bool,
+    pub reasons: Vec<String>,
+    pub schema_version: Option<u32>,
+    pub passport: Option<DbPassport>,
+    pub orphan_sidecars: Vec<String>,
+}
+
+impl DbPreflightReport {
+    pub fn missing(db_path: &Path, reasons: Vec<String>, orphan_sidecars: Vec<PathBuf>) -> Self {
+        Self {
+            db_path: db_path.display().to_string(),
+            passport_status: "missing".to_string(),
+            valid: false,
+            reasons,
+            schema_version: None,
+            passport: None,
+            orphan_sidecars: orphan_sidecars
+                .into_iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+        }
+    }
 }
 
 pub struct SqliteGraphStore {
@@ -239,6 +302,69 @@ impl SqliteGraphStore {
         self.integrity_check()?;
         self.foreign_key_check()?;
         Ok(())
+    }
+
+    pub fn upsert_db_passport(&self, passport: &DbPassport) -> StoreResult<()> {
+        self.connection.execute(
+            "INSERT INTO codegraph_db_passport (
+                id, passport_version, codegraph_schema_version, storage_mode,
+                index_scope_policy_hash, scope_policy_json, canonical_repo_root,
+                git_remote, worktree_root, repo_head, source_discovery_policy_version,
+                codegraph_build_version, last_successful_index_timestamp,
+                last_completed_run_id, last_run_status, integrity_gate_result,
+                files_seen, files_indexed, created_at_unix_ms, updated_at_unix_ms
+            ) VALUES (
+                1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                ?15, ?16, ?17, ?18, ?19
+            )
+            ON CONFLICT(id) DO UPDATE SET
+                passport_version = excluded.passport_version,
+                codegraph_schema_version = excluded.codegraph_schema_version,
+                storage_mode = excluded.storage_mode,
+                index_scope_policy_hash = excluded.index_scope_policy_hash,
+                scope_policy_json = excluded.scope_policy_json,
+                canonical_repo_root = excluded.canonical_repo_root,
+                git_remote = excluded.git_remote,
+                worktree_root = excluded.worktree_root,
+                repo_head = excluded.repo_head,
+                source_discovery_policy_version = excluded.source_discovery_policy_version,
+                codegraph_build_version = excluded.codegraph_build_version,
+                last_successful_index_timestamp = excluded.last_successful_index_timestamp,
+                last_completed_run_id = excluded.last_completed_run_id,
+                last_run_status = excluded.last_run_status,
+                integrity_gate_result = excluded.integrity_gate_result,
+                files_seen = excluded.files_seen,
+                files_indexed = excluded.files_indexed,
+                updated_at_unix_ms = excluded.updated_at_unix_ms",
+            params![
+                passport.passport_version,
+                passport.codegraph_schema_version,
+                passport.storage_mode,
+                passport.index_scope_policy_hash,
+                passport.scope_policy_json,
+                passport.canonical_repo_root,
+                passport.git_remote.as_deref(),
+                passport.worktree_root.as_deref(),
+                passport.repo_head.as_deref(),
+                passport.source_discovery_policy_version,
+                passport.codegraph_build_version.as_deref(),
+                passport
+                    .last_successful_index_timestamp
+                    .map(|value| i64::try_from(value).unwrap_or(i64::MAX)),
+                passport.last_completed_run_id.as_deref(),
+                passport.last_run_status,
+                passport.integrity_gate_result,
+                i64::try_from(passport.files_seen).unwrap_or(i64::MAX),
+                i64::try_from(passport.files_indexed).unwrap_or(i64::MAX),
+                i64::try_from(passport.created_at_unix_ms).unwrap_or(i64::MAX),
+                i64::try_from(passport.updated_at_unix_ms).unwrap_or(i64::MAX),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_db_passport(&self) -> StoreResult<Option<DbPassport>> {
+        read_db_passport(&self.connection)
     }
 
     /// Insert snippet FTS after the caller has already removed stale rows for
@@ -2277,6 +2403,249 @@ fn exists_in_sqlite_master(
         |row| row.get::<_, bool>(0),
     )?;
     Ok(exists)
+}
+
+pub fn inspect_db_preflight(
+    db_path: &Path,
+    expected_schema_version: u32,
+    expected: &ExpectedDbPassport,
+) -> DbPreflightReport {
+    let orphan_sidecars = existing_sqlite_sidecars(db_path);
+    if !db_path.exists() {
+        let mut reasons = vec![format!("main DB does not exist: {}", db_path.display())];
+        if !orphan_sidecars.is_empty() {
+            reasons.push("sidecar WAL/SHM files exist without a main DB".to_string());
+        }
+        return DbPreflightReport::missing(db_path, reasons, orphan_sidecars);
+    }
+
+    let mut reasons = Vec::new();
+    let connection = match Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(connection) => connection,
+        Err(error) => {
+            let message = error.to_string();
+            let passport_status = if message.to_ascii_lowercase().contains("locked") {
+                "locked"
+            } else if message.to_ascii_lowercase().contains("malformed")
+                || message.to_ascii_lowercase().contains("not a database")
+                || message.to_ascii_lowercase().contains("file is not a database")
+            {
+                "corrupt"
+            } else {
+                "unknown"
+            };
+            return DbPreflightReport {
+                db_path: db_path.display().to_string(),
+                passport_status: passport_status.to_string(),
+                valid: false,
+                reasons: vec![format!("read-only SQLite open failed: {error}")],
+                schema_version: None,
+                passport: None,
+                orphan_sidecars: orphan_sidecars
+                    .into_iter()
+                    .map(|path| path.display().to_string())
+                    .collect(),
+            };
+        }
+    };
+
+    let mut passport_status = "valid".to_string();
+    if let Err(error) = validate_sqlite_check_rows(&connection, "quick_check") {
+        passport_status = "corrupt".to_string();
+        reasons.push(error.to_string());
+    }
+    if let Err(error) = validate_foreign_key_check(&connection) {
+        passport_status = "corrupt".to_string();
+        reasons.push(error.to_string());
+    }
+
+    let schema_version = match connection.query_row("PRAGMA user_version", [], |row| row.get(0)) {
+        Ok(version) => Some(version),
+        Err(error) => {
+            passport_status = "unknown".to_string();
+            reasons.push(format!("schema version read failed: {error}"));
+            None
+        }
+    };
+    if schema_version != Some(expected_schema_version) {
+        passport_status = "mismatched".to_string();
+        reasons.push(format!(
+            "schema version mismatch: expected {expected_schema_version}, observed {}",
+            schema_version
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        ));
+    }
+
+    let passport_table = exists_in_sqlite_master(&connection, "table", "codegraph_db_passport")
+        .unwrap_or(false);
+    if !passport_table {
+        if passport_status == "valid" {
+            passport_status = "missing".to_string();
+        }
+        reasons.push("codegraph_db_passport table is missing".to_string());
+        return DbPreflightReport {
+            db_path: db_path.display().to_string(),
+            passport_status,
+            valid: false,
+            reasons,
+            schema_version,
+            passport: None,
+            orphan_sidecars: orphan_sidecars
+                .into_iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+        };
+    }
+
+    let passport = match read_db_passport(&connection) {
+        Ok(Some(passport)) => passport,
+        Ok(None) => {
+            if passport_status == "valid" {
+                passport_status = "missing".to_string();
+            }
+            reasons.push("codegraph_db_passport row is missing".to_string());
+            return DbPreflightReport {
+                db_path: db_path.display().to_string(),
+                passport_status,
+                valid: false,
+                reasons,
+                schema_version,
+                passport: None,
+                orphan_sidecars: orphan_sidecars
+                    .into_iter()
+                    .map(|path| path.display().to_string())
+                    .collect(),
+            };
+        }
+        Err(error) => {
+            passport_status = "corrupt".to_string();
+            reasons.push(format!("passport read failed: {error}"));
+            return DbPreflightReport {
+                db_path: db_path.display().to_string(),
+                passport_status,
+                valid: false,
+                reasons,
+                schema_version,
+                passport: None,
+                orphan_sidecars: orphan_sidecars
+                    .into_iter()
+                    .map(|path| path.display().to_string())
+                    .collect(),
+            };
+        }
+    };
+
+    if passport.passport_version != DB_PASSPORT_VERSION {
+        passport_status = "mismatched".to_string();
+        reasons.push(format!(
+            "passport version mismatch: expected {}, observed {}",
+            DB_PASSPORT_VERSION, passport.passport_version
+        ));
+    }
+    if passport.codegraph_schema_version != expected_schema_version {
+        passport_status = "mismatched".to_string();
+        reasons.push(format!(
+            "passport schema mismatch: expected {}, observed {}",
+            expected_schema_version, passport.codegraph_schema_version
+        ));
+    }
+    if passport.canonical_repo_root != expected.canonical_repo_root {
+        passport_status = "mismatched".to_string();
+        reasons.push(format!(
+            "repo root mismatch: expected {}, observed {}",
+            expected.canonical_repo_root, passport.canonical_repo_root
+        ));
+    }
+    if passport.storage_mode != expected.storage_mode {
+        passport_status = "mismatched".to_string();
+        reasons.push(format!(
+            "storage mode mismatch: expected {}, observed {}",
+            expected.storage_mode, passport.storage_mode
+        ));
+    }
+    if passport.index_scope_policy_hash != expected.index_scope_policy_hash {
+        passport_status = "mismatched".to_string();
+        reasons.push(format!(
+            "index scope policy hash mismatch: expected {}, observed {}",
+            expected.index_scope_policy_hash, passport.index_scope_policy_hash
+        ));
+    }
+    if passport.last_run_status != "completed" {
+        passport_status = "mismatched".to_string();
+        reasons.push(format!(
+            "previous run did not complete: {}",
+            passport.last_run_status
+        ));
+    }
+    if passport.integrity_gate_result != "ok" {
+        passport_status = "mismatched".to_string();
+        reasons.push(format!(
+            "previous integrity gate was not ok: {}",
+            passport.integrity_gate_result
+        ));
+    }
+    if expected.git_remote.is_some()
+        && passport.git_remote.is_some()
+        && passport.git_remote != expected.git_remote
+    {
+        passport_status = "mismatched".to_string();
+        reasons.push(format!(
+            "git remote mismatch: expected {}, observed {}",
+            expected.git_remote.as_deref().unwrap_or("unknown"),
+            passport.git_remote.as_deref().unwrap_or("unknown")
+        ));
+    }
+
+    DbPreflightReport {
+        db_path: db_path.display().to_string(),
+        passport_status,
+        valid: reasons.is_empty(),
+        reasons,
+        schema_version,
+        passport: Some(passport),
+        orphan_sidecars: orphan_sidecars
+            .into_iter()
+            .map(|path| path.display().to_string())
+            .collect(),
+    }
+}
+
+fn existing_sqlite_sidecars(db_path: &Path) -> Vec<PathBuf> {
+    let mut sidecars = Vec::new();
+    for suffix in ["-wal", "-shm"] {
+        let candidate = PathBuf::from(format!("{}{}", db_path.display(), suffix));
+        if candidate.exists() {
+            sidecars.push(candidate);
+        }
+    }
+    sidecars
+}
+
+fn validate_foreign_key_check(connection: &Connection) -> StoreResult<()> {
+    let mut statement = connection.prepare("PRAGMA foreign_key_check")?;
+    let mut rows = statement.query([])?;
+    let mut failures = Vec::new();
+    while let Some(row) = rows.next()? {
+        let table: String = row.get(0)?;
+        let rowid: Option<i64> = row.get(1)?;
+        let parent: String = row.get(2)?;
+        let fkid: i64 = row.get(3)?;
+        failures.push(format!(
+            "{table} rowid={} parent={parent} fkid={fkid}",
+            rowid
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ));
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(StoreError::Message(format!(
+            "SQLite foreign_key_check failed: {}",
+            failures.join("; ")
+        )))
+    }
 }
 
 fn view_compiles(connection: &Connection, view_name: &str) -> StoreResult<bool> {
@@ -5694,9 +6063,18 @@ fn intern_entity_object_id_cached(
     } else {
         intern_object_id(connection, value)?
     };
+    advance_dense_entity_id_cache(cache, id);
     cache.entity_ids.insert(value.to_string(), id);
     record_sqlite_profile("dictionary_lookup_insert", start.elapsed());
     Ok(id)
+}
+
+fn advance_dense_entity_id_cache(cache: &mut DictionaryInternCache, id: i64) {
+    if let Some(next) = cache.next_dense_entity_id.as_mut() {
+        if id >= *next {
+            *next = id + 1;
+        }
+    }
 }
 
 fn allocate_dense_entity_id_cached(
@@ -5720,7 +6098,14 @@ fn intern_object_id_cached(
         return Ok(compact_edge_key(value));
     }
     if canonical_entity_hash(value).is_some() {
-        return intern_entity_object_id_cached(connection, cache, value);
+        if let Some(id) = cache.entity_ids.get(value).copied() {
+            record_sqlite_profile("dictionary_cache_hit", Duration::ZERO);
+            return Ok(id);
+        }
+        let id = intern_object_id(connection, value)?;
+        advance_dense_entity_id_cache(cache, id);
+        cache.entity_ids.insert(value.to_string(), id);
+        return Ok(id);
     }
     let key = ("object_id_dict", value.to_string());
     if let Some(id) = cache.values.get(&key).copied() {
@@ -6719,6 +7104,61 @@ fn repo_index_state_from_row(row: &Row<'_>) -> rusqlite::Result<RepoIndexState> 
         edge_count: row.get("edge_count")?,
         metadata: json_column_by_name(row, "metadata_json")?,
     })
+}
+
+fn read_db_passport(connection: &Connection) -> StoreResult<Option<DbPassport>> {
+    connection
+        .query_row(
+            "SELECT * FROM codegraph_db_passport WHERE id = 1",
+            [],
+            db_passport_from_row,
+        )
+        .optional()
+        .map_err(StoreError::from)
+}
+
+fn db_passport_from_row(row: &Row<'_>) -> rusqlite::Result<DbPassport> {
+    Ok(DbPassport {
+        passport_version: row.get("passport_version")?,
+        codegraph_schema_version: row.get("codegraph_schema_version")?,
+        storage_mode: row.get("storage_mode")?,
+        index_scope_policy_hash: row.get("index_scope_policy_hash")?,
+        scope_policy_json: row.get("scope_policy_json")?,
+        canonical_repo_root: row.get("canonical_repo_root")?,
+        git_remote: row.get("git_remote")?,
+        worktree_root: row.get("worktree_root")?,
+        repo_head: row.get("repo_head")?,
+        source_discovery_policy_version: row.get("source_discovery_policy_version")?,
+        codegraph_build_version: row.get("codegraph_build_version")?,
+        last_successful_index_timestamp: optional_u64_column(row, "last_successful_index_timestamp")?,
+        last_completed_run_id: row.get("last_completed_run_id")?,
+        last_run_status: row.get("last_run_status")?,
+        integrity_gate_result: row.get("integrity_gate_result")?,
+        files_seen: u64_column(row, "files_seen")?,
+        files_indexed: u64_column(row, "files_indexed")?,
+        created_at_unix_ms: u64_column(row, "created_at_unix_ms")?,
+        updated_at_unix_ms: u64_column(row, "updated_at_unix_ms")?,
+    })
+}
+
+fn u64_column(row: &Row<'_>, name: &str) -> rusqlite::Result<u64> {
+    let value: i64 = row.get(name)?;
+    u64::try_from(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            Type::Integer,
+            Box::new(error),
+        )
+    })
+}
+
+fn optional_u64_column(row: &Row<'_>, name: &str) -> rusqlite::Result<Option<u64>> {
+    let Some(value) = row.get::<_, Option<i64>>(name)? else {
+        return Ok(None);
+    };
+    Ok(Some(u64::try_from(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(0, Type::Integer, Box::new(error))
+    })?))
 }
 
 fn path_evidence_from_row(row: &Row<'_>) -> rusqlite::Result<PathEvidence> {
@@ -8680,6 +9120,29 @@ CREATE TABLE IF NOT EXISTS repo_index_state (
     entity_count INTEGER NOT NULL,
     edge_count INTEGER NOT NULL,
     metadata_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS codegraph_db_passport (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    passport_version INTEGER NOT NULL,
+    codegraph_schema_version INTEGER NOT NULL,
+    storage_mode TEXT NOT NULL,
+    index_scope_policy_hash TEXT NOT NULL,
+    scope_policy_json TEXT NOT NULL,
+    canonical_repo_root TEXT NOT NULL,
+    git_remote TEXT,
+    worktree_root TEXT,
+    repo_head TEXT,
+    source_discovery_policy_version TEXT NOT NULL,
+    codegraph_build_version TEXT,
+    last_successful_index_timestamp INTEGER,
+    last_completed_run_id TEXT,
+    last_run_status TEXT NOT NULL,
+    integrity_gate_result TEXT NOT NULL,
+    files_seen INTEGER NOT NULL,
+    files_indexed INTEGER NOT NULL,
+    created_at_unix_ms INTEGER NOT NULL,
+    updated_at_unix_ms INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS path_evidence (

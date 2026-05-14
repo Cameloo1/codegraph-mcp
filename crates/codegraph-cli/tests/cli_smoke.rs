@@ -8,7 +8,10 @@ use std::{
 use codegraph_core::{
     Edge, EdgeClass, EdgeContext, Exactness, FileRecord, RelationKind, SourceSpan,
 };
-use codegraph_store::{GraphStore, SqliteGraphStore};
+use codegraph_index::{scope_policy_hash, IndexScopeOptions, StorageMode};
+use codegraph_store::{
+    DbPassport, GraphStore, SqliteGraphStore, DB_PASSPORT_VERSION, SCHEMA_VERSION,
+};
 use serde_json::{json, Value};
 
 fn run_codegraph(args: &[&str]) -> Output {
@@ -2305,6 +2308,10 @@ fn context_pack_modes_filter_production_and_allow_test_impact_edges() {
     ] {
         store.upsert_edge(&edge).expect("upsert edge");
     }
+    store
+        .quick_integrity_gate()
+        .expect("manual DB integrity gate");
+    upsert_test_passport(&store, &repo, StorageMode::Proof, 2, 2);
     drop(store);
 
     let production = stdout_json(&run_codegraph_in(
@@ -2436,6 +2443,151 @@ fn serve_mcp_starts_and_exits_on_closed_stdin() {
         "stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn non_index_commands_do_not_create_default_index_db() {
+    let repo = empty_repo();
+    let db_dir = repo.join(".codegraph");
+
+    let help = run_codegraph_in(&repo, &["--help"]);
+    assert!(
+        help.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&help.stderr)
+    );
+    assert!(!db_dir.exists(), "--help created default index state");
+
+    let status = stdout_json(&run_codegraph_in(&repo, &["status"]));
+    assert_eq!(status["status"].as_str(), Some("not_indexed"));
+    assert_eq!(
+        status["next_command"].as_str(),
+        Some("codegraph-mcp index .")
+    );
+    assert!(!db_dir.exists(), "status created default index state");
+
+    let server = run_codegraph_in(&repo, &["serve-mcp"]);
+    assert!(
+        server.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&server.stderr)
+    );
+    assert!(
+        !db_dir.exists(),
+        "serve-mcp cold-indexed or created default index state"
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup non-index command workspace");
+}
+
+#[test]
+fn index_status_and_query_surface_db_lifecycle_evidence() {
+    let repo = fixture_repo();
+
+    let index = stdout_json(&run_codegraph_in(
+        &repo,
+        &["index", ".", "--json", "--workers", "1"],
+    ));
+    assert_eq!(index["status"].as_str(), Some("indexed"));
+    assert_eq!(
+        index["db_lifecycle"]["decision"].as_str(),
+        Some("fresh_rebuild")
+    );
+    assert_eq!(index["db_lifecycle"]["claimable"].as_bool(), Some(true));
+
+    let status = stdout_json(&run_codegraph_in(&repo, &["status"]));
+    assert_eq!(status["status"].as_str(), Some("ok"));
+    assert_eq!(status["db_health"]["passport_status"].as_str(), Some("valid"));
+    assert_eq!(status["db_health"]["valid"].as_bool(), Some(true));
+
+    let query = stdout_json(&run_codegraph_in(&repo, &["query", "symbols", "sanitize"]));
+    assert_eq!(query["status"].as_str(), Some("ok"));
+    assert_eq!(
+        query["db_lifecycle_read"]["decision"].as_str(),
+        Some("read_reuse")
+    );
+    assert_eq!(
+        query["db_lifecycle_read"]["claimable"].as_bool(),
+        Some(true)
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup lifecycle fixture");
+}
+
+#[test]
+fn index_incremental_rejects_corrupt_explicit_db() {
+    let repo = fixture_repo();
+    fs::write(repo.join("named.sqlite"), "not sqlite").expect("write corrupt DB");
+
+    let output = run_codegraph_in(
+        &repo,
+        &[
+            "index",
+            ".",
+            "--db",
+            "named.sqlite",
+            "--incremental",
+            "--json",
+        ],
+    );
+    assert!(
+        !output.status.success(),
+        "stdout={}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("DB lifecycle preflight failed"),
+        "stderr={stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join("named.sqlite")).expect("corrupt DB preserved"),
+        "not sqlite"
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup corrupt explicit fixture");
+}
+
+#[test]
+fn query_refuses_db_passport_from_another_repo() {
+    let repo_a = fixture_repo();
+    let repo_b = fixture_repo();
+    let index = stdout_json(&run_codegraph_in(
+        &repo_a,
+        &["index", ".", "--json", "--workers", "1"],
+    ));
+    assert_eq!(index["status"].as_str(), Some("indexed"));
+
+    let source_db = repo_a.join(".codegraph").join("codegraph.sqlite");
+    let target_db_dir = repo_b.join(".codegraph");
+    fs::create_dir_all(&target_db_dir).expect("create target DB dir");
+    fs::copy(&source_db, target_db_dir.join("codegraph.sqlite")).expect("copy DB");
+
+    let output = run_codegraph_in(&repo_b, &["query", "symbols", "sanitize"]);
+    assert!(
+        !output.status.success(),
+        "stdout={}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("repo root mismatch"), "stderr={stderr}");
+
+    let diagnostic = stdout_json(&run_codegraph_in(
+        &repo_b,
+        &["query", "symbols", "sanitize", "--allow-stale-read"],
+    ));
+    assert_eq!(diagnostic["status"].as_str(), Some("ok"));
+    assert_eq!(
+        diagnostic["db_lifecycle_read"]["decision"].as_str(),
+        Some("diagnostic_stale_reuse")
+    );
+    assert_eq!(
+        diagnostic["db_lifecycle_read"]["claimable"].as_bool(),
+        Some(false)
+    );
+
+    fs::remove_dir_all(repo_a).expect("cleanup repo A");
+    fs::remove_dir_all(repo_b).expect("cleanup repo B");
 }
 
 #[test]
@@ -2640,6 +2792,46 @@ fn test_edge(head: &str, relation: RelationKind, tail: &str, span: SourceSpan) -
         provenance_edges: Vec::new(),
         metadata: Default::default(),
     }
+}
+
+fn upsert_test_passport(
+    store: &SqliteGraphStore,
+    repo: &Path,
+    storage_mode: StorageMode,
+    files_seen: u64,
+    files_indexed: u64,
+) {
+    let scope = IndexScopeOptions::default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    let canonical_repo_root = fs::canonicalize(repo).expect("canonical repo");
+    let passport = DbPassport {
+        passport_version: DB_PASSPORT_VERSION,
+        codegraph_schema_version: SCHEMA_VERSION,
+        storage_mode: storage_mode.as_str().to_string(),
+        index_scope_policy_hash: scope_policy_hash(&scope).expect("scope policy hash"),
+        scope_policy_json: serde_json::to_string(&scope).expect("scope policy json"),
+        canonical_repo_root: canonical_repo_root.display().to_string(),
+        git_remote: None,
+        worktree_root: Some(canonical_repo_root.display().to_string()),
+        repo_head: None,
+        source_discovery_policy_version: "scope-policy-v1".to_string(),
+        codegraph_build_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        last_successful_index_timestamp: Some(now),
+        last_completed_run_id: Some(format!("test-{now}-{}", std::process::id())),
+        last_run_status: "completed".to_string(),
+        integrity_gate_result: "ok".to_string(),
+        files_seen,
+        files_indexed,
+        created_at_unix_ms: now,
+        updated_at_unix_ms: now,
+    };
+    store
+        .upsert_db_passport(&passport)
+        .expect("upsert test passport");
 }
 
 fn fixture_repo() -> PathBuf {
