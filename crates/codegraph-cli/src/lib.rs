@@ -12820,7 +12820,7 @@ fn build_metadata_json() -> Value {
 fn release_metadata_json() -> Value {
     json!({
         "schema_version": 1,
-        "source_of_truth": "MVP.md Prompt 29",
+        "source_of_truth": "public release metadata template",
         "build": build_metadata_json(),
         "archives": release_archive_manifest_json(),
         "install_paths": release_install_paths_json(),
@@ -12837,24 +12837,28 @@ fn release_archive_manifest_json() -> Value {
     let targets = [
         (
             "windows-x64",
+            "supported_tested",
             "x86_64-pc-windows-msvc",
             "zip",
             "codegraph-mcp.exe",
         ),
         (
             "macos-apple-silicon",
+            "planned_not_tested_no_ci",
             "aarch64-apple-darwin",
             "tar.gz",
             "codegraph-mcp",
         ),
         (
             "macos-intel",
+            "planned_not_tested_no_ci",
             "x86_64-apple-darwin",
             "tar.gz",
             "codegraph-mcp",
         ),
         (
             "linux-x64",
+            "supported_tested_via_docker_and_ci",
             "x86_64-unknown-linux-gnu",
             "tar.gz",
             "codegraph-mcp",
@@ -12862,8 +12866,9 @@ fn release_archive_manifest_json() -> Value {
     ];
     json!(targets
         .into_iter()
-        .map(|(name, triple, archive_format, binary)| json!({
+        .map(|(name, support_status, triple, archive_format, binary)| json!({
             "name": name,
+            "support_status": support_status,
             "target_triple": triple,
             "archive": format!("{BIN_NAME}-{triple}.{archive_format}"),
             "binary": binary,

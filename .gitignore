@@ -20,9 +20,13 @@
 *.sqlite3-shm
 *.sqlite3-wal
 
+# Root release templates are committed; generated root dist payloads are ignored.
+/dist/*
+!/dist/
+!/dist/archive-manifest.json
+!/dist/cargo-binstall.example.toml
+
 # Node and UI artifacts
-dist/
-/dist/
 node_modules/
 codegraph-ui/node_modules/
 codegraph-ui/.next/
