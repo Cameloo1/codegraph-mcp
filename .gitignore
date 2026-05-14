@@ -50,6 +50,7 @@ codegraph-competitors/
 /codegraph-competitors/
 /.codegraph-competitors/
 /.codegraph-bench-cache/
+/crates/codegraph-bench/competitors/
 /reports/smoke/fresh_clone/windows_*/
 /reports/smoke/fresh_clone/linux_*/
 /reports/smoke/index/windows_*/
