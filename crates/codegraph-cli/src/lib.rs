@@ -34,8 +34,8 @@ pub use codegraph_index::{
     index_repo_with_options, parse_extract_pending_files, should_ignore_path,
     should_start_new_index_batch, update_changed_files, update_changed_files_to_db,
     update_changed_files_with_cache, IncrementalIndexCache, IncrementalIndexSummary,
-    IndexBuildMode, IndexError, IndexIssue, IndexOptions, IndexProfile, IndexSummary,
-    LocalFactBundle, PendingIndexFile, StorageMode, DEFAULT_INDEX_BATCH_MAX_FILES,
+    IndexBuildMode, IndexError, IndexIssue, IndexOptions, IndexProfile, IndexScopeOptions,
+    IndexSummary, LocalFactBundle, PendingIndexFile, StorageMode, DEFAULT_INDEX_BATCH_MAX_FILES,
     DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY, UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::{
@@ -79,7 +79,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "index",
-        usage: "codegraph-mcp index <repo> [--db <path>] [--profile] [--json] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>]",
+        usage: "codegraph-mcp index <repo> [--db <path>] [--profile] [--json] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]",
         description: "Index a repository into the local graph store.",
     },
     CommandSpec {
@@ -1776,10 +1776,13 @@ fn run_final_gate_command(args: &[String]) -> Result<Value, String> {
 }
 
 fn run_comprehensive_benchmark_command(args: &[String]) -> Result<Value, String> {
+    let comprehensive_start = Instant::now();
     let options = parse_comprehensive_benchmark_options(args)?;
     fs::create_dir_all(&options.output_dir).map_err(|error| error.to_string())?;
-    let report = build_comprehensive_benchmark_report(&options)?;
-    let markdown = render_comprehensive_benchmark_markdown(&report);
+    let mut report = build_comprehensive_benchmark_report(&options)?;
+    let report_generation_start = Instant::now();
+    let _ = render_comprehensive_benchmark_markdown(&report);
+    let report_generation_ms = elapsed_ms(report_generation_start);
 
     let timestamp_json = options.output_dir.join(format!(
         "comprehensive_benchmark_{}.json",
@@ -1792,6 +1795,13 @@ fn run_comprehensive_benchmark_command(args: &[String]) -> Result<Value, String>
         .output_dir
         .join("comprehensive_benchmark_latest.json");
     let latest_md = options.output_dir.join("comprehensive_benchmark_latest.md");
+    let comprehensive_total_ms = elapsed_ms(comprehensive_start);
+    patch_comprehensive_timing_separation(
+        &mut report,
+        report_generation_ms,
+        comprehensive_total_ms,
+    );
+    let markdown = render_comprehensive_benchmark_markdown(&report);
 
     write_json_file(&timestamp_json, &report)?;
     write_text_file(&timestamp_md, &markdown)?;
@@ -1808,8 +1818,54 @@ fn run_comprehensive_benchmark_command(args: &[String]) -> Result<Value, String>
         "output_md": path_string(&latest_md),
         "timestamped_json": path_string(&timestamp_json),
         "timestamped_md": path_string(&timestamp_md),
+        "timing_separation": report["timing_separation"].clone(),
         "proof": "Comprehensive benchmark builds a fresh proof artifact by default; explicit artifact reuse is labeled and cannot claim storage/cold-build passes if stale.",
     }))
+}
+
+fn patch_comprehensive_timing_separation(
+    report: &mut Value,
+    report_generation_ms: u64,
+    comprehensive_total_ms: u64,
+) {
+    let proof_build_only_ms = report
+        .get("artifact_freshness")
+        .and_then(|value| value.get("proof_build_only_ms"))
+        .cloned()
+        .or_else(|| {
+            report
+                .get("artifact_freshness")
+                .and_then(|value| value.get("build_duration_ms"))
+                .cloned()
+        })
+        .unwrap_or(Value::Null);
+    let validation_ms = report
+        .get("artifact_freshness")
+        .and_then(|value| value.get("validation_ms"))
+        .cloned()
+        .unwrap_or_else(|| json!(0));
+    let audit_ms = report
+        .get("artifact_freshness")
+        .and_then(|value| value.get("audit_ms"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let timing = json!({
+        "proof_build_only_ms": proof_build_only_ms,
+        "validation_ms": validation_ms,
+        "audit_ms": audit_ms,
+        "report_generation_ms": report_generation_ms,
+        "comprehensive_total_ms": comprehensive_total_ms,
+        "notes": [
+            "proof_build_only_ms is the fresh proof DB build timing only.",
+            "validation_ms, audit_ms, report_generation_ms, and comprehensive_total_ms are separated so operator-gate overhead cannot be charged to proof-build-only."
+        ]
+    });
+    if let Some(object) = report.as_object_mut() {
+        object.insert("timing_separation".to_string(), timing.clone());
+    }
+    if let Some(sections) = report.get_mut("sections").and_then(Value::as_object_mut) {
+        sections.insert("timing_separation".to_string(), timing);
+    }
 }
 
 fn parse_comprehensive_benchmark_options(
@@ -1940,6 +1996,7 @@ fn run_query_surface_benchmark_command(args: &[String]) -> Result<Value, String>
                 worker_count: options.workers,
                 storage_mode: StorageMode::Proof,
                 build_mode: IndexBuildMode::ProofBuildOnly,
+                ..IndexOptions::default()
             },
         )
         .map_err(|error| error.to_string())?;
@@ -2007,6 +2064,20 @@ fn run_proof_build_mode_benchmark_command(
 
     let started = Instant::now();
     let (repo, db, options) = parse_index_options(&index_args)?;
+    if options.storage_mode != StorageMode::Proof {
+        return Err(format!(
+            "bench {} requires --storage-mode proof; got {}",
+            build_mode.as_str(),
+            options.storage_mode.as_str()
+        ));
+    }
+    if options.build_mode != build_mode {
+        return Err(format!(
+            "bench {} cannot be run with --build-mode {}; use the matching benchmark subcommand",
+            build_mode.as_str(),
+            options.build_mode.as_str()
+        ));
+    }
     let summary = if let Some(db) = db {
         index_repo_to_db_with_options(Path::new(&repo), &db, options)
     } else {
@@ -2015,6 +2086,32 @@ fn run_proof_build_mode_benchmark_command(
     .map_err(|error| error.to_string())?;
     let elapsed = elapsed_ms(started);
     let summary_json = index_summary_json(&summary)?;
+    let proof_build_only_ms = if build_mode == IndexBuildMode::ProofBuildOnly {
+        summary
+            .profile
+            .as_ref()
+            .map(|profile| profile.total_wall_ms)
+            .unwrap_or(elapsed as u128)
+    } else {
+        0
+    };
+    let validation_ms = if build_mode == IndexBuildMode::ProofBuildPlusValidation {
+        profile_span_ms(summary.profile.as_ref(), "integrity_check").unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    let report_generation_start = Instant::now();
+    let db_path = PathBuf::from(&summary.db_path);
+    let artifact_metadata_path = default_artifact_metadata_path(&db_path);
+    let artifact_metadata = proof_build_mode_artifact_metadata(
+        &summary,
+        build_mode,
+        proof_build_only_ms,
+        validation_ms,
+        &artifact_metadata_path,
+    );
+    write_json_file(&artifact_metadata_path, &artifact_metadata)?;
+    let report_generation_ms = elapsed_ms(report_generation_start);
     Ok(json!({
         "status": "benchmarked",
         "phase": PHASE,
@@ -2023,32 +2120,153 @@ fn run_proof_build_mode_benchmark_command(
             IndexBuildMode::ProofBuildPlusValidation => "proof_build_validated",
         },
         "mode": build_mode.as_str(),
-        "proof_build_only_ms": if build_mode == IndexBuildMode::ProofBuildOnly {
-            summary.profile.as_ref().map(|profile| profile.total_wall_ms).unwrap_or(elapsed as u128)
-        } else {
-            0
-        },
-        "validation_ms": if build_mode == IndexBuildMode::ProofBuildPlusValidation {
-            summary.profile.as_ref().map(|profile| profile.total_wall_ms).unwrap_or(elapsed as u128)
-        } else {
-            0
-        },
+        "proof_build_only_ms": proof_build_only_ms,
+        "validation_ms": validation_ms,
+        "audit_ms": 0,
+        "report_generation_ms": report_generation_ms,
+        "comprehensive_total_ms": Value::Null,
         "wall_ms": elapsed,
         "summary": summary_json,
+        "artifact_metadata_path": path_string(&artifact_metadata_path),
+        "artifact_metadata": artifact_metadata,
         "mode_separation": {
             "proof_build_only_excludes": [
                 "storage_audit",
                 "dbstat",
                 "relation_sampler",
                 "path_evidence_audit_sampler",
+                "path_evidence_sampler",
                 "cgc_comparison",
                 "manual_relation_label_summary",
+                "readme_or_report_generation",
+                "full_comprehensive_benchmark_generation",
+                "repeated_build_attempts",
                 "comprehensive_markdown_generation",
-                "artifact_compression"
+                "artifact_compression",
+                "fresh_repeat_update_loops"
             ],
-            "cgc_autorun": false
+            "prohibited_operations_ran": {
+                "storage_audit": false,
+                "dbstat": false,
+                "relation_sampler": false,
+                "path_evidence_sampler": false,
+                "cgc_comparison": false,
+                "manual_precision_summary": false,
+                "readme_or_report_generation": false,
+                "full_comprehensive_benchmark_generation": false,
+                "repeated_build_attempts": false,
+                "artifact_compression": false,
+                "vacuum": false,
+                "analyze": false,
+                "fresh_repeat_update_loops": false
+            },
+            "post_build_checks": {
+                "full_integrity_check_ran": build_mode == IndexBuildMode::ProofBuildPlusValidation,
+                "quick_check_ran": build_mode == IndexBuildMode::ProofBuildOnly,
+                "publish_gate": match build_mode {
+                    IndexBuildMode::ProofBuildOnly => "quick_check",
+                    IndexBuildMode::ProofBuildPlusValidation => "integrity_check"
+                }
+            },
+            "cgc_autorun": false,
+            "timing_separation": {
+                "proof_build_only_ms": proof_build_only_ms,
+                "validation_ms": validation_ms,
+                "audit_ms": 0,
+                "report_generation_ms": report_generation_ms,
+                "comprehensive_total_ms": Value::Null
+            }
         }
     }))
+}
+
+fn proof_build_mode_artifact_metadata(
+    summary: &IndexSummary,
+    build_mode: IndexBuildMode,
+    proof_build_only_ms: u128,
+    validation_ms: f64,
+    metadata_path: &Path,
+) -> Value {
+    let db_path = PathBuf::from(&summary.db_path);
+    let schema_version = sqlite_user_version_read_only(&db_path).unwrap_or(SCHEMA_VERSION);
+    let db_size_bytes = sqlite_family_size_bytes(&db_path).unwrap_or(0);
+    let quick_check_count = profile_span_count(summary.profile.as_ref(), "quick_check");
+    let integrity_check_count = profile_span_count(summary.profile.as_ref(), "integrity_check");
+    let artifact_validated =
+        build_mode == IndexBuildMode::ProofBuildPlusValidation && integrity_check_count > 0;
+    json!({
+        "schema_version": schema_version,
+        "current_schema_version": SCHEMA_VERSION,
+        "migration_version": schema_version,
+        "current_migration_version": SCHEMA_VERSION,
+        "artifact_path": summary.db_path.clone(),
+        "artifact_metadata_path": path_string(metadata_path),
+        "artifact_created_at": file_modified_unix_ms(&db_path).unwrap_or_else(unix_time_ms),
+        "git_commit": current_git_commit(),
+        "storage_mode": "proof",
+        "build_mode": build_mode.as_str(),
+        "proof_build_only_ms": proof_build_only_ms,
+        "validation_ms": validation_ms,
+        "audit_ms": 0,
+        "report_generation_ms": Value::Null,
+        "comprehensive_total_ms": Value::Null,
+        "db_size_bytes": db_size_bytes,
+        "integrity_status": if artifact_validated {
+            "validated"
+        } else {
+            "quick_check_only"
+        },
+        "artifact_validation": {
+            "validated": artifact_validated,
+            "claimable_as_validated": artifact_validated,
+            "validation_mode": if artifact_validated {
+                "proof-build-plus-validation"
+            } else {
+                "not_validated"
+            },
+            "quick_check_count": quick_check_count,
+            "integrity_check_count": integrity_check_count,
+            "publish_gate": match build_mode {
+                IndexBuildMode::ProofBuildOnly => "quick_check",
+                IndexBuildMode::ProofBuildPlusValidation => "integrity_check",
+            },
+            "notes": if artifact_validated {
+                vec!["Artifact may be described as validated because proof-build-plus-validation passed its configured full integrity_check gate."]
+            } else {
+                vec!["Artifact must not be described as validated; proof-build-only publishes after the configured quick_check timing gate."]
+            }
+        },
+        "contamination_contract": proof_build_mode_contamination_contract(build_mode),
+        "notes": [
+            "Metadata is emitted after the measured proof DB build and is not included in proof_build_only_ms.",
+            "No storage audit, relation sampler, PathEvidence sampler, CGC comparison, manual precision summary, comprehensive report generation, compression, repeat loop, update loop, VACUUM, or ANALYZE is part of proof_build_only_ms."
+        ]
+    })
+}
+
+fn proof_build_mode_contamination_contract(build_mode: IndexBuildMode) -> Value {
+    json!({
+        "prohibited_operations_ran": {
+            "storage_audit": false,
+            "dbstat": false,
+            "relation_sampler": false,
+            "path_evidence_sampler": false,
+            "cgc_comparison": false,
+            "manual_precision_summary": false,
+            "readme_or_report_generation": false,
+            "full_comprehensive_benchmark_generation": false,
+            "repeated_build_attempts": false,
+            "artifact_compression": false,
+            "vacuum": false,
+            "analyze": false,
+            "fresh_repeat_update_loops": false
+        },
+        "configured_publish_gate": match build_mode {
+            IndexBuildMode::ProofBuildOnly => "quick_check",
+            IndexBuildMode::ProofBuildPlusValidation => "integrity_check",
+        },
+        "proof_build_only_target_surface": build_mode == IndexBuildMode::ProofBuildOnly,
+    })
 }
 
 fn parse_query_surface_benchmark_options(
@@ -2463,6 +2681,7 @@ fn build_fresh_comprehensive_proof_artifact(
             worker_count: options.workers,
             storage_mode: StorageMode::Proof,
             build_mode: IndexBuildMode::ProofBuildOnly,
+            ..IndexOptions::default()
         },
     )
     .map_err(|error| error.to_string())?;
@@ -2489,7 +2708,9 @@ fn build_fresh_comprehensive_proof_artifact(
         "--markdown".to_string(),
         path_string(&storage_md_path),
     ];
+    let audit_start = Instant::now();
     audit::run_audit_command(&audit_args)?;
+    let audit_ms = elapsed_ms(audit_start);
     let proof_storage = read_json_file(&storage_json_path)?;
     let schema_version = sqlite_user_version_read_only(&db_path).unwrap_or(SCHEMA_VERSION);
     let integrity_status = value_string(&proof_storage, &["integrity_check", "status"])
@@ -2514,8 +2735,24 @@ fn build_fresh_comprehensive_proof_artifact(
         "storage_mode": "proof",
         "build_command": comprehensive_fresh_build_command(options, &db_path),
         "build_duration_ms": build_duration_ms,
+        "proof_build_only_ms": build_duration_ms,
+        "validation_ms": 0,
+        "audit_ms": audit_ms,
+        "report_generation_ms": Value::Null,
+        "comprehensive_total_ms": Value::Null,
         "db_size_bytes": db_size_bytes,
         "integrity_status": integrity_status,
+        "artifact_validation": {
+            "validated": false,
+            "claimable_as_validated": false,
+            "validation_mode": "not_run",
+            "publish_gate": "proof-build-only quick_check",
+            "integrity_check_source": "post_build_storage_audit",
+            "notes": [
+                "The comprehensive fresh artifact is built in proof-build-only mode for timing.",
+                "The later storage audit integrity_check is reported as audit_ms and does not make proof_build_only_ms a validation-mode timing."
+            ]
+        },
         "benchmark_run_id": options.timestamp,
         "artifact_metadata_path": path_string(&metadata_path),
         "freshness_metadata_present": true,
@@ -2723,6 +2960,7 @@ fn inspect_existing_comprehensive_proof_artifact(
         storage_policy: StorageMode::Proof.storage_policy().to_string(),
         issue_counts: BTreeMap::new(),
         issues: Vec::new(),
+        scope: None,
         profile: Some(IndexProfile {
             file_discovery_ms: 0,
             parse_ms: 0,
@@ -5813,6 +6051,11 @@ fn render_comprehensive_benchmark_markdown(report: &Value) -> String {
             "db_size_bytes",
             "integrity_status",
             "build_duration_ms",
+            "proof_build_only_ms",
+            "validation_ms",
+            "audit_ms",
+            "report_generation_ms",
+            "comprehensive_total_ms",
             "storage_result_claimable",
             "cold_build_result_claimable",
         ] {
@@ -5820,6 +6063,24 @@ fn render_comprehensive_benchmark_markdown(report: &Value) -> String {
                 "| `{}` | {} |\n",
                 field,
                 display_value(&report["artifact_freshness"][field])
+            ));
+        }
+        markdown.push('\n');
+    }
+    if report["timing_separation"].is_object() {
+        markdown.push_str("## Section 4B - Timing Separation\n\n");
+        markdown.push_str("| Field | Value |\n| --- | ---: |\n");
+        for field in [
+            "proof_build_only_ms",
+            "validation_ms",
+            "audit_ms",
+            "report_generation_ms",
+            "comprehensive_total_ms",
+        ] {
+            markdown.push_str(&format!(
+                "| `{}` | {} |\n",
+                field,
+                display_value(&report["timing_separation"][field])
             ));
         }
         markdown.push('\n');
@@ -6379,7 +6640,7 @@ fn run_update_integrity_repo(
         update_integrity_seed_step(repo, db, mode, Some(seed_db), artifact_copy_ms)?
     } else {
         let start = Instant::now();
-        let summary = index_repo_to_db_with_options(repo, db, options)
+        let summary = index_repo_to_db_with_options(repo, db, options.clone())
             .map_err(|error| format!("cold index failed for {name}: {error}"))?;
         update_integrity_step_from_index("cold_index", start.elapsed(), &summary, db, mode)?
     };
@@ -6427,7 +6688,7 @@ fn run_update_integrity_repo(
             ));
         }
         let start = Instant::now();
-        let repeat_summary = index_repo_to_db_with_options(repo, db, options)
+        let repeat_summary = index_repo_to_db_with_options(repo, db, options.clone())
             .map_err(|error| format!("repeat unchanged failed for {name}: {error}"))?;
         let repeat = update_integrity_step_from_index(
             "repeat_unchanged_index",
@@ -9177,6 +9438,32 @@ fn parse_index_options(args: &[String]) -> Result<(String, Option<PathBuf>, Inde
                 };
                 options.build_mode = raw.parse::<IndexBuildMode>()?;
             }
+            "--include-ignored" => options.scope.include_ignored = true,
+            "--include" => {
+                index += 1;
+                let Some(raw) = args.get(index) else {
+                    return Err("--include requires a pattern".to_string());
+                };
+                options.scope.include_patterns.push(raw.to_string());
+            }
+            "--exclude" => {
+                index += 1;
+                let Some(raw) = args.get(index) else {
+                    return Err("--exclude requires a pattern".to_string());
+                };
+                options.scope.exclude_patterns.push(raw.to_string());
+            }
+            "--no-default-excludes" => options.scope.no_default_excludes = true,
+            "--respect-gitignore" => {
+                index += 1;
+                let Some(raw) = args.get(index) else {
+                    return Err("--respect-gitignore requires true or false".to_string());
+                };
+                options.scope.respect_gitignore = parse_index_bool(raw, "--respect-gitignore")?;
+            }
+            "--explain-scope" => options.scope.explain_scope = true,
+            "--print-included" => options.scope.print_included = true,
+            "--print-excluded" => options.scope.print_excluded = true,
             value if value.starts_with('-') => {
                 return Err(format!("unknown index option: {value}"))
             }
@@ -9191,11 +9478,19 @@ fn parse_index_options(args: &[String]) -> Result<(String, Option<PathBuf>, Inde
     }
     Ok((
         repo.ok_or_else(|| {
-            "Usage: codegraph-mcp index <repo> [--db <path>] [--profile] [--json] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>]".to_string()
+            "Usage: codegraph-mcp index <repo> [--db <path>] [--profile] [--json] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]".to_string()
         })?,
         db,
         options,
     ))
+}
+
+fn parse_index_bool(raw: &str, flag: &str) -> Result<bool, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => Err(format!("{flag} requires true or false, got {raw}")),
+    }
 }
 
 fn parse_watch_options(args: &[String]) -> Result<WatchOptions, String> {
@@ -12296,6 +12591,13 @@ fn profile_span_ms(profile: Option<&IndexProfile>, name: &str) -> Option<f64> {
         .map(|span| span.elapsed_ms)
 }
 
+fn profile_span_count(profile: Option<&IndexProfile>, name: &str) -> u64 {
+    profile
+        .and_then(|profile| profile.spans.iter().find(|span| span.name == name))
+        .map(|span| span.count)
+        .unwrap_or(0)
+}
+
 fn quick_integrity_status(db: &Path) -> String {
     match SqliteGraphStore::open(db).and_then(|store| store.quick_integrity_gate()) {
         Ok(()) => "ok".to_string(),
@@ -12866,15 +13168,17 @@ fn release_archive_manifest_json() -> Value {
     ];
     json!(targets
         .into_iter()
-        .map(|(name, support_status, triple, archive_format, binary)| json!({
-            "name": name,
-            "support_status": support_status,
-            "target_triple": triple,
-            "archive": format!("{BIN_NAME}-{triple}.{archive_format}"),
-            "binary": binary,
-            "checksum": format!("{BIN_NAME}-{triple}.{archive_format}.sha256"),
-            "provenance": format!("{BIN_NAME}-{triple}.{archive_format}.intoto.jsonl")
-        }))
+        .map(
+            |(name, support_status, triple, archive_format, binary)| json!({
+                "name": name,
+                "support_status": support_status,
+                "target_triple": triple,
+                "archive": format!("{BIN_NAME}-{triple}.{archive_format}"),
+                "binary": binary,
+                "checksum": format!("{BIN_NAME}-{triple}.{archive_format}.sha256"),
+                "provenance": format!("{BIN_NAME}-{triple}.{archive_format}.intoto.jsonl")
+            })
+        )
         .collect::<Vec<_>>())
 }
 
@@ -13011,7 +13315,7 @@ mod tests {
 
     use super::{
         generate_large_synthetic_repo, index_repo, index_repo_with_options,
-        parse_extract_pending_files, percentile, regression_row,
+        parse_extract_pending_files, parse_index_options, percentile, regression_row,
         render_comprehensive_benchmark_markdown, route_ui_request, run, serve_ui_loop,
         should_ignore_path, should_start_new_index_batch, update_changed_files_with_cache,
         IncrementalIndexCache, IndexOptions, PendingIndexFile, UiResponse, WatchDebouncer,
@@ -13224,6 +13528,36 @@ mod tests {
             Path::new("/repo/static/d3.min.js")
         ));
         assert!(!should_ignore_path(root, Path::new("/repo/src/auth.ts")));
+    }
+
+    #[test]
+    fn parse_index_options_accepts_scope_overrides() {
+        let args = vec![
+            ".".to_string(),
+            "--include-ignored".to_string(),
+            "--include".to_string(),
+            "target/keep.ts".to_string(),
+            "--exclude".to_string(),
+            "reports/private/**".to_string(),
+            "--no-default-excludes".to_string(),
+            "--respect-gitignore".to_string(),
+            "false".to_string(),
+            "--explain-scope".to_string(),
+            "--print-included".to_string(),
+            "--print-excluded".to_string(),
+        ];
+        let (repo, db, options) = parse_index_options(&args).expect("parse index options");
+
+        assert_eq!(repo, ".");
+        assert!(db.is_none());
+        assert!(options.scope.include_ignored);
+        assert!(options.scope.no_default_excludes);
+        assert!(!options.scope.respect_gitignore);
+        assert_eq!(options.scope.include_patterns, vec!["target/keep.ts"]);
+        assert_eq!(options.scope.exclude_patterns, vec!["reports/private/**"]);
+        assert!(options.scope.explain_scope);
+        assert!(options.scope.print_included);
+        assert!(options.scope.print_excluded);
     }
 
     #[test]

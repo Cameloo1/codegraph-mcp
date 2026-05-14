@@ -107,6 +107,17 @@ pub struct SqliteGraphStore {
 #[derive(Debug, Default)]
 struct DictionaryInternCache {
     values: BTreeMap<(&'static str, String), i64>,
+    entity_ids: BTreeMap<String, i64>,
+    file_ids: BTreeMap<String, CachedFileIds>,
+    content_templates: BTreeMap<(String, i64), i64>,
+    next_dense_entity_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CachedFileIds {
+    path_id: i64,
+    file_id: i64,
+    has_content_hash: bool,
 }
 
 impl SqliteGraphStore {
@@ -165,11 +176,17 @@ impl SqliteGraphStore {
 
     pub fn rollback_write_transaction(&self) -> StoreResult<()> {
         self.connection.execute_batch("ROLLBACK")?;
+        self.clear_write_caches();
         Ok(())
     }
 
     pub fn rollback_bulk_index_transaction(&self) -> StoreResult<()> {
         self.rollback_write_transaction()
+    }
+
+    fn clear_write_caches(&self) {
+        *self.dictionary_cache.borrow_mut() = DictionaryInternCache::default();
+        self.entity_file_cache.borrow_mut().clear();
     }
 
     pub fn wal_checkpoint_truncate(&self) -> StoreResult<()> {
@@ -270,19 +287,40 @@ impl SqliteGraphStore {
 
     fn insert_entity_row_after_file_delete(&self, entity: &Entity) -> StoreResult<()> {
         validate_entity_identity_fields(entity)?;
-        let entity_id = intern_entity_object_id(&self.connection, &entity.id)?;
-        let kind_id = intern_entity_kind(&self.connection, &entity.kind.to_string())?;
-        let name_id = intern_symbol(&self.connection, &entity.name)?;
-        let qualified_name_id = intern_qualified_name(&self.connection, &entity.qualified_name)?;
-        let (path_id, file_id) = ensure_file_for_path(
+        let mut dictionary_cache = self.dictionary_cache.borrow_mut();
+        let entity_id =
+            intern_entity_object_id_cached(&self.connection, &mut dictionary_cache, &entity.id)?;
+        let kind_id = intern_dict_value_cached(
             &self.connection,
+            &mut dictionary_cache,
+            "entity_kind_dict",
+            &entity.kind.to_string(),
+        )?;
+        let name_id = intern_symbol_cached(&self.connection, &mut dictionary_cache, &entity.name)?;
+        let qualified_name_id = intern_qualified_name_cached(
+            &self.connection,
+            &mut dictionary_cache,
+            &entity.qualified_name,
+        )?;
+        let (path_id, file_id) = ensure_file_for_path_cached(
+            &self.connection,
+            &mut dictionary_cache,
             &entity.repo_relative_path,
             entity.file_hash.as_deref(),
         )?;
-        let created_from_id = intern_extractor(&self.connection, &entity.created_from)?;
+        let created_from_id = intern_dict_value_cached(
+            &self.connection,
+            &mut dictionary_cache,
+            "extractor_dict",
+            &entity.created_from,
+        )?;
         let span = entity.source_span.as_ref();
         let span_path_id = match span {
-            Some(span) => Some(intern_path(&self.connection, &span.repo_relative_path)?),
+            Some(span) => Some(intern_path_cached(
+                &self.connection,
+                &mut dictionary_cache,
+                &span.repo_relative_path,
+            )?),
             None => None,
         };
         let declaration_span_id = span.map(|_| entity_id);
@@ -324,25 +362,51 @@ impl SqliteGraphStore {
             &entity.repo_relative_path,
             &entity.id,
         )?;
+        cache_entity_file_id(
+            &self.entity_file_cache,
+            entity_id,
+            &entity.repo_relative_path,
+        );
         record_sqlite_profile("entity_insert_sql", sql_start.elapsed());
         Ok(())
     }
 
     fn write_entity(&self, entity: &Entity, replace_fts: bool) -> StoreResult<()> {
         validate_entity_identity_fields(entity)?;
-        let entity_id = intern_entity_object_id(&self.connection, &entity.id)?;
-        let kind_id = intern_entity_kind(&self.connection, &entity.kind.to_string())?;
-        let name_id = intern_symbol(&self.connection, &entity.name)?;
-        let qualified_name_id = intern_qualified_name(&self.connection, &entity.qualified_name)?;
-        let (path_id, file_id) = ensure_file_for_path(
+        let mut dictionary_cache = self.dictionary_cache.borrow_mut();
+        let entity_id =
+            intern_entity_object_id_cached(&self.connection, &mut dictionary_cache, &entity.id)?;
+        let kind_id = intern_dict_value_cached(
             &self.connection,
+            &mut dictionary_cache,
+            "entity_kind_dict",
+            &entity.kind.to_string(),
+        )?;
+        let name_id = intern_symbol_cached(&self.connection, &mut dictionary_cache, &entity.name)?;
+        let qualified_name_id = intern_qualified_name_cached(
+            &self.connection,
+            &mut dictionary_cache,
+            &entity.qualified_name,
+        )?;
+        let (path_id, file_id) = ensure_file_for_path_cached(
+            &self.connection,
+            &mut dictionary_cache,
             &entity.repo_relative_path,
             entity.file_hash.as_deref(),
         )?;
-        let created_from_id = intern_extractor(&self.connection, &entity.created_from)?;
+        let created_from_id = intern_dict_value_cached(
+            &self.connection,
+            &mut dictionary_cache,
+            "extractor_dict",
+            &entity.created_from,
+        )?;
         let span = entity.source_span.as_ref();
         let span_path_id = match span {
-            Some(span) => Some(intern_path(&self.connection, &span.repo_relative_path)?),
+            Some(span) => Some(intern_path_cached(
+                &self.connection,
+                &mut dictionary_cache,
+                &span.repo_relative_path,
+            )?),
             None => None,
         };
         let declaration_span_id = span.map(|_| entity_id);
@@ -397,6 +461,11 @@ impl SqliteGraphStore {
             0_i64,
         ])?;
         map_entity_to_file(&self.connection, &entity.repo_relative_path, &entity.id)?;
+        cache_entity_file_id(
+            &self.entity_file_cache,
+            entity_id,
+            &entity.repo_relative_path,
+        );
         record_sqlite_profile("entity_insert_sql", sql_start.elapsed());
 
         if replace_fts {
@@ -409,14 +478,21 @@ impl SqliteGraphStore {
 
     fn write_edge(&self, edge: &Edge, storage: EdgeIdStorage) -> StoreResult<()> {
         let edge = normalize_edge_for_storage(edge)?;
+        let mut dictionary_cache = self.dictionary_cache.borrow_mut();
         match compact_storage_for_relation(edge.relation) {
             CompactFactStorage::GenericEdge => {}
             CompactFactStorage::StructuralRelation => {
-                return write_structural_relation(&self.connection, &edge, storage);
+                return write_structural_relation(
+                    &self.connection,
+                    &mut dictionary_cache,
+                    &edge,
+                    storage,
+                );
             }
             CompactFactStorage::CallsiteCallee => {
                 return write_callsite_callee(
                     &self.connection,
+                    &mut dictionary_cache,
                     &self.entity_file_cache,
                     &edge,
                     storage,
@@ -425,6 +501,7 @@ impl SqliteGraphStore {
             CompactFactStorage::CallsiteArgument { ordinal } => {
                 return write_callsite_argument(
                     &self.connection,
+                    &mut dictionary_cache,
                     &self.entity_file_cache,
                     &edge,
                     storage,
@@ -439,24 +516,62 @@ impl SqliteGraphStore {
         if matches!(storage, EdgeIdStorage::ExistingOrCompact) {
             delete_compact_fact_by_key(&self.connection, edge_id)?;
         }
-        let head_id = intern_object_id(&self.connection, &edge.head_id)?;
-        let tail_id = intern_object_id(&self.connection, &edge.tail_id)?;
-        let relation_id = intern_relation_kind(&self.connection, &edge.relation.to_string())?;
-        let (span_path_id, file_id) = ensure_file_for_path(
+        let head_id =
+            intern_object_id_cached(&self.connection, &mut dictionary_cache, &edge.head_id)?;
+        let tail_id =
+            intern_object_id_cached(&self.connection, &mut dictionary_cache, &edge.tail_id)?;
+        let relation_id = intern_dict_value_cached(
             &self.connection,
+            &mut dictionary_cache,
+            "relation_kind_dict",
+            &edge.relation.to_string(),
+        )?;
+        let (span_path_id, file_id) = ensure_file_for_path_cached(
+            &self.connection,
+            &mut dictionary_cache,
             &edge.source_span.repo_relative_path,
             edge.file_hash.as_deref(),
         )?;
-        let extractor_id = intern_extractor(&self.connection, &edge.extractor)?;
-        let exactness_id = intern_exactness(&self.connection, &edge.exactness.to_string())?;
+        let extractor_id = intern_dict_value_cached(
+            &self.connection,
+            &mut dictionary_cache,
+            "extractor_dict",
+            &edge.extractor,
+        )?;
+        let exactness_id = intern_dict_value_cached(
+            &self.connection,
+            &mut dictionary_cache,
+            "exactness_dict",
+            &edge.exactness.to_string(),
+        )?;
         let resolution_kind = edge_resolution_kind(&edge);
-        let resolution_kind_id = intern_resolution_kind(&self.connection, &resolution_kind)?;
-        let edge_class_id = intern_edge_class(&self.connection, &edge.edge_class.to_string())?;
-        let context_id = intern_edge_context(&self.connection, &edge.context.to_string())?;
+        let resolution_kind_id = intern_dict_value_cached(
+            &self.connection,
+            &mut dictionary_cache,
+            "resolution_kind_dict",
+            &resolution_kind,
+        )?;
+        let edge_class_id = intern_dict_value_cached(
+            &self.connection,
+            &mut dictionary_cache,
+            "edge_class_dict",
+            &edge.edge_class.to_string(),
+        )?;
+        let context_id = intern_dict_value_cached(
+            &self.connection,
+            &mut dictionary_cache,
+            "edge_context_dict",
+            &edge.context.to_string(),
+        )?;
         let flags_bitset = edge_flags_bitset(&edge, &resolution_kind);
         let confidence_q = quantize_confidence(edge.confidence);
         let provenance_edges_json = to_json(&edge.provenance_edges)?;
-        let provenance_id = intern_edge_provenance(&self.connection, &provenance_edges_json)?;
+        let provenance_id = intern_dict_value_cached(
+            &self.connection,
+            &mut dictionary_cache,
+            "edge_provenance_dict",
+            &provenance_edges_json,
+        )?;
         let mut statement = self.connection.prepare_cached(
             "
             INSERT INTO edges (
@@ -1647,13 +1762,23 @@ impl GraphStore for SqliteGraphStore {
     }
 
     fn upsert_file(&self, file: &FileRecord) -> StoreResult<()> {
-        let path_id = intern_path(&self.connection, &file.repo_relative_path)?;
+        let mut dictionary_cache = self.dictionary_cache.borrow_mut();
+        let path_id = intern_path_cached(
+            &self.connection,
+            &mut dictionary_cache,
+            &file.repo_relative_path,
+        )?;
         let language_id = match &file.language {
-            Some(language) => Some(intern_language(&self.connection, language)?),
+            Some(language) => Some(intern_language_cached(
+                &self.connection,
+                &mut dictionary_cache,
+                language,
+            )?),
             None => None,
         };
-        let content_template_id = ensure_content_template_for_path_id(
+        let content_template_id = ensure_content_template_for_path_id_cached(
             &self.connection,
+            &mut dictionary_cache,
             &file.file_hash,
             language_id,
             path_id,
@@ -1684,6 +1809,14 @@ impl GraphStore for SqliteGraphStore {
                 to_json(&file.metadata)?,
             ],
         )?;
+        dictionary_cache.file_ids.insert(
+            file.repo_relative_path.clone(),
+            CachedFileIds {
+                path_id,
+                file_id: path_id,
+                has_content_hash: !file.file_hash.is_empty(),
+            },
+        );
         record_sqlite_profile("file_manifest_upsert_sql", sql_start.elapsed());
         Ok(())
     }
@@ -1711,7 +1844,7 @@ impl GraphStore for SqliteGraphStore {
 
     fn delete_facts_for_file(&self, repo_relative_path: &str) -> StoreResult<()> {
         let repo_relative_path = normalize_repo_relative_path(repo_relative_path);
-        self.entity_file_cache.borrow_mut().clear();
+        self.clear_write_caches();
         delete_fts_rows_for_file(&self.connection, &repo_relative_path)?;
         delete_sidecar_facts_for_file(&self.connection, &repo_relative_path)?;
         let Some(path_id) = lookup_path(&self.connection, &repo_relative_path)? else {
@@ -4139,18 +4272,25 @@ fn compact_edge_storage_key(
 
 fn write_structural_relation(
     connection: &Connection,
+    dictionary_cache: &mut DictionaryInternCache,
     edge: &Edge,
     storage: EdgeIdStorage,
 ) -> StoreResult<()> {
     let edge_id = compact_edge_storage_key(connection, edge, storage)?;
-    let head_id = intern_object_id(connection, &edge.head_id)?;
-    let tail_id = intern_object_id(connection, &edge.tail_id)?;
-    let (_span_path_id, _file_id) = ensure_file_for_path(
+    let head_id = intern_object_id_cached(connection, dictionary_cache, &edge.head_id)?;
+    let tail_id = intern_object_id_cached(connection, dictionary_cache, &edge.tail_id)?;
+    let (_span_path_id, _file_id) = ensure_file_for_path_cached(
         connection,
+        dictionary_cache,
         &edge.source_span.repo_relative_path,
         edge.file_hash.as_deref(),
     )?;
-    let _ = intern_relation_kind(connection, &edge.relation.to_string())?;
+    let _ = intern_dict_value_cached(
+        connection,
+        dictionary_cache,
+        "relation_kind_dict",
+        &edge.relation.to_string(),
+    )?;
     let sql_start = Instant::now();
     connection.execute(
         "DELETE FROM structural_relations WHERE id_key = ?1",
@@ -4163,28 +4303,55 @@ fn write_structural_relation(
 
 fn write_callsite_callee(
     connection: &Connection,
+    dictionary_cache: &mut DictionaryInternCache,
     entity_file_cache: &RefCell<BTreeMap<i64, Vec<String>>>,
     edge: &Edge,
     storage: EdgeIdStorage,
 ) -> StoreResult<()> {
     let edge_id = compact_edge_storage_key(connection, edge, storage)?;
-    let callsite_id = intern_object_id(connection, &edge.head_id)?;
-    let callee_id = intern_object_id(connection, &edge.tail_id)?;
-    let relation_id = intern_relation_kind(connection, &edge.relation.to_string())?;
-    let (span_path_id, file_id) = ensure_file_for_path(
+    let callsite_id = intern_object_id_cached(connection, dictionary_cache, &edge.head_id)?;
+    let callee_id = intern_object_id_cached(connection, dictionary_cache, &edge.tail_id)?;
+    let relation_id = intern_dict_value_cached(
         connection,
+        dictionary_cache,
+        "relation_kind_dict",
+        &edge.relation.to_string(),
+    )?;
+    let (span_path_id, file_id) = ensure_file_for_path_cached(
+        connection,
+        dictionary_cache,
         &edge.source_span.repo_relative_path,
         edge.file_hash.as_deref(),
     )?;
-    let extractor_id = intern_extractor(connection, &edge.extractor)?;
-    let exactness_id = intern_exactness(connection, &edge.exactness.to_string())?;
-    let edge_class_id = intern_edge_class(connection, &edge.edge_class.to_string())?;
-    let context_id = intern_edge_context(connection, &edge.context.to_string())?;
+    let extractor_id = intern_dict_value_cached(
+        connection,
+        dictionary_cache,
+        "extractor_dict",
+        &edge.extractor,
+    )?;
+    let exactness_id = intern_dict_value_cached(
+        connection,
+        dictionary_cache,
+        "exactness_dict",
+        &edge.exactness.to_string(),
+    )?;
+    let edge_class_id = intern_dict_value_cached(
+        connection,
+        dictionary_cache,
+        "edge_class_dict",
+        &edge.edge_class.to_string(),
+    )?;
+    let context_id = intern_dict_value_cached(
+        connection,
+        dictionary_cache,
+        "edge_context_dict",
+        &edge.context.to_string(),
+    )?;
     let caller_id = edge
         .metadata
         .get("caller_id")
         .and_then(serde_json::Value::as_str)
-        .map(|value| intern_object_id(connection, value))
+        .map(|value| intern_object_id_cached(connection, dictionary_cache, value))
         .transpose()?;
     let sql_start = Instant::now();
     connection.execute(
@@ -4249,24 +4416,51 @@ fn write_callsite_callee(
 
 fn write_callsite_argument(
     connection: &Connection,
+    dictionary_cache: &mut DictionaryInternCache,
     entity_file_cache: &RefCell<BTreeMap<i64, Vec<String>>>,
     edge: &Edge,
     storage: EdgeIdStorage,
     ordinal: i64,
 ) -> StoreResult<()> {
     let edge_id = compact_edge_storage_key(connection, edge, storage)?;
-    let callsite_id = intern_object_id(connection, &edge.head_id)?;
-    let argument_id = intern_object_id(connection, &edge.tail_id)?;
-    let relation_id = intern_relation_kind(connection, &edge.relation.to_string())?;
-    let (span_path_id, file_id) = ensure_file_for_path(
+    let callsite_id = intern_object_id_cached(connection, dictionary_cache, &edge.head_id)?;
+    let argument_id = intern_object_id_cached(connection, dictionary_cache, &edge.tail_id)?;
+    let relation_id = intern_dict_value_cached(
         connection,
+        dictionary_cache,
+        "relation_kind_dict",
+        &edge.relation.to_string(),
+    )?;
+    let (span_path_id, file_id) = ensure_file_for_path_cached(
+        connection,
+        dictionary_cache,
         &edge.source_span.repo_relative_path,
         edge.file_hash.as_deref(),
     )?;
-    let extractor_id = intern_extractor(connection, &edge.extractor)?;
-    let exactness_id = intern_exactness(connection, &edge.exactness.to_string())?;
-    let edge_class_id = intern_edge_class(connection, &edge.edge_class.to_string())?;
-    let context_id = intern_edge_context(connection, &edge.context.to_string())?;
+    let extractor_id = intern_dict_value_cached(
+        connection,
+        dictionary_cache,
+        "extractor_dict",
+        &edge.extractor,
+    )?;
+    let exactness_id = intern_dict_value_cached(
+        connection,
+        dictionary_cache,
+        "exactness_dict",
+        &edge.exactness.to_string(),
+    )?;
+    let edge_class_id = intern_dict_value_cached(
+        connection,
+        dictionary_cache,
+        "edge_class_dict",
+        &edge.edge_class.to_string(),
+    )?;
+    let context_id = intern_dict_value_cached(
+        connection,
+        dictionary_cache,
+        "edge_context_dict",
+        &edge.context.to_string(),
+    )?;
     let sql_start = Instant::now();
     connection.execute(
         "
@@ -5456,6 +5650,189 @@ fn intern_dict_value_cached(
     let id = intern_dict_value(connection, table, value)?;
     cache.values.insert(key, id);
     Ok(id)
+}
+
+fn intern_path_cached(
+    connection: &Connection,
+    cache: &mut DictionaryInternCache,
+    value: &str,
+) -> StoreResult<i64> {
+    intern_dict_value_cached(connection, cache, "path_dict", value)
+}
+
+fn intern_language_cached(
+    connection: &Connection,
+    cache: &mut DictionaryInternCache,
+    value: &str,
+) -> StoreResult<i64> {
+    intern_dict_value_cached(connection, cache, "language_dict", value)
+}
+
+fn intern_entity_object_id_cached(
+    connection: &Connection,
+    cache: &mut DictionaryInternCache,
+    value: &str,
+) -> StoreResult<i64> {
+    if let Some(id) = cache.entity_ids.get(value).copied() {
+        record_sqlite_profile("dictionary_cache_hit", Duration::ZERO);
+        return Ok(id);
+    }
+
+    let start = Instant::now();
+    let id = if let Some(hash) = canonical_entity_hash(value) {
+        if let Some(existing) = lookup_entity_id_by_hash(connection, &hash)? {
+            existing
+        } else if let Some(existing) =
+            lookup_hashed_dict_value(connection, "object_id_dict", value)?
+        {
+            existing
+        } else if let Some(existing) = lookup_entity_id_history(connection, &hash)? {
+            existing
+        } else {
+            allocate_dense_entity_id_cached(connection, cache)?
+        }
+    } else {
+        intern_object_id(connection, value)?
+    };
+    cache.entity_ids.insert(value.to_string(), id);
+    record_sqlite_profile("dictionary_lookup_insert", start.elapsed());
+    Ok(id)
+}
+
+fn allocate_dense_entity_id_cached(
+    connection: &Connection,
+    cache: &mut DictionaryInternCache,
+) -> StoreResult<i64> {
+    let next = match cache.next_dense_entity_id {
+        Some(next) => next,
+        None => next_dense_entity_id(connection)?,
+    };
+    cache.next_dense_entity_id = Some(next + 1);
+    Ok(next)
+}
+
+fn intern_object_id_cached(
+    connection: &Connection,
+    cache: &mut DictionaryInternCache,
+    value: &str,
+) -> StoreResult<i64> {
+    if canonical_edge_hash(value).is_some() {
+        return Ok(compact_edge_key(value));
+    }
+    if canonical_entity_hash(value).is_some() {
+        return intern_entity_object_id_cached(connection, cache, value);
+    }
+    let key = ("object_id_dict", value.to_string());
+    if let Some(id) = cache.values.get(&key).copied() {
+        record_sqlite_profile("dictionary_cache_hit", Duration::ZERO);
+        return Ok(id);
+    }
+    let id = intern_object_id(connection, value)?;
+    cache.values.insert(key, id);
+    Ok(id)
+}
+
+fn ensure_content_template_for_path_id_cached(
+    connection: &Connection,
+    cache: &mut DictionaryInternCache,
+    content_hash: &str,
+    language_id: Option<i64>,
+    canonical_path_id: i64,
+) -> StoreResult<i64> {
+    let language_key = language_id.unwrap_or(0);
+    let key = (content_hash.to_string(), language_key);
+    if let Some(id) = cache.content_templates.get(&key).copied() {
+        record_sqlite_profile("dictionary_cache_hit", Duration::ZERO);
+        return Ok(id);
+    }
+    let id = ensure_content_template_for_path_id(
+        connection,
+        content_hash,
+        language_id,
+        canonical_path_id,
+    )?;
+    cache.content_templates.insert(key, id);
+    Ok(id)
+}
+
+fn ensure_file_for_path_cached(
+    connection: &Connection,
+    cache: &mut DictionaryInternCache,
+    repo_relative_path: &str,
+    file_hash: Option<&str>,
+) -> StoreResult<(i64, i64)> {
+    let has_content_hash = file_hash.is_some_and(|hash| !hash.is_empty());
+    if let Some(cached) = cache.file_ids.get(repo_relative_path).copied() {
+        if !has_content_hash || cached.has_content_hash {
+            record_sqlite_profile("dictionary_cache_hit", Duration::ZERO);
+            return Ok((cached.path_id, cached.file_id));
+        }
+    }
+
+    let path_id = intern_path_cached(connection, cache, repo_relative_path)?;
+    let language_id = None;
+    let content_template_id = file_hash
+        .filter(|hash| !hash.is_empty())
+        .map(|hash| {
+            ensure_content_template_for_path_id_cached(
+                connection,
+                cache,
+                hash,
+                language_id,
+                path_id,
+            )
+        })
+        .transpose()?;
+    let existing_file_id = connection
+        .query_row(
+            "SELECT file_id FROM files WHERE path_id = ?1",
+            [path_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    let file_id = if let Some(file_id) = existing_file_id {
+        if let Some(hash) = file_hash.filter(|hash| !hash.is_empty()) {
+            connection.execute(
+                "UPDATE files
+                 SET content_hash = ?1,
+                     content_template_id = COALESCE(content_template_id, ?2)
+                 WHERE file_id = ?3 AND content_hash = ''",
+                params![hash, content_template_id, file_id],
+            )?;
+        }
+        file_id
+    } else {
+        connection.execute(
+            "
+            INSERT INTO files (
+                file_id, path_id, content_hash, mtime_unix_ms, size_bytes,
+                language_id, indexed_at_unix_ms, content_template_id, metadata_json
+            ) VALUES (?1, ?1, ?2, NULL, 0, NULL, NULL, ?3, '{}')
+            ",
+            params![path_id, file_hash.unwrap_or_default(), content_template_id],
+        )?;
+        path_id
+    };
+    cache.file_ids.insert(
+        repo_relative_path.to_string(),
+        CachedFileIds {
+            path_id,
+            file_id,
+            has_content_hash,
+        },
+    );
+    Ok((path_id, file_id))
+}
+
+fn cache_entity_file_id(
+    entity_file_cache: &RefCell<BTreeMap<i64, Vec<String>>>,
+    entity_id_key: i64,
+    repo_relative_path: &str,
+) {
+    entity_file_cache.borrow_mut().insert(
+        entity_id_key,
+        vec![normalize_repo_relative_path(repo_relative_path)],
+    );
 }
 
 fn intern_symbol_cached(

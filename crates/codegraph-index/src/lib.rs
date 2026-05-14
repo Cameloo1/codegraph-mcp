@@ -34,6 +34,10 @@ use codegraph_vector::{BinarySignature, BinaryVectorIndex, InMemoryBinaryVectorI
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+pub mod scope;
+pub use scope::IndexScopeOptions;
+use scope::{IndexScope, IndexScopeRuntimeReport, ScopeAction, ScopePathKind};
+
 pub const UNBOUNDED_STORE_READ_LIMIT: usize = 1_000_000;
 pub const DEFAULT_INDEX_BATCH_MAX_FILES: usize = 128;
 pub const DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES: usize = 32 * 1024 * 1024;
@@ -130,6 +134,7 @@ pub struct IndexSummary {
     pub storage_policy: String,
     pub issue_counts: BTreeMap<String, usize>,
     pub issues: Vec<IndexIssue>,
+    pub scope: Option<IndexScopeRuntimeReport>,
     pub profile: Option<IndexProfile>,
 }
 
@@ -263,13 +268,14 @@ impl std::str::FromStr for IndexBuildMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IndexOptions {
     pub profile: bool,
     pub json: bool,
     pub worker_count: Option<usize>,
     pub storage_mode: StorageMode,
     pub build_mode: IndexBuildMode,
+    pub scope: IndexScopeOptions,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -828,11 +834,14 @@ fn index_repo_to_existing_db_with_options(
         storage_policy: options.storage_mode.storage_policy().to_string(),
         issue_counts: BTreeMap::new(),
         issues: Vec::new(),
+        scope: None,
         profile: None,
     };
 
     let discovery_start = Instant::now();
-    let files = collect_repo_files(&repo_root)?;
+    let scoped_files = collect_repo_files_with_scope(&repo_root, &options.scope)?;
+    let files = scoped_files.files;
+    summary.scope = Some(scoped_files.scope_report);
     let file_discovery_ms = discovery_start.elapsed().as_millis();
     phase_profile.add_ms("file_walk", file_discovery_ms as f64, 1, files.len() as u64);
     let indexed_at = unix_time_ms();
@@ -1496,6 +1505,8 @@ fn index_repo_to_atomic_cold_db(
     let atomic_start = Instant::now();
     let temp_db_path = atomic_temp_db_path(final_db_path);
     remove_sqlite_file_family(&temp_db_path)?;
+    let build_mode = options.build_mode;
+    let publish_check = options.build_mode.post_index_check();
     let result = index_repo_to_existing_db_with_options(
         repo_root,
         &temp_db_path,
@@ -1505,7 +1516,6 @@ fn index_repo_to_atomic_cold_db(
     );
     match result {
         Ok(mut summary) => {
-            let publish_check = options.build_mode.post_index_check();
             let temp_finalize_start = Instant::now();
             {
                 let temp_store = SqliteGraphStore::open(&temp_db_path)?;
@@ -1569,7 +1579,7 @@ fn index_repo_to_atomic_cold_db(
             let final_finalize_start = Instant::now();
             {
                 let final_store = SqliteGraphStore::open(final_db_path)?;
-                if options.build_mode == IndexBuildMode::ProofBuildOnly
+                if build_mode == IndexBuildMode::ProofBuildOnly
                     && publish_check == PostIndexCheck::Quick
                 {
                     add_profile_span_to_summary(
@@ -1617,7 +1627,7 @@ fn index_repo_to_atomic_cold_db(
                 final_finalize_start.elapsed(),
                 1,
                 0,
-                "open, full integrity gate, and checkpoint after visible replacement",
+                "open, configured publish gate, and checkpoint after visible replacement",
             );
             summary.db_path = path_string(final_db_path);
             if let Some(profile) = &mut summary.profile {
@@ -7369,17 +7379,49 @@ fn module_name_for_index_path(path: &str) -> String {
         .replace('/', "::")
 }
 
-pub fn collect_repo_files(root: &Path) -> Result<Vec<PathBuf>, IndexError> {
-    let mut files = Vec::new();
-    collect_repo_files_inner(root, &mut files)?;
-    files.sort();
-    Ok(files)
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ScopedRepoFiles {
+    pub files: Vec<PathBuf>,
+    pub scope_report: IndexScopeRuntimeReport,
 }
 
-fn collect_repo_files_inner(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), IndexError> {
+pub fn collect_repo_files(root: &Path) -> Result<Vec<PathBuf>, IndexError> {
+    Ok(collect_repo_files_with_scope(root, &IndexScopeOptions::default())?.files)
+}
+
+pub fn collect_repo_files_with_scope(
+    root: &Path,
+    options: &IndexScopeOptions,
+) -> Result<ScopedRepoFiles, IndexError> {
+    let scope = IndexScope::for_repo(root, options.clone());
+    let mut files = Vec::new();
+    let mut scope_report = IndexScopeRuntimeReport::new(options);
+    collect_repo_files_inner(root, root, &scope, &mut scope_report, &mut files)?;
+    files.sort();
+    Ok(ScopedRepoFiles {
+        files,
+        scope_report,
+    })
+}
+
+fn collect_repo_files_inner(
+    root: &Path,
+    path: &Path,
+    scope: &IndexScope,
+    scope_report: &mut IndexScopeRuntimeReport,
+    files: &mut Vec<PathBuf>,
+) -> Result<(), IndexError> {
     if path.is_dir() {
-        if should_skip_dir(path) {
-            return Ok(());
+        if path != root {
+            let relative = path.strip_prefix(root).unwrap_or(path);
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            let decision = scope.evaluate_repo_path(relative, ScopePathKind::Directory);
+            emit_scope_decision(scope.options(), &decision);
+            let excluded = decision.excluded();
+            scope_report.record(&decision);
+            if excluded && !scope.options().has_include_patterns() {
+                return Ok(());
+            }
         }
 
         let mut entries = match fs::read_dir(path) {
@@ -7388,58 +7430,41 @@ fn collect_repo_files_inner(path: &Path, files: &mut Vec<PathBuf>) -> Result<(),
         };
         entries.sort_by_key(|entry| entry.path());
         for entry in entries {
-            collect_repo_files_inner(&entry.path(), files)?;
+            collect_repo_files_inner(root, &entry.path(), scope, scope_report, files)?;
         }
-    } else if path.is_file() && !should_skip_file(path) {
-        files.push(path.to_path_buf());
+    } else if path.is_file() {
+        let relative = path.strip_prefix(root).unwrap_or(path);
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        let decision = scope.evaluate_repo_path(relative, ScopePathKind::File);
+        emit_scope_decision(scope.options(), &decision);
+        scope_report.record(&decision);
+        if !decision.excluded() && !should_skip_file_with_scope(path, &decision, scope.options()) {
+            files.push(path.to_path_buf());
+        }
     }
 
     Ok(())
 }
 
-fn should_skip_dir(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-    is_ignored_dir_name(name)
-}
-
 pub fn should_ignore_path(root: &Path, path: &Path) -> bool {
-    let relative = path.strip_prefix(root).unwrap_or(path);
-    relative.components().any(|component| match component {
-        Component::Normal(name) => name.to_str().is_some_and(is_ignored_dir_name),
-        _ => false,
-    }) || should_skip_file(relative)
+    should_ignore_path_with_scope(root, path, &IndexScopeOptions::default())
 }
 
-fn is_ignored_dir_name(name: &str) -> bool {
-    matches!(
-        name,
-        ".git"
-            | ".codegraph"
-            | ".codegraph-competitors"
-            | ".codegraph-bench-cache"
-            | ".codegraphcontext"
-            | ".arl"
-            | ".tools"
-            | ".codex-tools"
-            | "node_modules"
-            | "__pycache__"
-            | ".pytest_cache"
-            | ".mypy_cache"
-            | ".ruff_cache"
-            | "target"
-            | "dist"
-            | "build"
-            | "out"
-            | "coverage"
-            | ".next"
-            | ".nuxt"
-            | ".vite"
-            | ".turbo"
-            | "vendor"
-            | ".venv"
-    )
+pub fn should_ignore_path_with_scope(
+    root: &Path,
+    path: &Path,
+    options: &IndexScopeOptions,
+) -> bool {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    let path_kind = if path.is_dir() {
+        ScopePathKind::Directory
+    } else {
+        ScopePathKind::File
+    };
+    let scope = IndexScope::for_repo(root, options.clone());
+    let decision = scope.evaluate_repo_path(relative, path_kind);
+    decision.excluded() || should_skip_file_with_scope(path, &decision, options)
 }
 
 fn should_skip_file(path: &Path) -> bool {
@@ -7451,6 +7476,47 @@ fn should_skip_file(path: &Path) -> bool {
                 || name.ends_with(".map")
                 || name.ends_with(".lock")
         })
+}
+
+fn should_skip_file_with_scope(
+    path: &Path,
+    decision: &scope::IndexScopeDecision,
+    options: &IndexScopeOptions,
+) -> bool {
+    if decision.path_kind != ScopePathKind::File {
+        return false;
+    }
+    if options.no_default_excludes || decision.rule_kind == scope::ScopeRuleKind::ExplicitInclude {
+        return false;
+    }
+    should_skip_file(path)
+}
+
+fn emit_scope_decision(options: &IndexScopeOptions, decision: &scope::IndexScopeDecision) {
+    if !options.has_print_or_explain() {
+        return;
+    }
+    let should_print = match decision.action {
+        ScopeAction::WouldExclude => options.print_excluded || options.explain_scope,
+        ScopeAction::WouldInclude | ScopeAction::WouldIncludeWithWarning => {
+            options.print_included || options.explain_scope
+        }
+    };
+    if should_print {
+        eprintln!(
+            "scope\t{:?}\t{}\t{:?}\t{}",
+            decision.action,
+            decision.normalized_path,
+            decision.rule_kind,
+            decision.matched_rule.as_deref().unwrap_or("none")
+        );
+    }
+    if options.explain_scope && decision.warned() {
+        eprintln!(
+            "scope-warning\t{}\t{:?}",
+            decision.normalized_path, decision.warnings
+        );
+    }
 }
 
 pub fn repo_relative_path(root: &Path, path: &Path) -> Result<String, IndexError> {
@@ -7680,6 +7746,136 @@ mod tests {
         }
         fs::create_dir_all(root.join("src")).expect("create src");
         root
+    }
+
+    fn write_test_file(root: &Path, relative: &str, source: &str) {
+        let path = root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create parent");
+        }
+        fs::write(path, source).expect("write test file");
+    }
+
+    fn collected_rel_paths(root: &Path, options: &IndexScopeOptions) -> BTreeSet<String> {
+        collect_repo_files_with_scope(root, options)
+            .expect("collect files")
+            .files
+            .into_iter()
+            .map(|path| repo_relative_path(root, &path).expect("relative path"))
+            .collect()
+    }
+
+    #[test]
+    fn collect_repo_files_applies_safe_hard_excludes_by_default() {
+        let repo = temp_repo("scope-default-hard-excludes");
+        write_test_file(&repo, "src/main.ts", "export const app = 1;\n");
+        write_test_file(
+            &repo,
+            "fixtures/basic/src/app.ts",
+            "export const fixture = 1;\n",
+        );
+        write_test_file(&repo, "tests/main.test.ts", "export const test = 1;\n");
+        write_test_file(&repo, "examples/demo.ts", "export const demo = 1;\n");
+        write_test_file(&repo, "docs/example.ts", "export const docs = 1;\n");
+        write_test_file(
+            &repo,
+            "target/debug/generated.ts",
+            "export const target = 1;\n",
+        );
+        write_test_file(
+            &repo,
+            "node_modules/pkg/index.ts",
+            "export const dependency = 1;\n",
+        );
+        write_test_file(
+            &repo,
+            "reports/diagnostic_lab/artifact.py",
+            "artifact = 1\n",
+        );
+        write_test_file(
+            &repo,
+            "reports/handwritten/source.ts",
+            "export const reportSource = 1;\n",
+        );
+        write_test_file(&repo, "src/cache.sqlite", "not source");
+
+        let files = collected_rel_paths(&repo, &IndexScopeOptions::default());
+
+        assert!(files.contains("src/main.ts"));
+        assert!(files.contains("fixtures/basic/src/app.ts"));
+        assert!(files.contains("tests/main.test.ts"));
+        assert!(files.contains("examples/demo.ts"));
+        assert!(files.contains("docs/example.ts"));
+        assert!(files.contains("reports/handwritten/source.ts"));
+        assert!(!files.contains("target/debug/generated.ts"));
+        assert!(!files.contains("node_modules/pkg/index.ts"));
+        assert!(!files.contains("reports/diagnostic_lab/artifact.py"));
+        assert!(!files.contains("src/cache.sqlite"));
+    }
+
+    #[test]
+    fn collect_repo_files_respects_gitignore_and_include_ignored_override() {
+        let repo = temp_repo("scope-gitignore");
+        fs::write(repo.join(".gitignore"), "dist/\n*.log\n").expect("write gitignore");
+        write_test_file(&repo, "src/main.ts", "export const app = 1;\n");
+        write_test_file(&repo, "dist/app.ts", "export const built = 1;\n");
+        write_test_file(&repo, "logs/run.log", "log");
+
+        let default_files = collected_rel_paths(&repo, &IndexScopeOptions::default());
+        assert!(default_files.contains("src/main.ts"));
+        assert!(!default_files.contains("dist/app.ts"));
+        assert!(!default_files.contains("logs/run.log"));
+
+        let include_ignored_files = collected_rel_paths(
+            &repo,
+            &IndexScopeOptions {
+                include_ignored: true,
+                ..IndexScopeOptions::default()
+            },
+        );
+        assert!(include_ignored_files.contains("dist/app.ts"));
+        assert!(
+            !include_ignored_files.contains("logs/run.log"),
+            "hard log suffix stays excluded even when gitignored paths are included"
+        );
+    }
+
+    #[test]
+    fn scope_overrides_can_include_or_exclude_explicit_paths() {
+        let repo = temp_repo("scope-overrides");
+        write_test_file(&repo, "src/main.ts", "export const app = 1;\n");
+        write_test_file(
+            &repo,
+            "target/debug/generated.ts",
+            "export const target = 1;\n",
+        );
+
+        let included = collected_rel_paths(
+            &repo,
+            &IndexScopeOptions {
+                include_patterns: vec!["target/debug/generated.ts".to_string()],
+                ..IndexScopeOptions::default()
+            },
+        );
+        assert!(included.contains("target/debug/generated.ts"));
+
+        let excluded = collected_rel_paths(
+            &repo,
+            &IndexScopeOptions {
+                exclude_patterns: vec!["src/main.ts".to_string()],
+                ..IndexScopeOptions::default()
+            },
+        );
+        assert!(!excluded.contains("src/main.ts"));
+
+        let no_default = collected_rel_paths(
+            &repo,
+            &IndexScopeOptions {
+                no_default_excludes: true,
+                ..IndexScopeOptions::default()
+            },
+        );
+        assert!(no_default.contains("target/debug/generated.ts"));
     }
 
     fn assert_db_integrity(db: &Path) {

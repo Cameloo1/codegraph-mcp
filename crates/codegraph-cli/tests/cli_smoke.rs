@@ -978,15 +978,217 @@ fn bench_comprehensive_writes_machine_json_and_human_markdown() {
         .iter()
         .any(|stage| stage["stage"].as_str()
             == Some("production_persistence_and_global_reduction_bucket")));
+    assert!(summary["timing_separation"]["proof_build_only_ms"].is_number());
+    assert!(summary["timing_separation"]["validation_ms"].is_number());
+    assert!(summary["timing_separation"]["audit_ms"].is_number());
+    assert!(summary["timing_separation"]["report_generation_ms"].is_number());
+    assert!(summary["timing_separation"]["comprehensive_total_ms"].is_number());
+    assert_eq!(
+        summary["sections"]["timing_separation"]["proof_build_only_ms"],
+        summary["timing_separation"]["proof_build_only_ms"]
+    );
+    assert_eq!(
+        summary["artifact_freshness"]["artifact_validation"]["validated"].as_bool(),
+        Some(false),
+        "fresh comprehensive artifacts are proof-build-only plus separate audit, not validation-mode artifacts"
+    );
     let markdown =
         fs::read_to_string(output_dir.join("comprehensive_benchmark_latest.md")).expect("markdown");
     assert!(markdown.contains("Section 1 - Executive Verdict"));
     assert!(markdown.contains("Section 4A - Proof Artifact Freshness"));
+    assert!(markdown.contains("Section 4B - Timing Separation"));
     assert!(markdown.contains("Section 6 - Storage Contributors"));
     assert!(markdown.contains("Cold Build Mode Distinction"));
 
     fs::remove_dir_all(workspace).expect("cleanup comprehensive workspace");
     fs::remove_dir_all(repo).expect("cleanup comprehensive repo");
+}
+
+#[test]
+fn bench_proof_build_only_has_clean_contract_and_metadata() {
+    let repo = fixture_repo();
+    let db = repo.join("proof-only.sqlite");
+    let result = stdout_json(&run_codegraph_in(
+        &repo,
+        &[
+            "bench",
+            "proof-build-only",
+            "--repo",
+            repo.to_str().expect("repo path"),
+            "--db",
+            db.to_str().expect("db path"),
+        ],
+    ));
+
+    assert_eq!(result["benchmark"].as_str(), Some("proof_build_only"));
+    assert_eq!(result["mode"].as_str(), Some("proof-build-only"));
+    assert!(result["proof_build_only_ms"].as_u64().unwrap_or(0) > 0);
+    assert_eq!(result["validation_ms"].as_f64(), Some(0.0));
+    assert_eq!(result["audit_ms"].as_u64(), Some(0));
+    assert!(result["report_generation_ms"].as_u64().is_some());
+    assert!(result["comprehensive_total_ms"].is_null());
+
+    let metadata_path = Path::new(
+        result["artifact_metadata_path"]
+            .as_str()
+            .expect("metadata path"),
+    );
+    assert!(metadata_path.exists());
+    let metadata: Value =
+        serde_json::from_str(&fs::read_to_string(metadata_path).expect("metadata JSON"))
+            .expect("valid metadata");
+    assert_eq!(metadata["build_mode"].as_str(), Some("proof-build-only"));
+    assert_eq!(
+        metadata["artifact_validation"]["validated"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        metadata["artifact_validation"]["claimable_as_validated"].as_bool(),
+        Some(false)
+    );
+
+    let contract = &result["mode_separation"]["prohibited_operations_ran"];
+    for key in [
+        "storage_audit",
+        "dbstat",
+        "relation_sampler",
+        "path_evidence_sampler",
+        "cgc_comparison",
+        "manual_precision_summary",
+        "readme_or_report_generation",
+        "full_comprehensive_benchmark_generation",
+        "repeated_build_attempts",
+        "artifact_compression",
+        "vacuum",
+        "analyze",
+        "fresh_repeat_update_loops",
+    ] {
+        assert_eq!(contract[key].as_bool(), Some(false), "{key}");
+    }
+    assert_eq!(
+        result["mode_separation"]["post_build_checks"]["full_integrity_check_ran"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        result["mode_separation"]["post_build_checks"]["quick_check_ran"].as_bool(),
+        Some(true)
+    );
+
+    let spans = result["summary"]["profile"]["spans"]
+        .as_array()
+        .expect("profile spans");
+    assert!(spans
+        .iter()
+        .any(|span| span["name"].as_str() == Some("quick_check")));
+    assert!(!spans.iter().any(|span| {
+        span["name"].as_str() == Some("integrity_check") && span["count"].as_u64().unwrap_or(0) > 0
+    }));
+    for prohibited_span in [
+        "storage_audit",
+        "relation_sampler",
+        "path_evidence_sampler",
+        "cgc_comparison",
+        "repeat_unchanged_index",
+        "single_file_update",
+    ] {
+        assert!(
+            !spans.iter().any(|span| {
+                span["name"].as_str() == Some(prohibited_span)
+                    && span["count"].as_u64().unwrap_or(0) > 0
+            }),
+            "{prohibited_span} should not execute in proof-build-only"
+        );
+    }
+    assert!(!repo.join("reports").exists());
+
+    fs::remove_dir_all(repo).expect("cleanup proof-build-only repo");
+}
+
+#[test]
+fn bench_proof_build_validated_marks_artifact_validated_only_after_integrity_gate() {
+    let repo = fixture_repo();
+    let db = repo.join("validated.sqlite");
+    let result = stdout_json(&run_codegraph_in(
+        &repo,
+        &[
+            "bench",
+            "proof-build-validated",
+            "--repo",
+            repo.to_str().expect("repo path"),
+            "--db",
+            db.to_str().expect("db path"),
+        ],
+    ));
+
+    assert_eq!(result["benchmark"].as_str(), Some("proof_build_validated"));
+    assert_eq!(result["mode"].as_str(), Some("proof-build-plus-validation"));
+    assert_eq!(result["proof_build_only_ms"].as_u64(), Some(0));
+    assert!(result["validation_ms"].as_f64().unwrap_or(0.0) > 0.0);
+    assert_eq!(
+        result["mode_separation"]["post_build_checks"]["full_integrity_check_ran"].as_bool(),
+        Some(true)
+    );
+    let metadata_path = Path::new(
+        result["artifact_metadata_path"]
+            .as_str()
+            .expect("metadata path"),
+    );
+    let metadata: Value =
+        serde_json::from_str(&fs::read_to_string(metadata_path).expect("metadata JSON"))
+            .expect("valid metadata");
+    assert_eq!(
+        metadata["artifact_validation"]["validated"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        metadata["artifact_validation"]["claimable_as_validated"].as_bool(),
+        Some(true)
+    );
+    assert!(
+        metadata["artifact_validation"]["integrity_check_count"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup proof-build-validated repo");
+}
+
+#[test]
+fn bench_proof_build_modes_reject_contaminating_overrides() {
+    let repo = fixture_repo();
+    let audit_storage = run_codegraph_in(
+        &repo,
+        &[
+            "bench",
+            "proof-build-only",
+            "--repo",
+            repo.to_str().expect("repo path"),
+            "--storage-mode",
+            "audit",
+        ],
+    );
+    assert!(!audit_storage.status.success());
+    assert!(
+        String::from_utf8_lossy(&audit_storage.stderr).contains("requires --storage-mode proof")
+    );
+
+    let validation_override = run_codegraph_in(
+        &repo,
+        &[
+            "bench",
+            "proof-build-only",
+            "--repo",
+            repo.to_str().expect("repo path"),
+            "--build-mode",
+            "proof-build-plus-validation",
+        ],
+    );
+    assert!(!validation_override.status.success());
+    assert!(String::from_utf8_lossy(&validation_override.stderr)
+        .contains("cannot be run with --build-mode"));
+
+    fs::remove_dir_all(repo).expect("cleanup contaminated override repo");
 }
 
 #[test]
