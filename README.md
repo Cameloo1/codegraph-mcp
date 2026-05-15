@@ -12,9 +12,10 @@ packets that a coding agent can actually trust.
 |---|---|---|
 | ![Agent Context Quality](docs/assets/readme/agent_visual_01_context_quality.png) | ![Trusted Proof Relations](docs/assets/readme/agent_visual_02_trusted_relations.png) | ![Agent Loop Readiness](docs/assets/readme/agent_visual_03_agent_loop_readiness.png) |
 
-Current status: semantic proof and context-packet gates are green, and compact
-proof storage is under target. The remaining intended-tool blocker is cold
-proof-build time; CGC comparison remains diagnostic/incomplete, with no
+Current status: semantic proof and context-packet gates are green, compact
+proof storage is under the intended 250 MiB target, and stale or mismatched DB
+reuse is guarded by DB passport preflight. The remaining intended-tool blocker
+is cold proof-build time; CGC comparison remains diagnostic/incomplete, with no
 superiority claim.
 
 See: [Intended Tool Quality Gate](reports/final/intended_tool_quality_gate.md)
@@ -68,16 +69,14 @@ context quality, warm-operation latency, and update performance passing.
 | Single-file update | 336ms | pass |
 | context_pack p95 | 852ms | pass |
 | Unresolved-calls page p95 | 243ms | pass |
-| Proof DB size | 320.63 MiB vs 250 MiB target | open |
-| Cold proof build | 50.02 min vs 60s target | open |
+| Proof DB size | 171.184 MiB vs 250 MiB target | pass |
+| Cold proof build | 184,297 ms vs 60s target | open |
 | CodeGraphContext comparison | CGC timed out | incomplete |
 
-Storage size and cold proof-build time are the two open performance gates in
-the public benchmark table above. Later PR-readiness reports linked below record
-the current proof DB size as 171.184 MiB and still record the Intended Tool
-Quality Gate as `FAIL` because `proof_build_only_ms = 184,297 ms`, above the
-`<=60,000 ms` target. This README does not claim final intended-performance
-readiness.
+Cold proof-build time is the main intended-tool blocker. Compact proof storage
+now passes the 250 MiB target, while comprehensive reports may still flag
+storage-efficiency stretch metrics such as proof DB stretch size or bytes per
+proof edge. This README does not claim final intended-performance readiness.
 
 ## CodeGraph vs CodeGraphContext
 
@@ -157,6 +156,9 @@ tiered support matrix, exactness labels, and known limitations.
 ## Interfaces
 
 - `codegraph-mcp index` builds the local graph.
+- `codegraph-mcp index` uses DB passport preflight: valid matching DBs can
+  reuse incrementally, while stale, mismatched, corrupt, or unknown default DBs
+  are rebuilt safely instead of silently reused.
 - `codegraph-mcp query ...` searches symbols, text, relations, paths, callers,
   callees, impact, and unresolved calls.
 - `codegraph-mcp context-pack ...` emits agent-facing proof context.
@@ -226,7 +228,7 @@ Logs are written under `reports/smoke/index/`.
 
 Benchmark and audit artifacts:
 
-- [reports/final/comprehensive_benchmark_latest.md](reports/final/comprehensive_benchmark_latest.md) and [reports/final/comprehensive_benchmark_latest.json](reports/final/comprehensive_benchmark_latest.json) - current master gate.
+- [reports/final/comprehensive_benchmark_latest.md](reports/final/comprehensive_benchmark_latest.md) and [reports/final/comprehensive_benchmark_latest.json](reports/final/comprehensive_benchmark_latest.json) - latest preserved comprehensive gate.
 - [reports/final/compact_proof_db_gate.md](reports/final/compact_proof_db_gate.md) and [reports/final/compact_proof_db_gate.json](reports/final/compact_proof_db_gate.json) - compact proof DB gate.
 - [reports/comparison/codegraph_vs_cgc_latest.md](reports/comparison/codegraph_vs_cgc_latest.md) and [reports/comparison/codegraph_vs_cgc_latest.json](reports/comparison/codegraph_vs_cgc_latest.json) - latest CGC comparison status, normalized from the public `CODEGRAPH_VS_CGC_LATEST.*` label for case-sensitive link checks.
 - [reports/final/pr_baseline_status.md](reports/final/pr_baseline_status.md) and [reports/final/pr_baseline_status.json](reports/final/pr_baseline_status.json) - PR-readiness baseline status.
@@ -263,6 +265,8 @@ Manual precision evidence is sampled precision only:
 - Intended Tool Quality Gate verdict is `FAIL`.
 - The current preserved failure is `proof_build_only_ms = 184,297 ms`, above the
   `<=60,000 ms` target.
+- Compact proof storage passes the intended 250 MiB target, but comprehensive
+  storage-efficiency stretch metrics may still fail.
 - This README does not claim final intended-performance pass.
 - CGC comparison is diagnostic, blocked, and incomplete.
 - No CodeGraph vs CGC superiority claim is made.
