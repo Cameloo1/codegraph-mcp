@@ -8,7 +8,11 @@ use std::{
 use codegraph_core::{
     Edge, EdgeClass, EdgeContext, Exactness, FileRecord, RelationKind, SourceSpan,
 };
-use codegraph_store::{GraphStore, SqliteGraphStore};
+use codegraph_index::{scope_policy_hash, IndexScopeOptions, StorageMode};
+use codegraph_mcp_server::{McpServer, McpServerConfig};
+use codegraph_store::{
+    DbPassport, GraphStore, SqliteGraphStore, DB_PASSPORT_VERSION, SCHEMA_VERSION,
+};
 use serde_json::{json, Value};
 
 fn run_codegraph(args: &[&str]) -> Output {
@@ -30,6 +34,37 @@ fn stdout_json(output: &Output) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("stdout JSON")
+}
+
+fn mcp_server_for_repo(repo: &Path) -> McpServer {
+    McpServer::new(McpServerConfig::for_repo(repo).without_trace())
+}
+
+fn mcp_ok(result: Result<Value, impl std::fmt::Debug>) -> Value {
+    match result {
+        Ok(value) => value,
+        Err(error) => panic!("expected MCP Ok(..), got Err({error:?})"),
+    }
+}
+
+fn assert_hits_present(value: &Value, label: &str) {
+    assert!(
+        !value["hits"].as_array().expect("hits").is_empty(),
+        "expected hits for {label}: {value:?}"
+    );
+}
+
+fn assert_hits_empty(value: &Value, label: &str) {
+    assert!(
+        value["hits"].as_array().expect("hits").is_empty(),
+        "expected no hits for {label}: {value:?}"
+    );
+}
+
+fn passport_scope_hash(value: &Value) -> &str {
+    value["db_lifecycle_read"]["passport_scope_hash"]
+        .as_str()
+        .expect("passport scope hash")
 }
 
 #[test]
@@ -914,7 +949,9 @@ fn bench_comprehensive_writes_machine_json_and_human_markdown() {
         output_dir.to_str().expect("output path"),
         "--timestamp",
         "fixture",
+        "--allow-debug-timing",
         "--no-previous",
+        "--allow-debug-timing",
     ]));
 
     assert_eq!(value["status"].as_str(), Some("reported"));
@@ -947,6 +984,34 @@ fn bench_comprehensive_writes_machine_json_and_human_markdown() {
         Some("fresh_proof_build")
     );
     assert_eq!(
+        summary["debug_assertions"].as_bool(),
+        Some(cfg!(debug_assertions))
+    );
+    assert_eq!(
+        summary["binary_profile"].as_str(),
+        Some(if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        })
+    );
+    assert_eq!(
+        summary["claimable_for_thresholds"].as_bool(),
+        Some(!cfg!(debug_assertions))
+    );
+    assert_eq!(
+        summary["diagnostic_only"].as_bool(),
+        Some(cfg!(debug_assertions))
+    );
+    assert_eq!(
+        summary["binary_metadata"]["exact_command"],
+        summary["exact_command"]
+    );
+    assert!(summary["exact_command"]
+        .as_str()
+        .expect("exact command")
+        .contains("bench comprehensive"));
+    assert_eq!(
         summary["artifact_freshness"]["freshly_built"].as_bool(),
         Some(true)
     );
@@ -958,6 +1023,26 @@ fn bench_comprehensive_writes_machine_json_and_human_markdown() {
         .as_str()
         .expect("artifact metadata path");
     assert!(Path::new(metadata_path).exists());
+    assert_eq!(
+        summary["artifact_freshness"]["debug_assertions"].as_bool(),
+        Some(cfg!(debug_assertions))
+    );
+    assert_eq!(
+        summary["artifact_freshness"]["binary_profile"].as_str(),
+        Some(if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        })
+    );
+    assert_eq!(
+        summary["artifact_freshness"]["claimable_for_thresholds"].as_bool(),
+        Some(!cfg!(debug_assertions))
+    );
+    assert!(summary["artifact_freshness"]["exact_command"]
+        .as_str()
+        .expect("artifact exact command")
+        .contains("bench comprehensive"));
     assert!(
         summary["sections"]["executive_verdict"]["exact_passed_targets"]
             .as_array()
@@ -978,15 +1063,506 @@ fn bench_comprehensive_writes_machine_json_and_human_markdown() {
         .iter()
         .any(|stage| stage["stage"].as_str()
             == Some("production_persistence_and_global_reduction_bucket")));
+    if cfg!(debug_assertions) {
+        assert_eq!(
+            summary["timing_separation"]["proof_build_only_ms"].as_str(),
+            Some("non_claimable_debug_timing")
+        );
+        assert!(summary["artifact_freshness"]["diagnostic_debug_proof_build_only_ms"].is_number());
+        assert_eq!(
+            summary["artifact_freshness"]["cold_build_result_claimable"].as_bool(),
+            Some(false)
+        );
+        let failed = summary["sections"]["executive_verdict"]["exact_failed_targets"]
+            .as_array()
+            .expect("failed targets");
+        assert!(failed
+            .iter()
+            .any(|target| target.as_str() == Some("cold_build_result_claimable")));
+        assert!(failed.iter().any(|target| {
+            target.as_str() == Some("proof_build_timing_claimable_for_thresholds")
+        }));
+        let cold_metrics = summary["sections"]["cold_proof_build_profile"]["metrics"]
+            .as_array()
+            .expect("cold metrics");
+        let claim_metric = cold_metrics
+            .iter()
+            .find(|metric| {
+                metric["id"].as_str() == Some("proof_build_timing_claimable_for_thresholds")
+            })
+            .expect("claimable metric");
+        assert_eq!(claim_metric["status"].as_str(), Some("fail"));
+        let wall_metric = cold_metrics
+            .iter()
+            .find(|metric| metric["id"].as_str() == Some("cold_proof_build_total_wall_ms"))
+            .expect("wall metric");
+        assert_eq!(wall_metric["status"].as_str(), Some("unknown"));
+        assert_eq!(
+            wall_metric["observed"].as_str(),
+            Some("non_claimable_debug_timing")
+        );
+    } else {
+        assert!(summary["timing_separation"]["proof_build_only_ms"].is_number());
+    }
+    assert!(summary["timing_separation"]["validation_ms"].is_number());
+    assert!(summary["timing_separation"]["audit_ms"].is_number());
+    assert!(summary["timing_separation"]["report_generation_ms"].is_number());
+    assert!(summary["timing_separation"]["comprehensive_total_ms"].is_number());
+    assert_eq!(
+        summary["sections"]["timing_separation"]["proof_build_only_ms"],
+        summary["timing_separation"]["proof_build_only_ms"]
+    );
+    assert_eq!(
+        summary["artifact_freshness"]["artifact_validation"]["validated"].as_bool(),
+        Some(false),
+        "fresh comprehensive artifacts are proof-build-only plus separate audit, not validation-mode artifacts"
+    );
+    assert_eq!(
+        summary["artifact_freshness"]["binary_profile"].as_str(),
+        Some(if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        })
+    );
+    assert_eq!(
+        summary["artifact_freshness"]["claimable_for_thresholds"].as_bool(),
+        Some(!cfg!(debug_assertions))
+    );
+    assert_eq!(
+        summary["timing_separation"]["claimable_for_thresholds"].as_bool(),
+        Some(!cfg!(debug_assertions))
+    );
+    if cfg!(debug_assertions) {
+        let failed = summary["sections"]["executive_verdict"]["exact_failed_targets"]
+            .as_array()
+            .expect("failed targets");
+        assert!(failed
+            .iter()
+            .any(|target| target.as_str() == Some("proof_build_timing_claimable_for_thresholds")));
+        assert!(failed
+            .iter()
+            .any(|target| target.as_str() == Some("cold_build_result_claimable")));
+    }
     let markdown =
         fs::read_to_string(output_dir.join("comprehensive_benchmark_latest.md")).expect("markdown");
     assert!(markdown.contains("Section 1 - Executive Verdict"));
     assert!(markdown.contains("Section 4A - Proof Artifact Freshness"));
+    assert!(markdown.contains("Section 4B - Timing Separation"));
     assert!(markdown.contains("Section 6 - Storage Contributors"));
     assert!(markdown.contains("Cold Build Mode Distinction"));
+    if cfg!(debug_assertions) {
+        assert!(markdown.contains("non_claimable_debug_timing"));
+        assert!(markdown.contains("binary_profile"));
+    }
 
     fs::remove_dir_all(workspace).expect("cleanup comprehensive workspace");
     fs::remove_dir_all(repo).expect("cleanup comprehensive repo");
+}
+
+#[test]
+fn bench_comprehensive_debug_requires_explicit_diagnostic_flag() {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+
+    let workspace = empty_repo();
+    let repo = fixture_repo();
+    let output_dir = workspace.join("reports").join("final");
+    let (baseline_path, gate_path) = write_minimal_comprehensive_inputs(&workspace);
+    let output = run_codegraph(&[
+        "bench",
+        "comprehensive",
+        "--baseline",
+        baseline_path.to_str().expect("baseline path"),
+        "--compact-gate-json",
+        gate_path.to_str().expect("gate path"),
+        "--repo",
+        repo.to_str().expect("repo path"),
+        "--output-dir",
+        output_dir.to_str().expect("output path"),
+        "--timestamp",
+        "debug_refusal",
+        "--no-previous",
+    ]);
+
+    assert!(!output.status.success());
+    let error: Value = serde_json::from_slice(&output.stderr).expect("structured benchmark error");
+    assert_eq!(error["error"].as_str(), Some("bench_failed"));
+    assert_eq!(error["binary_profile"].as_str(), Some("debug"));
+    assert_eq!(error["debug_assertions"].as_bool(), Some(true));
+    assert_eq!(error["claimable_for_thresholds"].as_bool(), Some(false));
+    assert!(error["message"]
+        .as_str()
+        .expect("message")
+        .contains("--allow-debug-timing"));
+
+    fs::remove_dir_all(workspace).expect("cleanup comprehensive debug refusal workspace");
+    fs::remove_dir_all(repo).expect("cleanup comprehensive debug refusal repo");
+}
+
+#[test]
+fn bench_proof_build_only_has_clean_contract_and_metadata() {
+    let repo = fixture_repo();
+    let db = repo.join("proof-only.sqlite");
+    let result = stdout_json(&run_codegraph_in(
+        &repo,
+        &[
+            "bench",
+            "proof-build-only",
+            "--repo",
+            repo.to_str().expect("repo path"),
+            "--db",
+            db.to_str().expect("db path"),
+            "--allow-debug-timing",
+        ],
+    ));
+
+    assert_eq!(result["benchmark"].as_str(), Some("proof_build_only"));
+    assert_eq!(result["mode"].as_str(), Some("proof-build-only"));
+    assert_eq!(
+        result["debug_assertions"].as_bool(),
+        Some(cfg!(debug_assertions))
+    );
+    assert_eq!(
+        result["binary_profile"].as_str(),
+        Some(if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        })
+    );
+    assert_eq!(
+        result["claimable_for_thresholds"].as_bool(),
+        Some(!cfg!(debug_assertions))
+    );
+    assert_eq!(
+        result["diagnostic_only"].as_bool(),
+        Some(cfg!(debug_assertions))
+    );
+    assert!(result["current_exe"]
+        .as_str()
+        .expect("current exe")
+        .contains("codegraph-mcp"));
+    assert!(result["exact_command"]
+        .as_str()
+        .expect("exact command")
+        .contains("bench proof-build-only"));
+    assert_eq!(
+        result["binary_metadata"]["exact_command"],
+        result["exact_command"]
+    );
+    if cfg!(debug_assertions) {
+        assert_eq!(
+            result["proof_build_only_ms"].as_str(),
+            Some("non_claimable_debug_timing")
+        );
+        assert!(
+            result["diagnostic_debug_proof_build_only_ms"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0
+        );
+    } else {
+        assert!(result["proof_build_only_ms"].as_u64().unwrap_or(0) > 0);
+        assert!(result["diagnostic_debug_proof_build_only_ms"].is_null());
+    }
+    assert_eq!(result["validation_ms"].as_f64(), Some(0.0));
+    assert_eq!(result["audit_ms"].as_u64(), Some(0));
+    assert!(result["report_generation_ms"].as_u64().is_some());
+    assert!(result["comprehensive_total_ms"].is_null());
+    assert_eq!(
+        result["binary_profile"].as_str(),
+        Some(if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        })
+    );
+    assert_eq!(
+        result["claimable_for_thresholds"].as_bool(),
+        Some(!cfg!(debug_assertions))
+    );
+    assert_eq!(
+        result["timing_classification"].as_str(),
+        Some(if cfg!(debug_assertions) {
+            "diagnostic_only"
+        } else {
+            "production"
+        })
+    );
+
+    let metadata_path = Path::new(
+        result["artifact_metadata_path"]
+            .as_str()
+            .expect("metadata path"),
+    );
+    assert!(metadata_path.exists());
+    let metadata: Value =
+        serde_json::from_str(&fs::read_to_string(metadata_path).expect("metadata JSON"))
+            .expect("valid metadata");
+    assert_eq!(metadata["build_mode"].as_str(), Some("proof-build-only"));
+    assert!(metadata["build_duration_ms"].as_u64().unwrap_or(0) > 0);
+    assert_eq!(
+        metadata["debug_assertions"].as_bool(),
+        Some(cfg!(debug_assertions))
+    );
+    assert_eq!(
+        metadata["binary_profile"].as_str(),
+        result["binary_profile"].as_str()
+    );
+    assert_eq!(
+        metadata["claimable_for_thresholds"].as_bool(),
+        Some(!cfg!(debug_assertions))
+    );
+    assert!(metadata["exact_command"]
+        .as_str()
+        .expect("metadata exact command")
+        .contains("bench proof-build-only"));
+    if cfg!(debug_assertions) {
+        assert_eq!(
+            metadata["proof_build_only_ms"].as_str(),
+            Some("non_claimable_debug_timing")
+        );
+        assert!(
+            metadata["diagnostic_debug_proof_build_only_ms"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0
+        );
+    }
+    assert_eq!(
+        metadata["artifact_validation"]["validated"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        metadata["artifact_validation"]["claimable_as_validated"].as_bool(),
+        Some(false)
+    );
+
+    let contract = &result["mode_separation"]["prohibited_operations_ran"];
+    for key in [
+        "storage_audit",
+        "dbstat",
+        "relation_sampler",
+        "path_evidence_sampler",
+        "cgc_comparison",
+        "manual_precision_summary",
+        "readme_or_report_generation",
+        "full_comprehensive_benchmark_generation",
+        "repeated_build_attempts",
+        "artifact_compression",
+        "vacuum",
+        "analyze",
+        "fresh_repeat_update_loops",
+    ] {
+        assert_eq!(contract[key].as_bool(), Some(false), "{key}");
+    }
+    assert_eq!(
+        result["mode_separation"]["post_build_checks"]["full_integrity_check_ran"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        result["mode_separation"]["post_build_checks"]["quick_check_ran"].as_bool(),
+        Some(true)
+    );
+
+    let spans = result["summary"]["profile"]["spans"]
+        .as_array()
+        .expect("profile spans");
+    assert!(spans
+        .iter()
+        .any(|span| span["name"].as_str() == Some("quick_check")));
+    assert!(!spans.iter().any(|span| {
+        span["name"].as_str() == Some("integrity_check") && span["count"].as_u64().unwrap_or(0) > 0
+    }));
+    for prohibited_span in [
+        "storage_audit",
+        "relation_sampler",
+        "path_evidence_sampler",
+        "cgc_comparison",
+        "repeat_unchanged_index",
+        "single_file_update",
+    ] {
+        assert!(
+            !spans.iter().any(|span| {
+                span["name"].as_str() == Some(prohibited_span)
+                    && span["count"].as_u64().unwrap_or(0) > 0
+            }),
+            "{prohibited_span} should not execute in proof-build-only"
+        );
+    }
+    assert!(!repo.join("reports").exists());
+
+    fs::remove_dir_all(repo).expect("cleanup proof-build-only repo");
+}
+
+#[test]
+fn bench_proof_build_only_debug_requires_explicit_diagnostic_flag() {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+
+    let repo = fixture_repo();
+    let db = repo.join("proof-only.sqlite");
+    let output = run_codegraph_in(
+        &repo,
+        &[
+            "bench",
+            "proof-build-only",
+            "--repo",
+            repo.to_str().expect("repo path"),
+            "--db",
+            db.to_str().expect("db path"),
+        ],
+    );
+
+    assert!(!output.status.success());
+    let error: Value = serde_json::from_slice(&output.stderr).expect("structured benchmark error");
+    assert_eq!(error["error"].as_str(), Some("bench_failed"));
+    assert_eq!(error["binary_profile"].as_str(), Some("debug"));
+    assert_eq!(error["debug_assertions"].as_bool(), Some(true));
+    assert_eq!(error["claimable_for_thresholds"].as_bool(), Some(false));
+    assert_eq!(error["diagnostic_only"].as_bool(), Some(true));
+    assert!(error["exact_command"]
+        .as_str()
+        .expect("exact command")
+        .contains("bench proof-build-only"));
+    assert!(error["message"]
+        .as_str()
+        .expect("message")
+        .contains("--allow-debug-timing"));
+
+    fs::remove_dir_all(repo).expect("cleanup debug refusal repo");
+}
+
+#[test]
+fn bench_proof_build_validated_marks_artifact_validated_only_after_integrity_gate() {
+    let repo = fixture_repo();
+    let db = repo.join("validated.sqlite");
+    let result = stdout_json(&run_codegraph_in(
+        &repo,
+        &[
+            "bench",
+            "proof-build-validated",
+            "--repo",
+            repo.to_str().expect("repo path"),
+            "--db",
+            db.to_str().expect("db path"),
+            "--allow-debug-timing",
+        ],
+    ));
+
+    assert_eq!(result["benchmark"].as_str(), Some("proof_build_validated"));
+    assert_eq!(result["mode"].as_str(), Some("proof-build-plus-validation"));
+    assert!(
+        result["proof_build_only_ms"].as_u64().unwrap_or(0) > 0,
+        "validated mode should still report the proof-build portion"
+    );
+    assert!(result["validation_ms"].as_f64().unwrap_or(0.0) > 0.0);
+    assert_eq!(
+        result["mode_separation"]["post_build_checks"]["full_integrity_check_ran"].as_bool(),
+        Some(true)
+    );
+    let metadata_path = Path::new(
+        result["artifact_metadata_path"]
+            .as_str()
+            .expect("metadata path"),
+    );
+    let metadata: Value =
+        serde_json::from_str(&fs::read_to_string(metadata_path).expect("metadata JSON"))
+            .expect("valid metadata");
+    assert_eq!(
+        metadata["artifact_validation"]["validated"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        metadata["artifact_validation"]["claimable_as_validated"].as_bool(),
+        Some(true)
+    );
+    assert!(
+        metadata["artifact_validation"]["integrity_check_count"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup proof-build-validated repo");
+}
+
+#[test]
+fn bench_comprehensive_debug_timing_fails_without_explicit_allowance() {
+    let workspace = empty_repo();
+    let output_dir = workspace.join("reports").join("final");
+    let repo = fixture_repo();
+    let (baseline_path, gate_path) = write_minimal_comprehensive_inputs(&workspace);
+
+    let output = run_codegraph(&[
+        "bench",
+        "comprehensive",
+        "--baseline",
+        baseline_path.to_str().expect("baseline path"),
+        "--compact-gate-json",
+        gate_path.to_str().expect("gate path"),
+        "--repo",
+        repo.to_str().expect("repo path"),
+        "--output-dir",
+        output_dir.to_str().expect("output path"),
+        "--timestamp",
+        "debug_guard",
+        "--no-previous",
+    ]);
+
+    if cfg!(debug_assertions) {
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("debug binary"));
+        assert!(stderr.contains("--allow-debug-timing"));
+    } else {
+        assert!(output.status.success());
+    }
+
+    fs::remove_dir_all(workspace).expect("cleanup comprehensive debug guard workspace");
+    fs::remove_dir_all(repo).expect("cleanup comprehensive debug guard repo");
+}
+
+#[test]
+fn bench_proof_build_modes_reject_contaminating_overrides() {
+    let repo = fixture_repo();
+    let audit_storage = run_codegraph_in(
+        &repo,
+        &[
+            "bench",
+            "proof-build-only",
+            "--repo",
+            repo.to_str().expect("repo path"),
+            "--allow-debug-timing",
+            "--storage-mode",
+            "audit",
+        ],
+    );
+    assert!(!audit_storage.status.success());
+    assert!(
+        String::from_utf8_lossy(&audit_storage.stderr).contains("requires --storage-mode proof")
+    );
+
+    let validation_override = run_codegraph_in(
+        &repo,
+        &[
+            "bench",
+            "proof-build-only",
+            "--repo",
+            repo.to_str().expect("repo path"),
+            "--allow-debug-timing",
+            "--build-mode",
+            "proof-build-plus-validation",
+        ],
+    );
+    assert!(!validation_override.status.success());
+    assert!(String::from_utf8_lossy(&validation_override.stderr)
+        .contains("cannot be run with --build-mode"));
+
+    fs::remove_dir_all(repo).expect("cleanup contaminated override repo");
 }
 
 #[test]
@@ -2103,6 +2679,10 @@ fn context_pack_modes_filter_production_and_allow_test_impact_edges() {
     ] {
         store.upsert_edge(&edge).expect("upsert edge");
     }
+    store
+        .quick_integrity_gate()
+        .expect("manual DB integrity gate");
+    upsert_test_passport(&store, &repo, StorageMode::Proof, 2, 2);
     drop(store);
 
     let production = stdout_json(&run_codegraph_in(
@@ -2234,6 +2814,671 @@ fn serve_mcp_starts_and_exits_on_closed_stdin() {
         "stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn non_index_commands_do_not_create_default_index_db() {
+    let repo = empty_repo();
+    let db_dir = repo.join(".codegraph");
+
+    let help = run_codegraph_in(&repo, &["--help"]);
+    assert!(
+        help.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&help.stderr)
+    );
+    assert!(!db_dir.exists(), "--help created default index state");
+
+    let status = stdout_json(&run_codegraph_in(&repo, &["status"]));
+    assert_eq!(status["status"].as_str(), Some("not_indexed"));
+    assert_eq!(
+        status["next_command"].as_str(),
+        Some("codegraph-mcp index .")
+    );
+    assert!(!db_dir.exists(), "status created default index state");
+
+    let server = run_codegraph_in(&repo, &["serve-mcp"]);
+    assert!(
+        server.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&server.stderr)
+    );
+    assert!(
+        !db_dir.exists(),
+        "serve-mcp cold-indexed or created default index state"
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup non-index command workspace");
+}
+
+#[test]
+fn index_status_and_query_surface_db_lifecycle_evidence() {
+    let repo = fixture_repo();
+
+    let index = stdout_json(&run_codegraph_in(
+        &repo,
+        &["index", ".", "--json", "--workers", "1"],
+    ));
+    assert_eq!(index["status"].as_str(), Some("indexed"));
+    assert_eq!(
+        index["db_lifecycle"]["decision"].as_str(),
+        Some("fresh_rebuild")
+    );
+    assert_eq!(index["db_lifecycle"]["claimable"].as_bool(), Some(true));
+
+    let status = stdout_json(&run_codegraph_in(&repo, &["status"]));
+    assert_eq!(status["status"].as_str(), Some("ok"));
+    assert_eq!(
+        status["db_health"]["passport_status"].as_str(),
+        Some("valid")
+    );
+    assert_eq!(status["db_health"]["valid"].as_bool(), Some(true));
+
+    let query = stdout_json(&run_codegraph_in(&repo, &["query", "symbols", "sanitize"]));
+    assert_eq!(query["status"].as_str(), Some("ok"));
+    assert_eq!(
+        query["db_lifecycle_read"]["decision"].as_str(),
+        Some("read_reuse")
+    );
+    assert_eq!(
+        query["db_lifecycle_read"]["claimable"].as_bool(),
+        Some(true)
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup lifecycle fixture");
+}
+
+#[test]
+fn index_incremental_rejects_corrupt_explicit_db() {
+    let repo = fixture_repo();
+    fs::write(repo.join("named.sqlite"), "not sqlite").expect("write corrupt DB");
+
+    let output = run_codegraph_in(
+        &repo,
+        &[
+            "index",
+            ".",
+            "--db",
+            "named.sqlite",
+            "--incremental",
+            "--json",
+        ],
+    );
+    assert!(
+        !output.status.success(),
+        "stdout={}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("DB lifecycle preflight failed"),
+        "stderr={stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join("named.sqlite")).expect("corrupt DB preserved"),
+        "not sqlite"
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup corrupt explicit fixture");
+}
+
+#[test]
+fn query_refuses_db_passport_from_another_repo() {
+    let repo_a = fixture_repo();
+    let repo_b = fixture_repo();
+    let index = stdout_json(&run_codegraph_in(
+        &repo_a,
+        &["index", ".", "--json", "--workers", "1"],
+    ));
+    assert_eq!(index["status"].as_str(), Some("indexed"));
+
+    let source_db = repo_a.join(".codegraph").join("codegraph.sqlite");
+    let target_db_dir = repo_b.join(".codegraph");
+    fs::create_dir_all(&target_db_dir).expect("create target DB dir");
+    fs::copy(&source_db, target_db_dir.join("codegraph.sqlite")).expect("copy DB");
+
+    let output = run_codegraph_in(&repo_b, &["query", "symbols", "sanitize"]);
+    assert!(
+        !output.status.success(),
+        "stdout={}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("repo root mismatch"), "stderr={stderr}");
+
+    let diagnostic = stdout_json(&run_codegraph_in(
+        &repo_b,
+        &["query", "symbols", "sanitize", "--allow-stale-read"],
+    ));
+    assert_eq!(diagnostic["status"].as_str(), Some("ok"));
+    assert_eq!(
+        diagnostic["db_lifecycle_read"]["decision"].as_str(),
+        Some("diagnostic_stale_reuse")
+    );
+    assert_eq!(
+        diagnostic["db_lifecycle_read"]["claimable"].as_bool(),
+        Some(false)
+    );
+
+    fs::remove_dir_all(repo_a).expect("cleanup repo A");
+    fs::remove_dir_all(repo_b).expect("cleanup repo B");
+}
+
+#[test]
+fn passport_non_default_scope_query_symbols_uses_passport_scope() {
+    let repo = non_default_scope_cli_repo();
+    let index = stdout_json(&run_codegraph_in(
+        &repo,
+        &[
+            "index",
+            ".",
+            "--json",
+            "--include-ignored",
+            "--workers",
+            "1",
+        ],
+    ));
+    assert_eq!(index["status"].as_str(), Some("indexed"));
+
+    let db = repo.join(".codegraph").join("codegraph.sqlite");
+    let store = SqliteGraphStore::open(&db).expect("open DB");
+    let passport = store
+        .get_db_passport()
+        .expect("read passport")
+        .expect("passport");
+    let expected_scope = IndexScopeOptions {
+        include_ignored: true,
+        ..IndexScopeOptions::default()
+    };
+    let expected_scope_hash = scope_policy_hash(&expected_scope).expect("non-default scope hash");
+    assert_eq!(passport.index_scope_policy_hash, expected_scope_hash);
+    assert_ne!(
+        passport.index_scope_policy_hash,
+        scope_policy_hash(&IndexScopeOptions::default()).expect("default scope hash")
+    );
+    drop(store);
+
+    let query = stdout_json(&run_codegraph_in(
+        &repo,
+        &["query", "symbols", "ignored_scope_symbol"],
+    ));
+    assert_eq!(query["status"].as_str(), Some("ok"));
+    assert!(!query["hits"].as_array().expect("hits").is_empty());
+    assert_eq!(
+        query["db_lifecycle_read"]["scope_source"].as_str(),
+        Some("passport")
+    );
+    assert_eq!(
+        query["db_lifecycle_read"]["decision"].as_str(),
+        Some("read_reuse")
+    );
+    assert_eq!(
+        query["db_lifecycle_read"]["passport_scope_hash"].as_str(),
+        Some(expected_scope_hash.as_str())
+    );
+    assert!(query["db_lifecycle_read"]["explicit_scope_hash"].is_null());
+
+    let explicit_query = stdout_json(&run_codegraph_in(
+        &repo,
+        &[
+            "query",
+            "symbols",
+            "ignored_scope_symbol",
+            "--include-ignored",
+        ],
+    ));
+    assert_eq!(explicit_query["status"].as_str(), Some("ok"));
+    assert_eq!(
+        explicit_query["db_lifecycle_read"]["scope_source"].as_str(),
+        Some("explicit")
+    );
+    assert_eq!(
+        explicit_query["db_lifecycle_read"]["passport_scope_hash"].as_str(),
+        Some(expected_scope_hash.as_str())
+    );
+    assert_eq!(
+        explicit_query["db_lifecycle_read"]["explicit_scope_hash"].as_str(),
+        Some(expected_scope_hash.as_str())
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup non-default scope query fixture");
+}
+
+#[test]
+fn passport_non_default_scope_context_pack_uses_passport_scope() {
+    let repo = non_default_scope_cli_repo();
+    stdout_json(&run_codegraph_in(
+        &repo,
+        &[
+            "index",
+            ".",
+            "--json",
+            "--include-ignored",
+            "--workers",
+            "1",
+        ],
+    ));
+    let expected_scope_hash = scope_policy_hash(&IndexScopeOptions {
+        include_ignored: true,
+        ..IndexScopeOptions::default()
+    })
+    .expect("non-default scope hash");
+
+    let context = stdout_json(&run_codegraph_in(
+        &repo,
+        &[
+            "context-pack",
+            "--task",
+            "Change ignored-scope symbol safely",
+            "--seed",
+            "ignored_scope_symbol",
+            "--budget",
+            "1200",
+            "--mode",
+            "impact",
+        ],
+    ));
+    assert_eq!(context["status"].as_str(), Some("ok"));
+    assert_eq!(
+        context["db_lifecycle_read"]["scope_source"].as_str(),
+        Some("passport")
+    );
+    assert_eq!(
+        context["db_lifecycle_read"]["passport_scope_hash"].as_str(),
+        Some(expected_scope_hash.as_str())
+    );
+    assert!(context["packet"]["verified_paths"].is_array());
+
+    let explicit_context = stdout_json(&run_codegraph_in(
+        &repo,
+        &[
+            "context-pack",
+            "--task",
+            "Change ignored-scope symbol safely",
+            "--seed",
+            "ignored_scope_symbol",
+            "--budget",
+            "1200",
+            "--mode",
+            "impact",
+            "--include-ignored",
+        ],
+    ));
+    assert_eq!(
+        explicit_context["db_lifecycle_read"]["scope_source"].as_str(),
+        Some("explicit")
+    );
+    assert_eq!(
+        explicit_context["db_lifecycle_read"]["explicit_scope_hash"].as_str(),
+        Some(expected_scope_hash.as_str())
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup non-default scope context fixture");
+}
+
+#[test]
+fn passport_explicit_incompatible_scope_read_flags_reject_mismatch() {
+    let repo = non_default_scope_cli_repo();
+    stdout_json(&run_codegraph_in(
+        &repo,
+        &[
+            "index",
+            ".",
+            "--json",
+            "--include-ignored",
+            "--workers",
+            "1",
+        ],
+    ));
+
+    let output = run_codegraph_in(
+        &repo,
+        &[
+            "query",
+            "symbols",
+            "ignored_scope_symbol",
+            "--exclude",
+            "ignored.ts",
+        ],
+    );
+    assert!(
+        !output.status.success(),
+        "stdout={}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("DB passport scope does not match explicit requested scope")
+            && stderr.contains("passport_scope_hash")
+            && stderr.contains("explicit_scope_hash"),
+        "stderr={stderr}"
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup incompatible scope fixture");
+}
+
+#[test]
+fn lifecycle_integration_default_cli_query_mcp_status_and_search_share_passport() {
+    let repo = fixture_repo();
+    let index = stdout_json(&run_codegraph_in(
+        &repo,
+        &["index", ".", "--json", "--workers", "1"],
+    ));
+    assert_eq!(index["status"].as_str(), Some("indexed"));
+
+    let cli_query = stdout_json(&run_codegraph_in(&repo, &["query", "symbols", "sanitize"]));
+    assert_eq!(cli_query["status"].as_str(), Some("ok"));
+    assert_hits_present(&cli_query, "CLI sanitize query");
+
+    let server = mcp_server_for_repo(&repo);
+    let repo_arg = repo.to_str().expect("repo path");
+    let mcp_status = mcp_ok(server.call_tool("codegraph.status", &json!({"repo": repo_arg})));
+    let mcp_search = mcp_ok(server.call_tool(
+        "codegraph.search",
+        &json!({"repo": repo_arg, "query": "sanitize"}),
+    ));
+
+    assert_eq!(mcp_status["status"].as_str(), Some("ok"));
+    assert_eq!(mcp_status["safe_to_query"].as_bool(), Some(true));
+    assert_eq!(mcp_search["status"].as_str(), Some("ok"));
+    assert_hits_present(&mcp_search, "MCP sanitize search");
+
+    let scope_hash = passport_scope_hash(&cli_query);
+    assert_eq!(
+        mcp_status["passport_summary"]["passport_scope_hash"].as_str(),
+        Some(scope_hash)
+    );
+    assert_eq!(
+        mcp_status["db_lifecycle_read"]["passport_scope_hash"].as_str(),
+        Some(scope_hash)
+    );
+    assert_eq!(
+        mcp_search["db_lifecycle_read"]["passport_scope_hash"].as_str(),
+        Some(scope_hash)
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup lifecycle default fixture");
+}
+
+#[test]
+fn lifecycle_integration_non_default_scope_cli_and_mcp_use_passport_scope() {
+    let repo = non_default_scope_cli_repo();
+    let index = stdout_json(&run_codegraph_in(
+        &repo,
+        &[
+            "index",
+            ".",
+            "--json",
+            "--include-ignored",
+            "--workers",
+            "1",
+        ],
+    ));
+    assert_eq!(index["status"].as_str(), Some("indexed"));
+
+    let cli_query = stdout_json(&run_codegraph_in(
+        &repo,
+        &["query", "symbols", "ignored_scope_symbol"],
+    ));
+    assert_eq!(cli_query["status"].as_str(), Some("ok"));
+    assert_hits_present(&cli_query, "CLI ignored-scope query");
+    assert_eq!(
+        cli_query["db_lifecycle_read"]["scope_source"].as_str(),
+        Some("passport")
+    );
+
+    let server = mcp_server_for_repo(&repo);
+    let repo_arg = repo.to_str().expect("repo path");
+    let mcp_status = mcp_ok(server.call_tool("codegraph.status", &json!({"repo": repo_arg})));
+    let mcp_search = mcp_ok(server.call_tool(
+        "codegraph.search",
+        &json!({"repo": repo_arg, "query": "ignored_scope_symbol"}),
+    ));
+
+    assert_eq!(mcp_status["status"].as_str(), Some("ok"));
+    assert_eq!(mcp_status["safe_to_query"].as_bool(), Some(true));
+    assert_eq!(mcp_status["scope_source"].as_str(), Some("passport"));
+    assert_eq!(
+        mcp_search["db_lifecycle_read"]["scope_source"].as_str(),
+        Some("passport")
+    );
+    assert_hits_present(&mcp_search, "MCP ignored-scope search");
+    assert_eq!(
+        mcp_status["passport_summary"]["passport_scope_hash"].as_str(),
+        Some(passport_scope_hash(&cli_query))
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup lifecycle non-default fixture");
+}
+
+#[test]
+fn lifecycle_integration_explicit_incompatible_scope_rejected_by_cli_and_mcp() {
+    let repo = non_default_scope_cli_repo();
+    stdout_json(&run_codegraph_in(
+        &repo,
+        &[
+            "index",
+            ".",
+            "--json",
+            "--include-ignored",
+            "--workers",
+            "1",
+        ],
+    ));
+
+    let cli = run_codegraph_in(
+        &repo,
+        &[
+            "query",
+            "symbols",
+            "ignored_scope_symbol",
+            "--exclude",
+            "ignored.ts",
+        ],
+    );
+    assert!(!cli.status.success());
+    let cli_stderr = String::from_utf8_lossy(&cli.stderr);
+    assert!(cli_stderr.contains("scope_mismatch"), "{cli_stderr}");
+    assert!(
+        cli_stderr.contains("DB passport scope does not match explicit requested scope"),
+        "{cli_stderr}"
+    );
+
+    let server = mcp_server_for_repo(&repo);
+    let repo_arg = repo.to_str().expect("repo path");
+    let mcp_search = server
+        .call_tool(
+            "codegraph.search",
+            &json!({
+                "repo": repo_arg,
+                "query": "ignored_scope_symbol",
+                "exclude": ["ignored.ts"]
+            }),
+        )
+        .expect_err("MCP explicit incompatible scope must fail");
+    assert_eq!(mcp_search.code, "scope_mismatch");
+    assert!(mcp_search.message.contains("passport_scope_hash"));
+    assert!(mcp_search.message.contains("explicit_scope_hash"));
+
+    let mcp_status = mcp_ok(server.call_tool(
+        "codegraph.status",
+        &json!({"repo": repo_arg, "exclude": ["ignored.ts"]}),
+    ));
+    assert_eq!(mcp_status["status"].as_str(), Some("db_problem"));
+    assert_eq!(mcp_status["problem"].as_str(), Some("scope_mismatch"));
+    assert_eq!(mcp_status["safe_to_query"].as_bool(), Some(false));
+    assert_eq!(
+        mcp_status["db_lifecycle_read"]["scope_status"].as_str(),
+        Some("mismatched")
+    );
+    assert!(mcp_status.get("files").is_none());
+
+    fs::remove_dir_all(repo).expect("cleanup lifecycle incompatible scope fixture");
+}
+
+#[test]
+fn lifecycle_integration_newly_ignored_cleanup_removes_cli_and_mcp_hits() {
+    let repo = empty_repo();
+    fs::create_dir_all(repo.join("generated")).expect("create generated");
+    fs::write(
+        repo.join("generated").join("now_ignored.ts"),
+        "export function stale_generated_symbol() { return 1; }\n",
+    )
+    .expect("write generated source");
+    stdout_json(&run_codegraph_in(
+        &repo,
+        &["index", ".", "--json", "--workers", "1"],
+    ));
+
+    let before_cli = stdout_json(&run_codegraph_in(
+        &repo,
+        &["query", "symbols", "stale_generated_symbol"],
+    ));
+    assert_hits_present(&before_cli, "CLI stale symbol before ignore");
+    let server = mcp_server_for_repo(&repo);
+    let repo_arg = repo.to_str().expect("repo path");
+    let before_mcp = mcp_ok(server.call_tool(
+        "codegraph.search",
+        &json!({"repo": repo_arg, "query": "stale_generated_symbol"}),
+    ));
+    assert_hits_present(&before_mcp, "MCP stale symbol before ignore");
+
+    fs::write(repo.join(".gitignore"), "generated/\n").expect("write ignore");
+    let update = stdout_json(&run_codegraph_in(
+        &repo,
+        &["watch", "--once", "--changed", "generated/now_ignored.ts"],
+    ));
+    assert_eq!(update["status"].as_str(), Some("updated"));
+    assert_eq!(update["ignored_paths_seen"].as_u64(), Some(1));
+    assert_eq!(
+        update["ignored_paths_with_existing_facts"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        update["stale_facts_deleted_for_ignored_paths"].as_u64(),
+        Some(1)
+    );
+
+    let after_cli = stdout_json(&run_codegraph_in(
+        &repo,
+        &["query", "symbols", "stale_generated_symbol"],
+    ));
+    assert_hits_empty(&after_cli, "CLI stale symbol after ignore cleanup");
+    let after_mcp = mcp_ok(server.call_tool(
+        "codegraph.search",
+        &json!({"repo": repo_arg, "query": "stale_generated_symbol"}),
+    ));
+    assert_hits_empty(&after_mcp, "MCP stale symbol after ignore cleanup");
+
+    let mcp_status = mcp_ok(server.call_tool("codegraph.status", &json!({"repo": repo_arg})));
+    assert_eq!(mcp_status["status"].as_str(), Some("ok"));
+    assert_eq!(mcp_status["safe_to_query"].as_bool(), Some(true));
+
+    fs::remove_dir_all(repo).expect("cleanup lifecycle ignored cleanup fixture");
+}
+
+#[test]
+fn lifecycle_integration_include_aware_pruning_audit_prunes_unrelated_dirs() {
+    let repo = empty_repo();
+    for dir in ["src", "target/debug", "node_modules/pkg", ".git", "dist"] {
+        fs::create_dir_all(repo.join(dir)).expect("create fixture dir");
+    }
+    fs::write(
+        repo.join("src").join("keep.ts"),
+        "export function keep_me() { return 1; }\n",
+    )
+    .expect("write keep source");
+    fs::write(
+        repo.join("target").join("debug").join("junk.ts"),
+        "export function target_junk() { return 1; }\n",
+    )
+    .expect("write target junk");
+    fs::write(
+        repo.join("node_modules").join("pkg").join("junk.js"),
+        "export function dependency_junk() { return 1; }\n",
+    )
+    .expect("write node_modules junk");
+    fs::write(repo.join(".git").join("config"), "[core]\n").expect("write git config");
+    fs::write(repo.join(".gitignore"), "dist/\n").expect("write ignore config");
+    fs::write(
+        repo.join("dist").join("bundle.js"),
+        "export function dist_junk() { return 1; }\n",
+    )
+    .expect("write dist junk");
+
+    let index = stdout_json(&run_codegraph_in(
+        &repo,
+        &[
+            "index",
+            ".",
+            "--json",
+            "--include",
+            "src/keep.ts",
+            "--explain-scope",
+            "--workers",
+            "1",
+        ],
+    ));
+    assert_eq!(index["status"].as_str(), Some("indexed"));
+    assert_eq!(index["files_indexed"].as_u64(), Some(1));
+    for directory in ["target", "node_modules", ".git", "dist"] {
+        let decision = scope_directory_prune_decision(&index, directory);
+        assert_eq!(decision["pruned"].as_bool(), Some(true), "{decision:?}");
+        assert_eq!(
+            decision["could_include_descendant"].as_bool(),
+            Some(false),
+            "{decision:?}"
+        );
+        assert!(
+            decision["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("excluded_directory_pruned")),
+            "{decision:?}"
+        );
+    }
+
+    fs::remove_dir_all(repo).expect("cleanup lifecycle pruning fixture");
+}
+
+#[test]
+fn lifecycle_integration_unsafe_db_rejected_consistently_by_cli_mcp_and_status() {
+    let repo_a = fixture_repo();
+    let repo_b = fixture_repo();
+    stdout_json(&run_codegraph_in(
+        &repo_a,
+        &["index", ".", "--json", "--workers", "1"],
+    ));
+    let source_db = repo_a.join(".codegraph").join("codegraph.sqlite");
+    let target_db_dir = repo_b.join(".codegraph");
+    fs::create_dir_all(&target_db_dir).expect("create target DB dir");
+    fs::copy(&source_db, target_db_dir.join("codegraph.sqlite")).expect("copy DB");
+
+    let cli = run_codegraph_in(&repo_b, &["query", "symbols", "sanitize"]);
+    assert!(!cli.status.success());
+    let cli_stderr = String::from_utf8_lossy(&cli.stderr);
+    assert!(cli_stderr.contains("repo root mismatch"), "{cli_stderr}");
+
+    let server = mcp_server_for_repo(&repo_b);
+    let repo_arg = repo_b.to_str().expect("repo path");
+    let mcp_search = server
+        .call_tool(
+            "codegraph.search",
+            &json!({"repo": repo_arg, "query": "sanitize"}),
+        )
+        .expect_err("MCP search must reject unsafe DB");
+    assert_eq!(mcp_search.code, "db_lifecycle_blocked");
+    assert!(mcp_search.message.contains("repo root mismatch"));
+
+    let mcp_status = mcp_ok(server.call_tool("codegraph.status", &json!({"repo": repo_arg})));
+    assert_eq!(mcp_status["status"].as_str(), Some("db_problem"));
+    assert_eq!(mcp_status["problem"].as_str(), Some("repo_root_mismatch"));
+    assert_eq!(mcp_status["safe_to_query"].as_bool(), Some(false));
+    assert!(mcp_status.get("files").is_none());
+    assert!(mcp_status.get("entities").is_none());
+    assert!(mcp_status.get("edges").is_none());
+
+    fs::remove_dir_all(repo_a).expect("cleanup unsafe repo A");
+    fs::remove_dir_all(repo_b).expect("cleanup unsafe repo B");
 }
 
 #[test]
@@ -2440,6 +3685,46 @@ fn test_edge(head: &str, relation: RelationKind, tail: &str, span: SourceSpan) -
     }
 }
 
+fn upsert_test_passport(
+    store: &SqliteGraphStore,
+    repo: &Path,
+    storage_mode: StorageMode,
+    files_seen: u64,
+    files_indexed: u64,
+) {
+    let scope = IndexScopeOptions::default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    let canonical_repo_root = fs::canonicalize(repo).expect("canonical repo");
+    let passport = DbPassport {
+        passport_version: DB_PASSPORT_VERSION,
+        codegraph_schema_version: SCHEMA_VERSION,
+        storage_mode: storage_mode.as_str().to_string(),
+        index_scope_policy_hash: scope_policy_hash(&scope).expect("scope policy hash"),
+        scope_policy_json: serde_json::to_string(&scope).expect("scope policy json"),
+        canonical_repo_root: canonical_repo_root.display().to_string(),
+        git_remote: None,
+        worktree_root: Some(canonical_repo_root.display().to_string()),
+        repo_head: None,
+        source_discovery_policy_version: "scope-policy-v1".to_string(),
+        codegraph_build_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        last_successful_index_timestamp: Some(now),
+        last_completed_run_id: Some(format!("test-{now}-{}", std::process::id())),
+        last_run_status: "completed".to_string(),
+        integrity_gate_result: "ok".to_string(),
+        files_seen,
+        files_indexed,
+        created_at_unix_ms: now,
+        updated_at_unix_ms: now,
+    };
+    store
+        .upsert_db_passport(&passport)
+        .expect("upsert test passport");
+}
+
 fn fixture_repo() -> PathBuf {
     let repo = empty_repo();
     fs::create_dir_all(repo.join("src")).expect("create fixture directories");
@@ -2448,6 +3733,23 @@ fn fixture_repo() -> PathBuf {
         "export function sanitize(input: string) {\n  return input.trim();\n}\n\nexport function saveUser(email: string) {\n  return email;\n}\n\nexport function login(req: any) {\n  const email = sanitize(req.body.email);\n  saveUser(email);\n  auditLogin(req.user);\n  return email;\n}\n",
     )
     .expect("write fixture source");
+    repo
+}
+
+fn non_default_scope_cli_repo() -> PathBuf {
+    let repo = empty_repo();
+    fs::write(repo.join(".gitignore"), "ignored.ts\n").expect("write ignore config");
+    fs::write(
+        repo.join("ignored.ts"),
+        "export function ignored_scope_symbol() {\n  return 1;\n}\n",
+    )
+    .expect("write ignored source");
+    fs::create_dir_all(repo.join("src")).expect("create src");
+    fs::write(
+        repo.join("src").join("visible.ts"),
+        "export function visible_scope_symbol() {\n  return ignored_scope_symbol();\n}\n",
+    )
+    .expect("write visible source");
     repo
 }
 
@@ -2576,6 +3878,11 @@ fn write_artifact_metadata(
     build_duration_ms: u64,
 ) {
     let size = sqlite_family_size_for_test(db_path);
+    let current_exe = "C:\\fixture\\target\\release\\codegraph-mcp.exe";
+    let exact_command = format!(
+        "{current_exe} bench proof-build-only --repo fixture --db {}",
+        db_path.to_string_lossy()
+    );
     fs::write(
         metadata_path,
         serde_json::to_string_pretty(&json!({
@@ -2586,10 +3893,26 @@ fn write_artifact_metadata(
             "migration_version": migration_version,
             "storage_mode": storage_mode,
             "build_command": "fixture build",
+            "benchmark_command": "fixture benchmark",
             "build_duration_ms": build_duration_ms,
+            "proof_build_only_ms": build_duration_ms,
             "db_size_bytes": size,
             "integrity_status": "ok",
-            "benchmark_run_id": "fixture"
+            "benchmark_run_id": "fixture",
+            "current_exe": current_exe,
+            "debug_assertions": false,
+            "binary_profile": "release",
+            "exact_command": exact_command,
+            "claimable_for_thresholds": true,
+            "diagnostic_only": false,
+            "binary_metadata": {
+                "current_exe": current_exe,
+                "debug_assertions": false,
+                "binary_profile": "release",
+                "exact_command": exact_command,
+                "claimable_for_thresholds": true,
+                "diagnostic_only": false
+            }
         }))
         .expect("metadata JSON"),
     )
@@ -2613,6 +3936,20 @@ fn empty_repo() -> PathBuf {
     ));
     fs::create_dir_all(&path).expect("create fixture workspace");
     path
+}
+
+fn scope_directory_prune_decision<'a>(summary: &'a Value, directory: &str) -> &'a Value {
+    summary["scope"]["directory_prune_decisions"]
+        .as_array()
+        .expect("directory prune decisions")
+        .iter()
+        .find(|decision| {
+            decision["directory"]
+                .as_str()
+                .map(|value| value.replace('\\', "/") == directory)
+                .unwrap_or(false)
+        })
+        .unwrap_or_else(|| panic!("missing prune decision for {directory}: {summary:?}"))
 }
 
 const EXPECTED_SKILLS: &[&str] = &[

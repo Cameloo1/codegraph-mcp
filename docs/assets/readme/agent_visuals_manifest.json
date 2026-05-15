@@ -1,191 +1,145 @@
 {
-  "generated_at": "2026-05-13T14:53:14-05:00",
+  "generated_at": "2026-05-15T17:06:34-05:00",
   "chart_paths": {
-    "agent_context_quality": "docs/assets/readme/agent_visual_01_context_quality.png",
-    "trusted_proof_relations": "docs/assets/readme/agent_visual_02_trusted_relations.png",
-    "agent_loop_readiness": "docs/assets/readme/agent_visual_03_agent_loop_readiness.png"
+    "large_repo_improvement": "docs/assets/readme/large_repo_improvement.png",
+    "evidence_reliability": "docs/assets/readme/evidence_reliability.png",
+    "warm_agent_loop_latency": "docs/assets/readme/warm_agent_loop_latency.png"
   },
   "metrics_used": [
     {
-      "name": "Graph Truth Gate",
-      "value": 100.0,
-      "unit": "percent",
-      "source_file": "reports/final/comprehensive_benchmark_latest.json",
-      "claim_boundary": "Graph Truth Gate pass rate over 11 adversarial fixtures.",
-      "source_kind": "json",
-      "chart": "agent_visual_01_context_quality",
-      "label": "11/11"
-    },
-    {
-      "name": "Context Packet Gate",
-      "value": 100.0,
-      "unit": "percent",
-      "source_file": "reports/final/comprehensive_benchmark_latest.json",
-      "claim_boundary": "Context Packet Gate pass rate over 11 adversarial fixtures.",
-      "source_kind": "json",
-      "chart": "agent_visual_01_context_quality",
-      "label": "11/11"
-    },
-    {
-      "name": "Critical symbol recall",
-      "value": 100.0,
-      "unit": "percent",
-      "source_file": "reports/final/comprehensive_benchmark_latest.json",
-      "claim_boundary": "Context packet gate validation; not a real-world recall claim.",
-      "source_kind": "json",
-      "chart": "agent_visual_01_context_quality",
-      "label": "100%"
-    },
-    {
-      "name": "Proof-path coverage",
-      "value": 100.0,
-      "unit": "percent",
-      "source_file": "reports/final/comprehensive_benchmark_latest.json",
-      "claim_boundary": "Context packet gate validation over adversarial fixtures.",
-      "source_kind": "json",
-      "chart": "agent_visual_01_context_quality",
-      "label": "100%"
-    },
-    {
-      "name": "Proof-path source-span coverage",
-      "value": 100.0,
-      "unit": "percent",
-      "source_file": "reports/final/comprehensive_benchmark_latest.json",
-      "claim_boundary": "Proof paths include source spans in the context packet gate.",
-      "source_kind": "json",
-      "chart": "agent_visual_01_context_quality",
-      "label": "100%"
-    },
-    {
-      "name": "Expected tests recall",
-      "value": 100.0,
-      "unit": "percent",
-      "source_file": "reports/final/comprehensive_benchmark_latest.json",
-      "claim_boundary": "Expected-test fixture recall; not a real-world test recall claim.",
-      "source_kind": "json",
-      "chart": "agent_visual_01_context_quality",
-      "label": "100%"
-    },
-    {
-      "name": "Distractor-free packet",
-      "value": 100.0,
-      "unit": "percent",
-      "source_file": "reports/final/comprehensive_benchmark_latest.json",
-      "claim_boundary": "Clean-context score derived as 100 * (1 - distractor_ratio) for the context packet gate.",
-      "source_kind": "json",
-      "chart": "agent_visual_01_context_quality",
-      "label": "100%"
-    },
-    {
-      "name": "CALLS",
-      "value": 2363.0,
-      "unit": "proof_db_edges",
-      "source_file": "reports/final/manual_relation_precision.json",
-      "claim_boundary": "Sampled precision for present compact-proof relation only; recall is not claimed.",
-      "source_kind": "json",
-      "chart": "agent_visual_02_trusted_relations",
-      "status": "pass",
-      "label": "50/50 labeled precision",
+      "name": "Proof DB size",
+      "value": 9.539442938592392,
+      "unit": "improvement_factor",
+      "source_file": "reports/final/comprehensive_benchmark_latest.md",
+      "claim_boundary": "Before/after regression row from the comprehensive benchmark; lower is better and this is not a CGC comparison.",
+      "source_kind": "markdown",
+      "chart": "large_repo_improvement",
+      "label": "9.5x",
       "extra": {
-        "labeled_samples": 50,
-        "precision": 1.0,
-        "claim": "sampled_precision_estimate"
+        "previous": 1633.0,
+        "current": 171.184,
+        "metric_unit": "MiB",
+        "status": "improved"
       }
     },
     {
-      "name": "READS",
-      "value": 1970.0,
-      "unit": "proof_db_edges",
-      "source_file": "reports/final/manual_relation_precision.json",
-      "claim_boundary": "Sampled precision for present compact-proof relation only; recall is not claimed.",
-      "source_kind": "json",
-      "chart": "agent_visual_02_trusted_relations",
-      "status": "pass",
-      "label": "50/50 labeled precision",
+      "name": "context_pack p95",
+      "value": 36.31178183464634,
+      "unit": "improvement_factor",
+      "source_file": "reports/final/comprehensive_benchmark_latest.md",
+      "claim_boundary": "Before/after regression row from the comprehensive benchmark; lower is better and this is not a CGC comparison.",
+      "source_kind": "markdown",
+      "chart": "large_repo_improvement",
+      "label": "36.3x",
       "extra": {
-        "labeled_samples": 50,
-        "precision": 1.0,
-        "claim": "sampled_precision_estimate"
+        "previous": 30315.0,
+        "current": 834.853,
+        "metric_unit": "ms",
+        "status": "improved"
       }
     },
     {
-      "name": "WRITES",
-      "value": 1104.0,
-      "unit": "proof_db_edges",
-      "source_file": "reports/final/manual_relation_precision.json",
-      "claim_boundary": "Sampled precision for present compact-proof relation only; recall is not claimed.",
-      "source_kind": "json",
-      "chart": "agent_visual_02_trusted_relations",
-      "status": "pass",
-      "label": "50/50 labeled precision",
+      "name": "Single-file update",
+      "value": 47.34769775678867,
+      "unit": "improvement_factor",
+      "source_file": "reports/final/comprehensive_benchmark_latest.md",
+      "claim_boundary": "Before/after regression row from the comprehensive benchmark; lower is better and this is not a CGC comparison.",
+      "source_kind": "markdown",
+      "chart": "large_repo_improvement",
+      "label": "47.3x",
       "extra": {
-        "labeled_samples": 50,
-        "precision": 1.0,
-        "claim": "sampled_precision_estimate"
+        "previous": 80207.0,
+        "current": 1694.0,
+        "metric_unit": "ms",
+        "status": "improved"
       }
     },
     {
-      "name": "FLOWS_TO",
-      "value": 14801.0,
-      "unit": "proof_db_edges",
-      "source_file": "reports/final/manual_relation_precision.json",
-      "claim_boundary": "Sampled precision for present compact-proof relation only; recall is not claimed.",
-      "source_kind": "json",
-      "chart": "agent_visual_02_trusted_relations",
-      "status": "pass",
-      "label": "50/50 labeled precision",
+      "name": "Repeat unchanged",
+      "value": 8.106929510155316,
+      "unit": "improvement_factor",
+      "source_file": "reports/final/comprehensive_benchmark_latest.md",
+      "claim_boundary": "Before/after regression row from the comprehensive benchmark; lower is better and this is not a CGC comparison.",
+      "source_kind": "markdown",
+      "chart": "large_repo_improvement",
+      "label": "8.1x",
       "extra": {
-        "labeled_samples": 50,
-        "precision": 1.0,
-        "claim": "sampled_precision_estimate"
+        "previous": 13571.0,
+        "current": 1674.0,
+        "metric_unit": "ms",
+        "status": "improved"
       }
     },
     {
-      "name": "MUTATES",
-      "value": 177.0,
-      "unit": "proof_db_edges",
+      "name": "Sampled relation precision",
+      "value": 100.0,
+      "unit": "percent",
       "source_file": "reports/final/manual_relation_precision.json",
-      "claim_boundary": "Sampled precision for present compact-proof relation only; recall is not claimed.",
+      "claim_boundary": "Sampled precision only across present compact-proof relations; recall is unknown.",
       "source_kind": "json",
-      "chart": "agent_visual_02_trusted_relations",
-      "status": "reported_no_target",
-      "label": "50/50 labeled precision",
+      "chart": "evidence_reliability",
+      "label": "320/320 true-positive",
       "extra": {
-        "labeled_samples": 50,
-        "precision": 1.0,
-        "claim": "sampled_precision_estimate"
+        "true_positive": 320.0,
+        "labeled_samples": 320.0
       }
     },
     {
-      "name": "MAY_MUTATE",
-      "value": 1130.0,
-      "unit": "proof_db_edges",
+      "name": "No false/stale/leak events",
+      "value": 100.0,
+      "unit": "percent",
       "source_file": "reports/final/manual_relation_precision.json",
-      "claim_boundary": "Sampled precision for present compact-proof relation only; recall is not claimed.",
+      "claim_boundary": "Manual sample taxonomy found no false positives, stale facts, test/mock leakage, or derived-without-provenance events.",
       "source_kind": "json",
-      "chart": "agent_visual_02_trusted_relations",
-      "status": "reported_no_target",
-      "label": "50/50 labeled precision",
+      "chart": "evidence_reliability",
+      "label": "0 events found",
       "extra": {
-        "labeled_samples": 50,
-        "precision": 1.0,
-        "claim": "sampled_precision_estimate"
+        "false_positive": 0.0,
+        "stale": 0,
+        "test_mock_leaked": 0,
+        "derived_missing_provenance": 0
       }
     },
     {
-      "name": "PathEvidence",
-      "value": 20.0,
-      "unit": "labeled_path_evidence_samples",
+      "name": "Wrong-span avoidance",
+      "value": 100.0,
+      "unit": "percent",
+      "source_file": "reports/final/manual_relation_precision.json",
+      "claim_boundary": "Source-span correctness across labeled samples; recall is not claimed.",
+      "source_kind": "json",
+      "chart": "evidence_reliability",
+      "label": "0 wrong spans",
+      "extra": {
+        "wrong_span": 0.0,
+        "labeled_samples": 320.0
+      }
+    },
+    {
+      "name": "Source-span precision",
+      "value": 100.0,
+      "unit": "percent",
+      "source_file": "reports/final/manual_relation_precision.json",
+      "claim_boundary": "Manual source-span precision over eligible samples; recall is unknown.",
+      "source_kind": "json",
+      "chart": "evidence_reliability",
+      "label": "320/320 spans",
+      "extra": {
+        "true_positive": 320.0,
+        "eligible_samples": 320.0
+      }
+    },
+    {
+      "name": "PathEvidence correctness",
+      "value": 100.0,
+      "unit": "percent",
       "source_file": "reports/final/manual_relation_precision.json",
       "claim_boundary": "Sampled PathEvidence correctness only; recall is not claimed.",
       "source_kind": "json",
-      "chart": "agent_visual_02_trusted_relations",
-      "status": "pass",
-      "label": "20/20 path evidence",
+      "chart": "evidence_reliability",
+      "label": "20/20 paths",
       "extra": {
-        "labeled_samples": 20,
-        "precision": 1.0,
-        "claim": "sampled_precision_estimate"
+        "true_positive": 20.0,
+        "labeled_samples": 20.0
       }
     },
     {
@@ -195,7 +149,7 @@
       "source_file": "reports/final/intended_tool_quality_gate.json",
       "claim_boundary": "Compact proof DB size from the Intended Tool Quality Gate; audit/debug sidecars excluded.",
       "source_kind": "json",
-      "chart": "agent_visual_03_agent_loop_readiness",
+      "chart": "warm_agent_loop_latency",
       "target": 250.0,
       "status": "pass",
       "observed_label": "171.184 MiB / 250 MiB",
@@ -211,7 +165,7 @@
       "source_file": "reports/final/intended_tool_quality_gate.json",
       "claim_boundary": "Warm unchanged index loop from the Intended Tool Quality Gate.",
       "source_kind": "json",
-      "chart": "agent_visual_03_agent_loop_readiness",
+      "chart": "warm_agent_loop_latency",
       "target": 5000.0,
       "status": "pass",
       "observed_label": "1674 ms / 5000 ms",
@@ -227,7 +181,7 @@
       "source_file": "reports/final/intended_tool_quality_gate.json",
       "claim_boundary": "Single-file update loop from the Intended Tool Quality Gate.",
       "source_kind": "json",
-      "chart": "agent_visual_03_agent_loop_readiness",
+      "chart": "warm_agent_loop_latency",
       "target": 750.0,
       "status": "pass",
       "observed_label": "336 ms / 750 ms",
@@ -243,7 +197,7 @@
       "source_file": "reports/final/comprehensive_benchmark_latest.json",
       "claim_boundary": "Normal context-pack query latency from the comprehensive benchmark; not an agent success-rate metric.",
       "source_kind": "json",
-      "chart": "agent_visual_03_agent_loop_readiness",
+      "chart": "warm_agent_loop_latency",
       "target": 2000.0,
       "status": "pass",
       "observed_label": "140.3 ms / 2000 ms",
@@ -259,7 +213,7 @@
       "source_file": "reports/final/comprehensive_benchmark_latest.json",
       "claim_boundary": "Bounded unresolved-calls pagination latency from the comprehensive benchmark.",
       "source_kind": "json",
-      "chart": "agent_visual_03_agent_loop_readiness",
+      "chart": "warm_agent_loop_latency",
       "target": 1000.0,
       "status": "pass",
       "observed_label": "98.4 ms / 1000 ms",
@@ -275,7 +229,7 @@
       "source_file": "reports/final/intended_tool_quality_gate.json",
       "claim_boundary": "Cold proof-build-only timing from the Intended Tool Quality Gate; this is the remaining blocker.",
       "source_kind": "json",
-      "chart": "agent_visual_03_agent_loop_readiness",
+      "chart": "warm_agent_loop_latency",
       "target": 60000.0,
       "status": "fail",
       "observed_label": "184297 ms / 60000 ms",

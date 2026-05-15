@@ -1,2 +1,0 @@
-origin	https://github.com/CodeGraphContext/CodeGraphContext.git (fetch)
-origin	https://github.com/CodeGraphContext/CodeGraphContext.git (push)

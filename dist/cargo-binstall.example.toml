@@ -1,0 +1,7 @@
+# Example cargo-binstall metadata for a future published package.
+# Kept as a template because this workspace is currently publish = false.
+
+pkg-url = "{ repo }/releases/download/v{ version }/codegraph-mcp-{ target }{ archive-suffix }"
+bin-dir = "{ bin }"
+pkg-fmt = "tgz"
+disabled-strategies = ["quick-install"]

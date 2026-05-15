@@ -12,6 +12,7 @@ use std::{
     error::Error,
     fmt, fs,
     path::{Component, Path, PathBuf},
+    process::Command,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -28,11 +29,18 @@ use codegraph_parser::{
 use codegraph_query::{
     is_proof_path_relation, ExactGraphQueryEngine, GraphPath, TraversalDirection, TraversalStep,
 };
+use codegraph_store::{
+    inspect_db_preflight, DbPassport, DbPreflightReport, ExpectedDbPassport, GraphStore,
+    SqliteGraphStore, StoreError, DB_PASSPORT_VERSION, SCHEMA_VERSION,
+};
 use codegraph_store::{reset_sqlite_profile, take_sqlite_profile};
-use codegraph_store::{GraphStore, SqliteGraphStore, StoreError};
 use codegraph_vector::{BinarySignature, BinaryVectorIndex, InMemoryBinaryVectorIndex};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+pub mod scope;
+pub use scope::IndexScopeOptions;
+use scope::{IndexScope, IndexScopeRuntimeReport, ScopeAction, ScopePathKind};
 
 pub const UNBOUNDED_STORE_READ_LIMIT: usize = 1_000_000;
 pub const DEFAULT_INDEX_BATCH_MAX_FILES: usize = 128;
@@ -105,6 +113,7 @@ impl From<codegraph_parser::ParseError> for IndexError {
 pub struct IndexSummary {
     pub repo_root: String,
     pub db_path: String,
+    pub db_lifecycle: Option<DbLifecycleEvidence>,
     pub build_mode: String,
     pub files_seen: usize,
     pub files_walked: usize,
@@ -130,7 +139,85 @@ pub struct IndexSummary {
     pub storage_policy: String,
     pub issue_counts: BTreeMap<String, usize>,
     pub issues: Vec<IndexIssue>,
+    pub scope: Option<IndexScopeRuntimeReport>,
     pub profile: Option<IndexProfile>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DbLifecyclePolicy {
+    SafeAuto,
+    FreshRebuild,
+    IncrementalRequired,
+    FailOnDbProblem,
+    DiagnosticStaleReuse,
+}
+
+impl Default for DbLifecyclePolicy {
+    fn default() -> Self {
+        Self::SafeAuto
+    }
+}
+
+impl DbLifecyclePolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SafeAuto => "safe-auto",
+            Self::FreshRebuild => "fresh-rebuild",
+            Self::IncrementalRequired => "incremental",
+            Self::FailOnDbProblem => "fail-on-db-problem",
+            Self::DiagnosticStaleReuse => "diagnostic-stale-reuse",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DbLifecycleOptions {
+    pub policy: DbLifecyclePolicy,
+    pub explicit_db_path: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DbLifecyclePreflight {
+    pub safe: bool,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+    pub repo_root_status: String,
+    pub schema_status: String,
+    pub storage_mode_status: String,
+    pub scope_status: String,
+    pub scope_source: String,
+    pub passport_scope_hash: Option<String>,
+    pub explicit_scope_hash: Option<String>,
+    pub scope_mismatch: Option<ScopeMismatchDetails>,
+    pub passport_scope_policy: Option<IndexScopeOptions>,
+    pub explicit_scope_policy: Option<IndexScopeOptions>,
+    pub effective_scope_policy: Option<IndexScopeOptions>,
+    pub db_health: DbPreflightReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScopeMismatchDetails {
+    pub message: String,
+    pub expected_scope_source: String,
+    pub expected_scope_hash: Option<String>,
+    pub observed_scope_source: String,
+    pub observed_scope_hash: Option<String>,
+    pub passport_scope_policy: Option<IndexScopeOptions>,
+    pub explicit_scope_policy: Option<IndexScopeOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DbLifecycleEvidence {
+    pub mode: String,
+    pub decision: String,
+    pub reasons: Vec<String>,
+    pub passport_status: String,
+    pub old_db_used: bool,
+    pub old_db_replaced: bool,
+    pub fresh_temp_db_path: Option<String>,
+    pub claimable: bool,
+    pub explicit_db_path: bool,
+    pub preflight: Option<DbPreflightReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -263,13 +350,15 @@ impl std::str::FromStr for IndexBuildMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IndexOptions {
     pub profile: bool,
     pub json: bool,
     pub worker_count: Option<usize>,
     pub storage_mode: StorageMode,
     pub build_mode: IndexBuildMode,
+    pub scope: IndexScopeOptions,
+    pub db_lifecycle: DbLifecycleOptions,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -647,6 +736,11 @@ pub struct IncrementalIndexSummary {
     pub adjacency_edges: usize,
     pub deleted_fact_files: usize,
     pub dirty_path_evidence_count: usize,
+    pub ignored_paths_seen: usize,
+    pub ignored_paths_with_existing_facts: usize,
+    pub stale_facts_deleted_for_ignored_paths: usize,
+    pub deleted_file_facts_removed: usize,
+    pub path_cleanup_reasons: BTreeMap<String, Vec<String>>,
     pub global_hash_check_ran: bool,
     pub storage_audit_ran: bool,
     pub integrity_check_ran: bool,
@@ -762,16 +856,38 @@ pub fn index_repo_to_db_with_options(
     if let Some(parent) = db_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    if !db_path.exists() {
-        return index_repo_to_atomic_cold_db(&repo_root, &db_path, options);
+    let expected_passport = expected_db_passport(&repo_root, &options)?;
+    let preflight = inspect_db_preflight(&db_path, SCHEMA_VERSION, &expected_passport);
+    let decision = decide_db_lifecycle(&db_path, &options, &preflight);
+    match decision.action {
+        DbLifecycleAction::FreshRebuild => {
+            let temp_db_path = atomic_temp_db_path(&db_path);
+            let mut summary = index_repo_to_atomic_cold_db(
+                &repo_root,
+                &db_path,
+                options,
+                Some(temp_db_path.clone()),
+            )?;
+            summary.db_lifecycle = Some(decision.into_evidence(Some(temp_db_path), true));
+            Ok(summary)
+        }
+        DbLifecycleAction::IncrementalReuse { claimable } => {
+            let mut summary = index_repo_to_existing_db_with_options(
+                &repo_root,
+                &db_path,
+                options,
+                PostIndexCheck::Quick,
+                BulkIndexLoadDurability::VisibleDb,
+            )?;
+            summary.db_lifecycle = Some(decision.into_evidence(None, claimable));
+            Ok(summary)
+        }
+        DbLifecycleAction::Fail => Err(IndexError::Message(format!(
+            "DB lifecycle preflight failed for {}: {}",
+            db_path.display(),
+            decision.reasons.join("; ")
+        ))),
     }
-    index_repo_to_existing_db_with_options(
-        &repo_root,
-        &db_path,
-        options,
-        PostIndexCheck::Quick,
-        BulkIndexLoadDurability::VisibleDb,
-    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -785,6 +901,161 @@ enum PostIndexCheck {
 enum BulkIndexLoadDurability {
     VisibleDb,
     HiddenAtomicColdTemp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DbLifecycleAction {
+    FreshRebuild,
+    IncrementalReuse { claimable: bool },
+    Fail,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct DbLifecycleDecision {
+    mode: String,
+    action: DbLifecycleAction,
+    decision: String,
+    reasons: Vec<String>,
+    passport_status: String,
+    old_db_used: bool,
+    old_db_replaced: bool,
+    explicit_db_path: bool,
+    preflight: Option<DbPreflightReport>,
+}
+
+impl DbLifecycleDecision {
+    fn into_evidence(
+        self,
+        fresh_temp_db_path: Option<PathBuf>,
+        claimable: bool,
+    ) -> DbLifecycleEvidence {
+        DbLifecycleEvidence {
+            mode: self.mode,
+            decision: self.decision,
+            reasons: self.reasons,
+            passport_status: self.passport_status,
+            old_db_used: self.old_db_used,
+            old_db_replaced: self.old_db_replaced,
+            fresh_temp_db_path: fresh_temp_db_path.map(|path| path_string(&path)),
+            claimable,
+            explicit_db_path: self.explicit_db_path,
+            preflight: self.preflight,
+        }
+    }
+}
+
+fn decide_db_lifecycle(
+    db_path: &Path,
+    options: &IndexOptions,
+    preflight: &DbPreflightReport,
+) -> DbLifecycleDecision {
+    let policy = options.db_lifecycle.policy;
+    let explicit = options.db_lifecycle.explicit_db_path;
+    let mode = policy.as_str().to_string();
+    let db_exists = db_path.exists();
+    let mut reasons = preflight.reasons.clone();
+    if reasons.is_empty() && preflight.valid {
+        reasons.push("passport and read-only preflight are valid".to_string());
+    }
+
+    if policy == DbLifecyclePolicy::FreshRebuild {
+        return DbLifecycleDecision {
+            mode,
+            action: DbLifecycleAction::FreshRebuild,
+            decision: "fresh_rebuild".to_string(),
+            reasons: vec!["--fresh/--rebuild requested atomic fresh rebuild".to_string()],
+            passport_status: preflight.passport_status.clone(),
+            old_db_used: false,
+            old_db_replaced: db_exists,
+            explicit_db_path: explicit,
+            preflight: Some(preflight.clone()),
+        };
+    }
+
+    if preflight.passport_status == "locked" {
+        return DbLifecycleDecision {
+            mode,
+            action: DbLifecycleAction::Fail,
+            decision: "failed".to_string(),
+            reasons,
+            passport_status: preflight.passport_status.clone(),
+            old_db_used: false,
+            old_db_replaced: false,
+            explicit_db_path: explicit,
+            preflight: Some(preflight.clone()),
+        };
+    }
+
+    if !db_exists && policy != DbLifecyclePolicy::IncrementalRequired {
+        return DbLifecycleDecision {
+            mode,
+            action: DbLifecycleAction::FreshRebuild,
+            decision: "fresh_rebuild".to_string(),
+            reasons,
+            passport_status: preflight.passport_status.clone(),
+            old_db_used: false,
+            old_db_replaced: false,
+            explicit_db_path: explicit,
+            preflight: Some(preflight.clone()),
+        };
+    }
+
+    if preflight.valid {
+        return DbLifecycleDecision {
+            mode,
+            action: DbLifecycleAction::IncrementalReuse { claimable: true },
+            decision: "incremental_reuse".to_string(),
+            reasons,
+            passport_status: preflight.passport_status.clone(),
+            old_db_used: true,
+            old_db_replaced: false,
+            explicit_db_path: explicit,
+            preflight: Some(preflight.clone()),
+        };
+    }
+
+    if policy == DbLifecyclePolicy::DiagnosticStaleReuse {
+        return DbLifecycleDecision {
+            mode,
+            action: DbLifecycleAction::IncrementalReuse { claimable: false },
+            decision: "diagnostic_stale_reuse".to_string(),
+            reasons,
+            passport_status: preflight.passport_status.clone(),
+            old_db_used: true,
+            old_db_replaced: false,
+            explicit_db_path: explicit,
+            preflight: Some(preflight.clone()),
+        };
+    }
+
+    if policy == DbLifecyclePolicy::IncrementalRequired
+        || policy == DbLifecyclePolicy::FailOnDbProblem
+        || explicit
+    {
+        return DbLifecycleDecision {
+            mode,
+            action: DbLifecycleAction::Fail,
+            decision: "failed".to_string(),
+            reasons,
+            passport_status: preflight.passport_status.clone(),
+            old_db_used: false,
+            old_db_replaced: false,
+            explicit_db_path: explicit,
+            preflight: Some(preflight.clone()),
+        };
+    }
+
+    DbLifecycleDecision {
+        mode,
+        action: DbLifecycleAction::FreshRebuild,
+        decision: "fresh_rebuild".to_string(),
+        reasons,
+        passport_status: preflight.passport_status.clone(),
+        old_db_used: false,
+        old_db_replaced: db_exists,
+        explicit_db_path: explicit,
+        preflight: Some(preflight.clone()),
+    }
 }
 
 fn index_repo_to_existing_db_with_options(
@@ -803,6 +1074,7 @@ fn index_repo_to_existing_db_with_options(
     let mut summary = IndexSummary {
         repo_root: path_string(&repo_root),
         db_path: path_string(&db_path),
+        db_lifecycle: None,
         build_mode: options.build_mode.as_str().to_string(),
         files_seen: 0,
         files_walked: 0,
@@ -828,11 +1100,14 @@ fn index_repo_to_existing_db_with_options(
         storage_policy: options.storage_mode.storage_policy().to_string(),
         issue_counts: BTreeMap::new(),
         issues: Vec::new(),
+        scope: None,
         profile: None,
     };
 
     let discovery_start = Instant::now();
-    let files = collect_repo_files(&repo_root)?;
+    let scoped_files = collect_repo_files_with_scope(&repo_root, &options.scope)?;
+    let files = scoped_files.files;
+    summary.scope = Some(scoped_files.scope_report);
     let file_discovery_ms = discovery_start.elapsed().as_millis();
     phase_profile.add_ms("file_walk", file_discovery_ms as f64, 1, files.len() as u64);
     let indexed_at = unix_time_ms();
@@ -1464,6 +1739,11 @@ fn index_repo_to_existing_db_with_options(
         );
     }
 
+    let passport_start = Instant::now();
+    let passport = build_db_passport(&store, repo_root, &options, indexed_at, &summary, "ok")?;
+    store.upsert_db_passport(&passport)?;
+    phase_profile.add_duration("upsert_db_passport", passport_start.elapsed(), 1, 1);
+
     if options.profile {
         if let Some(profile) = &mut summary.profile {
             profile.spans = phase_profile.into_spans();
@@ -1492,10 +1772,13 @@ fn index_repo_to_atomic_cold_db(
     repo_root: &Path,
     final_db_path: &Path,
     options: IndexOptions,
+    temp_db_path_override: Option<PathBuf>,
 ) -> Result<IndexSummary, IndexError> {
     let atomic_start = Instant::now();
-    let temp_db_path = atomic_temp_db_path(final_db_path);
+    let temp_db_path = temp_db_path_override.unwrap_or_else(|| atomic_temp_db_path(final_db_path));
     remove_sqlite_file_family(&temp_db_path)?;
+    let build_mode = options.build_mode;
+    let publish_check = options.build_mode.post_index_check();
     let result = index_repo_to_existing_db_with_options(
         repo_root,
         &temp_db_path,
@@ -1505,7 +1788,6 @@ fn index_repo_to_atomic_cold_db(
     );
     match result {
         Ok(mut summary) => {
-            let publish_check = options.build_mode.post_index_check();
             let temp_finalize_start = Instant::now();
             {
                 let temp_store = SqliteGraphStore::open(&temp_db_path)?;
@@ -1547,16 +1829,14 @@ fn index_repo_to_atomic_cold_db(
                 "checkpoint and integrity gate on hidden temp DB before visible replacement",
             );
             let replace_start = Instant::now();
-            remove_sqlite_file_family(final_db_path)?;
-            fs::rename(&temp_db_path, final_db_path)?;
-            remove_sqlite_sidecars(&temp_db_path)?;
+            publish_atomic_sqlite_db(&temp_db_path, final_db_path)?;
             add_profile_span_to_summary(
                 &mut summary,
                 "atomic_db_replace",
                 replace_start.elapsed(),
                 1,
                 0,
-                "remove old DB family and rename temp DB into place",
+                "swap validated temp DB into place with old DB rollback on publish failure",
             );
             add_profile_span_to_summary(
                 &mut summary,
@@ -1569,7 +1849,7 @@ fn index_repo_to_atomic_cold_db(
             let final_finalize_start = Instant::now();
             {
                 let final_store = SqliteGraphStore::open(final_db_path)?;
-                if options.build_mode == IndexBuildMode::ProofBuildOnly
+                if build_mode == IndexBuildMode::ProofBuildOnly
                     && publish_check == PostIndexCheck::Quick
                 {
                     add_profile_span_to_summary(
@@ -1617,7 +1897,7 @@ fn index_repo_to_atomic_cold_db(
                 final_finalize_start.elapsed(),
                 1,
                 0,
-                "open, full integrity gate, and checkpoint after visible replacement",
+                "open, configured publish gate, and checkpoint after visible replacement",
             );
             summary.db_path = path_string(final_db_path);
             if let Some(profile) = &mut summary.profile {
@@ -1662,6 +1942,62 @@ fn atomic_temp_db_path(final_db_path: &Path) -> PathBuf {
     ))
 }
 
+fn atomic_backup_db_path(final_db_path: &Path) -> PathBuf {
+    let parent = final_db_path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = final_db_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("codegraph.sqlite");
+    parent.join(format!(
+        ".{file_name}.backup-{}-{}",
+        std::process::id(),
+        unix_time_ms()
+    ))
+}
+
+fn publish_atomic_sqlite_db(temp_db_path: &Path, final_db_path: &Path) -> Result<(), IndexError> {
+    let backup_db_path = atomic_backup_db_path(final_db_path);
+    let had_old_db = final_db_path.exists();
+    if had_old_db {
+        if let Err(error) = rename_sqlite_file_family(final_db_path, &backup_db_path) {
+            let _ = rename_sqlite_file_family(&backup_db_path, final_db_path);
+            return Err(error);
+        }
+    } else {
+        remove_sqlite_sidecars(final_db_path)?;
+    }
+
+    match fs::rename(temp_db_path, final_db_path) {
+        Ok(()) => {
+            remove_sqlite_sidecars(temp_db_path)?;
+            if had_old_db {
+                remove_sqlite_file_family(&backup_db_path)?;
+            }
+            Ok(())
+        }
+        Err(error) => {
+            let _ = remove_sqlite_file_family(final_db_path);
+            if had_old_db {
+                let _ = rename_sqlite_file_family(&backup_db_path, final_db_path);
+            }
+            Err(IndexError::Io(error))
+        }
+    }
+}
+
+fn rename_sqlite_file_family(from: &Path, to: &Path) -> Result<(), IndexError> {
+    rename_file_if_exists(from, to)?;
+    rename_file_if_exists(
+        &sqlite_sidecar_path(from, "wal"),
+        &sqlite_sidecar_path(to, "wal"),
+    )?;
+    rename_file_if_exists(
+        &sqlite_sidecar_path(from, "shm"),
+        &sqlite_sidecar_path(to, "shm"),
+    )?;
+    Ok(())
+}
+
 fn remove_sqlite_file_family(path: &Path) -> Result<(), IndexError> {
     remove_file_if_exists(path)?;
     remove_sqlite_sidecars(path)
@@ -1679,6 +2015,14 @@ fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
 
 fn remove_file_if_exists(path: &Path) -> Result<(), IndexError> {
     match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(IndexError::Io(error)),
+    }
+}
+
+fn rename_file_if_exists(from: &Path, to: &Path) -> Result<(), IndexError> {
+    match fs::rename(from, to) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(IndexError::Io(error)),
@@ -2469,6 +2813,364 @@ fn upsert_index_state_to_writer(
         metadata: Default::default(),
     };
     writer.upsert_repo_index_state(&state)
+}
+
+fn expected_db_passport(
+    repo_root: &Path,
+    options: &IndexOptions,
+) -> Result<ExpectedDbPassport, IndexError> {
+    Ok(ExpectedDbPassport {
+        canonical_repo_root: canonical_repo_root_string(repo_root)?,
+        storage_mode: options.storage_mode.as_str().to_string(),
+        index_scope_policy_hash: scope_policy_hash(&options.scope)?,
+        git_remote: git_remote(repo_root),
+        worktree_root: git_worktree_root(repo_root).or_else(|| Some(path_string(repo_root))),
+    })
+}
+
+pub fn inspect_repo_db_passport(
+    repo_root: &Path,
+    db_path: &Path,
+    options: &IndexOptions,
+) -> Result<DbPreflightReport, IndexError> {
+    let repo_root = resolve_repo_root_for_index(repo_root)?;
+    let db_path = normalize_db_path(&repo_root, db_path);
+    let expected = expected_db_passport(&repo_root, options)?;
+    Ok(inspect_db_preflight(&db_path, SCHEMA_VERSION, &expected))
+}
+
+pub fn inspect_db_lifecycle_preflight(
+    repo_root: &Path,
+    db_path: &Path,
+    explicit_scope_policy: Option<IndexScopeOptions>,
+) -> Result<DbLifecyclePreflight, IndexError> {
+    let repo_root = resolve_repo_root_for_index(repo_root)?;
+    let db_path = normalize_db_path(&repo_root, db_path);
+    let initial = inspect_repo_db_passport(&repo_root, &db_path, &IndexOptions::default())?;
+    let Some(passport) = initial.passport.as_ref() else {
+        return Ok(db_lifecycle_preflight_from_report(
+            initial,
+            Vec::new(),
+            Vec::new(),
+            "missing".to_string(),
+            None,
+            None,
+            None,
+            None,
+            explicit_scope_policy,
+            None,
+        ));
+    };
+
+    let mut blockers = Vec::new();
+    let mut warnings = Vec::new();
+    let mut options = IndexOptions::default();
+    let passport_scope_hash = Some(passport.index_scope_policy_hash.clone());
+    match passport.storage_mode.parse::<StorageMode>() {
+        Ok(storage_mode) => options.storage_mode = storage_mode,
+        Err(error) => blockers.push(format!("invalid passport storage_mode: {error}")),
+    }
+
+    let passport_scope_policy = match parse_passport_scope_policy(passport) {
+        Ok(scope_policy) => scope_policy,
+        Err(error) => {
+            blockers.push(error);
+            None
+        }
+    };
+    let mut scope_source = if explicit_scope_policy.is_some() {
+        "explicit".to_string()
+    } else {
+        "passport".to_string()
+    };
+    let explicit_scope_hash = explicit_scope_policy
+        .as_ref()
+        .map(scope_policy_hash)
+        .transpose()?;
+    let effective_scope_policy = if let Some(explicit) = explicit_scope_policy.clone() {
+        options.scope = explicit.clone();
+        Some(explicit)
+    } else if let Some(scope_policy) = passport_scope_policy.clone() {
+        options.scope = scope_policy.clone();
+        Some(scope_policy)
+    } else {
+        let default_scope = IndexScopeOptions::default();
+        let default_scope_hash = scope_policy_hash(&default_scope)?;
+        if passport.index_scope_policy_hash == default_scope_hash {
+            warnings.push(
+                "passport scope_policy_json is missing; using default-scope compatibility"
+                    .to_string(),
+            );
+            scope_source = "compat_default".to_string();
+            options.scope = default_scope.clone();
+            Some(default_scope)
+        } else {
+            blockers.push(
+                "passport scope_policy_json is missing or unreadable and hash is not default; rebuild required"
+                    .to_string(),
+            );
+            None
+        }
+    };
+
+    let report = inspect_repo_db_passport(&repo_root, &db_path, &options)?;
+    let scope_mismatch = if explicit_scope_policy.is_some()
+        && report
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("index scope policy hash mismatch"))
+    {
+        Some(ScopeMismatchDetails {
+            message: "DB passport scope does not match explicit requested scope".to_string(),
+            expected_scope_source: "passport".to_string(),
+            expected_scope_hash: passport_scope_hash.clone(),
+            observed_scope_source: "explicit".to_string(),
+            observed_scope_hash: explicit_scope_hash.clone(),
+            passport_scope_policy: passport_scope_policy.clone(),
+            explicit_scope_policy: explicit_scope_policy.clone(),
+        })
+    } else {
+        None
+    };
+    if let Some(mismatch) = scope_mismatch.as_ref() {
+        blockers.push(format!(
+            "{}: expected passport_scope_hash={}, observed explicit_scope_hash={}",
+            mismatch.message,
+            mismatch.expected_scope_hash.as_deref().unwrap_or("unknown"),
+            mismatch.observed_scope_hash.as_deref().unwrap_or("unknown")
+        ));
+    }
+
+    Ok(db_lifecycle_preflight_from_report(
+        report,
+        blockers,
+        warnings,
+        scope_source,
+        passport_scope_hash,
+        explicit_scope_hash,
+        scope_mismatch,
+        passport_scope_policy,
+        explicit_scope_policy,
+        effective_scope_policy,
+    ))
+}
+
+pub fn require_db_lifecycle_preflight(
+    repo_root: &Path,
+    db_path: &Path,
+    explicit_scope_policy: Option<IndexScopeOptions>,
+) -> Result<DbLifecyclePreflight, IndexError> {
+    let preflight = inspect_db_lifecycle_preflight(repo_root, db_path, explicit_scope_policy)?;
+    if preflight.safe {
+        Ok(preflight)
+    } else {
+        Err(IndexError::Message(format!(
+            "CodeGraph DB is not safe to reuse at {}: {}",
+            db_path.display(),
+            preflight.blockers.join("; ")
+        )))
+    }
+}
+
+fn parse_passport_scope_policy(passport: &DbPassport) -> Result<Option<IndexScopeOptions>, String> {
+    let raw = passport.scope_policy_json.trim();
+    if raw.is_empty() || raw == "null" {
+        return Ok(None);
+    }
+    serde_json::from_str::<IndexScopeOptions>(raw)
+        .map(Some)
+        .map_err(|error| format!("passport scope_policy_json is unreadable: {error}"))
+}
+
+fn db_lifecycle_preflight_from_report(
+    report: DbPreflightReport,
+    extra_blockers: Vec<String>,
+    warnings: Vec<String>,
+    scope_source: String,
+    passport_scope_hash: Option<String>,
+    explicit_scope_hash: Option<String>,
+    scope_mismatch: Option<ScopeMismatchDetails>,
+    passport_scope_policy: Option<IndexScopeOptions>,
+    explicit_scope_policy: Option<IndexScopeOptions>,
+    effective_scope_policy: Option<IndexScopeOptions>,
+) -> DbLifecyclePreflight {
+    let mut blockers = if report.valid {
+        Vec::new()
+    } else {
+        report.reasons.clone()
+    };
+    blockers.extend(extra_blockers);
+    blockers.sort();
+    blockers.dedup();
+    let safe = report.valid && blockers.is_empty();
+    let scope_status = if blockers
+        .iter()
+        .any(|reason| reason.contains("scope mismatch") || reason.contains("scope policy"))
+        || report
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("index scope policy hash mismatch"))
+    {
+        "mismatched"
+    } else if scope_source == "missing" {
+        "missing"
+    } else if scope_source == "compat_default" {
+        "compat_default"
+    } else if report.passport.is_some() {
+        "ok"
+    } else {
+        "unknown"
+    };
+    DbLifecyclePreflight {
+        safe,
+        blockers,
+        warnings,
+        repo_root_status: preflight_field_status(&report, "repo root mismatch"),
+        schema_status: preflight_field_status_any(
+            &report,
+            &["schema version mismatch", "passport schema mismatch"],
+        ),
+        storage_mode_status: preflight_field_status(&report, "storage mode mismatch"),
+        scope_status: scope_status.to_string(),
+        scope_source,
+        passport_scope_hash,
+        explicit_scope_hash,
+        scope_mismatch,
+        passport_scope_policy,
+        explicit_scope_policy,
+        effective_scope_policy,
+        db_health: report,
+    }
+}
+
+fn preflight_field_status(report: &DbPreflightReport, needle: &str) -> String {
+    preflight_field_status_any(report, &[needle])
+}
+
+fn preflight_field_status_any(report: &DbPreflightReport, needles: &[&str]) -> String {
+    if report.passport.is_none() && !report.valid {
+        return "unknown".to_string();
+    }
+    if report
+        .reasons
+        .iter()
+        .any(|reason| needles.iter().any(|needle| reason.contains(needle)))
+    {
+        "mismatched".to_string()
+    } else {
+        "ok".to_string()
+    }
+}
+
+pub fn require_reusable_db_passport(
+    repo_root: &Path,
+    db_path: &Path,
+    options: &IndexOptions,
+) -> Result<DbPreflightReport, IndexError> {
+    let report = inspect_repo_db_passport(repo_root, db_path, options)?;
+    if report.valid {
+        Ok(report)
+    } else {
+        Err(IndexError::Message(format!(
+            "CodeGraph DB is not safe to reuse at {}: {}",
+            db_path.display(),
+            report.reasons.join("; ")
+        )))
+    }
+}
+
+fn build_db_passport(
+    store: &SqliteGraphStore,
+    repo_root: &Path,
+    options: &IndexOptions,
+    indexed_at: u64,
+    summary: &IndexSummary,
+    integrity_gate_result: &str,
+) -> Result<DbPassport, IndexError> {
+    let now = unix_time_ms();
+    let existing_created_at = store
+        .get_db_passport()
+        .ok()
+        .flatten()
+        .map(|passport| passport.created_at_unix_ms)
+        .unwrap_or(now);
+    Ok(DbPassport {
+        passport_version: DB_PASSPORT_VERSION,
+        codegraph_schema_version: SCHEMA_VERSION,
+        storage_mode: options.storage_mode.as_str().to_string(),
+        index_scope_policy_hash: scope_policy_hash(&options.scope)?,
+        scope_policy_json: scope_policy_json(&options.scope)?,
+        canonical_repo_root: canonical_repo_root_string(repo_root)?,
+        git_remote: git_remote(repo_root),
+        worktree_root: git_worktree_root(repo_root).or_else(|| Some(path_string(repo_root))),
+        repo_head: git_head(repo_root),
+        source_discovery_policy_version: source_discovery_policy_version().to_string(),
+        codegraph_build_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        last_successful_index_timestamp: Some(indexed_at),
+        last_completed_run_id: Some(format!("index-{indexed_at}-{}", std::process::id())),
+        last_run_status: "completed".to_string(),
+        integrity_gate_result: integrity_gate_result.to_string(),
+        files_seen: summary.files_seen as u64,
+        files_indexed: summary.files_indexed as u64,
+        created_at_unix_ms: existing_created_at,
+        updated_at_unix_ms: now,
+    })
+}
+
+fn source_discovery_policy_version() -> &'static str {
+    "scope-policy-v1"
+}
+
+fn scope_policy_json(options: &IndexScopeOptions) -> Result<String, IndexError> {
+    serde_json::to_string(options).map_err(|error| IndexError::Message(error.to_string()))
+}
+
+pub fn scope_policy_hash(options: &IndexScopeOptions) -> Result<String, IndexError> {
+    Ok(stable_hex_hash(scope_policy_json(options)?.as_bytes()))
+}
+
+fn stable_hex_hash(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn canonical_repo_root_string(repo_root: &Path) -> Result<String, IndexError> {
+    Ok(path_string(&fs::canonicalize(repo_root)?))
+}
+
+fn git_remote(repo_root: &Path) -> Option<String> {
+    git_output(repo_root, &["config", "--get", "remote.origin.url"])
+}
+
+fn git_worktree_root(repo_root: &Path) -> Option<String> {
+    git_output(repo_root, &["rev-parse", "--show-toplevel"])
+}
+
+fn git_head(repo_root: &Path) -> Option<String> {
+    git_output(repo_root, &["rev-parse", "HEAD"])
+}
+
+fn git_output(repo_root: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn process_index_batch(
@@ -3358,6 +4060,107 @@ fn current_process_memory_bytes() -> Option<u64> {
     None
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IndexedPathFacts {
+    has_file_record: bool,
+    entity_ids: Vec<String>,
+}
+
+impl IndexedPathFacts {
+    fn has_existing_facts(&self) -> bool {
+        self.has_file_record || !self.entity_ids.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathCleanupReason {
+    Deleted,
+    NowIgnored,
+    ScopeChanged,
+    Replaced,
+}
+
+impl PathCleanupReason {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Deleted => "deleted",
+            Self::NowIgnored => "now_ignored",
+            Self::ScopeChanged => "scope_changed",
+            Self::Replaced => "replaced",
+        }
+    }
+}
+
+fn path_has_indexed_facts(
+    store: &SqliteGraphStore,
+    repo_relative_path: &str,
+) -> Result<IndexedPathFacts, IndexError> {
+    let has_file_record = store.get_file(repo_relative_path)?.is_some();
+    let entity_ids = store
+        .list_entities_by_file(repo_relative_path)?
+        .into_iter()
+        .map(|entity| entity.id)
+        .collect::<Vec<_>>();
+    Ok(IndexedPathFacts {
+        has_file_record,
+        entity_ids,
+    })
+}
+
+fn record_path_cleanup_reason(
+    summary: &mut IncrementalIndexSummary,
+    repo_relative_path: &str,
+    reason: PathCleanupReason,
+) {
+    let entry = summary
+        .path_cleanup_reasons
+        .entry(normalize_graph_path(repo_relative_path))
+        .or_default();
+    let reason = reason.as_str().to_string();
+    if !entry.contains(&reason) {
+        entry.push(reason);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cleanup_facts_for_path(
+    store: &SqliteGraphStore,
+    cache: &IncrementalIndexCache,
+    repo_relative_path: &str,
+    reason: PathCleanupReason,
+    summary: &mut IncrementalIndexSummary,
+    changed_fact_paths: &mut BTreeSet<String>,
+    removed_cache_entity_ids: &mut Vec<String>,
+    changed_static_resolver_inputs: &mut bool,
+    phase_profile: &mut IndexPhaseRecorder,
+) -> Result<bool, IndexError> {
+    let facts = path_has_indexed_facts(store, repo_relative_path)?;
+    if !facts.has_existing_facts() {
+        return Ok(false);
+    }
+
+    if path_has_static_resolver_language(repo_relative_path) {
+        *changed_static_resolver_inputs = true;
+    }
+    if cache.has_cached_facts() {
+        let cache_lookup_start = Instant::now();
+        removed_cache_entity_ids.extend(facts.entity_ids);
+        phase_profile.add_duration(
+            "cache_old_fact_lookup",
+            cache_lookup_start.elapsed(),
+            1,
+            removed_cache_entity_ids.len() as u64,
+        );
+    }
+    let delete_start = Instant::now();
+    store.delete_facts_for_file(repo_relative_path)?;
+    phase_profile.add_duration("stale_fact_delete", delete_start.elapsed(), 1, 1);
+    changed_fact_paths.insert(normalize_graph_path(repo_relative_path));
+    summary.deleted_fact_files += 1;
+    record_path_cleanup_reason(summary, repo_relative_path, reason);
+    Ok(true)
+}
+
 pub fn update_changed_files(
     repo_path: &Path,
     changed_paths: &[PathBuf],
@@ -3400,6 +4203,11 @@ pub fn update_changed_files_with_cache_to_db(
     if let Some(parent) = db_path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let db_preflight = require_db_lifecycle_preflight(&repo_root, &db_path, None)?;
+    let update_scope = db_preflight
+        .effective_scope_policy
+        .clone()
+        .unwrap_or_else(IndexScopeOptions::default);
     let open_start = Instant::now();
     let store = SqliteGraphStore::open(&db_path)?;
     phase_profile.add_duration("open_store", open_start.elapsed(), 1, 0);
@@ -3430,6 +4238,11 @@ pub fn update_changed_files_with_cache_to_db(
         adjacency_edges: 0,
         deleted_fact_files: 0,
         dirty_path_evidence_count: 0,
+        ignored_paths_seen: 0,
+        ignored_paths_with_existing_facts: 0,
+        stale_facts_deleted_for_ignored_paths: 0,
+        deleted_file_facts_removed: 0,
+        path_cleanup_reasons: BTreeMap::new(),
         global_hash_check_ran: false,
         storage_audit_ran: false,
         integrity_check_ran: false,
@@ -3469,38 +4282,53 @@ pub fn update_changed_files_with_cache_to_db(
         for (file_path, repo_relative_path) in &normalized {
             summary.files_seen += 1;
             summary.files_walked += 1;
-            if should_ignore_path(&repo_root, file_path) {
-                summary.files_ignored += 1;
+            let existing_facts = path_has_indexed_facts(tx, repo_relative_path)?;
+            if !file_path.exists() || !file_path.is_file() {
+                if existing_facts.has_existing_facts()
+                    && cleanup_facts_for_path(
+                        tx,
+                        cache,
+                        repo_relative_path,
+                        PathCleanupReason::Deleted,
+                        &mut summary,
+                        &mut changed_fact_paths,
+                        &mut removed_cache_entity_ids,
+                        &mut changed_static_resolver_inputs,
+                        &mut phase_profile,
+                    )?
+                {
+                    summary.deleted_file_facts_removed += 1;
+                    changed_fact_paths.insert(normalize_graph_path(repo_relative_path));
+                    summary.files_deleted += 1;
+                }
                 continue;
             }
 
-            if !file_path.exists() || !file_path.is_file() {
-                let existed = tx.get_file(repo_relative_path)?.is_some();
-                if path_has_static_resolver_language(repo_relative_path) {
-                    changed_static_resolver_inputs = true;
+            if should_ignore_path_with_scope(&repo_root, file_path, &update_scope) {
+                summary.ignored_paths_seen += 1;
+                if existing_facts.has_existing_facts() {
+                    summary.ignored_paths_with_existing_facts += 1;
+                    if cleanup_facts_for_path(
+                        tx,
+                        cache,
+                        repo_relative_path,
+                        PathCleanupReason::NowIgnored,
+                        &mut summary,
+                        &mut changed_fact_paths,
+                        &mut removed_cache_entity_ids,
+                        &mut changed_static_resolver_inputs,
+                        &mut phase_profile,
+                    )? {
+                        record_path_cleanup_reason(
+                            &mut summary,
+                            repo_relative_path,
+                            PathCleanupReason::ScopeChanged,
+                        );
+                        summary.stale_facts_deleted_for_ignored_paths += 1;
+                        summary.files_deleted += 1;
+                    }
                 }
-                if cache.has_cached_facts() {
-                    let cache_lookup_start = Instant::now();
-                    removed_cache_entity_ids.extend(
-                        tx.list_entities_by_file(repo_relative_path)?
-                            .into_iter()
-                            .map(|entity| entity.id),
-                    );
-                    phase_profile.add_duration(
-                        "cache_old_fact_lookup",
-                        cache_lookup_start.elapsed(),
-                        1,
-                        removed_cache_entity_ids.len() as u64,
-                    );
-                }
-                let delete_start = Instant::now();
-                tx.delete_facts_for_file(repo_relative_path)?;
-                phase_profile.add_duration("stale_fact_delete", delete_start.elapsed(), 1, 1);
-                if existed {
-                    changed_fact_paths.insert(normalize_graph_path(repo_relative_path));
-                    summary.files_deleted += 1;
-                    summary.deleted_fact_files += 1;
-                }
+                summary.files_ignored += 1;
                 continue;
             }
 
@@ -3568,24 +4396,17 @@ pub fn update_changed_files_with_cache_to_db(
             summary.files_renamed += renamed_stale;
             summary.deleted_fact_files += renamed_stale;
             changed_fact_paths.insert(normalize_graph_path(repo_relative_path));
-            if cache.has_cached_facts() {
-                let cache_lookup_start = Instant::now();
-                removed_cache_entity_ids.extend(
-                    tx.list_entities_by_file(repo_relative_path)?
-                        .into_iter()
-                        .map(|entity| entity.id),
-                );
-                phase_profile.add_duration(
-                    "cache_old_fact_lookup",
-                    cache_lookup_start.elapsed(),
-                    1,
-                    removed_cache_entity_ids.len() as u64,
-                );
-            }
-            let delete_start = Instant::now();
-            tx.delete_facts_for_file(repo_relative_path)?;
-            phase_profile.add_duration("stale_fact_delete", delete_start.elapsed(), 1, 1);
-            summary.deleted_fact_files += 1;
+            cleanup_facts_for_path(
+                tx,
+                cache,
+                repo_relative_path,
+                PathCleanupReason::Replaced,
+                &mut summary,
+                &mut changed_fact_paths,
+                &mut removed_cache_entity_ids,
+                &mut changed_static_resolver_inputs,
+                &mut phase_profile,
+            )?;
             summary.files_parsed += 1;
             let parse_start = Instant::now();
             let parsed = match parser.parse(repo_relative_path, &source) {
@@ -7369,17 +8190,72 @@ fn module_name_for_index_path(path: &str) -> String {
         .replace('/', "::")
 }
 
-pub fn collect_repo_files(root: &Path) -> Result<Vec<PathBuf>, IndexError> {
-    let mut files = Vec::new();
-    collect_repo_files_inner(root, &mut files)?;
-    files.sort();
-    Ok(files)
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ScopedRepoFiles {
+    pub files: Vec<PathBuf>,
+    pub scope_report: IndexScopeRuntimeReport,
 }
 
-fn collect_repo_files_inner(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), IndexError> {
+pub fn collect_repo_files(root: &Path) -> Result<Vec<PathBuf>, IndexError> {
+    Ok(collect_repo_files_with_scope(root, &IndexScopeOptions::default())?.files)
+}
+
+pub fn collect_repo_files_with_scope(
+    root: &Path,
+    options: &IndexScopeOptions,
+) -> Result<ScopedRepoFiles, IndexError> {
+    let scope = IndexScope::for_repo(root, options.clone());
+    let mut files = Vec::new();
+    let mut scope_report = IndexScopeRuntimeReport::new(options);
+    collect_repo_files_inner(root, root, &scope, &mut scope_report, &mut files)?;
+    files.sort();
+    Ok(ScopedRepoFiles {
+        files,
+        scope_report,
+    })
+}
+
+fn collect_repo_files_inner(
+    root: &Path,
+    path: &Path,
+    scope: &IndexScope,
+    scope_report: &mut IndexScopeRuntimeReport,
+    files: &mut Vec<PathBuf>,
+) -> Result<(), IndexError> {
     if path.is_dir() {
-        if should_skip_dir(path) {
-            return Ok(());
+        if path != root {
+            let relative = path.strip_prefix(root).unwrap_or(path);
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            let decision = scope.evaluate_repo_path(&relative, ScopePathKind::Directory);
+            emit_scope_decision(scope.options(), &decision);
+            let excluded = decision.excluded();
+            scope_report.record(&decision);
+            if excluded {
+                let include_descendant = scope::could_include_descendant_decision(
+                    &relative,
+                    &scope.options().include_patterns,
+                );
+                let pruned = !include_descendant.could_include_descendant;
+                let reason = if pruned {
+                    format!("excluded_directory_pruned: {}", include_descendant.reason)
+                } else {
+                    format!(
+                        "excluded_directory_descended: {}",
+                        include_descendant.reason
+                    )
+                };
+                scope_report.record_directory_prune(scope::IndexScopeDirectoryPruneDecision {
+                    directory: relative.clone(),
+                    excluded_by: decision.matched_rule.clone(),
+                    include_patterns_present: scope.options().has_include_patterns(),
+                    could_include_descendant: include_descendant.could_include_descendant,
+                    pruned,
+                    reason,
+                });
+                if pruned {
+                    return Ok(());
+                }
+            }
         }
 
         let mut entries = match fs::read_dir(path) {
@@ -7388,58 +8264,41 @@ fn collect_repo_files_inner(path: &Path, files: &mut Vec<PathBuf>) -> Result<(),
         };
         entries.sort_by_key(|entry| entry.path());
         for entry in entries {
-            collect_repo_files_inner(&entry.path(), files)?;
+            collect_repo_files_inner(root, &entry.path(), scope, scope_report, files)?;
         }
-    } else if path.is_file() && !should_skip_file(path) {
-        files.push(path.to_path_buf());
+    } else if path.is_file() {
+        let relative = path.strip_prefix(root).unwrap_or(path);
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        let decision = scope.evaluate_repo_path(relative, ScopePathKind::File);
+        emit_scope_decision(scope.options(), &decision);
+        scope_report.record(&decision);
+        if !decision.excluded() && !should_skip_file_with_scope(path, &decision, scope.options()) {
+            files.push(path.to_path_buf());
+        }
     }
 
     Ok(())
 }
 
-fn should_skip_dir(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-    is_ignored_dir_name(name)
-}
-
 pub fn should_ignore_path(root: &Path, path: &Path) -> bool {
-    let relative = path.strip_prefix(root).unwrap_or(path);
-    relative.components().any(|component| match component {
-        Component::Normal(name) => name.to_str().is_some_and(is_ignored_dir_name),
-        _ => false,
-    }) || should_skip_file(relative)
+    should_ignore_path_with_scope(root, path, &IndexScopeOptions::default())
 }
 
-fn is_ignored_dir_name(name: &str) -> bool {
-    matches!(
-        name,
-        ".git"
-            | ".codegraph"
-            | ".codegraph-competitors"
-            | ".codegraph-bench-cache"
-            | ".codegraphcontext"
-            | ".arl"
-            | ".tools"
-            | ".codex-tools"
-            | "node_modules"
-            | "__pycache__"
-            | ".pytest_cache"
-            | ".mypy_cache"
-            | ".ruff_cache"
-            | "target"
-            | "dist"
-            | "build"
-            | "out"
-            | "coverage"
-            | ".next"
-            | ".nuxt"
-            | ".vite"
-            | ".turbo"
-            | "vendor"
-            | ".venv"
-    )
+pub fn should_ignore_path_with_scope(
+    root: &Path,
+    path: &Path,
+    options: &IndexScopeOptions,
+) -> bool {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    let path_kind = if path.is_dir() {
+        ScopePathKind::Directory
+    } else {
+        ScopePathKind::File
+    };
+    let scope = IndexScope::for_repo(root, options.clone());
+    let decision = scope.evaluate_repo_path(relative, path_kind);
+    decision.excluded() || should_skip_file_with_scope(path, &decision, options)
 }
 
 fn should_skip_file(path: &Path) -> bool {
@@ -7451,6 +8310,47 @@ fn should_skip_file(path: &Path) -> bool {
                 || name.ends_with(".map")
                 || name.ends_with(".lock")
         })
+}
+
+fn should_skip_file_with_scope(
+    path: &Path,
+    decision: &scope::IndexScopeDecision,
+    options: &IndexScopeOptions,
+) -> bool {
+    if decision.path_kind != ScopePathKind::File {
+        return false;
+    }
+    if options.no_default_excludes || decision.rule_kind == scope::ScopeRuleKind::ExplicitInclude {
+        return false;
+    }
+    should_skip_file(path)
+}
+
+fn emit_scope_decision(options: &IndexScopeOptions, decision: &scope::IndexScopeDecision) {
+    if !options.has_print_or_explain() {
+        return;
+    }
+    let should_print = match decision.action {
+        ScopeAction::WouldExclude => options.print_excluded || options.explain_scope,
+        ScopeAction::WouldInclude | ScopeAction::WouldIncludeWithWarning => {
+            options.print_included || options.explain_scope
+        }
+    };
+    if should_print {
+        eprintln!(
+            "scope\t{:?}\t{}\t{:?}\t{}",
+            decision.action,
+            decision.normalized_path,
+            decision.rule_kind,
+            decision.matched_rule.as_deref().unwrap_or("none")
+        );
+    }
+    if options.explain_scope && decision.warned() {
+        eprintln!(
+            "scope-warning\t{}\t{:?}",
+            decision.normalized_path, decision.warnings
+        );
+    }
 }
 
 pub fn repo_relative_path(root: &Path, path: &Path) -> Result<String, IndexError> {
@@ -7680,6 +8580,718 @@ mod tests {
         }
         fs::create_dir_all(root.join("src")).expect("create src");
         root
+    }
+
+    fn write_test_file(root: &Path, relative: &str, source: &str) {
+        let path = root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create parent");
+        }
+        fs::write(path, source).expect("write test file");
+    }
+
+    fn collected_rel_paths(root: &Path, options: &IndexScopeOptions) -> BTreeSet<String> {
+        collect_repo_files_with_scope(root, options)
+            .expect("collect files")
+            .files
+            .into_iter()
+            .map(|path| repo_relative_path(root, &path).expect("relative path"))
+            .collect()
+    }
+
+    fn directory_prune_decision<'a>(
+        report: &'a IndexScopeRuntimeReport,
+        directory: &str,
+    ) -> &'a scope::IndexScopeDirectoryPruneDecision {
+        report
+            .directory_prune_decisions
+            .iter()
+            .find(|decision| decision.directory == directory)
+            .unwrap_or_else(|| panic!("missing directory prune decision for {directory}"))
+    }
+
+    fn workspace_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace root")
+            .to_path_buf()
+    }
+
+    fn generated_junk_fixture() -> PathBuf {
+        workspace_root()
+            .join("fixtures")
+            .join("index_scope")
+            .join("generated_junk_repo")
+    }
+
+    fn indexed_file_paths(db: &Path) -> BTreeSet<String> {
+        let store = SqliteGraphStore::open(db).expect("open indexed fixture DB");
+        store
+            .list_files(UNBOUNDED_STORE_READ_LIMIT)
+            .expect("list indexed files")
+            .into_iter()
+            .map(|record| normalize_graph_path(&record.repo_relative_path))
+            .collect()
+    }
+
+    fn expected_generated_junk_source_paths() -> BTreeSet<String> {
+        BTreeSet::from([
+            "docs/example.ts".to_string(),
+            "examples/demo.ts".to_string(),
+            "fixtures/local_fixture.ts".to_string(),
+            "src/main.ts".to_string(),
+            "tests/scope.test.ts".to_string(),
+        ])
+    }
+
+    #[test]
+    fn db_lifecycle_scope_policy_hash_is_deterministic() {
+        let default_hash = scope_policy_hash(&IndexScopeOptions::default()).expect("hash");
+        assert_eq!(
+            default_hash,
+            scope_policy_hash(&IndexScopeOptions::default()).expect("hash")
+        );
+
+        let changed_hash = scope_policy_hash(&IndexScopeOptions {
+            exclude_patterns: vec!["generated/**".to_string()],
+            ..IndexScopeOptions::default()
+        })
+        .expect("changed hash");
+        assert_ne!(default_hash, changed_hash);
+    }
+
+    #[test]
+    fn passport_non_default_scope_read_preflight_uses_stored_scope_policy() {
+        let repo = temp_repo("passport-non-default-scope-read");
+        write_test_file(&repo, ".gitignore", "ignored.ts\n");
+        write_test_file(
+            &repo,
+            "ignored.ts",
+            "export function ignored_scope_symbol() { return 1; }\n",
+        );
+        let db = repo.join(".codegraph").join("codegraph.sqlite");
+        let mut options = IndexOptions::default();
+        options.scope.include_ignored = true;
+
+        index_repo_to_db_with_options(&repo, &db, options.clone())
+            .expect("index with non-default include-ignored scope");
+
+        let stored_scope_preflight =
+            inspect_repo_db_passport(&repo, &db, &options).expect("stored-scope preflight");
+        assert!(stored_scope_preflight.valid, "{stored_scope_preflight:?}");
+        let passport = stored_scope_preflight.passport.expect("passport");
+        assert_eq!(
+            passport.index_scope_policy_hash,
+            scope_policy_hash(&options.scope).expect("non-default scope hash")
+        );
+        assert_ne!(
+            passport.index_scope_policy_hash,
+            scope_policy_hash(&IndexScopeOptions::default()).expect("default scope hash")
+        );
+
+        let read_preflight =
+            inspect_db_lifecycle_preflight(&repo, &db, None).expect("read preflight");
+        assert!(
+            read_preflight.safe,
+            "read paths should derive scope_source=passport instead of rejecting a safe DB with the wrong default-scope question: {read_preflight:?}"
+        );
+        assert_eq!(read_preflight.scope_source, "passport");
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn db_lifecycle_explicit_incompatible_scope_reports_scope_mismatch() {
+        let repo = temp_repo("passport-incompatible-scope");
+        write_test_file(&repo, ".gitignore", "ignored.ts\n");
+        write_test_file(
+            &repo,
+            "ignored.ts",
+            "export function included_by_scope() { return 1; }\n",
+        );
+        let db = repo.join(".codegraph").join("codegraph.sqlite");
+        let mut stored_options = IndexOptions::default();
+        stored_options.scope.include_ignored = true;
+        index_repo_to_db_with_options(&repo, &db, stored_options)
+            .expect("index with non-default scope");
+
+        let incompatible_scope = IndexScopeOptions {
+            exclude_patterns: vec!["ignored.ts".to_string()],
+            ..IndexScopeOptions::default()
+        };
+        let preflight = inspect_db_lifecycle_preflight(&repo, &db, Some(incompatible_scope))
+            .expect("incompatible lifecycle preflight");
+
+        assert!(!preflight.safe, "{preflight:?}");
+        assert_eq!(preflight.scope_status, "mismatched");
+        let mismatch = preflight.scope_mismatch.expect("scope mismatch details");
+        assert_eq!(
+            mismatch.message,
+            "DB passport scope does not match explicit requested scope"
+        );
+        assert!(mismatch.expected_scope_hash.is_some(), "{mismatch:?}");
+        assert!(mismatch.observed_scope_hash.is_some(), "{mismatch:?}");
+        assert_ne!(mismatch.expected_scope_hash, mismatch.observed_scope_hash);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn db_lifecycle_fresh_index_writes_passport_and_warm_reuses() {
+        let repo = temp_repo("passport-fresh-warm");
+        write_test_file(
+            &repo,
+            "src/main.ts",
+            "export function lifecycle_target() { return 1; }\n",
+        );
+        let db = repo.join(".codegraph").join("codegraph.sqlite");
+
+        let cold =
+            index_repo_to_db_with_options(&repo, &db, IndexOptions::default()).expect("cold index");
+        let cold_lifecycle = cold.db_lifecycle.as_ref().expect("cold lifecycle");
+        assert_eq!(cold_lifecycle.decision, "fresh_rebuild");
+        assert!(cold_lifecycle.claimable);
+
+        let preflight =
+            inspect_repo_db_passport(&repo, &db, &IndexOptions::default()).expect("preflight");
+        assert!(preflight.valid, "{preflight:?}");
+        assert_eq!(preflight.passport_status, "valid");
+        let passport = preflight.passport.expect("passport");
+        assert_eq!(passport.last_run_status, "completed");
+        assert_eq!(passport.integrity_gate_result, "ok");
+        assert_eq!(passport.files_indexed, 1);
+
+        let warm =
+            index_repo_to_db_with_options(&repo, &db, IndexOptions::default()).expect("warm index");
+        let warm_lifecycle = warm.db_lifecycle.as_ref().expect("warm lifecycle");
+        assert_eq!(warm_lifecycle.decision, "incremental_reuse");
+        assert!(warm_lifecycle.old_db_used);
+        assert_eq!(warm.files_metadata_unchanged, 1);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn db_lifecycle_explicit_corrupt_db_fails_unless_fresh() {
+        let repo = temp_repo("passport-explicit-corrupt");
+        write_test_file(&repo, "src/main.ts", "export const value = 1;\n");
+        let db = repo.join("named-artifact.sqlite");
+        fs::write(&db, "not sqlite").expect("write corrupt DB");
+
+        let mut explicit = IndexOptions::default();
+        explicit.db_lifecycle.explicit_db_path = true;
+        let error = index_repo_to_db_with_options(&repo, &db, explicit)
+            .expect_err("explicit corrupt DB should fail");
+        assert!(
+            error.to_string().contains("DB lifecycle preflight failed"),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(&db).expect("old corrupt DB preserved"),
+            "not sqlite"
+        );
+
+        let mut fresh = IndexOptions::default();
+        fresh.db_lifecycle.explicit_db_path = true;
+        fresh.db_lifecycle.policy = DbLifecyclePolicy::FreshRebuild;
+        let summary =
+            index_repo_to_db_with_options(&repo, &db, fresh).expect("--fresh explicit DB rebuilds");
+        assert_eq!(
+            summary
+                .db_lifecycle
+                .as_ref()
+                .map(|lifecycle| lifecycle.decision.as_str()),
+            Some("fresh_rebuild")
+        );
+        assert!(
+            inspect_repo_db_passport(&repo, &db, &IndexOptions::default())
+                .expect("preflight")
+                .valid
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn db_lifecycle_repo_mismatch_default_rebuilds() {
+        let repo_a = temp_repo("passport-repo-a");
+        let repo_b = temp_repo("passport-repo-b");
+        write_test_file(&repo_a, "src/a.ts", "export const repo_a = 1;\n");
+        write_test_file(&repo_b, "src/b.ts", "export const repo_b = 2;\n");
+        let shared_db = repo_a.join(".codegraph").join("codegraph.sqlite");
+
+        index_repo_to_db_with_options(&repo_a, &shared_db, IndexOptions::default())
+            .expect("index repo A");
+        let summary_b = index_repo_to_db_with_options(&repo_b, &shared_db, IndexOptions::default())
+            .expect("default repo mismatch rebuilds");
+        let lifecycle = summary_b.db_lifecycle.as_ref().expect("lifecycle");
+        assert_eq!(lifecycle.decision, "fresh_rebuild");
+        assert!(lifecycle.old_db_replaced);
+        assert!(
+            lifecycle
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("repo root mismatch")),
+            "{lifecycle:?}"
+        );
+        let preflight_b = inspect_repo_db_passport(&repo_b, &shared_db, &IndexOptions::default())
+            .expect("repo B preflight");
+        assert!(preflight_b.valid, "{preflight_b:?}");
+
+        fs::remove_dir_all(repo_a).expect("cleanup repo A");
+        fs::remove_dir_all(repo_b).expect("cleanup repo B");
+    }
+
+    #[test]
+    fn generated_junk_fixture_default_scope_excludes_artifacts() {
+        let repo = generated_junk_fixture();
+        let files = collected_rel_paths(&repo, &IndexScopeOptions::default());
+
+        for expected in expected_generated_junk_source_paths() {
+            assert!(files.contains(&expected), "{expected} should stay included");
+        }
+
+        for excluded in [
+            "target/debug/fake.rs",
+            "node_modules/pkg/index.js",
+            "dist/bundle.js",
+            "build/generated.py",
+            "reports/final/fake_report.rs",
+            ".venv/lib/fake.py",
+            "__pycache__/fake.py",
+            ".cache/fake.js",
+            "artifacts/fake.db",
+        ] {
+            assert!(
+                !files.contains(excluded),
+                "{excluded} must not be collected by default"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_junk_fixture_overrides_and_gitignore_are_explicit() {
+        let repo = generated_junk_fixture();
+
+        let included = collected_rel_paths(
+            &repo,
+            &IndexScopeOptions {
+                include_patterns: vec!["target/debug/fake.rs".to_string()],
+                ..IndexScopeOptions::default()
+            },
+        );
+        assert!(included.contains("target/debug/fake.rs"));
+        assert!(!included.contains("node_modules/pkg/index.js"));
+
+        let no_default = collected_rel_paths(
+            &repo,
+            &IndexScopeOptions {
+                no_default_excludes: true,
+                ..IndexScopeOptions::default()
+            },
+        );
+        for normally_excluded in [
+            "target/debug/fake.rs",
+            "node_modules/pkg/index.js",
+            "dist/bundle.js",
+            "build/generated.py",
+            "reports/final/fake_report.rs",
+            ".venv/lib/fake.py",
+            "__pycache__/fake.py",
+            ".cache/fake.js",
+            "artifacts/fake.db",
+        ] {
+            assert!(
+                no_default.contains(normally_excluded),
+                "{normally_excluded} should be included with --no-default-excludes"
+            );
+        }
+
+        let windows_decision = scope::IndexScope::new(IndexScopeOptions::default()).evaluate_path(
+            r"target\debug\fake.rs",
+            scope::ScopePathKind::File,
+            false,
+        );
+        assert_eq!(windows_decision.normalized_path, "target/debug/fake.rs");
+        assert_eq!(windows_decision.action, scope::ScopeAction::WouldExclude);
+    }
+
+    #[test]
+    fn scope_include_pattern_does_not_descend_unrelated_excluded_directories() {
+        let repo = temp_repo("scope-include-pruning");
+        write_test_file(
+            &repo,
+            "src/keep.ts",
+            "export function only_included_path() { return 1; }\n",
+        );
+        write_test_file(&repo, ".gitignore", "dist/\n");
+        write_test_file(
+            &repo,
+            "target/debug/noisy.ts",
+            "export function target_noise() { return 1; }\n",
+        );
+        write_test_file(
+            &repo,
+            "node_modules/pkg/noisy.ts",
+            "export function node_noise() { return 1; }\n",
+        );
+        write_test_file(
+            &repo,
+            "dist/noisy.ts",
+            "export function dist_noise() { return 1; }\n",
+        );
+        write_test_file(
+            &repo,
+            ".git/objects/noisy.ts",
+            "export function git_noise() { return 1; }\n",
+        );
+
+        let scoped = collect_repo_files_with_scope(
+            &repo,
+            &IndexScopeOptions {
+                include_patterns: vec!["src/keep.ts".to_string()],
+                ..IndexScopeOptions::default()
+            },
+        )
+        .expect("collect scoped files");
+        let files = scoped
+            .files
+            .iter()
+            .map(|path| repo_relative_path(&repo, path).expect("relative"))
+            .collect::<BTreeSet<_>>();
+        let source_files = files
+            .iter()
+            .filter(|path| path.ends_with(".ts"))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(source_files, BTreeSet::from(["src/keep.ts".to_string()]));
+        for unrelated_excluded_file in [
+            "target/debug/noisy.ts",
+            "node_modules/pkg/noisy.ts",
+            "dist/noisy.ts",
+            ".git/objects/noisy.ts",
+        ] {
+            assert!(
+                !scoped.scope_report.excluded_examples.iter().any(|decision| {
+                    decision.path_kind == ScopePathKind::File
+                        && decision.normalized_path == unrelated_excluded_file
+                }),
+                "{unrelated_excluded_file} should remain pruned, not merely excluded after traversal: {:?}",
+                scoped.scope_report.excluded_examples
+            );
+        }
+        for unrelated_excluded_dir in ["target", "node_modules", "dist", ".git"] {
+            let decision = directory_prune_decision(&scoped.scope_report, unrelated_excluded_dir);
+            assert!(decision.pruned, "{decision:?}");
+            assert!(!decision.could_include_descendant, "{decision:?}");
+            assert!(decision.include_patterns_present, "{decision:?}");
+        }
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn scope_include_pattern_descends_only_needed_node_modules_subtree() {
+        let repo = temp_repo("scope-include-node-modules");
+        write_test_file(
+            &repo,
+            "src/main.ts",
+            "export function app() { return 1; }\n",
+        );
+        write_test_file(
+            &repo,
+            "node_modules/pkg/file.js",
+            "export function explicit_dependency() { return 1; }\n",
+        );
+        write_test_file(
+            &repo,
+            "node_modules/other/noisy.js",
+            "export function unrelated_dependency() { return 1; }\n",
+        );
+
+        let scoped = collect_repo_files_with_scope(
+            &repo,
+            &IndexScopeOptions {
+                include_patterns: vec!["node_modules/pkg/file.js".to_string()],
+                ..IndexScopeOptions::default()
+            },
+        )
+        .expect("collect scoped files");
+        let files = scoped
+            .files
+            .iter()
+            .map(|path| repo_relative_path(&repo, path).expect("relative"))
+            .collect::<BTreeSet<_>>();
+
+        assert!(files.contains("node_modules/pkg/file.js"));
+        assert!(!files.contains("node_modules/other/noisy.js"));
+        let node_modules = directory_prune_decision(&scoped.scope_report, "node_modules");
+        assert!(!node_modules.pruned, "{node_modules:?}");
+        assert!(node_modules.could_include_descendant, "{node_modules:?}");
+        let pkg = directory_prune_decision(&scoped.scope_report, "node_modules/pkg");
+        assert!(!pkg.pruned, "{pkg:?}");
+        assert!(pkg.could_include_descendant, "{pkg:?}");
+        let other = directory_prune_decision(&scoped.scope_report, "node_modules/other");
+        assert!(other.pruned, "{other:?}");
+        assert!(!other.could_include_descendant, "{other:?}");
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn scope_include_pattern_descends_soft_dist_only_when_pattern_can_match() {
+        let repo = temp_repo("scope-include-dist");
+        write_test_file(&repo, ".gitignore", "dist/\n");
+        write_test_file(
+            &repo,
+            "dist/foo.js",
+            "export function explicit_dist_file() { return 1; }\n",
+        );
+        write_test_file(
+            &repo,
+            "dist/other.js",
+            "export function unrelated_dist_file() { return 1; }\n",
+        );
+
+        let unrelated = collect_repo_files_with_scope(
+            &repo,
+            &IndexScopeOptions {
+                include_patterns: vec!["src/keep.ts".to_string()],
+                ..IndexScopeOptions::default()
+            },
+        )
+        .expect("collect unrelated include");
+        let unrelated_dist = directory_prune_decision(&unrelated.scope_report, "dist");
+        assert!(unrelated_dist.pruned, "{unrelated_dist:?}");
+        assert!(
+            !unrelated_dist.could_include_descendant,
+            "{unrelated_dist:?}"
+        );
+
+        let scoped = collect_repo_files_with_scope(
+            &repo,
+            &IndexScopeOptions {
+                include_patterns: vec!["dist/foo.js".to_string()],
+                ..IndexScopeOptions::default()
+            },
+        )
+        .expect("collect scoped dist include");
+        let files = scoped
+            .files
+            .iter()
+            .map(|path| repo_relative_path(&repo, path).expect("relative"))
+            .collect::<BTreeSet<_>>();
+
+        assert!(files.contains("dist/foo.js"));
+        assert!(!files.contains("dist/other.js"));
+        let dist = directory_prune_decision(&scoped.scope_report, "dist");
+        assert!(!dist.pruned, "{dist:?}");
+        assert!(dist.could_include_descendant, "{dist:?}");
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn scope_complex_glob_conservative_descend_is_audited() {
+        let repo = temp_repo("scope-complex-glob");
+        write_test_file(
+            &repo,
+            "target/debug/noisy.generated.ts",
+            "export function generated() { return 1; }\n",
+        );
+
+        let scoped = collect_repo_files_with_scope(
+            &repo,
+            &IndexScopeOptions {
+                include_patterns: vec!["**/*.generated.ts".to_string()],
+                ..IndexScopeOptions::default()
+            },
+        )
+        .expect("collect complex glob");
+        let target = directory_prune_decision(&scoped.scope_report, "target");
+        assert!(!target.pruned, "{target:?}");
+        assert!(target.could_include_descendant, "{target:?}");
+        assert!(
+            target.reason.contains("complex_glob_conservative_descend"),
+            "{target:?}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn generated_junk_include_pruning_keeps_traversal_bounded() {
+        let repo = generated_junk_fixture();
+        let no_default = collect_repo_files_with_scope(
+            &repo,
+            &IndexScopeOptions {
+                no_default_excludes: true,
+                ..IndexScopeOptions::default()
+            },
+        )
+        .expect("collect no-default fixture");
+        let scoped = collect_repo_files_with_scope(
+            &repo,
+            &IndexScopeOptions {
+                include_patterns: vec!["src/main.ts".to_string()],
+                ..IndexScopeOptions::default()
+            },
+        )
+        .expect("collect exact include fixture");
+
+        assert!(
+            scoped.scope_report.paths_evaluated < no_default.scope_report.paths_evaluated,
+            "exact include should not globally disable pruning: scoped={} no_default={}",
+            scoped.scope_report.paths_evaluated,
+            no_default.scope_report.paths_evaluated
+        );
+        for excluded_dir in ["target", "node_modules", ".venv", "__pycache__", ".cache"] {
+            let decision = directory_prune_decision(&scoped.scope_report, excluded_dir);
+            assert!(decision.pruned, "{decision:?}");
+            assert!(!decision.could_include_descendant, "{decision:?}");
+        }
+    }
+
+    #[test]
+    fn generated_junk_fixture_default_index_persists_only_allowed_sources() {
+        let repo = generated_junk_fixture();
+        let work = temp_repo("generated-junk-index-db");
+        let db = work.join("generated-junk.sqlite");
+
+        let summary = index_repo_to_db_with_options(
+            &repo,
+            &db,
+            IndexOptions {
+                worker_count: Some(1),
+                ..IndexOptions::default()
+            },
+        )
+        .expect("index generated junk fixture");
+        let indexed = indexed_file_paths(&db);
+        let expected = expected_generated_junk_source_paths();
+
+        assert_eq!(indexed, expected);
+        assert_eq!(summary.files_indexed, expected.len());
+        assert_eq!(summary.files_parsed, expected.len());
+        assert_eq!(summary.parse_errors, 0);
+        assert_db_integrity(&db);
+
+        fs::remove_dir_all(work).expect("cleanup generated junk DB workspace");
+    }
+
+    #[test]
+    fn collect_repo_files_applies_safe_hard_excludes_by_default() {
+        let repo = temp_repo("scope-default-hard-excludes");
+        write_test_file(&repo, "src/main.ts", "export const app = 1;\n");
+        write_test_file(
+            &repo,
+            "fixtures/basic/src/app.ts",
+            "export const fixture = 1;\n",
+        );
+        write_test_file(&repo, "tests/main.test.ts", "export const test = 1;\n");
+        write_test_file(&repo, "examples/demo.ts", "export const demo = 1;\n");
+        write_test_file(&repo, "docs/example.ts", "export const docs = 1;\n");
+        write_test_file(
+            &repo,
+            "target/debug/generated.ts",
+            "export const target = 1;\n",
+        );
+        write_test_file(
+            &repo,
+            "node_modules/pkg/index.ts",
+            "export const dependency = 1;\n",
+        );
+        write_test_file(
+            &repo,
+            "reports/diagnostic_lab/artifact.py",
+            "artifact = 1\n",
+        );
+        write_test_file(
+            &repo,
+            "reports/handwritten/source.ts",
+            "export const reportSource = 1;\n",
+        );
+        write_test_file(&repo, "src/cache.sqlite", "not source");
+
+        let files = collected_rel_paths(&repo, &IndexScopeOptions::default());
+
+        assert!(files.contains("src/main.ts"));
+        assert!(files.contains("fixtures/basic/src/app.ts"));
+        assert!(files.contains("tests/main.test.ts"));
+        assert!(files.contains("examples/demo.ts"));
+        assert!(files.contains("docs/example.ts"));
+        assert!(files.contains("reports/handwritten/source.ts"));
+        assert!(!files.contains("target/debug/generated.ts"));
+        assert!(!files.contains("node_modules/pkg/index.ts"));
+        assert!(!files.contains("reports/diagnostic_lab/artifact.py"));
+        assert!(!files.contains("src/cache.sqlite"));
+    }
+
+    #[test]
+    fn collect_repo_files_respects_gitignore_and_include_ignored_override() {
+        let repo = temp_repo("scope-gitignore");
+        fs::write(repo.join(".gitignore"), "dist/\n*.log\n").expect("write gitignore");
+        write_test_file(&repo, "src/main.ts", "export const app = 1;\n");
+        write_test_file(&repo, "dist/app.ts", "export const built = 1;\n");
+        write_test_file(&repo, "logs/run.log", "log");
+
+        let default_files = collected_rel_paths(&repo, &IndexScopeOptions::default());
+        assert!(default_files.contains("src/main.ts"));
+        assert!(!default_files.contains("dist/app.ts"));
+        assert!(!default_files.contains("logs/run.log"));
+
+        let include_ignored_files = collected_rel_paths(
+            &repo,
+            &IndexScopeOptions {
+                include_ignored: true,
+                ..IndexScopeOptions::default()
+            },
+        );
+        assert!(include_ignored_files.contains("dist/app.ts"));
+        assert!(
+            !include_ignored_files.contains("logs/run.log"),
+            "hard log suffix stays excluded even when gitignored paths are included"
+        );
+    }
+
+    #[test]
+    fn scope_overrides_can_include_or_exclude_explicit_paths() {
+        let repo = temp_repo("scope-overrides");
+        write_test_file(&repo, "src/main.ts", "export const app = 1;\n");
+        write_test_file(
+            &repo,
+            "target/debug/generated.ts",
+            "export const target = 1;\n",
+        );
+
+        let included = collected_rel_paths(
+            &repo,
+            &IndexScopeOptions {
+                include_patterns: vec!["target/debug/generated.ts".to_string()],
+                ..IndexScopeOptions::default()
+            },
+        );
+        assert!(included.contains("target/debug/generated.ts"));
+
+        let excluded = collected_rel_paths(
+            &repo,
+            &IndexScopeOptions {
+                exclude_patterns: vec!["src/main.ts".to_string()],
+                ..IndexScopeOptions::default()
+            },
+        );
+        assert!(!excluded.contains("src/main.ts"));
+
+        let no_default = collected_rel_paths(
+            &repo,
+            &IndexScopeOptions {
+                no_default_excludes: true,
+                ..IndexScopeOptions::default()
+            },
+        );
+        assert!(no_default.contains("target/debug/generated.ts"));
     }
 
     fn assert_db_integrity(db: &Path) {
@@ -9207,6 +10819,15 @@ mod tests {
         let edges = store.list_edges(UNBOUNDED_STORE_READ_LIMIT).expect("edges");
 
         assert_eq!(summary.files_deleted, 1);
+        assert_eq!(summary.deleted_file_facts_removed, 1);
+        assert_eq!(
+            summary
+                .path_cleanup_reasons
+                .get("src/auth.ts")
+                .cloned()
+                .unwrap_or_default(),
+            vec!["deleted".to_string()]
+        );
         assert!(store.get_file("src/auth.ts").expect("file").is_none());
         assert!(store
             .list_entities_by_file("src/auth.ts")
@@ -9218,6 +10839,158 @@ mod tests {
 
         drop(store);
         fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn update_newly_ignored_file_deletes_stale_facts_before_ignore_skip() {
+        let repo = temp_repo("newly-ignored-stale");
+        write_test_file(
+            &repo,
+            "generated/now_ignored.ts",
+            "export function stale_generated_symbol() { return 1; }\n",
+        );
+        let db = repo.join("target").join("newly-ignored.sqlite");
+        index_repo_to_db(&repo, &db).expect("initial index");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert!(store
+            .get_file("generated/now_ignored.ts")
+            .expect("file lookup")
+            .is_some());
+        assert!(!store
+            .list_entities_by_file("generated/now_ignored.ts")
+            .expect("entities")
+            .is_empty());
+        drop(store);
+
+        write_test_file(&repo, ".gitignore", "generated/\n");
+        let summary =
+            update_changed_files_to_db(&repo, &[PathBuf::from("generated/now_ignored.ts")], &db)
+                .expect("update newly ignored file");
+        let store = SqliteGraphStore::open(&db).expect("store");
+
+        assert_eq!(
+            summary.files_deleted, 1,
+            "existing facts must be deleted before the ignored-path skip is counted"
+        );
+        assert_eq!(summary.ignored_paths_seen, 1);
+        assert_eq!(summary.ignored_paths_with_existing_facts, 1);
+        assert_eq!(summary.stale_facts_deleted_for_ignored_paths, 1);
+        assert_eq!(
+            summary
+                .path_cleanup_reasons
+                .get("generated/now_ignored.ts")
+                .cloned()
+                .unwrap_or_default(),
+            vec!["now_ignored".to_string(), "scope_changed".to_string()]
+        );
+        assert!(store
+            .get_file("generated/now_ignored.ts")
+            .expect("file lookup")
+            .is_none());
+        assert!(store
+            .list_entities_by_file("generated/now_ignored.ts")
+            .expect("entities")
+            .is_empty());
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn update_ignored_path_without_existing_facts_is_skipped_without_cleanup() {
+        let repo = temp_repo("ignored-no-existing-facts");
+        write_test_file(&repo, ".gitignore", "generated/\n");
+        write_test_file(
+            &repo,
+            "src/visible.ts",
+            "export function visible_symbol() { return 1; }\n",
+        );
+        write_test_file(
+            &repo,
+            "generated/new_ignored.ts",
+            "export function never_indexed_ignored_symbol() { return 1; }\n",
+        );
+        let db = repo.join("target").join("ignored-no-facts.sqlite");
+        index_repo_to_db(&repo, &db).expect("initial index");
+
+        let summary =
+            update_changed_files_to_db(&repo, &[PathBuf::from("generated/new_ignored.ts")], &db)
+                .expect("update ignored path without facts");
+
+        assert_eq!(summary.ignored_paths_seen, 1);
+        assert_eq!(summary.ignored_paths_with_existing_facts, 0);
+        assert_eq!(summary.stale_facts_deleted_for_ignored_paths, 0);
+        assert_eq!(summary.deleted_fact_files, 0);
+        assert!(summary.path_cleanup_reasons.is_empty());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn update_uses_non_default_passport_scope_for_ignored_path() {
+        let repo = temp_repo("update-passport-scope");
+        write_test_file(&repo, ".gitignore", "ignored.ts\n");
+        write_test_file(
+            &repo,
+            "ignored.ts",
+            "export function ignored_scope_symbol() { return 1; }\n",
+        );
+        let db = repo.join("target").join("passport-scope-update.sqlite");
+        let mut options = IndexOptions::default();
+        options.scope.include_ignored = true;
+        index_repo_to_db_with_options(&repo, &db, options).expect("index include-ignored");
+
+        write_test_file(
+            &repo,
+            "ignored.ts",
+            "export function ignored_scope_symbol_v2() { return 2; }\n",
+        );
+        let summary = update_changed_files_to_db(&repo, &[PathBuf::from("ignored.ts")], &db)
+            .expect("update uses passport scope");
+        let store = SqliteGraphStore::open(&db).expect("store");
+
+        assert_eq!(summary.files_ignored, 0);
+        assert_eq!(summary.ignored_paths_seen, 0);
+        assert_eq!(summary.files_indexed, 1);
+        assert!(!store
+            .find_entities_by_exact_symbol("ignored_scope_symbol_v2")
+            .expect("new symbol")
+            .is_empty());
+        assert!(store
+            .find_entities_by_exact_symbol("ignored_scope_symbol")
+            .expect("old symbol")
+            .is_empty());
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn update_rejects_repo_root_mismatch_before_cleanup() {
+        let repo_a = temp_repo("update-root-a");
+        let repo_b = temp_repo("update-root-b");
+        write_test_file(
+            &repo_a,
+            "src/auth.ts",
+            "export function login() { return 1; }\n",
+        );
+        write_test_file(
+            &repo_b,
+            "src/auth.ts",
+            "export function login() { return 2; }\n",
+        );
+        let db = repo_a.join("target").join("root-mismatch.sqlite");
+        index_repo_to_db(&repo_a, &db).expect("index repo A");
+
+        let error = update_changed_files_to_db(&repo_b, &[PathBuf::from("src/auth.ts")], &db)
+            .expect_err("repo B must not update repo A DB");
+        assert!(
+            error.to_string().contains("repo root mismatch"),
+            "error={error}"
+        );
+
+        fs::remove_dir_all(repo_a).expect("cleanup repo A");
+        fs::remove_dir_all(repo_b).expect("cleanup repo B");
     }
 
     #[test]

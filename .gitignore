@@ -20,9 +20,13 @@
 *.sqlite3-shm
 *.sqlite3-wal
 
+# Root release templates are committed; generated root dist payloads are ignored.
+/dist/*
+!/dist/
+!/dist/archive-manifest.json
+!/dist/cargo-binstall.example.toml
+
 # Node and UI artifacts
-dist/
-/dist/
 node_modules/
 codegraph-ui/node_modules/
 codegraph-ui/.next/
@@ -56,11 +60,29 @@ codegraph-competitors/
 /reports/smoke/index/windows_*/
 /reports/smoke/index/linux_*/
 /reports/smoke/docker/run_*/
-/reports/comparison/cgc_full_run/cgc/home_*/
-/reports/comparison/cgc_full_run/codegraph/artifacts/
-/reports/comparison/cgc_full_run/tmp/
-/reports/comparison/cgc_full_run/artifacts/harness_cgc_comparison/fixtures/
+/reports/comparison/cgc_full_run/
 /fixtures/cgc_smoke/
+/reports/audit/artifacts/
+/reports/diagnostic_lab/
+/reports/audit/clean_scope_rebuild_comparison.*
+/reports/audit/cold_build_profile_after_clean_scope.*
+/reports/audit/exclude_policy_report_only.*
+/reports/audit/index_scope_hypothesis.*
+/reports/audit/index_scope_inventory.*
+/reports/audit/index_side_effects.*
+/reports/audit/proof_build_mode_contamination_fix.*
+/reports/audit/proof_build_optimization_after_clean_scope.*
+/reports/audit/safe_hard_excludes_enabled.*
+/scripts/audit_index_scope.py
+/scripts/audit_index_side_effects.py
+/scripts/generate_diagnostic_lab_charts.py
+/scripts/run_diagnostic_lab.py
+
+# Committed regression fixture intentionally contains generated-looking paths
+# that are ignored elsewhere: target/, node_modules/, .venv/, caches, and DBs.
+!/fixtures/index_scope/
+!/fixtures/index_scope/generated_junk_repo/
+!/fixtures/index_scope/generated_junk_repo/**
 
 # Internal planning/status docs not intended for the public repo
 /MVP.md
@@ -80,6 +102,7 @@ codegraph-competitors/
 .DS_Store
 Thumbs.db
 .idea/
+.vs/
 .vscode/
 
 # Workspace-local tooling seeded for Codex sessions

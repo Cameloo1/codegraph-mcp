@@ -1,2 +1,0 @@
-warn: could not canonicalize path <USER_HOME>
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s

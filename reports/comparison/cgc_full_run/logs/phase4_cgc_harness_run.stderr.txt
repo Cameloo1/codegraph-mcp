@@ -1,3 +1,0 @@
-warn: could not canonicalize path <USER_HOME>
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
-     Running `target\debug\codegraph-mcp.exe bench cgc-comparison --output-dir <REPO_ROOT>\reports\comparison\cgc_full_run\artifacts\harness_cgc_comparison --timeout-ms 180000 --top-k 10 --competitor-bin <REPO_ROOT>\target\cgc-competitor\cgc-fork-venv\Scripts\cgc.exe`

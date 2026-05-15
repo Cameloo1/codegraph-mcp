@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "source_of_truth": "public release metadata template",
+  "workflow": "single-agent-only",
+  "checksum_algorithm": "sha256",
+  "archives": [
+    {
+      "name": "windows-x64",
+      "support_status": "supported_tested",
+      "target_triple": "x86_64-pc-windows-msvc",
+      "archive": "codegraph-mcp-x86_64-pc-windows-msvc.zip",
+      "binary": "codegraph-mcp.exe",
+      "checksum": "codegraph-mcp-x86_64-pc-windows-msvc.zip.sha256",
+      "provenance": "codegraph-mcp-x86_64-pc-windows-msvc.zip.intoto.jsonl"
+    },
+    {
+      "name": "macos-apple-silicon",
+      "support_status": "planned_not_tested_no_ci",
+      "target_triple": "aarch64-apple-darwin",
+      "archive": "codegraph-mcp-aarch64-apple-darwin.tar.gz",
+      "binary": "codegraph-mcp",
+      "checksum": "codegraph-mcp-aarch64-apple-darwin.tar.gz.sha256",
+      "provenance": "codegraph-mcp-aarch64-apple-darwin.tar.gz.intoto.jsonl"
+    },
+    {
+      "name": "macos-intel",
+      "support_status": "planned_not_tested_no_ci",
+      "target_triple": "x86_64-apple-darwin",
+      "archive": "codegraph-mcp-x86_64-apple-darwin.tar.gz",
+      "binary": "codegraph-mcp",
+      "checksum": "codegraph-mcp-x86_64-apple-darwin.tar.gz.sha256",
+      "provenance": "codegraph-mcp-x86_64-apple-darwin.tar.gz.intoto.jsonl"
+    },
+    {
+      "name": "linux-x64",
+      "support_status": "supported_tested_via_docker_and_ci",
+      "target_triple": "x86_64-unknown-linux-gnu",
+      "archive": "codegraph-mcp-x86_64-unknown-linux-gnu.tar.gz",
+      "binary": "codegraph-mcp",
+      "checksum": "codegraph-mcp-x86_64-unknown-linux-gnu.tar.gz.sha256",
+      "provenance": "codegraph-mcp-x86_64-unknown-linux-gnu.tar.gz.intoto.jsonl"
+    }
+  ]
+}

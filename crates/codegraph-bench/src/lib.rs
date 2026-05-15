@@ -2064,8 +2064,9 @@ fn final_gate_architecture_checks(workspace_root: &Path) -> (FinalGateCheck, Fin
         }
     };
 
-    let shared = source.contains("index_repo_to_db(&repo_root, &db_path)")
-        && source.contains("update_changed_files_to_db(&repo_root");
+    let contains_index_repo = source.contains("index_repo_to_db(&repo_root, &db_path)")
+        || source.contains("index_repo_to_db_with_options(&repo_root, &db_path");
+    let shared = contains_index_repo && source.contains("update_changed_files_to_db(&repo_root");
     let forbidden = [
         "upsert_file_text",
         "upsert_snippet_text",
@@ -2095,7 +2096,7 @@ fn final_gate_architecture_checks(workspace_root: &Path) -> (FinalGateCheck, Fin
             },
             json!({
                 "source_path": source_path.display().to_string(),
-                "contains_index_repo_to_db": source.contains("index_repo_to_db(&repo_root, &db_path)"),
+                "contains_index_repo_to_db": contains_index_repo,
                 "contains_update_changed_files_to_db": source.contains("update_changed_files_to_db(&repo_root"),
             }),
         ),

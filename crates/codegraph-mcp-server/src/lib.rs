@@ -19,7 +19,9 @@ use std::{
 
 use codegraph_core::{Edge, Entity, FileRecord, RelationKind, SourceSpan};
 use codegraph_index::{
-    default_db_path, index_repo_to_db, update_changed_files_to_db, UNBOUNDED_STORE_READ_LIMIT,
+    default_db_path, index_repo_to_db_with_options, inspect_db_lifecycle_preflight,
+    update_changed_files_to_db, DbLifecyclePreflight, IndexOptions, IndexScopeOptions,
+    UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::language_frontends;
 use codegraph_query::{
@@ -29,6 +31,9 @@ use codegraph_query::{
 use codegraph_store::{GraphStore, SqliteGraphStore, TextSearchHit, TextSearchKind};
 use codegraph_trace::{TraceConfig, TraceLogger};
 use serde_json::{json, Map, Value};
+
+#[cfg(test)]
+use codegraph_index::scope_policy_hash;
 
 pub const SERVER_NAME: &str = "codegraph-mcp";
 pub const PHASE: &str = "30";
@@ -612,6 +617,11 @@ impl McpServer {
         inner_args.insert("limit".to_string(), json!(probe_limit));
         let symbol = self.search_symbols(&inner_args)?;
         let text = self.search_text(&inner_args)?;
+        let db_lifecycle_read = symbol
+            .get("db_lifecycle_read")
+            .cloned()
+            .or_else(|| text.get("db_lifecycle_read").cloned())
+            .unwrap_or(Value::Null);
         let mut combined = Vec::new();
         for hit in symbol["hits"].as_array().cloned().unwrap_or_default() {
             combined.push(json!({
@@ -645,6 +655,7 @@ impl McpServer {
             "query": query,
             "mode": mode,
             "repo_context": context.to_json(),
+            "db_lifecycle_read": db_lifecycle_read,
             "recommended_next": [
                 "Use codegraph.analyze on the best entity id.",
                 "Use codegraph.plan_context before editing.",
@@ -679,7 +690,7 @@ impl McpServer {
             .replace('-', "_")
             .to_ascii_lowercase();
 
-        let store = self.open_store(args)?;
+        let (store, preflight) = self.open_store_with_preflight(args)?;
         let engine = self.query_engine(&store, args)?;
         let limits = query_limits(args)?;
         let paths = match analysis.as_str() {
@@ -729,6 +740,7 @@ impl McpServer {
             "analysis": analysis,
             "mode": mode,
             "repo_context": context.to_json(),
+            "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
             "paths": paths_json,
             "pagination": pagination,
             "explain_missing": if paths.is_empty() {
@@ -767,6 +779,7 @@ impl McpServer {
             "status": "ok",
             "tool": "codegraph.plan_context",
             "repo_context": context.to_json(),
+            "db_lifecycle_read": pack["db_lifecycle_read"].clone(),
             "packet": pack["packet"].clone(),
             "workflow": recommended_workflow(),
             "recommended_next": [
@@ -855,13 +868,45 @@ impl McpServer {
         let db_path = context.db_path.clone();
         if !context.indexed {
             return Ok(json!({
-                "status": "not_indexed",
+                "status": "missing",
+                "problem": "index_required",
+                "db_problem": "db_missing",
+                "safe_to_query": false,
                 "server": SERVER_NAME,
                 "phase": PHASE,
                 "repo_root": path_string(&repo_root),
                 "db_path": path_string(&db_path),
                 "repo_context": context.to_json(),
+                "blockers": [format!("db_missing: {}", db_path.display())],
+                "warnings": [],
                 "suggested_next": "Call codegraph.index_repo with the shown repo/db_path before search or analysis.",
+                "read_mostly": true,
+                "workflow": "single-agent-only",
+            }));
+        }
+
+        let explicit_scope = mcp_explicit_scope_policy(args)?;
+        let preflight = inspect_db_lifecycle_preflight(&repo_root, &db_path, explicit_scope)
+            .map_err(ToolCallError::from)?;
+        if !preflight.safe {
+            let problem = mcp_db_problem_kind(&preflight);
+            return Ok(json!({
+                "status": "db_problem",
+                "problem": problem,
+                "db_problem": problem,
+                "safe_to_query": false,
+                "server": SERVER_NAME,
+                "phase": PHASE,
+                "repo_root": path_string(&repo_root),
+                "db_path": path_string(&db_path),
+                "repo_context": context.to_json(),
+                "db_health": preflight.db_health.clone(),
+                "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
+                "passport_summary": mcp_passport_summary_json(&preflight),
+                "scope_source": preflight.scope_source.clone(),
+                "blockers": preflight.blockers.clone(),
+                "warnings": preflight.warnings.clone(),
+                "suggested_next": "Call codegraph.index_repo to rebuild the unsafe DB before search or analysis.",
                 "read_mostly": true,
                 "workflow": "single-agent-only",
             }));
@@ -870,11 +915,18 @@ impl McpServer {
         let store = SqliteGraphStore::open(&db_path).map_err(mcp_store_error)?;
         Ok(json!({
             "status": "ok",
+            "safe_to_query": true,
             "server": SERVER_NAME,
             "phase": PHASE,
             "repo_root": path_string(&repo_root),
             "db_path": path_string(&db_path),
             "repo_context": context.to_json(),
+            "db_health": preflight.db_health.clone(),
+            "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
+            "passport_summary": mcp_passport_summary_json(&preflight),
+            "scope_source": preflight.scope_source.clone(),
+            "blockers": preflight.blockers.clone(),
+            "warnings": preflight.warnings.clone(),
             "schema_version": store.schema_version().map_err(mcp_store_error)?,
             "files": store.count_files().map_err(mcp_store_error)?,
             "entities": store.count_entities().map_err(mcp_store_error)?,
@@ -888,7 +940,10 @@ impl McpServer {
     fn index_repo(&self, args: &Map<String, Value>) -> Result<Value, ToolCallError> {
         let repo_root = self.repo_root(args)?;
         let db_path = self.db_path(args, &repo_root)?;
-        let summary = index_repo_to_db(&repo_root, &db_path).map_err(ToolCallError::from)?;
+        let mut options = IndexOptions::default();
+        options.db_lifecycle.explicit_db_path = args.contains_key("db_path");
+        let summary = index_repo_to_db_with_options(&repo_root, &db_path, options)
+            .map_err(ToolCallError::from)?;
         let mut value = serde_json::to_value(summary).map_err(|error| {
             ToolCallError::new(
                 "serialization_failed",
@@ -921,7 +976,7 @@ impl McpServer {
         let offset = optional_offset(args)?;
         let requested = limit.saturating_add(offset).saturating_add(1);
         let mode = response_mode(args)?;
-        let store = self.open_store(args)?;
+        let (store, preflight) = self.open_store_with_preflight(args)?;
         let mut seen = BTreeSet::new();
         let mut hits = Vec::new();
 
@@ -961,6 +1016,7 @@ impl McpServer {
             "status": "ok",
             "query": query,
             "mode": mode,
+            "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
             "hits": hits,
             "pagination": pagination,
             "resource_links": result_resource_links(),
@@ -974,7 +1030,7 @@ impl McpServer {
         let offset = optional_offset(args)?;
         let mode = response_mode(args)?;
         let repo_root = self.repo_root(args)?;
-        let store = self.open_store(args)?;
+        let (store, preflight) = self.open_store_with_preflight(args)?;
         let requested = limit.saturating_add(offset).saturating_add(1);
         let mut raw_hits = store
             .search_text(&query, requested)
@@ -998,6 +1054,7 @@ impl McpServer {
             "status": "ok",
             "query": query,
             "mode": mode,
+            "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
             "hits": hits,
             "pagination": pagination,
             "resource_links": result_resource_links(),
@@ -1011,7 +1068,7 @@ impl McpServer {
         let offset = optional_offset(args)?;
         let mode = response_mode(args)?;
         let repo_root = self.repo_root(args)?;
-        let store = self.open_store(args)?;
+        let (store, preflight) = self.open_store_with_preflight(args)?;
         let requested = limit.saturating_add(offset);
         let mut raw_hits = store
             .search_text(&query, limit.saturating_add(offset))
@@ -1036,6 +1093,7 @@ impl McpServer {
             "query": query,
             "mode": mode,
             "semantic_mode": "deterministic_text_fallback",
+            "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
             "hits": hits,
             "pagination": pagination,
             "resource_links": result_resource_links(),
@@ -1050,7 +1108,7 @@ impl McpServer {
         let seeds = optional_string_array(args, "seeds")?;
         let stage0_candidates = optional_string_array(args, "stage0_candidates")?;
         let repo_root = self.repo_root(args)?;
-        let store = self.open_store(args)?;
+        let (store, preflight) = self.open_store_with_preflight(args)?;
         let sources = load_sources(&repo_root, &store).map_err(ToolCallError::from)?;
         let documents = retrieval_documents(&store)?;
         let funnel = RetrievalFunnel::new(
@@ -1077,6 +1135,7 @@ impl McpServer {
         Ok(json!({
             "status": "ok",
             "task": task,
+            "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
             "packet": result.packet,
             "funnel_trace": result.trace.iter().map(retrieval_trace_stage_json).collect::<Vec<_>>(),
             "proof": "Context packet is built through Stage 0 exact seeds, Stage 1 binary sieve, Stage 2 compressed rerank, Stage 3 exact graph verification, and Stage 4 packet emission.",
@@ -1088,27 +1147,35 @@ impl McpServer {
         let target = required_string(args, "target")?;
         let relations = optional_relations(args)?;
         let limits = query_limits(args)?;
-        let store = self.open_store(args)?;
+        let (store, preflight) = self.open_store_with_preflight(args)?;
         let engine = self.query_engine(&store, args)?;
         let paths = engine.trace_path(&source, &target, &relations, limits);
-        paths_response(
+        let mut value = paths_response(
             "trace_path",
             &engine,
             paths,
             args,
             Some((&store, &source, &target, &relations, limits)),
-        )
+        )?;
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "db_lifecycle_read".to_string(),
+                mcp_db_lifecycle_preflight_json(&preflight),
+            );
+        }
+        Ok(value)
     }
 
     fn impact_analysis(&self, args: &Map<String, Value>) -> Result<Value, ToolCallError> {
         let entity_id = entity_id_arg(args)?;
         let limits = query_limits(args)?;
-        let store = self.open_store(args)?;
+        let (store, preflight) = self.open_store_with_preflight(args)?;
         let engine = self.query_engine(&store, args)?;
         let impact = engine.impact_analysis_core(&entity_id, limits);
         Ok(json!({
             "status": "ok",
             "entity_id": entity_id,
+            "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
             "impact": {
                 "callers": path_evidence_json(&engine, impact.callers),
                 "callees": path_evidence_json(&engine, impact.callees),
@@ -1132,7 +1199,7 @@ impl McpServer {
     ) -> Result<Value, ToolCallError> {
         let entity_id = entity_id_arg(args)?;
         let limits = query_limits(args)?;
-        let store = self.open_store(args)?;
+        let (store, preflight) = self.open_store_with_preflight(args)?;
         let engine = self.query_engine(&store, args)?;
         let paths = match query_name {
             "callers" => engine.find_callers(&entity_id, limits),
@@ -1147,12 +1214,19 @@ impl McpServer {
             "migrations" => engine.find_migrations(&entity_id, limits),
             _ => Vec::new(),
         };
-        paths_response(query_name, &engine, paths, args, None)
+        let mut value = paths_response(query_name, &engine, paths, args, None)?;
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "db_lifecycle_read".to_string(),
+                mcp_db_lifecycle_preflight_json(&preflight),
+            );
+        }
+        Ok(value)
     }
 
     fn explain_edge(&self, args: &Map<String, Value>) -> Result<Value, ToolCallError> {
         let edge_id = required_string_alias(args, &["edge_id", "id"])?;
-        let store = self.open_store(args)?;
+        let (store, preflight) = self.open_store_with_preflight(args)?;
         let Some(edge) = store.get_edge(&edge_id).map_err(mcp_store_error)? else {
             return Err(ToolCallError::new(
                 "not_found",
@@ -1162,6 +1236,7 @@ impl McpServer {
         Ok(json!({
             "status": "ok",
             "edge": edge_json(&edge),
+            "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
             "proof": "Edge explanation is read directly from the local graph store.",
         }))
     }
@@ -1171,7 +1246,7 @@ impl McpServer {
         let target = required_string(args, "target")?;
         let relations = optional_relations(args)?;
         let limits = query_limits(args)?;
-        let store = self.open_store(args)?;
+        let (store, preflight) = self.open_store_with_preflight(args)?;
         let engine = self.query_engine(&store, args)?;
         let paths = engine.trace_path(&source, &target, &relations, limits);
         let evidence = engine.path_evidence_from_paths(&paths);
@@ -1190,6 +1265,7 @@ impl McpServer {
             "mode": response_mode(args)?,
             "paths": paths_json,
             "pagination": pagination,
+            "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
             "explain_missing": if paths.is_empty() {
                 explain_missing_path(&store, &source, &target, &relations, limits)?
             } else {
@@ -1317,6 +1393,14 @@ impl McpServer {
     }
 
     fn open_store(&self, args: &Map<String, Value>) -> Result<SqliteGraphStore, ToolCallError> {
+        let (store, _preflight) = self.open_store_with_preflight(args)?;
+        Ok(store)
+    }
+
+    fn open_store_with_preflight(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<(SqliteGraphStore, DbLifecyclePreflight), ToolCallError> {
         let repo_root = self.repo_root(args)?;
         let db_path = self.db_path(args, &repo_root)?;
         if !db_path.exists() {
@@ -1328,7 +1412,27 @@ impl McpServer {
                 ),
             ));
         }
-        SqliteGraphStore::open(db_path).map_err(mcp_store_error)
+        let explicit_scope = mcp_explicit_scope_policy(args)?;
+        let preflight = inspect_db_lifecycle_preflight(&repo_root, &db_path, explicit_scope)
+            .map_err(ToolCallError::from)?;
+        if !preflight.safe {
+            if let Some(mismatch) = preflight.scope_mismatch.as_ref() {
+                return Err(ToolCallError::new(
+                    "scope_mismatch",
+                    mcp_scope_mismatch_message(&db_path, mismatch),
+                ));
+            }
+            return Err(ToolCallError::new(
+                "db_lifecycle_blocked",
+                format!(
+                    "CodeGraph DB is not safe to read at {}: {}; call codegraph.index_repo to rebuild",
+                    db_path.display(),
+                    preflight.blockers.join("; ")
+                ),
+            ));
+        }
+        let store = SqliteGraphStore::open(&db_path).map_err(mcp_store_error)?;
+        Ok((store, preflight))
     }
 
     fn query_engine(
@@ -1392,10 +1496,7 @@ fn tool_definition(name: &str) -> Value {
             "Classify why requested evidence was not found without guessing.",
             explain_missing_schema(),
         ),
-        "codegraph.status" => (
-            "Report local CodeGraph index status.",
-            repo_schema(Vec::new()),
-        ),
+        "codegraph.status" => ("Report local CodeGraph index status.", status_schema()),
         "codegraph.index_repo" => (
             "Index a repository into the local CodeGraph SQLite store.",
             repo_schema(vec![("repo", "string", "Repository root to index.")]),
@@ -1518,6 +1619,13 @@ fn output_schema_for_tool(name: &str) -> Value {
             properties.insert("packet".to_string(), json!({"type": "object"}));
         }
         "codegraph.status" => {
+            properties.insert("safe_to_query".to_string(), json!({"type": "boolean"}));
+            properties.insert("blockers".to_string(), json!({"type": "array"}));
+            properties.insert("warnings".to_string(), json!({"type": "array"}));
+            properties.insert("passport_summary".to_string(), json!({"type": "object"}));
+            properties.insert("scope_source".to_string(), json!({"type": "string"}));
+            properties.insert("db_lifecycle_read".to_string(), json!({"type": "object"}));
+            properties.insert("problem".to_string(), json!({"type": "string"}));
             properties.insert("files".to_string(), json!({"type": "integer"}));
             properties.insert("entities".to_string(), json!({"type": "integer"}));
             properties.insert("edges".to_string(), json!({"type": "integer"}));
@@ -1632,8 +1740,34 @@ fn repo_schema(required: Vec<(&str, &str, &str)>) -> Value {
     })
 }
 
+fn add_read_scope_schema_properties(schema: &mut Value) {
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        properties.insert(
+            "include_ignored".to_string(),
+            json!({"type": "boolean", "description": "Explicit read scope: include gitignored files if the DB passport was built with that policy."}),
+        );
+        properties.insert(
+            "no_default_excludes".to_string(),
+            json!({"type": "boolean", "description": "Explicit read scope: disable CodeGraph default excludes when matching the DB passport."}),
+        );
+        properties.insert(
+            "respect_gitignore".to_string(),
+            json!({"type": "boolean", "description": "Explicit read scope: respect repository ignore files when matching the DB passport."}),
+        );
+        properties.insert(
+            "include".to_string(),
+            json!({"type": ["string", "array"], "items": {"type": "string"}, "description": "Explicit read scope include pattern or patterns."}),
+        );
+        properties.insert(
+            "exclude".to_string(),
+            json!({"type": ["string", "array"], "items": {"type": "string"}, "description": "Explicit read scope exclude pattern or patterns."}),
+        );
+    }
+}
+
 fn search_schema() -> Value {
     let mut schema = repo_schema(vec![("query", "string", "Search query.")]);
+    add_read_scope_schema_properties(&mut schema);
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
         properties.insert(
             "limit".to_string(),
@@ -1651,8 +1785,15 @@ fn search_schema() -> Value {
     schema
 }
 
+fn status_schema() -> Value {
+    let mut schema = repo_schema(Vec::new());
+    add_read_scope_schema_properties(&mut schema);
+    schema
+}
+
 fn entity_query_schema() -> Value {
     let mut schema = repo_schema(Vec::new());
+    add_read_scope_schema_properties(&mut schema);
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
         properties.insert(
             "entity_id".to_string(),
@@ -1688,6 +1829,7 @@ fn path_schema() -> Value {
         ("source", "string", "Source entity id."),
         ("target", "string", "Target entity id."),
     ]);
+    add_read_scope_schema_properties(&mut schema);
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
         properties.insert(
             "relations".to_string(),
@@ -1711,6 +1853,7 @@ fn path_schema() -> Value {
 
 fn context_pack_schema() -> Value {
     let mut schema = repo_schema(vec![("task", "string", "User task to build context for.")]);
+    add_read_scope_schema_properties(&mut schema);
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
         properties.insert("mode".to_string(), json!({"type": "string"}));
         properties.insert(
@@ -1731,6 +1874,7 @@ fn context_pack_schema() -> Value {
 
 fn high_level_schema() -> Value {
     let mut schema = repo_schema(Vec::new());
+    add_read_scope_schema_properties(&mut schema);
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
         properties.insert(
             "query".to_string(),
@@ -1782,6 +1926,7 @@ fn high_level_schema() -> Value {
 
 fn plan_context_schema() -> Value {
     let mut schema = repo_schema(Vec::new());
+    add_read_scope_schema_properties(&mut schema);
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
         properties.insert(
             "task".to_string(),
@@ -2479,6 +2624,166 @@ fn mcp_store_error(error: codegraph_store::StoreError) -> ToolCallError {
     ToolCallError::new("store_error", error.to_string())
 }
 
+fn mcp_explicit_scope_policy(
+    args: &Map<String, Value>,
+) -> Result<Option<IndexScopeOptions>, ToolCallError> {
+    let mut options = IndexScopeOptions::default();
+    let mut explicit = false;
+
+    if let Some(value) = optional_bool_arg(args, "include_ignored")? {
+        options.include_ignored = value;
+        explicit = true;
+    }
+    if let Some(value) = optional_bool_arg(args, "includeIgnored")? {
+        options.include_ignored = value;
+        explicit = true;
+    }
+    if let Some(value) = optional_bool_arg(args, "no_default_excludes")? {
+        options.no_default_excludes = value;
+        explicit = true;
+    }
+    if let Some(value) = optional_bool_arg(args, "noDefaultExcludes")? {
+        options.no_default_excludes = value;
+        explicit = true;
+    }
+    if let Some(value) = optional_bool_arg(args, "respect_gitignore")? {
+        options.respect_gitignore = value;
+        explicit = true;
+    }
+    if let Some(value) = optional_bool_arg(args, "respectGitignore")? {
+        options.respect_gitignore = value;
+        explicit = true;
+    }
+    for value in optional_scope_patterns(args, &["include", "includes", "include_patterns"])? {
+        options.include_patterns.push(value);
+        explicit = true;
+    }
+    for value in optional_scope_patterns(args, &["exclude", "excludes", "exclude_patterns"])? {
+        options.exclude_patterns.push(value);
+        explicit = true;
+    }
+
+    Ok(explicit.then_some(options))
+}
+
+fn optional_bool_arg(args: &Map<String, Value>, name: &str) -> Result<Option<bool>, ToolCallError> {
+    match args.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(ToolCallError::new(
+            "invalid_input",
+            format!("{name} must be a boolean"),
+        )),
+    }
+}
+
+fn optional_scope_patterns(
+    args: &Map<String, Value>,
+    names: &[&str],
+) -> Result<Vec<String>, ToolCallError> {
+    let mut values = Vec::new();
+    for name in names {
+        let Some(value) = args.get(*name) else {
+            continue;
+        };
+        match value {
+            Value::Null => {}
+            Value::String(pattern) => values.push(pattern.clone()),
+            Value::Array(items) => {
+                for item in items {
+                    let Some(pattern) = item.as_str() else {
+                        return Err(ToolCallError::new(
+                            "invalid_input",
+                            format!("{name} entries must be strings"),
+                        ));
+                    };
+                    values.push(pattern.to_string());
+                }
+            }
+            _ => {
+                return Err(ToolCallError::new(
+                    "invalid_input",
+                    format!("{name} must be a string or string array"),
+                ));
+            }
+        }
+    }
+    Ok(values)
+}
+
+fn mcp_db_problem_kind(preflight: &DbLifecyclePreflight) -> &'static str {
+    if preflight.repo_root_status == "mismatched" {
+        "repo_root_mismatch"
+    } else if preflight.scope_status == "mismatched" {
+        "scope_mismatch"
+    } else if preflight.schema_status == "mismatched" {
+        "schema_mismatch"
+    } else if preflight.storage_mode_status == "mismatched" {
+        "storage_mismatch"
+    } else if preflight.db_health.passport_status == "missing" {
+        "passport_missing"
+    } else if preflight.db_health.passport_status == "corrupt" {
+        "passport_corrupt"
+    } else {
+        "passport_invalid"
+    }
+}
+
+fn mcp_passport_summary_json(preflight: &DbLifecyclePreflight) -> Value {
+    let passport = preflight.db_health.passport.as_ref();
+    json!({
+        "passport_status": preflight.db_health.passport_status.clone(),
+        "schema_version": preflight.db_health.schema_version,
+        "passport_version": passport.map(|value| value.passport_version),
+        "codegraph_schema_version": passport.map(|value| value.codegraph_schema_version),
+        "storage_mode": passport.map(|value| value.storage_mode.clone()),
+        "canonical_repo_root": passport.map(|value| value.canonical_repo_root.clone()),
+        "scope_source": preflight.scope_source.clone(),
+        "scope_status": preflight.scope_status.clone(),
+        "passport_scope_hash": preflight.passport_scope_hash.clone(),
+        "explicit_scope_hash": preflight.explicit_scope_hash.clone(),
+        "last_run_status": passport.map(|value| value.last_run_status.clone()),
+        "integrity_gate_result": passport.map(|value| value.integrity_gate_result.clone()),
+        "files_seen": passport.map(|value| value.files_seen),
+        "files_indexed": passport.map(|value| value.files_indexed),
+        "updated_at_unix_ms": passport.map(|value| value.updated_at_unix_ms),
+    })
+}
+
+fn mcp_db_lifecycle_preflight_json(preflight: &DbLifecyclePreflight) -> Value {
+    json!({
+        "decision": if preflight.safe { "read_reuse" } else { "blocked" },
+        "passport_status": preflight.db_health.passport_status.clone(),
+        "safe": preflight.safe,
+        "claimable": preflight.safe,
+        "blockers": preflight.blockers.clone(),
+        "warnings": preflight.warnings.clone(),
+        "repo_root_status": preflight.repo_root_status.clone(),
+        "schema_status": preflight.schema_status.clone(),
+        "storage_mode_status": preflight.storage_mode_status.clone(),
+        "scope_status": preflight.scope_status.clone(),
+        "scope_source": preflight.scope_source.clone(),
+        "passport_scope_hash": preflight.passport_scope_hash.clone(),
+        "explicit_scope_hash": preflight.explicit_scope_hash.clone(),
+        "scope_mismatch": preflight.scope_mismatch.clone(),
+        "passport_scope_policy": preflight.passport_scope_policy.clone(),
+        "explicit_scope_policy": preflight.explicit_scope_policy.clone(),
+    })
+}
+
+fn mcp_scope_mismatch_message(
+    db_path: &Path,
+    mismatch: &codegraph_index::ScopeMismatchDetails,
+) -> String {
+    format!(
+        "{} at {}: expected passport_scope_hash={}, observed explicit_scope_hash={}",
+        mismatch.message,
+        db_path.display(),
+        mismatch.expected_scope_hash.as_deref().unwrap_or("unknown"),
+        mismatch.observed_scope_hash.as_deref().unwrap_or("unknown")
+    )
+}
+
 fn trace_id_for(tool: &str) -> String {
     let safe_tool = tool
         .chars()
@@ -2578,6 +2883,30 @@ mod tests {
         root
     }
 
+    fn non_default_scope_repo() -> PathBuf {
+        let counter = FIXTURE_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+        let root = std::env::temp_dir().join(format!(
+            "codegraph-mcp-server-non-default-scope-{}-{counter}",
+            std::process::id(),
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root).expect("remove stale fixture");
+        }
+        fs::create_dir_all(root.join("src")).expect("create fixture");
+        fs::write(root.join(".gitignore"), "ignored.ts\n").expect("write ignore config");
+        fs::write(
+            root.join("ignored.ts"),
+            "export function ignored_scope_symbol() {\n  return 1;\n}\n",
+        )
+        .expect("write ignored source");
+        fs::write(
+            root.join("src").join("visible.ts"),
+            "export function visible_scope_symbol() {\n  return ignored_scope_symbol();\n}\n",
+        )
+        .expect("write visible source");
+        root
+    }
+
     fn indexed_server() -> (McpServer, PathBuf, String, String) {
         let repo = fixture_repo();
         let server = McpServer::new(McpServerConfig::for_repo(&repo));
@@ -2596,6 +2925,30 @@ mod tests {
             .as_str()
             .expect("entity id")
             .to_string()
+    }
+
+    fn mutate_db_passport(repo: &Path, mut mutate: impl FnMut(&mut codegraph_store::DbPassport)) {
+        let db_path = default_db_path(repo);
+        let store = SqliteGraphStore::open(&db_path).expect("open DB");
+        let mut passport = store
+            .get_db_passport()
+            .expect("read passport")
+            .expect("passport");
+        mutate(&mut passport);
+        store
+            .upsert_db_passport(&passport)
+            .expect("write mutated passport");
+    }
+
+    fn assert_blocker_contains(status: &Value, expected: &str) {
+        assert!(
+            status["blockers"]
+                .as_array()
+                .expect("blockers")
+                .iter()
+                .any(|reason| reason.as_str().is_some_and(|text| text.contains(expected))),
+            "expected blocker containing {expected:?}: {status:?}"
+        );
     }
 
     #[test]
@@ -2745,10 +3098,7 @@ mod tests {
         );
 
         let status = ok(server.call_tool("codegraph.status", &json!({"repo": path_string(&repo)})));
-        assert!(matches!(
-            status["status"].as_str(),
-            Some("not_indexed" | "ok")
-        ));
+        assert!(matches!(status["status"].as_str(), Some("missing" | "ok")));
         drop(server);
 
         let events_path = trace_root.join(run_id).join("events.jsonl");
@@ -2792,6 +3142,235 @@ mod tests {
                 assert!(event.get(field).is_some(), "missing field {field}");
             }
         }
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mcp_status_safe_db_reports_counts_passport_and_scope_source() {
+        let repo = fixture_repo();
+        let server = McpServer::new(McpServerConfig::for_repo(&repo));
+        ok(server.call_tool("codegraph.index_repo", &json!({"repo": path_string(&repo)})));
+
+        let status = ok(server.call_tool("codegraph.status", &json!({"repo": path_string(&repo)})));
+
+        assert_eq!(status["status"].as_str(), Some("ok"));
+        assert_eq!(status["safe_to_query"].as_bool(), Some(true));
+        assert_eq!(status["scope_source"].as_str(), Some("passport"));
+        assert_eq!(
+            status["db_lifecycle_read"]["scope_source"].as_str(),
+            Some("passport")
+        );
+        assert_eq!(
+            status["passport_summary"]["passport_status"].as_str(),
+            Some("valid")
+        );
+        assert_eq!(
+            status["passport_summary"]["scope_source"].as_str(),
+            Some("passport")
+        );
+        assert!(status["files"].as_u64().is_some());
+        assert!(status["entities"].as_u64().is_some());
+        assert!(status["edges"].as_u64().is_some());
+        assert!(status["blockers"].as_array().expect("blockers").is_empty());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mcp_status_missing_db_reports_index_required() {
+        let repo = fixture_repo();
+        let server = McpServer::new(McpServerConfig::for_repo(&repo));
+
+        let status = ok(server.call_tool("codegraph.status", &json!({"repo": path_string(&repo)})));
+
+        assert_eq!(status["status"].as_str(), Some("missing"));
+        assert_eq!(status["problem"].as_str(), Some("index_required"));
+        assert_eq!(status["db_problem"].as_str(), Some("db_missing"));
+        assert_eq!(status["safe_to_query"].as_bool(), Some(false));
+        assert_blocker_contains(&status, "db_missing");
+        assert!(status.get("files").is_none());
+        assert!(status.get("entities").is_none());
+        assert!(status.get("edges").is_none());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mcp_status_passport_gate_reports_db_problem_for_mismatched_db() {
+        let repo = fixture_repo();
+        let server = McpServer::new(McpServerConfig::for_repo(&repo));
+        ok(server.call_tool("codegraph.index_repo", &json!({"repo": path_string(&repo)})));
+        let repo_arg = path_string(&repo);
+        mutate_db_passport(&repo, |passport| {
+            passport.canonical_repo_root = path_string(&repo.join("different-root"));
+        });
+
+        let search = server
+            .call_tool(
+                "codegraph.search_symbols",
+                &json!({"repo": repo_arg, "query": "login"}),
+            )
+            .expect_err("search should reject mismatched passport");
+        assert_eq!(search.code, "db_lifecycle_blocked");
+        assert!(search.message.contains("repo root mismatch"));
+
+        let status = ok(server.call_tool("codegraph.status", &json!({"repo": repo_arg})));
+        assert_eq!(status["status"].as_str(), Some("db_problem"));
+        assert_eq!(status["problem"].as_str(), Some("repo_root_mismatch"));
+        assert_eq!(status["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(
+            status["db_health"]["passport_status"].as_str(),
+            Some("mismatched")
+        );
+        assert_eq!(
+            status["db_lifecycle_read"]["repo_root_status"].as_str(),
+            Some("mismatched")
+        );
+        assert_blocker_contains(&status, "repo root mismatch");
+        assert!(
+            status.get("files").is_none() && status.get("entities").is_none(),
+            "unsafe status must not pretend direct counts are enough: {status:?}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mcp_status_scope_mismatch_reports_scope_mismatch_blocker() {
+        let repo = fixture_repo();
+        let server = McpServer::new(McpServerConfig::for_repo(&repo));
+        ok(server.call_tool("codegraph.index_repo", &json!({"repo": path_string(&repo)})));
+        mutate_db_passport(&repo, |passport| {
+            passport.index_scope_policy_hash = "tampered-scope-policy-hash".to_string();
+        });
+
+        let status = ok(server.call_tool("codegraph.status", &json!({"repo": path_string(&repo)})));
+
+        assert_eq!(status["status"].as_str(), Some("db_problem"));
+        assert_eq!(status["problem"].as_str(), Some("scope_mismatch"));
+        assert_eq!(status["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(
+            status["db_lifecycle_read"]["scope_status"].as_str(),
+            Some("mismatched")
+        );
+        assert_blocker_contains(&status, "index scope policy hash mismatch");
+        assert!(status.get("files").is_none());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mcp_status_schema_mismatch_reports_schema_blocker() {
+        let repo = fixture_repo();
+        let server = McpServer::new(McpServerConfig::for_repo(&repo));
+        ok(server.call_tool("codegraph.index_repo", &json!({"repo": path_string(&repo)})));
+        mutate_db_passport(&repo, |passport| {
+            passport.codegraph_schema_version = passport.codegraph_schema_version.saturating_add(1);
+        });
+
+        let status = ok(server.call_tool("codegraph.status", &json!({"repo": path_string(&repo)})));
+
+        assert_eq!(status["status"].as_str(), Some("db_problem"));
+        assert_eq!(status["problem"].as_str(), Some("schema_mismatch"));
+        assert_eq!(status["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(
+            status["db_lifecycle_read"]["schema_status"].as_str(),
+            Some("mismatched")
+        );
+        assert_blocker_contains(&status, "passport schema mismatch");
+        assert!(status.get("files").is_none());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mcp_status_storage_mismatch_reports_storage_blocker() {
+        let repo = fixture_repo();
+        let server = McpServer::new(McpServerConfig::for_repo(&repo));
+        ok(server.call_tool("codegraph.index_repo", &json!({"repo": path_string(&repo)})));
+        mutate_db_passport(&repo, |passport| {
+            passport.storage_mode = "unknown_storage_mode".to_string();
+        });
+
+        let status = ok(server.call_tool("codegraph.status", &json!({"repo": path_string(&repo)})));
+
+        assert_eq!(status["status"].as_str(), Some("db_problem"));
+        assert_eq!(status["problem"].as_str(), Some("storage_mismatch"));
+        assert_eq!(status["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(
+            status["db_lifecycle_read"]["storage_mode_status"].as_str(),
+            Some("mismatched")
+        );
+        assert_blocker_contains(&status, "storage mode");
+        assert!(status.get("files").is_none());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mcp_non_default_scope_search_analyze_and_status_use_passport_scope() {
+        let repo = non_default_scope_repo();
+        let db_path = default_db_path(&repo);
+        let mut options = IndexOptions::default();
+        options.scope.include_ignored = true;
+        index_repo_to_db_with_options(&repo, &db_path, options.clone())
+            .expect("index non-default scope fixture");
+        let expected_scope_hash = scope_policy_hash(&options.scope).expect("scope hash");
+        let server = McpServer::new(McpServerConfig::for_repo(&repo));
+        let repo_arg = path_string(&repo);
+
+        let search = ok(server.call_tool(
+            "codegraph.search",
+            &json!({"repo": repo_arg, "query": "ignored_scope_symbol"}),
+        ));
+        assert_eq!(search["status"].as_str(), Some("ok"));
+        assert_eq!(
+            search["db_lifecycle_read"]["scope_source"].as_str(),
+            Some("passport")
+        );
+        assert_eq!(
+            search["db_lifecycle_read"]["passport_scope_hash"].as_str(),
+            Some(expected_scope_hash.as_str())
+        );
+
+        let symbols = ok(server.call_tool(
+            "codegraph.search_symbols",
+            &json!({"repo": repo_arg, "query": "ignored_scope_symbol"}),
+        ));
+        assert_eq!(
+            symbols["db_lifecycle_read"]["scope_source"].as_str(),
+            Some("passport")
+        );
+        let entity_id = symbols["hits"][0]["entity"]["id"]
+            .as_str()
+            .expect("entity id")
+            .to_string();
+
+        let analyze = ok(server.call_tool(
+            "codegraph.analyze",
+            &json!({"repo": repo_arg, "entity_id": entity_id}),
+        ));
+        assert_eq!(analyze["status"].as_str(), Some("ok"));
+        assert_eq!(
+            analyze["db_lifecycle_read"]["scope_source"].as_str(),
+            Some("passport")
+        );
+        assert_eq!(
+            analyze["db_lifecycle_read"]["passport_scope_hash"].as_str(),
+            Some(expected_scope_hash.as_str())
+        );
+
+        let status = ok(server.call_tool("codegraph.status", &json!({"repo": repo_arg})));
+        assert_eq!(status["status"].as_str(), Some("ok"));
+        assert_eq!(
+            status["db_lifecycle_read"]["scope_source"].as_str(),
+            Some("passport")
+        );
+        assert_eq!(
+            status["db_lifecycle_read"]["passport_scope_hash"].as_str(),
+            Some(expected_scope_hash.as_str())
+        );
 
         fs::remove_dir_all(repo).expect("cleanup");
     }
@@ -2853,7 +3432,8 @@ mod tests {
         let repo = fixture_repo();
         let cli_db = repo.join("target").join("shared-cli.sqlite");
         let mcp_db = repo.join("external-db").join("shared-mcp.sqlite");
-        let cli_summary = index_repo_to_db(&repo, &cli_db).expect("shared cli index");
+        let cli_summary =
+            codegraph_index::index_repo_to_db(&repo, &cli_db).expect("shared cli index");
         let server = McpServer::new(
             McpServerConfig::for_repo(&repo)
                 .with_db_path(&mcp_db)
