@@ -78,6 +78,12 @@ codegraph-competitors/
 /scripts/generate_diagnostic_lab_charts.py
 /scripts/run_diagnostic_lab.py
 
+# Committed regression fixture intentionally contains generated-looking paths
+# that are ignored elsewhere: target/, node_modules/, .venv/, caches, and DBs.
+!/fixtures/index_scope/
+!/fixtures/index_scope/generated_junk_repo/
+!/fixtures/index_scope/generated_junk_repo/**
+
 # Internal planning/status docs not intended for the public repo
 /MVP.md
 /TODO_PHASES.md

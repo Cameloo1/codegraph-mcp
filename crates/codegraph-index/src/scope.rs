@@ -605,6 +605,10 @@ fn soft_known_generated_artifact(path: &str) -> bool {
     SOFT_KNOWN_GENERATED_PREFIXES
         .iter()
         .any(|prefix| path_starts_with(path, prefix))
+        || path == "dist/bundle.js"
+        || path.ends_with("/dist/bundle.js")
+        || path == "build/generated.py"
+        || path.ends_with("/build/generated.py")
 }
 
 fn has_source_extension(path: &str) -> bool {
@@ -683,6 +687,7 @@ const HARD_EXCLUDE_PREFIXES: &[&str] = &[
     ".tools",
     ".codex-tools",
     "reports/audit/artifacts",
+    "reports/final",
     "reports/final/artifacts",
     "reports/comparison/cgc_full_run",
     "reports/comparison/cgc_recovery",
@@ -756,6 +761,7 @@ mod tests {
             "target/debug/app.rs",
             "node_modules/pkg/index.ts",
             "reports/diagnostic_lab/out.py",
+            "reports/final/fake_report.rs",
             "reports/final/artifacts/proof.sqlite",
             "src/cache.sqlite",
             "src/cache.db",
@@ -799,7 +805,7 @@ mod tests {
     fn soft_excludes_warn_when_not_gitignored() {
         for path in [
             "dist/app.ts",
-            "build/generated.py",
+            "build/source.py",
             "out/main.rs",
             "vendor/library/src/index.ts",
             "third_party/lib/main.py",
@@ -829,6 +835,28 @@ mod tests {
             observed.matched_rule.as_deref(),
             Some("soft_gitignore:dist")
         );
+    }
+
+    #[test]
+    fn soft_known_generated_artifacts_are_excluded_without_broadening_soft_dirs() {
+        for (path, rule) in [
+            ("dist/bundle.js", "soft_known_generated_artifact:dist"),
+            ("build/generated.py", "soft_known_generated_artifact:build"),
+        ] {
+            let observed = default_scope().evaluate_path(path, ScopePathKind::File, false);
+            assert_eq!(observed.action, ScopeAction::WouldExclude, "{path}");
+            assert_eq!(observed.rule_kind, ScopeRuleKind::SoftExclude, "{path}");
+            assert_eq!(observed.matched_rule.as_deref(), Some(rule), "{path}");
+        }
+
+        for path in ["dist/source.ts", "build/source.py"] {
+            let observed = default_scope().evaluate_path(path, ScopePathKind::File, false);
+            assert_eq!(
+                observed.action,
+                ScopeAction::WouldIncludeWithWarning,
+                "{path}"
+            );
+        }
     }
 
     #[test]
