@@ -10,13 +10,31 @@ does not introduce subagents.
 codegraph-mcp serve-mcp
 ```
 
-Suggested Codex config:
+For routine Codex use on this repo, prefer the `PRODUCTION_AGENT_USE` profile
+from [operational-profiles.md](operational-profiles.md). That profile uses a
+release binary and a DB outside the source tree, separate from development
+self-test indexes.
+
+Suggested generic Codex config:
 
 ```toml
 [mcp_servers.codegraph-mcp]
 command = "codegraph-mcp"
 args = ["serve-mcp"]
 cwd = "C:\\path\\to\\repo"
+```
+
+Suggested config for this checkout's production agent-use profile:
+
+```toml
+[mcp_servers.codegraph-mcp-production]
+command = "C:\\Users\\wamin\\Desktop\\development\\codegraph-mcp\\target\\release\\codegraph-mcp.exe"
+args = [
+  "--repo", "C:\\Users\\wamin\\Desktop\\development\\codegraph-mcp",
+  "--db", "C:\\Users\\wamin\\AppData\\Local\\CodeGraphMCP\\agent-indexes\\codegraph-mcp\\production-agent-use.sqlite",
+  "serve-mcp"
+]
+cwd = "C:\\Users\\wamin\\Desktop\\development\\codegraph-mcp"
 ```
 
 ## Tools
@@ -96,8 +114,24 @@ Tool responses are compact JSON values suitable for Codex:
 relation, path exceeds traversal bounds, relation unsupported for language, and
 optional resolver unavailable cases.
 
+## DB Lifecycle
+
+MCP read paths use the same passport/preflight guard as the CLI. A matching,
+completed, integrity-checked DB is reusable. Missing, stale, mismatched, corrupt,
+or unknown DB state is not silently trusted.
+
+- `codegraph.index_repo` can build or update the configured DB.
+- `codegraph.update_changed_files` requires a reusable DB and refuses unsafe
+  state instead of writing over unknown data.
+- `codegraph.status` reports DB health and blockers rather than bypassing the
+  lifecycle gate.
+- Query and context tools refuse mismatched DBs unless an explicit diagnostic
+  stale-read path is used, and diagnostic output must be labeled as such.
+
 ## Safety
 
 `codegraph.index_repo` and `codegraph.update_changed_files` update only the
-local `.codegraph/codegraph.sqlite` index. They do not edit source files or run
+configured local SQLite index. The default project-local path is
+`.codegraph/codegraph.sqlite`; the production agent-use profile deliberately
+uses a DB outside the source tree. These tools do not edit source files or run
 project tests.

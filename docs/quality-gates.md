@@ -3,6 +3,34 @@
 The root `README.md` is the public setup contract. These gates keep changes
 narrow and verifiable.
 
+## Current Published Status
+
+The stable reports are the current public gate surface:
+
+- `reports/final/comprehensive_benchmark_latest.md` / `.json`: latest
+  preserved comprehensive gate.
+- `reports/final/intended_tool_quality_gate.md` / `.json`: Intended Tool
+  Quality Gate.
+- `reports/final/manual_relation_precision.md` / `.json`: manual sampled
+  precision boundary.
+- `reports/comparison/codegraph_vs_cgc_latest.md` / `.json`: CGC comparison
+  status.
+
+Current summary:
+
+- Graph Truth Gate: 11/11 pass.
+- Context Packet Gate: 11/11 pass.
+- DB integrity: ok.
+- Proof DB size: 171.184 MiB against a 250 MiB target.
+- Repeat unchanged index: 1674 ms.
+- Single-file update: 336 ms.
+- Intended Tool Quality Gate: **FAIL** because the stable report records
+  `proof_build_only_ms = 184,297 ms` against `<=60,000 ms`.
+- CGC comparison: diagnostic/incomplete; no superiority claim.
+
+Do not use raw benchmark payloads, partial CGC artifacts, debug timing, or
+fake-agent dry runs as green gate evidence.
+
 ## Local Checks
 
 Run these before handing off a phase:
@@ -18,6 +46,14 @@ codegraph-mcp bench synthetic-index --output-dir target\phase30-index-speed --fi
 codegraph-mcp bench gaps --output-dir target\phase26-gaps --competitor-bin target\missing-cgc.exe
 codegraph-mcp bench real-repo-corpus
 codegraph-mcp bench parity-report --output-dir target\phase30-parity
+```
+
+For production threshold timing, build and run the release binary. Debug timing
+may be kept as diagnostic evidence, but it must be marked non-claimable.
+
+```powershell
+cargo build --release --bin codegraph-mcp
+.\target\release\codegraph-mcp.exe bench proof-build-only --repo <repo> --db <db> --workers 16
 ```
 
 ## CI
@@ -78,6 +114,14 @@ codegraph-mcp bench parity-report --output-dir target\phase30-parity
 codegraph-mcp bench cgc-comparison --output-dir target\phase30-cgc-comparison --competitor-bin target\missing-cgc.exe
 powershell -NoProfile -ExecutionPolicy Bypass -File install\install.ps1 -DryRun
 sh install/install.sh --dry-run
+```
+
+Documentation-only changes can usually use the lighter gate:
+
+```text
+python scripts/check_readme_artifacts.py
+python scripts/check_markdown_links.py
+git diff --check
 ```
 
 Targeted acceptance coverage also includes CLI fixture tests, MCP fixture

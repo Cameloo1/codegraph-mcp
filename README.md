@@ -83,6 +83,10 @@ If `codegraph-mcp` is on your `PATH`, drop the
 `cargo run --bin codegraph-mcp --` prefix. Full CLI surface:
 [docs/cli-reference.md](docs/cli-reference.md).
 
+For day-to-day Codex use, keep the development/self-test profile separate from
+the production agent-use profile. See
+[docs/operational-profiles.md](docs/operational-profiles.md).
+
 ## How It Works
 
 CodeGraph is a 5-stage runtime funnel sitting on top of a typed program graph.
@@ -394,6 +398,7 @@ Reference docs:
 - [docs/architecture.md](docs/architecture.md)
 - [docs/benchmark-guide.md](docs/benchmark-guide.md)
 - [docs/mcp-reference.md](docs/mcp-reference.md)
+- [docs/operational-profiles.md](docs/operational-profiles.md)
 - [docs/guardrails.md](docs/guardrails.md)
 - [docs/cli-reference.md](docs/cli-reference.md)
 - [docs/quality-gates.md](docs/quality-gates.md)

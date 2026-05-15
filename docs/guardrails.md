@@ -3,6 +3,30 @@
 Use the root `README.md` for the public project contract. These notes preserve
 implementation guardrails for local development.
 
+## Current Report Boundary
+
+Do not infer the current project status from old phase text, raw benchmark
+payloads, or local DB files. Use the stable report summaries:
+
+- `reports/final/comprehensive_benchmark_latest.md` / `.json`
+- `reports/final/intended_tool_quality_gate.md` / `.json`
+- `reports/final/manual_relation_precision.md` / `.json`
+- `reports/comparison/codegraph_vs_cgc_latest.md` / `.json`
+
+Current public stance:
+
+- Graph Truth Gate: 11/11.
+- Context Packet Gate: 11/11.
+- Manual precision: 320 labeled samples, sampled precision only, recall
+  unknown.
+- Intended Tool Quality Gate: **FAIL** in the stable report because
+  `proof_build_only_ms = 184,297 ms` exceeds `<=60,000 ms`.
+- CGC comparison: diagnostic/incomplete, no CodeGraph superiority claim.
+
+Generated DBs, benchmark workdirs, CGC raw artifacts, raw logs, and diagnostic
+lab payloads must not become public claims or branch content unless explicitly
+promoted by a reviewed summary.
+
 ## Delivery Discipline
 
 - Keep implementation milestones sequential and independently testable.
@@ -14,6 +38,9 @@ implementation guardrails for local development.
   remaining gaps.
 
 ## Current Phase Boundary
+
+The phase list below is historical implementation context. It is not a green
+release verdict and does not override the stable reports above.
 
 The current public baseline includes the implementation milestones below. Phase
 00 created:

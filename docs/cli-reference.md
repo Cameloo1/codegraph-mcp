@@ -23,7 +23,9 @@ Global flags are accepted before the command name:
 
 `--repo` sets the working repository, `--db` overrides
 `CODEGRAPH_DB_PATH`, and global `--profile` enables index profiling for the
-`index` command.
+`index` command. For routine agent use in this checkout, prefer the production
+profile DB documented in [operational-profiles.md](operational-profiles.md)
+instead of reusing development/self-test DBs.
 
 ## Commands
 
@@ -32,7 +34,7 @@ Global flags are accepted before the command name:
 Detects repo tooling, creates `.codegraph/`, and can install Codex config,
 `AGENTS.md`, skill templates, hook templates, and an initial index.
 
-`index <repo> [--profile] [--json]`
+`index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json]`
 
 Indexes supported language frontends into `.codegraph/codegraph.sqlite`.
 Unchanged files are skipped by content hash. Changed files are parsed and
@@ -41,6 +43,22 @@ single batched SQLite transaction. `--profile --json` includes discovery,
 parse, extraction, semantic resolver, DB write, FTS/search index, signature,
 total wall time, throughput, worker count, unchanged skip count, and memory
 when measurable.
+
+DB lifecycle flags:
+
+- `--fresh` / `--rebuild` always builds a fresh replacement and publishes it
+  only after validation.
+- `--incremental` requires a reusable passported DB and fails if reuse is
+  unsafe.
+- `--fail-on-db-problem` fails instead of safe-auto rebuilding.
+- `--allow-stale-reuse` is diagnostic only; output must be labeled
+  contaminated and not claimable.
+
+Scope flags include `--include-ignored`, `--include <pattern>`,
+`--exclude <pattern>`, `--no-default-excludes`,
+`--respect-gitignore <true|false>`, `--explain-scope`, `--print-included`, and
+`--print-excluded`. A DB built with non-default scope records that scope in the
+passport, and read paths validate against it.
 
 `status [repo]`
 
@@ -100,6 +118,11 @@ API/auth/security, events, and tests.
 
 Builds a compact proof-oriented context packet from verified graph paths and
 source snippets.
+
+Read paths run the DB passport/preflight guard. If the configured DB is from a
+different repo, stale scope, incompatible storage mode, failed run, corrupt
+file, or unknown old format, the command refuses to answer unless an explicit
+diagnostic stale-read override is used.
 
 `context --task <task> [--budget <tokens>] [--mode <mode>] [--seed <symbol>]`
 
@@ -183,6 +206,18 @@ SOTA claim without measured evidence.
 Runs the optional external CodeGraphContext / CGC comparison harness. The
 subcommand skips CGC with a structured reason when `CGC_COMPETITOR_BIN`, `cgc`,
 and `codegraphcontext` are unavailable.
+
+`trace append|replay|validate ...`
+
+Appends replayable Agent/MCP JSONL trace events or replays/validates an
+`events.jsonl` file. Trace files are evidence artifacts; keep them out of
+public claims unless summarized.
+
+`audit storage|schema-check|storage-experiments|sample-edges|sample-paths|relation-counts|label-samples|summarize-labels ...`
+
+Runs read-only audit inspections over DBs and manual-label artifacts. Audit
+outputs can support stable summaries, but raw audit DBs/logs are not final
+benchmark artifacts by themselves.
 
 `doctor [repo] [--json]`
 

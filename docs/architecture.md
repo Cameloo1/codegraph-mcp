@@ -22,6 +22,28 @@ Core rule:
 vectors suggest; graph verifies; packet proves
 ```
 
+## Current Evidence Boundary
+
+The current public evidence is in the stable report summaries, not in raw
+development artifacts:
+
+- `reports/final/comprehensive_benchmark_latest.md` / `.json` preserves the
+  latest comprehensive gate. It is currently **fail** because
+  `bytes_per_proof_edge`, `cold_proof_build_total_wall_ms`, and
+  `proof_db_mib_stretch` miss target.
+- `reports/final/intended_tool_quality_gate.md` / `.json` is currently
+  **FAIL** because `proof_build_only_ms = 184,297 ms` exceeds the
+  `<=60,000 ms` target.
+- `reports/final/manual_relation_precision.md` / `.json` reports 320 labeled
+  samples for present compact-proof relations. It is sampled precision only;
+  recall is unknown.
+- `reports/comparison/codegraph_vs_cgc_latest.md` / `.json` is incomplete and
+  diagnostic. CGC recovered enough for smoke/fixture diagnostics, but the
+  comparable run did not complete, so no CodeGraph superiority claim is made.
+
+Raw DBs, WAL/SHM files, raw logs, diagnostic lab payloads, and temporary CGC
+artifacts are evidence inputs, not public architecture claims.
+
 ## Major Layers
 
 1. `codegraph-core` defines the serializable domain model for entities,
@@ -64,9 +86,26 @@ vectors suggest; graph verifies; packet proves
    graph modes, exactness legends, source-span preview, export/copy controls,
    and large-graph guardrails.
 
+## Operational Profiles
+
+Use the two profiles in [operational-profiles.md](operational-profiles.md) to
+keep CodeGraph's own development state separate from the graph used by a coding
+agent:
+
+- `DEVELOPMENT_SELF_TEST` uses the debug binary and repo-local diagnostic DBs
+  for testing CodeGraph changes.
+- `PRODUCTION_AGENT_USE` uses the release binary and a DB outside the source
+  tree under LocalAppData for routine Codex context.
+
+The production profile is allowed to answer agent-context questions only after
+the DB lifecycle preflight says the DB is valid, matching, claimable, and not
+contaminated. Development/self-test DBs are never benchmark or superiority
+evidence by themselves.
+
 ## Phase Ordering
 
-The graph/domain model comes before storage. Storage comes before parsing.
+This section is a historical implementation map, not the current pass/fail
+report. The graph/domain model comes before storage. Storage comes before parsing.
 Parsing comes before extraction. Exact graph queries and graph-only context
 packets come before Stage 0 BM25/FTS. Stage 0 comes before the binary-vector
 sieve. Stage 1 comes before compressed reranking. The integrated runtime funnel

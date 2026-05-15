@@ -6,7 +6,9 @@ or release template changes that workflow.
 
 ## Install Paths
 
-Current release templates document these install paths:
+Current release templates document these install paths. Unless a GitHub release
+is actually published for a version, the checkout build is the authoritative
+local install path.
 
 - GitHub release archives from `dist/archive-manifest.json`
 - PowerShell installer template: `install/install.ps1`
@@ -17,6 +19,20 @@ Current release templates document these install paths:
 
 The npm wrapper path is intentionally not included because it would add
 packaging surface without improving the Rust-first core.
+
+## Recommended Local Agent Setup
+
+For routine Codex/agent use from this checkout:
+
+```powershell
+cargo build --release --bin codegraph-mcp
+.\scripts\codegraph-profile.ps1 -Profile prod-agent -Action status
+.\scripts\codegraph-profile.ps1 -Profile prod-agent -Action index
+```
+
+That profile uses `target\release\codegraph-mcp.exe` and stores the agent-use
+DB under LocalAppData instead of inside the source tree. Use the development
+profile only when testing CodeGraph itself.
 
 ## Local Dry Runs
 
@@ -53,8 +69,9 @@ names, checksum names, and provenance template paths.
 
 Release templates cover the following targets:
 
-- Windows x64: `x86_64-pc-windows-msvc`
-- Linux x64: `x86_64-unknown-linux-gnu`
+- Windows x64: `x86_64-pc-windows-msvc` (supported/tested by local smoke)
+- Linux x64: `x86_64-unknown-linux-gnu` (supported/tested through Linux/Docker
+  workflow when a daemon is available)
 - macOS Apple Silicon: `aarch64-apple-darwin` (planned, not currently tested,
   no CI coverage)
 - macOS Intel: `x86_64-apple-darwin` (planned, not currently tested, no CI

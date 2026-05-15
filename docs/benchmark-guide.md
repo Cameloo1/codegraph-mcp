@@ -1,10 +1,53 @@
 # Benchmark Guide
 
-The root `README.md` is the public setup contract. Benchmarks are local and
-reproducible. They measure CodeGraph against baseline implementations without
-changing retrieval logic and without using subagents.
+The root `README.md` is the public setup contract. Benchmarks are local,
+reproducible, single-agent, and evidence-labeled. They measure CodeGraph against
+internal baselines and optional black-box CGC runs without changing retrieval
+logic.
+
+There are two report classes:
+
+- **Stable public summaries** are durable Markdown/JSON files linked from the
+  README.
+- **Run artifacts** are DBs, WAL/SHM files, raw stdout/stderr, copied fixtures,
+  and temporary benchmark payloads. Keep them ignored unless a report
+  explicitly promotes a small summary artifact.
+
+## Stable Reports
+
+Use these as the current public status surface:
+
+- `reports/final/comprehensive_benchmark_latest.md` / `.json` - latest
+  preserved comprehensive gate.
+- `reports/final/intended_tool_quality_gate.md` / `.json` - Intended Tool
+  Quality Gate.
+- `reports/final/manual_relation_precision.md` / `.json` - manual sampled
+  precision boundary.
+- `reports/comparison/codegraph_vs_cgc_latest.md` / `.json` - CGC comparison
+  status.
+
+Current stable status: Graph Truth and Context Packet gates pass, warm repeat
+and single-file update pass, DB integrity passes, and proof DB size is under the
+250 MiB target. The Intended Tool Quality Gate is still **FAIL** in the stable
+report because `proof_build_only_ms = 184,297 ms` is above `<=60,000 ms`. The
+CGC comparison is diagnostic/incomplete and does not support a superiority
+claim.
 
 ## Run
+
+Use the release binary for timing that might be compared to production
+thresholds:
+
+```powershell
+cargo build --release --bin codegraph-mcp
+.\target\release\codegraph-mcp.exe bench comprehensive --fresh --output-dir reports\final
+```
+
+Debug runs are allowed for diagnosis only. If a debug binary produces
+proof-build timing, mark it non-claimable and do not compare it to the
+production threshold.
+
+Small local benchmark:
 
 ```powershell
 codegraph-mcp bench --output target\codegraph-benchmark-report.json
@@ -87,12 +130,12 @@ Live replay requires an explicit network opt-in:
 scripts\replay-real-repo-corpus.ps1 -AllowNetwork
 ```
 
-## Reports
+## Optional Report Commands
 
 JSON reports are machine-readable and include per-run metrics plus aggregate
 baseline summaries. Markdown reports are compact human summaries.
 
-Phase 26 gap scoreboard:
+Gap scoreboard:
 
 ```powershell
 codegraph-mcp bench gaps --output-dir reports\phase26-gaps
@@ -110,7 +153,7 @@ The scoreboard classifies every dimension as `win`, `loss`, `tie`, or
 guessed. The nested `external-codegraphcontext` directory contains the black-box
 CGC comparison report and raw stdout/stderr artifacts when CGC actually runs.
 
-Final parity report:
+Parity report:
 
 ```powershell
 codegraph-mcp bench parity-report --output-dir reports\phase30-parity
@@ -127,9 +170,9 @@ OS/arch metadata, skipped/unknown fields, and no fabricated SOTA claims.
 
 ## External CodeGraphContext Comparison
 
-Prompt 21.1 adds a separate external competitor harness for CodeGraphContext /
-CGC. This is not part of the internal baseline enum and does not replace the
-MVP benchmark suite.
+The external competitor harness treats CodeGraphContext / CGC as a black-box
+CLI. It is not part of the internal baseline enum and does not replace the
+CodeGraph correctness gates.
 
 Run it locally:
 
@@ -169,3 +212,9 @@ reports/cgc-comparison/<timestamp>/
 The harness preserves raw CGC stdout/stderr artifacts and marks unsupported or
 unparseable fields separately from incorrect results. It does not claim SOTA
 superiority unless measured results directly support that claim.
+
+The latest stable CGC report is diagnostic only: CGC version 0.4.7 was recovered
+enough for smoke and fixture diagnostics, the fixture diagnostic was not
+comparable to CodeGraph proof/path/source-span evidence, and the Autoresearch
+diagnostic timed out under the 180s cap. Partial CGC artifacts are not final
+storage artifacts.
