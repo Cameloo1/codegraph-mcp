@@ -36,9 +36,9 @@ README = ROOT / "README.md"
 
 ASSET_DIR = ROOT / "docs/assets/readme"
 REPORT_DIR = ROOT / "reports/final"
-VISUAL_01 = ASSET_DIR / "agent_visual_01_context_quality.png"
-VISUAL_02 = ASSET_DIR / "agent_visual_02_trusted_relations.png"
-VISUAL_03 = ASSET_DIR / "agent_visual_03_agent_loop_readiness.png"
+VISUAL_01 = ASSET_DIR / "large_repo_improvement.png"
+VISUAL_02 = ASSET_DIR / "evidence_reliability.png"
+VISUAL_03 = ASSET_DIR / "warm_agent_loop_latency.png"
 MANIFEST = ASSET_DIR / "agent_visuals_manifest.json"
 REPORT_JSON = REPORT_DIR / "readme_agent_benchmark_visuals.json"
 REPORT_MD = REPORT_DIR / "readme_agent_benchmark_visuals.md"
@@ -315,7 +315,7 @@ def build_context_quality_metrics(
             add_metric(
                 metrics,
                 Metric(
-                    chart="agent_visual_01_context_quality",
+                    chart="large_repo_improvement",
                     name="Graph Truth Gate",
                     value=100.0 * passed / total,
                     unit="percent",
@@ -338,7 +338,7 @@ def build_context_quality_metrics(
             add_metric(
                 metrics,
                 Metric(
-                    chart="agent_visual_01_context_quality",
+                    chart="large_repo_improvement",
                     name="Context Packet Gate",
                     value=100.0 * passed / total,
                     unit="percent",
@@ -383,7 +383,7 @@ def build_context_quality_metrics(
         add_metric(
             metrics,
             Metric(
-                chart="agent_visual_01_context_quality",
+                chart="large_repo_improvement",
                 name=name,
                 value=100.0 * observed,
                 unit="percent",
@@ -403,7 +403,7 @@ def build_context_quality_metrics(
             add_metric(
                 metrics,
                 Metric(
-                    chart="agent_visual_01_context_quality",
+                    chart="large_repo_improvement",
                     name="Distractor-free packet",
                     value=clean_score,
                     unit="percent",
@@ -448,7 +448,7 @@ def build_historical_improvement_metrics(
         add_metric(
             metrics,
             Metric(
-                chart="agent_visual_01_context_quality",
+                chart="large_repo_improvement",
                 name=name,
                 value=improvement,
                 unit="improvement_factor",
@@ -516,7 +516,7 @@ def build_relation_metrics(
         add_metric(
             metrics,
             Metric(
-                chart="agent_visual_02_trusted_relations",
+                chart="evidence_reliability",
                 name=relation,
                 value=edge_count,
                 unit=unit,
@@ -571,7 +571,7 @@ def build_evidence_reliability_metrics(
         add_metric(
             metrics,
             Metric(
-                chart="agent_visual_02_trusted_relations",
+                chart="evidence_reliability",
                 name=name,
                 value=value,
                 unit="percent",
@@ -676,7 +676,7 @@ def build_loop_metrics(
         add_metric(
             metrics,
             Metric(
-                chart="agent_visual_03_agent_loop_readiness",
+                chart="warm_agent_loop_latency",
                 name=name,
                 value=ratio,
                 unit="observed/target_ratio",
@@ -749,7 +749,7 @@ def build_loop_metrics(
         add_metric(
             metrics,
             Metric(
-                chart="agent_visual_03_agent_loop_readiness",
+                chart="warm_agent_loop_latency",
                 name=name,
                 value=observed / target,
                 unit="observed/target_ratio",
@@ -994,9 +994,9 @@ def main() -> int:
     metrics.extend(build_evidence_reliability_metrics(manual, omitted))
     metrics.extend(build_loop_metrics(intended, intended_md, comprehensive, comprehensive_md, omitted))
 
-    context_metrics = [metric for metric in metrics if metric.chart == "agent_visual_01_context_quality"]
-    relation_metrics = [metric for metric in metrics if metric.chart == "agent_visual_02_trusted_relations"]
-    loop_metrics = [metric for metric in metrics if metric.chart == "agent_visual_03_agent_loop_readiness"]
+    context_metrics = [metric for metric in metrics if metric.chart == "large_repo_improvement"]
+    relation_metrics = [metric for metric in metrics if metric.chart == "evidence_reliability"]
+    loop_metrics = [metric for metric in metrics if metric.chart == "warm_agent_loop_latency"]
     if not context_metrics:
         raise SystemExit("no Large-Repo Improvement metrics available")
     if not relation_metrics:

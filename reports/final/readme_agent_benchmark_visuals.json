@@ -1,9 +1,9 @@
 {
-  "generated_at": "2026-05-15T16:53:26-05:00",
+  "generated_at": "2026-05-15T17:06:34-05:00",
   "chart_paths": {
-    "large_repo_improvement": "docs/assets/readme/agent_visual_01_context_quality.png",
-    "evidence_reliability": "docs/assets/readme/agent_visual_02_trusted_relations.png",
-    "warm_agent_loop_latency": "docs/assets/readme/agent_visual_03_agent_loop_readiness.png"
+    "large_repo_improvement": "docs/assets/readme/large_repo_improvement.png",
+    "evidence_reliability": "docs/assets/readme/evidence_reliability.png",
+    "warm_agent_loop_latency": "docs/assets/readme/warm_agent_loop_latency.png"
   },
   "metrics_used": [
     {
@@ -13,7 +13,7 @@
       "source_file": "reports/final/comprehensive_benchmark_latest.md",
       "claim_boundary": "Before/after regression row from the comprehensive benchmark; lower is better and this is not a CGC comparison.",
       "source_kind": "markdown",
-      "chart": "agent_visual_01_context_quality",
+      "chart": "large_repo_improvement",
       "label": "9.5x",
       "extra": {
         "previous": 1633.0,
@@ -29,7 +29,7 @@
       "source_file": "reports/final/comprehensive_benchmark_latest.md",
       "claim_boundary": "Before/after regression row from the comprehensive benchmark; lower is better and this is not a CGC comparison.",
       "source_kind": "markdown",
-      "chart": "agent_visual_01_context_quality",
+      "chart": "large_repo_improvement",
       "label": "36.3x",
       "extra": {
         "previous": 30315.0,
@@ -45,7 +45,7 @@
       "source_file": "reports/final/comprehensive_benchmark_latest.md",
       "claim_boundary": "Before/after regression row from the comprehensive benchmark; lower is better and this is not a CGC comparison.",
       "source_kind": "markdown",
-      "chart": "agent_visual_01_context_quality",
+      "chart": "large_repo_improvement",
       "label": "47.3x",
       "extra": {
         "previous": 80207.0,
@@ -61,7 +61,7 @@
       "source_file": "reports/final/comprehensive_benchmark_latest.md",
       "claim_boundary": "Before/after regression row from the comprehensive benchmark; lower is better and this is not a CGC comparison.",
       "source_kind": "markdown",
-      "chart": "agent_visual_01_context_quality",
+      "chart": "large_repo_improvement",
       "label": "8.1x",
       "extra": {
         "previous": 13571.0,
@@ -77,7 +77,7 @@
       "source_file": "reports/final/manual_relation_precision.json",
       "claim_boundary": "Sampled precision only across present compact-proof relations; recall is unknown.",
       "source_kind": "json",
-      "chart": "agent_visual_02_trusted_relations",
+      "chart": "evidence_reliability",
       "label": "320/320 true-positive",
       "extra": {
         "true_positive": 320.0,
@@ -91,7 +91,7 @@
       "source_file": "reports/final/manual_relation_precision.json",
       "claim_boundary": "Manual sample taxonomy found no false positives, stale facts, test/mock leakage, or derived-without-provenance events.",
       "source_kind": "json",
-      "chart": "agent_visual_02_trusted_relations",
+      "chart": "evidence_reliability",
       "label": "0 events found",
       "extra": {
         "false_positive": 0.0,
@@ -107,7 +107,7 @@
       "source_file": "reports/final/manual_relation_precision.json",
       "claim_boundary": "Source-span correctness across labeled samples; recall is not claimed.",
       "source_kind": "json",
-      "chart": "agent_visual_02_trusted_relations",
+      "chart": "evidence_reliability",
       "label": "0 wrong spans",
       "extra": {
         "wrong_span": 0.0,
@@ -121,7 +121,7 @@
       "source_file": "reports/final/manual_relation_precision.json",
       "claim_boundary": "Manual source-span precision over eligible samples; recall is unknown.",
       "source_kind": "json",
-      "chart": "agent_visual_02_trusted_relations",
+      "chart": "evidence_reliability",
       "label": "320/320 spans",
       "extra": {
         "true_positive": 320.0,
@@ -135,7 +135,7 @@
       "source_file": "reports/final/manual_relation_precision.json",
       "claim_boundary": "Sampled PathEvidence correctness only; recall is not claimed.",
       "source_kind": "json",
-      "chart": "agent_visual_02_trusted_relations",
+      "chart": "evidence_reliability",
       "label": "20/20 paths",
       "extra": {
         "true_positive": 20.0,
@@ -149,7 +149,7 @@
       "source_file": "reports/final/intended_tool_quality_gate.json",
       "claim_boundary": "Compact proof DB size from the Intended Tool Quality Gate; audit/debug sidecars excluded.",
       "source_kind": "json",
-      "chart": "agent_visual_03_agent_loop_readiness",
+      "chart": "warm_agent_loop_latency",
       "target": 250.0,
       "status": "pass",
       "observed_label": "171.184 MiB / 250 MiB",
@@ -165,7 +165,7 @@
       "source_file": "reports/final/intended_tool_quality_gate.json",
       "claim_boundary": "Warm unchanged index loop from the Intended Tool Quality Gate.",
       "source_kind": "json",
-      "chart": "agent_visual_03_agent_loop_readiness",
+      "chart": "warm_agent_loop_latency",
       "target": 5000.0,
       "status": "pass",
       "observed_label": "1674 ms / 5000 ms",
@@ -181,7 +181,7 @@
       "source_file": "reports/final/intended_tool_quality_gate.json",
       "claim_boundary": "Single-file update loop from the Intended Tool Quality Gate.",
       "source_kind": "json",
-      "chart": "agent_visual_03_agent_loop_readiness",
+      "chart": "warm_agent_loop_latency",
       "target": 750.0,
       "status": "pass",
       "observed_label": "336 ms / 750 ms",
@@ -197,7 +197,7 @@
       "source_file": "reports/final/comprehensive_benchmark_latest.json",
       "claim_boundary": "Normal context-pack query latency from the comprehensive benchmark; not an agent success-rate metric.",
       "source_kind": "json",
-      "chart": "agent_visual_03_agent_loop_readiness",
+      "chart": "warm_agent_loop_latency",
       "target": 2000.0,
       "status": "pass",
       "observed_label": "140.3 ms / 2000 ms",
@@ -213,7 +213,7 @@
       "source_file": "reports/final/comprehensive_benchmark_latest.json",
       "claim_boundary": "Bounded unresolved-calls pagination latency from the comprehensive benchmark.",
       "source_kind": "json",
-      "chart": "agent_visual_03_agent_loop_readiness",
+      "chart": "warm_agent_loop_latency",
       "target": 1000.0,
       "status": "pass",
       "observed_label": "98.4 ms / 1000 ms",
@@ -229,7 +229,7 @@
       "source_file": "reports/final/intended_tool_quality_gate.json",
       "claim_boundary": "Cold proof-build-only timing from the Intended Tool Quality Gate; this is the remaining blocker.",
       "source_kind": "json",
-      "chart": "agent_visual_03_agent_loop_readiness",
+      "chart": "warm_agent_loop_latency",
       "target": 60000.0,
       "status": "fail",
       "observed_label": "184297 ms / 60000 ms",
