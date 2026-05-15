@@ -1,5 +1,9 @@
 # CodeGraph MCP
 
+[![CI](https://img.shields.io/github/actions/workflow/status/Cameloo1/codegraph-mcp/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/Cameloo1/codegraph-mcp/actions/workflows/ci.yml)
+[![Primary Language](https://img.shields.io/github/languages/top/Cameloo1/codegraph-mcp?style=flat-square&label=primary%20language)](https://github.com/Cameloo1/codegraph-mcp)
+[![MCP](https://img.shields.io/badge/MCP-local%20read--mostly-informational?style=flat-square)](docs/mcp-reference.md)
+
 **Local proof-grounded context for AI coding agents on large repositories. Vectors suggest, the typed program graph proves, source spans verify.**
 
 CodeGraph MCP indexes a repository into a deterministic typed program graph,
@@ -27,9 +31,9 @@ repository
 
 ## Agent-Impact Benchmarks
 
-| Agent Context Quality | Trusted Proof Relations | Agent Loop Readiness |
+| Large-Repo Improvement | Evidence Reliability | Warm Agent Loop |
 |---|---|---|
-| ![Agent Context Quality](docs/assets/readme/agent_visual_01_context_quality.png) | ![Trusted Proof Relations](docs/assets/readme/agent_visual_02_trusted_relations.png) | ![Agent Loop Readiness](docs/assets/readme/agent_visual_03_agent_loop_readiness.png) |
+| ![Large-Repo Improvement](docs/assets/readme/agent_visual_01_context_quality.png) | ![Evidence Reliability](docs/assets/readme/agent_visual_02_trusted_relations.png) | ![Warm Agent Loop](docs/assets/readme/agent_visual_03_agent_loop_readiness.png) |
 
 Current status: semantic-proof and context-packet gates are green, compact-proof
 storage is under the intended 250 MiB target, and stale or mismatched DB reuse is
