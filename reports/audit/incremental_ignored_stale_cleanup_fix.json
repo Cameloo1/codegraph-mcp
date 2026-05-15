@@ -1,0 +1,126 @@
+{
+  "report": "incremental_ignored_stale_cleanup_fix",
+  "generated_at": "2026-05-15T13:29:23.6897071-05:00",
+  "mvp_md": {
+    "path": "MVP.md",
+    "present": false,
+    "timestamp_written": false,
+    "note": "MVP.md is absent in this worktree, so no MVP task timestamp could be written."
+  },
+  "read_before_implementation": [
+    "reports/audit/scope_passport_regression_tests.md",
+    "reports/audit/shared_passport_preflight_fix.md"
+  ],
+  "goal": "Fix P1 so incremental updates delete stale facts for files that were previously indexed but are now ignored.",
+  "implemented_behavior": {
+    "fact_check_before_ignore_skip": true,
+    "deleted_cleanup_before_ignore_decision": true,
+    "ignored_with_existing_facts_cleanup": true,
+    "ignored_without_existing_facts_skip": true,
+    "passport_scope_used_for_update": true,
+    "repo_root_mismatch_hard_failure": true,
+    "cleanup_reasons": [
+      "deleted",
+      "now_ignored",
+      "scope_changed",
+      "replaced"
+    ]
+  },
+  "structured_update_output": [
+    "ignored_paths_seen",
+    "ignored_paths_with_existing_facts",
+    "stale_facts_deleted_for_ignored_paths",
+    "deleted_file_facts_removed",
+    "path_cleanup_reasons"
+  ],
+  "updated_paths": {
+    "index_update_loop": [
+      "crates/codegraph-index/src/lib.rs"
+    ],
+    "cli_update_json": [
+      "crates/codegraph-cli/src/lib.rs"
+    ],
+    "watch_event_path": [
+      "crates/codegraph-cli/src/lib.rs"
+    ]
+  },
+  "regression_tests": [
+    "update_newly_ignored_file_deletes_stale_facts_before_ignore_skip",
+    "audit_deleted_file_removes_stale_entities_and_edges",
+    "update_ignored_path_without_existing_facts_is_skipped_without_cleanup",
+    "update_uses_non_default_passport_scope_for_ignored_path",
+    "update_rejects_repo_root_mismatch_before_cleanup",
+    "watch_once_reindexes_changed_file_and_prunes_stale_facts"
+  ],
+  "validation": [
+    {
+      "command": "cargo test -p codegraph-index update",
+      "status": "passed",
+      "summary": "6 passed; 0 failed"
+    },
+    {
+      "command": "cargo test -p codegraph-index db_lifecycle",
+      "status": "passed",
+      "summary": "5 passed; 0 failed"
+    },
+    {
+      "command": "cargo test -p codegraph-bench graph_truth",
+      "status": "passed",
+      "summary": "19 passed; 0 failed"
+    },
+    {
+      "command": "cargo test -p codegraph-bench context_packet",
+      "status": "passed",
+      "summary": "4 passed; 0 failed"
+    },
+    {
+      "command": "cargo test -p codegraph-cli watch_once",
+      "status": "passed",
+      "summary": "1 integration test passed"
+    },
+    {
+      "command": "cargo test --workspace",
+      "status": "failed_then_reran",
+      "summary": "First run failed on known UI-server connection reset; exact test rerun passed."
+    },
+    {
+      "command": "cargo test -p codegraph-cli tests::ui_server_starts_and_status_endpoint_uses_real_index -- --exact",
+      "status": "passed",
+      "summary": "1 passed; 0 failed"
+    },
+    {
+      "command": "cargo test --workspace",
+      "status": "passed",
+      "summary": "Final workspace rerun passed."
+    },
+    {
+      "command": "git diff --check",
+      "status": "passed_with_warnings",
+      "summary": "No whitespace errors; CRLF normalization warnings only."
+    }
+  ],
+  "dirty_state_before_report": {
+    "modified": [
+      "crates/codegraph-bench/src/lib.rs",
+      "crates/codegraph-cli/src/lib.rs",
+      "crates/codegraph-cli/tests/cli_smoke.rs",
+      "crates/codegraph-index/src/lib.rs",
+      "crates/codegraph-index/src/scope.rs",
+      "crates/codegraph-mcp-server/src/lib.rs",
+      "crates/codegraph-store/src/lib.rs",
+      "crates/codegraph-store/src/sqlite.rs"
+    ],
+    "untracked_reports": [
+      "reports/audit/non_default_scope_read_fix.json",
+      "reports/audit/non_default_scope_read_fix.md",
+      "reports/audit/scope_passport_lifecycle_fix_baseline.json",
+      "reports/audit/scope_passport_lifecycle_fix_baseline.md",
+      "reports/audit/scope_passport_regression_tests.json",
+      "reports/audit/scope_passport_regression_tests.md",
+      "reports/audit/shared_passport_preflight_fix.json",
+      "reports/audit/shared_passport_preflight_fix.md"
+    ],
+    "generated_payloads_intended_for_commit": false,
+    "notes": "No DB, WAL, SHM, raw log, CGC payload, or target/ payload is intended for commit."
+  }
+}

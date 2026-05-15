@@ -2428,7 +2428,9 @@ pub fn inspect_db_preflight(
                 "locked"
             } else if message.to_ascii_lowercase().contains("malformed")
                 || message.to_ascii_lowercase().contains("not a database")
-                || message.to_ascii_lowercase().contains("file is not a database")
+                || message
+                    .to_ascii_lowercase()
+                    .contains("file is not a database")
             {
                 "corrupt"
             } else {
@@ -2477,8 +2479,8 @@ pub fn inspect_db_preflight(
         ));
     }
 
-    let passport_table = exists_in_sqlite_master(&connection, "table", "codegraph_db_passport")
-        .unwrap_or(false);
+    let passport_table =
+        exists_in_sqlite_master(&connection, "table", "codegraph_db_passport").unwrap_or(false);
     if !passport_table {
         if passport_status == "valid" {
             passport_status = "missing".to_string();
@@ -7130,7 +7132,10 @@ fn db_passport_from_row(row: &Row<'_>) -> rusqlite::Result<DbPassport> {
         repo_head: row.get("repo_head")?,
         source_discovery_policy_version: row.get("source_discovery_policy_version")?,
         codegraph_build_version: row.get("codegraph_build_version")?,
-        last_successful_index_timestamp: optional_u64_column(row, "last_successful_index_timestamp")?,
+        last_successful_index_timestamp: optional_u64_column(
+            row,
+            "last_successful_index_timestamp",
+        )?,
         last_completed_run_id: row.get("last_completed_run_id")?,
         last_run_status: row.get("last_run_status")?,
         integrity_gate_result: row.get("integrity_gate_result")?,
@@ -7144,11 +7149,7 @@ fn db_passport_from_row(row: &Row<'_>) -> rusqlite::Result<DbPassport> {
 fn u64_column(row: &Row<'_>, name: &str) -> rusqlite::Result<u64> {
     let value: i64 = row.get(name)?;
     u64::try_from(value).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
-            0,
-            Type::Integer,
-            Box::new(error),
-        )
+        rusqlite::Error::FromSqlConversionFailure(0, Type::Integer, Box::new(error))
     })
 }
 

@@ -346,6 +346,7 @@ pub struct IndexScopeRuntimeReport {
     pub included_examples: Vec<IndexScopeDecision>,
     pub excluded_examples: Vec<IndexScopeDecision>,
     pub warning_examples: Vec<IndexScopeDecision>,
+    pub directory_prune_decisions: Vec<IndexScopeDirectoryPruneDecision>,
 }
 
 impl IndexScopeRuntimeReport {
@@ -378,12 +379,35 @@ impl IndexScopeRuntimeReport {
             push_limited(&mut self.warning_examples, decision.clone());
         }
     }
+
+    pub fn record_directory_prune(&mut self, decision: IndexScopeDirectoryPruneDecision) {
+        push_limited_directory_prune(&mut self.directory_prune_decisions, decision);
+    }
 }
 
 fn push_limited(items: &mut Vec<IndexScopeDecision>, item: IndexScopeDecision) {
     if items.len() < SCOPE_EXAMPLE_LIMIT {
         items.push(item);
     }
+}
+
+fn push_limited_directory_prune(
+    items: &mut Vec<IndexScopeDirectoryPruneDecision>,
+    item: IndexScopeDirectoryPruneDecision,
+) {
+    if items.len() < SCOPE_EXAMPLE_LIMIT {
+        items.push(item);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexScopeDirectoryPruneDecision {
+    pub directory: String,
+    pub excluded_by: Option<String>,
+    pub include_patterns_present: bool,
+    pub could_include_descendant: bool,
+    pub pruned: bool,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -563,6 +587,134 @@ pub fn pattern_matches_path(pattern: &str, path: &str) -> bool {
         return wildcard_match(&pattern, &path);
     }
     path == pattern || path_starts_with(&path, &pattern)
+}
+
+pub fn include_patterns_may_match_descendant(patterns: &[String], directory: &str) -> bool {
+    could_include_descendant(directory, patterns)
+}
+
+pub fn could_include_descendant(directory: &str, include_patterns: &[String]) -> bool {
+    could_include_descendant_decision(directory, include_patterns).could_include_descendant
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncludeDescendantDecision {
+    pub matched_include_pattern: Option<String>,
+    pub could_include_descendant: bool,
+    pub reason: String,
+}
+
+pub fn could_include_descendant_decision(
+    directory: &str,
+    include_patterns: &[String],
+) -> IncludeDescendantDecision {
+    if include_patterns.is_empty() {
+        return IncludeDescendantDecision {
+            matched_include_pattern: None,
+            could_include_descendant: false,
+            reason: "no_include_patterns".to_string(),
+        };
+    }
+
+    for pattern in include_patterns {
+        let decision = include_pattern_descendant_decision(pattern, directory);
+        if decision.could_include_descendant {
+            return decision;
+        }
+    }
+
+    IncludeDescendantDecision {
+        matched_include_pattern: None,
+        could_include_descendant: false,
+        reason: "include_patterns_unrelated_to_directory".to_string(),
+    }
+}
+
+fn include_pattern_descendant_decision(
+    pattern: &str,
+    directory: &str,
+) -> IncludeDescendantDecision {
+    let normalized_pattern = normalize_scope_path(pattern);
+    let normalized_directory = normalize_scope_path(directory);
+    let pattern_cmp = normalize_scope_path_for_compare(&normalized_pattern);
+    let directory_cmp = normalize_scope_path_for_compare(&normalized_directory);
+    let directory_cmp = directory_cmp.trim_end_matches('/');
+    if pattern_cmp == "." || directory_cmp.is_empty() || directory_cmp == "." {
+        return include_descendant_decision(pattern, false, "invalid_pattern_or_directory");
+    }
+
+    if path_starts_with_cmp(&pattern_cmp, directory_cmp)
+        || path_starts_with_cmp(directory_cmp, &pattern_cmp)
+    {
+        return include_descendant_decision(pattern, true, "exact_or_prefix_path_intersects");
+    }
+
+    if pattern_cmp.ends_with("/**") {
+        let prefix = pattern_cmp.trim_end_matches("/**");
+        if path_starts_with_cmp(prefix, directory_cmp)
+            || path_starts_with_cmp(directory_cmp, prefix)
+        {
+            return include_descendant_decision(pattern, true, "globstar_prefix_intersects");
+        }
+        return include_descendant_decision(pattern, false, "globstar_prefix_unrelated");
+    }
+
+    let Some(glob_index) = first_glob_meta_index(&pattern_cmp) else {
+        return include_descendant_decision(pattern, false, "exact_path_unrelated");
+    };
+    let literal_prefix = &pattern_cmp[..glob_index];
+    let literal_dir = literal_directory_prefix(literal_prefix);
+    if literal_dir.is_empty() {
+        return include_descendant_decision(pattern, true, "complex_glob_conservative_descend");
+    }
+    if path_starts_with_cmp(literal_dir, directory_cmp)
+        || path_starts_with_cmp(directory_cmp, literal_dir)
+    {
+        return include_descendant_decision(pattern, true, "glob_prefix_intersects");
+    }
+    include_descendant_decision(pattern, false, "glob_prefix_unrelated")
+}
+
+fn include_descendant_decision(
+    pattern: &str,
+    could_include_descendant: bool,
+    reason: &str,
+) -> IncludeDescendantDecision {
+    IncludeDescendantDecision {
+        matched_include_pattern: could_include_descendant.then(|| pattern.to_string()),
+        could_include_descendant,
+        reason: reason.to_string(),
+    }
+}
+
+fn first_glob_meta_index(pattern: &str) -> Option<usize> {
+    pattern
+        .char_indices()
+        .find(|(_, character)| matches!(character, '*' | '?' | '[' | ']'))
+        .map(|(index, _)| index)
+}
+
+fn literal_directory_prefix(literal_prefix: &str) -> &str {
+    if literal_prefix.ends_with('/') {
+        return literal_prefix.trim_end_matches('/');
+    }
+    literal_prefix
+        .rsplit_once('/')
+        .map(|(dir, _)| dir)
+        .unwrap_or("")
+}
+
+fn normalize_scope_path_for_compare(path: &str) -> String {
+    let normalized = normalize_scope_path(path);
+    if cfg!(windows) {
+        normalized.to_ascii_lowercase()
+    } else {
+        normalized
+    }
+}
+
+fn path_starts_with_cmp(path: &str, prefix: &str) -> bool {
+    path == prefix || path.starts_with(&format!("{prefix}/"))
 }
 
 fn wildcard_match(pattern: &str, text: &str) -> bool {
@@ -916,6 +1068,32 @@ mod tests {
         assert_eq!(observed.normalized_path, "target/debug/app.rs");
         assert_eq!(observed.action, ScopeAction::WouldExclude);
         assert_eq!(observed.matched_rule.as_deref(), Some("hard_dir:target"));
+    }
+
+    #[test]
+    fn could_include_descendant_handles_exact_prefix_and_separators() {
+        let patterns = vec![r"src\special\generated.rs".to_string()];
+        assert!(could_include_descendant("src", &patterns));
+        assert!(could_include_descendant("src/special", &patterns));
+        assert!(!could_include_descendant("target", &patterns));
+        assert!(!could_include_descendant("node_modules/pkg", &patterns));
+    }
+
+    #[test]
+    fn could_include_descendant_uses_glob_literal_prefixes() {
+        let patterns = vec!["node_modules/pkg/*.js".to_string()];
+        assert!(could_include_descendant("node_modules", &patterns));
+        assert!(could_include_descendant("node_modules/pkg", &patterns));
+        assert!(!could_include_descendant("node_modules/other", &patterns));
+        assert!(!could_include_descendant("target", &patterns));
+    }
+
+    #[test]
+    fn could_include_descendant_documents_complex_glob_fallback() {
+        let patterns = vec!["**/*.generated.ts".to_string()];
+        let decision = could_include_descendant_decision("target", &patterns);
+        assert!(decision.could_include_descendant);
+        assert_eq!(decision.reason, "complex_glob_conservative_descend");
     }
 
     #[test]

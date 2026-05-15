@@ -1,0 +1,225 @@
+{
+  "generated_at": "2026-05-15T15:06:40.6583510-05:00",
+  "source_of_truth": {
+    "required_first_read": "MVP.md",
+    "status": "missing",
+    "timestamp_update_applied": false,
+    "note": "MVP.md was not present in the worktree, so the required task timestamp could not be applied."
+  },
+  "reports_read": [
+    "reports/audit/scope_passport_lifecycle_fix_baseline.md",
+    "reports/audit/scope_passport_regression_tests.md",
+    "reports/audit/shared_passport_preflight_fix.md",
+    "reports/audit/non_default_scope_read_fix.md",
+    "reports/audit/incremental_ignored_stale_cleanup_fix.md",
+    "reports/audit/include_aware_pruning_fix.md",
+    "reports/audit/mcp_status_passport_gate_fix.md",
+    "reports/audit/cli_mcp_lifecycle_integration_tests.md"
+  ],
+  "overall_status": "blocked_on_literal_mcp_package_name",
+  "broad_full_gate_started": false,
+  "focused_commands": [
+    {
+      "command": "cargo test -p codegraph-index scope",
+      "exit_code": 0,
+      "status": "passed",
+      "matched_tests": 27,
+      "passed_tests": 27,
+      "filtered_out": 63
+    },
+    {
+      "command": "cargo test -p codegraph-index passport",
+      "exit_code": 0,
+      "status": "passed",
+      "matched_tests": 3,
+      "passed_tests": 3,
+      "filtered_out": 87
+    },
+    {
+      "command": "cargo test -p codegraph-index db_lifecycle",
+      "exit_code": 0,
+      "status": "passed",
+      "matched_tests": 5,
+      "passed_tests": 5,
+      "filtered_out": 85
+    },
+    {
+      "command": "cargo test -p codegraph-index update",
+      "exit_code": 0,
+      "status": "passed",
+      "matched_tests": 6,
+      "passed_tests": 6,
+      "filtered_out": 84
+    },
+    {
+      "command": "cargo test -p codegraph-index pruning",
+      "exit_code": 0,
+      "status": "passed",
+      "matched_tests": 1,
+      "passed_tests": 1,
+      "filtered_out": 89
+    },
+    {
+      "command": "cargo test -p codegraph-mcp mcp_status",
+      "exit_code": 1,
+      "status": "failed_package_not_found",
+      "matched_tests": 0,
+      "error": "package ID specification `codegraph-mcp` did not match any packages",
+      "cargo_help": "a package with a similar name exists: codegraph-cli"
+    },
+    {
+      "command": "cargo test -p codegraph-mcp lifecycle",
+      "exit_code": 1,
+      "status": "failed_package_not_found",
+      "matched_tests": 0,
+      "error": "package ID specification `codegraph-mcp` did not match any packages",
+      "cargo_help": "a package with a similar name exists: codegraph-cli"
+    }
+  ],
+  "equivalent_real_package_commands": [
+    {
+      "command": "cargo test -p codegraph-mcp-server mcp_status",
+      "exit_code": 0,
+      "status": "passed",
+      "matched_tests": 6,
+      "passed_tests": 6,
+      "filtered_out": 14
+    },
+    {
+      "command": "cargo test -p codegraph-cli lifecycle_integration -- --test-threads=1",
+      "exit_code": 0,
+      "status": "passed",
+      "matched_tests": 6,
+      "passed_tests": 6,
+      "filtered_out": 51
+    }
+  ],
+  "cli_manual_smoke": {
+    "executable": ".\\target\\debug\\codegraph-mcp.exe",
+    "fixture_notes": [
+      "Temporary repos were created under %TEMP% and removed after the run.",
+      "Fixture files and .gitignore files were written as UTF-8 without BOM."
+    ],
+    "results": {
+      "non_default_index": {
+        "command": "index . --json --include-ignored --workers 1",
+        "status": "indexed"
+      },
+      "query_symbols_non_default_scope": {
+        "command": "query symbols manual_ignored_symbol",
+        "status": "ok",
+        "scope_source": "passport",
+        "hits": 6
+      },
+      "context_pack_non_default_scope": {
+        "command": "context-pack --task \"manual scope smoke\" --seed manual_ignored_symbol --budget 1200 --mode impact",
+        "status": "ok",
+        "scope_source": "passport"
+      },
+      "update_after_ignore_change": {
+        "command": "watch --once --changed generated/now_ignored.ts",
+        "status": "updated",
+        "ignored_paths_seen": 1,
+        "ignored_paths_with_existing_facts": 1,
+        "stale_facts_deleted_for_ignored_paths": 1,
+        "path_cleanup_reasons": {
+          "generated/now_ignored.ts": [
+            "now_ignored",
+            "scope_changed"
+          ]
+        }
+      },
+      "query_symbols_after_cleanup": {
+        "command": "query symbols manual_stale_symbol",
+        "hits": 0
+      }
+    },
+    "discarded_attempts": [
+      {
+        "reason": "PowerShell Set-Content -Encoding UTF8 wrote a BOM into .gitignore on this shell, creating an invalid fixture for the repo parser.",
+        "outcome": "rerun with BOM-free fixture writes"
+      }
+    ]
+  },
+  "mcp_manual_smoke": {
+    "executable": ".\\target\\debug\\codegraph-mcp.exe serve-mcp",
+    "transport": "jsonrpc_stdio_tools_call",
+    "results": {
+      "status_safe_db": {
+        "tool": "codegraph.status",
+        "status": "ok",
+        "safe_to_query": true,
+        "scope_source": "passport"
+      },
+      "search_safe_db": {
+        "tool": "codegraph.search",
+        "is_error": false,
+        "status": "ok",
+        "scope_source": "passport",
+        "hits": 2
+      },
+      "status_unsafe_db": {
+        "tool": "codegraph.status",
+        "is_error": false,
+        "status": "db_problem",
+        "problem": "repo_root_mismatch",
+        "safe_to_query": false,
+        "blockers": [
+          "repo root mismatch: expected unsafe repo root, observed safe repo root"
+        ]
+      },
+      "search_unsafe_db": {
+        "tool": "codegraph.search",
+        "is_error": true,
+        "status": "error",
+        "error": "db_lifecycle_blocked"
+      }
+    }
+  },
+  "working_tree_before_report": {
+    "git_status_short": [
+      " M crates/codegraph-bench/src/lib.rs",
+      " M crates/codegraph-cli/src/lib.rs",
+      " M crates/codegraph-cli/tests/cli_smoke.rs",
+      " M crates/codegraph-index/src/lib.rs",
+      " M crates/codegraph-index/src/scope.rs",
+      " M crates/codegraph-mcp-server/src/lib.rs",
+      " M crates/codegraph-store/src/lib.rs",
+      " M crates/codegraph-store/src/sqlite.rs",
+      "?? reports/audit/cli_mcp_lifecycle_integration_tests.json",
+      "?? reports/audit/cli_mcp_lifecycle_integration_tests.md",
+      "?? reports/audit/include_aware_pruning_fix.json",
+      "?? reports/audit/include_aware_pruning_fix.md",
+      "?? reports/audit/incremental_ignored_stale_cleanup_fix.json",
+      "?? reports/audit/incremental_ignored_stale_cleanup_fix.md",
+      "?? reports/audit/mcp_status_passport_gate_fix.json",
+      "?? reports/audit/mcp_status_passport_gate_fix.md",
+      "?? reports/audit/non_default_scope_read_fix.json",
+      "?? reports/audit/non_default_scope_read_fix.md",
+      "?? reports/audit/scope_passport_lifecycle_fix_baseline.json",
+      "?? reports/audit/scope_passport_lifecycle_fix_baseline.md",
+      "?? reports/audit/scope_passport_regression_tests.json",
+      "?? reports/audit/scope_passport_regression_tests.md",
+      "?? reports/audit/shared_passport_preflight_fix.json",
+      "?? reports/audit/shared_passport_preflight_fix.md"
+    ],
+    "git_diff_stat": {
+      "files_changed": 8,
+      "insertions": 3203,
+      "deletions": 235
+    },
+    "git_diff_check": {
+      "whitespace_errors": 0,
+      "warnings": [
+        "CRLF conversion warnings for modified Rust files"
+      ]
+    }
+  },
+  "acceptance": {
+    "focused_index_commands_match_and_pass": true,
+    "literal_mcp_commands_match_and_pass": false,
+    "equivalent_mcp_commands_match_and_pass": true,
+    "manual_smoke_results_recorded": true,
+    "full_gate_not_run_after_blocker": true
+  }
+}

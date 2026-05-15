@@ -31,13 +31,13 @@ use codegraph_core::{
 };
 pub use codegraph_index::{
     collect_repo_files, default_db_path, index_repo, index_repo_to_db_with_options,
-    index_repo_with_options, inspect_repo_db_passport, parse_extract_pending_files,
-    require_reusable_db_passport, scope_policy_hash, should_ignore_path,
-    should_start_new_index_batch, update_changed_files, update_changed_files_to_db,
-    update_changed_files_with_cache, DbLifecyclePolicy, IncrementalIndexCache,
-    IncrementalIndexSummary, IndexBuildMode, IndexError, IndexIssue, IndexOptions,
-    IndexProfile, IndexScopeOptions, IndexSummary, LocalFactBundle, PendingIndexFile, StorageMode,
-    DEFAULT_INDEX_BATCH_MAX_FILES,
+    index_repo_with_options, inspect_db_lifecycle_preflight, inspect_repo_db_passport,
+    parse_extract_pending_files, require_reusable_db_passport, scope_policy_hash,
+    should_ignore_path, should_start_new_index_batch, update_changed_files,
+    update_changed_files_to_db, update_changed_files_with_cache, DbLifecyclePolicy,
+    DbLifecyclePreflight, IncrementalIndexCache, IncrementalIndexSummary, IndexBuildMode,
+    IndexError, IndexIssue, IndexOptions, IndexProfile, IndexScopeOptions, IndexSummary,
+    LocalFactBundle, PendingIndexFile, StorageMode, DEFAULT_INDEX_BATCH_MAX_FILES,
     DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY, UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::{
@@ -49,8 +49,7 @@ use codegraph_query::{
     SymbolSearchHit, SymbolSearchIndex, TraversalDirection, TraversalStep,
 };
 use codegraph_store::{
-    DbPassport, DbPreflightReport, GraphStore, SqliteGraphStore, TextSearchKind,
-    DB_PASSPORT_VERSION, SCHEMA_VERSION,
+    DbPassport, GraphStore, SqliteGraphStore, TextSearchKind, DB_PASSPORT_VERSION, SCHEMA_VERSION,
 };
 use codegraph_trace::{
     append_trace_event, replay_trace_file, TraceAppendEvent, TraceConfig, TraceEventType,
@@ -144,7 +143,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "bench",
-        usage: "codegraph-mcp bench [--baseline <mode>]... [--format <json|markdown>] [--output <path>]\n  codegraph-mcp bench graph-truth --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--fail-on-forbidden] [--fail-on-missing-source-span] [--fail-on-unresolved-exact] [--fail-on-derived-without-provenance] [--fail-on-test-mock-production-leak] [--update-mode] [--keep-workdirs] [--verbose]\n  codegraph-mcp bench context-packet --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--top-k <k>] [--budget <tokens>]\n  codegraph-mcp bench retrieval-ablation --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--mode <mode>]... [--top-k <k>]\n  codegraph-mcp bench update-integrity [--mode <update-fast|update-validated|update-debug>] [--loop-kind <combined|repeat-fast|update-fast>] [--iterations <n>] [--autoresearch-iterations <n>] [--timeout-ms <n>] [--workers <n>] [--out-json <path>] [--out-md <path>] [--workdir <path>] [--skip-autoresearch] [--only-autoresearch] [--autoresearch-repo <path>] [--autoresearch-seed-db <path>]\n  codegraph-mcp bench query-surface [--repo <path>] [--db <path>] [--fresh] [--iterations <n>] [--out-json <path>] [--out-md <path>]\n  codegraph-mcp bench proof-build-only <repo>|--repo <path> [--db <path>] [--workers <n>]\n  codegraph-mcp bench proof-build-validated <repo>|--repo <path> [--db <path>] [--workers <n>]\n  codegraph-mcp bench comprehensive [--fresh|--use-existing-artifact <db>] [--artifact-metadata <path>] [--fail-on-stale-artifact] [--repo <path>] [--workers <n>] [--output-dir <dir>] [--baseline <path>] [--compact-gate-json <path>] [--previous <path>] [--timestamp <id>]\n  codegraph-mcp bench retrieval-quality [--run-id <id>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>] [--autoresearch-repo <path>]\n  codegraph-mcp bench agent-quality [--run-id <id>] [--timeout-ms <ms>] [--competitor-bin <path>] [--fake-agent]\n  codegraph-mcp bench final-gate [--output-dir <dir>] [--workspace-root <dir>] [--timeout-ms <ms>] [--competitor-bin <path>] [--cgc-db-size-bytes <n>]\n  codegraph-mcp bench gaps [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>]\n  codegraph-mcp bench synthetic-index --output-dir <dir> [--files <n>]\n  codegraph-mcp bench real-repo-corpus\n  codegraph-mcp bench parity-report [--output-dir <dir>]\n  codegraph-mcp bench cgc-comparison [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>]",
+        usage: "codegraph-mcp bench [--baseline <mode>]... [--format <json|markdown>] [--output <path>]\n  codegraph-mcp bench graph-truth --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--fail-on-forbidden] [--fail-on-missing-source-span] [--fail-on-unresolved-exact] [--fail-on-derived-without-provenance] [--fail-on-test-mock-production-leak] [--update-mode] [--keep-workdirs] [--verbose]\n  codegraph-mcp bench context-packet --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--top-k <k>] [--budget <tokens>]\n  codegraph-mcp bench retrieval-ablation --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--mode <mode>]... [--top-k <k>]\n  codegraph-mcp bench update-integrity [--mode <update-fast|update-validated|update-debug>] [--loop-kind <combined|repeat-fast|update-fast>] [--iterations <n>] [--autoresearch-iterations <n>] [--timeout-ms <n>] [--workers <n>] [--out-json <path>] [--out-md <path>] [--workdir <path>] [--skip-autoresearch] [--only-autoresearch] [--autoresearch-repo <path>] [--autoresearch-seed-db <path>]\n  codegraph-mcp bench query-surface [--repo <path>] [--db <path>] [--fresh] [--iterations <n>] [--out-json <path>] [--out-md <path>]\n  codegraph-mcp bench proof-build-only <repo>|--repo <path> [--db <path>] [--workers <n>] [--allow-debug-timing]\n  codegraph-mcp bench proof-build-validated <repo>|--repo <path> [--db <path>] [--workers <n>]\n  codegraph-mcp bench comprehensive [--fresh|--use-existing-artifact <db>] [--artifact-metadata <path>] [--fail-on-stale-artifact] [--repo <path>] [--workers <n>] [--output-dir <dir>] [--baseline <path>] [--compact-gate-json <path>] [--previous <path>] [--timestamp <id>] [--allow-debug-timing]\n  codegraph-mcp bench retrieval-quality [--run-id <id>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>] [--autoresearch-repo <path>]\n  codegraph-mcp bench agent-quality [--run-id <id>] [--timeout-ms <ms>] [--competitor-bin <path>] [--fake-agent]\n  codegraph-mcp bench final-gate [--output-dir <dir>] [--workspace-root <dir>] [--timeout-ms <ms>] [--competitor-bin <path>] [--cgc-db-size-bytes <n>]\n  codegraph-mcp bench gaps [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>]\n  codegraph-mcp bench synthetic-index --output-dir <dir> [--files <n>]\n  codegraph-mcp bench real-repo-corpus\n  codegraph-mcp bench parity-report [--output-dir <dir>]\n  codegraph-mcp bench cgc-comparison [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>]",
         description: "Run local reproducible CodeGraph benchmarks, including optional external CGC comparison.",
     },
     CommandSpec {
@@ -454,6 +453,7 @@ struct ComprehensiveBenchmarkOptions {
     artifact_metadata: Option<PathBuf>,
     fail_on_stale_artifact: bool,
     workers: Option<usize>,
+    allow_debug_timing: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -607,7 +607,18 @@ where
 
 fn run_json_command(error_kind: &str, result: Result<Value, String>) -> CliOutput {
     match result {
+        Ok(value) if error_kind == "bench_failed" => {
+            success(json_line(add_benchmark_binary_metadata(value)))
+        }
         Ok(value) => success(json_line(value)),
+        Err(error) if error_kind == "bench_failed" => command_error_json(
+            error_kind,
+            add_benchmark_binary_metadata(json!({
+                "status": "error",
+                "error": error_kind,
+                "message": error,
+            })),
+        ),
         Err(error) => command_error(error_kind, &error),
     }
 }
@@ -680,6 +691,22 @@ fn command_error(kind: &str, message: &str) -> CliOutput {
             "error": kind,
             "message": message,
         })),
+    }
+}
+
+fn command_error_json(kind: &str, mut value: Value) -> CliOutput {
+    if let Some(object) = value.as_object_mut() {
+        object
+            .entry("status".to_string())
+            .or_insert_with(|| json!("error"));
+        object
+            .entry("error".to_string())
+            .or_insert_with(|| json!(kind));
+    }
+    CliOutput {
+        exit_code: 1,
+        stdout: String::new(),
+        stderr: json_line(value),
     }
 }
 
@@ -819,13 +846,14 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
         }));
     }
 
-    let preflight = inspect_read_db_passport(&repo_root, &db_path)?;
-    if !preflight.valid {
+    let preflight = inspect_read_db_lifecycle_preflight(&repo_root, &db_path, None)?;
+    if !preflight.safe {
         return Ok(json!({
             "status": "db_problem",
             "repo_root": path_string(&repo_root),
             "db_path": path_string(&db_path),
-            "db_health": preflight,
+            "db_health": preflight.db_health.clone(),
+            "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true),
             "next_command": "codegraph-mcp index . --fresh",
         }));
     }
@@ -860,7 +888,8 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
         "db_path": path_string(&db_path),
         "db_size_bytes": sqlite_family_size_bytes(&db_path).map_err(|error| error.to_string())?,
         "storage_policy": DEFAULT_STORAGE_POLICY,
-        "db_health": preflight,
+        "db_health": preflight.db_health.clone(),
+        "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true),
         "schema_version": store.schema_version().map_err(|error| error.to_string())?,
         "files": store.count_files().map_err(|error| error.to_string())?,
         "entities": store.count_entities().map_err(|error| error.to_string())?,
@@ -1083,6 +1112,11 @@ fn yes_no(value: bool) -> &'static str {
 fn run_query_command(args: &[String]) -> Result<Value, String> {
     let mut args = args.to_vec();
     let allow_stale_read = remove_flag(&mut args, "--allow-stale-read");
+    let explicit_scope = parse_read_scope_options(&mut args)?;
+    let repo_root = current_repo_root()?;
+    let db_path = default_db_path(&repo_root);
+    let db_lifecycle_read =
+        read_db_lifecycle_guard(&repo_root, &db_path, allow_stale_read, explicit_scope)?;
     let previous_allow_stale = std::env::var("CODEGRAPH_ALLOW_STALE_READ").ok();
     if allow_stale_read {
         std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", "1");
@@ -1094,12 +1128,7 @@ fn run_query_command(args: &[String]) -> Result<Value, String> {
     }
     let mut value = result?;
     if let Some(object) = value.as_object_mut() {
-        let repo_root = current_repo_root()?;
-        let db_path = default_db_path(&repo_root);
-        object.insert(
-            "db_lifecycle_read".to_string(),
-            read_db_lifecycle_guard(&repo_root, &db_path, allow_stale_read)?,
-        );
+        object.insert("db_lifecycle_read".to_string(), db_lifecycle_read);
     }
     Ok(value)
 }
@@ -1184,6 +1213,53 @@ fn remove_flag(args: &mut Vec<String>, flag: &str) -> bool {
     args.len() != before
 }
 
+fn parse_read_scope_options(args: &mut Vec<String>) -> Result<Option<IndexScopeOptions>, String> {
+    let mut options = IndexScopeOptions::default();
+    let mut explicit = false;
+    let mut retained = Vec::new();
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--include-ignored" => {
+                options.include_ignored = true;
+                explicit = true;
+            }
+            "--no-default-excludes" => {
+                options.no_default_excludes = true;
+                explicit = true;
+            }
+            "--include" => {
+                index += 1;
+                let Some(raw) = args.get(index) else {
+                    return Err("--include requires a pattern".to_string());
+                };
+                options.include_patterns.push(raw.to_string());
+                explicit = true;
+            }
+            "--exclude" => {
+                index += 1;
+                let Some(raw) = args.get(index) else {
+                    return Err("--exclude requires a pattern".to_string());
+                };
+                options.exclude_patterns.push(raw.to_string());
+                explicit = true;
+            }
+            "--respect-gitignore" => {
+                index += 1;
+                let Some(raw) = args.get(index) else {
+                    return Err("--respect-gitignore requires true or false".to_string());
+                };
+                options.respect_gitignore = parse_index_bool(raw, "--respect-gitignore")?;
+                explicit = true;
+            }
+            value => retained.push(value.to_string()),
+        }
+        index += 1;
+    }
+    *args = retained;
+    Ok(explicit.then_some(options))
+}
+
 fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
     let options = parse_context_pack_args(args)?;
     let profile_enabled = options.profile;
@@ -1191,8 +1267,12 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
     let total_start = Instant::now();
     let mut profile_spans = Vec::new();
     let db_path = default_db_path(&repo_root);
-    let db_lifecycle_read =
-        read_db_lifecycle_guard(&repo_root, &db_path, options.allow_stale_read)?;
+    let db_lifecycle_read = read_db_lifecycle_guard(
+        &repo_root,
+        &db_path,
+        options.allow_stale_read,
+        options.explicit_scope_policy.clone(),
+    )?;
     let open_start = Instant::now();
     let connection = open_context_pack_connection(&db_path)?;
     profile_spans.push(profile_span_json(
@@ -1403,11 +1483,30 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
 }
 
 fn run_impact_command(args: &[String]) -> Result<Value, String> {
+    let mut args = args.to_vec();
+    let allow_stale_read = remove_flag(&mut args, "--allow-stale-read");
+    let explicit_scope = parse_read_scope_options(&mut args)?;
     if args.len() != 1 {
-        return Err("Usage: codegraph-mcp impact <file-or-symbol>".to_string());
+        return Err("Usage: codegraph-mcp impact <file-or-symbol> [scope flags]".to_string());
     }
     let repo_root = current_repo_root()?;
-    impact_value(&repo_root, &args[0])
+    let db_path = default_db_path(&repo_root);
+    let db_lifecycle_read =
+        read_db_lifecycle_guard(&repo_root, &db_path, allow_stale_read, explicit_scope)?;
+    let previous_allow_stale = std::env::var("CODEGRAPH_ALLOW_STALE_READ").ok();
+    if allow_stale_read {
+        std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", "1");
+    }
+    let result = impact_value(&repo_root, &args[0]);
+    match previous_allow_stale {
+        Some(value) => std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", value),
+        None => std::env::remove_var("CODEGRAPH_ALLOW_STALE_READ"),
+    }
+    let mut value = result?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("db_lifecycle_read".to_string(), db_lifecycle_read);
+    }
+    Ok(value)
 }
 
 fn impact_value(repo_root: &Path, target: &str) -> Result<Value, String> {
@@ -1905,8 +2004,23 @@ fn patch_comprehensive_timing_separation(
         "audit_ms": audit_ms,
         "report_generation_ms": report_generation_ms,
         "comprehensive_total_ms": comprehensive_total_ms,
+        "claimable_for_thresholds": report
+            .get("artifact_freshness")
+            .and_then(|value| value.get("claimable_for_thresholds"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "diagnostic_only": report
+            .get("artifact_freshness")
+            .and_then(|value| value.get("diagnostic_only"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "timing_classification": report
+            .get("artifact_freshness")
+            .and_then(|value| value.get("timing_classification"))
+            .cloned()
+            .unwrap_or(Value::Null),
         "notes": [
-            "proof_build_only_ms is the fresh proof DB build timing only.",
+            "proof_build_only_ms is numeric only for claimable release-binary proof DB build timing; debug timing is reported as non_claimable_debug_timing.",
             "validation_ms, audit_ms, report_generation_ms, and comprehensive_total_ms are separated so operator-gate overhead cannot be charged to proof-build-only."
         ]
     });
@@ -1939,6 +2053,7 @@ fn parse_comprehensive_benchmark_options(
     let mut artifact_metadata = None;
     let mut fail_on_stale_artifact = false;
     let mut workers = None;
+    let mut allow_debug_timing = false;
 
     let mut index = 0usize;
     while index < args.len() {
@@ -1962,6 +2077,9 @@ fn parse_comprehensive_benchmark_options(
             }
             "--fail-on-stale-artifact" => {
                 fail_on_stale_artifact = true;
+            }
+            "--allow-debug-timing" => {
+                allow_debug_timing = true;
             }
             "--repo" => {
                 index += 1;
@@ -2022,6 +2140,7 @@ fn parse_comprehensive_benchmark_options(
         artifact_metadata,
         fail_on_stale_artifact,
         workers,
+        allow_debug_timing,
     })
 }
 
@@ -2083,9 +2202,13 @@ fn run_proof_build_mode_benchmark_command(
     build_mode: IndexBuildMode,
 ) -> Result<Value, String> {
     let mut index_args = Vec::new();
+    let mut allow_debug_timing = false;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
+            "--allow-debug-timing" => {
+                allow_debug_timing = true;
+            }
             "--repo" => {
                 index += 1;
                 let Some(repo) = args.get(index) else {
@@ -2096,6 +2219,13 @@ fn run_proof_build_mode_benchmark_command(
             value => index_args.push(value.to_string()),
         }
         index += 1;
+    }
+    if cfg!(debug_assertions) && build_mode == IndexBuildMode::ProofBuildOnly && !allow_debug_timing
+    {
+        return Err(
+            "bench proof-build-only was invoked from a debug binary; pass --allow-debug-timing for a diagnostic-only run, or run a release binary for claimable threshold timing"
+                .to_string(),
+        );
     }
     if !index_args.iter().any(|arg| arg == "--profile") {
         index_args.push("--profile".to_string());
@@ -2136,15 +2266,11 @@ fn run_proof_build_mode_benchmark_command(
     .map_err(|error| error.to_string())?;
     let elapsed = elapsed_ms(started);
     let summary_json = index_summary_json(&summary)?;
-    let proof_build_only_ms = if build_mode == IndexBuildMode::ProofBuildOnly {
-        summary
-            .profile
-            .as_ref()
-            .map(|profile| profile.total_wall_ms)
-            .unwrap_or(elapsed as u128)
-    } else {
-        0
-    };
+    let proof_build_only_ms = summary
+        .profile
+        .as_ref()
+        .map(|profile| profile.total_wall_ms)
+        .unwrap_or(elapsed as u128);
     let validation_ms = if build_mode == IndexBuildMode::ProofBuildPlusValidation {
         profile_span_ms(summary.profile.as_ref(), "integrity_check").unwrap_or(0.0)
     } else {
@@ -2153,12 +2279,31 @@ fn run_proof_build_mode_benchmark_command(
     let report_generation_start = Instant::now();
     let db_path = PathBuf::from(&summary.db_path);
     let artifact_metadata_path = default_artifact_metadata_path(&db_path);
+    let binary_metadata = benchmark_binary_metadata();
+    let claimable_for_thresholds = binary_metadata["claimable_for_thresholds"]
+        .as_bool()
+        .unwrap_or(false);
+    let diagnostic_only = binary_metadata["diagnostic_only"]
+        .as_bool()
+        .unwrap_or(false);
+    let timing_classification = if diagnostic_only {
+        "diagnostic_only"
+    } else {
+        "production"
+    };
+    let proof_build_only_value =
+        if build_mode == IndexBuildMode::ProofBuildOnly && !claimable_for_thresholds {
+            json!(NON_CLAIMABLE_DEBUG_TIMING)
+        } else {
+            json!(proof_build_only_ms)
+        };
     let artifact_metadata = proof_build_mode_artifact_metadata(
         &summary,
         build_mode,
         proof_build_only_ms,
         validation_ms,
         &artifact_metadata_path,
+        &binary_metadata,
     );
     write_json_file(&artifact_metadata_path, &artifact_metadata)?;
     let report_generation_ms = elapsed_ms(report_generation_start);
@@ -2170,12 +2315,25 @@ fn run_proof_build_mode_benchmark_command(
             IndexBuildMode::ProofBuildPlusValidation => "proof_build_validated",
         },
         "mode": build_mode.as_str(),
-        "proof_build_only_ms": proof_build_only_ms,
+        "proof_build_only_ms": proof_build_only_value.clone(),
+        "diagnostic_debug_proof_build_only_ms": if diagnostic_only && build_mode == IndexBuildMode::ProofBuildOnly {
+            json!(proof_build_only_ms)
+        } else {
+            Value::Null
+        },
         "validation_ms": validation_ms,
         "audit_ms": 0,
         "report_generation_ms": report_generation_ms,
         "comprehensive_total_ms": Value::Null,
         "wall_ms": elapsed,
+        "current_exe": binary_metadata["current_exe"].clone(),
+        "debug_assertions": binary_metadata["debug_assertions"].clone(),
+        "binary_profile": binary_metadata["binary_profile"].clone(),
+        "exact_command": binary_metadata["exact_command"].clone(),
+        "claimable_for_thresholds": claimable_for_thresholds,
+        "diagnostic_only": diagnostic_only,
+        "timing_classification": timing_classification,
+        "binary_metadata": binary_metadata,
         "summary": summary_json,
         "artifact_metadata_path": path_string(&artifact_metadata_path),
         "artifact_metadata": artifact_metadata,
@@ -2220,7 +2378,7 @@ fn run_proof_build_mode_benchmark_command(
             },
             "cgc_autorun": false,
             "timing_separation": {
-                "proof_build_only_ms": proof_build_only_ms,
+                "proof_build_only_ms": proof_build_only_value,
                 "validation_ms": validation_ms,
                 "audit_ms": 0,
                 "report_generation_ms": report_generation_ms,
@@ -2236,14 +2394,37 @@ fn proof_build_mode_artifact_metadata(
     proof_build_only_ms: u128,
     validation_ms: f64,
     metadata_path: &Path,
+    binary_metadata: &Value,
 ) -> Value {
     let db_path = PathBuf::from(&summary.db_path);
     let schema_version = sqlite_user_version_read_only(&db_path).unwrap_or(SCHEMA_VERSION);
-    let db_size_bytes = sqlite_family_size_bytes(&db_path).unwrap_or(0);
+    let db_size_bytes = metadata_len(&db_path).unwrap_or(0);
+    let build_duration_ms = summary
+        .profile
+        .as_ref()
+        .map(|profile| profile.total_wall_ms.min(u128::from(u64::MAX)) as u64)
+        .unwrap_or_else(|| proof_build_only_ms.min(u128::from(u64::MAX)) as u64);
     let quick_check_count = profile_span_count(summary.profile.as_ref(), "quick_check");
     let integrity_check_count = profile_span_count(summary.profile.as_ref(), "integrity_check");
     let artifact_validated =
         build_mode == IndexBuildMode::ProofBuildPlusValidation && integrity_check_count > 0;
+    let claimable_for_thresholds = binary_metadata["claimable_for_thresholds"]
+        .as_bool()
+        .unwrap_or(false);
+    let diagnostic_only = binary_metadata["diagnostic_only"]
+        .as_bool()
+        .unwrap_or(false);
+    let timing_classification = if diagnostic_only {
+        "diagnostic_only"
+    } else {
+        "production"
+    };
+    let proof_build_only_value =
+        if build_mode == IndexBuildMode::ProofBuildOnly && !claimable_for_thresholds {
+            json!(NON_CLAIMABLE_DEBUG_TIMING)
+        } else {
+            json!(proof_build_only_ms)
+        };
     json!({
         "schema_version": schema_version,
         "current_schema_version": SCHEMA_VERSION,
@@ -2255,7 +2436,13 @@ fn proof_build_mode_artifact_metadata(
         "git_commit": current_git_commit(),
         "storage_mode": "proof",
         "build_mode": build_mode.as_str(),
-        "proof_build_only_ms": proof_build_only_ms,
+        "build_duration_ms": build_duration_ms,
+        "proof_build_only_ms": proof_build_only_value,
+        "diagnostic_debug_proof_build_only_ms": if diagnostic_only && build_mode == IndexBuildMode::ProofBuildOnly {
+            json!(proof_build_only_ms)
+        } else {
+            Value::Null
+        },
         "validation_ms": validation_ms,
         "audit_ms": 0,
         "report_generation_ms": Value::Null,
@@ -2286,6 +2473,14 @@ fn proof_build_mode_artifact_metadata(
                 vec!["Artifact must not be described as validated; proof-build-only publishes after the configured quick_check timing gate."]
             }
         },
+        "current_exe": binary_metadata["current_exe"].clone(),
+        "debug_assertions": binary_metadata["debug_assertions"].clone(),
+        "binary_profile": binary_metadata["binary_profile"].clone(),
+        "exact_command": binary_metadata["exact_command"].clone(),
+        "claimable_for_thresholds": claimable_for_thresholds,
+        "diagnostic_only": diagnostic_only,
+        "timing_classification": timing_classification,
+        "binary_metadata": binary_metadata.clone(),
         "contamination_contract": proof_build_mode_contamination_contract(build_mode),
         "notes": [
             "Metadata is emitted after the measured proof DB build and is not included in proof_build_only_ms.",
@@ -2469,6 +2664,7 @@ fn build_comprehensive_benchmark_report(
     let comparison_section = comprehensive_comparison_section(&comparison);
     let regression_summary =
         comprehensive_regression_summary(&baseline, &gate, &clean_gate, previous.as_ref());
+    let report_binary_metadata = benchmark_binary_metadata();
 
     let mut failed_targets = Vec::new();
     let mut passed_targets = Vec::new();
@@ -2556,6 +2752,13 @@ fn build_comprehensive_benchmark_report(
         "timestamp": options.timestamp,
         "phase": PHASE,
         "source_of_truth": "MVP.md",
+        "current_exe": report_binary_metadata["current_exe"].clone(),
+        "debug_assertions": report_binary_metadata["debug_assertions"].clone(),
+        "binary_profile": report_binary_metadata["binary_profile"].clone(),
+        "exact_command": report_binary_metadata["exact_command"].clone(),
+        "claimable_for_thresholds": report_binary_metadata["claimable_for_thresholds"].clone(),
+        "diagnostic_only": report_binary_metadata["diagnostic_only"].clone(),
+        "binary_metadata": report_binary_metadata,
         "execution_mode": if artifact_freshness["artifact_reuse"].as_bool() == Some(true) {
             "explicit_artifact_reuse"
         } else {
@@ -2717,6 +2920,12 @@ fn build_fresh_comprehensive_proof_artifact(
     options: &ComprehensiveBenchmarkOptions,
     gate: &mut Value,
 ) -> Result<Value, String> {
+    if cfg!(debug_assertions) && !options.allow_debug_timing {
+        return Err(
+            "bench comprehensive would measure proof-build-only timing from a debug binary; pass --allow-debug-timing for a diagnostic-only report, or run the release binary for claimable production threshold timing"
+                .to_string(),
+        );
+    }
     let artifact_dir = absolutize_path(&options.output_dir)?.join("artifacts");
     fs::create_dir_all(&artifact_dir).map_err(|error| error.to_string())?;
     let db_path = artifact_dir.join(format!("comprehensive_proof_{}.sqlite", options.timestamp));
@@ -2774,6 +2983,23 @@ fn build_fresh_comprehensive_proof_artifact(
             options.timestamp
         ))
     });
+    let binary_metadata = benchmark_binary_metadata();
+    let claimable_for_thresholds = binary_metadata["claimable_for_thresholds"]
+        .as_bool()
+        .unwrap_or(false);
+    let diagnostic_only = binary_metadata["diagnostic_only"]
+        .as_bool()
+        .unwrap_or(false);
+    let timing_classification = if diagnostic_only {
+        "diagnostic_only"
+    } else {
+        "production"
+    };
+    let proof_build_only_value = if claimable_for_thresholds {
+        json!(build_duration_ms)
+    } else {
+        json!(NON_CLAIMABLE_DEBUG_TIMING)
+    };
     let metadata = json!({
         "artifact_path": path_string(&db_path),
         "artifact_created_at": file_modified_unix_ms(&db_path).unwrap_or_else(unix_time_ms),
@@ -2785,7 +3011,12 @@ fn build_fresh_comprehensive_proof_artifact(
         "storage_mode": "proof",
         "build_command": comprehensive_fresh_build_command(options, &db_path),
         "build_duration_ms": build_duration_ms,
-        "proof_build_only_ms": build_duration_ms,
+        "proof_build_only_ms": proof_build_only_value,
+        "diagnostic_debug_proof_build_only_ms": if diagnostic_only {
+            json!(build_duration_ms)
+        } else {
+            Value::Null
+        },
         "validation_ms": 0,
         "audit_ms": audit_ms,
         "report_generation_ms": Value::Null,
@@ -2805,6 +3036,14 @@ fn build_fresh_comprehensive_proof_artifact(
         },
         "benchmark_run_id": options.timestamp,
         "artifact_metadata_path": path_string(&metadata_path),
+        "current_exe": binary_metadata["current_exe"].clone(),
+        "debug_assertions": binary_metadata["debug_assertions"].clone(),
+        "binary_profile": binary_metadata["binary_profile"].clone(),
+        "exact_command": binary_metadata["exact_command"].clone(),
+        "claimable_for_thresholds": claimable_for_thresholds,
+        "diagnostic_only": diagnostic_only,
+        "timing_classification": timing_classification,
+        "binary_metadata": binary_metadata,
         "freshness_metadata_present": true,
         "artifact_reuse": false,
         "freshly_built": true,
@@ -2812,9 +3051,14 @@ fn build_fresh_comprehensive_proof_artifact(
         "stale_reasons": [],
         "freshness_status": "fresh",
         "storage_result_claimable": true,
-        "cold_build_result_claimable": true,
+        "cold_build_result_claimable": claimable_for_thresholds,
         "notes": [
-            "Fresh proof DB built by comprehensive benchmark before storage and cold-build metrics were read."
+            "Fresh proof DB built by comprehensive benchmark before storage and cold-build metrics were read.",
+            if claimable_for_thresholds {
+                "Proof-build timing came from a release binary and is claimable for production thresholds."
+            } else {
+                "Proof-build timing came from a debug binary; it is diagnostic_only and not claimable for production thresholds."
+            }
         ]
     });
     write_json_file(&metadata_path, &metadata)?;
@@ -2885,6 +3129,13 @@ fn inspect_existing_comprehensive_proof_artifact(
     let metadata_db_size = value_u64(&metadata_value, &["db_size_bytes"]);
     let metadata_build_duration = value_u64(&metadata_value, &["build_duration_ms"]);
     let metadata_git_commit = value_string(&metadata_value, &["git_commit"]);
+    let metadata_current_exe = value_string(&metadata_value, &["current_exe"]);
+    let metadata_binary_profile = value_string(&metadata_value, &["binary_profile"]);
+    let metadata_exact_command = value_string(&metadata_value, &["exact_command"]);
+    let metadata_claimable_for_thresholds =
+        value_bool(&metadata_value, &["claimable_for_thresholds"]);
+    let metadata_debug_assertions = value_bool(&metadata_value, &["debug_assertions"]);
+    let metadata_diagnostic_only = value_bool(&metadata_value, &["diagnostic_only"]);
     let current_git = current_git_commit();
 
     if metadata_schema != Some(u64::from(SCHEMA_VERSION)) {
@@ -2926,6 +3177,18 @@ fn inspect_existing_comprehensive_proof_artifact(
     if metadata_build_duration.is_none() {
         stale_reasons.push("missing build_duration_ms".to_string());
     }
+    if metadata_current_exe.is_none() {
+        stale_reasons.push("missing current_exe".to_string());
+    }
+    if metadata_binary_profile.is_none() {
+        stale_reasons.push("missing binary_profile".to_string());
+    }
+    if metadata_exact_command.is_none() {
+        stale_reasons.push("missing exact_command".to_string());
+    }
+    if metadata_claimable_for_thresholds.is_none() {
+        stale_reasons.push("missing claimable_for_thresholds".to_string());
+    }
     if let Some(recorded_git) = metadata_git_commit.as_deref() {
         if recorded_git != "unknown" && current_git != "unknown" && recorded_git != current_git {
             stale_reasons.push(format!(
@@ -2949,6 +3212,16 @@ fn inspect_existing_comprehensive_proof_artifact(
     }
 
     let build_duration_ms = metadata_build_duration.unwrap_or(0);
+    let claimable_for_thresholds = metadata_claimable_for_thresholds.unwrap_or(false);
+    let diagnostic_only = metadata_diagnostic_only
+        .unwrap_or(metadata_debug_assertions.unwrap_or(false) || !claimable_for_thresholds);
+    let proof_build_only_value = if claimable_for_thresholds && metadata_build_duration.is_some() {
+        json!(build_duration_ms)
+    } else if diagnostic_only {
+        json!(NON_CLAIMABLE_DEBUG_TIMING)
+    } else {
+        Value::Null
+    };
     let metadata_report = json!({
         "artifact_path": path_string(db_path),
         "artifact_created_at": value_u64(&metadata_value, &["artifact_created_at"]).unwrap_or_else(|| file_modified_unix_ms(db_path).unwrap_or(0)),
@@ -2962,11 +3235,31 @@ fn inspect_existing_comprehensive_proof_artifact(
         "storage_mode": metadata_storage_mode.unwrap_or_else(|| "unknown".to_string()),
         "build_command": value_string(&metadata_value, &["build_command"]).unwrap_or_else(|| "unknown".to_string()),
         "build_duration_ms": if metadata_build_duration.is_some() { json!(build_duration_ms) } else { Value::Null },
+        "proof_build_only_ms": proof_build_only_value,
+        "diagnostic_debug_proof_build_only_ms": if diagnostic_only && metadata_build_duration.is_some() {
+            json!(build_duration_ms)
+        } else {
+            Value::Null
+        },
         "db_size_bytes": actual_db_size_bytes,
         "metadata_db_size_bytes": metadata_db_size,
         "integrity_status": integrity_status,
         "benchmark_run_id": options.timestamp,
         "artifact_metadata_path": path_string(&metadata_path),
+        "current_exe": metadata_current_exe.unwrap_or_else(|| "unknown".to_string()),
+        "debug_assertions": metadata_debug_assertions.unwrap_or(false),
+        "binary_profile": metadata_binary_profile.unwrap_or_else(|| "unknown".to_string()),
+        "exact_command": metadata_exact_command.unwrap_or_else(|| "unknown".to_string()),
+        "claimable_for_thresholds": claimable_for_thresholds,
+        "diagnostic_only": diagnostic_only,
+        "binary_metadata": {
+            "current_exe": value_string(&metadata_value, &["current_exe"]).unwrap_or_else(|| "unknown".to_string()),
+            "debug_assertions": metadata_debug_assertions.unwrap_or(false),
+            "binary_profile": value_string(&metadata_value, &["binary_profile"]).unwrap_or_else(|| "unknown".to_string()),
+            "exact_command": value_string(&metadata_value, &["exact_command"]).unwrap_or_else(|| "unknown".to_string()),
+            "claimable_for_thresholds": claimable_for_thresholds,
+            "diagnostic_only": diagnostic_only
+        },
         "freshness_metadata_present": metadata_present,
         "artifact_reuse": true,
         "freshly_built": false,
@@ -2974,9 +3267,11 @@ fn inspect_existing_comprehensive_proof_artifact(
         "stale_reasons": stale_reasons,
         "freshness_status": if stale { "stale" } else { "fresh" },
         "storage_result_claimable": !stale,
-        "cold_build_result_claimable": !stale && metadata_build_duration.is_some(),
+        "cold_build_result_claimable": !stale && metadata_build_duration.is_some() && claimable_for_thresholds,
         "notes": if stale {
             vec!["stale artifact; storage result not claimable".to_string(), "stale artifact; cold-build result not claimable".to_string()]
+        } else if !claimable_for_thresholds {
+            vec!["debug or otherwise non-production proof-build timing; cold-build result not claimable".to_string()]
         } else {
             vec!["Explicit artifact reuse accepted because freshness metadata matches current schema/build checks.".to_string()]
         }
@@ -3058,6 +3353,13 @@ fn patch_gate_with_proof_artifact(
     let integrity_status = value_string(proof_storage, &["integrity_check", "status"])
         .unwrap_or_else(|| "unknown".to_string());
     let profile = summary.profile.as_ref();
+    let claimable_for_thresholds =
+        value_bool(metadata, &["claimable_for_thresholds"]).unwrap_or(true);
+    let diagnostic_only = value_bool(metadata, &["diagnostic_only"]).unwrap_or(false);
+    let measured_wall_ms = profile
+        .map(|profile| profile.total_wall_ms.min(u128::from(u64::MAX)) as u64)
+        .or_else(|| value_u64(metadata, &["build_duration_ms"]))
+        .unwrap_or(0);
 
     let gate_object = gate
         .as_object_mut()
@@ -3082,10 +3384,19 @@ fn patch_gate_with_proof_artifact(
     let proof_build_object = ensure_json_object(autoresearch_object, "proof_build")?;
     proof_build_object.insert(
         "wall_ms".to_string(),
-        json!(profile
-            .map(|profile| profile.total_wall_ms.min(u128::from(u64::MAX)) as u64)
-            .or_else(|| value_u64(metadata, &["build_duration_ms"]))
-            .unwrap_or(0)),
+        if claimable_for_thresholds {
+            json!(measured_wall_ms)
+        } else {
+            json!(NON_CLAIMABLE_DEBUG_TIMING)
+        },
+    );
+    proof_build_object.insert(
+        "diagnostic_debug_wall_ms".to_string(),
+        if diagnostic_only {
+            json!(measured_wall_ms)
+        } else {
+            Value::Null
+        },
     );
     proof_build_object.insert(
         "db_write_ms".to_string(),
@@ -3113,6 +3424,25 @@ fn patch_gate_with_proof_artifact(
     proof_build_object.insert(
         "duplicate_local_analyses_skipped".to_string(),
         json!(summary.files_skipped),
+    );
+    proof_build_object.insert(
+        "claimable_for_thresholds".to_string(),
+        json!(claimable_for_thresholds),
+    );
+    proof_build_object.insert("diagnostic_only".to_string(), json!(diagnostic_only));
+    proof_build_object.insert(
+        "binary_profile".to_string(),
+        metadata
+            .get("binary_profile")
+            .cloned()
+            .unwrap_or_else(|| json!("unknown")),
+    );
+    proof_build_object.insert(
+        "debug_assertions".to_string(),
+        metadata
+            .get("debug_assertions")
+            .cloned()
+            .unwrap_or(Value::Null),
     );
     gate_object.insert("artifact_freshness".to_string(), metadata.clone());
     Ok(())
@@ -3145,22 +3475,23 @@ fn comprehensive_fresh_build_command(
     db_path: &Path,
 ) -> String {
     let mut parts = vec![
-        "codegraph-mcp".to_string(),
-        "index".to_string(),
+        current_exe_string(),
+        "bench".to_string(),
+        "proof-build-only".to_string(),
+        "--repo".to_string(),
         path_string(&options.repo),
         "--db".to_string(),
         path_string(db_path),
-        "--profile".to_string(),
-        "--storage-mode".to_string(),
-        "proof".to_string(),
-        "--build-mode".to_string(),
-        "proof-build-only".to_string(),
     ];
     if let Some(workers) = options.workers {
         parts.push("--workers".to_string());
         parts.push(workers.to_string());
     }
-    parts.join(" ")
+    parts
+        .into_iter()
+        .map(|part| shell_quote_arg(&part))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn comprehensive_artifact_freshness_metrics(metadata: &Value) -> Vec<Value> {
@@ -3243,6 +3574,9 @@ fn comprehensive_artifact_freshness_metrics(metadata: &Value) -> Vec<Value> {
             status_known_pass(cold_claimable),
             vec![if cold_claimable == Some(true) {
                 "Cold-build result is claimable because the proof artifact is fresh or freshness-validated."
+                    .to_string()
+            } else if value_bool(metadata, &["diagnostic_only"]) == Some(true) {
+                "debug proof-build timing is diagnostic_only; cold-build result not claimable"
                     .to_string()
             } else {
                 "stale artifact; cold-build result not claimable".to_string()
@@ -4183,13 +4517,41 @@ fn comprehensive_cold_profile_metrics(proof_build: &Value) -> Vec<Value> {
     let total = value_f64(proof_build, &["wall_ms"]);
     let db_write = value_f64(proof_build, &["db_write_ms"]);
     let integrity = value_f64(proof_build, &["integrity_check_ms"]);
-    vec![
+    let claimable_for_thresholds = value_bool(proof_build, &["claimable_for_thresholds"]);
+    let mut metrics = Vec::new();
+    metrics.push(metric(
+        "proof_build_timing_claimable_for_thresholds",
+        json!(true),
+        observed_bool(claimable_for_thresholds),
+        status_known_pass(claimable_for_thresholds),
+        vec![if claimable_for_thresholds == Some(true) {
+            "Proof-build timing came from a production/release binary and may be compared to thresholds."
+                .to_string()
+        } else {
+            "Proof-build timing came from a debug or unknown binary profile; record it as diagnostic_only and do not compare it to production thresholds."
+                .to_string()
+        }],
+    ));
+    metrics.push(if claimable_for_thresholds == Some(true) {
         metric_le_f64(
             "cold_proof_build_total_wall_ms",
             60000.0,
             total,
             "Cold proof build intended target is <=60 seconds.",
-        ),
+        )
+    } else {
+        metric(
+            "cold_proof_build_total_wall_ms",
+            json!("<=60000 ms release binary only"),
+            json!(NON_CLAIMABLE_DEBUG_TIMING),
+            "unknown",
+            vec![
+                "Debug proof-build timing is not a claimable production-binary threshold result."
+                    .to_string(),
+            ],
+        )
+    });
+    metrics.extend([
         metric_reported_f64(
             "cold_proof_build_total_profile_ms",
             total,
@@ -4315,13 +4677,21 @@ fn comprehensive_cold_profile_metrics(proof_build: &Value) -> Vec<Value> {
             None,
             "Not persisted separately in compact proof cold-build profile.",
         ),
-    ]
+    ]);
+    metrics
 }
 
 fn comprehensive_cold_build_mode_distinction(gate: &Value) -> Vec<Value> {
     let proof_wall = value_f64(gate, &["autoresearch", "proof_build", "wall_ms"]);
     let integrity = value_f64(gate, &["autoresearch", "proof_build", "integrity_check_ms"]);
     let audit_wall = value_f64(gate, &["autoresearch", "audit_build", "wall_ms"]);
+    let claimable_for_thresholds = value_bool(
+        gate,
+        &["autoresearch", "proof_build", "claimable_for_thresholds"],
+    );
+    let proof_wall_observed = gate_value(gate, &["autoresearch", "proof_build", "wall_ms"])
+        .cloned()
+        .unwrap_or(Value::Null);
     let proof_plus_validation = proof_wall.map(|wall| wall + integrity.unwrap_or(0.0));
     let proof_plus_audit = match (proof_wall, audit_wall) {
         (Some(proof), Some(audit)) => Some(proof + audit),
@@ -4331,15 +4701,37 @@ fn comprehensive_cold_build_mode_distinction(gate: &Value) -> Vec<Value> {
     vec![
         json!({
             "mode": "proof-build-only",
-            "observed_ms": observed_number_f64(proof_wall),
-            "observed_minutes": observed_number_f64(proof_wall.map(|value| value / 60000.0)),
-            "target_ms": 60000,
-            "status": status_known_pass(proof_wall.map(|value| value <= 60000.0)),
-            "included_in_50_02_minute_number": true,
-            "classification": "actual production proof-mode cold build as persisted by the compact gate",
-            "notes": [
-                "This is the number compared to the <=60s cold proof build target."
-            ]
+            "observed_ms": if claimable_for_thresholds == Some(false) {
+                proof_wall_observed.clone()
+            } else {
+                observed_number_f64(proof_wall)
+            },
+            "observed_minutes": if claimable_for_thresholds == Some(false) {
+                Value::Null
+            } else {
+                observed_number_f64(proof_wall.map(|value| value / 60000.0))
+            },
+            "target_ms": if claimable_for_thresholds == Some(false) {
+                json!("<=60000 ms release binary only")
+            } else {
+                json!(60000)
+            },
+            "status": if claimable_for_thresholds == Some(false) {
+                "unknown"
+            } else {
+                status_known_pass(proof_wall.map(|value| value <= 60000.0))
+            },
+            "included_in_50_02_minute_number": claimable_for_thresholds != Some(false),
+            "classification": if claimable_for_thresholds == Some(false) {
+                "diagnostic debug/non-production proof-build timing; not compared to production threshold"
+            } else {
+                "actual production proof-mode cold build as persisted by the compact gate"
+            },
+            "notes": if claimable_for_thresholds == Some(false) {
+                vec!["Debug proof-build timing is diagnostic_only and cannot produce a green or red production verdict.".to_string()]
+            } else {
+                vec!["This is the number compared to the <=60s cold proof build target.".to_string()]
+            }
         }),
         json!({
             "mode": "proof-build-plus-validation",
@@ -6103,10 +6495,17 @@ fn render_comprehensive_benchmark_markdown(report: &Value) -> String {
             "integrity_status",
             "build_duration_ms",
             "proof_build_only_ms",
+            "diagnostic_debug_proof_build_only_ms",
             "validation_ms",
             "audit_ms",
             "report_generation_ms",
             "comprehensive_total_ms",
+            "current_exe",
+            "debug_assertions",
+            "binary_profile",
+            "exact_command",
+            "claimable_for_thresholds",
+            "diagnostic_only",
             "storage_result_claimable",
             "cold_build_result_claimable",
         ] {
@@ -7058,7 +7457,7 @@ fn watch_repo(repo_path: &Path, debounce: Duration) -> Result<(), IndexError> {
     loop {
         match receiver.recv_timeout(tick) {
             Ok(Ok(event)) => {
-                enqueue_event_paths(&repo_root, &mut debouncer, event, Instant::now());
+                enqueue_event_paths(&mut debouncer, event, Instant::now());
             }
             Ok(Err(error)) => {
                 eprintln!("codegraph watch: notify error: {error}");
@@ -7081,20 +7480,12 @@ fn watch_repo(repo_path: &Path, debounce: Duration) -> Result<(), IndexError> {
     }
 }
 
-fn enqueue_event_paths(
-    repo_root: &Path,
-    debouncer: &mut WatchDebouncer,
-    event: Event,
-    now: Instant,
-) {
+fn enqueue_event_paths(debouncer: &mut WatchDebouncer, event: Event, now: Instant) {
     if matches!(event.kind, EventKind::Access(_)) {
         return;
     }
 
     for path in event.paths {
-        if should_ignore_path(repo_root, &path) {
-            continue;
-        }
         debouncer.push(path, now);
     }
 }
@@ -8037,7 +8428,9 @@ fn run_bundle_import(args: &[String]) -> Result<Value, String> {
             Ok(())
         })
         .map_err(|error| error.to_string())?;
-    store.quick_integrity_gate().map_err(|error| error.to_string())?;
+    store
+        .quick_integrity_gate()
+        .map_err(|error| error.to_string())?;
     upsert_cli_db_passport(
         &store,
         &repo_root,
@@ -10640,9 +11033,12 @@ struct ContextPackOptions {
     stage0_candidates: Vec<String>,
     profile: bool,
     allow_stale_read: bool,
+    explicit_scope_policy: Option<IndexScopeOptions>,
 }
 
 fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String> {
+    let mut args = args.to_vec();
+    let explicit_scope_policy = parse_read_scope_options(&mut args)?;
     let mut task = None;
     let mut mode = "impact".to_string();
     let mut token_budget = 2_000usize;
@@ -10711,6 +11107,7 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
         stage0_candidates,
         profile,
         allow_stale_read,
+        explicit_scope_policy,
     })
 }
 
@@ -10794,7 +11191,7 @@ fn open_existing_store(repo_root: &Path) -> Result<SqliteGraphStore, String> {
             db_path.display()
         ));
     }
-    let _ = read_db_lifecycle_guard(repo_root, &db_path, allow_stale_read_enabled())?;
+    let _ = read_db_lifecycle_guard(repo_root, &db_path, allow_stale_read_enabled(), None)?;
     SqliteGraphStore::open(db_path).map_err(|error| error.to_string())
 }
 
@@ -10804,61 +11201,71 @@ fn allow_stale_read_enabled() -> bool {
         .unwrap_or(false)
 }
 
-fn inspect_read_db_passport(repo_root: &Path, db_path: &Path) -> Result<DbPreflightReport, String> {
-    let default_options = IndexOptions::default();
-    let preflight = inspect_repo_db_passport(repo_root, db_path, &default_options)
-        .map_err(|error| error.to_string())?;
-    if preflight.valid {
-        return Ok(preflight);
-    }
-
-    let Some(passport) = preflight.passport.as_ref() else {
-        return Ok(preflight);
-    };
-    let storage_mode_mismatch = preflight
-        .reasons
-        .iter()
-        .any(|reason| reason.contains("storage mode mismatch"));
-    if !storage_mode_mismatch {
-        return Ok(preflight);
-    }
-
-    let mut options = IndexOptions::default();
-    options.storage_mode = match passport.storage_mode.parse::<StorageMode>() {
-        Ok(storage_mode) => storage_mode,
-        Err(_) => return Ok(preflight),
-    };
-    inspect_repo_db_passport(repo_root, db_path, &options).map_err(|error| error.to_string())
+fn inspect_read_db_lifecycle_preflight(
+    repo_root: &Path,
+    db_path: &Path,
+    explicit_scope_policy: Option<IndexScopeOptions>,
+) -> Result<DbLifecyclePreflight, String> {
+    inspect_db_lifecycle_preflight(repo_root, db_path, explicit_scope_policy)
+        .map_err(|error| error.to_string())
 }
 
 fn read_db_lifecycle_guard(
     repo_root: &Path,
     db_path: &Path,
     allow_stale_read: bool,
+    explicit_scope_policy: Option<IndexScopeOptions>,
 ) -> Result<Value, String> {
-    let preflight = inspect_read_db_passport(repo_root, db_path)?;
-    if preflight.valid {
-        return Ok(json!({
-            "decision": "read_reuse",
-            "passport_status": preflight.passport_status,
-            "claimable": true,
-            "reasons": preflight.reasons,
-        }));
+    let preflight = inspect_read_db_lifecycle_preflight(repo_root, db_path, explicit_scope_policy)?;
+    if preflight.safe {
+        return Ok(db_lifecycle_preflight_json(&preflight, true));
     }
     if allow_stale_read {
-        return Ok(json!({
-            "decision": "diagnostic_stale_reuse",
-            "passport_status": preflight.passport_status,
-            "claimable": false,
-            "contaminated": true,
-            "reasons": preflight.reasons,
-        }));
+        return Ok(db_lifecycle_preflight_json(&preflight, false));
+    }
+    if let Some(mismatch) = preflight.scope_mismatch.as_ref() {
+        return Err(scope_mismatch_message(db_path, mismatch));
     }
     Err(format!(
         "CodeGraph DB is not safe to read at {}: {}; run `codegraph-mcp index . --fresh` or pass --allow-stale-read for diagnostic-only output",
         db_path.display(),
-        preflight.reasons.join("; ")
+        preflight.blockers.join("; ")
     ))
+}
+
+fn scope_mismatch_message(
+    db_path: &Path,
+    mismatch: &codegraph_index::ScopeMismatchDetails,
+) -> String {
+    format!(
+        "scope_mismatch: {} at {}: expected passport_scope_hash={}, observed explicit_scope_hash={}",
+        mismatch.message,
+        db_path.display(),
+        mismatch.expected_scope_hash.as_deref().unwrap_or("unknown"),
+        mismatch.observed_scope_hash.as_deref().unwrap_or("unknown")
+    )
+}
+
+fn db_lifecycle_preflight_json(preflight: &DbLifecyclePreflight, claimable: bool) -> Value {
+    json!({
+        "decision": if preflight.safe { "read_reuse" } else { "diagnostic_stale_reuse" },
+        "passport_status": preflight.db_health.passport_status,
+        "claimable": claimable && preflight.safe,
+        "contaminated": !preflight.safe,
+        "reasons": preflight.db_health.reasons.clone(),
+        "blockers": preflight.blockers.clone(),
+        "warnings": preflight.warnings.clone(),
+        "repo_root_status": preflight.repo_root_status.clone(),
+        "schema_status": preflight.schema_status.clone(),
+        "storage_mode_status": preflight.storage_mode_status.clone(),
+        "scope_status": preflight.scope_status.clone(),
+        "scope_source": preflight.scope_source.clone(),
+        "passport_scope_hash": preflight.passport_scope_hash.clone(),
+        "explicit_scope_hash": preflight.explicit_scope_hash.clone(),
+        "scope_mismatch": preflight.scope_mismatch.clone(),
+        "passport_scope_policy": preflight.passport_scope_policy.clone(),
+        "explicit_scope_policy": preflight.explicit_scope_policy.clone(),
+    })
 }
 
 fn query_engine(store: &SqliteGraphStore) -> Result<ExactGraphQueryEngine, String> {
@@ -12707,6 +13114,11 @@ fn update_integrity_step_from_incremental(
         "changed_files": summary.changed_files.clone(),
         "deleted_fact_files": summary.deleted_fact_files,
         "dirty_path_evidence_count": summary.dirty_path_evidence_count,
+        "ignored_paths_seen": summary.ignored_paths_seen,
+        "ignored_paths_with_existing_facts": summary.ignored_paths_with_existing_facts,
+        "stale_facts_deleted_for_ignored_paths": summary.stale_facts_deleted_for_ignored_paths,
+        "deleted_file_facts_removed": summary.deleted_file_facts_removed,
+        "path_cleanup_reasons": summary.path_cleanup_reasons.clone(),
         "global_hash_check_ran": global_hash_check_ran,
         "storage_audit_ran": summary.storage_audit_ran,
         "integrity_check_ran": summary.integrity_check_ran,
@@ -13248,6 +13660,76 @@ fn build_commit() -> &'static str {
         .unwrap_or("unknown")
 }
 
+const NON_CLAIMABLE_DEBUG_TIMING: &str = "non_claimable_debug_timing";
+
+fn add_benchmark_binary_metadata(mut value: Value) -> Value {
+    let metadata = benchmark_binary_metadata();
+    if let Some(object) = value.as_object_mut() {
+        for field in [
+            "current_exe",
+            "debug_assertions",
+            "binary_profile",
+            "exact_command",
+            "claimable_for_thresholds",
+            "diagnostic_only",
+        ] {
+            if !object.contains_key(field) {
+                object.insert(field.to_string(), metadata[field].clone());
+            }
+        }
+        if !object.contains_key("binary_metadata") {
+            object.insert("binary_metadata".to_string(), metadata);
+        }
+    }
+    value
+}
+
+fn benchmark_binary_metadata() -> Value {
+    benchmark_binary_metadata_for(
+        current_exe_string(),
+        cfg!(debug_assertions),
+        exact_command_line(),
+    )
+}
+
+fn benchmark_binary_metadata_for(
+    current_exe: String,
+    debug_assertions: bool,
+    exact_command: String,
+) -> Value {
+    let binary_profile = if debug_assertions { "debug" } else { "release" };
+    let claimable_for_thresholds = !debug_assertions;
+    json!({
+        "current_exe": current_exe,
+        "debug_assertions": debug_assertions,
+        "binary_profile": binary_profile,
+        "exact_command": exact_command,
+        "claimable_for_thresholds": claimable_for_thresholds,
+        "diagnostic_only": debug_assertions,
+    })
+}
+
+fn current_exe_string() -> String {
+    std::env::current_exe()
+        .map(|path| path_string(&path))
+        .unwrap_or_else(|error| format!("unknown: {error}"))
+}
+
+fn exact_command_line() -> String {
+    std::env::args()
+        .map(|arg| shell_quote_arg(&arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_quote_arg(value: &str) -> String {
+    if value.is_empty() || value.chars().any(char::is_whitespace) {
+        format!("\"{}\"", value.replace('"', "\\\""))
+    } else {
+        value.to_string()
+    }
+}
+
 fn build_profile() -> &'static str {
     if cfg!(debug_assertions) {
         "debug"
@@ -13492,12 +13974,13 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        generate_large_synthetic_repo, index_repo, index_repo_with_options,
-        parse_extract_pending_files, parse_index_options, percentile, regression_row,
-        render_comprehensive_benchmark_markdown, route_ui_request, run, serve_ui_loop,
-        should_ignore_path, should_start_new_index_batch, update_changed_files_with_cache,
-        IncrementalIndexCache, IndexOptions, PendingIndexFile, UiResponse, WatchDebouncer,
-        BIN_NAME, DEFAULT_INDEX_BATCH_MAX_FILES, DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES,
+        benchmark_binary_metadata_for, generate_large_synthetic_repo, index_repo,
+        index_repo_with_options, parse_extract_pending_files, parse_index_options, percentile,
+        regression_row, render_comprehensive_benchmark_markdown, route_ui_request, run,
+        serve_ui_loop, should_ignore_path, should_start_new_index_batch,
+        update_changed_files_with_cache, IncrementalIndexCache, IndexOptions, PendingIndexFile,
+        UiResponse, WatchDebouncer, BIN_NAME, DEFAULT_INDEX_BATCH_MAX_FILES,
+        DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES,
     };
 
     static TEMP_REPO_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -13555,6 +14038,28 @@ mod tests {
 
         assert_eq!(improved["status"].as_str(), Some("improved"));
         assert_eq!(regressed["status"].as_str(), Some("regressed"));
+    }
+
+    #[test]
+    fn benchmark_binary_metadata_for_release_records_exact_command() {
+        let metadata = benchmark_binary_metadata_for(
+            "C:/repo/target/release/codegraph-mcp.exe".to_string(),
+            false,
+            "C:/repo/target/release/codegraph-mcp.exe bench proof-build-only --repo repo --db artifact.sqlite".to_string(),
+        );
+
+        assert_eq!(
+            metadata["current_exe"].as_str(),
+            Some("C:/repo/target/release/codegraph-mcp.exe")
+        );
+        assert_eq!(metadata["debug_assertions"].as_bool(), Some(false));
+        assert_eq!(metadata["binary_profile"].as_str(), Some("release"));
+        assert_eq!(metadata["claimable_for_thresholds"].as_bool(), Some(true));
+        assert_eq!(metadata["diagnostic_only"].as_bool(), Some(false));
+        assert!(metadata["exact_command"]
+            .as_str()
+            .expect("exact command")
+            .contains("bench proof-build-only"));
     }
 
     #[test]
