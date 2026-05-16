@@ -1,0 +1,173 @@
+{
+  "report": "lifecycle_preflight_api_design",
+  "generated_at": "2026-05-15T22:14:42-05:00",
+  "workspace": "C:\\Users\\wamin\\.codex\\worktrees\\4160\\codegraph-mcp",
+  "source_of_truth": {
+    "local_mvp_present": false,
+    "local_mvp_path": "C:\\Users\\wamin\\.codex\\worktrees\\4160\\codegraph-mcp\\MVP.md",
+    "fallback_mvp_read": "C:\\Users\\wamin\\Desktop\\development\\codegraph-mcp\\MVP.md",
+    "inventory_read": "reports/audit/db_lifecycle_surface_inventory.md"
+  },
+  "behavior_change_scope": {
+    "production_commands_refactored": false,
+    "primitive_added": true,
+    "broad_command_behavior_changed": false
+  },
+  "api": {
+    "crate": "codegraph-index",
+    "file": "crates/codegraph-index/src/lib.rs",
+    "function": "inspect_db_lifecycle_surface_preflight",
+    "request_type": "DbLifecycleSurfacePreflightRequest",
+    "response_type": "DbLifecycleSurfacePreflight",
+    "operation_enum": "DbLifecycleOperationKind",
+    "operation_kinds": [
+      "normal_read",
+      "diagnostic_read",
+      "write_update",
+      "import_replace",
+      "import_merge",
+      "benchmark_inspection",
+      "benchmark_setup"
+    ],
+    "request_fields": [
+      "repo_root",
+      "db_path",
+      "surface_name",
+      "operation_kind",
+      "allow_stale_read",
+      "allow_foreign_repo",
+      "required_storage_mode",
+      "expected_scope"
+    ],
+    "response_fields": [
+      "safe_to_read",
+      "safe_to_write",
+      "claimable",
+      "diagnostic_only",
+      "passport_status",
+      "repo_match",
+      "scope_match",
+      "schema_status",
+      "storage_mode_match",
+      "blockers",
+      "warnings",
+      "exact_db_path_checked",
+      "repo_root_expected",
+      "repo_root_observed",
+      "artifact_freshness",
+      "scope_source",
+      "passport_scope_hash",
+      "explicit_scope_hash",
+      "lifecycle_preflight"
+    ]
+  },
+  "semantics": {
+    "normal_read": {
+      "safe_to_read": "true only when lifecycle preflight is safe and requested storage mode matches",
+      "claimable": "true only when safe_to_read is true",
+      "diagnostic_only": false
+    },
+    "diagnostic_read": {
+      "safe_to_read": "may proceed only when explicitly requested through this operation kind and remaining hard blockers are empty",
+      "claimable": false,
+      "diagnostic_only": true,
+      "foreign_repo_downgrade_requires": "allow_foreign_repo=true",
+      "stale_or_missing_passport_downgrade_requires": "allow_stale_read=true"
+    },
+    "write_update": {
+      "safe_to_write": "true only when lifecycle preflight is safe and requested storage mode matches",
+      "diagnostic_allowances": "ignored and reported as warnings"
+    },
+    "import_replace": {
+      "safe_to_write": "true for missing DB targets or lifecycle-safe existing DBs",
+      "claimable_before_import": "true only for lifecycle-safe existing DBs"
+    },
+    "import_merge": {
+      "safe_to_write": "true only for lifecycle-safe existing DBs"
+    },
+    "benchmark_inspection": {
+      "open_preference": "read-only lifecycle preflight",
+      "claimable": "true only when lifecycle preflight is safe"
+    },
+    "benchmark_setup": {
+      "safe_to_write": "true for missing DB targets or lifecycle-safe existing DBs",
+      "claimable_before_setup": false
+    }
+  },
+  "tests_added": [
+    {
+      "name": "lifecycle_surface_preflight_valid_db_normal_read_passes_exact_path",
+      "covers": [
+        "valid DB normal_read passes",
+        "exact_db_path_checked equals supplied custom DB path"
+      ]
+    },
+    {
+      "name": "lifecycle_surface_preflight_missing_passport_normal_read_fails",
+      "covers": [
+        "missing passport normal_read fails"
+      ]
+    },
+    {
+      "name": "lifecycle_surface_preflight_mismatched_repo_normal_read_fails_closed",
+      "covers": [
+        "mismatched repo normal_read fails closed"
+      ]
+    },
+    {
+      "name": "lifecycle_surface_preflight_mismatched_repo_diagnostic_read_is_nonclaimable",
+      "covers": [
+        "diagnostic_read can pass mismatched repo only with explicit foreign allowance",
+        "diagnostic output is non-claimable"
+      ]
+    },
+    {
+      "name": "lifecycle_surface_preflight_write_update_is_stricter_than_diagnostic_read",
+      "covers": [
+        "write_update remains blocked where diagnostic_read can proceed"
+      ]
+    }
+  ],
+  "verification": [
+    {
+      "command": "cargo fmt",
+      "status": "passed",
+      "notes": "cargo emitted existing warning: could not canonicalize path C:\\Users\\wamin"
+    },
+    {
+      "command": "cargo test -p codegraph-index lifecycle_surface_preflight",
+      "status": "passed",
+      "matched_tests": 5,
+      "passed_tests": 5
+    },
+    {
+      "command": "python -m json.tool reports/audit/lifecycle_preflight_api_design.json",
+      "status": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "status": "passed",
+      "notes": "git emitted CRLF normalization warnings for already dirty files"
+    },
+    {
+      "command": "cargo test --workspace",
+      "status": "failed",
+      "failed_test": "tests::ui_server_starts_and_status_endpoint_uses_real_index",
+      "failure": "read HTTP response: Os { code: 10054, kind: ConnectionReset, message: \"An existing connection was forcibly closed by the remote host.\" }"
+    },
+    {
+      "command": "cargo test -p codegraph-cli tests::ui_server_starts_and_status_endpoint_uses_real_index -- --exact",
+      "status": "passed",
+      "matched_tests": 1,
+      "passed_tests": 1
+    }
+  ],
+  "follow_up_surfaces": [
+    "query unresolved-calls --db",
+    "UI /api/unresolved-calls",
+    "long-running watch startup DB open and watch --db handling",
+    "doctor DB check",
+    "bundle import",
+    "benchmark existing-artifact inspection surfaces"
+  ]
+}

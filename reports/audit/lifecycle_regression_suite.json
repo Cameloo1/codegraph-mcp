@@ -1,0 +1,178 @@
+{
+  "report": "lifecycle_regression_suite",
+  "generated_at": "2026-05-16T00:24:10-05:00",
+  "source_of_truth": {
+    "mvp_read_first": true,
+    "mvp_path_note": "MVP.md was not present in this worktree; canonical CodeGraph MVP.md was read from the sibling checkout.",
+    "lifecycle_reports_read": true,
+    "subagents_used": false
+  },
+  "changes": {
+    "production_behavior_changed": false,
+    "test_files": [
+      "crates/codegraph-cli/tests/cli_smoke.rs",
+      "crates/codegraph-cli/src/lib.rs"
+    ],
+    "report_files": [
+      "reports/audit/lifecycle_regression_suite.md",
+      "reports/audit/lifecycle_regression_suite.json"
+    ]
+  },
+  "tests_added": [
+    {
+      "name": "lifecycle_regression_suite_cli_query_diagnostic_and_unresolved_db_guards",
+      "file": "crates/codegraph-cli/tests/cli_smoke.rs",
+      "covers": [
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "name": "lifecycle_regression_suite_watch_once_external_db_uses_exact_path",
+      "file": "crates/codegraph-cli/tests/cli_smoke.rs",
+      "covers": [
+        6
+      ]
+    },
+    {
+      "name": "lifecycle_regression_suite_bundle_import_contracts_are_explicit",
+      "file": "crates/codegraph-cli/tests/cli_smoke.rs",
+      "covers": [
+        11,
+        12,
+        13
+      ]
+    },
+    {
+      "name": "lifecycle_regression_suite_internal_surfaces_share_guardrails",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "covers": [
+        5,
+        7,
+        8,
+        9,
+        10,
+        14,
+        15,
+        16,
+        17,
+        18
+      ]
+    }
+  ],
+  "scenario_coverage": [
+    {
+      "id": 1,
+      "scenario": "Valid DB normal query succeeds",
+      "status": "covered"
+    },
+    {
+      "id": 2,
+      "scenario": "Mismatched repo DB normal query fails",
+      "status": "covered"
+    },
+    {
+      "id": 3,
+      "scenario": "Mismatched repo DB diagnostic query succeeds only with diagnostic label",
+      "status": "covered"
+    },
+    {
+      "id": 4,
+      "scenario": "query unresolved-calls --db exact path is guarded",
+      "status": "covered"
+    },
+    {
+      "id": 5,
+      "scenario": "UI unresolved-calls exact path is guarded",
+      "status": "covered"
+    },
+    {
+      "id": 6,
+      "scenario": "watch --once --db external uses external",
+      "status": "covered"
+    },
+    {
+      "id": 7,
+      "scenario": "long-running watch --db external uses external",
+      "status": "covered"
+    },
+    {
+      "id": 8,
+      "scenario": "long-running watch does not touch default DB when external DB is configured",
+      "status": "covered"
+    },
+    {
+      "id": 9,
+      "scenario": "doctor does not mutate old DB",
+      "status": "covered"
+    },
+    {
+      "id": 10,
+      "scenario": "doctor reports lifecycle blockers",
+      "status": "covered"
+    },
+    {
+      "id": 11,
+      "scenario": "bundle import foreign repo fails by default",
+      "status": "covered"
+    },
+    {
+      "id": 12,
+      "scenario": "bundle import into non-empty DB fails by default",
+      "status": "covered"
+    },
+    {
+      "id": 13,
+      "scenario": "bundle import replace is atomic",
+      "status": "covered"
+    },
+    {
+      "id": 14,
+      "scenario": "benchmark inspection does not mutate DB",
+      "status": "covered"
+    },
+    {
+      "id": 15,
+      "scenario": "sidecars status normal when DB exists",
+      "status": "covered"
+    },
+    {
+      "id": 16,
+      "scenario": "sidecars orphan only when main DB absent",
+      "status": "covered"
+    },
+    {
+      "id": 17,
+      "scenario": "exact caller/callee unambiguous symbol returns exact results",
+      "status": "covered"
+    },
+    {
+      "id": 18,
+      "scenario": "ambiguous caller/callee lists candidate entities",
+      "status": "covered"
+    }
+  ],
+  "verification": {
+    "focused": {
+      "command": "cargo test -p codegraph-cli lifecycle_regression_suite -- --test-threads=1",
+      "status": "passed",
+      "matched_tests": 4,
+      "failed_tests": 0
+    },
+    "workspace": {
+      "command": "cargo test --workspace",
+      "status": "passed",
+      "passed_tests": 466,
+      "ignored_tests": 3,
+      "failed_tests": 0
+    }
+  },
+  "determinism": {
+    "large_external_corpus_required": false,
+    "temporary_repositories_only": true,
+    "golden_json_checks_added": false,
+    "reason_no_golden_json": "The tests assert stable machine-readable lifecycle fields directly."
+  }
+}

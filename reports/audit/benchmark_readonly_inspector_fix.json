@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-15T23:22:58-05:00",
+  "scope": "benchmark and audit helper read-only inspection",
+  "source_of_truth": {
+    "active_worktree_mvp_path": "C:\\Users\\wamin\\.codex\\worktrees\\4160\\codegraph-mcp\\MVP.md",
+    "active_worktree_mvp_present": false,
+    "canonical_mvp_read": "C:\\Users\\wamin\\Desktop\\development\\codegraph-mcp\\MVP.md",
+    "reports_read": [
+      "reports/audit/db_lifecycle_surface_inventory.md",
+      "reports/audit/lifecycle_preflight_api_design.md"
+    ]
+  },
+  "confirmed_risk": "Inspection-only benchmark helpers could use mutation-capable SqliteGraphStore::open for schema, integrity, counts, hashes, and digests.",
+  "changes": {
+    "store": [
+      {
+        "file": "crates/codegraph-store/src/sqlite.rs",
+        "change": "Added SqliteGraphStore::open_read_only using SQLITE_OPEN_READ_ONLY and PRAGMA query_only without configure or migrate."
+      }
+    ],
+    "cli_benchmarks": [
+      {
+        "file": "crates/codegraph-cli/src/lib.rs",
+        "change": "Changed update-integrity inspection helpers to open read-only for quick/full integrity, counts, graph fact hash, incremental digest, and schema reads."
+      },
+      {
+        "file": "crates/codegraph-cli/src/lib.rs",
+        "change": "Added benchmark lifecycle status and claimability metadata to query-surface, comprehensive artifact inspection, and update-integrity reports."
+      },
+      {
+        "file": "crates/codegraph-cli/src/lib.rs",
+        "change": "Kept digest priming, repo digest replacement, staged update state adjustment, indexing, and update paths mutation-capable but explicitly reported as setup or mutation."
+      }
+    ],
+    "audit": [
+      {
+        "file": "crates/codegraph-cli/src/audit.rs",
+        "change": "Marked audit read-only connections query-only and added storage report fields for inspection_read_only and artifact_mutated_during_inspection."
+      }
+    ],
+    "tests": [
+      {
+        "file": "crates/codegraph-store/src/sqlite.rs",
+        "tests": [
+          "read_only_open_does_not_migrate_old_schema_db",
+          "read_only_open_supports_counts_hash_and_integrity_checks"
+        ]
+      },
+      {
+        "file": "crates/codegraph-cli/src/lib.rs",
+        "tests": [
+          "benchmark_inspection_lifecycle_blocks_mismatched_db_as_nonclaimable",
+          "update_integrity_report_marks_inspection_read_only_and_setup_mutations"
+        ]
+      },
+      {
+        "file": "crates/codegraph-cli/tests/cli_smoke.rs",
+        "change": "Aligned existing benchmark smoke expectations with proof-build timing and passported artifact claimability."
+      }
+    ]
+  },
+  "required_fields_added": [
+    "inspection_read_only",
+    "artifact_mutated_during_inspection",
+    "lifecycle_status",
+    "claimable"
+  ],
+  "mutation_capable_operations_reported": [
+    "cold_index_or_seed_db_copy_setup",
+    "repeat_index_setup",
+    "source_file_mutation_setup",
+    "update_changed_files_to_db",
+    "repo_graph_digest_prime_for_fast_mode",
+    "seed_db_copy_setup",
+    "index_repo_to_db_with_options"
+  ],
+  "verification": [
+    {
+      "command": "cargo fmt",
+      "status": "passed",
+      "notes": "Existing warning: could not canonicalize path C:\\Users\\wamin."
+    },
+    {
+      "command": "cargo test -p codegraph-store read_only_open",
+      "status": "passed",
+      "matched_tests": 2
+    },
+    {
+      "command": "cargo test -p codegraph-cli benchmark_inspection",
+      "status": "passed",
+      "matched_tests": 1
+    },
+    {
+      "command": "cargo test -p codegraph-cli update_integrity_report_marks_inspection_read_only_and_setup_mutations",
+      "status": "passed",
+      "matched_tests": 1
+    },
+    {
+      "command": "cargo test -p codegraph-cli --test cli_smoke bench_comprehensive_explicit_reuse_is_marked_with_claimable_metadata",
+      "status": "passed",
+      "matched_tests": 1
+    },
+    {
+      "command": "cargo test -p codegraph-cli --test cli_smoke bench_proof_build_validated_marks_artifact_validated_only_after_integrity_gate",
+      "status": "passed",
+      "matched_tests": 1
+    },
+    {
+      "command": "cargo test -p codegraph-cli tests::ui_server_starts_and_status_endpoint_uses_real_index -- --exact",
+      "status": "passed",
+      "matched_tests": 1
+    },
+    {
+      "command": "cargo test --workspace",
+      "status": "passed",
+      "notes": "Final rerun passed. Earlier reruns exposed a stale smoke assertion and a repeated Windows socket reset in the UI helper; both were corrected without weakening lifecycle checks."
+    },
+    {
+      "command": "git diff --check",
+      "status": "passed",
+      "notes": "CRLF normalization warnings only."
+    }
+  ],
+  "dirty_state": {
+    "pre_existing_dirty_tree": true,
+    "untracked_audit_reports_present": true,
+    "generated_artifacts_intentionally_added": false,
+    "db_files_intentionally_added": false,
+    "wal_shm_files_intentionally_added": false,
+    "raw_logs_intentionally_added": false,
+    "target_outputs_intentionally_added": false,
+    "cgc_payloads_intentionally_added": false
+  },
+  "acceptance": {
+    "benchmark_inspection_cannot_silently_mutate_artifacts": true,
+    "old_schema_inspection_does_not_migrate": true,
+    "claimability_metadata_preserved": true,
+    "cargo_test_workspace": "passed"
+  }
+}

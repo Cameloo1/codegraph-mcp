@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-15T23:31:41-05:00",
+  "scope": "SQLite WAL/SHM sidecar terminology in status and doctor outputs",
+  "source_of_truth": {
+    "active_worktree_mvp_path": "C:\\Users\\wamin\\.codex\\worktrees\\4160\\codegraph-mcp\\MVP.md",
+    "active_worktree_mvp_present": false,
+    "canonical_mvp_read": "C:\\Users\\wamin\\Desktop\\development\\codegraph-mcp\\MVP.md",
+    "reports_read": [
+      "reports/audit/db_lifecycle_surface_inventory.md"
+    ]
+  },
+  "reported_issue": "Valid DBs could report normal WAL/SHM files under orphan_sidecars.",
+  "sidecar_status_values": [
+    "normal",
+    "orphan_without_main_db",
+    "unexpected",
+    "stale_cleanup_candidate"
+  ],
+  "changes": [
+    {
+      "file": "crates/codegraph-store/src/sqlite.rs",
+      "summary": "DbPreflightReport now includes sqlite_sidecars and sidecar_status; orphan_sidecars remains only as a deprecated compatibility field and is populated only when the main DB is missing."
+    },
+    {
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "summary": "CLI status and doctor now expose consistent sqlite_sidecars and sidecar_status fields."
+    },
+    {
+      "file": "crates/codegraph-mcp-server/src/lib.rs",
+      "summary": "MCP status now exposes consistent sqlite_sidecars and sidecar_status fields."
+    }
+  ],
+  "compatibility": {
+    "orphan_sidecars_kept": true,
+    "orphan_sidecars_deprecated": true,
+    "normal_wal_shm_in_orphan_sidecars": false
+  },
+  "tests": [
+    {
+      "name": "status_and_doctor_report_normal_sqlite_sidecars_for_valid_db",
+      "coverage": "Valid DB with live WAL/SHM sidecars reports sidecar_status=normal in status and doctor."
+    },
+    {
+      "name": "status_and_doctor_report_orphan_without_main_db_for_sidecars_only",
+      "coverage": "WAL/SHM files without a main DB report sidecar_status=orphan_without_main_db in status and doctor."
+    }
+  ],
+  "verification": [
+    {
+      "command": "cargo fmt",
+      "status": "passed",
+      "notes": "Existing warning: could not canonicalize path C:\\Users\\wamin."
+    },
+    {
+      "command": "cargo test -p codegraph-cli sidecar",
+      "status": "passed",
+      "matched_tests": 2
+    },
+    {
+      "command": "cargo test -p codegraph-mcp-server mcp_status",
+      "status": "passed",
+      "matched_tests": 6
+    },
+    {
+      "command": "cargo test --workspace",
+      "status": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "status": "passed",
+      "notes": "CRLF normalization warnings only."
+    },
+    {
+      "command": "python -m json.tool reports/audit/sqlite_sidecar_status_cleanup.json",
+      "status": "passed"
+    }
+  ],
+  "acceptance": {
+    "valid_db_with_wal_shm_reports_normal": true,
+    "missing_main_db_with_sidecars_reports_orphan_without_main_db": true,
+    "status_and_doctor_consistent": true,
+    "cargo_test_workspace": "passed"
+  },
+  "dirty_state": {
+    "pre_existing_dirty_tree": true,
+    "generated_artifacts_intentionally_added": false,
+    "db_files_intentionally_added": false,
+    "wal_shm_files_intentionally_added": false,
+    "raw_logs_intentionally_added": false,
+    "target_outputs_intentionally_added": false,
+    "cgc_payloads_intentionally_added": false
+  }
+}

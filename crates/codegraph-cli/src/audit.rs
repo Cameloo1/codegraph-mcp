@@ -271,6 +271,8 @@ struct QualifiedNameMetric {
 struct StorageInspection {
     schema_version: u32,
     db_path: String,
+    inspection_read_only: bool,
+    artifact_mutated_during_inspection: bool,
     dbstat_available: bool,
     integrity_check: Value,
     file_family: FileFamilySize,
@@ -1366,6 +1368,8 @@ fn inspect_storage(db_path: &Path) -> Result<StorageInspection, String> {
     Ok(StorageInspection {
         schema_version: AUDIT_SCHEMA_VERSION,
         db_path: path_string(db_path),
+        inspection_read_only: true,
+        artifact_mutated_during_inspection: false,
         dbstat_available,
         integrity_check,
         file_family,
@@ -5048,8 +5052,12 @@ fn open_read_only(db_path: &Path) -> Result<Connection, String> {
     if !db_path.exists() {
         return Err(format!("database does not exist: {}", db_path.display()));
     }
-    Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| format!("failed to open {} read-only: {error}", db_path.display()))
+    let connection = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| format!("failed to open {} read-only: {error}", db_path.display()))?;
+    connection
+        .pragma_update(None, "query_only", true)
+        .map_err(|error| format!("failed to mark {} query-only: {error}", db_path.display()))?;
+    Ok(connection)
 }
 
 fn page_metrics(connection: &Connection) -> Result<PageMetrics, String> {
@@ -6023,7 +6031,9 @@ fn render_storage_markdown(report: &StorageInspection) -> String {
     output.push_str("# Storage Inspection\n\n");
     output.push_str(&format!("Database: `{}`\n\n", report.db_path));
     output.push_str(&format!(
-        "- DBSTAT available: `{}`\n- Database bytes: `{}`\n- WAL bytes: `{}`\n- SHM bytes: `{}`\n- File family bytes: `{}`\n- Page size: `{}`\n- Page count: `{}`\n- Freelist count: `{}`\n\n",
+        "- Inspection read-only: `{}`\n- Artifact mutated during inspection: `{}`\n- DBSTAT available: `{}`\n- Database bytes: `{}`\n- WAL bytes: `{}`\n- SHM bytes: `{}`\n- File family bytes: `{}`\n- Page size: `{}`\n- Page count: `{}`\n- Freelist count: `{}`\n\n",
+        report.inspection_read_only,
+        report.artifact_mutated_during_inspection,
         report.dbstat_available,
         report.file_family.database_bytes,
         report.file_family.wal_bytes,

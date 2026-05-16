@@ -30,14 +30,16 @@ use codegraph_core::{
     PathEvidence, RelationKind, RepoIndexState, SourceSpan,
 };
 pub use codegraph_index::{
-    collect_repo_files, default_db_path, index_repo, index_repo_to_db_with_options,
-    index_repo_with_options, inspect_db_lifecycle_preflight, inspect_repo_db_passport,
-    parse_extract_pending_files, require_reusable_db_passport, scope_policy_hash,
-    should_ignore_path, should_start_new_index_batch, update_changed_files,
-    update_changed_files_to_db, update_changed_files_with_cache, DbLifecyclePolicy,
-    DbLifecyclePreflight, IncrementalIndexCache, IncrementalIndexSummary, IndexBuildMode,
-    IndexError, IndexIssue, IndexOptions, IndexProfile, IndexScopeOptions, IndexSummary,
-    LocalFactBundle, PendingIndexFile, StorageMode, DEFAULT_INDEX_BATCH_MAX_FILES,
+    collect_repo_files, default_db_path, graph_fact_hash, index_repo,
+    index_repo_to_db_with_options, index_repo_with_options, inspect_db_lifecycle_preflight,
+    inspect_db_lifecycle_surface_preflight, inspect_repo_db_passport, parse_extract_pending_files,
+    require_reusable_db_passport, scope_policy_hash, should_ignore_path,
+    should_start_new_index_batch, update_changed_files, update_changed_files_to_db,
+    update_changed_files_with_cache, update_changed_files_with_cache_to_db,
+    DbLifecycleOperationKind, DbLifecyclePolicy, DbLifecyclePreflight, DbLifecycleSurfacePreflight,
+    DbLifecycleSurfacePreflightRequest, IncrementalIndexCache, IncrementalIndexSummary,
+    IndexBuildMode, IndexError, IndexIssue, IndexOptions, IndexProfile, IndexScopeOptions,
+    IndexSummary, LocalFactBundle, PendingIndexFile, StorageMode, DEFAULT_INDEX_BATCH_MAX_FILES,
     DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY, UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::{
@@ -64,7 +66,7 @@ mod audit;
 
 pub const BIN_NAME: &str = "codegraph-mcp";
 pub const PHASE: &str = "30";
-pub const BUNDLE_SCHEMA_VERSION: u32 = 1;
+pub const BUNDLE_SCHEMA_VERSION: u32 = 2;
 const DEFAULT_UI_NODE_CAP: usize = 80;
 const MAX_UI_NODE_CAP: usize = 250;
 const SYMBOL_SEARCH_MIN_FTS_CANDIDATES: usize = 128;
@@ -93,7 +95,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "query",
-        usage: "codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]\n  codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets]",
+        usage: "codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]\n  codegraph-mcp query callers|callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] <symbol>\n  codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets]",
         description: "Query symbols, text, files, references, definitions, calls, chains, or relation paths.",
     },
     CommandSpec {
@@ -302,6 +304,15 @@ struct WatchOptions {
     changed_paths: Vec<PathBuf>,
 }
 
+struct WatchStartup {
+    repo_root: PathBuf,
+    requested_db_path: PathBuf,
+    actual_db_path_opened: PathBuf,
+    lifecycle_status: Value,
+    auto_index_enabled: bool,
+    cache: IncrementalIndexCache,
+}
+
 #[derive(Debug, Clone)]
 struct UiOptions {
     repo: PathBuf,
@@ -500,9 +511,79 @@ struct BundleManifest {
     created_by: String,
     created_at_unix_ms: u64,
     repo_root: String,
+    #[serde(default)]
+    repo_identity: Option<String>,
+    #[serde(default)]
+    canonical_repo_root: Option<String>,
+    #[serde(default)]
+    repo_head: Option<String>,
+    #[serde(default)]
+    scope_hash: Option<String>,
+    #[serde(default)]
+    scope_policy_json: Option<String>,
+    #[serde(default)]
+    storage_mode: Option<String>,
+    #[serde(default)]
+    db_schema_version: Option<u32>,
+    #[serde(default)]
+    graph_digest: Option<String>,
     file_count: usize,
     entity_count: usize,
     edge_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BundleImportMode {
+    Fresh,
+    Replace,
+    Merge,
+}
+
+impl BundleImportMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Replace => "replace",
+            Self::Merge => "merge",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BundleImportOptions {
+    input: PathBuf,
+    mode: BundleImportMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BundleManifestEvidence {
+    repo_identity: String,
+    canonical_repo_root: String,
+    repo_head: Option<String>,
+    scope_hash: String,
+    scope_policy_json: String,
+    storage_mode: StorageMode,
+    db_schema_version: u32,
+    graph_digest: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BundleTargetState {
+    Missing,
+    Empty,
+    NonEmpty,
+    Uninspectable,
+}
+
+impl BundleTargetState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Empty => "empty",
+            Self::NonEmpty => "non_empty",
+            Self::Uninspectable => "uninspectable",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -837,22 +918,38 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
     let repo = optional_repo_arg(args)?;
     let repo_root = resolve_repo_root(&repo)?;
     let db_path = default_db_path(&repo_root);
-    if !db_path.exists() {
+    let preflight = inspect_read_db_lifecycle_preflight(&repo_root, &db_path, None)?;
+    let sqlite_sidecars = sqlite_sidecars_status_from_health(&db_path, &preflight.db_health);
+    if preflight.path_access_status == "db_missing" {
         return Ok(json!({
             "status": "not_indexed",
+            "db_problem_kind": preflight.db_problem_kind.clone(),
             "repo_root": path_string(&repo_root),
             "db_path": path_string(&db_path),
+            "db_path_outside_workspace": preflight.db_path_outside_workspace,
+            "outside_workspace_note": preflight.outside_workspace_note.clone(),
+            "path_access_status": preflight.path_access_status.clone(),
+            "path_access_error": preflight.path_access_error.clone(),
+            "sqlite_sidecars": sqlite_sidecars.clone(),
+            "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
+            "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true),
             "next_command": "codegraph-mcp index .",
         }));
     }
 
-    let preflight = inspect_read_db_lifecycle_preflight(&repo_root, &db_path, None)?;
     if !preflight.safe {
         return Ok(json!({
             "status": "db_problem",
+            "db_problem_kind": preflight.db_problem_kind.clone(),
             "repo_root": path_string(&repo_root),
             "db_path": path_string(&db_path),
+            "db_path_outside_workspace": preflight.db_path_outside_workspace,
+            "outside_workspace_note": preflight.outside_workspace_note.clone(),
+            "path_access_status": preflight.path_access_status.clone(),
+            "path_access_error": preflight.path_access_error.clone(),
             "db_health": preflight.db_health.clone(),
+            "sqlite_sidecars": sqlite_sidecars.clone(),
+            "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
             "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true),
             "next_command": "codegraph-mcp index . --fresh",
         }));
@@ -886,9 +983,15 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
         "phase": PHASE,
         "repo_root": path_string(&repo_root),
         "db_path": path_string(&db_path),
+        "db_path_outside_workspace": preflight.db_path_outside_workspace,
+        "outside_workspace_note": preflight.outside_workspace_note.clone(),
+        "path_access_status": preflight.path_access_status.clone(),
+        "path_access_error": preflight.path_access_error.clone(),
         "db_size_bytes": sqlite_family_size_bytes(&db_path).map_err(|error| error.to_string())?,
         "storage_policy": DEFAULT_STORAGE_POLICY,
         "db_health": preflight.db_health.clone(),
+        "sqlite_sidecars": sqlite_sidecars.clone(),
+        "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
         "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true),
         "schema_version": store.schema_version().map_err(|error| error.to_string())?,
         "files": store.count_files().map_err(|error| error.to_string())?,
@@ -952,16 +1055,35 @@ fn run_doctor_command(args: &[String]) -> Result<Value, String> {
             .parent()
             .is_some_and(|parent| parent.exists()),
     );
-    let db_ok = db_path.exists()
-        && SqliteGraphStore::open(&db_path)
-            .and_then(|store| store.schema_version().map(|_| ()))
-            .is_ok();
+    let db_lifecycle = inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
+        repo_root: repo_root.clone(),
+        db_path: db_path.clone(),
+        surface_name: "cli.doctor".to_string(),
+        operation_kind: DbLifecycleOperationKind::NormalRead,
+        allow_stale_read: false,
+        allow_foreign_repo: false,
+        required_storage_mode: None,
+        expected_scope: None,
+    })
+    .map_err(|error| error.to_string())?;
+    let database_exists = db_lifecycle.path_access_status != "db_missing";
+    let lifecycle_evidence = db_lifecycle_surface_preflight_json(&db_lifecycle);
+    let sqlite_sidecars =
+        sqlite_sidecars_status_from_health(&db_path, &db_lifecycle.lifecycle_preflight.db_health);
+    let db_check_status = if database_exists { "error" } else { "warning" };
+    let db_check_message = if db_lifecycle.safe_to_read {
+        "local SQLite graph database is lifecycle-safe to query"
+    } else if database_exists {
+        "local SQLite graph database exists but lifecycle/passport checks block normal reads"
+    } else {
+        "local SQLite graph database is missing; run `codegraph-mcp index .` first"
+    };
     push_doctor_check(
         &mut checks,
         "database",
-        if db_ok { "ok" } else { "warning" },
-        "local SQLite graph database exists and opens",
-        db_ok,
+        db_check_status,
+        db_check_message,
+        db_lifecycle.safe_to_read,
     );
     push_doctor_check(
         &mut checks,
@@ -1001,14 +1123,44 @@ fn run_doctor_command(args: &[String]) -> Result<Value, String> {
             _ => {}
         }
     }
+    let storage_mode = db_lifecycle
+        .lifecycle_preflight
+        .db_health
+        .passport
+        .as_ref()
+        .map(|passport| passport.storage_mode.clone());
+    let schema_status = doctor_lifecycle_field_status(
+        &db_lifecycle,
+        &["schema version mismatch", "passport schema mismatch"],
+        &db_lifecycle.schema_status,
+    );
 
     Ok(json!({
         "status": if errors == 0 { "ok" } else { "error" },
         "phase": PHASE,
         "repo_root": path_string(&repo_root),
         "db_path": path_string(&db_path),
+        "db_path_outside_workspace": db_lifecycle.db_path_outside_workspace,
+        "outside_workspace_note": db_lifecycle.outside_workspace_note.clone(),
+        "db_problem_kind": db_lifecycle.db_problem_kind.clone(),
+        "path_access_status": db_lifecycle.path_access_status.clone(),
+        "path_access_error": db_lifecycle.path_access_error.clone(),
+        "database_exists": database_exists,
+        "safe_to_query": db_lifecycle.safe_to_read,
+        "passport_status": db_lifecycle.passport_status.clone(),
+        "repo_match": db_lifecycle.repo_match,
+        "scope_match": db_lifecycle.scope_match,
+        "schema_status": schema_status,
+        "storage_mode": storage_mode,
+        "storage_mode_status": db_lifecycle.lifecycle_preflight.storage_mode_status.clone(),
+        "blockers": db_lifecycle.blockers.clone(),
+        "lifecycle_warnings": db_lifecycle.warnings.clone(),
+        "sqlite_sidecars": sqlite_sidecars.clone(),
+        "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
+        "db_lifecycle_read": lifecycle_evidence,
         "checks": checks,
         "warnings": warnings,
+        "warning_count": warnings,
         "errors": errors,
         "proof": "Doctor is local-only and treats missing optional components as warnings.",
     }))
@@ -1027,6 +1179,88 @@ fn push_doctor_check(
         "message": message,
         "optional": status_if_missing == "warning",
     }));
+}
+
+fn sqlite_sidecars_status_for_path(db_path: &Path) -> Value {
+    let wal_path = sqlite_sidecar_path(db_path, "wal");
+    let shm_path = sqlite_sidecar_path(db_path, "shm");
+    let wal_bytes = metadata_len(&wal_path).unwrap_or(0);
+    let shm_bytes = metadata_len(&shm_path).unwrap_or(0);
+    let wal_exists = wal_bytes > 0 || wal_path.exists();
+    let shm_exists = shm_bytes > 0 || shm_path.exists();
+    let main_exists = db_path.exists();
+    let mut sidecars = Vec::new();
+    if wal_exists {
+        sidecars.push(path_string(&wal_path));
+    }
+    if shm_exists {
+        sidecars.push(path_string(&shm_path));
+    }
+    let sidecar_status = if !main_exists && !sidecars.is_empty() {
+        "orphan_without_main_db"
+    } else {
+        "normal"
+    };
+    let orphan_sidecars = if sidecar_status == "orphan_without_main_db" {
+        sidecars.clone()
+    } else {
+        Vec::new()
+    };
+    json!({
+        "status": sidecar_status,
+        "sidecar_status": sidecar_status,
+        "main_db_exists": main_exists,
+        "wal_path": path_string(&wal_path),
+        "wal_exists": wal_exists,
+        "wal_bytes": wal_bytes,
+        "shm_path": path_string(&shm_path),
+        "shm_exists": shm_exists,
+        "shm_bytes": shm_bytes,
+        "sqlite_sidecars": sidecars,
+        "orphan_sidecars": orphan_sidecars,
+        "orphan_sidecars_deprecated": true,
+    })
+}
+
+fn sqlite_sidecars_status_from_health(db_path: &Path, health: &DbPreflightReport) -> Value {
+    let mut status = sqlite_sidecars_status_for_path(db_path);
+    if let Some(object) = status.as_object_mut() {
+        object.insert(
+            "status".to_string(),
+            Value::String(health.sidecar_status.clone()),
+        );
+        object.insert(
+            "sidecar_status".to_string(),
+            Value::String(health.sidecar_status.clone()),
+        );
+        object.insert(
+            "sqlite_sidecars".to_string(),
+            json!(health.sqlite_sidecars.clone()),
+        );
+        object.insert(
+            "orphan_sidecars".to_string(),
+            json!(health.orphan_sidecars.clone()),
+        );
+        object.insert("orphan_sidecars_deprecated".to_string(), json!(true));
+    }
+    status
+}
+
+fn doctor_lifecycle_field_status(
+    preflight: &DbLifecycleSurfacePreflight,
+    needles: &[&str],
+    fallback: &str,
+) -> String {
+    if preflight
+        .blockers
+        .iter()
+        .chain(preflight.lifecycle_preflight.db_health.reasons.iter())
+        .any(|reason| needles.iter().any(|needle| reason.contains(needle)))
+    {
+        "mismatched".to_string()
+    } else {
+        fallback.to_string()
+    }
 }
 
 fn run_config_command(args: &[String]) -> Result<Value, String> {
@@ -1114,14 +1348,21 @@ fn run_query_command(args: &[String]) -> Result<Value, String> {
     let allow_stale_read = remove_flag(&mut args, "--allow-stale-read");
     let explicit_scope = parse_read_scope_options(&mut args)?;
     let repo_root = current_repo_root()?;
+    if args.first().map(String::as_str) == Some("unresolved-calls") {
+        return run_query_command_inner(&args, allow_stale_read, explicit_scope);
+    }
     let db_path = default_db_path(&repo_root);
-    let db_lifecycle_read =
-        read_db_lifecycle_guard(&repo_root, &db_path, allow_stale_read, explicit_scope)?;
+    let db_lifecycle_read = read_db_lifecycle_guard(
+        &repo_root,
+        &db_path,
+        allow_stale_read,
+        explicit_scope.clone(),
+    )?;
     let previous_allow_stale = std::env::var("CODEGRAPH_ALLOW_STALE_READ").ok();
     if allow_stale_read {
         std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", "1");
     }
-    let result = run_query_command_inner(&args);
+    let result = run_query_command_inner(&args, allow_stale_read, explicit_scope);
     match previous_allow_stale {
         Some(value) => std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", value),
         None => std::env::remove_var("CODEGRAPH_ALLOW_STALE_READ"),
@@ -1133,7 +1374,11 @@ fn run_query_command(args: &[String]) -> Result<Value, String> {
     Ok(value)
 }
 
-fn run_query_command_inner(args: &[String]) -> Result<Value, String> {
+fn run_query_command_inner(
+    args: &[String],
+    allow_stale_read: bool,
+    explicit_scope_policy: Option<IndexScopeOptions>,
+) -> Result<Value, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         return Err("Usage: codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]".to_string());
     };
@@ -1175,17 +1420,17 @@ fn run_query_command_inner(args: &[String]) -> Result<Value, String> {
         }
         "callers" => {
             if args.len() < 2 {
-                return Err("Usage: codegraph-mcp query callers <symbol>".to_string());
+                return Err(call_relation_usage("callers"));
             }
-            let query = args[1..].join(" ");
-            query_callers(&current_repo_root()?, &query, 32)
+            let options = parse_call_relation_args("callers", &args[1..])?;
+            query_call_relation(&current_repo_root()?, options, CallQueryDirection::Callers)
         }
         "callees" => {
             if args.len() < 2 {
-                return Err("Usage: codegraph-mcp query callees <symbol>".to_string());
+                return Err(call_relation_usage("callees"));
             }
-            let query = args[1..].join(" ");
-            query_callees(&current_repo_root()?, &query, 32)
+            let options = parse_call_relation_args("callees", &args[1..])?;
+            query_call_relation(&current_repo_root()?, options, CallQueryDirection::Callees)
         }
         "chain" => {
             if args.len() != 3 {
@@ -1194,7 +1439,9 @@ fn run_query_command_inner(args: &[String]) -> Result<Value, String> {
             query_chain(&current_repo_root()?, &args[1], &args[2])
         }
         "unresolved-calls" => {
-            let options = parse_unresolved_calls_args(&args[1..])?;
+            let mut options = parse_unresolved_calls_args(&args[1..])?;
+            options.allow_stale_read = allow_stale_read;
+            options.explicit_scope_policy = explicit_scope_policy;
             query_unresolved_calls(&current_repo_root()?, options)
         }
         "path" => {
@@ -2971,6 +3218,13 @@ fn build_fresh_comprehensive_proof_artifact(
     audit::run_audit_command(&audit_args)?;
     let audit_ms = elapsed_ms(audit_start);
     let proof_storage = read_json_file(&storage_json_path)?;
+    let lifecycle_status = benchmark_inspection_lifecycle_status(
+        &options.repo,
+        &db_path,
+        "bench.comprehensive.fresh_storage_audit",
+        Some(StorageMode::Proof),
+    );
+    let lifecycle_claimable = benchmark_inspection_claimable(&lifecycle_status);
     let schema_version = sqlite_user_version_read_only(&db_path).unwrap_or(SCHEMA_VERSION);
     let integrity_status = value_string(&proof_storage, &["integrity_check", "status"])
         .unwrap_or_else(|| {
@@ -3000,67 +3254,117 @@ fn build_fresh_comprehensive_proof_artifact(
     } else {
         json!(NON_CLAIMABLE_DEBUG_TIMING)
     };
-    let metadata = json!({
-        "artifact_path": path_string(&db_path),
-        "artifact_created_at": file_modified_unix_ms(&db_path).unwrap_or_else(unix_time_ms),
-        "git_commit": current_git_commit(),
-        "schema_version": schema_version,
-        "current_schema_version": SCHEMA_VERSION,
-        "migration_version": schema_version,
-        "current_migration_version": SCHEMA_VERSION,
-        "storage_mode": "proof",
-        "build_command": comprehensive_fresh_build_command(options, &db_path),
-        "build_duration_ms": build_duration_ms,
-        "proof_build_only_ms": proof_build_only_value,
-        "diagnostic_debug_proof_build_only_ms": if diagnostic_only {
+    let artifact_validation = json!({
+        "validated": false,
+        "claimable_as_validated": false,
+        "validation_mode": "not_run",
+        "publish_gate": "proof-build-only quick_check",
+        "integrity_check_source": "post_build_storage_audit",
+        "notes": [
+            "The comprehensive fresh artifact is built in proof-build-only mode for timing.",
+            "The later storage audit integrity_check is reported as audit_ms and does not make proof_build_only_ms a validation-mode timing."
+        ]
+    });
+    let timing_note = if claimable_for_thresholds {
+        "Proof-build timing came from a release binary and is claimable for production thresholds."
+    } else {
+        "Proof-build timing came from a debug binary; it is diagnostic_only and not claimable for production thresholds."
+    };
+    let mut metadata_object = serde_json::Map::new();
+    metadata_object.insert("artifact_path".to_string(), json!(path_string(&db_path)));
+    metadata_object.insert(
+        "artifact_created_at".to_string(),
+        json!(file_modified_unix_ms(&db_path).unwrap_or_else(unix_time_ms)),
+    );
+    metadata_object.insert("git_commit".to_string(), json!(current_git_commit()));
+    metadata_object.insert("schema_version".to_string(), json!(schema_version));
+    metadata_object.insert("current_schema_version".to_string(), json!(SCHEMA_VERSION));
+    metadata_object.insert("migration_version".to_string(), json!(schema_version));
+    metadata_object.insert(
+        "current_migration_version".to_string(),
+        json!(SCHEMA_VERSION),
+    );
+    metadata_object.insert("storage_mode".to_string(), json!("proof"));
+    metadata_object.insert(
+        "build_command".to_string(),
+        json!(comprehensive_fresh_build_command(options, &db_path)),
+    );
+    metadata_object.insert("build_duration_ms".to_string(), json!(build_duration_ms));
+    metadata_object.insert("proof_build_only_ms".to_string(), proof_build_only_value);
+    metadata_object.insert(
+        "diagnostic_debug_proof_build_only_ms".to_string(),
+        if diagnostic_only {
             json!(build_duration_ms)
         } else {
             Value::Null
         },
-        "validation_ms": 0,
-        "audit_ms": audit_ms,
-        "report_generation_ms": Value::Null,
-        "comprehensive_total_ms": Value::Null,
-        "db_size_bytes": db_size_bytes,
-        "integrity_status": integrity_status,
-        "artifact_validation": {
-            "validated": false,
-            "claimable_as_validated": false,
-            "validation_mode": "not_run",
-            "publish_gate": "proof-build-only quick_check",
-            "integrity_check_source": "post_build_storage_audit",
-            "notes": [
-                "The comprehensive fresh artifact is built in proof-build-only mode for timing.",
-                "The later storage audit integrity_check is reported as audit_ms and does not make proof_build_only_ms a validation-mode timing."
-            ]
-        },
-        "benchmark_run_id": options.timestamp,
-        "artifact_metadata_path": path_string(&metadata_path),
-        "current_exe": binary_metadata["current_exe"].clone(),
-        "debug_assertions": binary_metadata["debug_assertions"].clone(),
-        "binary_profile": binary_metadata["binary_profile"].clone(),
-        "exact_command": binary_metadata["exact_command"].clone(),
-        "claimable_for_thresholds": claimable_for_thresholds,
-        "diagnostic_only": diagnostic_only,
-        "timing_classification": timing_classification,
-        "binary_metadata": binary_metadata,
-        "freshness_metadata_present": true,
-        "artifact_reuse": false,
-        "freshly_built": true,
-        "stale": false,
-        "stale_reasons": [],
-        "freshness_status": "fresh",
-        "storage_result_claimable": true,
-        "cold_build_result_claimable": claimable_for_thresholds,
-        "notes": [
+    );
+    metadata_object.insert("validation_ms".to_string(), json!(0));
+    metadata_object.insert("audit_ms".to_string(), json!(audit_ms));
+    metadata_object.insert("report_generation_ms".to_string(), Value::Null);
+    metadata_object.insert("comprehensive_total_ms".to_string(), Value::Null);
+    metadata_object.insert("inspection_read_only".to_string(), json!(true));
+    metadata_object.insert(
+        "artifact_mutated_during_inspection".to_string(),
+        json!(false),
+    );
+    metadata_object.insert("lifecycle_status".to_string(), lifecycle_status);
+    metadata_object.insert("db_size_bytes".to_string(), json!(db_size_bytes));
+    metadata_object.insert("integrity_status".to_string(), json!(integrity_status));
+    metadata_object.insert("artifact_validation".to_string(), artifact_validation);
+    metadata_object.insert("benchmark_run_id".to_string(), json!(options.timestamp));
+    metadata_object.insert(
+        "artifact_metadata_path".to_string(),
+        json!(path_string(&metadata_path)),
+    );
+    metadata_object.insert(
+        "current_exe".to_string(),
+        binary_metadata["current_exe"].clone(),
+    );
+    metadata_object.insert(
+        "debug_assertions".to_string(),
+        binary_metadata["debug_assertions"].clone(),
+    );
+    metadata_object.insert(
+        "binary_profile".to_string(),
+        binary_metadata["binary_profile"].clone(),
+    );
+    metadata_object.insert(
+        "exact_command".to_string(),
+        binary_metadata["exact_command"].clone(),
+    );
+    metadata_object.insert(
+        "claimable_for_thresholds".to_string(),
+        json!(claimable_for_thresholds),
+    );
+    metadata_object.insert("diagnostic_only".to_string(), json!(diagnostic_only));
+    metadata_object.insert(
+        "timing_classification".to_string(),
+        json!(timing_classification),
+    );
+    metadata_object.insert("binary_metadata".to_string(), binary_metadata);
+    metadata_object.insert("freshness_metadata_present".to_string(), json!(true));
+    metadata_object.insert("artifact_reuse".to_string(), json!(false));
+    metadata_object.insert("freshly_built".to_string(), json!(true));
+    metadata_object.insert("stale".to_string(), json!(false));
+    metadata_object.insert("stale_reasons".to_string(), json!([]));
+    metadata_object.insert("freshness_status".to_string(), json!("fresh"));
+    metadata_object.insert(
+        "storage_result_claimable".to_string(),
+        json!(lifecycle_claimable),
+    );
+    metadata_object.insert(
+        "cold_build_result_claimable".to_string(),
+        json!(lifecycle_claimable && claimable_for_thresholds),
+    );
+    metadata_object.insert(
+        "notes".to_string(),
+        json!([
             "Fresh proof DB built by comprehensive benchmark before storage and cold-build metrics were read.",
-            if claimable_for_thresholds {
-                "Proof-build timing came from a release binary and is claimable for production thresholds."
-            } else {
-                "Proof-build timing came from a debug binary; it is diagnostic_only and not claimable for production thresholds."
-            }
-        ]
-    });
+            timing_note
+        ]),
+    );
+    let metadata = Value::Object(metadata_object);
     write_json_file(&metadata_path, &metadata)?;
     patch_gate_with_proof_artifact(
         gate,
@@ -3111,6 +3415,13 @@ fn inspect_existing_comprehensive_proof_artifact(
     audit::run_audit_command(&audit_args)?;
     let proof_storage = read_json_file(&storage_json_path)?;
     let actual_schema_version = sqlite_user_version_read_only(db_path);
+    let lifecycle_status = benchmark_inspection_lifecycle_status(
+        &options.repo,
+        db_path,
+        "bench.comprehensive.existing_artifact",
+        Some(StorageMode::Proof),
+    );
+    let lifecycle_claimable = benchmark_inspection_claimable(&lifecycle_status);
     let actual_db_size_bytes = metadata_len(db_path).map_err(|error| error.to_string())?;
     let integrity_status = value_string(&proof_storage, &["integrity_check", "status"])
         .unwrap_or_else(|| {
@@ -3201,6 +3512,20 @@ fn inspect_existing_comprehensive_proof_artifact(
     if integrity_status != "ok" {
         stale_reasons.push(format!("integrity status is {integrity_status}"));
     }
+    if !lifecycle_claimable {
+        let blockers = lifecycle_status["blockers"]
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| "lifecycle preflight blocked claimability".to_string());
+        stale_reasons.push(format!("lifecycle preflight not claimable: {blockers}"));
+    }
 
     let stale = !stale_reasons.is_empty();
     if options.fail_on_stale_artifact && stale {
@@ -3241,6 +3566,9 @@ fn inspect_existing_comprehensive_proof_artifact(
         } else {
             Value::Null
         },
+        "inspection_read_only": true,
+        "artifact_mutated_during_inspection": false,
+        "lifecycle_status": lifecycle_status,
         "db_size_bytes": actual_db_size_bytes,
         "metadata_db_size_bytes": metadata_db_size,
         "integrity_status": integrity_status,
@@ -3266,8 +3594,8 @@ fn inspect_existing_comprehensive_proof_artifact(
         "stale": stale,
         "stale_reasons": stale_reasons,
         "freshness_status": if stale { "stale" } else { "fresh" },
-        "storage_result_claimable": !stale,
-        "cold_build_result_claimable": !stale && metadata_build_duration.is_some() && claimable_for_thresholds,
+        "storage_result_claimable": !stale && lifecycle_claimable,
+        "cold_build_result_claimable": !stale && lifecycle_claimable && metadata_build_duration.is_some() && claimable_for_thresholds,
         "notes": if stale {
             vec!["stale artifact; storage result not claimable".to_string(), "stale artifact; cold-build result not claimable".to_string()]
         } else if !claimable_for_thresholds {
@@ -3642,6 +3970,64 @@ fn sqlite_quick_check_status(path: &Path) -> Option<String> {
     connection
         .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
         .ok()
+}
+
+fn benchmark_inspection_lifecycle_status(
+    repo_root: &Path,
+    db_path: &Path,
+    surface_name: &str,
+    required_storage_mode: Option<StorageMode>,
+) -> Value {
+    match inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
+        repo_root: repo_root.to_path_buf(),
+        db_path: db_path.to_path_buf(),
+        surface_name: surface_name.to_string(),
+        operation_kind: DbLifecycleOperationKind::BenchmarkInspection,
+        allow_stale_read: false,
+        allow_foreign_repo: false,
+        required_storage_mode,
+        expected_scope: None,
+    }) {
+        Ok(preflight) => db_lifecycle_surface_preflight_json(&preflight),
+        Err(error) => json!({
+            "decision": "blocked",
+            "surface_name": surface_name,
+            "operation_kind": DbLifecycleOperationKind::BenchmarkInspection.as_str(),
+            "safe_to_read": false,
+            "safe_to_write": false,
+            "passport_status": "unknown",
+            "claimable": false,
+            "diagnostic_only": true,
+            "contaminated": true,
+            "repo_match": false,
+            "scope_match": false,
+            "schema_status": "unknown",
+            "storage_mode_match": false,
+            "reasons": [],
+            "blockers": [error.to_string()],
+            "warnings": [],
+            "exact_db_path_checked": path_string(db_path),
+            "repo_root_expected": path_string(repo_root),
+            "repo_root_observed": Value::Null,
+            "artifact_freshness": Value::Null,
+            "scope_source": Value::Null,
+            "passport_scope_hash": Value::Null,
+            "explicit_scope_hash": Value::Null,
+        }),
+    }
+}
+
+fn benchmark_inspection_claimable(lifecycle_status: &Value) -> bool {
+    lifecycle_status["safe_to_read"].as_bool() == Some(true)
+        && lifecycle_status["claimable"].as_bool() == Some(true)
+}
+
+fn json_object(entries: Vec<(&str, Value)>) -> Value {
+    let mut object = serde_json::Map::new();
+    for (key, value) in entries {
+        object.insert(key.to_string(), value);
+    }
+    Value::Object(object)
 }
 
 fn current_git_commit() -> String {
@@ -5339,6 +5725,60 @@ fn build_default_query_surface_report(
     let mut queries = Vec::new();
     let db_path = absolutize_path(db_path).unwrap_or_else(|_| db_path.to_path_buf());
     let repo_root = absolutize_path(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+    let lifecycle_status = benchmark_inspection_lifecycle_status(
+        &repo_root,
+        &db_path,
+        "bench.query_surface",
+        Some(StorageMode::Proof),
+    );
+    let claimable = benchmark_inspection_claimable(&lifecycle_status);
+    if lifecycle_status["safe_to_read"].as_bool() != Some(true) {
+        let blockers = lifecycle_status["blockers"]
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| "benchmark lifecycle preflight blocked DB inspection".to_string());
+        let failed = required_query_surface_ids()
+            .into_iter()
+            .map(|(id, target)| {
+                query_surface_failure_metric(
+                    id,
+                    target,
+                    &format!("benchmark lifecycle preflight blocked DB inspection: {blockers}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        return json!({
+            "schema_version": 1,
+            "status": "failed",
+            "generated_at_unix_ms": unix_time_ms(),
+            "repo_root": path_string(&repo_root),
+            "db_path": path_string(&db_path),
+            "storage_mode": "proof",
+            "iterations": iterations,
+            "inspection_read_only": true,
+            "artifact_mutated_during_inspection": false,
+            "lifecycle_status": lifecycle_status,
+            "claimable": false,
+            "queries": failed,
+            "summary": {
+                "failed_queries": required_query_surface_ids().len(),
+                "passed_queries": 0,
+                "elapsed_ms": elapsed_ms(started),
+                "all_default_queries_complete": false,
+            },
+            "notes": [
+                "The query surface benchmark refused to inspect a DB that failed lifecycle preflight.",
+                "No benchmark result from this artifact is claimable."
+            ],
+        });
+    }
     let connection = match Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
         Ok(connection) => connection,
         Err(error) => {
@@ -5359,11 +5799,16 @@ fn build_default_query_surface_report(
                 "repo_root": path_string(&repo_root),
                 "db_path": path_string(&db_path),
                 "iterations": iterations,
+                "inspection_read_only": true,
+                "artifact_mutated_during_inspection": false,
+                "lifecycle_status": lifecycle_status,
+                "claimable": false,
                 "queries": failed,
                 "summary": {
                     "failed_queries": required_query_surface_ids().len(),
                     "passed_queries": 0,
                     "elapsed_ms": elapsed_ms(started),
+                    "all_default_queries_complete": false,
                 },
                 "notes": [
                     "The query surface could not open the compact proof DB."
@@ -5535,6 +5980,10 @@ fn build_default_query_surface_report(
         "db_path": path_string(&db_path),
         "storage_mode": "proof",
         "iterations": iterations,
+        "inspection_read_only": true,
+        "artifact_mutated_during_inspection": false,
+        "lifecycle_status": lifecycle_status,
+        "claimable": claimable,
         "seeds": seeds,
         "queries": queries,
         "summary": {
@@ -5802,6 +6251,35 @@ fn benchmark_unresolved_calls_surface_query(
     iterations: usize,
 ) -> Value {
     let explain_plan = unresolved_calls_query_plan(connection, 20, 0).ok();
+    let preflight_options = UnresolvedCallsOptions {
+        db_path: Some(db_path.to_path_buf()),
+        requested_limit: 20,
+        limit: 20,
+        offset: 0,
+        include_snippets: false,
+        source_scan: false,
+        count_total: false,
+        allow_stale_read: false,
+        explicit_scope_policy: None,
+        surface_name: "bench.query_surface.unresolved_calls".to_string(),
+        operation_kind: DbLifecycleOperationKind::BenchmarkInspection,
+    };
+    let mut lifecycle_read =
+        unresolved_calls_lifecycle_preflight(repo_root, db_path, &preflight_options)
+            .map(|preflight| db_lifecycle_surface_preflight_json(&preflight))
+            .unwrap_or_else(|error| {
+                json!({
+                    "decision": "blocked",
+                    "surface_name": "bench.query_surface.unresolved_calls",
+                    "operation_kind": DbLifecycleOperationKind::BenchmarkInspection.as_str(),
+                    "safe_to_read": false,
+                    "claimable": false,
+                    "diagnostic_only": true,
+                    "exact_db_path_checked": path_string(db_path),
+                    "blockers": [error],
+                    "warnings": [],
+                })
+            });
     let mut samples = Vec::new();
     let mut rows_returned = 0usize;
     let mut error = None;
@@ -5815,9 +6293,16 @@ fn benchmark_unresolved_calls_surface_query(
             include_snippets: false,
             source_scan: false,
             count_total: false,
+            allow_stale_read: false,
+            explicit_scope_policy: None,
+            surface_name: "bench.query_surface.unresolved_calls".to_string(),
+            operation_kind: DbLifecycleOperationKind::BenchmarkInspection,
         };
         match query_unresolved_calls(repo_root, options) {
             Ok(value) => {
+                if let Some(value_lifecycle) = value.get("db_lifecycle_read") {
+                    lifecycle_read = value_lifecycle.clone();
+                }
                 rows_returned = value
                     .get("calls")
                     .and_then(Value::as_array)
@@ -5831,7 +6316,7 @@ fn benchmark_unresolved_calls_surface_query(
             }
         }
     }
-    query_surface_metric(
+    let mut metric = query_surface_metric(
         "unresolved_calls_paginated",
         "codegraph-mcp query unresolved-calls --limit 20",
         1000.0,
@@ -5843,7 +6328,11 @@ fn benchmark_unresolved_calls_surface_query(
         vec![
             "Unresolved-calls pagination may read the heuristic/debug sidecar by design, but it must remain explicit and bounded.".to_string(),
         ],
-    )
+    );
+    if let Some(object) = metric.as_object_mut() {
+        object.insert("db_lifecycle_read".to_string(), lifecycle_read);
+    }
+    metric
 }
 
 fn query_surface_metric(
@@ -7029,6 +7518,10 @@ fn run_update_integrity_harness(options: &UpdateIntegrityHarnessOptions) -> Resu
         .filter(|repo| repo["status"].as_str() != Some("passed"))
         .count();
     let status = if failures == 0 { "passed" } else { "failed" };
+    let claimable = status == "passed"
+        && repos
+            .iter()
+            .all(|repo| repo["claimable"].as_bool() == Some(true));
     Ok(json!({
         "schema_version": 1,
         "status": status,
@@ -7042,6 +7535,16 @@ fn run_update_integrity_harness(options: &UpdateIntegrityHarnessOptions) -> Resu
         "autoresearch_iterations_requested": options.autoresearch_iterations,
         "workers": options.workers,
         "workdir": path_string(&options.workdir),
+        "inspection_read_only": true,
+        "artifact_mutated_during_inspection": false,
+        "mutation_capable_operations": [
+            "cold_index_or_seed_db_copy_setup",
+            "repeat_index_setup",
+            "source_file_mutation_setup",
+            "update_changed_files_to_db",
+            "repo_graph_digest_prime_for_fast_mode"
+        ],
+        "claimable": claimable,
         "repos": repos,
     }))
 }
@@ -7092,7 +7595,7 @@ fn run_update_integrity_repo(
         let start = Instant::now();
         let summary = index_repo_to_db_with_options(repo, db, options.clone())
             .map_err(|error| format!("cold index failed for {name}: {error}"))?;
-        update_integrity_step_from_index("cold_index", start.elapsed(), &summary, db, mode)?
+        update_integrity_step_from_index("cold_index", start.elapsed(), &summary, repo, db, mode)?
     };
     let cold_hash = cold["graph_fact_hash"].as_str().unwrap_or("").to_string();
     if mode == UpdateBenchmarkMode::Fast && !cold_hash.is_empty() {
@@ -7144,6 +7647,7 @@ fn run_update_integrity_repo(
             "repeat_unchanged_index",
             start.elapsed(),
             &repeat_summary,
+            repo,
             db,
             mode,
         )?;
@@ -7217,6 +7721,7 @@ fn run_update_integrity_repo(
             "single_file_update",
             mutate_start.elapsed(),
             &update_summary,
+            update_repo,
             db,
             mode,
         )?;
@@ -7234,6 +7739,7 @@ fn run_update_integrity_repo(
             "restore_update",
             restore_start.elapsed(),
             &restore_summary,
+            update_repo,
             db,
             mode,
         )?;
@@ -7298,6 +7804,20 @@ fn run_update_integrity_repo(
     } else {
         "failed"
     };
+    let claimable = status == "passed"
+        && std::iter::once(&cold)
+            .chain(
+                repeat_iterations
+                    .iter()
+                    .filter_map(|iteration| iteration.get("repeat")),
+            )
+            .chain(iteration_results.iter().flat_map(|iteration| {
+                [
+                    iteration.get("update").unwrap(),
+                    iteration.get("restore").unwrap(),
+                ]
+            }))
+            .all(|step| step["claimable"].as_bool() == Some(true));
 
     Ok(json!({
         "name": name,
@@ -7317,6 +7837,9 @@ fn run_update_integrity_repo(
         "changed_file_updates_graph_fact_hash": changed_hash_ok,
         "restore_returns_to_repeat_graph_fact_hash": restore_hash_ok,
         "all_integrity_checks_passed": all_integrity_ok,
+        "inspection_read_only": true,
+        "artifact_mutated_during_inspection": false,
+        "claimable": claimable,
     }))
 }
 
@@ -7393,44 +7916,53 @@ fn run_watch_command(args: &[String]) -> CliOutput {
         Err(error) => return command_error("watch_failed", &error),
     };
 
+    let repo_root = match resolve_repo_root(&options.repo) {
+        Ok(repo_root) => repo_root,
+        Err(error) => return command_error("watch_failed", &error),
+    };
+    let requested_db_path = watch_requested_db_path(&repo_root, options.db.as_deref());
+
     if options.once {
         let changed_paths = if options.changed_paths.is_empty() {
             Vec::new()
         } else {
             options.changed_paths
         };
-        let update = if let Some(db) = &options.db {
-            update_changed_files_to_db(&options.repo, &changed_paths, db)
-        } else {
-            update_changed_files(&options.repo, &changed_paths)
-        };
+        let update = update_changed_files_to_db(&repo_root, &changed_paths, &requested_db_path);
         return run_json_command(
             "watch_failed",
             update
                 .and_then(|summary| {
-                    serde_json::to_value(summary)
-                        .map_err(|error| IndexError::Message(error.to_string()))
+                    let lifecycle = watch_update_lifecycle_metadata(
+                        &repo_root,
+                        &requested_db_path,
+                        "cli.watch.once",
+                        true,
+                    )?;
+                    let mut value = serde_json::to_value(summary)
+                        .map_err(|error| IndexError::Message(error.to_string()))?;
+                    if let Some(object) = value.as_object_mut() {
+                        object.insert("watch_db".to_string(), lifecycle);
+                    }
+                    Ok(value)
                 })
                 .map_err(|error| error.to_string()),
         );
     }
 
-    match watch_repo(&options.repo, options.debounce) {
+    match watch_repo(&repo_root, Some(&requested_db_path), options.debounce) {
         Ok(()) => success(String::new()),
         Err(error) => command_error("watch_failed", &error.to_string()),
     }
 }
 
-fn watch_repo(repo_path: &Path, debounce: Duration) -> Result<(), IndexError> {
-    if !repo_path.exists() {
-        return Err(IndexError::RepoNotFound(repo_path.to_path_buf()));
-    }
-
-    let repo_root = fs::canonicalize(repo_path)?;
-    let mut cache = IncrementalIndexCache::new(256)?;
-    fs::create_dir_all(repo_root.join(".codegraph"))?;
-    let store = SqliteGraphStore::open(default_db_path(&repo_root))?;
-    cache.refresh_from_store(&store)?;
+fn watch_repo(
+    repo_path: &Path,
+    requested_db_path: Option<&Path>,
+    debounce: Duration,
+) -> Result<(), IndexError> {
+    let mut startup =
+        prepare_watch_startup(repo_path, requested_db_path, "cli.watch.long_running")?;
 
     let (sender, receiver) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |result| {
@@ -7438,13 +7970,20 @@ fn watch_repo(repo_path: &Path, debounce: Duration) -> Result<(), IndexError> {
     })
     .map_err(|error| IndexError::Message(format!("watcher init failed: {error}")))?;
     watcher
-        .watch(&repo_root, RecursiveMode::Recursive)
+        .watch(&startup.repo_root, RecursiveMode::Recursive)
         .map_err(|error| IndexError::Message(format!("watcher start failed: {error}")))?;
 
     eprintln!(
-        "codegraph watch: watching {} with {}ms debounce",
-        repo_root.display(),
-        debounce.as_millis()
+        "codegraph watch: lifecycle {}",
+        json_line(startup.lifecycle_status.clone()).trim_end()
+    );
+    eprintln!(
+        "codegraph watch: watching {} with {}ms debounce requested_db={} actual_db={} auto_index_enabled={}",
+        startup.repo_root.display(),
+        debounce.as_millis(),
+        startup.requested_db_path.display(),
+        startup.actual_db_path_opened.display(),
+        startup.auto_index_enabled
     );
 
     let mut debouncer = WatchDebouncer::new(debounce);
@@ -7475,9 +8014,131 @@ fn watch_repo(repo_path: &Path, debounce: Duration) -> Result<(), IndexError> {
             continue;
         }
 
-        let summary = update_changed_files_with_cache(&repo_root, &ready, &mut cache)?;
+        let summary = update_changed_files_with_cache_to_db(
+            &startup.repo_root,
+            &ready,
+            &startup.actual_db_path_opened,
+            &mut startup.cache,
+        )?;
         log_watch_summary(&summary);
     }
+}
+
+fn watch_requested_db_path(repo_root: &Path, db_path: Option<&Path>) -> PathBuf {
+    db_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_db_path(repo_root))
+}
+
+fn prepare_watch_startup(
+    repo_path: &Path,
+    requested_db_path: Option<&Path>,
+    surface_name: &str,
+) -> Result<WatchStartup, IndexError> {
+    if !repo_path.exists() {
+        return Err(IndexError::RepoNotFound(repo_path.to_path_buf()));
+    }
+    let repo_root = fs::canonicalize(repo_path)?;
+    let requested_db_path = watch_requested_db_path(&repo_root, requested_db_path);
+    let preflight = inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
+        repo_root: repo_root.clone(),
+        db_path: requested_db_path.clone(),
+        surface_name: surface_name.to_string(),
+        operation_kind: DbLifecycleOperationKind::WriteUpdate,
+        allow_stale_read: false,
+        allow_foreign_repo: false,
+        required_storage_mode: None,
+        expected_scope: None,
+    })
+    .map_err(|error| IndexError::Message(error.to_string()))?;
+    if !preflight.safe_to_write {
+        return Err(IndexError::Message(watch_lifecycle_error(&preflight)));
+    }
+    let actual_db_path_opened = PathBuf::from(&preflight.exact_db_path_checked);
+    let lifecycle_status = watch_lifecycle_status_json(&preflight, &requested_db_path, false);
+    let mut cache = IncrementalIndexCache::new(256)?;
+    let store = SqliteGraphStore::open(&actual_db_path_opened)?;
+    cache.refresh_from_store(&store)?;
+    drop(store);
+    Ok(WatchStartup {
+        repo_root,
+        requested_db_path,
+        actual_db_path_opened,
+        lifecycle_status,
+        auto_index_enabled: false,
+        cache,
+    })
+}
+
+fn watch_update_lifecycle_metadata(
+    repo_root: &Path,
+    requested_db_path: &Path,
+    surface_name: &str,
+    safe_to_write: bool,
+) -> Result<Value, IndexError> {
+    let preflight = inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
+        repo_root: repo_root.to_path_buf(),
+        db_path: requested_db_path.to_path_buf(),
+        surface_name: surface_name.to_string(),
+        operation_kind: DbLifecycleOperationKind::WriteUpdate,
+        allow_stale_read: false,
+        allow_foreign_repo: false,
+        required_storage_mode: None,
+        expected_scope: None,
+    })
+    .map_err(|error| IndexError::Message(error.to_string()))?;
+    let mut value = watch_lifecycle_status_json(&preflight, requested_db_path, false);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("safe_to_write".to_string(), Value::Bool(safe_to_write));
+    }
+    Ok(value)
+}
+
+fn watch_lifecycle_status_json(
+    preflight: &DbLifecycleSurfacePreflight,
+    requested_db_path: &Path,
+    auto_index_enabled: bool,
+) -> Value {
+    json!({
+        "requested_db_path": path_string(requested_db_path),
+        "actual_db_path_opened": preflight.exact_db_path_checked.clone(),
+        "lifecycle_status": if preflight.safe_to_write { "safe_to_write" } else { "blocked" },
+        "auto_index_enabled": auto_index_enabled,
+        "safe_to_read": preflight.safe_to_read,
+        "safe_to_write": preflight.safe_to_write,
+        "claimable": preflight.claimable,
+        "diagnostic_only": preflight.diagnostic_only,
+        "passport_status": preflight.passport_status.clone(),
+        "repo_match": preflight.repo_match,
+        "scope_match": preflight.scope_match,
+        "schema_status": preflight.schema_status.clone(),
+        "storage_mode_match": preflight.storage_mode_match,
+        "blockers": preflight.blockers.clone(),
+        "warnings": preflight.warnings.clone(),
+        "repo_root_expected": preflight.repo_root_expected.clone(),
+        "repo_root_observed": preflight.repo_root_observed.clone(),
+        "artifact_freshness": preflight.artifact_freshness.clone(),
+        "operation_kind": preflight.operation_kind.as_str(),
+        "surface_name": preflight.surface_name.clone(),
+    })
+}
+
+fn watch_lifecycle_error(preflight: &DbLifecycleSurfacePreflight) -> String {
+    let db_path = &preflight.exact_db_path_checked;
+    let blockers = if preflight.blockers.is_empty() {
+        "unknown lifecycle blocker".to_string()
+    } else {
+        preflight.blockers.join("; ")
+    };
+    if preflight.artifact_freshness.as_deref() == Some("missing")
+        || preflight.passport_status == "missing"
+    {
+        return format!(
+            "CodeGraph index does not exist or is missing a valid passport at {db_path}; run `codegraph-mcp index . --db {}` first. Long-running watch does not auto-index by default.",
+            db_path
+        );
+    }
+    format!("CodeGraph DB is not safe for watch updates at {db_path}: {blockers}")
 }
 
 fn enqueue_event_paths(debouncer: &mut WatchDebouncer, event: Event, now: Instant) {
@@ -7873,6 +8534,7 @@ fn ui_unresolved_calls(
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(0),
             include_snippets,
+            surface_name: "ui.unresolved_calls".to_string(),
             ..UnresolvedCallsOptions::default()
         },
     )
@@ -8358,6 +9020,7 @@ fn run_bundle_export(args: &[String]) -> Result<Value, String> {
     let output = parse_output_arg(args)?;
     let repo_root = current_repo_root()?;
     let store = open_existing_store(&repo_root)?;
+    let passport = store.get_db_passport().map_err(|error| error.to_string())?;
     let files = store
         .list_files(UNBOUNDED_STORE_READ_LIMIT)
         .map_err(|error| error.to_string())?;
@@ -8367,12 +9030,38 @@ fn run_bundle_export(args: &[String]) -> Result<Value, String> {
     let edges = store
         .list_edges(UNBOUNDED_STORE_READ_LIMIT)
         .map_err(|error| error.to_string())?;
+    let graph_digest = graph_fact_hash(&entities, &edges);
+    let default_scope = IndexScopeOptions::default();
+    let scope_hash = passport
+        .as_ref()
+        .map(|passport| passport.index_scope_policy_hash.clone())
+        .unwrap_or_else(|| {
+            scope_policy_hash(&default_scope).unwrap_or_else(|_| "unknown".to_string())
+        });
+    let scope_policy_json = passport
+        .as_ref()
+        .map(|passport| passport.scope_policy_json.clone())
+        .unwrap_or_else(|| {
+            serde_json::to_string(&default_scope).unwrap_or_else(|_| "{}".to_string())
+        });
+    let storage_mode = passport
+        .as_ref()
+        .map(|passport| passport.storage_mode.clone())
+        .unwrap_or_else(|| StorageMode::Proof.as_str().to_string());
     let bundle = CodeGraphBundle {
         manifest: BundleManifest {
             schema_version: BUNDLE_SCHEMA_VERSION,
             created_by: format!("{BIN_NAME} phase {PHASE}"),
             created_at_unix_ms: unix_time_ms(),
             repo_root: path_string(&repo_root),
+            repo_identity: Some(bundle_repo_identity(&repo_root)),
+            canonical_repo_root: Some(path_string(&repo_root)),
+            repo_head: git_head(&repo_root),
+            scope_hash: Some(scope_hash),
+            scope_policy_json: Some(scope_policy_json),
+            storage_mode: Some(storage_mode),
+            db_schema_version: Some(store.schema_version().map_err(|error| error.to_string())?),
+            graph_digest: Some(graph_digest),
             file_count: files.len(),
             entity_count: entities.len(),
             edge_count: edges.len(),
@@ -8392,10 +9081,8 @@ fn run_bundle_export(args: &[String]) -> Result<Value, String> {
 }
 
 fn run_bundle_import(args: &[String]) -> Result<Value, String> {
-    if args.len() != 1 {
-        return Err("Usage: codegraph-mcp bundle import repo.cgc-bundle".to_string());
-    }
-    let input = PathBuf::from(&args[0]);
+    let options = parse_bundle_import_options(args)?;
+    let input = options.input;
     let source = fs::read_to_string(&input).map_err(|error| error.to_string())?;
     let bundle: CodeGraphBundle =
         serde_json::from_str(&source).map_err(|error| error.to_string())?;
@@ -8407,9 +9094,306 @@ fn run_bundle_import(args: &[String]) -> Result<Value, String> {
     }
 
     let repo_root = current_repo_root()?;
-    fs::create_dir_all(repo_root.join(".codegraph")).map_err(|error| error.to_string())?;
-    let store =
-        SqliteGraphStore::open(default_db_path(&repo_root)).map_err(|error| error.to_string())?;
+    let evidence = validate_bundle_manifest(&bundle, &repo_root)?;
+    if options.mode == BundleImportMode::Merge {
+        return Ok(json!({
+            "status": "merge_refused",
+            "mode": options.mode.as_str(),
+            "input": path_string(&input),
+            "repo_root": path_string(&repo_root),
+            "manifest": bundle.manifest,
+            "claimable": false,
+            "diagnostic_only": true,
+            "database_mutated": false,
+            "provenance": {
+                "bundle_repo_identity": evidence.repo_identity,
+                "bundle_graph_digest": evidence.graph_digest,
+                "merge_policy": "refused_until_per_fact_provenance_is_defined"
+            },
+            "message": "bundle import --merge is explicit but currently diagnostic-only: merge mutation is refused until merged facts have a product-grade provenance and claimability contract"
+        }));
+    }
+
+    let db_path = default_db_path(&repo_root);
+    let target_state = inspect_bundle_target_state(&db_path);
+    if options.mode == BundleImportMode::Fresh
+        && !matches!(
+            target_state,
+            BundleTargetState::Missing | BundleTargetState::Empty
+        )
+    {
+        return Err(format!(
+            "bundle import refuses to write into {} DB at {} without --replace or explicit --merge",
+            target_state.as_str(),
+            db_path.display()
+        ));
+    }
+
+    let temp_db_path = bundle_import_temp_db_path(&db_path);
+    let import_result = (|| {
+        remove_sqlite_file_family(&temp_db_path)?;
+        import_bundle_to_temp_db(&temp_db_path, &repo_root, &bundle, &evidence, true)?;
+        let temp_preflight =
+            inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
+                repo_root: repo_root.clone(),
+                db_path: temp_db_path.clone(),
+                surface_name: "cli.bundle.import.temp".to_string(),
+                operation_kind: DbLifecycleOperationKind::NormalRead,
+                allow_stale_read: false,
+                allow_foreign_repo: false,
+                required_storage_mode: Some(evidence.storage_mode),
+                expected_scope: None,
+            })
+            .map_err(|error| error.to_string())?;
+        if !temp_preflight.safe_to_read {
+            return Err(format!(
+                "bundle import temp DB failed lifecycle validation: {}",
+                temp_preflight.blockers.join("; ")
+            ));
+        }
+        publish_bundle_import_db(&temp_db_path, &db_path)?;
+        let final_preflight =
+            inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
+                repo_root: repo_root.clone(),
+                db_path: db_path.clone(),
+                surface_name: "cli.bundle.import.final".to_string(),
+                operation_kind: DbLifecycleOperationKind::NormalRead,
+                allow_stale_read: false,
+                allow_foreign_repo: false,
+                required_storage_mode: Some(evidence.storage_mode),
+                expected_scope: None,
+            })
+            .map_err(|error| error.to_string())?;
+        if !final_preflight.safe_to_read {
+            return Err(format!(
+                "bundle import final DB failed lifecycle validation: {}",
+                final_preflight.blockers.join("; ")
+            ));
+        }
+        Ok(final_preflight)
+    })();
+    if import_result.is_err() {
+        let _ = remove_sqlite_file_family(&temp_db_path);
+    }
+    let final_preflight = import_result?;
+
+    Ok(json!({
+        "status": "imported",
+        "mode": options.mode.as_str(),
+        "input": path_string(&input),
+        "repo_root": path_string(&repo_root),
+        "db_path": path_string(&db_path),
+        "target_state_before_import": target_state.as_str(),
+        "old_db_replaced": target_state != BundleTargetState::Missing,
+        "atomic_publish": true,
+        "claimable": true,
+        "diagnostic_only": false,
+        "db_lifecycle_read": db_lifecycle_surface_preflight_json(&final_preflight),
+        "manifest": bundle.manifest,
+    }))
+}
+
+fn parse_bundle_import_options(args: &[String]) -> Result<BundleImportOptions, String> {
+    let mut input = None;
+    let mut mode = BundleImportMode::Fresh;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--replace" => {
+                if mode != BundleImportMode::Fresh {
+                    return Err(
+                        "bundle import accepts only one of --replace or --merge".to_string()
+                    );
+                }
+                mode = BundleImportMode::Replace;
+            }
+            "--merge" => {
+                if mode != BundleImportMode::Fresh {
+                    return Err(
+                        "bundle import accepts only one of --replace or --merge".to_string()
+                    );
+                }
+                mode = BundleImportMode::Merge;
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("unknown bundle import option: {value}"));
+            }
+            value => {
+                if input.is_some() {
+                    return Err(bundle_import_usage());
+                }
+                input = Some(PathBuf::from(value));
+            }
+        }
+        index += 1;
+    }
+    let Some(input) = input else {
+        return Err(bundle_import_usage());
+    };
+    Ok(BundleImportOptions { input, mode })
+}
+
+fn bundle_import_usage() -> String {
+    "Usage: codegraph-mcp bundle import repo.cgc-bundle [--replace|--merge]".to_string()
+}
+
+fn validate_bundle_manifest(
+    bundle: &CodeGraphBundle,
+    repo_root: &Path,
+) -> Result<BundleManifestEvidence, String> {
+    if bundle.manifest.file_count != bundle.files.len() {
+        return Err(format!(
+            "bundle file_count mismatch: manifest {}, observed {}",
+            bundle.manifest.file_count,
+            bundle.files.len()
+        ));
+    }
+    if bundle.manifest.entity_count != bundle.entities.len() {
+        return Err(format!(
+            "bundle entity_count mismatch: manifest {}, observed {}",
+            bundle.manifest.entity_count,
+            bundle.entities.len()
+        ));
+    }
+    if bundle.manifest.edge_count != bundle.edges.len() {
+        return Err(format!(
+            "bundle edge_count mismatch: manifest {}, observed {}",
+            bundle.manifest.edge_count,
+            bundle.edges.len()
+        ));
+    }
+
+    let repo_identity = required_bundle_string(&bundle.manifest.repo_identity, "repo_identity")?;
+    let canonical_repo_root =
+        required_bundle_string(&bundle.manifest.canonical_repo_root, "canonical_repo_root")?;
+    let expected_identity = bundle_repo_identity(repo_root);
+    let expected_canonical = path_string(repo_root);
+    if repo_identity != expected_identity || canonical_repo_root != expected_canonical {
+        return Err(format!(
+            "bundle repo identity mismatch: expected repo_identity={} canonical_repo_root={}, observed repo_identity={} canonical_repo_root={}",
+            expected_identity, expected_canonical, repo_identity, canonical_repo_root
+        ));
+    }
+
+    let scope_hash = required_bundle_string(&bundle.manifest.scope_hash, "scope_hash")?;
+    let scope_policy_json =
+        required_bundle_string(&bundle.manifest.scope_policy_json, "scope_policy_json")?;
+    let scope_policy: IndexScopeOptions =
+        serde_json::from_str(&scope_policy_json).map_err(|error| {
+            format!("bundle scope_policy_json is not a valid IndexScopeOptions value: {error}")
+        })?;
+    let computed_scope_hash =
+        scope_policy_hash(&scope_policy).map_err(|error| error.to_string())?;
+    if computed_scope_hash != scope_hash {
+        return Err(format!(
+            "bundle scope hash mismatch: manifest {}, computed {}",
+            scope_hash, computed_scope_hash
+        ));
+    }
+
+    let storage_mode_text = required_bundle_string(&bundle.manifest.storage_mode, "storage_mode")?;
+    let storage_mode = storage_mode_text.parse::<StorageMode>()?;
+    let db_schema_version = bundle
+        .manifest
+        .db_schema_version
+        .ok_or_else(|| "bundle manifest missing required field db_schema_version".to_string())?;
+    if db_schema_version != SCHEMA_VERSION {
+        return Err(format!(
+            "bundle DB schema mismatch: expected {}, got {}",
+            SCHEMA_VERSION, db_schema_version
+        ));
+    }
+
+    let graph_digest = required_bundle_string(&bundle.manifest.graph_digest, "graph_digest")?;
+    let computed_graph_digest = graph_fact_hash(&bundle.entities, &bundle.edges);
+    if computed_graph_digest != graph_digest {
+        return Err(format!(
+            "bundle graph digest mismatch: manifest {}, computed {}",
+            graph_digest, computed_graph_digest
+        ));
+    }
+
+    Ok(BundleManifestEvidence {
+        repo_identity,
+        canonical_repo_root,
+        repo_head: bundle.manifest.repo_head.clone(),
+        scope_hash,
+        scope_policy_json,
+        storage_mode,
+        db_schema_version,
+        graph_digest,
+    })
+}
+
+fn required_bundle_string(value: &Option<String>, name: &str) -> Result<String, String> {
+    value
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .ok_or_else(|| format!("bundle manifest missing required field {name}"))
+}
+
+fn bundle_repo_identity(repo_root: &Path) -> String {
+    format!("repo-root:{}", path_string(repo_root))
+}
+
+fn git_head(repo_root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+fn inspect_bundle_target_state(db_path: &Path) -> BundleTargetState {
+    if !db_path.exists() {
+        return BundleTargetState::Missing;
+    }
+    let Ok(connection) = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    else {
+        return BundleTargetState::Uninspectable;
+    };
+    let mut total_rows = 0u64;
+    for table in ["files", "entities", "edges", "codegraph_db_passport"] {
+        let exists = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [table],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(false);
+        if exists {
+            total_rows += connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, u64>(0)
+                })
+                .unwrap_or(1);
+        }
+    }
+    if total_rows == 0 {
+        BundleTargetState::Empty
+    } else {
+        BundleTargetState::NonEmpty
+    }
+}
+
+fn import_bundle_to_temp_db(
+    temp_db_path: &Path,
+    repo_root: &Path,
+    bundle: &CodeGraphBundle,
+    evidence: &BundleManifestEvidence,
+    claimable: bool,
+) -> Result<(), String> {
+    if let Some(parent) = temp_db_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let store = SqliteGraphStore::open(temp_db_path).map_err(|error| error.to_string())?;
     store
         .transaction(|tx| {
             for file in &bundle.files {
@@ -8431,48 +9415,140 @@ fn run_bundle_import(args: &[String]) -> Result<Value, String> {
     store
         .quick_integrity_gate()
         .map_err(|error| error.to_string())?;
-    upsert_cli_db_passport(
+    upsert_cli_db_passport_with_policy(
         &store,
-        &repo_root,
-        StorageMode::Proof,
+        repo_root,
+        evidence,
         bundle.manifest.file_count,
         bundle.manifest.file_count,
+        if claimable {
+            "ok"
+        } else {
+            "diagnostic_merge_non_claimable"
+        },
     )?;
-
-    Ok(json!({
-        "status": "imported",
-        "input": path_string(&input),
-        "repo_root": path_string(&repo_root),
-        "manifest": bundle.manifest,
-    }))
+    store
+        .quick_integrity_gate()
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
-fn upsert_cli_db_passport(
+fn bundle_import_temp_db_path(final_db_path: &Path) -> PathBuf {
+    let parent = final_db_path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = final_db_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("codegraph.sqlite");
+    parent.join(format!(
+        ".{file_name}.bundle-import-tmp-{}-{}",
+        std::process::id(),
+        unix_time_ms()
+    ))
+}
+
+fn bundle_import_backup_db_path(final_db_path: &Path) -> PathBuf {
+    let parent = final_db_path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = final_db_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("codegraph.sqlite");
+    parent.join(format!(
+        ".{file_name}.bundle-import-backup-{}-{}",
+        std::process::id(),
+        unix_time_ms()
+    ))
+}
+
+fn publish_bundle_import_db(temp_db_path: &Path, final_db_path: &Path) -> Result<(), String> {
+    let parent = final_db_path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let backup_db_path = bundle_import_backup_db_path(final_db_path);
+    let had_old_db = final_db_path.exists();
+    if had_old_db {
+        if let Err(error) = rename_sqlite_file_family(final_db_path, &backup_db_path) {
+            let _ = rename_sqlite_file_family(&backup_db_path, final_db_path);
+            return Err(error);
+        }
+    } else {
+        remove_sqlite_sidecars(final_db_path)?;
+    }
+
+    match fs::rename(temp_db_path, final_db_path) {
+        Ok(()) => {
+            remove_sqlite_sidecars(temp_db_path)?;
+            if had_old_db {
+                remove_sqlite_file_family(&backup_db_path)?;
+            }
+            Ok(())
+        }
+        Err(error) => {
+            let _ = remove_sqlite_file_family(final_db_path);
+            if had_old_db {
+                let _ = rename_sqlite_file_family(&backup_db_path, final_db_path);
+            }
+            Err(error.to_string())
+        }
+    }
+}
+
+fn rename_sqlite_file_family(from: &Path, to: &Path) -> Result<(), String> {
+    rename_file_if_exists(from, to)?;
+    rename_file_if_exists(
+        &sqlite_sidecar_path(from, "wal"),
+        &sqlite_sidecar_path(to, "wal"),
+    )?;
+    rename_file_if_exists(
+        &sqlite_sidecar_path(from, "shm"),
+        &sqlite_sidecar_path(to, "shm"),
+    )?;
+    Ok(())
+}
+
+fn remove_sqlite_file_family(path: &Path) -> Result<(), String> {
+    remove_file_if_exists(path)?;
+    remove_sqlite_sidecars(path)
+}
+
+fn remove_sqlite_sidecars(path: &Path) -> Result<(), String> {
+    remove_file_if_exists(&sqlite_sidecar_path(path, "wal"))?;
+    remove_file_if_exists(&sqlite_sidecar_path(path, "shm"))?;
+    Ok(())
+}
+
+fn rename_file_if_exists(from: &Path, to: &Path) -> Result<(), String> {
+    match fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn upsert_cli_db_passport_with_policy(
     store: &SqliteGraphStore,
     repo_root: &Path,
-    storage_mode: StorageMode,
+    evidence: &BundleManifestEvidence,
     files_seen: usize,
     files_indexed: usize,
+    integrity_gate_result: &str,
 ) -> Result<(), String> {
     let canonical_repo_root = resolve_repo_root(repo_root)?;
-    let scope = IndexScopeOptions::default();
     let now = unix_time_ms();
     let passport = DbPassport {
         passport_version: DB_PASSPORT_VERSION,
         codegraph_schema_version: SCHEMA_VERSION,
-        storage_mode: storage_mode.as_str().to_string(),
-        index_scope_policy_hash: scope_policy_hash(&scope).map_err(|error| error.to_string())?,
-        scope_policy_json: serde_json::to_string(&scope).map_err(|error| error.to_string())?,
+        storage_mode: evidence.storage_mode.as_str().to_string(),
+        index_scope_policy_hash: evidence.scope_hash.clone(),
+        scope_policy_json: evidence.scope_policy_json.clone(),
         canonical_repo_root: path_string(&canonical_repo_root),
         git_remote: None,
         worktree_root: Some(path_string(&canonical_repo_root)),
-        repo_head: None,
+        repo_head: evidence.repo_head.clone(),
         source_discovery_policy_version: "scope-policy-v1".to_string(),
         codegraph_build_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         last_successful_index_timestamp: Some(now),
         last_completed_run_id: Some(format!("cli-import-{now}-{}", std::process::id())),
         last_run_status: "completed".to_string(),
-        integrity_gate_result: "ok".to_string(),
+        integrity_gate_result: integrity_gate_result.to_string(),
         files_seen: files_seen as u64,
         files_indexed: files_indexed as u64,
         created_at_unix_ms: now,
@@ -8859,14 +9935,6 @@ fn query_references(repo_root: &Path, query: &str, limit: usize) -> Result<Value
     }))
 }
 
-fn query_callers(repo_root: &Path, query: &str, limit: usize) -> Result<Value, String> {
-    query_call_relation(repo_root, query, limit, CallQueryDirection::Callers)
-}
-
-fn query_callees(repo_root: &Path, query: &str, limit: usize) -> Result<Value, String> {
-    query_call_relation(repo_root, query, limit, CallQueryDirection::Callees)
-}
-
 fn query_chain(repo_root: &Path, source: &str, target: &str) -> Result<Value, String> {
     let store = open_existing_store(repo_root)?;
     let entities = store
@@ -8919,6 +9987,10 @@ struct UnresolvedCallsOptions {
     include_snippets: bool,
     source_scan: bool,
     count_total: bool,
+    allow_stale_read: bool,
+    explicit_scope_policy: Option<IndexScopeOptions>,
+    surface_name: String,
+    operation_kind: DbLifecycleOperationKind,
 }
 
 impl Default for UnresolvedCallsOptions {
@@ -8931,6 +10003,10 @@ impl Default for UnresolvedCallsOptions {
             include_snippets: false,
             source_scan: false,
             count_total: false,
+            allow_stale_read: false,
+            explicit_scope_policy: None,
+            surface_name: "cli.query.unresolved_calls".to_string(),
+            operation_kind: DbLifecycleOperationKind::NormalRead,
         }
     }
 }
@@ -8992,6 +10068,126 @@ fn unresolved_calls_usage() -> String {
     "Usage: codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets] [--include-snippets] [--db <path>]".to_string()
 }
 
+fn unresolved_calls_lifecycle_preflight(
+    repo_root: &Path,
+    db_path: &Path,
+    options: &UnresolvedCallsOptions,
+) -> Result<DbLifecycleSurfacePreflight, String> {
+    let allow_stale_read = options.allow_stale_read || allow_stale_read_enabled();
+    let request = DbLifecycleSurfacePreflightRequest {
+        repo_root: repo_root.to_path_buf(),
+        db_path: db_path.to_path_buf(),
+        surface_name: options.surface_name.clone(),
+        operation_kind: options.operation_kind,
+        allow_stale_read: false,
+        allow_foreign_repo: false,
+        required_storage_mode: None,
+        expected_scope: options.explicit_scope_policy.clone(),
+    };
+
+    if options.operation_kind == DbLifecycleOperationKind::NormalRead && allow_stale_read {
+        let normal = inspect_db_lifecycle_surface_preflight(request.clone())
+            .map_err(|error| error.to_string())?;
+        if normal.safe_to_read {
+            return Ok(normal);
+        }
+        let mut diagnostic = request;
+        diagnostic.operation_kind = DbLifecycleOperationKind::DiagnosticRead;
+        diagnostic.allow_stale_read = true;
+        diagnostic.allow_foreign_repo = true;
+        return inspect_db_lifecycle_surface_preflight(diagnostic)
+            .map_err(|error| error.to_string());
+    }
+
+    let mut request = request;
+    if matches!(
+        request.operation_kind,
+        DbLifecycleOperationKind::DiagnosticRead | DbLifecycleOperationKind::BenchmarkInspection
+    ) {
+        request.allow_stale_read = allow_stale_read;
+        request.allow_foreign_repo = allow_stale_read;
+    }
+    inspect_db_lifecycle_surface_preflight(request).map_err(|error| error.to_string())
+}
+
+fn require_unresolved_calls_lifecycle_preflight(
+    repo_root: &Path,
+    db_path: &Path,
+    options: &UnresolvedCallsOptions,
+) -> Result<DbLifecycleSurfacePreflight, String> {
+    let preflight = unresolved_calls_lifecycle_preflight(repo_root, db_path, options)?;
+    if preflight.safe_to_read {
+        return Ok(preflight);
+    }
+    if let Some(mismatch) = preflight.lifecycle_preflight.scope_mismatch.as_ref() {
+        return Err(scope_mismatch_message(db_path, mismatch));
+    }
+    let outside_note = preflight
+        .outside_workspace_note
+        .as_deref()
+        .map(|note| format!("; {note}"))
+        .unwrap_or_default();
+    Err(format!(
+        "CodeGraph DB is not safe to read at {}: kind={}; {}{}; run `codegraph-mcp index . --fresh` or pass --allow-stale-read for diagnostic-only output",
+        preflight.exact_db_path_checked,
+        preflight
+            .db_problem_kind
+            .as_deref()
+            .unwrap_or("unknown"),
+        preflight.blockers.join("; "),
+        outside_note
+    ))
+}
+
+fn db_lifecycle_surface_preflight_json(preflight: &DbLifecycleSurfacePreflight) -> Value {
+    json!({
+        "decision": if preflight.safe_to_read && preflight.claimable {
+            "read_reuse"
+        } else if preflight.safe_to_read && preflight.diagnostic_only {
+            "diagnostic_stale_reuse"
+        } else {
+            "blocked"
+        },
+        "surface_name": preflight.surface_name.clone(),
+        "operation_kind": preflight.operation_kind.as_str(),
+        "safe_to_read": preflight.safe_to_read,
+        "safe_to_write": preflight.safe_to_write,
+        "db_problem_kind": preflight.db_problem_kind.clone(),
+        "path_access_status": preflight.path_access_status.clone(),
+        "path_access_error": preflight.path_access_error.clone(),
+        "passport_status": preflight.passport_status.clone(),
+        "claimable": preflight.claimable,
+        "diagnostic_only": preflight.diagnostic_only,
+        "contaminated": preflight.diagnostic_only || !preflight.claimable,
+        "repo_match": preflight.repo_match,
+        "scope_match": preflight.scope_match,
+        "schema_status": preflight.schema_status.clone(),
+        "storage_mode_match": preflight.storage_mode_match,
+        "reasons": preflight.lifecycle_preflight.db_health.reasons.clone(),
+        "sqlite_sidecars": preflight.lifecycle_preflight.db_health.sqlite_sidecars.clone(),
+        "sidecar_status": preflight.lifecycle_preflight.db_health.sidecar_status.clone(),
+        "orphan_sidecars": preflight.lifecycle_preflight.db_health.orphan_sidecars.clone(),
+        "orphan_sidecars_deprecated": true,
+        "blockers": preflight.blockers.clone(),
+        "warnings": preflight.warnings.clone(),
+        "exact_db_path_checked": preflight.exact_db_path_checked.clone(),
+        "repo_root_expected": preflight.repo_root_expected.clone(),
+        "db_path_outside_workspace": preflight.db_path_outside_workspace,
+        "outside_workspace_note": preflight.outside_workspace_note.clone(),
+        "repo_root_observed": preflight.repo_root_observed.clone(),
+        "artifact_freshness": preflight.artifact_freshness.clone(),
+        "repo_root_status": preflight.lifecycle_preflight.repo_root_status.clone(),
+        "storage_mode_status": preflight.lifecycle_preflight.storage_mode_status.clone(),
+        "scope_status": preflight.lifecycle_preflight.scope_status.clone(),
+        "scope_source": preflight.scope_source.clone(),
+        "passport_scope_hash": preflight.passport_scope_hash.clone(),
+        "explicit_scope_hash": preflight.explicit_scope_hash.clone(),
+        "scope_mismatch": preflight.lifecycle_preflight.scope_mismatch.clone(),
+        "passport_scope_policy": preflight.lifecycle_preflight.passport_scope_policy.clone(),
+        "explicit_scope_policy": preflight.lifecycle_preflight.explicit_scope_policy.clone(),
+    })
+}
+
 fn query_unresolved_calls(
     repo_root: &Path,
     options: UnresolvedCallsOptions,
@@ -9001,16 +10197,14 @@ fn query_unresolved_calls(
         .db_path
         .clone()
         .unwrap_or_else(|| default_db_path(repo_root));
-    if !db_path.exists() {
-        return Err(format!(
-            "CodeGraph index does not exist at {}; run `codegraph-mcp index .` first",
-            db_path.display()
-        ));
-    }
+    let preflight = require_unresolved_calls_lifecycle_preflight(repo_root, &db_path, &options)?;
+    let db_lifecycle_read = db_lifecycle_surface_preflight_json(&preflight);
+    let checked_db_path = PathBuf::from(&preflight.exact_db_path_checked);
 
     let open_start = Instant::now();
-    let connection = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| error.to_string())?;
+    let connection =
+        Connection::open_with_flags(&checked_db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| error.to_string())?;
     let open_ms = elapsed_ms(open_start);
 
     let explain_start = Instant::now();
@@ -9044,7 +10238,7 @@ fn query_unresolved_calls(
     });
     if options.source_scan && unresolved.len() < options.limit {
         let scan_start = Instant::now();
-        let store = SqliteGraphStore::open(&db_path).map_err(|error| error.to_string())?;
+        let store = SqliteGraphStore::open(&checked_db_path).map_err(|error| error.to_string())?;
         let before = unresolved.len();
         unresolved.extend(source_scan_unresolved_calls(
             repo_root,
@@ -9062,6 +10256,10 @@ fn query_unresolved_calls(
     let total_ms = elapsed_ms(total_start);
     Ok(json!({
         "status": "ok",
+        "db_lifecycle_read": db_lifecycle_read,
+        "claimable": preflight.claimable,
+        "diagnostic_only": preflight.diagnostic_only,
+        "exact_db_path_checked": preflight.exact_db_path_checked,
         "calls": unresolved,
         "pagination": {
             "requested_limit": options.requested_limit,
@@ -9082,7 +10280,7 @@ fn query_unresolved_calls(
             },
         },
         "instrumentation": {
-            "db_path": db_path,
+            "db_path": checked_db_path,
             "sql": {
                 "page_query": UNRESOLVED_CALLS_PAGE_SQL,
                 "count_query": if options.count_total { Value::String(UNRESOLVED_CALLS_COUNT_SQL.to_string()) } else { Value::Null },
@@ -9564,10 +10762,88 @@ enum CallQueryDirection {
     Callees,
 }
 
+#[derive(Debug, Clone)]
+struct CallRelationQueryOptions {
+    query: Option<String>,
+    entity_id: Option<String>,
+    limit: usize,
+    exact_resolved: bool,
+    fuzzy: bool,
+}
+
+fn parse_call_relation_args(
+    command_name: &str,
+    args: &[String],
+) -> Result<CallRelationQueryOptions, String> {
+    let mut options = CallRelationQueryOptions {
+        query: None,
+        entity_id: None,
+        limit: 32,
+        exact_resolved: false,
+        fuzzy: false,
+    };
+    let mut query_parts = Vec::new();
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--entity-id" | "--entity_id" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(call_relation_usage(command_name));
+                };
+                options.entity_id = Some(value.clone());
+            }
+            "--exact-resolved" | "--exact_resolved" => {
+                options.exact_resolved = true;
+            }
+            "--fuzzy" | "--global" => {
+                options.fuzzy = true;
+            }
+            "--limit" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(call_relation_usage(command_name));
+                };
+                options.limit = value
+                    .parse::<usize>()
+                    .map_err(|_| "invalid --limit value".to_string())?
+                    .clamp(1, 500);
+            }
+            "--json" => {}
+            value if value.starts_with("--") => {
+                return Err(format!(
+                    "unknown {command_name} option: {value}\n{}",
+                    call_relation_usage(command_name)
+                ));
+            }
+            value => query_parts.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if !query_parts.is_empty() {
+        options.query = Some(query_parts.join(" "));
+    }
+    if options.entity_id.is_none() && options.query.is_none() {
+        return Err(call_relation_usage(command_name));
+    }
+    if options.entity_id.is_some() && options.fuzzy {
+        return Err(
+            "--entity-id selects exact mode and cannot be combined with --fuzzy".to_string(),
+        );
+    }
+    Ok(options)
+}
+
+fn call_relation_usage(command_name: &str) -> String {
+    format!(
+        "Usage: codegraph-mcp query {command_name} [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] <symbol>"
+    )
+}
+
 fn query_call_relation(
     repo_root: &Path,
-    query: &str,
-    limit: usize,
+    options: CallRelationQueryOptions,
     direction: CallQueryDirection,
 ) -> Result<Value, String> {
     let store = open_existing_store(repo_root)?;
@@ -9575,12 +10851,186 @@ fn query_call_relation(
         .list_entities(UNBOUNDED_STORE_READ_LIMIT)
         .map_err(|error| error.to_string())?;
     let entity_by_id = entities_by_id(&entities);
-    let seeds = resolve_symbol_candidates(&store, query, 8)?;
+
+    let key = match direction {
+        CallQueryDirection::Callers => "callers",
+        CallQueryDirection::Callees => "callees",
+    };
+    let query_label = options
+        .query
+        .as_deref()
+        .or(options.entity_id.as_deref())
+        .unwrap_or_default()
+        .to_string();
+
+    let mut resolved_symbols = Vec::new();
+    let mut exact_resolved_entity_results = Vec::new();
+    let mut fuzzy_or_global_results = Vec::new();
+    let mut ambiguous_symbol_matches = Vec::new();
+    let mut exact_entity = None;
+    let mut status = "ok";
+    let mut resolution_mode = "fuzzy_or_global";
+    let mut suggestion = Value::Null;
+
+    if let Some(entity_id) = options.entity_id.as_deref() {
+        let entity = store
+            .get_entity(entity_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("entity_id not found: {entity_id}"))?;
+        exact_resolved_entity_results = exact_call_relation_rows(
+            &store,
+            &entity_by_id,
+            &entity.id,
+            options.limit,
+            direction,
+            "entity_id",
+        )?;
+        resolved_symbols.push(entity.clone());
+        exact_entity = Some(entity);
+        resolution_mode = "entity_id";
+    } else if let Some(query) = options.query.as_deref() {
+        let exact_candidates = resolve_exact_symbol_candidates(&store, query)?;
+        resolved_symbols = resolve_symbol_candidates(&store, query, 8)?;
+        if options.fuzzy {
+            fuzzy_or_global_results = fuzzy_call_relation_rows(
+                &store,
+                &entity_by_id,
+                &resolved_symbols,
+                query,
+                options.limit,
+                direction,
+            )?;
+            resolution_mode = "fuzzy_or_global";
+        } else if exact_candidates.len() == 1 {
+            let entity = exact_candidates[0].clone();
+            exact_resolved_entity_results = exact_call_relation_rows(
+                &store,
+                &entity_by_id,
+                &entity.id,
+                options.limit,
+                direction,
+                "exact_resolved",
+            )?;
+            exact_entity = Some(entity);
+            resolution_mode = "exact_resolved";
+        } else if exact_candidates.len() > 1 {
+            status = "ambiguous_symbol";
+            resolution_mode = "ambiguous_symbol";
+            ambiguous_symbol_matches = exact_candidates.iter().map(entity_json).collect();
+            fuzzy_or_global_results = fuzzy_call_relation_rows(
+                &store,
+                &entity_by_id,
+                &resolved_symbols,
+                query,
+                options.limit,
+                direction,
+            )?;
+            suggestion = json!({
+                "reason": "Symbol resolved to multiple entities; choose one candidate id for exact caller/callee proof.",
+                "rerun": format!("codegraph-mcp query {key} --entity-id <candidate-id>"),
+            });
+        } else if options.exact_resolved {
+            status = "not_found";
+            resolution_mode = "exact_resolved_not_found";
+            suggestion = json!({
+                "reason": "--exact-resolved requires exactly one symbol match.",
+                "rerun": format!("codegraph-mcp query {key} --fuzzy {query}"),
+            });
+        } else {
+            fuzzy_or_global_results = fuzzy_call_relation_rows(
+                &store,
+                &entity_by_id,
+                &resolved_symbols,
+                query,
+                options.limit,
+                direction,
+            )?;
+            resolution_mode = "fuzzy_or_global";
+        }
+    }
+
+    let legacy_rows = if exact_entity.is_some() {
+        exact_resolved_entity_results.clone()
+    } else if status == "ambiguous_symbol" && !options.fuzzy {
+        Vec::new()
+    } else {
+        fuzzy_or_global_results.clone()
+    };
+
+    let mut response = json!({
+        "status": status,
+        "query": query_label,
+        "resolution_mode": resolution_mode,
+        "exact_mode_available": exact_entity.is_some(),
+        "exact_resolved_entity": exact_entity.as_ref().map(entity_json),
+        "resolved_symbols": resolved_symbols.iter().map(entity_json).collect::<Vec<_>>(),
+        "exact_resolved_entity_results": exact_resolved_entity_results,
+        "fuzzy_or_global_results": fuzzy_or_global_results,
+        "ambiguous_symbol_matches": ambiguous_symbol_matches,
+        "suggestion": suggestion,
+        "proof": "Caller/callee results preserve CALLS edge exactness, confidence, source spans, and proof labels. Exact modes match a single persisted entity id; --fuzzy keeps alias/global matching available.",
+    });
+    if let Some(object) = response.as_object_mut() {
+        object.insert(key.to_string(), json!(legacy_rows));
+    }
+    Ok(response)
+}
+
+fn resolve_exact_symbol_candidates(
+    store: &SqliteGraphStore,
+    value: &str,
+) -> Result<Vec<Entity>, String> {
+    let mut seen = BTreeSet::new();
+    let mut entities = Vec::new();
+    for entity in store
+        .find_entities_by_exact_symbol(value)
+        .map_err(|error| error.to_string())?
+    {
+        if seen.insert(entity.id.clone()) {
+            entities.push(entity);
+        }
+    }
+    Ok(entities)
+}
+
+fn exact_call_relation_rows(
+    store: &SqliteGraphStore,
+    entity_by_id: &BTreeMap<String, Entity>,
+    entity_id: &str,
+    limit: usize,
+    direction: CallQueryDirection,
+    match_kind: &str,
+) -> Result<Vec<Value>, String> {
+    let edges = match direction {
+        CallQueryDirection::Callers => {
+            store.find_edges_by_tail_relation(entity_id, RelationKind::Calls)
+        }
+        CallQueryDirection::Callees => {
+            store.find_edges_by_head_relation(entity_id, RelationKind::Calls)
+        }
+    }
+    .map_err(|error| error.to_string())?;
+
+    Ok(edges
+        .into_iter()
+        .take(limit)
+        .map(|edge| call_edge_result_json(&edge, entity_by_id, match_kind, Some(entity_id)))
+        .collect())
+}
+
+fn fuzzy_call_relation_rows(
+    store: &SqliteGraphStore,
+    entity_by_id: &BTreeMap<String, Entity>,
+    seeds: &[Entity],
+    query: &str,
+    limit: usize,
+    direction: CallQueryDirection,
+) -> Result<Vec<Value>, String> {
     let seed_ids = seeds
         .iter()
         .map(|entity| entity.id.clone())
         .collect::<BTreeSet<_>>();
-    let seed_aliases = alias_set_for_entities(&seeds)
+    let seed_aliases = alias_set_for_entities(seeds)
         .into_iter()
         .chain([normalize_symbol_alias(query)])
         .collect::<BTreeSet<_>>();
@@ -9612,29 +11062,45 @@ fn query_call_relation(
             }
         };
         if matches {
-            rows.push(json!({
-                "caller": entity_by_id.get(&edge.head_id).map(entity_json),
-                "callee": entity_by_id.get(&edge.tail_id).map(entity_json),
-                "edge": edge_json(&edge),
-                "unresolved": entity_by_id.get(&edge.tail_id).is_some_and(entity_is_unresolved_reference),
-            }));
+            rows.push(call_edge_result_json(
+                &edge,
+                entity_by_id,
+                "fuzzy_or_global",
+                None,
+            ));
         }
     }
+    Ok(rows)
+}
 
-    let key = match direction {
-        CallQueryDirection::Callers => "callers",
-        CallQueryDirection::Callees => "callees",
-    };
-    let mut response = json!({
-        "status": "ok",
-        "query": query,
-        "resolved_symbols": seeds.iter().map(entity_json).collect::<Vec<_>>(),
-        "proof": "Caller/callee results are CALLS edges with exactness, confidence, and unresolved-call labels preserved.",
-    });
-    if let Some(object) = response.as_object_mut() {
-        object.insert(key.to_string(), json!(rows));
-    }
-    Ok(response)
+fn call_edge_result_json(
+    edge: &Edge,
+    entity_by_id: &BTreeMap<String, Entity>,
+    match_kind: &str,
+    exact_entity_id: Option<&str>,
+) -> Value {
+    let unresolved = entity_by_id
+        .get(&edge.tail_id)
+        .is_some_and(entity_is_unresolved_reference);
+    json!({
+        "match_kind": match_kind,
+        "exact_entity_id": exact_entity_id,
+        "caller": entity_by_id.get(&edge.head_id).map(entity_json),
+        "callee": entity_by_id.get(&edge.tail_id).map(entity_json),
+        "edge": edge_json(edge),
+        "source_span": edge.source_span,
+        "proof_labels": {
+            "relation": edge.relation.to_string(),
+            "exactness": edge.exactness.to_string(),
+            "confidence": edge.confidence,
+            "edge_class": edge.edge_class.to_string(),
+            "context": edge.context.to_string(),
+            "derived": edge.derived,
+            "provenance_edges": edge.provenance_edges,
+            "unresolved": unresolved,
+        },
+        "unresolved": unresolved,
+    })
 }
 
 fn resolve_symbol_candidates(
@@ -11185,12 +12651,6 @@ fn current_repo_root() -> Result<PathBuf, String> {
 
 fn open_existing_store(repo_root: &Path) -> Result<SqliteGraphStore, String> {
     let db_path = default_db_path(repo_root);
-    if !db_path.exists() {
-        return Err(format!(
-            "CodeGraph index does not exist at {}; run `codegraph-mcp index .` first",
-            db_path.display()
-        ));
-    }
     let _ = read_db_lifecycle_guard(repo_root, &db_path, allow_stale_read_enabled(), None)?;
     SqliteGraphStore::open(db_path).map_err(|error| error.to_string())
 }
@@ -11226,10 +12686,20 @@ fn read_db_lifecycle_guard(
     if let Some(mismatch) = preflight.scope_mismatch.as_ref() {
         return Err(scope_mismatch_message(db_path, mismatch));
     }
+    let outside_note = preflight
+        .outside_workspace_note
+        .as_deref()
+        .map(|note| format!("; {note}"))
+        .unwrap_or_default();
     Err(format!(
-        "CodeGraph DB is not safe to read at {}: {}; run `codegraph-mcp index . --fresh` or pass --allow-stale-read for diagnostic-only output",
+        "CodeGraph DB is not safe to read at {}: kind={}; {}{}; run `codegraph-mcp index . --fresh` or pass --allow-stale-read for diagnostic-only output",
         db_path.display(),
-        preflight.blockers.join("; ")
+        preflight
+            .db_problem_kind
+            .as_deref()
+            .unwrap_or("unknown"),
+        preflight.blockers.join("; "),
+        outside_note
     ))
 }
 
@@ -11249,12 +12719,23 @@ fn scope_mismatch_message(
 fn db_lifecycle_preflight_json(preflight: &DbLifecyclePreflight, claimable: bool) -> Value {
     json!({
         "decision": if preflight.safe { "read_reuse" } else { "diagnostic_stale_reuse" },
+        "db_problem_kind": preflight.db_problem_kind.clone(),
+        "path_access_status": preflight.path_access_status.clone(),
+        "path_access_error": preflight.path_access_error.clone(),
         "passport_status": preflight.db_health.passport_status,
         "claimable": claimable && preflight.safe,
         "contaminated": !preflight.safe,
         "reasons": preflight.db_health.reasons.clone(),
+        "sqlite_sidecars": preflight.db_health.sqlite_sidecars.clone(),
+        "sidecar_status": preflight.db_health.sidecar_status.clone(),
+        "orphan_sidecars": preflight.db_health.orphan_sidecars.clone(),
+        "orphan_sidecars_deprecated": true,
         "blockers": preflight.blockers.clone(),
         "warnings": preflight.warnings.clone(),
+        "exact_db_path_checked": preflight.exact_db_path_checked.clone(),
+        "repo_root_expected": preflight.repo_root_expected.clone(),
+        "db_path_outside_workspace": preflight.db_path_outside_workspace,
+        "outside_workspace_note": preflight.outside_workspace_note.clone(),
         "repo_root_status": preflight.repo_root_status.clone(),
         "schema_status": preflight.schema_status.clone(),
         "storage_mode_status": preflight.storage_mode_status.clone(),
@@ -12546,6 +14027,10 @@ fn edge_json(edge: &Edge) -> Value {
         "source_span": edge.source_span,
         "confidence": edge.confidence,
         "exactness": edge.exactness.to_string(),
+        "edge_class": edge.edge_class.to_string(),
+        "context": edge.context.to_string(),
+        "derived": edge.derived,
+        "provenance_edges": edge.provenance_edges,
         "extractor": edge.extractor,
         "metadata": edge.metadata,
     })
@@ -12912,7 +14397,7 @@ fn update_integrity_seed_step(
 ) -> Result<Value, String> {
     let started = Instant::now();
     let open_start = Instant::now();
-    let schema_version = SqliteGraphStore::open(db)
+    let schema_version = SqliteGraphStore::open_read_only(db)
         .and_then(|store| store.schema_version())
         .map_err(|error| error.to_string())?;
     let artifact_open_ms = elapsed_ms(open_start);
@@ -12934,46 +14419,65 @@ fn update_integrity_seed_step(
         }
     };
     let integrity_check_ms = integrity_start.elapsed().as_secs_f64() * 1000.0;
-    Ok(json!({
-        "step": "cold_index",
-        "status": "seeded",
-        "source": "seed_db_copy",
-        "seed_db": seed_db.map(path_string),
-        "repo_root": path_string(repo),
-        "wall_ms": elapsed_ms(started),
-        "setup_timings": {
-            "artifact_copy_ms": artifact_copy_ms,
-            "artifact_open_ms": artifact_open_ms,
-            "schema_validation_ms": artifact_open_ms,
-            "graph_fact_hash_ms": graph_fact_hash_ms,
-            "validation_ms": integrity_check_ms,
-        },
-        "schema_version": schema_version,
-        "files_walked": Value::Null,
-        "files_read": Value::Null,
-        "files_hashed": Value::Null,
-        "files_parsed": Value::Null,
-        "entities_inserted": Value::Null,
-        "edges_inserted": Value::Null,
-        "duplicate_edges_upserted": Value::Null,
-        "transaction_status": "seeded_copy_integrity_checked",
-        "integrity_status": integrity_status,
-        "integrity_check_kind": integrity_check_kind,
-        "integrity_check_ms": integrity_check_ms,
-        "graph_fact_hash": graph_fact_hash,
-        "graph_fact_hash_ms": graph_fact_hash_ms,
-        "entity_count": entity_count,
-        "edge_count": edge_count,
-        "source_span_count": source_span_count,
-        "graph_counts_ran": graph_counts_ran,
-        "db_family_size_bytes": sqlite_family_size_bytes(db).unwrap_or(0),
-    }))
+    let lifecycle_status = benchmark_inspection_lifecycle_status(
+        repo,
+        db,
+        "bench.update_integrity.seed",
+        Some(StorageMode::Proof),
+    );
+    let claimable = benchmark_inspection_claimable(&lifecycle_status);
+    Ok(json_object(vec![
+        ("step", json!("cold_index")),
+        ("status", json!("seeded")),
+        ("source", json!("seed_db_copy")),
+        ("seed_db", json!(seed_db.map(path_string))),
+        ("repo_root", json!(path_string(repo))),
+        ("wall_ms", json!(elapsed_ms(started))),
+        (
+            "setup_timings",
+            json!({
+                "artifact_copy_ms": artifact_copy_ms,
+                "artifact_open_ms": artifact_open_ms,
+                "schema_validation_ms": artifact_open_ms,
+                "graph_fact_hash_ms": graph_fact_hash_ms,
+                "validation_ms": integrity_check_ms,
+            }),
+        ),
+        ("schema_version", json!(schema_version)),
+        ("files_walked", Value::Null),
+        ("files_read", Value::Null),
+        ("files_hashed", Value::Null),
+        ("files_parsed", Value::Null),
+        ("entities_inserted", Value::Null),
+        ("edges_inserted", Value::Null),
+        ("duplicate_edges_upserted", Value::Null),
+        ("transaction_status", json!("seeded_copy_integrity_checked")),
+        ("integrity_status", json!(integrity_status)),
+        ("integrity_check_kind", json!(integrity_check_kind)),
+        ("integrity_check_ms", json!(integrity_check_ms)),
+        ("graph_fact_hash", json!(graph_fact_hash)),
+        ("graph_fact_hash_ms", json!(graph_fact_hash_ms)),
+        ("entity_count", entity_count),
+        ("edge_count", edge_count),
+        ("source_span_count", source_span_count),
+        ("graph_counts_ran", json!(graph_counts_ran)),
+        (
+            "db_family_size_bytes",
+            json!(sqlite_family_size_bytes(db).unwrap_or(0)),
+        ),
+        ("inspection_read_only", json!(true)),
+        ("artifact_mutated_during_inspection", json!(false)),
+        ("mutation_capable_operation", json!("seed_db_copy_setup")),
+        ("lifecycle_status", lifecycle_status),
+        ("claimable", json!(claimable)),
+    ]))
 }
 
 fn update_integrity_step_from_index(
     step: &str,
     elapsed: Duration,
     summary: &IndexSummary,
+    repo: &Path,
     db: &Path,
     mode: UpdateBenchmarkMode,
 ) -> Result<Value, String> {
@@ -13010,40 +14514,68 @@ fn update_integrity_step_from_index(
         ),
     };
     let integrity_check_ms = integrity_start.elapsed().as_secs_f64() * 1000.0;
-    Ok(json!({
-        "step": step,
-        "status": "ok",
-        "mode": mode.as_str(),
-        "wall_ms": elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
-        "timings": index_summary_timing_breakdown(summary, graph_fact_hash_ms, integrity_check_ms),
-        "files_walked": summary.files_walked,
-        "files_read": summary.files_read,
-        "files_hashed": summary.files_hashed,
-        "files_parsed": summary.files_parsed,
-        "entities_inserted": summary.entities,
-        "edges_inserted": summary.edges,
-        "duplicate_edges_upserted": summary.duplicate_edges_upserted,
-        "transaction_status": "committed",
-        "integrity_status": integrity_status,
-        "integrity_check_kind": integrity_check_kind,
-        "integrity_check_ms": integrity_check_ms,
-        "graph_fact_hash": graph_fact_hash,
-        "graph_fact_hash_ms": graph_fact_hash_ms,
-        "graph_digest_kind": graph_digest_kind,
-        "global_hash_check_ran": global_hash_check_ran,
-        "entity_count": entity_count,
-        "edge_count": edge_count,
-        "source_span_count": source_span_count,
-        "graph_counts_ran": graph_counts_ran,
-        "db_family_size_bytes": sqlite_family_size_bytes(db).unwrap_or(0),
-        "profile": summary.profile.clone(),
-    }))
+    let lifecycle_status = benchmark_inspection_lifecycle_status(
+        repo,
+        db,
+        "bench.update_integrity.index_step",
+        Some(StorageMode::Proof),
+    );
+    let claimable = benchmark_inspection_claimable(&lifecycle_status);
+    Ok(json_object(vec![
+        ("step", json!(step)),
+        ("status", json!("ok")),
+        ("mode", json!(mode.as_str())),
+        (
+            "wall_ms",
+            json!(elapsed.as_millis().min(u128::from(u64::MAX)) as u64),
+        ),
+        (
+            "timings",
+            index_summary_timing_breakdown(summary, graph_fact_hash_ms, integrity_check_ms),
+        ),
+        ("files_walked", json!(summary.files_walked)),
+        ("files_read", json!(summary.files_read)),
+        ("files_hashed", json!(summary.files_hashed)),
+        ("files_parsed", json!(summary.files_parsed)),
+        ("entities_inserted", json!(summary.entities)),
+        ("edges_inserted", json!(summary.edges)),
+        (
+            "duplicate_edges_upserted",
+            json!(summary.duplicate_edges_upserted),
+        ),
+        ("transaction_status", json!("committed")),
+        ("integrity_status", json!(integrity_status)),
+        ("integrity_check_kind", json!(integrity_check_kind)),
+        ("integrity_check_ms", json!(integrity_check_ms)),
+        ("graph_fact_hash", json!(graph_fact_hash)),
+        ("graph_fact_hash_ms", json!(graph_fact_hash_ms)),
+        ("graph_digest_kind", json!(graph_digest_kind)),
+        ("global_hash_check_ran", json!(global_hash_check_ran)),
+        ("entity_count", entity_count),
+        ("edge_count", edge_count),
+        ("source_span_count", source_span_count),
+        ("graph_counts_ran", json!(graph_counts_ran)),
+        (
+            "db_family_size_bytes",
+            json!(sqlite_family_size_bytes(db).unwrap_or(0)),
+        ),
+        ("profile", json!(summary.profile.clone())),
+        ("inspection_read_only", json!(true)),
+        ("artifact_mutated_during_inspection", json!(false)),
+        (
+            "mutation_capable_operation",
+            json!("index_repo_to_db_with_options"),
+        ),
+        ("lifecycle_status", lifecycle_status),
+        ("claimable", json!(claimable)),
+    ]))
 }
 
 fn update_integrity_step_from_incremental(
     step: &str,
     elapsed: Duration,
     summary: &IncrementalIndexSummary,
+    repo: &Path,
     db: &Path,
     mode: UpdateBenchmarkMode,
 ) -> Result<Value, String> {
@@ -13081,49 +14613,90 @@ fn update_integrity_step_from_incremental(
         ),
     };
     let integrity_check_ms = integrity_start.elapsed().as_secs_f64() * 1000.0;
-    Ok(json!({
-        "step": step,
-        "status": "ok",
-        "mode": mode.as_str(),
-        "wall_ms": elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
-        "timings": incremental_summary_timing_breakdown(
-            summary,
-            graph_fact_hash_ms,
-            integrity_check_ms
+    let lifecycle_status = benchmark_inspection_lifecycle_status(
+        repo,
+        db,
+        "bench.update_integrity.incremental_step",
+        Some(StorageMode::Proof),
+    );
+    let claimable = benchmark_inspection_claimable(&lifecycle_status);
+    Ok(json_object(vec![
+        ("step", json!(step)),
+        ("status", json!("ok")),
+        ("mode", json!(mode.as_str())),
+        (
+            "wall_ms",
+            json!(elapsed.as_millis().min(u128::from(u64::MAX)) as u64),
         ),
-        "files_walked": summary.files_walked,
-        "files_read": summary.files_read,
-        "files_hashed": summary.files_hashed,
-        "files_parsed": summary.files_parsed,
-        "entities_inserted": summary.entities,
-        "edges_inserted": summary.edges,
-        "duplicate_edges_upserted": summary.duplicate_edges_upserted,
-        "transaction_status": "committed",
-        "integrity_status": integrity_status,
-        "integrity_check_ms": integrity_check_ms,
-        "integrity_check_kind": integrity_check_kind,
-        "post_measurement_integrity_check_ran": post_measurement_integrity_check_ran,
-        "graph_fact_hash": graph_fact_hash,
-        "graph_fact_hash_ms": graph_fact_hash_ms,
-        "graph_digest_kind": graph_digest_kind,
-        "entity_count": entity_count,
-        "edge_count": edge_count,
-        "source_span_count": source_span_count,
-        "graph_counts_ran": graph_counts_ran,
-        "db_family_size_bytes": sqlite_family_size_bytes(db).unwrap_or(0),
-        "changed_files": summary.changed_files.clone(),
-        "deleted_fact_files": summary.deleted_fact_files,
-        "dirty_path_evidence_count": summary.dirty_path_evidence_count,
-        "ignored_paths_seen": summary.ignored_paths_seen,
-        "ignored_paths_with_existing_facts": summary.ignored_paths_with_existing_facts,
-        "stale_facts_deleted_for_ignored_paths": summary.stale_facts_deleted_for_ignored_paths,
-        "deleted_file_facts_removed": summary.deleted_file_facts_removed,
-        "path_cleanup_reasons": summary.path_cleanup_reasons.clone(),
-        "global_hash_check_ran": global_hash_check_ran,
-        "storage_audit_ran": summary.storage_audit_ran,
-        "integrity_check_ran": summary.integrity_check_ran,
-        "profile": summary.profile.clone(),
-    }))
+        (
+            "timings",
+            incremental_summary_timing_breakdown(summary, graph_fact_hash_ms, integrity_check_ms),
+        ),
+        ("files_walked", json!(summary.files_walked)),
+        ("files_read", json!(summary.files_read)),
+        ("files_hashed", json!(summary.files_hashed)),
+        ("files_parsed", json!(summary.files_parsed)),
+        ("entities_inserted", json!(summary.entities)),
+        ("edges_inserted", json!(summary.edges)),
+        (
+            "duplicate_edges_upserted",
+            json!(summary.duplicate_edges_upserted),
+        ),
+        ("transaction_status", json!("committed")),
+        ("integrity_status", json!(integrity_status)),
+        ("integrity_check_ms", json!(integrity_check_ms)),
+        ("integrity_check_kind", json!(integrity_check_kind)),
+        (
+            "post_measurement_integrity_check_ran",
+            json!(post_measurement_integrity_check_ran),
+        ),
+        ("graph_fact_hash", json!(graph_fact_hash)),
+        ("graph_fact_hash_ms", json!(graph_fact_hash_ms)),
+        ("graph_digest_kind", json!(graph_digest_kind)),
+        ("entity_count", entity_count),
+        ("edge_count", edge_count),
+        ("source_span_count", source_span_count),
+        ("graph_counts_ran", json!(graph_counts_ran)),
+        (
+            "db_family_size_bytes",
+            json!(sqlite_family_size_bytes(db).unwrap_or(0)),
+        ),
+        ("changed_files", json!(summary.changed_files.clone())),
+        ("deleted_fact_files", json!(summary.deleted_fact_files)),
+        (
+            "dirty_path_evidence_count",
+            json!(summary.dirty_path_evidence_count),
+        ),
+        ("ignored_paths_seen", json!(summary.ignored_paths_seen)),
+        (
+            "ignored_paths_with_existing_facts",
+            json!(summary.ignored_paths_with_existing_facts),
+        ),
+        (
+            "stale_facts_deleted_for_ignored_paths",
+            json!(summary.stale_facts_deleted_for_ignored_paths),
+        ),
+        (
+            "deleted_file_facts_removed",
+            json!(summary.deleted_file_facts_removed),
+        ),
+        (
+            "path_cleanup_reasons",
+            json!(summary.path_cleanup_reasons.clone()),
+        ),
+        ("global_hash_check_ran", json!(global_hash_check_ran)),
+        ("storage_audit_ran", json!(summary.storage_audit_ran)),
+        ("integrity_check_ran", json!(summary.integrity_check_ran)),
+        ("profile", json!(summary.profile.clone())),
+        ("inspection_read_only", json!(true)),
+        ("artifact_mutated_during_inspection", json!(false)),
+        (
+            "mutation_capable_operation",
+            json!("update_changed_files_to_db"),
+        ),
+        ("lifecycle_status", lifecycle_status),
+        ("claimable", json!(claimable)),
+    ]))
 }
 
 fn index_summary_timing_breakdown(
@@ -13189,21 +14762,21 @@ fn profile_span_count(profile: Option<&IndexProfile>, name: &str) -> u64 {
 }
 
 fn quick_integrity_status(db: &Path) -> String {
-    match SqliteGraphStore::open(db).and_then(|store| store.quick_integrity_gate()) {
+    match SqliteGraphStore::open_read_only(db).and_then(|store| store.quick_integrity_gate()) {
         Ok(()) => "ok".to_string(),
         Err(error) => format!("failed: {error}"),
     }
 }
 
 fn full_integrity_status(db: &Path) -> String {
-    match SqliteGraphStore::open(db).and_then(|store| store.full_integrity_gate()) {
+    match SqliteGraphStore::open_read_only(db).and_then(|store| store.full_integrity_gate()) {
         Ok(()) => "ok".to_string(),
         Err(error) => format!("failed: {error}"),
     }
 }
 
 fn graph_counts_for_db(db: &Path) -> Result<(u64, u64, u64), String> {
-    let store = SqliteGraphStore::open(db).map_err(|error| error.to_string())?;
+    let store = SqliteGraphStore::open_read_only(db).map_err(|error| error.to_string())?;
     Ok((
         store.count_entities().map_err(|error| error.to_string())?,
         store.count_edges().map_err(|error| error.to_string())?,
@@ -13214,12 +14787,12 @@ fn graph_counts_for_db(db: &Path) -> Result<(u64, u64, u64), String> {
 }
 
 fn graph_fact_hash_for_db(db: &Path) -> Result<String, String> {
-    let store = SqliteGraphStore::open(db).map_err(|error| error.to_string())?;
+    let store = SqliteGraphStore::open_read_only(db).map_err(|error| error.to_string())?;
     store.graph_fact_digest().map_err(|error| error.to_string())
 }
 
 fn incremental_graph_digest_for_db(db: &Path) -> Result<Option<String>, String> {
-    let store = SqliteGraphStore::open(db).map_err(|error| error.to_string())?;
+    let store = SqliteGraphStore::open_read_only(db).map_err(|error| error.to_string())?;
     store
         .incremental_graph_digest()
         .map_err(|error| error.to_string())
@@ -13959,7 +15532,7 @@ fn not_implemented_json(command: &CommandSpec, args: &[String]) -> String {
 mod tests {
     use std::{
         fs,
-        io::{Read, Write},
+        io::{ErrorKind, Read, Write},
         net::{SocketAddr, TcpListener, TcpStream},
         path::{Path, PathBuf},
         sync::{
@@ -13970,17 +15543,25 @@ mod tests {
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
+    use codegraph_core::{
+        stable_edge_id, stable_entity_id_for_kind, Edge, EdgeClass, EdgeContext, Entity,
+        EntityKind, Exactness, RelationKind, SourceSpan,
+    };
     use codegraph_store::{GraphStore, SqliteGraphStore};
     use serde_json::{json, Value};
 
     use super::{
-        benchmark_binary_metadata_for, generate_large_synthetic_repo, index_repo,
-        index_repo_with_options, parse_extract_pending_files, parse_index_options, percentile,
-        regression_row, render_comprehensive_benchmark_markdown, route_ui_request, run,
-        serve_ui_loop, should_ignore_path, should_start_new_index_batch,
-        update_changed_files_with_cache, IncrementalIndexCache, IndexOptions, PendingIndexFile,
-        UiResponse, WatchDebouncer, BIN_NAME, DEFAULT_INDEX_BATCH_MAX_FILES,
-        DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES,
+        benchmark_binary_metadata_for, benchmark_inspection_lifecycle_status, default_db_path,
+        generate_large_synthetic_repo, generate_update_integrity_small_repo, index_repo,
+        index_repo_to_db_with_options, index_repo_with_options, parse_call_relation_args,
+        parse_extract_pending_files, parse_index_options, path_string, percentile,
+        prepare_watch_startup, query_call_relation, regression_row,
+        render_comprehensive_benchmark_markdown, route_ui_request, run, run_doctor_command,
+        run_status_command, run_update_integrity_repo, serve_ui_loop, should_ignore_path,
+        should_start_new_index_batch, update_changed_files_with_cache, CallQueryDirection,
+        CallRelationQueryOptions, IncrementalIndexCache, IndexOptions, PendingIndexFile,
+        StorageMode, UiResponse, UpdateBenchmarkMode, UpdateLoopKind, WatchDebouncer, BIN_NAME,
+        DEFAULT_INDEX_BATCH_MAX_FILES, DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, SCHEMA_VERSION,
     };
 
     static TEMP_REPO_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -14060,6 +15641,93 @@ mod tests {
             .as_str()
             .expect("exact command")
             .contains("bench proof-build-only"));
+    }
+
+    #[test]
+    fn benchmark_inspection_lifecycle_blocks_mismatched_db_as_nonclaimable() {
+        let repo_a = ui_fixture_repo();
+        let repo_b = ui_fixture_repo();
+        let db_path = repo_a.join("benchmark-custom.sqlite");
+        index_repo_to_db_with_options(&repo_a, &db_path, IndexOptions::default())
+            .expect("index repo A custom DB");
+
+        let lifecycle = benchmark_inspection_lifecycle_status(
+            &repo_b,
+            &db_path,
+            "test.benchmark_mismatch",
+            Some(StorageMode::Proof),
+        );
+
+        assert_eq!(lifecycle["safe_to_read"].as_bool(), Some(false));
+        assert_eq!(lifecycle["claimable"].as_bool(), Some(false));
+        assert_eq!(lifecycle["diagnostic_only"].as_bool(), Some(true));
+        assert_eq!(
+            lifecycle["exact_db_path_checked"].as_str(),
+            Some(path_string(&db_path).as_str())
+        );
+        assert!(
+            lifecycle["blockers"]
+                .as_array()
+                .expect("blockers")
+                .iter()
+                .any(|blocker| blocker
+                    .as_str()
+                    .is_some_and(|value| value.contains("repo root mismatch"))),
+            "{lifecycle:?}"
+        );
+
+        fs::remove_dir_all(repo_a).expect("cleanup repo A");
+        fs::remove_dir_all(repo_b).expect("cleanup repo B");
+    }
+
+    #[test]
+    fn update_integrity_report_marks_inspection_read_only_and_setup_mutations() {
+        let workdir = temp_repo();
+        let repo = workdir.join("repo");
+        let db = workdir.join("fixture.sqlite");
+        let mutation_file =
+            generate_update_integrity_small_repo(&repo).expect("generate small fixture");
+
+        let result = run_update_integrity_repo(
+            "fixture",
+            &repo,
+            &db,
+            &mutation_file,
+            1,
+            1,
+            UpdateBenchmarkMode::Fast,
+            UpdateLoopKind::Repeat,
+            None,
+            None,
+            None,
+        )
+        .expect("run update integrity fixture");
+
+        assert_eq!(result["status"].as_str(), Some("passed"));
+        assert_eq!(result["inspection_read_only"].as_bool(), Some(true));
+        assert_eq!(
+            result["artifact_mutated_during_inspection"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(result["claimable"].as_bool(), Some(true));
+        for step in [
+            result.get("cold").expect("cold"),
+            result.get("repeat_unchanged").expect("repeat"),
+        ] {
+            assert_eq!(step["inspection_read_only"].as_bool(), Some(true));
+            assert_eq!(
+                step["artifact_mutated_during_inspection"].as_bool(),
+                Some(false)
+            );
+            assert_eq!(step["claimable"].as_bool(), Some(true));
+            assert_eq!(step["lifecycle_status"]["claimable"].as_bool(), Some(true));
+        }
+        assert_eq!(
+            result["cold"]["mutation_capable_operation"].as_str(),
+            Some("index_repo_to_db_with_options")
+        );
+
+        fs::remove_dir_all(workdir).expect("cleanup");
     }
 
     #[test]
@@ -14516,6 +16184,112 @@ mod tests {
     }
 
     #[test]
+    fn watch_long_running_startup_uses_external_db_without_touching_default() {
+        let repo = ui_fixture_repo();
+        let external_db = repo.join("watch-external.sqlite");
+        index_repo_to_db_with_options(&repo, &external_db, IndexOptions::default())
+            .expect("index external watch DB");
+        let default_db = repo.join(".codegraph").join("codegraph.sqlite");
+        assert!(
+            !default_db.exists(),
+            "external DB setup should not create default DB"
+        );
+
+        let startup = prepare_watch_startup(&repo, Some(&external_db), "test.watch.long_running")
+            .expect("prepare watch startup");
+
+        assert_eq!(startup.requested_db_path, external_db);
+        assert_eq!(startup.actual_db_path_opened, external_db);
+        assert!(!startup.auto_index_enabled);
+        assert_eq!(
+            startup.lifecycle_status["requested_db_path"].as_str(),
+            Some(external_db.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            startup.lifecycle_status["actual_db_path_opened"].as_str(),
+            Some(external_db.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            startup.lifecycle_status["lifecycle_status"].as_str(),
+            Some("safe_to_write")
+        );
+        assert_eq!(
+            startup.lifecycle_status["auto_index_enabled"].as_bool(),
+            Some(false)
+        );
+        assert!(
+            !default_db.exists(),
+            "long-running watch startup must not touch default DB when --db is supplied"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn watch_long_running_startup_rejects_unsafe_external_db() {
+        let repo_a = ui_fixture_repo();
+        let repo_b = ui_fixture_repo();
+        let external_db = repo_a.join("watch-external.sqlite");
+        index_repo_to_db_with_options(&repo_a, &external_db, IndexOptions::default())
+            .expect("index repo A external DB");
+
+        let error =
+            match prepare_watch_startup(&repo_b, Some(&external_db), "test.watch.long_running") {
+                Ok(_) => panic!("repo B must reject repo A DB"),
+                Err(error) => error,
+            };
+        let message = error.to_string();
+        assert!(message.contains("not safe for watch updates"), "{message}");
+        assert!(message.contains("repo root mismatch"), "{message}");
+
+        fs::remove_dir_all(repo_a).expect("cleanup repo A");
+        fs::remove_dir_all(repo_b).expect("cleanup repo B");
+    }
+
+    #[test]
+    fn watch_long_running_startup_missing_db_is_clear_and_does_not_auto_index() {
+        let repo = ui_fixture_repo();
+        let missing_external = repo.join("missing-watch.sqlite");
+        let error = match prepare_watch_startup(
+            &repo,
+            Some(&missing_external),
+            "test.watch.long_running",
+        ) {
+            Ok(_) => panic!("missing external DB must fail"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("run `codegraph-mcp index . --db"),
+            "{message}"
+        );
+        assert!(
+            message.contains("does not auto-index by default"),
+            "{message}"
+        );
+        assert!(
+            !repo.join(".codegraph").exists(),
+            "missing external DB startup must not create default state"
+        );
+
+        let missing_default = match prepare_watch_startup(&repo, None, "test.watch.long_running") {
+            Ok(_) => panic!("missing default DB must fail"),
+            Err(error) => error,
+        };
+        let default_message = missing_default.to_string();
+        assert!(
+            default_message.contains("does not auto-index by default"),
+            "{default_message}"
+        );
+        assert!(
+            !repo.join(".codegraph").exists(),
+            "missing default DB startup must not auto-create .codegraph"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
     fn large_synthetic_index_generator_smoke_test() {
         let output = temp_repo();
         let repo = output.join("repo");
@@ -14553,6 +16327,15 @@ mod tests {
         let doctor_json: Value = serde_json::from_str(&doctor.stdout).expect("doctor JSON");
         assert_eq!(doctor_json["status"].as_str(), Some("ok"));
         assert!(doctor_json["checks"].as_array().expect("checks").len() >= 5);
+        assert_eq!(doctor_json["database_exists"].as_bool(), Some(false));
+        assert_eq!(doctor_json["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(
+            doctor_json["path_access_status"].as_str(),
+            Some("db_missing")
+        );
+        assert_eq!(doctor_json["db_problem_kind"].as_str(), Some("db_missing"));
+        assert!(doctor_json["db_lifecycle_read"].is_object());
+        assert!(doctor_json["sqlite_sidecars"].is_object());
 
         let metadata = run([BIN_NAME, "config", "release-metadata", "--json"]);
         assert_eq!(metadata.exit_code, 0, "stderr={}", metadata.stderr);
@@ -14579,6 +16362,268 @@ mod tests {
             .as_str()
             .expect("script")
             .contains("Register-ArgumentCompleter"));
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn doctor_valid_db_reports_readonly_lifecycle_evidence() {
+        let repo = ui_fixture_repo();
+        index_repo(&repo).expect("index fixture");
+        let repo_root = fs::canonicalize(&repo).expect("canonical repo");
+        let db_path = default_db_path(&repo_root);
+
+        let doctor =
+            run_doctor_command(&[path_string(&repo), "--json".to_string()]).expect("doctor");
+
+        assert_eq!(doctor["status"].as_str(), Some("ok"));
+        assert_eq!(doctor["database_exists"].as_bool(), Some(true));
+        assert_eq!(doctor["safe_to_query"].as_bool(), Some(true));
+        assert_eq!(doctor["passport_status"].as_str(), Some("valid"));
+        assert_eq!(doctor["path_access_status"].as_str(), Some("ok"));
+        assert_eq!(doctor["db_path_outside_workspace"].as_bool(), Some(false));
+        assert_eq!(doctor["repo_match"].as_bool(), Some(true));
+        assert_eq!(doctor["scope_match"].as_bool(), Some(true));
+        assert_eq!(doctor["schema_status"].as_str(), Some("ok"));
+        assert_eq!(doctor["storage_mode"].as_str(), Some("proof"));
+        let db_path_string = path_string(&db_path);
+        assert_eq!(
+            doctor["db_lifecycle_read"]["exact_db_path_checked"].as_str(),
+            Some(db_path_string.as_str())
+        );
+        assert_eq!(
+            doctor["db_lifecycle_read"]["safe_to_read"].as_bool(),
+            Some(true)
+        );
+        assert!(doctor["sqlite_sidecars"]["status"].is_string());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn status_and_doctor_report_normal_sqlite_sidecars_for_valid_db() {
+        let repo = ui_fixture_repo();
+        index_repo(&repo).expect("index fixture");
+        let db_path = default_db_path(&repo);
+        let wal_connection = keep_wal_sidecars_for_test(&db_path);
+
+        let status = run_status_command(&[path_string(&repo)]).expect("status");
+        let doctor =
+            run_doctor_command(&[path_string(&repo), "--json".to_string()]).expect("doctor");
+
+        assert_eq!(status["status"].as_str(), Some("ok"));
+        assert_eq!(doctor["status"].as_str(), Some("ok"));
+        assert_eq!(status["sidecar_status"].as_str(), Some("normal"));
+        assert_eq!(doctor["sidecar_status"].as_str(), Some("normal"));
+        assert_eq!(
+            status["sqlite_sidecars"]["sidecar_status"].as_str(),
+            Some("normal")
+        );
+        assert_eq!(
+            doctor["sqlite_sidecars"]["sidecar_status"].as_str(),
+            Some("normal")
+        );
+        assert!(
+            !status["sqlite_sidecars"]["sqlite_sidecars"]
+                .as_array()
+                .expect("status sidecars")
+                .is_empty(),
+            "{status:?}"
+        );
+        assert!(status["db_health"]["orphan_sidecars"]
+            .as_array()
+            .expect("deprecated orphan sidecars")
+            .is_empty());
+        assert!(doctor["sqlite_sidecars"]["orphan_sidecars"]
+            .as_array()
+            .expect("doctor deprecated orphan sidecars")
+            .is_empty());
+
+        drop(wal_connection);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn status_and_doctor_report_orphan_without_main_db_for_sidecars_only() {
+        let repo = temp_repo();
+        let db_path = default_db_path(&repo);
+        fs::create_dir_all(db_path.parent().expect("db parent")).expect("create db parent");
+        fs::write(sqlite_sidecar_path_for_test(&db_path, "wal"), "stale wal")
+            .expect("write stale wal");
+        fs::write(sqlite_sidecar_path_for_test(&db_path, "shm"), "stale shm")
+            .expect("write stale shm");
+
+        let status = run_status_command(&[path_string(&repo)]).expect("status");
+        let doctor =
+            run_doctor_command(&[path_string(&repo), "--json".to_string()]).expect("doctor");
+
+        assert_eq!(status["status"].as_str(), Some("not_indexed"));
+        assert_eq!(status["db_problem_kind"].as_str(), Some("db_missing"));
+        assert_eq!(status["path_access_status"].as_str(), Some("db_missing"));
+        assert_eq!(status["db_path_outside_workspace"].as_bool(), Some(false));
+        assert_eq!(
+            status["sidecar_status"].as_str(),
+            Some("orphan_without_main_db")
+        );
+        assert_eq!(
+            status["sqlite_sidecars"]["sidecar_status"].as_str(),
+            Some("orphan_without_main_db")
+        );
+        assert_eq!(
+            doctor["sidecar_status"].as_str(),
+            Some("orphan_without_main_db")
+        );
+        assert_eq!(
+            doctor["sqlite_sidecars"]["sidecar_status"].as_str(),
+            Some("orphan_without_main_db")
+        );
+        assert!(
+            !doctor["sqlite_sidecars"]["orphan_sidecars"]
+                .as_array()
+                .expect("doctor orphan sidecars")
+                .is_empty(),
+            "{doctor:?}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn doctor_repo_mismatch_matches_status_blockers() {
+        let repo_a = ui_fixture_repo();
+        let repo_b = ui_fixture_repo();
+        index_repo(&repo_a).expect("index repo A");
+        let repo_a_db = default_db_path(&repo_a);
+        let repo_b_db = default_db_path(&repo_b);
+        fs::create_dir_all(repo_b_db.parent().expect("repo B db parent")).expect("create db dir");
+        fs::copy(&repo_a_db, &repo_b_db).expect("copy mismatched DB");
+
+        let doctor =
+            run_doctor_command(&[path_string(&repo_b), "--json".to_string()]).expect("doctor");
+        let status = run_status_command(&[path_string(&repo_b)]).expect("status");
+
+        assert_eq!(doctor["status"].as_str(), Some("error"));
+        assert_eq!(doctor["database_exists"].as_bool(), Some(true));
+        assert_eq!(doctor["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(
+            doctor["db_problem_kind"].as_str(),
+            Some("repo_root_mismatch")
+        );
+        assert_eq!(doctor["repo_match"].as_bool(), Some(false));
+        assert_eq!(status["status"].as_str(), Some("db_problem"));
+        assert!(
+            doctor["blockers"]
+                .as_array()
+                .expect("doctor blockers")
+                .iter()
+                .any(|blocker| blocker
+                    .as_str()
+                    .is_some_and(|value| value.contains("repo root mismatch"))),
+            "{doctor:?}"
+        );
+        assert_eq!(
+            doctor["db_lifecycle_read"]["blockers"],
+            status["db_lifecycle_read"]["blockers"]
+        );
+
+        fs::remove_dir_all(repo_a).expect("cleanup repo A");
+        fs::remove_dir_all(repo_b).expect("cleanup repo B");
+    }
+
+    #[test]
+    fn doctor_reports_scope_mismatch_without_opening_mutably() {
+        let repo = ui_fixture_repo();
+        index_repo(&repo).expect("index fixture");
+        let db_path = default_db_path(&repo);
+        let connection = rusqlite::Connection::open(&db_path).expect("open DB");
+        connection
+            .execute(
+                "UPDATE codegraph_db_passport SET index_scope_policy_hash = 'tampered-scope-hash' WHERE id = 1",
+                [],
+            )
+            .expect("tamper scope hash");
+        drop(connection);
+
+        let doctor =
+            run_doctor_command(&[path_string(&repo), "--json".to_string()]).expect("doctor");
+
+        assert_eq!(doctor["status"].as_str(), Some("error"));
+        assert_eq!(doctor["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(doctor["scope_match"].as_bool(), Some(false));
+        assert_eq!(
+            doctor["db_lifecycle_read"]["scope_status"].as_str(),
+            Some("mismatched")
+        );
+        assert!(
+            doctor["blockers"]
+                .as_array()
+                .expect("blockers")
+                .iter()
+                .any(|blocker| blocker
+                    .as_str()
+                    .is_some_and(|value| value.contains("index scope policy hash mismatch"))),
+            "{doctor:?}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn doctor_reports_missing_passport_for_existing_db() {
+        let repo = temp_repo();
+        let db_path = default_db_path(&repo);
+        fs::create_dir_all(db_path.parent().expect("db parent")).expect("create db dir");
+        let connection = rusqlite::Connection::open(&db_path).expect("create DB");
+        connection
+            .pragma_update(None, "user_version", SCHEMA_VERSION)
+            .expect("set current user_version");
+        drop(connection);
+
+        let doctor =
+            run_doctor_command(&[path_string(&repo), "--json".to_string()]).expect("doctor");
+
+        assert_eq!(doctor["status"].as_str(), Some("error"));
+        assert_eq!(doctor["database_exists"].as_bool(), Some(true));
+        assert_eq!(doctor["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(doctor["passport_status"].as_str(), Some("missing"));
+        assert_eq!(doctor["db_problem_kind"].as_str(), Some("passport_missing"));
+        assert!(
+            doctor["blockers"]
+                .as_array()
+                .expect("blockers")
+                .iter()
+                .any(|blocker| blocker
+                    .as_str()
+                    .is_some_and(|value| value.contains("codegraph_db_passport table is missing"))),
+            "{doctor:?}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn doctor_does_not_migrate_old_schema_db() {
+        let repo = temp_repo();
+        let db_path = default_db_path(&repo);
+        fs::create_dir_all(db_path.parent().expect("db parent")).expect("create db dir");
+        let connection = rusqlite::Connection::open(&db_path).expect("create DB");
+        connection
+            .pragma_update(None, "user_version", 1u32)
+            .expect("set old user_version");
+        drop(connection);
+
+        let doctor =
+            run_doctor_command(&[path_string(&repo), "--json".to_string()]).expect("doctor");
+        let observed_version = sqlite_user_version_for_test(&db_path);
+        let passport_table_exists = sqlite_table_exists_for_test(&db_path, "codegraph_db_passport");
+
+        assert_eq!(doctor["status"].as_str(), Some("error"));
+        assert_eq!(doctor["database_exists"].as_bool(), Some(true));
+        assert_eq!(doctor["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(doctor["schema_status"].as_str(), Some("mismatched"));
+        assert_eq!(doctor["db_problem_kind"].as_str(), Some("schema_mismatch"));
+        assert_eq!(observed_version, 1);
+        assert!(!passport_table_exists);
 
         fs::remove_dir_all(repo).expect("cleanup");
     }
@@ -14715,6 +16760,253 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_calls_ui_endpoint_refuses_unsafe_db() {
+        let repo_a = ui_fixture_repo();
+        let repo_b = ui_fixture_repo();
+        index_repo(&repo_a).expect("index repo A");
+        let repo_a_db = repo_a.join(".codegraph").join("codegraph.sqlite");
+        let repo_b_db_dir = repo_b.join(".codegraph");
+        fs::create_dir_all(&repo_b_db_dir).expect("create repo B DB dir");
+        fs::copy(&repo_a_db, repo_b_db_dir.join("codegraph.sqlite")).expect("copy mismatched DB");
+
+        let response = route_ui_request(&repo_b, "GET", "/api/unresolved-calls?limit=1");
+        assert_eq!(response.status, 500);
+        let body: Value = serde_json::from_str(&response.body).expect("JSON body");
+        assert_eq!(body["status"].as_str(), Some("error"));
+        assert!(
+            body["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("repo root mismatch")),
+            "{body:?}"
+        );
+
+        fs::remove_dir_all(repo_a).expect("cleanup repo A");
+        fs::remove_dir_all(repo_b).expect("cleanup repo B");
+    }
+
+    #[test]
+    fn lifecycle_regression_suite_internal_surfaces_share_guardrails() {
+        let watch_repo = ui_fixture_repo();
+        let external_db = watch_repo.join("suite-long-watch.sqlite");
+        index_repo_to_db_with_options(&watch_repo, &external_db, IndexOptions::default())
+            .expect("index external watch DB");
+        let default_watch_db = default_db_path(&watch_repo);
+        assert!(
+            !default_watch_db.exists(),
+            "external watch setup must not create default DB"
+        );
+        let watch_startup =
+            prepare_watch_startup(&watch_repo, Some(&external_db), "suite.watch.long_running")
+                .expect("prepare long-running watch startup");
+        assert_eq!(watch_startup.requested_db_path, external_db);
+        assert_eq!(watch_startup.actual_db_path_opened, external_db);
+        assert_eq!(
+            watch_startup.lifecycle_status["lifecycle_status"].as_str(),
+            Some("safe_to_write")
+        );
+        assert_eq!(
+            watch_startup.lifecycle_status["auto_index_enabled"].as_bool(),
+            Some(false)
+        );
+        assert!(
+            !default_watch_db.exists(),
+            "long-running watch must not touch default DB when external DB is configured"
+        );
+
+        let ui_repo_a = ui_fixture_repo();
+        let ui_repo_b = ui_fixture_repo();
+        index_repo(&ui_repo_a).expect("index UI repo A");
+        let ui_repo_a_db = default_db_path(&ui_repo_a);
+        let ui_repo_b_db = default_db_path(&ui_repo_b);
+        fs::create_dir_all(ui_repo_b_db.parent().expect("ui repo B db parent"))
+            .expect("create UI repo B db dir");
+        fs::copy(&ui_repo_a_db, &ui_repo_b_db).expect("copy mismatched UI DB");
+        let ui_response = route_ui_request(&ui_repo_b, "GET", "/api/unresolved-calls?limit=1");
+        assert_eq!(ui_response.status, 500);
+        let ui_body: Value = serde_json::from_str(&ui_response.body).expect("UI JSON body");
+        assert_eq!(ui_body["status"].as_str(), Some("error"));
+        assert!(
+            ui_body["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("repo root mismatch")),
+            "{ui_body:?}"
+        );
+
+        let doctor_repo = temp_repo();
+        let doctor_db = default_db_path(&doctor_repo);
+        fs::create_dir_all(doctor_db.parent().expect("doctor db parent"))
+            .expect("create doctor db dir");
+        let doctor_connection = rusqlite::Connection::open(&doctor_db).expect("create old DB");
+        doctor_connection
+            .pragma_update(None, "user_version", 1u32)
+            .expect("set old doctor user_version");
+        drop(doctor_connection);
+        let doctor =
+            run_doctor_command(&[path_string(&doctor_repo), "--json".to_string()]).expect("doctor");
+        assert_eq!(doctor["status"].as_str(), Some("error"));
+        assert_eq!(doctor["database_exists"].as_bool(), Some(true));
+        assert_eq!(doctor["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(doctor["schema_status"].as_str(), Some("mismatched"));
+        assert_eq!(doctor["db_problem_kind"].as_str(), Some("schema_mismatch"));
+        assert!(
+            !doctor["blockers"]
+                .as_array()
+                .expect("doctor blockers")
+                .is_empty(),
+            "{doctor:?}"
+        );
+        assert_eq!(sqlite_user_version_for_test(&doctor_db), 1);
+        assert!(!sqlite_table_exists_for_test(
+            &doctor_db,
+            "codegraph_db_passport"
+        ));
+
+        let benchmark_repo = temp_repo();
+        let benchmark_db = default_db_path(&benchmark_repo);
+        fs::create_dir_all(benchmark_db.parent().expect("benchmark db parent"))
+            .expect("create benchmark db dir");
+        let benchmark_connection =
+            rusqlite::Connection::open(&benchmark_db).expect("create benchmark DB");
+        benchmark_connection
+            .pragma_update(None, "user_version", 1u32)
+            .expect("set benchmark user_version");
+        drop(benchmark_connection);
+        let benchmark_lifecycle = benchmark_inspection_lifecycle_status(
+            &benchmark_repo,
+            &benchmark_db,
+            "suite.benchmark_inspection",
+            Some(StorageMode::Proof),
+        );
+        assert_eq!(benchmark_lifecycle["safe_to_read"].as_bool(), Some(false));
+        assert_eq!(benchmark_lifecycle["claimable"].as_bool(), Some(false));
+        assert_eq!(benchmark_lifecycle["diagnostic_only"].as_bool(), Some(true));
+        assert_eq!(
+            benchmark_lifecycle["exact_db_path_checked"].as_str(),
+            Some(path_string(&benchmark_db).as_str())
+        );
+        assert_eq!(sqlite_user_version_for_test(&benchmark_db), 1);
+        assert!(!sqlite_table_exists_for_test(
+            &benchmark_db,
+            "codegraph_db_passport"
+        ));
+
+        let sidecar_repo = ui_fixture_repo();
+        index_repo(&sidecar_repo).expect("index sidecar repo");
+        let sidecar_db = default_db_path(&sidecar_repo);
+        let wal_connection = keep_wal_sidecars_for_test(&sidecar_db);
+        let sidecar_status = run_status_command(&[path_string(&sidecar_repo)]).expect("status");
+        let sidecar_doctor =
+            run_doctor_command(&[path_string(&sidecar_repo), "--json".to_string()])
+                .expect("doctor");
+        assert_eq!(sidecar_status["status"].as_str(), Some("ok"));
+        assert_eq!(sidecar_doctor["status"].as_str(), Some("ok"));
+        assert_eq!(sidecar_status["sidecar_status"].as_str(), Some("normal"));
+        assert_eq!(sidecar_doctor["sidecar_status"].as_str(), Some("normal"));
+        drop(wal_connection);
+
+        let orphan_repo = temp_repo();
+        let orphan_db = default_db_path(&orphan_repo);
+        fs::create_dir_all(orphan_db.parent().expect("orphan db parent"))
+            .expect("create orphan db dir");
+        fs::write(sqlite_sidecar_path_for_test(&orphan_db, "wal"), "stale wal")
+            .expect("write orphan wal");
+        fs::write(sqlite_sidecar_path_for_test(&orphan_db, "shm"), "stale shm")
+            .expect("write orphan shm");
+        let orphan_status = run_status_command(&[path_string(&orphan_repo)]).expect("status");
+        let orphan_doctor =
+            run_doctor_command(&[path_string(&orphan_repo), "--json".to_string()]).expect("doctor");
+        assert_eq!(
+            orphan_status["sidecar_status"].as_str(),
+            Some("orphan_without_main_db")
+        );
+        assert_eq!(
+            orphan_doctor["sidecar_status"].as_str(),
+            Some("orphan_without_main_db")
+        );
+
+        let call_fixture = caller_callee_precision_fixture();
+        let exact_callers = query_call_relation(
+            &call_fixture.repo,
+            CallRelationQueryOptions {
+                query: Some("uniqueTarget".to_string()),
+                entity_id: None,
+                limit: 32,
+                exact_resolved: false,
+                fuzzy: false,
+            },
+            CallQueryDirection::Callers,
+        )
+        .expect("exact callers");
+        assert_eq!(exact_callers["status"].as_str(), Some("ok"));
+        assert_eq!(
+            exact_callers["resolution_mode"].as_str(),
+            Some("exact_resolved")
+        );
+        assert_eq!(
+            exact_callers["exact_resolved_entity"]["id"].as_str(),
+            Some(call_fixture.unique_target_id.as_str())
+        );
+        assert_eq!(
+            exact_callers["exact_resolved_entity_results"]
+                .as_array()
+                .expect("exact results")
+                .len(),
+            1
+        );
+        assert!(exact_callers["fuzzy_or_global_results"]
+            .as_array()
+            .expect("fuzzy results")
+            .is_empty());
+
+        let ambiguous_callers = query_call_relation(
+            &call_fixture.repo,
+            CallRelationQueryOptions {
+                query: Some("target".to_string()),
+                entity_id: None,
+                limit: 32,
+                exact_resolved: false,
+                fuzzy: false,
+            },
+            CallQueryDirection::Callers,
+        )
+        .expect("ambiguous callers");
+        assert_eq!(
+            ambiguous_callers["status"].as_str(),
+            Some("ambiguous_symbol")
+        );
+        assert_eq!(
+            ambiguous_callers["resolution_mode"].as_str(),
+            Some("ambiguous_symbol")
+        );
+        let candidates = ambiguous_callers["ambiguous_symbol_matches"]
+            .as_array()
+            .expect("ambiguous candidates");
+        assert!(candidates.iter().any(
+            |candidate| candidate["id"].as_str() == Some(call_fixture.alpha_target_id.as_str())
+        ));
+        assert!(candidates.iter().any(
+            |candidate| candidate["id"].as_str() == Some(call_fixture.beta_target_id.as_str())
+        ));
+        assert!(ambiguous_callers["exact_resolved_entity_results"]
+            .as_array()
+            .expect("ambiguous exact results")
+            .is_empty());
+        assert!(ambiguous_callers["suggestion"]["rerun"]
+            .as_str()
+            .expect("rerun suggestion")
+            .contains("--entity-id"));
+
+        fs::remove_dir_all(watch_repo).expect("cleanup watch repo");
+        fs::remove_dir_all(ui_repo_a).expect("cleanup UI repo A");
+        fs::remove_dir_all(ui_repo_b).expect("cleanup UI repo B");
+        fs::remove_dir_all(doctor_repo).expect("cleanup doctor repo");
+        fs::remove_dir_all(benchmark_repo).expect("cleanup benchmark repo");
+        fs::remove_dir_all(sidecar_repo).expect("cleanup sidecar repo");
+        fs::remove_dir_all(orphan_repo).expect("cleanup orphan repo");
+        fs::remove_dir_all(call_fixture.repo).expect("cleanup caller fixture repo");
+    }
+
+    #[test]
     fn context_packet_preview_api_uses_local_context_pack() {
         let repo = ui_fixture_repo();
         index_repo(&repo).expect("index fixture");
@@ -14744,6 +17036,290 @@ mod tests {
         assert!(output.stderr.contains("\"error\":\"unknown_command\""));
     }
 
+    #[test]
+    fn callers_default_to_exact_results_when_symbol_is_unambiguous() {
+        let fixture = caller_callee_precision_fixture();
+
+        let result = query_call_relation(
+            &fixture.repo,
+            CallRelationQueryOptions {
+                query: Some("uniqueTarget".to_string()),
+                entity_id: None,
+                limit: 32,
+                exact_resolved: false,
+                fuzzy: false,
+            },
+            CallQueryDirection::Callers,
+        )
+        .expect("query callers");
+
+        assert_eq!(result["status"].as_str(), Some("ok"));
+        assert_eq!(result["resolution_mode"].as_str(), Some("exact_resolved"));
+        assert_eq!(
+            result["exact_resolved_entity"]["id"].as_str(),
+            Some(fixture.unique_target_id.as_str())
+        );
+        let exact = result["exact_resolved_entity_results"]
+            .as_array()
+            .expect("exact results");
+        assert_eq!(exact.len(), 1, "{result:?}");
+        assert_eq!(
+            exact[0]["callee"]["id"].as_str(),
+            Some(fixture.unique_target_id.as_str())
+        );
+        assert_eq!(
+            exact[0]["proof_labels"]["exactness"].as_str(),
+            Some("parser_verified")
+        );
+        assert!(exact[0]["source_span"].is_object());
+        assert!(result["fuzzy_or_global_results"]
+            .as_array()
+            .expect("fuzzy results")
+            .is_empty());
+        assert_eq!(
+            result["callers"].as_array().expect("legacy callers").len(),
+            1
+        );
+
+        fs::remove_dir_all(fixture.repo).expect("cleanup");
+    }
+
+    #[test]
+    fn callers_ambiguous_symbol_lists_candidates_without_legacy_exact_noise() {
+        let fixture = caller_callee_precision_fixture();
+
+        let result = query_call_relation(
+            &fixture.repo,
+            CallRelationQueryOptions {
+                query: Some("target".to_string()),
+                entity_id: None,
+                limit: 32,
+                exact_resolved: false,
+                fuzzy: false,
+            },
+            CallQueryDirection::Callers,
+        )
+        .expect("query callers");
+
+        assert_eq!(result["status"].as_str(), Some("ambiguous_symbol"));
+        assert_eq!(result["resolution_mode"].as_str(), Some("ambiguous_symbol"));
+        let candidates = result["ambiguous_symbol_matches"]
+            .as_array()
+            .expect("ambiguous candidates");
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate["id"].as_str() == Some(fixture.alpha_target_id.as_str())),
+            "{candidates:?}"
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate["id"].as_str() == Some(fixture.beta_target_id.as_str())),
+            "{candidates:?}"
+        );
+        assert!(result["exact_resolved_entity_results"]
+            .as_array()
+            .expect("exact results")
+            .is_empty());
+        assert!(result["callers"]
+            .as_array()
+            .expect("legacy callers")
+            .is_empty());
+        assert!(
+            result["fuzzy_or_global_results"]
+                .as_array()
+                .expect("fuzzy section")
+                .len()
+                >= 2
+        );
+        assert!(result["suggestion"]["rerun"]
+            .as_str()
+            .expect("rerun suggestion")
+            .contains("--entity-id"));
+
+        fs::remove_dir_all(fixture.repo).expect("cleanup");
+    }
+
+    #[test]
+    fn callers_entity_id_mode_returns_only_selected_entity_callers() {
+        let fixture = caller_callee_precision_fixture();
+        let options = CallRelationQueryOptions {
+            query: None,
+            entity_id: Some(fixture.alpha_target_id.clone()),
+            limit: 32,
+            exact_resolved: false,
+            fuzzy: false,
+        };
+
+        let result = query_call_relation(&fixture.repo, options, CallQueryDirection::Callers)
+            .expect("exact callers");
+
+        assert_eq!(result["status"].as_str(), Some("ok"));
+        assert_eq!(result["resolution_mode"].as_str(), Some("entity_id"));
+        let callers = result["callers"].as_array().expect("callers");
+        assert_eq!(callers.len(), 1, "{result:?}");
+        assert_eq!(
+            callers[0]["caller"]["id"].as_str(),
+            Some(fixture.alpha_caller_id.as_str())
+        );
+        assert_eq!(
+            callers[0]["callee"]["id"].as_str(),
+            Some(fixture.alpha_target_id.as_str())
+        );
+        assert_ne!(
+            callers[0]["caller"]["id"].as_str(),
+            Some(fixture.beta_caller_id.as_str())
+        );
+
+        fs::remove_dir_all(fixture.repo).expect("cleanup");
+    }
+
+    #[test]
+    fn callees_entity_id_mode_returns_exact_callees_and_fuzzy_mode_still_works() {
+        let fixture = caller_callee_precision_fixture();
+        let exact_options = CallRelationQueryOptions {
+            query: None,
+            entity_id: Some(fixture.alpha_caller_id.clone()),
+            limit: 32,
+            exact_resolved: false,
+            fuzzy: false,
+        };
+
+        let exact = query_call_relation(&fixture.repo, exact_options, CallQueryDirection::Callees)
+            .expect("exact callees");
+
+        assert_eq!(exact["status"].as_str(), Some("ok"));
+        assert_eq!(exact["resolution_mode"].as_str(), Some("entity_id"));
+        let callees = exact["callees"].as_array().expect("callees");
+        assert_eq!(callees.len(), 1, "{exact:?}");
+        assert_eq!(
+            callees[0]["callee"]["id"].as_str(),
+            Some(fixture.alpha_target_id.as_str())
+        );
+
+        let fuzzy_args = vec!["--fuzzy".to_string(), "target".to_string()];
+        let fuzzy_options =
+            parse_call_relation_args("callers", &fuzzy_args).expect("parse fuzzy options");
+        let fuzzy = query_call_relation(&fixture.repo, fuzzy_options, CallQueryDirection::Callers)
+            .expect("fuzzy callers");
+
+        assert_eq!(fuzzy["status"].as_str(), Some("ok"));
+        assert_eq!(fuzzy["resolution_mode"].as_str(), Some("fuzzy_or_global"));
+        assert!(fuzzy["exact_resolved_entity_results"]
+            .as_array()
+            .expect("exact results")
+            .is_empty());
+        assert!(
+            fuzzy["callers"]
+                .as_array()
+                .expect("legacy fuzzy callers")
+                .len()
+                >= 2
+        );
+
+        fs::remove_dir_all(fixture.repo).expect("cleanup");
+    }
+
+    struct CallerCalleePrecisionFixture {
+        repo: PathBuf,
+        alpha_target_id: String,
+        beta_target_id: String,
+        unique_target_id: String,
+        alpha_caller_id: String,
+        beta_caller_id: String,
+    }
+
+    fn caller_callee_precision_fixture() -> CallerCalleePrecisionFixture {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::write(
+            repo.join("src").join("seed.ts"),
+            "export function seed() {\n  return 1;\n}\n",
+        )
+        .expect("write seed");
+        index_repo(&repo).expect("index seed repo");
+        let store = SqliteGraphStore::open(default_db_path(&repo)).expect("open store");
+
+        let alpha_target = test_function_entity("src/alpha.ts", "target", "alpha.target", 3);
+        let beta_target = test_function_entity("src/beta.ts", "target", "beta.target", 4);
+        let unique_target =
+            test_function_entity("src/unique.ts", "uniqueTarget", "unique.uniqueTarget", 5);
+        let alpha_caller = test_function_entity("src/alpha.ts", "callAlpha", "alpha.callAlpha", 10);
+        let beta_caller = test_function_entity("src/beta.ts", "callBeta", "beta.callBeta", 11);
+        let unique_caller =
+            test_function_entity("src/unique.ts", "callUnique", "unique.callUnique", 12);
+
+        for entity in [
+            &alpha_target,
+            &beta_target,
+            &unique_target,
+            &alpha_caller,
+            &beta_caller,
+            &unique_caller,
+        ] {
+            store.upsert_entity(entity).expect("upsert entity");
+        }
+        for edge in [
+            test_call_edge(&alpha_caller, &alpha_target, "src/alpha.ts", 13),
+            test_call_edge(&beta_caller, &beta_target, "src/beta.ts", 14),
+            test_call_edge(&unique_caller, &unique_target, "src/unique.ts", 15),
+        ] {
+            store.upsert_edge(&edge).expect("upsert edge");
+        }
+
+        CallerCalleePrecisionFixture {
+            repo,
+            alpha_target_id: alpha_target.id,
+            beta_target_id: beta_target.id,
+            unique_target_id: unique_target.id,
+            alpha_caller_id: alpha_caller.id,
+            beta_caller_id: beta_caller.id,
+        }
+    }
+
+    fn test_function_entity(path: &str, name: &str, qualified_name: &str, line: u32) -> Entity {
+        Entity {
+            id: stable_entity_id_for_kind(
+                path,
+                EntityKind::Function,
+                qualified_name,
+                Some(qualified_name),
+            ),
+            kind: EntityKind::Function,
+            name: name.to_string(),
+            qualified_name: qualified_name.to_string(),
+            repo_relative_path: path.to_string(),
+            source_span: Some(SourceSpan::with_columns(path, line, 1, line, 20)),
+            content_hash: None,
+            file_hash: None,
+            created_from: "unit-test".to_string(),
+            confidence: 1.0,
+            metadata: Default::default(),
+        }
+    }
+
+    fn test_call_edge(head: &Entity, tail: &Entity, path: &str, line: u32) -> Edge {
+        let span = SourceSpan::with_columns(path, line, 3, line, 24);
+        Edge {
+            id: stable_edge_id(&head.id, RelationKind::Calls, &tail.id, &span),
+            head_id: head.id.clone(),
+            relation: RelationKind::Calls,
+            tail_id: tail.id.clone(),
+            source_span: span,
+            repo_commit: None,
+            file_hash: None,
+            extractor: "unit-test".to_string(),
+            confidence: 1.0,
+            exactness: Exactness::ParserVerified,
+            edge_class: EdgeClass::BaseExact,
+            context: EdgeContext::Production,
+            derived: false,
+            provenance_edges: Vec::new(),
+            metadata: Default::default(),
+        }
+    }
+
     fn temp_repo() -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -14769,6 +17345,50 @@ mod tests {
         repo
     }
 
+    fn sqlite_user_version_for_test(db_path: &Path) -> u32 {
+        let connection = rusqlite::Connection::open(db_path).expect("open test DB");
+        connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("read user_version")
+    }
+
+    fn sqlite_table_exists_for_test(db_path: &Path, table_name: &str) -> bool {
+        let connection = rusqlite::Connection::open(db_path).expect("open test DB");
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [table_name],
+                |row| row.get(0),
+            )
+            .expect("read sqlite_master")
+    }
+
+    fn sqlite_sidecar_path_for_test(db_path: &Path, suffix: &str) -> PathBuf {
+        PathBuf::from(format!("{}-{}", db_path.display(), suffix))
+    }
+
+    fn keep_wal_sidecars_for_test(db_path: &Path) -> rusqlite::Connection {
+        let connection = rusqlite::Connection::open(db_path).expect("open DB for WAL sidecars");
+        connection
+            .execute_batch(
+                "
+                PRAGMA journal_mode = WAL;
+                CREATE TABLE IF NOT EXISTS codegraph_sidecar_status_test(
+                    id INTEGER PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                INSERT INTO codegraph_sidecar_status_test(value) VALUES ('keep-wal-live');
+                ",
+            )
+            .expect("create WAL sidecars");
+        assert!(
+            sqlite_sidecar_path_for_test(db_path, "wal").exists()
+                || sqlite_sidecar_path_for_test(db_path, "shm").exists(),
+            "expected WAL/SHM sidecars to exist for valid DB test"
+        );
+        connection
+    }
+
     fn http_get_json(addr: SocketAddr, path: &str) -> Value {
         let mut stream = TcpStream::connect(addr).expect("connect UI server");
         write!(
@@ -14777,9 +17397,12 @@ mod tests {
         )
         .expect("write HTTP request");
         let mut response = String::new();
-        stream
-            .read_to_string(&mut response)
-            .expect("read HTTP response");
+        match stream.read_to_string(&mut response) {
+            Ok(_) => {}
+            Err(error)
+                if error.kind() == ErrorKind::ConnectionReset && response.contains("\r\n\r\n") => {}
+            Err(error) => panic!("read HTTP response: {error}"),
+        }
         let (_, body) = response.split_once("\r\n\r\n").expect("HTTP body");
         serde_json::from_str(body).expect("JSON response")
     }

@@ -1,0 +1,183 @@
+{
+  "report": "lifecycle_quality_gate",
+  "generated_at": "2026-05-16T00:36:30-05:00",
+  "verdict": "pass",
+  "db_lifecycle_policy_complete": true,
+  "scope": "DB lifecycle hardening final quality gate",
+  "source_of_truth": {
+    "mvp_read_first": true,
+    "mvp_present_in_worktree": false,
+    "mvp_path_read": "C:\\Users\\wamin\\Desktop\\development\\codegraph-mcp\\MVP.md",
+    "lifecycle_hardening_reports_read": true,
+    "subagents_used": false
+  },
+  "artifact_dir": "reports/final/lifecycle_quality_gate_artifacts/run_20260516_002818",
+  "runs": [
+    {
+      "name": "workspace_build",
+      "command": "cargo build --workspace",
+      "status": "pass"
+    },
+    {
+      "name": "workspace_tests",
+      "command": "cargo test --workspace",
+      "status": "pass",
+      "passed_tests": 466,
+      "ignored_tests": 3,
+      "failed_tests": 0
+    },
+    {
+      "name": "graph_truth_gate",
+      "command": "target\\debug\\codegraph-mcp.exe bench graph-truth --cases benchmarks/graph_truth/fixtures --fixture-root . --out-json reports/final/lifecycle_quality_gate_artifacts/run_20260516_002818/graph_truth.json --out-md reports/final/lifecycle_quality_gate_artifacts/run_20260516_002818/graph_truth.md --fail-on-forbidden --fail-on-missing-source-span --fail-on-unresolved-exact --fail-on-derived-without-provenance --fail-on-test-mock-production-leak --update-mode",
+      "status": "pass",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "cases_failed": 0,
+      "binary_profile": "debug",
+      "claimable_for_timing_thresholds": false
+    },
+    {
+      "name": "context_packet_gate",
+      "command": "target\\debug\\codegraph-mcp.exe bench context-packet --cases benchmarks/graph_truth/fixtures --fixture-root . --out-json reports/final/lifecycle_quality_gate_artifacts/run_20260516_002818/context_packet.json --out-md reports/final/lifecycle_quality_gate_artifacts/run_20260516_002818/context_packet.md --top-k 10",
+      "status": "pass",
+      "cases_passed": 11,
+      "cases_total": 11,
+      "cases_failed": 0,
+      "proof_path_coverage": 1.0,
+      "source_span_coverage": 1.0,
+      "critical_snippet_coverage": 1.0,
+      "binary_profile": "debug",
+      "claimable_for_timing_thresholds": false
+    },
+    {
+      "name": "db_integrity",
+      "command": "target\\debug\\codegraph-mcp.exe audit schema-check --db reports/final/lifecycle_quality_gate_artifacts/run_20260516_002818/fixture_repo/.codegraph/codegraph.sqlite --json reports/final/lifecycle_quality_gate_artifacts/run_20260516_002818/db_integrity_schema_check.json --markdown reports/final/lifecycle_quality_gate_artifacts/run_20260516_002818/db_integrity_schema_check.md",
+      "status": "pass",
+      "db_status": "ok",
+      "user_version": 20,
+      "failures_empty": true
+    },
+    {
+      "name": "lifecycle_regression_suite",
+      "command": "cargo test -p codegraph-cli lifecycle_regression_suite -- --test-threads=1",
+      "status": "pass",
+      "matched_tests": 4,
+      "failed_tests": 0
+    },
+    {
+      "name": "default_query_surface",
+      "command": "target\\debug\\codegraph-mcp.exe bench query-surface --fresh --repo reports/final/lifecycle_quality_gate_artifacts/run_20260516_002818/fixture_repo --iterations 2 --out-json reports/final/lifecycle_quality_gate_artifacts/run_20260516_002818/default_query_surface.json --out-md reports/final/lifecycle_quality_gate_artifacts/run_20260516_002818/default_query_surface.md",
+      "status": "pass",
+      "query_metrics_passed": 10,
+      "query_metrics_total": 10,
+      "binary_profile": "debug",
+      "claimable_for_timing_thresholds": false
+    },
+    {
+      "name": "unresolved_calls_lifecycle_tests",
+      "command": "cargo test -p codegraph-cli unresolved_calls -- --test-threads=1",
+      "status": "pass",
+      "matched_tests": 4,
+      "failed_tests": 0
+    },
+    {
+      "name": "watch_db_path_tests",
+      "command": "cargo test -p codegraph-cli watch -- --test-threads=1",
+      "status": "pass",
+      "matched_tests": 6,
+      "failed_tests": 0
+    },
+    {
+      "name": "doctor_lifecycle_tests",
+      "command": "cargo test -p codegraph-cli doctor -- --test-threads=1",
+      "status": "pass",
+      "matched_tests": 9,
+      "failed_tests": 0
+    },
+    {
+      "name": "bundle_import_safety_tests",
+      "command": "cargo test -p codegraph-cli bundle_import -- --test-threads=1",
+      "status": "pass",
+      "matched_tests": 7,
+      "failed_tests": 0
+    },
+    {
+      "name": "benchmark_readonly_inspector_tests",
+      "commands": [
+        "cargo test -p codegraph-cli benchmark_inspection -- --test-threads=1",
+        "cargo test -p codegraph-cli update_integrity_report_marks_inspection_read_only_and_setup_mutations -- --test-threads=1"
+      ],
+      "status": "pass",
+      "matched_tests": 2,
+      "failed_tests": 0
+    },
+    {
+      "name": "exact_caller_callee_query_tests",
+      "commands": [
+        "cargo test -p codegraph-cli caller -- --test-threads=1",
+        "cargo test -p codegraph-cli callee -- --test-threads=1",
+        "cargo test -p codegraph-mcp-server mcp_call_relation -- --test-threads=1"
+      ],
+      "status": "pass",
+      "matched_tests": 5,
+      "failed_tests": 0
+    },
+    {
+      "name": "status_sidecar_tests",
+      "commands": [
+        "cargo test -p codegraph-cli sidecar -- --test-threads=1",
+        "cargo test -p codegraph-mcp-server mcp_status -- --test-threads=1"
+      ],
+      "status": "pass",
+      "matched_tests": 8,
+      "failed_tests": 0
+    },
+    {
+      "name": "external_profile_db_error_tests",
+      "commands": [
+        "cargo test -p codegraph-index external_profile -- --test-threads=1",
+        "cargo test -p codegraph-store preflight -- --test-threads=1"
+      ],
+      "status": "pass",
+      "matched_tests": 5,
+      "failed_tests": 0
+    },
+    {
+      "name": "docs_text_proof_label_check",
+      "command": ".\\.codex-tools\\rg.exe -n \"text_evidence|repo-text|mode docs|claimable_as_graph_proof|graph_proof_results|text_evidence_results\" crates docs README.md reports/audit/docs_text_retrieval_profile_plan.md",
+      "status": "pass",
+      "finding": "text_evidence/repo-text terms appear in the planning report, not implemented graph proof surfaces; generic trace context_evidence_used is not docs text proof labeling"
+    }
+  ],
+  "pass_criteria": {
+    "cargo_build_pass": true,
+    "cargo_test_pass": true,
+    "graph_truth_11_of_11": true,
+    "context_packet_11_of_11": true,
+    "db_integrity_ok": true,
+    "no_normal_read_path_can_query_unsafe_db": true,
+    "no_db_override_bypasses_lifecycle": true,
+    "long_running_watch_honors_db": true,
+    "doctor_readonly_lifecycle_aware": true,
+    "bundle_import_atomic_repo_identity_safe": true,
+    "benchmark_inspection_readonly_or_marked_setup": true,
+    "sidecar_status_terminology_correct": true,
+    "exact_caller_callee_mode_works": true,
+    "no_docs_text_mislabeled_graph_proof": true,
+    "external_profile_db_errors_correctly_classified": true
+  },
+  "generated_artifacts": [
+    "reports/final/lifecycle_quality_gate_artifacts/run_20260516_002818/graph_truth.json",
+    "reports/final/lifecycle_quality_gate_artifacts/run_20260516_002818/context_packet.json",
+    "reports/final/lifecycle_quality_gate_artifacts/run_20260516_002818/db_integrity_schema_check.json",
+    "reports/final/lifecycle_quality_gate_artifacts/run_20260516_002818/default_query_surface.json",
+    "reports/final/lifecycle_quality_gate_artifacts/run_20260516_002818/fixture_repo/.codegraph/codegraph.sqlite",
+    "reports/audit/artifacts/default_query_surface_1778909351227.sqlite"
+  ],
+  "failures": [],
+  "notes": [
+    "This gate used the debug binary for correctness/report commands, so emitted binary timing metadata is diagnostic and not a production proof-build threshold claim.",
+    "The lifecycle verdict does not claim CGC superiority or final performance status.",
+    "Generated DBs and sidecars should not be staged unless explicitly requested as evidence payloads."
+  ]
+}

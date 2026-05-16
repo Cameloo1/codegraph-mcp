@@ -1,0 +1,118 @@
+{
+  "generated_at": "2026-05-15T23:00:37-05:00",
+  "source_of_truth": {
+    "active_worktree_mvp_path": "C:\\Users\\wamin\\.codex\\worktrees\\4160\\codegraph-mcp\\MVP.md",
+    "active_worktree_mvp_present": false,
+    "canonical_sibling_mvp_read": "C:\\Users\\wamin\\Desktop\\development\\codegraph-mcp\\MVP.md",
+    "reports_read": [
+      "reports/audit/db_lifecycle_surface_inventory.md",
+      "reports/audit/lifecycle_preflight_api_design.md"
+    ]
+  },
+  "inspection": {
+    "reported_risk_present_before_fix": true,
+    "risk_summary": "bundle import opened and mutated the current/default DB directly after bundle schema validation, allowing imported facts to merge into the current repo DB without explicit mode semantics"
+  },
+  "changed_files_for_this_pass": [
+    "crates/codegraph-cli/src/lib.rs",
+    "crates/codegraph-cli/tests/cli_smoke.rs"
+  ],
+  "bundle_metadata_requirements": {
+    "bundle_schema_version": 2,
+    "fields": [
+      "repo_identity",
+      "canonical_repo_root",
+      "repo_head",
+      "scope_hash",
+      "scope_policy_json",
+      "storage_mode",
+      "db_schema_version",
+      "graph_digest",
+      "created_at_unix_ms"
+    ]
+  },
+  "semantics": {
+    "default_import": {
+      "mode": "fresh",
+      "empty_or_missing_db_only": true,
+      "refuses_non_empty_db": true,
+      "refuses_foreign_repo": true,
+      "uses_temp_db": true,
+      "validates_temp_db_before_publish": true,
+      "validates_final_db_after_publish": true,
+      "failure_leaves_old_db_untouched": true
+    },
+    "replace": {
+      "explicit_flag": "--replace",
+      "allows_non_empty_db": true,
+      "uses_backup_then_rename_publish": true,
+      "rollback_on_publish_failure": true,
+      "cleans_backup_after_success": true
+    },
+    "merge": {
+      "explicit_flag": "--merge",
+      "implemented_as_diagnostic_noop": true,
+      "database_mutated": false,
+      "claimable": false,
+      "diagnostic_only": true,
+      "reason": "per-fact provenance and production claimability semantics are not yet defined"
+    }
+  },
+  "compatibility": {
+    "old_schema_version_1_imports_rejected": true,
+    "reason": "schema 1 bundles do not carry required lifecycle metadata"
+  },
+  "tests_added_or_updated": [
+    "bundle_export_import_round_trip",
+    "bundle_import_refuses_non_empty_db_without_replace_or_merge",
+    "bundle_import_replace_is_atomic_and_replaces_non_empty_db",
+    "bundle_import_rejects_foreign_repo_by_default",
+    "bundle_import_failure_leaves_old_db_untouched",
+    "bundle_import_merge_is_explicit_diagnostic_noop",
+    "bundle_import_rejects_schema_mismatch"
+  ],
+  "verification": [
+    {
+      "command": "cargo fmt",
+      "status": "passed",
+      "notes": "Existing Windows warning: could not canonicalize path C:\\Users\\wamin"
+    },
+    {
+      "command": "git diff --check",
+      "status": "passed",
+      "notes": "CRLF normalization warnings only"
+    },
+    {
+      "command": "cargo test -p codegraph-cli bundle",
+      "status": "passed",
+      "matched_tests": 7,
+      "passed_tests": 7
+    },
+    {
+      "command": "cargo test --workspace",
+      "status": "failed",
+      "attempts": 2,
+      "failing_test": "tests::ui_server_starts_and_status_endpoint_uses_real_index",
+      "failure": "read HTTP response: Os { code: 10054, kind: ConnectionReset, message: \"An existing connection was forcibly closed by the remote host.\" }"
+    },
+    {
+      "command": "cargo test -p codegraph-cli tests::ui_server_starts_and_status_endpoint_uses_real_index -- --exact",
+      "status": "passed",
+      "matched_tests": 1,
+      "passed_tests": 1
+    }
+  ],
+  "dirty_state": {
+    "preexisting_dirty_source_changes_present": true,
+    "untracked_audit_reports_present": true,
+    "staged_files": [],
+    "generated_artifacts_intentionally_staged": false
+  },
+  "acceptance": {
+    "bundle_import_cannot_silently_contaminate_current_db": true,
+    "import_semantics_explicit_and_documented": true,
+    "focused_tests_pass": true,
+    "workspace_tests_pass": false,
+    "workspace_test_blocker": "repeated in-suite UI server connection reset; exact test passes in isolation"
+  }
+}

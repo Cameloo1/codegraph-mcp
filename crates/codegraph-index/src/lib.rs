@@ -179,8 +179,15 @@ pub struct DbLifecycleOptions {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DbLifecyclePreflight {
     pub safe: bool,
+    pub db_problem_kind: Option<String>,
+    pub path_access_status: String,
+    pub path_access_error: Option<String>,
     pub blockers: Vec<String>,
     pub warnings: Vec<String>,
+    pub exact_db_path_checked: String,
+    pub repo_root_expected: String,
+    pub db_path_outside_workspace: bool,
+    pub outside_workspace_note: Option<String>,
     pub repo_root_status: String,
     pub schema_status: String,
     pub storage_mode_status: String,
@@ -195,6 +202,74 @@ pub struct DbLifecyclePreflight {
     pub db_health: DbPreflightReport,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DbLifecycleOperationKind {
+    NormalRead,
+    DiagnosticRead,
+    WriteUpdate,
+    ImportReplace,
+    ImportMerge,
+    BenchmarkInspection,
+    BenchmarkSetup,
+}
+
+impl DbLifecycleOperationKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NormalRead => "normal_read",
+            Self::DiagnosticRead => "diagnostic_read",
+            Self::WriteUpdate => "write_update",
+            Self::ImportReplace => "import_replace",
+            Self::ImportMerge => "import_merge",
+            Self::BenchmarkInspection => "benchmark_inspection",
+            Self::BenchmarkSetup => "benchmark_setup",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DbLifecycleSurfacePreflightRequest {
+    pub repo_root: PathBuf,
+    pub db_path: PathBuf,
+    pub surface_name: String,
+    pub operation_kind: DbLifecycleOperationKind,
+    pub allow_stale_read: bool,
+    pub allow_foreign_repo: bool,
+    pub required_storage_mode: Option<StorageMode>,
+    pub expected_scope: Option<IndexScopeOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DbLifecycleSurfacePreflight {
+    pub surface_name: String,
+    pub operation_kind: DbLifecycleOperationKind,
+    pub safe_to_read: bool,
+    pub safe_to_write: bool,
+    pub claimable: bool,
+    pub diagnostic_only: bool,
+    pub db_problem_kind: Option<String>,
+    pub path_access_status: String,
+    pub path_access_error: Option<String>,
+    pub passport_status: String,
+    pub repo_match: bool,
+    pub scope_match: bool,
+    pub schema_status: String,
+    pub storage_mode_match: bool,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+    pub exact_db_path_checked: String,
+    pub repo_root_expected: String,
+    pub db_path_outside_workspace: bool,
+    pub outside_workspace_note: Option<String>,
+    pub repo_root_observed: Option<String>,
+    pub artifact_freshness: Option<String>,
+    pub scope_source: String,
+    pub passport_scope_hash: Option<String>,
+    pub explicit_scope_hash: Option<String>,
+    pub lifecycle_preflight: DbLifecyclePreflight,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScopeMismatchDetails {
     pub message: String,
@@ -205,6 +280,9 @@ pub struct ScopeMismatchDetails {
     pub passport_scope_policy: Option<IndexScopeOptions>,
     pub explicit_scope_policy: Option<IndexScopeOptions>,
 }
+
+const EXTERNAL_PROFILE_DB_NOTE: &str =
+    "This profile DB is outside the workspace; grant access or choose a workspace-local DB.";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DbLifecycleEvidence {
@@ -2849,6 +2927,7 @@ pub fn inspect_db_lifecycle_preflight(
     let initial = inspect_repo_db_passport(&repo_root, &db_path, &IndexOptions::default())?;
     let Some(passport) = initial.passport.as_ref() else {
         return Ok(db_lifecycle_preflight_from_report(
+            &repo_root,
             initial,
             Vec::new(),
             Vec::new(),
@@ -2942,6 +3021,7 @@ pub fn inspect_db_lifecycle_preflight(
     }
 
     Ok(db_lifecycle_preflight_from_report(
+        &repo_root,
         report,
         blockers,
         warnings,
@@ -2972,6 +3052,203 @@ pub fn require_db_lifecycle_preflight(
     }
 }
 
+pub fn inspect_db_lifecycle_surface_preflight(
+    request: DbLifecycleSurfacePreflightRequest,
+) -> Result<DbLifecycleSurfacePreflight, IndexError> {
+    let repo_root = resolve_repo_root_for_index(&request.repo_root)?;
+    let exact_db_path = normalize_db_path(&repo_root, &request.db_path);
+    let lifecycle =
+        inspect_db_lifecycle_preflight(&repo_root, &exact_db_path, request.expected_scope.clone())?;
+    let mut blockers = lifecycle.blockers.clone();
+    let mut warnings = lifecycle.warnings.clone();
+
+    let mut storage_mode_match = lifecycle.storage_mode_status == "ok";
+    if let Some(required_storage_mode) = request.required_storage_mode {
+        let observed = lifecycle
+            .db_health
+            .passport
+            .as_ref()
+            .map(|passport| passport.storage_mode.as_str());
+        if observed != Some(required_storage_mode.as_str()) {
+            storage_mode_match = false;
+            blockers.push(format!(
+                "storage mode requirement mismatch: expected {}, observed {}",
+                required_storage_mode.as_str(),
+                observed.unwrap_or("unknown")
+            ));
+        }
+    }
+
+    let base_safe = lifecycle.safe && storage_mode_match;
+    let db_missing = lifecycle
+        .db_health
+        .reasons
+        .iter()
+        .any(|reason| reason_is_db_missing(reason));
+    let read_open_compatible = !db_missing
+        && lifecycle.db_health.passport_status != "corrupt"
+        && (lifecycle.schema_status == "ok"
+            || lifecycle.db_health.schema_version == Some(SCHEMA_VERSION));
+
+    let (safe_to_read, safe_to_write, claimable, diagnostic_only, blockers) = match request
+        .operation_kind
+    {
+        DbLifecycleOperationKind::NormalRead => (base_safe, false, base_safe, false, blockers),
+        DbLifecycleOperationKind::DiagnosticRead => {
+            let blockers = diagnostic_blockers_for_surface(
+                blockers,
+                &mut warnings,
+                request.allow_stale_read,
+                request.allow_foreign_repo,
+            );
+            let safe_to_read = read_open_compatible && blockers.is_empty();
+            (safe_to_read, false, false, true, blockers)
+        }
+        DbLifecycleOperationKind::WriteUpdate => {
+            if request.allow_stale_read || request.allow_foreign_repo {
+                warnings
+                    .push("write_update ignores stale/foreign diagnostic allowances".to_string());
+            }
+            (base_safe, base_safe, base_safe, false, blockers)
+        }
+        DbLifecycleOperationKind::ImportReplace => {
+            let safe_to_write = db_missing || base_safe;
+            let claimable = base_safe;
+            (false, safe_to_write, claimable, false, blockers)
+        }
+        DbLifecycleOperationKind::ImportMerge => (base_safe, base_safe, base_safe, false, blockers),
+        DbLifecycleOperationKind::BenchmarkInspection => {
+            let blockers = if base_safe {
+                blockers
+            } else {
+                diagnostic_blockers_for_surface(
+                    blockers,
+                    &mut warnings,
+                    request.allow_stale_read,
+                    request.allow_foreign_repo,
+                )
+            };
+            let safe_to_read = if base_safe {
+                true
+            } else {
+                read_open_compatible && blockers.is_empty()
+            };
+            let diagnostic_only = !base_safe;
+            let claimable = base_safe;
+            (safe_to_read, false, claimable, diagnostic_only, blockers)
+        }
+        DbLifecycleOperationKind::BenchmarkSetup => {
+            let safe_to_write = db_missing || base_safe;
+            (false, safe_to_write, base_safe, !base_safe, blockers)
+        }
+    };
+
+    let mut blockers = blockers;
+    blockers.sort();
+    blockers.dedup();
+    warnings.sort();
+    warnings.dedup();
+
+    Ok(DbLifecycleSurfacePreflight {
+        surface_name: request.surface_name,
+        operation_kind: request.operation_kind,
+        safe_to_read,
+        safe_to_write,
+        claimable,
+        diagnostic_only,
+        db_problem_kind: lifecycle.db_problem_kind.clone(),
+        path_access_status: lifecycle.path_access_status.clone(),
+        path_access_error: lifecycle.path_access_error.clone(),
+        passport_status: lifecycle.db_health.passport_status.clone(),
+        repo_match: lifecycle.repo_root_status == "ok" && lifecycle.db_health.passport.is_some(),
+        scope_match: matches!(lifecycle.scope_status.as_str(), "ok" | "compat_default"),
+        schema_status: lifecycle.schema_status.clone(),
+        storage_mode_match,
+        blockers,
+        warnings,
+        exact_db_path_checked: lifecycle.db_health.db_path.clone(),
+        repo_root_expected: path_string(&repo_root),
+        db_path_outside_workspace: lifecycle.db_path_outside_workspace,
+        outside_workspace_note: lifecycle.outside_workspace_note.clone(),
+        repo_root_observed: lifecycle
+            .db_health
+            .passport
+            .as_ref()
+            .map(|passport| passport.canonical_repo_root.clone()),
+        artifact_freshness: db_artifact_freshness(&lifecycle),
+        scope_source: lifecycle.scope_source.clone(),
+        passport_scope_hash: lifecycle.passport_scope_hash.clone(),
+        explicit_scope_hash: lifecycle.explicit_scope_hash.clone(),
+        lifecycle_preflight: lifecycle,
+    })
+}
+
+fn diagnostic_blockers_for_surface(
+    blockers: Vec<String>,
+    warnings: &mut Vec<String>,
+    allow_stale_read: bool,
+    allow_foreign_repo: bool,
+) -> Vec<String> {
+    blockers
+        .into_iter()
+        .filter_map(|blocker| {
+            if allow_foreign_repo && reason_is_repo_identity_mismatch(&blocker) {
+                warnings.push(format!(
+                    "diagnostic_read allowed foreign-repo blocker; output is non-claimable: {blocker}"
+                ));
+                None
+            } else if allow_stale_read && reason_is_stale_or_missing_passport(&blocker) {
+                warnings.push(format!(
+                    "diagnostic_read allowed stale/passport blocker; output is non-claimable: {blocker}"
+                ));
+                None
+            } else {
+                Some(blocker)
+            }
+        })
+        .collect()
+}
+
+fn reason_is_repo_identity_mismatch(reason: &str) -> bool {
+    reason.contains("repo root mismatch") || reason.contains("git remote mismatch")
+}
+
+fn reason_is_stale_or_missing_passport(reason: &str) -> bool {
+    reason.contains("previous run did not complete")
+        || reason.contains("previous integrity gate was not ok")
+        || reason.contains("codegraph_db_passport table is missing")
+        || reason.contains("codegraph_db_passport row is missing")
+        || reason.contains("passport scope_policy_json is missing")
+}
+
+fn reason_is_db_missing(reason: &str) -> bool {
+    reason.contains("main DB does not exist")
+}
+
+fn db_artifact_freshness(preflight: &DbLifecyclePreflight) -> Option<String> {
+    if preflight
+        .db_health
+        .reasons
+        .iter()
+        .any(|reason| reason_is_db_missing(reason))
+    {
+        return Some("missing".to_string());
+    }
+    let Some(passport) = preflight.db_health.passport.as_ref() else {
+        return Some("passport_missing".to_string());
+    };
+    if passport.last_run_status != "completed" {
+        return Some(format!("incomplete:{}", passport.last_run_status));
+    }
+    if passport.integrity_gate_result != "ok" {
+        return Some(format!(
+            "integrity_not_ok:{}",
+            passport.integrity_gate_result
+        ));
+    }
+    Some("fresh".to_string())
+}
+
 fn parse_passport_scope_policy(passport: &DbPassport) -> Result<Option<IndexScopeOptions>, String> {
     let raw = passport.scope_policy_json.trim();
     if raw.is_empty() || raw == "null" {
@@ -2983,6 +3260,7 @@ fn parse_passport_scope_policy(passport: &DbPassport) -> Result<Option<IndexScop
 }
 
 fn db_lifecycle_preflight_from_report(
+    repo_root: &Path,
     report: DbPreflightReport,
     extra_blockers: Vec<String>,
     warnings: Vec<String>,
@@ -3021,10 +3299,23 @@ fn db_lifecycle_preflight_from_report(
     } else {
         "unknown"
     };
+    let exact_db_path_checked = report.db_path.clone();
+    let db_path = PathBuf::from(&exact_db_path_checked);
+    let db_path_outside_workspace = db_path_is_outside_workspace(&db_path, repo_root);
+    let outside_workspace_note =
+        db_path_outside_workspace.then(|| EXTERNAL_PROFILE_DB_NOTE.to_string());
+    let db_problem_kind = lifecycle_db_problem_kind(&report, &blockers, scope_status);
     DbLifecyclePreflight {
         safe,
+        db_problem_kind,
+        path_access_status: report.path_access_status.clone(),
+        path_access_error: report.path_access_error.clone(),
         blockers,
         warnings,
+        exact_db_path_checked,
+        repo_root_expected: path_string(repo_root),
+        db_path_outside_workspace,
+        outside_workspace_note,
         repo_root_status: preflight_field_status(&report, "repo root mismatch"),
         schema_status: preflight_field_status_any(
             &report,
@@ -3060,6 +3351,92 @@ fn preflight_field_status_any(report: &DbPreflightReport, needles: &[&str]) -> S
     } else {
         "ok".to_string()
     }
+}
+
+fn lifecycle_db_problem_kind(
+    report: &DbPreflightReport,
+    blockers: &[String],
+    scope_status: &str,
+) -> Option<String> {
+    if matches!(
+        report.db_problem_kind.as_deref(),
+        Some(
+            "db_missing"
+                | "permission_denied"
+                | "filesystem_inaccessible"
+                | "db_locked"
+                | "sqlite_corrupt"
+        )
+    ) {
+        return report.db_problem_kind.clone();
+    }
+    if blockers.iter().any(|blocker| {
+        blocker.contains("repo root mismatch") || blocker.contains("git remote mismatch")
+    }) {
+        Some("repo_root_mismatch".to_string())
+    } else if scope_status == "mismatched" {
+        Some("scope_mismatch".to_string())
+    } else if blockers.iter().any(|blocker| {
+        blocker.contains("schema version mismatch") || blocker.contains("passport schema mismatch")
+    }) {
+        Some("schema_mismatch".to_string())
+    } else if blockers
+        .iter()
+        .any(|blocker| blocker.contains("storage mode mismatch"))
+    {
+        Some("storage_mismatch".to_string())
+    } else {
+        report.db_problem_kind.clone()
+    }
+}
+
+fn db_path_is_outside_workspace(db_path: &Path, workspace_root: &Path) -> bool {
+    let absolute_db_path = if db_path.is_absolute() {
+        db_path.to_path_buf()
+    } else {
+        workspace_root.join(db_path)
+    };
+    let normalized_db_path =
+        normalize_lexical_path(&canonicalize_existing_prefix(&absolute_db_path));
+    let normalized_workspace_root =
+        normalize_lexical_path(&canonicalize_existing_prefix(workspace_root));
+    !path_starts_with_workspace(&normalized_db_path, &normalized_workspace_root)
+}
+
+fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
+    if let Ok(canonical) = fs::canonicalize(path) {
+        return canonical;
+    }
+    let mut current = path.to_path_buf();
+    let mut suffix = Vec::<std::ffi::OsString>::new();
+    while let Some(file_name) = current.file_name().map(|value| value.to_os_string()) {
+        suffix.push(file_name);
+        if !current.pop() {
+            return path.to_path_buf();
+        }
+        if let Ok(mut canonical) = fs::canonicalize(&current) {
+            for component in suffix.iter().rev() {
+                canonical.push(component);
+            }
+            return canonical;
+        }
+    }
+    path.to_path_buf()
+}
+
+#[cfg(windows)]
+fn path_starts_with_workspace(path: &Path, workspace_root: &Path) -> bool {
+    let path = path.display().to_string().to_ascii_lowercase();
+    let workspace_root = workspace_root.display().to_string().to_ascii_lowercase();
+    path == workspace_root
+        || path
+            .strip_prefix(&workspace_root)
+            .is_some_and(|rest| rest.starts_with('\\') || rest.starts_with('/'))
+}
+
+#[cfg(not(windows))]
+fn path_starts_with_workspace(path: &Path, workspace_root: &Path) -> bool {
+    path.starts_with(workspace_root)
 }
 
 pub fn require_reusable_db_passport(
@@ -8735,6 +9112,247 @@ mod tests {
         assert_ne!(mismatch.expected_scope_hash, mismatch.observed_scope_hash);
 
         fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    fn surface_preflight_request(
+        repo_root: &Path,
+        db_path: &Path,
+        operation_kind: DbLifecycleOperationKind,
+    ) -> DbLifecycleSurfacePreflightRequest {
+        DbLifecycleSurfacePreflightRequest {
+            repo_root: repo_root.to_path_buf(),
+            db_path: db_path.to_path_buf(),
+            surface_name: "test.surface".to_string(),
+            operation_kind,
+            allow_stale_read: false,
+            allow_foreign_repo: false,
+            required_storage_mode: Some(StorageMode::Proof),
+            expected_scope: None,
+        }
+    }
+
+    #[test]
+    fn lifecycle_surface_preflight_valid_db_normal_read_passes_exact_path() {
+        let repo = temp_repo("surface-valid-normal-read");
+        write_test_file(
+            &repo,
+            "src/main.ts",
+            "export function exact_path_checked() { return 1; }\n",
+        );
+        let db = repo.join("custom-artifact.sqlite");
+        index_repo_to_db_with_options(&repo, &db, IndexOptions::default())
+            .expect("index custom artifact");
+
+        let preflight = inspect_db_lifecycle_surface_preflight(surface_preflight_request(
+            &repo,
+            &db,
+            DbLifecycleOperationKind::NormalRead,
+        ))
+        .expect("surface preflight");
+
+        assert!(preflight.safe_to_read, "{preflight:?}");
+        assert!(!preflight.safe_to_write, "{preflight:?}");
+        assert!(preflight.claimable, "{preflight:?}");
+        assert!(!preflight.diagnostic_only, "{preflight:?}");
+        assert_eq!(preflight.passport_status, "valid");
+        assert!(preflight.repo_match, "{preflight:?}");
+        assert!(preflight.scope_match, "{preflight:?}");
+        assert_eq!(preflight.schema_status, "ok");
+        assert!(preflight.storage_mode_match, "{preflight:?}");
+        assert_eq!(preflight.exact_db_path_checked, db.display().to_string());
+        assert_eq!(preflight.artifact_freshness.as_deref(), Some("fresh"));
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn lifecycle_surface_preflight_missing_passport_normal_read_fails() {
+        let repo = temp_repo("surface-missing-passport");
+        let db = repo.join("missing-passport.sqlite");
+        drop(SqliteGraphStore::open(&db).expect("create schema without passport"));
+
+        let preflight = inspect_db_lifecycle_surface_preflight(surface_preflight_request(
+            &repo,
+            &db,
+            DbLifecycleOperationKind::NormalRead,
+        ))
+        .expect("surface preflight");
+
+        assert!(!preflight.safe_to_read, "{preflight:?}");
+        assert!(!preflight.safe_to_write, "{preflight:?}");
+        assert!(!preflight.claimable, "{preflight:?}");
+        assert_eq!(preflight.passport_status, "missing");
+        assert_eq!(
+            preflight.db_problem_kind.as_deref(),
+            Some("passport_missing")
+        );
+        assert_eq!(preflight.path_access_status, "ok");
+        assert!(!preflight.repo_match, "{preflight:?}");
+        assert_eq!(
+            preflight.artifact_freshness.as_deref(),
+            Some("passport_missing")
+        );
+        assert!(
+            preflight
+                .blockers
+                .iter()
+                .any(|blocker| blocker.contains("codegraph_db_passport")),
+            "{preflight:?}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn lifecycle_surface_preflight_mismatched_repo_normal_read_fails_closed() {
+        let repo_a = temp_repo("surface-repo-a");
+        let repo_b = temp_repo("surface-repo-b");
+        write_test_file(&repo_a, "src/a.ts", "export const repo_a = 1;\n");
+        write_test_file(&repo_b, "src/b.ts", "export const repo_b = 1;\n");
+        let db = repo_a.join("repo-a.sqlite");
+        index_repo_to_db_with_options(&repo_a, &db, IndexOptions::default()).expect("index repo A");
+
+        let mut request =
+            surface_preflight_request(&repo_b, &db, DbLifecycleOperationKind::NormalRead);
+        request.allow_foreign_repo = true;
+        let preflight = inspect_db_lifecycle_surface_preflight(request).expect("surface preflight");
+
+        assert!(!preflight.safe_to_read, "{preflight:?}");
+        assert!(!preflight.claimable, "{preflight:?}");
+        assert!(!preflight.repo_match, "{preflight:?}");
+        assert_eq!(
+            preflight.db_problem_kind.as_deref(),
+            Some("repo_root_mismatch")
+        );
+        assert!(
+            preflight
+                .blockers
+                .iter()
+                .any(|blocker| blocker.contains("repo root mismatch")),
+            "{preflight:?}"
+        );
+
+        fs::remove_dir_all(repo_a).expect("cleanup repo A");
+        fs::remove_dir_all(repo_b).expect("cleanup repo B");
+    }
+
+    #[test]
+    fn lifecycle_surface_preflight_reports_external_profile_db_path() {
+        let repo = temp_repo("surface-external-profile-db");
+        write_test_file(
+            &repo,
+            "src/main.ts",
+            "export function external_profile_db() { return 1; }\n",
+        );
+        let external_db = std::env::temp_dir().join(format!(
+            "codegraph-index-external-profile-{}-{}.sqlite",
+            process::id(),
+            unix_time_ms()
+        ));
+        index_repo_to_db_with_options(&repo, &external_db, IndexOptions::default())
+            .expect("index external profile DB");
+
+        let preflight = inspect_db_lifecycle_surface_preflight(surface_preflight_request(
+            &repo,
+            &external_db,
+            DbLifecycleOperationKind::NormalRead,
+        ))
+        .expect("surface preflight");
+
+        assert!(preflight.safe_to_read, "{preflight:?}");
+        assert!(preflight.db_path_outside_workspace, "{preflight:?}");
+        assert_eq!(
+            preflight.outside_workspace_note.as_deref(),
+            Some(EXTERNAL_PROFILE_DB_NOTE)
+        );
+        assert_eq!(preflight.path_access_status, "ok");
+
+        let _ = fs::remove_file(&external_db);
+        let _ = fs::remove_file(format!("{}-wal", external_db.display()));
+        let _ = fs::remove_file(format!("{}-shm", external_db.display()));
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn lifecycle_surface_preflight_mismatched_repo_diagnostic_read_is_nonclaimable() {
+        let repo_a = temp_repo("surface-diagnostic-repo-a");
+        let repo_b = temp_repo("surface-diagnostic-repo-b");
+        write_test_file(&repo_a, "src/a.ts", "export const repo_a = 1;\n");
+        write_test_file(&repo_b, "src/b.ts", "export const repo_b = 1;\n");
+        let db = repo_a.join("repo-a.sqlite");
+        index_repo_to_db_with_options(&repo_a, &db, IndexOptions::default()).expect("index repo A");
+
+        let blocked = inspect_db_lifecycle_surface_preflight(surface_preflight_request(
+            &repo_b,
+            &db,
+            DbLifecycleOperationKind::DiagnosticRead,
+        ))
+        .expect("blocked diagnostic preflight");
+        assert!(!blocked.safe_to_read, "{blocked:?}");
+        assert!(!blocked.claimable, "{blocked:?}");
+
+        let mut request =
+            surface_preflight_request(&repo_b, &db, DbLifecycleOperationKind::DiagnosticRead);
+        request.allow_foreign_repo = true;
+        let allowed =
+            inspect_db_lifecycle_surface_preflight(request).expect("allowed diagnostic preflight");
+
+        assert!(allowed.safe_to_read, "{allowed:?}");
+        assert!(!allowed.safe_to_write, "{allowed:?}");
+        assert!(allowed.diagnostic_only, "{allowed:?}");
+        assert!(!allowed.claimable, "{allowed:?}");
+        assert!(!allowed.repo_match, "{allowed:?}");
+        assert!(allowed.blockers.is_empty(), "{allowed:?}");
+        assert!(
+            allowed
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("foreign-repo blocker")),
+            "{allowed:?}"
+        );
+
+        fs::remove_dir_all(repo_a).expect("cleanup repo A");
+        fs::remove_dir_all(repo_b).expect("cleanup repo B");
+    }
+
+    #[test]
+    fn lifecycle_surface_preflight_write_update_is_stricter_than_diagnostic_read() {
+        let repo_a = temp_repo("surface-write-repo-a");
+        let repo_b = temp_repo("surface-write-repo-b");
+        write_test_file(&repo_a, "src/a.ts", "export const repo_a = 1;\n");
+        write_test_file(&repo_b, "src/b.ts", "export const repo_b = 1;\n");
+        let db = repo_a.join("repo-a.sqlite");
+        index_repo_to_db_with_options(&repo_a, &db, IndexOptions::default()).expect("index repo A");
+
+        let mut diagnostic =
+            surface_preflight_request(&repo_b, &db, DbLifecycleOperationKind::DiagnosticRead);
+        diagnostic.allow_foreign_repo = true;
+        assert!(
+            inspect_db_lifecycle_surface_preflight(diagnostic)
+                .expect("diagnostic")
+                .safe_to_read
+        );
+
+        let mut write =
+            surface_preflight_request(&repo_b, &db, DbLifecycleOperationKind::WriteUpdate);
+        write.allow_foreign_repo = true;
+        write.allow_stale_read = true;
+        let write_preflight =
+            inspect_db_lifecycle_surface_preflight(write).expect("write preflight");
+
+        assert!(!write_preflight.safe_to_write, "{write_preflight:?}");
+        assert!(!write_preflight.safe_to_read, "{write_preflight:?}");
+        assert!(!write_preflight.claimable, "{write_preflight:?}");
+        assert!(
+            write_preflight
+                .blockers
+                .iter()
+                .any(|blocker| blocker.contains("repo root mismatch")),
+            "{write_preflight:?}"
+        );
+
+        fs::remove_dir_all(repo_a).expect("cleanup repo A");
+        fs::remove_dir_all(repo_b).expect("cleanup repo B");
     }
 
     #[test]

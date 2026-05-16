@@ -1,0 +1,605 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-15T22:01:40-05:00",
+  "cwd": "C:/Users/wamin/.codex/worktrees/4160/codegraph-mcp",
+  "mvp": {
+    "active_worktree_mvp_md": {
+      "path": "C:/Users/wamin/.codex/worktrees/4160/codegraph-mcp/MVP.md",
+      "status": "missing"
+    },
+    "reference_mvp_md": {
+      "path": "C:/Users/wamin/Desktop/development/codegraph-mcp/MVP.md",
+      "status": "read"
+    },
+    "note": "Inventory is based on the active worktree code. The active worktree does not contain MVP.md, so the sibling checkout copy was read only for project intent."
+  },
+  "behavior_change": false,
+  "summary": {
+    "production_main_read_paths_guarded": true,
+    "mcp_status_guarded": true,
+    "mcp_read_paths_guarded": true,
+    "update_paths_guarded": true,
+    "confirmed_p0_surfaces": [
+      "cli.query.unresolved_calls.subcommand_db",
+      "cli.ui.unresolved_calls",
+      "cli.watch.persistent_startup",
+      "cli.doctor.database_check",
+      "cli.bundle.import"
+    ],
+    "p2_diagnostic_claimability_surfaces": [
+      "cli.audit.read_only",
+      "cli.audit.storage_experiments",
+      "cli.bench.query_surface_existing_db",
+      "cli.bench.comprehensive_existing_artifact",
+      "cli.bench.update_integrity_helpers",
+      "codegraph_bench.generated_fixture_opens"
+    ]
+  },
+  "surfaces": [
+    {
+      "id": "store.primitive.open",
+      "file": "crates/codegraph-store/src/sqlite.rs",
+      "function": "SqliteGraphStore::open",
+      "lines": [187, 202],
+      "command_or_api": "shared primitive",
+      "db_path_source": "caller-provided path",
+      "user_can_override_db_path": "caller-dependent",
+      "role": "store open and migration primitive",
+      "lifecycle_passport_guard": "none inside primitive",
+      "exact_path_guarded": "caller-dependent",
+      "open_mode": "mutation_capable",
+      "claimability": "not output-producing itself",
+      "risk": "not_applicable"
+    },
+    {
+      "id": "store.preflight",
+      "file": "crates/codegraph-store/src/sqlite.rs",
+      "function": "inspect_db_preflight",
+      "lines": [2423, 2478],
+      "command_or_api": "shared lifecycle/passport guard",
+      "db_path_source": "exact caller-provided DB path",
+      "user_can_override_db_path": "caller-dependent",
+      "role": "repo/schema/storage/scope/passport/integrity inspection",
+      "lifecycle_passport_guard": "this is the guard",
+      "exact_path_guarded": true,
+      "open_mode": "read_only",
+      "claimability": "guard evidence claimable when enforced by caller",
+      "risk": "already_fixed"
+    },
+    {
+      "id": "index.lifecycle",
+      "file": "crates/codegraph-index/src/lib.rs",
+      "function": "index_repo_to_db_with_options",
+      "lines": [849, 882],
+      "command_or_api": "CLI index, MCP index_repo, fresh benchmark builds",
+      "db_path_source": "default_db_path, CODEGRAPH_DB_PATH, or explicit caller DB",
+      "user_can_override_db_path": true,
+      "role": "write/index",
+      "lifecycle_passport_guard": "inspect_db_preflight plus decide_db_lifecycle",
+      "exact_path_guarded": true,
+      "open_mode": "mutation_capable_after_lifecycle_decision",
+      "claimability": "claimable when lifecycle decision is claimable",
+      "risk": "already_fixed"
+    },
+    {
+      "id": "index.update",
+      "file": "crates/codegraph-index/src/lib.rs",
+      "function": "update_changed_files_with_cache_to_db",
+      "lines": [4192, 4213],
+      "command_or_api": "CLI watch once, MCP update_changed_files, benchmark update loop",
+      "db_path_source": "default DB or explicit update DB",
+      "user_can_override_db_path": true,
+      "role": "incremental mutation",
+      "lifecycle_passport_guard": "require_db_lifecycle_preflight with passport scope baseline",
+      "exact_path_guarded": true,
+      "open_mode": "mutation_capable_after_preflight",
+      "claimability": "claimable if preflight passes",
+      "risk": "already_fixed"
+    },
+    {
+      "id": "cli.status",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "function": "run_status_command",
+      "lines": [836, 901],
+      "command_or_api": "codegraph-mcp status",
+      "db_path_source": "default_db_path(repo_root), including CODEGRAPH_DB_PATH",
+      "user_can_override_db_path": "global --db or env",
+      "role": "status/count inspection",
+      "lifecycle_passport_guard": "inspect_read_db_lifecycle_preflight before open",
+      "exact_path_guarded": true,
+      "open_mode": "mutation_capable_store_open_after_safe_preflight",
+      "claimability": "claimable if preflight safe",
+      "risk": "already_fixed"
+    },
+    {
+      "id": "cli.doctor.database_check",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "function": "run_doctor_command",
+      "lines": [920, 964],
+      "command_or_api": "codegraph-mcp doctor",
+      "db_path_source": "default_db_path(repo_root), including CODEGRAPH_DB_PATH",
+      "user_can_override_db_path": "global --db or env",
+      "role": "diagnostic DB-open probe",
+      "lifecycle_passport_guard": "none",
+      "exact_path_guarded": false,
+      "open_mode": "mutation_capable_store_open",
+      "claimability": "diagnostic but may report database ok without passport",
+      "risk": "P0_confirmed_unsafe_diagnostic_open",
+      "finding": "Direct store open can migrate/open an unsafe DB and doctor can report ok without lifecycle/passport blockers."
+    },
+    {
+      "id": "cli.query.wrapper",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "function": "run_query_command",
+      "lines": [1112, 1133],
+      "command_or_api": "codegraph-mcp query ...",
+      "db_path_source": "default_db_path(current_repo_root), including CODEGRAPH_DB_PATH",
+      "user_can_override_db_path": "global --db or env",
+      "role": "shared query read guard",
+      "lifecycle_passport_guard": "read_db_lifecycle_guard",
+      "exact_path_guarded": "yes for default/env DB",
+      "open_mode": "guard_then_subcommand",
+      "claimability": "claimable when subcommand opens same path",
+      "risk": "already_fixed_except_unresolved_subcommand_db"
+    },
+    {
+      "id": "cli.open_existing_store",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "function": "open_existing_store",
+      "lines": [11186, 11195],
+      "command_or_api": "query symbols/text/files/relation/path, impact internals, UI DB routes, bundle export",
+      "db_path_source": "default_db_path(repo_root), including CODEGRAPH_DB_PATH",
+      "user_can_override_db_path": "global --db or env",
+      "role": "shared store read helper",
+      "lifecycle_passport_guard": "read_db_lifecycle_guard",
+      "exact_path_guarded": true,
+      "open_mode": "mutation_capable_store_open_after_safe_preflight",
+      "claimability": "claimable if caller output is claimable",
+      "risk": "already_fixed"
+    },
+    {
+      "id": "cli.context_pack",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "function": "run_context_pack_command/open_context_pack_connection",
+      "lines": [1263, 1280, 11334, 11350],
+      "command_or_api": "codegraph-mcp context-pack",
+      "db_path_source": "default_db_path(repo_root), including CODEGRAPH_DB_PATH",
+      "user_can_override_db_path": "global --db or env",
+      "role": "context packet read",
+      "lifecycle_passport_guard": "read_db_lifecycle_guard before read-only connection",
+      "exact_path_guarded": true,
+      "open_mode": "read_only_query_only",
+      "claimability": "claimable if guard safe",
+      "risk": "already_fixed"
+    },
+    {
+      "id": "cli.impact",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "function": "run_impact_command/impact_value",
+      "lines": [1485, 1515],
+      "command_or_api": "codegraph-mcp impact",
+      "db_path_source": "default_db_path(repo_root), including CODEGRAPH_DB_PATH",
+      "user_can_override_db_path": "global --db or env",
+      "role": "graph traversal read",
+      "lifecycle_passport_guard": "read_db_lifecycle_guard and open_existing_store",
+      "exact_path_guarded": true,
+      "open_mode": "mutation_capable_store_open_after_safe_preflight",
+      "claimability": "claimable if guard safe",
+      "risk": "already_fixed"
+    },
+    {
+      "id": "cli.query.unresolved_calls.subcommand_db",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "function": "parse_unresolved_calls_args/query_unresolved_calls",
+      "lines": [8914, 8995, 9054],
+      "command_or_api": "codegraph-mcp query unresolved-calls --db <path>",
+      "db_path_source": "subcommand --db, otherwise default_db_path(repo_root)",
+      "user_can_override_db_path": true,
+      "role": "SQL read and optional bounded source scan",
+      "lifecycle_passport_guard": "top-level query guard checks default/env DB, not necessarily this subcommand path",
+      "exact_path_guarded": false,
+      "open_mode": "read_only_connection plus mutation_capable_store_open if --source-scan",
+      "claimability": "can look claimable while exact opened DB is unguarded",
+      "risk": "P0_confirmed_unsafe_read_path",
+      "finding": "If subcommand --db differs from global/default DB, the exact DB opened at line 9012 is not preflighted."
+    },
+    {
+      "id": "ui.guarded_routes",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "function": "route_ui_request/ui_status/ui_path_graph/ui_symbol_search/ui_impact/ui_context_pack",
+      "lines": [7613, 7915],
+      "command_or_api": "serve-ui local API except /api/unresolved-calls and /api/source-span",
+      "db_path_source": "default_db_path(repo_root), including CODEGRAPH_DB_PATH",
+      "user_can_override_db_path": "env/global before server start",
+      "role": "local API read",
+      "lifecycle_passport_guard": "open_existing_store for DB-backed routes",
+      "exact_path_guarded": true,
+      "open_mode": "mutation_capable_store_open_after_safe_preflight",
+      "claimability": "local diagnostic/UI",
+      "risk": "already_fixed"
+    },
+    {
+      "id": "ui.unresolved_calls",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "function": "ui_unresolved_calls/query_unresolved_calls",
+      "lines": [7853, 7878],
+      "command_or_api": "serve-ui /api/unresolved-calls",
+      "db_path_source": "default_db_path(repo_root) inside query_unresolved_calls",
+      "user_can_override_db_path": "env/global before server start",
+      "role": "local API unresolved-call read",
+      "lifecycle_passport_guard": "none on this route",
+      "exact_path_guarded": false,
+      "open_mode": "read_only_connection",
+      "claimability": "local diagnostic/UI",
+      "risk": "P0_confirmed_unsafe_read_path",
+      "finding": "The route bypasses the top-level query guard and calls the unguarded unresolved-calls helper directly."
+    },
+    {
+      "id": "watch.once",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "function": "run_watch_command",
+      "lines": [7396, 7415],
+      "command_or_api": "codegraph-mcp watch --once --changed ... [--db <path>]",
+      "db_path_source": "--db or default_db_path through update helper",
+      "user_can_override_db_path": true,
+      "role": "one-shot update",
+      "lifecycle_passport_guard": "update_changed_files_to_db preflight",
+      "exact_path_guarded": true,
+      "open_mode": "mutation_capable_after_preflight",
+      "claimability": "claimable if update preflight passes",
+      "risk": "already_fixed"
+    },
+    {
+      "id": "watch.persistent_startup",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "function": "run_watch_command/watch_repo/parse_watch_options",
+      "lines": [7418, 7433, 7478, 9997, 10023],
+      "command_or_api": "codegraph-mcp watch [repo] [--db <path>]",
+      "db_path_source": "watch_repo uses default_db_path(repo_root); local --db is parsed but not passed",
+      "user_can_override_db_path": "local --db parsed but ignored in persistent mode; env/global can affect default_db_path",
+      "role": "long-running cache refresh and update loop",
+      "lifecycle_passport_guard": "none before initial store open; later update helper is guarded",
+      "exact_path_guarded": false,
+      "open_mode": "mutation_capable_store_open_before_events",
+      "claimability": "operational path, not benchmark output",
+      "risk": "P0_confirmed_unsafe_startup_open_and_P3_ignored_db_option",
+      "finding": "Persistent watch can open/migrate default/env DB before lifecycle preflight and does not honor the parsed local --db path."
+    },
+    {
+      "id": "bundle.export",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "function": "run_bundle_export",
+      "lines": [8357, 8391],
+      "command_or_api": "codegraph-mcp bundle export",
+      "db_path_source": "default_db_path(current_repo_root), including CODEGRAPH_DB_PATH",
+      "user_can_override_db_path": "global --db or env",
+      "role": "bundle export/read",
+      "lifecycle_passport_guard": "open_existing_store",
+      "exact_path_guarded": true,
+      "open_mode": "mutation_capable_store_open_after_safe_preflight",
+      "claimability": "claimable if guard safe",
+      "risk": "already_fixed"
+    },
+    {
+      "id": "bundle.import",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "function": "run_bundle_import",
+      "lines": [8394, 8447],
+      "command_or_api": "codegraph-mcp bundle import",
+      "db_path_source": "default_db_path(current_repo_root), including CODEGRAPH_DB_PATH",
+      "user_can_override_db_path": "global --db or env",
+      "role": "bundle import/write",
+      "lifecycle_passport_guard": "bundle schema check and post-write quick_integrity_gate only",
+      "exact_path_guarded": false,
+      "open_mode": "mutation_capable_transaction",
+      "claimability": "import output not safely claimable before lifecycle hardening",
+      "risk": "P0_confirmed_unsafe_import_path",
+      "finding": "Existing DB can be opened and mutated before lifecycle/passport compatibility is checked."
+    },
+    {
+      "id": "audit.read_only",
+      "file": "crates/codegraph-cli/src/audit.rs",
+      "function": "open_read_only and audit readers",
+      "lines": [860, 985, 1331, 1392, 3172, 4230, 5047],
+      "command_or_api": "audit storage/schema-check/sample-edges/sample-paths/relation-counts",
+      "db_path_source": "--db, CODEGRAPH_DB_PATH, or .codegraph/codegraph.sqlite",
+      "user_can_override_db_path": true,
+      "role": "diagnostic/audit read",
+      "lifecycle_passport_guard": "none, intentionally arbitrary read-only inspection",
+      "exact_path_guarded": false,
+      "open_mode": "read_only",
+      "claimability": "diagnostic unless caller establishes lifecycle/freshness",
+      "risk": "P2_diagnostic_claimability_issue"
+    },
+    {
+      "id": "audit.storage_experiments",
+      "file": "crates/codegraph-cli/src/audit.rs",
+      "function": "run_storage_experiments/mutate_copy",
+      "lines": [1582, 2738],
+      "command_or_api": "audit storage-experiments",
+      "db_path_source": "original --db copied to workdir",
+      "user_can_override_db_path": true,
+      "role": "mutate copied DB for experiments",
+      "lifecycle_passport_guard": "copy-only safeguards, no original passport preflight",
+      "exact_path_guarded": "original no; copy yes by construction",
+      "open_mode": "original read/copy and copied DB mutation",
+      "claimability": "diagnostic only",
+      "risk": "P2_P3_diagnostic"
+    },
+    {
+      "id": "bench.query_surface_existing_db",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "function": "run_query_surface_benchmark_command/build_default_query_surface_report",
+      "lines": [2147, 2182, 5333, 5368],
+      "command_or_api": "bench query-surface",
+      "db_path_source": "fresh generated DB or existing --db/default DB",
+      "user_can_override_db_path": true,
+      "role": "benchmark read surface",
+      "lifecycle_passport_guard": "fresh build uses index lifecycle; existing path opens read-only directly",
+      "exact_path_guarded": "partial",
+      "open_mode": "read_only for report; mutation-capable for fresh generated DB",
+      "claimability": "claimable only when artifact lifecycle/freshness is established",
+      "risk": "P2_diagnostic_claimability_issue"
+    },
+    {
+      "id": "bench.proof_build",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "function": "run_proof_build_mode_benchmark_command",
+      "lines": [2200, 2489],
+      "command_or_api": "bench proof-build-only/proof-build-validated",
+      "db_path_source": "explicit --db or default index DB",
+      "user_can_override_db_path": true,
+      "role": "production proof-build timing and metadata",
+      "lifecycle_passport_guard": "index lifecycle for built DB; metadata helpers after build",
+      "exact_path_guarded": true,
+      "open_mode": "mutation_capable index plus read-only metadata",
+      "claimability": "release binary required; debug timing diagnostic_only",
+      "risk": "already_fixed_for_binary_claimability"
+    },
+    {
+      "id": "bench.comprehensive_existing_artifact",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "function": "inspect_existing_comprehensive_proof_artifact",
+      "lines": [3076, 3238],
+      "command_or_api": "bench comprehensive --use-existing-artifact",
+      "db_path_source": "user-provided artifact DB",
+      "user_can_override_db_path": true,
+      "role": "existing artifact benchmark reuse",
+      "lifecycle_passport_guard": "metadata/schema/storage/integrity checks, no shared passport preflight",
+      "exact_path_guarded": false,
+      "open_mode": "read_only audit/schema checks",
+      "claimability": "can be stale/non-claimable; fail-on-stale helps but does not prove repo passport scope",
+      "risk": "P2_diagnostic_claimability_issue"
+    },
+    {
+      "id": "bench.update_integrity_helpers",
+      "file": "crates/codegraph-cli/src/lib.rs",
+      "function": "run_update_integrity_harness and helper hash/count/integrity functions",
+      "lines": [6882, 7235, 12906, 13280],
+      "command_or_api": "bench update-integrity",
+      "db_path_source": "harness-generated DBs or copied --autoresearch-seed-db",
+      "user_can_override_db_path": "seed DB and workdir",
+      "role": "benchmark repeat/update/integrity harness",
+      "lifecycle_passport_guard": "fresh/repeat/update calls use index/update lifecycle; helper opens do not",
+      "exact_path_guarded": "partial",
+      "open_mode": "mutation_capable helper opens on generated/copy DBs",
+      "claimability": "diagnostic/benchmark; depends on harness artifact freshness",
+      "risk": "P2_diagnostic_claimability_issue"
+    },
+    {
+      "id": "bench.final_acceptance",
+      "file": "crates/codegraph-bench/src/lib.rs",
+      "function": "run_final_acceptance_gate",
+      "lines": [1753, 1783],
+      "command_or_api": "internal final acceptance gate",
+      "db_path_source": "generated fixture DBs",
+      "user_can_override_db_path": false,
+      "role": "benchmark comparison snapshot",
+      "lifecycle_passport_guard": "DBs generated by index paths in same run",
+      "exact_path_guarded": "by construction, not separately preflighted",
+      "open_mode": "mutation_capable_store_open_after_generation",
+      "claimability": "diagnostic benchmark evidence",
+      "risk": "P2_diagnostic_benchmark_surface"
+    },
+    {
+      "id": "bench.graph_truth",
+      "file": "crates/codegraph-bench/src/graph_truth.rs",
+      "function": "run_case/evaluate indexed fixture DB",
+      "lines": [1053, 1357],
+      "command_or_api": "bench graph-truth and context-packet fixture cases",
+      "db_path_source": "generated fixture/audit DB",
+      "user_can_override_db_path": false,
+      "role": "benchmark query/evaluation",
+      "lifecycle_passport_guard": "DB generated by benchmark indexing in same case",
+      "exact_path_guarded": "by construction, not shared preflight",
+      "open_mode": "mutation_capable_store_open_after_generated_index",
+      "claimability": "fixture gate evidence, not user DB read surface",
+      "risk": "P2_diagnostic_benchmark_surface"
+    },
+    {
+      "id": "bench.retrieval_ablation",
+      "file": "crates/codegraph-bench/src/retrieval_ablation.rs",
+      "function": "run_case",
+      "lines": [501, 511],
+      "command_or_api": "bench retrieval-ablation",
+      "db_path_source": "unique generated DB path",
+      "user_can_override_db_path": false,
+      "role": "benchmark read/evaluation",
+      "lifecycle_passport_guard": "DB generated by benchmark indexing in same case",
+      "exact_path_guarded": "by construction, not shared preflight",
+      "open_mode": "mutation_capable_store_open_after_generated_index",
+      "claimability": "diagnostic benchmark",
+      "risk": "P2_diagnostic_benchmark_surface"
+    },
+    {
+      "id": "tests.direct_opens",
+      "file": "crates/*/src/*.rs",
+      "function": "multiple cfg(test) helpers",
+      "lines": [],
+      "command_or_api": "unit/smoke tests",
+      "db_path_source": "temp fixture DBs",
+      "user_can_override_db_path": false,
+      "role": "test setup/assertion",
+      "lifecycle_passport_guard": "test-specific",
+      "exact_path_guarded": "test-specific",
+      "open_mode": "mixed",
+      "claimability": "not production output",
+      "risk": "not_applicable"
+    }
+  ],
+  "fix_matrix": {
+    "P0_confirmed_unsafe_read_write_path": [
+      {
+        "surface": "query unresolved-calls --db",
+        "classification": "present",
+        "reason": "Subcommand --db can differ from the default/env DB preflighted by run_query_command."
+      },
+      {
+        "surface": "UI /api/unresolved-calls",
+        "classification": "present",
+        "reason": "Calls query_unresolved_calls directly without read_db_lifecycle_guard."
+      },
+      {
+        "surface": "long-running watch",
+        "classification": "present",
+        "reason": "Startup opens default/env DB directly and local --db is not passed into persistent watch."
+      },
+      {
+        "surface": "doctor",
+        "classification": "present",
+        "reason": "Direct mutation-capable store open and schema_version check without passport preflight."
+      },
+      {
+        "surface": "bundle import",
+        "classification": "present",
+        "reason": "Mutates default/env DB before lifecycle/passport compatibility is checked."
+      }
+    ],
+    "P1_likely_unsafe_needs_proof": [
+      {
+        "surface": "persistent watch --db exact-path behavior",
+        "reason": "Needs a regression proving local --db is ignored and proving unsafe default/env startup DB handling."
+      },
+      {
+        "surface": "comprehensive existing artifact passport compatibility",
+        "reason": "Freshness checks exist, but repo/scope passport compatibility is not checked through shared preflight."
+      }
+    ],
+    "P2_diagnostic_benchmark_claimability_issue": [
+      "audit read-only commands inspect arbitrary DBs",
+      "audit storage-experiments mutate copied DBs",
+      "bench query-surface existing DB path",
+      "bench comprehensive existing artifact path",
+      "bench update-integrity helper opens",
+      "codegraph-bench generated fixture direct opens"
+    ],
+    "P3_usability_clarity_issue": [
+      "persistent watch parses local --db but ignores it",
+      "doctor database check should report lifecycle/passport blockers instead of generic open status"
+    ],
+    "already_fixed": [
+      "CLI status",
+      "CLI default query paths through open_existing_store",
+      "CLI context-pack",
+      "CLI impact",
+      "CLI bundle export",
+      "CLI watch --once",
+      "MCP status",
+      "MCP search/analyze/read tools through open_store_with_preflight",
+      "MCP update_changed_files through guarded update path",
+      "incremental update stale ignored-file cleanup",
+      "include-aware pruning",
+      "proof-build binary claimability metadata"
+    ],
+    "not_applicable": [
+      "SqliteGraphStore::open as a primitive",
+      "open_in_memory",
+      "inspect_db_preflight as the guard itself",
+      "test-only direct opens",
+      "UI /api/source-span"
+    ]
+  },
+  "suspected_surfaces": [
+    {
+      "surface": "query unresolved-calls --db",
+      "classification": "present_P0",
+      "evidence": [
+        "crates/codegraph-cli/src/lib.rs:8961 parses subcommand --db",
+        "crates/codegraph-cli/src/lib.rs:9012 opens that DB read-only",
+        "crates/codegraph-cli/src/lib.rs:9047 optionally opens it through SqliteGraphStore for source-scan",
+        "crates/codegraph-cli/src/lib.rs:1119 preflights the default/env DB, not necessarily the subcommand DB"
+      ]
+    },
+    {
+      "surface": "long-running watch --db",
+      "classification": "partial_P0_P3",
+      "evidence": [
+        "crates/codegraph-cli/src/lib.rs:10017 parses --db",
+        "crates/codegraph-cli/src/lib.rs:7402 honors --db only for --once",
+        "crates/codegraph-cli/src/lib.rs:7418 calls watch_repo without db",
+        "crates/codegraph-cli/src/lib.rs:7432 opens default/env DB directly"
+      ]
+    },
+    {
+      "surface": "doctor",
+      "classification": "present_P0",
+      "evidence": [
+        "crates/codegraph-cli/src/lib.rs:955 opens the store and reads schema_version without lifecycle preflight"
+      ]
+    },
+    {
+      "surface": "bundle import",
+      "classification": "present_P0",
+      "evidence": [
+        "crates/codegraph-cli/src/lib.rs:8411 opens default/env DB directly",
+        "crates/codegraph-cli/src/lib.rs:8413 mutates it in a transaction",
+        "crates/codegraph-cli/src/lib.rs:8431 runs quick integrity after mutation",
+        "crates/codegraph-cli/src/lib.rs:8434 writes passport after mutation"
+      ]
+    },
+    {
+      "surface": "benchmark/update-integrity helpers",
+      "classification": "partial_P2",
+      "evidence": [
+        "crates/codegraph-cli/src/lib.rs:7211 and 7230 update via guarded update_changed_files_to_db",
+        "crates/codegraph-cli/src/lib.rs:12915 opens DB for seed schema_version",
+        "crates/codegraph-cli/src/lib.rs:13191 and 13198 open DB for integrity helpers",
+        "crates/codegraph-cli/src/lib.rs:13205, 13216, 13221, 13228, 13244, and 13254 open DB for graph count/hash/digest priming helpers"
+      ]
+    }
+  ],
+  "verification": {
+    "planned": [
+      "python -m json.tool reports/audit/db_lifecycle_surface_inventory.json",
+      "cargo test --workspace"
+    ],
+    "results": [
+      {
+        "command": "python -m json.tool reports/audit/db_lifecycle_surface_inventory.json",
+        "status": "passed",
+        "notes": "JSON validates."
+      },
+      {
+        "command": "cargo test --workspace",
+        "status": "failed",
+        "attempt": 1,
+        "failing_test": "tests::ui_server_starts_and_status_endpoint_uses_real_index",
+        "failure": "read HTTP response: Os { code: 10054, kind: ConnectionReset, message: \"An existing connection was forcibly closed by the remote host.\" }",
+        "notes": "Failure occurred in codegraph-cli unit tests after codegraph-bench tests passed."
+      },
+      {
+        "command": "cargo test -p codegraph-cli tests::ui_server_starts_and_status_endpoint_uses_real_index -- --exact",
+        "status": "passed",
+        "notes": "The exact failed test passed when run alone."
+      },
+      {
+        "command": "cargo test --workspace",
+        "status": "failed",
+        "attempt": 2,
+        "failing_test": "tests::ui_server_starts_and_status_endpoint_uses_real_index",
+        "failure": "read HTTP response: Os { code: 10054, kind: ConnectionReset, message: \"An existing connection was forcibly closed by the remote host.\" }",
+        "notes": "Same full-workspace failure repeated. No behavior change was made because this prompt is inventory-only."
+      }
+    ]
+  }
+}

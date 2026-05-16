@@ -1,0 +1,151 @@
+{
+  "report": "mcp_status_passport_gate_fix",
+  "generated": "2026-05-15T14:20:59.0050136-05:00",
+  "source_preflight": {
+    "mvp_md": {
+      "path": "MVP.md",
+      "status": "missing",
+      "timestamp_written": false,
+      "read_attempts": [
+        "Test-Path MVP.md -> MVP.md NOT FOUND",
+        ".\\.codex-tools\\rg.exe --files | .\\.codex-tools\\rg.exe \"(^|/)MVP\\.md$\" -> no output; exit 1"
+      ]
+    },
+    "read_reports": [
+      "reports/audit/shared_passport_preflight_fix.md",
+      "reports/audit/scope_passport_regression_tests.md"
+    ]
+  },
+  "goal": "Fix P2: MCP status must not bypass the passport gate.",
+  "changed_files_for_this_pass": [
+    "crates/codegraph-mcp-server/src/lib.rs",
+    "reports/audit/mcp_status_passport_gate_fix.md",
+    "reports/audit/mcp_status_passport_gate_fix.json"
+  ],
+  "implementation": {
+    "status_uses_shared_preflight": true,
+    "preflight_function": "inspect_db_lifecycle_preflight",
+    "sqlite_counts_after_safe_preflight_only": true,
+    "missing_db_status": {
+      "status": "missing",
+      "problem": "index_required",
+      "db_problem": "db_missing",
+      "safe_to_query": false
+    },
+    "unsafe_db_status": {
+      "status": "db_problem",
+      "safe_to_query": false,
+      "counts_reported": false
+    },
+    "safe_db_status": {
+      "status": "ok",
+      "safe_to_query": true,
+      "counts_reported": true
+    },
+    "new_helpers": [
+      "mcp_db_problem_kind",
+      "mcp_passport_summary_json"
+    ],
+    "status_schema_fields": [
+      "status",
+      "safe_to_query",
+      "blockers",
+      "warnings",
+      "passport_summary",
+      "scope_source",
+      "db_lifecycle_read",
+      "problem",
+      "files",
+      "entities",
+      "edges"
+    ],
+    "problem_kinds": [
+      "repo_root_mismatch",
+      "scope_mismatch",
+      "schema_mismatch",
+      "storage_mismatch",
+      "passport_missing",
+      "passport_corrupt",
+      "passport_invalid"
+    ]
+  },
+  "tests_added": [
+    "mcp_status_safe_db_reports_counts_passport_and_scope_source",
+    "mcp_status_missing_db_reports_index_required",
+    "mcp_status_passport_gate_reports_db_problem_for_mismatched_db",
+    "mcp_status_scope_mismatch_reports_scope_mismatch_blocker",
+    "mcp_status_schema_mismatch_reports_schema_blocker",
+    "mcp_status_storage_mismatch_reports_storage_blocker"
+  ],
+  "requirements_covered": {
+    "safe_db_status_ok": true,
+    "unsafe_db_status_db_problem": true,
+    "repo_root_mismatch_status_blocker": true,
+    "scope_mismatch_status_blocker": true,
+    "schema_mismatch_status_blocker": true,
+    "storage_mismatch_status_blocker": true,
+    "missing_db_status_index_required": true,
+    "status_agrees_with_search_safety": true
+  },
+  "commands": [
+    {
+      "command": "cargo test -p codegraph-mcp mcp_status",
+      "status": "failed_package_not_found",
+      "summary": "Package codegraph-mcp does not exist in this workspace."
+    },
+    {
+      "command": "cargo test -p codegraph-mcp-server mcp_status",
+      "status": "passed",
+      "summary": "6 passed; 0 failed; 0 ignored; 14 filtered out"
+    },
+    {
+      "command": "cargo test -p codegraph-index db_lifecycle",
+      "status": "passed",
+      "summary": "5 passed; 0 failed; 0 ignored; 85 filtered out"
+    },
+    {
+      "command": "cargo test -p codegraph-mcp-server",
+      "status": "passed",
+      "summary": "20 passed; 0 failed; 0 ignored"
+    },
+    {
+      "command": "cargo test --workspace",
+      "status": "failed",
+      "summary": "Failed in codegraph-cli tests::ui_server_starts_and_status_endpoint_uses_real_index with Windows connection reset 10054; cargo stopped before later workspace crates."
+    },
+    {
+      "command": "cargo test -p codegraph-cli tests::ui_server_starts_and_status_endpoint_uses_real_index -- --exact",
+      "status": "passed",
+      "summary": "1 passed; 0 failed; 0 ignored"
+    }
+  ],
+  "dirty_state": {
+    "pre_existing_modified_files": [
+      "crates/codegraph-bench/src/lib.rs",
+      "crates/codegraph-cli/src/lib.rs",
+      "crates/codegraph-cli/tests/cli_smoke.rs",
+      "crates/codegraph-index/src/lib.rs",
+      "crates/codegraph-index/src/scope.rs",
+      "crates/codegraph-store/src/lib.rs",
+      "crates/codegraph-store/src/sqlite.rs"
+    ],
+    "modified_by_this_pass": [
+      "crates/codegraph-mcp-server/src/lib.rs"
+    ],
+    "generated_files_policy": {
+      "benchmark_dbs_committed": false,
+      "sqlite_wal_shm_committed": false,
+      "raw_logs_committed": false,
+      "cgc_artifacts_committed": false,
+      "target_payloads_committed": false,
+      "generated_benchmark_payloads_committed": false
+    }
+  },
+  "acceptance": {
+    "mcp_status_no_longer_bypasses_passport": true,
+    "unsafe_dbs_visible_not_usable": true,
+    "counts_only_for_safe_db": true,
+    "safe_status_includes_counts_and_passport_summary": true,
+    "workspace_gate": "failed_documented_ui_server_connection_reset"
+  }
+}
