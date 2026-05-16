@@ -51,7 +51,8 @@ use codegraph_query::{
     SymbolSearchHit, SymbolSearchIndex, TraversalDirection, TraversalStep,
 };
 use codegraph_store::{
-    DbPassport, GraphStore, SqliteGraphStore, TextSearchKind, DB_PASSPORT_VERSION, SCHEMA_VERSION,
+    DbPassport, DbPreflightReport, GraphStore, SqliteGraphStore, TextSearchKind,
+    DB_PASSPORT_VERSION, SCHEMA_VERSION,
 };
 use codegraph_trace::{
     append_trace_event, replay_trace_file, TraceAppendEvent, TraceConfig, TraceEventType,
