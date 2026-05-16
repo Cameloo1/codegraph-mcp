@@ -97,6 +97,10 @@ symbol/entity ids, relation filters, and bounded traversal limits depending on
 the tool schema. Search/path tools also accept `limit`, `offset`, and `mode`
 where applicable. Invalid input returns a structured JSON-RPC error.
 
+Caller/callee tools preserve exact traversal when an `entity_id` is supplied.
+For symbol queries, an unambiguous symbol resolves to exact entity results;
+ambiguous symbols return candidate ids instead of silently choosing one match.
+
 ## Output Contract
 
 Tool responses are compact JSON values suitable for Codex:
@@ -127,6 +131,8 @@ or unknown DB state is not silently trusted.
   lifecycle gate.
 - Query and context tools refuse mismatched DBs unless an explicit diagnostic
   stale-read path is used, and diagnostic output must be labeled as such.
+- Status output includes passport state, the exact checked DB path, access
+  classification, `sqlite_sidecars`, and `sidecar_status`.
 
 ## Safety
 

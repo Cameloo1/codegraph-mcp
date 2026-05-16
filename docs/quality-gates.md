@@ -58,12 +58,17 @@ cargo build --release --bin codegraph-mcp
 
 ## CI
 
-The GitHub Actions workflow in `.github/workflows/ci.yml` runs formatting,
-Clippy, tests, all-feature compilation, release metadata validation, and a
-small synthetic indexing-speed dry run. `.github/workflows/release.yml` is a
-packaging dry-run template for release archives, checksums, installer dry runs,
-and provenance placeholders. Feature flags are placeholders only and do not
-enable optional backend dependencies yet.
+The GitHub Actions workflow in `.github/workflows/ci.yml` runs on pull requests
+and pushes to `main` or `master`. It currently checks Windows and Linux
+workspace build/test smoke, `codegraph-mcp --help`, fixture index smoke,
+README artifact validation, Markdown link validation, and a Docker smoke job.
+It does not currently run formatting, Clippy, all-feature compilation, or
+synthetic indexing-speed gates.
+
+`.github/workflows/release.yml` is a manual/tag packaging dry run. It builds the
+release binary, validates release metadata and archive manifest JSON, runs the
+shell installer dry run, and generates a checksum in a temporary release-dry-run
+directory.
 
 ## CLI Smoke Scope
 

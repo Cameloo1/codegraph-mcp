@@ -35,6 +35,11 @@ For an explicit `--db <path>`, CodeGraph is more conservative: invalid or
 mismatched named DBs fail unless you explicitly pass `--fresh`. This protects
 named benchmark artifacts from accidental replacement.
 
+For the production agent-use profile, the DB normally lives under LocalAppData,
+outside the source tree. If a status or query command reports path access
+problems, treat that as filesystem access first; it is separate from passport
+mismatch, corruption, or stale scope.
+
 ## `serve-ui` Refuses A Host
 
 `serve-ui` is local-only by default. Use:
@@ -56,6 +61,9 @@ codegraph-mcp index . --fresh
 Do not delete source files. Delete generated `.codegraph/` state only when you
 intentionally want to remove the default local index. Production agent-use DBs
 may live outside the repo under LocalAppData.
+
+Normal SQLite WAL/SHM files are reported as `sqlite_sidecars` with
+`sidecar_status: normal`. They are only orphaned when the main DB is missing.
 
 ## Slow Indexing
 

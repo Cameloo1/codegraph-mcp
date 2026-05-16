@@ -62,8 +62,8 @@ passport, and read paths validate against it.
 
 `status [repo]`
 
-Reports schema version, file/entity/edge counts, detected tooling, and whether
-the index exists.
+Reports schema version, file/entity/edge counts, detected tooling, DB
+lifecycle health, passport status, and SQLite sidecar status.
 
 `query symbols <query>`
 
@@ -88,22 +88,30 @@ same-name placeholders.
 
 Returns declaration/executable symbol hits.
 
-`query callers <symbol>`
+`query callers [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] <symbol>`
 
-Returns `CALLS` edges whose callee resolves to the symbol.
+Returns `CALLS` edges whose callee resolves to the symbol. When a symbol
+resolves to exactly one persisted entity, default output uses exact resolved
+entity results. Ambiguous symbols return candidate entity ids instead of
+pretending broad results are exact. Use `--entity-id` for exact persisted-entity
+traversal, `--exact-resolved` to require one symbol match, or `--fuzzy` for the
+older broad alias/global behavior.
 
-`query callees <symbol>`
+`query callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] <symbol>`
 
-Returns `CALLS` edges emitted by the symbol.
+Returns `CALLS` edges emitted by the symbol. It uses the same exact,
+ambiguous, and fuzzy modes as `query callers`.
 
 `query chain <source> <target>`
 
 Runs cycle-safe call-chain recovery over `CALLS` edges, preserving exactness and
 confidence labels.
 
-`query unresolved-calls`
+`query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets|--include-snippets] [--db <path>]`
 
-Lists retained unresolved calls labeled as `static_heuristic`.
+Lists retained unresolved calls labeled as `static_heuristic`. The exact DB path
+used by this command is checked with the same lifecycle/passport preflight as
+other read paths.
 
 `query path <source> <target>`
 
@@ -132,15 +140,19 @@ Alias group for `context-pack`.
 
 Exports files, entities, and edges with a bundle manifest schema.
 
-`bundle import repo.cgc-bundle`
+`bundle import repo.cgc-bundle [--replace|--merge]`
 
-Imports a bundle if the schema version matches.
+Imports a bundle if the schema version and repo identity are safe. The default
+fresh mode refuses to write into a non-empty DB. `--replace` performs an atomic
+replacement after validation. `--merge` is currently diagnostic-only and refuses
+mutation until merged facts have a stronger provenance contract.
 
-`watch [repo] [--debounce-ms <ms>] [--once --changed <path>...]`
+`watch [repo] [--db <path>] [--debounce-ms <ms>] [--once --changed <path>...]`
 
 Watches or updates changed files only. Ignore rules cover `.git`,
 `.codegraph`, dependency folders, build outputs, generated bundles, maps, lock
-files, and minified JS.
+files, and minified JS. Persistent watch mode honors the configured DB path and
+runs lifecycle preflight before opening it.
 
 `serve-mcp`
 
@@ -223,7 +235,9 @@ benchmark artifacts by themselves.
 
 Checks the local SQLite DB, language frontends, optional Node/TypeScript
 resolver, `.codex/config.toml`, bundled UI assets, and `.codegraph`
-permissions. Missing optional components are warnings, not fatal errors.
+permissions. DB inspection is read-only and lifecycle-aware. JSON output
+includes passport status plus `sqlite_sidecars` and `sidecar_status`; normal
+WAL/SHM files are not reported as orphaned unless the main DB is missing.
 
 `config [show|completions|release-metadata] [--shell <powershell|bash|zsh|fish>]`
 
