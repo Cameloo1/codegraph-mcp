@@ -2052,6 +2052,546 @@ fn index_status_and_query_commands_work_on_fixture_repo() {
 }
 
 #[test]
+fn audit_storage_micro_tiny_run_writes_reports_and_uses_external_dbs() {
+    let workspace = empty_repo();
+    let output_dir = workspace.join("storage micro output");
+    let out_json = output_dir.join("summary.json");
+    let out_md = output_dir.join("summary.md");
+
+    let value = stdout_json(&run_codegraph(&[
+        "audit",
+        "storage-micro",
+        "--out",
+        output_dir.to_str().expect("output path"),
+        "--cases",
+        "simple",
+        "--batch-sizes",
+        "1",
+        "--keep-artifacts",
+        "--no-context-pack",
+        "--json",
+        out_json.to_str().expect("json path"),
+        "--markdown",
+        out_md.to_str().expect("markdown path"),
+    ]));
+
+    assert_eq!(value["status"].as_str(), Some("ok"));
+    assert_eq!(value["audit"].as_str(), Some("storage_micro"));
+    assert_eq!(value["normal_codegraph_db_created"].as_bool(), Some(false));
+    assert!(out_json.exists());
+    assert!(out_md.exists());
+
+    let report: Value =
+        serde_json::from_str(&fs::read_to_string(&out_json).expect("storage micro JSON"))
+            .expect("storage micro report JSON validates");
+    assert_eq!(report["status"].as_str(), Some("ok"));
+    assert_eq!(
+        report["command"].as_str(),
+        Some("codegraph-mcp audit storage-micro")
+    );
+    assert_eq!(report["artifacts_kept"].as_bool(), Some(true));
+    assert_eq!(
+        report["safety"]["normal_codegraph_db_created"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(report["context_pack_checks"]["ran"].as_bool(), Some(false));
+    assert_eq!(
+        report["storage_budget"]["policy_version"].as_str(),
+        Some("storage-budget-v1")
+    );
+    assert_eq!(
+        report["storage_budget"]["budget_status"].as_str(),
+        Some("ok")
+    );
+    assert_eq!(
+        report["storage_budget"]["diagnostic_only"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(report["storage_budget"]["claimable"].as_bool(), Some(false));
+    let cases = report["cases"].as_array().expect("cases");
+    assert_eq!(cases.len(), 2);
+    assert!(cases.iter().any(|case| {
+        case["case"].as_str() == Some("schema_baseline_empty_repo")
+            && case["db_path_is_absolute"].as_bool() == Some(true)
+    }));
+    let n1 = cases
+        .iter()
+        .find(|case| case["case"].as_str() == Some("n1_simple_2kb_files"))
+        .expect("n1 case");
+    assert_eq!(n1["db_path_is_absolute"].as_bool(), Some(true));
+    assert!(n1["source_bytes"].as_u64().unwrap_or_default() >= 1536);
+    assert!(Path::new(
+        n1["storage_audit_json"]
+            .as_str()
+            .expect("storage audit JSON")
+    )
+    .exists());
+    assert!(Path::new(n1["case_log"].as_str().expect("case log")).exists());
+    assert!(!Path::new(n1["repo_path"].as_str().expect("repo path"))
+        .join(".codegraph")
+        .exists());
+    assert!(fs::read_to_string(&out_md)
+        .expect("storage micro markdown")
+        .contains("Storage Micro Diagnostic"));
+
+    fs::remove_dir_all(workspace).expect("cleanup storage micro workspace");
+}
+
+#[test]
+fn storage_budget_refuses_linux_stress_without_extended() {
+    let repo = fixture_repo();
+    for corpus in ["linux", "buildroot"] {
+        let output = run_codegraph(&[
+            "index",
+            repo.to_str().expect("repo path"),
+            "--stress-corpus",
+            corpus,
+            "--json",
+        ]);
+        let error = stderr_json(&output);
+        assert_eq!(error["error"].as_str(), Some("storage_budget_refused"));
+        assert_eq!(
+            error["storage_budget"]["stress_corpus"].as_str(),
+            Some(corpus)
+        );
+        assert_eq!(
+            error["storage_budget"]["budget_status"].as_str(),
+            Some("refused")
+        );
+        assert!(error["message"]
+            .as_str()
+            .expect("message")
+            .contains("--extended"));
+    }
+
+    fs::remove_dir_all(repo).expect("cleanup fixture workspace");
+}
+
+#[test]
+fn storage_budget_refuses_linux_stress_without_explicit_external_db() {
+    let repo = fixture_repo();
+    let output = run_codegraph(&[
+        "index",
+        repo.to_str().expect("repo path"),
+        "--extended",
+        "--stress-corpus",
+        "linux",
+        "--json",
+    ]);
+    let error = stderr_json(&output);
+    assert_eq!(error["error"].as_str(), Some("storage_budget_refused"));
+    assert_eq!(
+        error["storage_budget"]["external_db_required"].as_bool(),
+        Some(true)
+    );
+    assert!(error["message"]
+        .as_str()
+        .expect("message")
+        .contains("explicit external --db"));
+
+    fs::remove_dir_all(repo).expect("cleanup fixture workspace");
+}
+
+#[test]
+fn storage_budget_refuses_stress_output_under_codegraph_or_reports_final() {
+    let workspace = empty_repo();
+    let under_codegraph = workspace.join(".codegraph").join("stress");
+    let codegraph_error = stderr_json(&run_codegraph_in(
+        &workspace,
+        &[
+            "audit",
+            "storage-micro",
+            "--out",
+            under_codegraph.to_str().expect("output path"),
+            "--extended",
+            "--stress-corpus",
+            "linux",
+            "--no-context-pack",
+        ],
+    ));
+    assert_eq!(
+        codegraph_error["storage_budget"]["default_codegraph_refused"].as_bool(),
+        Some(true)
+    );
+
+    let under_reports_final = workspace.join("reports").join("final").join("stress");
+    let reports_final_error = stderr_json(&run_codegraph_in(
+        &workspace,
+        &[
+            "audit",
+            "storage-micro",
+            "--out",
+            under_reports_final.to_str().expect("output path"),
+            "--extended",
+            "--stress-corpus",
+            "linux",
+            "--no-context-pack",
+        ],
+    ));
+    assert_eq!(
+        reports_final_error["storage_budget"]["reports_final_refused"].as_bool(),
+        Some(true)
+    );
+
+    fs::remove_dir_all(workspace).expect("cleanup storage budget workspace");
+}
+
+#[test]
+fn storage_budget_accepts_buildroot_medium_corpus_with_external_output() {
+    let workspace = empty_repo();
+    let output_dir = workspace.join("buildroot medium output");
+    let value = stdout_json(&run_codegraph_in(
+        &workspace,
+        &[
+            "audit",
+            "storage-micro",
+            "--out",
+            output_dir.to_str().expect("output path"),
+            "--cases",
+            "simple",
+            "--batch-sizes",
+            "1",
+            "--no-context-pack",
+            "--json",
+            "--extended",
+            "--stress-corpus",
+            "buildroot",
+        ],
+    ));
+    assert_eq!(value["status"].as_str(), Some("ok"));
+    assert_eq!(
+        value["storage_budget"]["stress_corpus"].as_str(),
+        Some("buildroot")
+    );
+    assert_eq!(
+        value["storage_budget"]["budget_status"].as_str(),
+        Some("ok")
+    );
+    assert!(
+        value["storage_budget"]["min_free_disk_gib"]
+            .as_f64()
+            .unwrap_or_default()
+            >= 5.0
+    );
+
+    fs::remove_dir_all(workspace).expect("cleanup buildroot storage budget workspace");
+}
+
+#[test]
+fn storage_budget_reports_postflight_db_and_artifact_overruns() {
+    let db_workspace = empty_repo();
+    let db_output = db_workspace.join("db budget");
+    let db_error = stderr_json(&run_codegraph(&[
+        "audit",
+        "storage-micro",
+        "--out",
+        db_output.to_str().expect("output path"),
+        "--cases",
+        "simple",
+        "--batch-sizes",
+        "1",
+        "--keep-artifacts",
+        "--no-context-pack",
+        "--max-db-mib",
+        "0.000001",
+    ]));
+    assert_eq!(
+        db_error["storage_budget"]["budget_status"].as_str(),
+        Some("over_budget")
+    );
+    assert_eq!(
+        db_error["storage_budget"]["claimable"].as_bool(),
+        Some(false)
+    );
+    assert!(
+        db_error["storage_budget"]["db_bytes"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0
+    );
+    fs::remove_dir_all(db_workspace).expect("cleanup db budget workspace");
+
+    let artifact_workspace = empty_repo();
+    let artifact_output = artifact_workspace.join("artifact budget");
+    let artifact_error = stderr_json(&run_codegraph(&[
+        "audit",
+        "storage-micro",
+        "--out",
+        artifact_output.to_str().expect("output path"),
+        "--cases",
+        "simple",
+        "--batch-sizes",
+        "1",
+        "--keep-artifacts",
+        "--no-context-pack",
+        "--max-artifacts-mib",
+        "0.000001",
+    ]));
+    assert_eq!(
+        artifact_error["storage_budget"]["budget_status"].as_str(),
+        Some("over_budget")
+    );
+    assert!(
+        artifact_error["storage_budget"]["artifact_bytes"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0
+    );
+    fs::remove_dir_all(artifact_workspace).expect("cleanup artifact budget workspace");
+}
+
+#[test]
+fn storage_budget_min_free_disk_refusal_is_structured() {
+    let workspace = empty_repo();
+    let output_dir = workspace.join("free disk budget");
+    let error = stderr_json(&run_codegraph(&[
+        "audit",
+        "storage-micro",
+        "--out",
+        output_dir.to_str().expect("output path"),
+        "--cases",
+        "simple",
+        "--batch-sizes",
+        "1",
+        "--no-context-pack",
+        "--min-free-disk-gib",
+        "999999999",
+    ]));
+    assert_eq!(error["error"].as_str(), Some("storage_budget_refused"));
+    assert_eq!(
+        error["storage_budget"]["budget_status"].as_str(),
+        Some("disk_check_failed")
+    );
+    assert_eq!(error["storage_budget"]["claimable"].as_bool(), Some(false));
+
+    fs::remove_dir_all(workspace).expect("cleanup min free disk workspace");
+}
+
+#[test]
+fn status_missing_external_db_is_structured_and_read_only() {
+    let repo = empty_repo();
+    let workspace = empty_repo();
+    let db_parent = workspace.join("external profile");
+    fs::create_dir_all(&db_parent).expect("create DB parent");
+    let db_path = db_parent.join("production-agent-use.sqlite");
+    let repo_arg = repo.to_str().expect("repo path");
+    let db_arg = db_path.to_str().expect("db path");
+
+    let status = stdout_json(&run_codegraph(&[
+        "--repo", repo_arg, "--db", db_arg, "--json", "status", repo_arg,
+    ]));
+
+    assert_eq!(status["status"].as_str(), Some("not_indexed"));
+    assert_eq!(status["db_problem_kind"].as_str(), Some("db_missing"));
+    assert_eq!(status["path_access_status"].as_str(), Some("db_missing"));
+    assert_eq!(
+        status["db_lifecycle_read"]["claimable"].as_bool(),
+        Some(false)
+    );
+    assert!(status["next_command"]
+        .as_str()
+        .expect("next command")
+        .contains("index"));
+    assert!(!db_path.exists(), "status must not create missing DB");
+    assert!(
+        !sqlite_sidecar_path(&db_path, "wal").exists()
+            && !sqlite_sidecar_path(&db_path, "shm").exists(),
+        "status must not create SQLite sidecars"
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup repo");
+    fs::remove_dir_all(workspace).expect("cleanup workspace");
+}
+
+#[test]
+fn status_missing_external_db_parent_is_structured_and_read_only() {
+    let repo = empty_repo();
+    let workspace = empty_repo();
+    let db_path = workspace
+        .join("missing parent")
+        .join("production-agent-use.sqlite");
+    let repo_arg = repo.to_str().expect("repo path");
+    let db_arg = db_path.to_str().expect("db path");
+
+    let status = stdout_json(&run_codegraph(&[
+        "--repo", repo_arg, "--db", db_arg, "--json", "status", repo_arg,
+    ]));
+
+    assert_eq!(status["status"].as_str(), Some("not_indexed"));
+    assert_eq!(status["db_problem_kind"].as_str(), Some("db_missing"));
+    assert_eq!(status["path_access_status"].as_str(), Some("db_missing"));
+    assert!(!db_path.parent().expect("db parent").exists());
+    assert!(!db_path.exists(), "status must not create missing DB");
+    assert!(
+        !sqlite_sidecar_path(&db_path, "wal").exists()
+            && !sqlite_sidecar_path(&db_path, "shm").exists(),
+        "status must not create SQLite sidecars"
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup repo");
+    fs::remove_dir_all(workspace).expect("cleanup workspace");
+}
+
+#[test]
+fn status_valid_external_db_uses_read_only_open_without_sidecars() {
+    let repo = fixture_repo();
+    let workspace = empty_repo();
+    let db_parent = workspace.join("external profile");
+    fs::create_dir_all(&db_parent).expect("create DB parent");
+    let db_path = db_parent.join("production-agent-use.sqlite");
+    let repo_arg = repo.to_str().expect("repo path");
+    let db_arg = db_path.to_str().expect("db path");
+
+    stdout_json(&run_codegraph(&[
+        "index", repo_arg, "--db", db_arg, "--fresh", "--json",
+    ]));
+    let _ = fs::remove_file(sqlite_sidecar_path(&db_path, "wal"));
+    let _ = fs::remove_file(sqlite_sidecar_path(&db_path, "shm"));
+
+    let status = stdout_json(&run_codegraph(&[
+        "--repo", repo_arg, "--db", db_arg, "--json", "status", repo_arg,
+    ]));
+
+    assert_eq!(status["status"].as_str(), Some("ok"));
+    assert_eq!(status["path_access_status"].as_str(), Some("ok"));
+    assert_eq!(
+        status["db_lifecycle_read"]["claimable"].as_bool(),
+        Some(true)
+    );
+    assert!(
+        !sqlite_sidecar_path(&db_path, "wal").exists()
+            && !sqlite_sidecar_path(&db_path, "shm").exists(),
+        "read-only status must not create SQLite sidecars"
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup repo");
+    fs::remove_dir_all(workspace).expect("cleanup workspace");
+}
+
+#[test]
+fn query_and_context_pack_missing_external_db_still_fail_closed() {
+    let repo = fixture_repo();
+    let workspace = empty_repo();
+    let db_parent = workspace.join("external profile");
+    fs::create_dir_all(&db_parent).expect("create DB parent");
+    let db_path = db_parent.join("missing.sqlite");
+    let repo_arg = repo.to_str().expect("repo path");
+    let db_arg = db_path.to_str().expect("db path");
+
+    let query = run_codegraph(&[
+        "--repo", repo_arg, "--db", db_arg, "--json", "query", "symbols", "login",
+    ]);
+
+    assert!(!query.status.success(), "query should fail closed");
+    let error: Value = serde_json::from_slice(&query.stderr).expect("query error JSON");
+    assert_eq!(error["status"].as_str(), Some("error"));
+    assert!(error["message"]
+        .as_str()
+        .expect("message")
+        .contains("db_missing"));
+    assert!(!db_path.exists(), "query must not create missing DB");
+    assert!(
+        !sqlite_sidecar_path(&db_path, "wal").exists()
+            && !sqlite_sidecar_path(&db_path, "shm").exists(),
+        "query must not create SQLite sidecars"
+    );
+
+    let context_pack = run_codegraph(&[
+        "--repo",
+        repo_arg,
+        "--db",
+        db_arg,
+        "--json",
+        "context-pack",
+        "--task",
+        "inspect login",
+        "--seed",
+        "login",
+        "--agent-json",
+    ]);
+
+    assert!(
+        !context_pack.status.success(),
+        "context-pack should fail closed"
+    );
+    let error: Value =
+        serde_json::from_slice(&context_pack.stderr).expect("context-pack error JSON");
+    assert_eq!(error["status"].as_str(), Some("error"));
+    assert!(error["message"]
+        .as_str()
+        .expect("message")
+        .contains("db_missing"));
+    assert!(!db_path.exists(), "context-pack must not create missing DB");
+    assert!(
+        !sqlite_sidecar_path(&db_path, "wal").exists()
+            && !sqlite_sidecar_path(&db_path, "shm").exists(),
+        "context-pack must not create SQLite sidecars"
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup repo");
+    fs::remove_dir_all(workspace).expect("cleanup workspace");
+}
+
+#[cfg(windows)]
+#[test]
+fn profile_wrapper_prod_agent_status_missing_db_is_actionable() {
+    let repo = empty_repo();
+    let workspace = empty_repo();
+    let local_app_data = workspace.join("localapp");
+    let db_path = local_app_data
+        .join("CodeGraphMCP")
+        .join("agent-indexes")
+        .join(repo.file_name().expect("repo name"))
+        .join("production-agent-use.sqlite");
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+
+    let output = Command::new("powershell")
+        .current_dir(workspace_root)
+        .env("LOCALAPPDATA", &local_app_data)
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            ".\\scripts\\codegraph-profile.ps1",
+            "-Profile",
+            "prod-agent",
+            "-Action",
+            "status",
+            "-Repo",
+            repo.to_str().expect("repo path"),
+            "-Binary",
+            env!("CARGO_BIN_EXE_codegraph-mcp"),
+        ])
+        .output()
+        .expect("run profile wrapper");
+
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json_start = stdout.find('{').expect("JSON status in stdout");
+    let status: Value = serde_json::from_str(&stdout[json_start..]).expect("status JSON");
+    assert_eq!(status["status"].as_str(), Some("not_indexed"));
+    assert_eq!(status["db_problem_kind"].as_str(), Some("db_missing"));
+    assert!(!db_path.exists(), "profile status must not create DB");
+    assert!(
+        !sqlite_sidecar_path(&db_path, "wal").exists()
+            && !sqlite_sidecar_path(&db_path, "shm").exists(),
+        "profile status must not create SQLite sidecars"
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup repo");
+    fs::remove_dir_all(workspace).expect("cleanup workspace");
+}
+
+#[test]
 fn unresolved_calls_query_is_bounded_and_instrumented() {
     let repo = fixture_repo();
     stdout_json(&run_codegraph_in(
@@ -3311,6 +3851,10 @@ fn global_flag_placement_is_targeted_and_literal_query_flags_can_escape() {
     let db_path = repo.join("flag-placement.sqlite");
     let repo_arg = repo.to_str().expect("repo path");
     let db_arg = db_path.to_str().expect("db path");
+    let resolved_repo_arg = fs::canonicalize(&repo)
+        .expect("canonical repo")
+        .to_string_lossy()
+        .to_string();
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR"));
 
     stdout_json(&run_codegraph_in(
@@ -3333,6 +3877,58 @@ fn global_flag_placement_is_targeted_and_literal_query_flags_can_escape() {
     ));
     assert_eq!(before["status"].as_str(), Some("ok"));
     assert_eq!(before["query"]["text"].as_str(), Some("login"));
+    assert_eq!(
+        before["resolved_repo"].as_str(),
+        Some(resolved_repo_arg.as_str())
+    );
+    assert_eq!(before["resolved_db"].as_str(), Some(db_arg));
+    assert_eq!(before["repo_source"].as_str(), Some("global --repo"));
+    assert_eq!(before["db_source"].as_str(), Some("global --db"));
+    assert_eq!(before["lifecycle_status"].as_str(), Some("read_reuse"));
+
+    let status_with_global_db = stdout_json(&run_codegraph_in(
+        workspace,
+        &["--repo", repo_arg, "--db", db_arg, "status", "."],
+    ));
+    assert_eq!(status_with_global_db["status"].as_str(), Some("ok"));
+    assert_eq!(status_with_global_db["db_path"].as_str(), Some(db_arg));
+
+    let doctor_with_global_db = stdout_json(&run_codegraph_in(
+        workspace,
+        &["--repo", repo_arg, "--db", db_arg, "doctor", ".", "--json"],
+    ));
+    assert_eq!(doctor_with_global_db["status"].as_str(), Some("ok"));
+    assert_eq!(doctor_with_global_db["db_path"].as_str(), Some(db_arg));
+
+    let relative_db_name = "flag-placement-relative.sqlite";
+    let relative_db_path = PathBuf::from(&resolved_repo_arg).join(relative_db_name);
+    let relative_db_arg = relative_db_path.to_str().expect("relative DB path");
+    stdout_json(&run_codegraph_in(
+        &repo,
+        &["index", ".", "--db", relative_db_name, "--fresh", "--json"],
+    ));
+    let relative_db_query = stdout_json(&run_codegraph_in(
+        workspace,
+        &[
+            "--repo",
+            repo_arg,
+            "--db",
+            relative_db_name,
+            "query",
+            "symbols",
+            "login",
+            "--agent-json",
+        ],
+    ));
+    let observed_relative_db = relative_db_query["resolved_db"]
+        .as_str()
+        .expect("resolved relative DB");
+    assert_eq!(
+        observed_relative_db.trim_start_matches(r"\\?\"),
+        relative_db_arg.trim_start_matches(r"\\?\"),
+        "observed_relative_db={observed_relative_db}, expected={relative_db_arg}"
+    );
+    assert!(relative_db_path.exists());
 
     let misplaced_db = run_codegraph_in(&repo, &["query", "symbols", "login", "--db", db_arg]);
     let misplaced_db_json = stderr_json(&misplaced_db);
@@ -3383,6 +3979,33 @@ fn global_flag_placement_is_targeted_and_literal_query_flags_can_escape() {
         .as_str()
         .expect("message")
         .contains("--db is a global flag"));
+
+    let other_repo = fixture_repo();
+    let other_repo_arg = other_repo.to_str().expect("other repo path");
+    let mismatched_db = run_codegraph_in(
+        workspace,
+        &[
+            "--repo",
+            other_repo_arg,
+            "--db",
+            db_arg,
+            "query",
+            "symbols",
+            "login",
+            "--agent-json",
+        ],
+    );
+    assert!(
+        !mismatched_db.status.success(),
+        "mismatched repo/db should be lifecycle-blocked"
+    );
+    let mismatched_stderr = String::from_utf8_lossy(&mismatched_db.stderr);
+    assert!(
+        mismatched_stderr.contains("repo_root_mismatch")
+            || mismatched_stderr.contains("not safe to read"),
+        "stderr={mismatched_stderr}"
+    );
+    fs::remove_dir_all(other_repo).expect("cleanup mismatched repo fixture");
 
     fs::remove_dir_all(repo).expect("cleanup flag placement fixture");
 }
@@ -4723,6 +5346,10 @@ fn empty_repo() -> PathBuf {
     ));
     fs::create_dir_all(&path).expect("create fixture workspace");
     path
+}
+
+fn sqlite_sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
+    PathBuf::from(format!("{}-{suffix}", db_path.display()))
 }
 
 fn scope_directory_prune_decision<'a>(summary: &'a Value, directory: &str) -> &'a Value {

@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "report": "agent_trust_and_storage_micro_gate",
+  "sanitized_public_summary": true,
+  "overall_status": "pass",
+  "sequence_complete": true,
+  "scope": "context-pack trust/correctness, CLI flag and path UX, read-only inspection side effects, storage lab v2 methodology, the built-in audit storage-micro diagnostic command, and generic storage/stress guardrails for larger corpus testing",
+  "not_in_scope": [
+    "CGC gate",
+    "final intended-performance gate",
+    "real-world recall benchmark"
+  ],
+  "stable_public_report_decision": {
+    "promote_to_reports_final": true,
+    "rationale": "This is the canonical public pass/fail summary for the agent trust plus storage-micro remediation sequence.",
+    "excluded_from_public_report": [
+      "local absolute paths",
+      "raw command logs",
+      "temporary DB paths",
+      "generated fixture paths",
+      "command-level artifact payloads"
+    ],
+    "raw_evidence_policy": "Detailed raw evidence remains in ignored audit artifacts and is not part of this stable public report."
+  },
+  "pass_criteria": {
+    "cargo_build_workspace": true,
+    "cargo_test_workspace": true,
+    "release_build": true,
+    "production_context_pack_excludes_inline_tests": true,
+    "test_impact_surfaces_inline_tests": true,
+    "test_impact_no_path_fallback_useful": true,
+    "global_flags_targeted_or_supported": true,
+    "db_repo_resolution_explicit": true,
+    "misplaced_globals_not_swallowed": true,
+    "read_only_main_db_not_mutated": true,
+    "sidecar_only_reported": true,
+    "storage_lab_v2_n_series": true,
+    "storage_micro_command_works": true,
+    "storage_stress_budget_guardrails_work": true,
+    "buildroot_medium_corpus_opt_in_supported": true,
+    "linux_max_stress_opt_in_supported": true,
+    "no_normal_codegraph_db_mutation": true,
+    "json_reports_valid": true,
+    "docs_checks_after_public_report_cleanup": true
+  },
+  "storage_micro_summary": {
+    "full_run_status": "ok",
+    "full_run_case_count": 8,
+    "tiny_smoke_status": "ok",
+    "tiny_smoke_case_count": 2,
+    "dbstat_available_all_full_run_cases": true,
+    "db_paths_are_explicit_absolute": true,
+    "normal_codegraph_db_created": false,
+    "normal_codegraph_db_mutation": false,
+    "production_agent_use_db_touched": false,
+    "fixed_overhead_schema_baseline_bytes": 483328,
+    "simple_series_slope_estimates": [
+      {
+        "from_case": "n1_simple_2kb_files",
+        "to_case": "n10_simple_2kb_files",
+        "main_db_bytes_per_file": 65991.111,
+        "bytes_per_entity": 653.377,
+        "bytes_per_edge": 2538.12
+      },
+      {
+        "from_case": "n10_simple_2kb_files",
+        "to_case": "n100_simple_2kb_files",
+        "main_db_bytes_per_file": 64079.644,
+        "bytes_per_entity": 634.452,
+        "bytes_per_edge": 2464.602
+      }
+    ]
+  },
+  "storage_stress_guardrail_summary": {
+    "policy_version": "storage-budget-v1",
+    "fixture_smoke_max_db_mib": 10.0,
+    "fixture_smoke_max_artifacts_mib": 10.0,
+    "normal_self_use_target_mib": 250.0,
+    "extended_opt_in_threshold_mib": 500.0,
+    "buildroot_corpus_role": "medium corpus, opt-in only",
+    "linux_corpus_role": "max stress corpus, opt-in only",
+    "stress_runs_require_extended": true,
+    "stress_runs_require_explicit_external_paths": true,
+    "stress_runs_refuse_default_codegraph": true,
+    "stress_raw_artifacts_refuse_reports_final": true,
+    "structured_storage_budget_json_emitted": true,
+    "vhdx_admin_run_completed": false,
+    "vhdx_fallback_evidence_completed": true,
+    "buildroot_corpus_indexed_in_this_gate": false,
+    "linux_corpus_indexed_in_this_gate": false
+  },
+  "context_trust_summary": {
+    "production_context_excludes_inline_tests": true,
+    "production_evidence_roles": [
+      "production"
+    ],
+    "test_impact_surfaces_inline_tests": true,
+    "test_impact_evidence_roles": [
+      "production",
+      "test"
+    ],
+    "recommended_tests_include_inline_test": true,
+    "fallback_sources_labeled": true,
+    "fallback_evidence_non_proof": true
+  },
+  "cli_and_db_safety_summary": {
+    "global_flag_placement_targeted": true,
+    "db_repo_path_resolution_explicit": true,
+    "mismatched_repo_db_reads_blocked": true,
+    "read_only_audit_records_main_db_before_after": true,
+    "read_only_audit_records_sidecars_before_after": true,
+    "clean_read_only_inspection_uses_side_effect_minimal_open": true,
+    "existing_sidecars_classified_separately_from_main_db_mutation": true
+  },
+  "claim_boundaries": {
+    "final_intended_performance_pass_claimed": false,
+    "codegraph_vs_cgc_superiority_claimed": false,
+    "real_world_recall_claimed": false,
+    "unsupported_relation_precision_claimed": false,
+    "storage_micro_is_diagnostic_not_broad_benchmark": true
+  },
+  "public_report_hygiene": {
+    "contains_local_absolute_paths": false,
+    "contains_raw_log_paths": false,
+    "contains_temporary_db_paths": false,
+    "contains_generated_fixture_paths": false,
+    "contains_command_payload_table": false
+  }
+}

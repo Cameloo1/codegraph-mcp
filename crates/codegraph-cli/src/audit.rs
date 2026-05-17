@@ -1,16 +1,23 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    fs,
+    fs::{self, File},
+    io::Read,
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use codegraph_index::{
+    index_repo_to_db_with_options, IndexBuildMode, IndexOptions, IndexScopeOptions, StorageMode,
+};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::storage_budget;
+
 const AUDIT_SCHEMA_VERSION: u32 = 1;
 const LABEL_SCHEMA_VERSION: u32 = 1;
+const STORAGE_MICRO_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_SAMPLE_LIMIT: usize = 100;
 const DEFAULT_PATH_SAMPLE_LIMIT: usize = 20;
 const DEFAULT_SAMPLE_SEED: u64 = 1;
@@ -92,12 +99,13 @@ const MOCK_RELATIONS: &[&str] = &["MOCKS", "STUBS"];
 pub fn run_audit_command(args: &[String]) -> Result<Value, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         return Err(
-            "Usage: codegraph-mcp audit <storage|schema-check|storage-experiments|sample-edges|sample-paths|relation-counts|label-samples|summarize-labels> [ARGS]".to_string(),
+            "Usage: codegraph-mcp audit <storage|storage-micro|schema-check|storage-experiments|sample-edges|sample-paths|relation-counts|label-samples|summarize-labels> [ARGS]".to_string(),
         );
     };
 
     match subcommand {
         "storage" | "storage-forensics" => run_storage_command(&args[1..]),
+        "storage-micro" | "storage_micro" => run_storage_micro_command(&args[1..]),
         "schema-check" | "schema" | "validate-schema" => run_schema_check_command(&args[1..]),
         "storage-experiments" | "storage-experiment" => run_storage_experiments_command(&args[1..]),
         "sample-edges" | "edge-sample" => run_sample_edges_command(&args[1..]),
@@ -114,6 +122,35 @@ struct StorageOptions {
     db_path: PathBuf,
     json_path: Option<PathBuf>,
     markdown_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct StorageMicroOptions {
+    out_dir: PathBuf,
+    cases: BTreeSet<StorageMicroCaseKind>,
+    batch_sizes: Vec<usize>,
+    keep_artifacts: bool,
+    json_path: Option<PathBuf>,
+    markdown_path: Option<PathBuf>,
+    no_context_pack: bool,
+    respect_gitignore: bool,
+    storage_budget: storage_budget::StorageBudgetOptions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum StorageMicroCaseKind {
+    Simple,
+    Expression,
+    InlineTests,
+    Duplicates,
+    ExcludedJunk,
+}
+
+#[derive(Debug, Clone)]
+struct StorageMicroCaseSpec {
+    name: String,
+    kind: StorageMicroCaseKind,
+    file_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -228,6 +265,49 @@ struct FileFamilySize {
     total_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SidecarSnapshot {
+    kind: String,
+    path: String,
+    size: u64,
+    mtime_unix_ms: Option<u64>,
+    hash: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DbFileSnapshot {
+    main_db_size: u64,
+    main_db_mtime_unix_ms: Option<u64>,
+    main_db_hash: Option<String>,
+    sidecars: Vec<SidecarSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ReadOnlyInspectionAudit {
+    main_db_size_before: u64,
+    main_db_size_after: u64,
+    main_db_mtime_before: Option<u64>,
+    main_db_mtime_after: Option<u64>,
+    main_db_hash_before: Option<String>,
+    main_db_hash_after: Option<String>,
+    main_db_hash_algorithm: String,
+    sidecars_before: Vec<SidecarSnapshot>,
+    sidecars_after: Vec<SidecarSnapshot>,
+    sidecar_status: String,
+    artifact_mutated_during_inspection: bool,
+    sidecar_only_change: bool,
+    read_only_mode_used: String,
+    immutable_mode_used: bool,
+    immutable_mode_reason: String,
+}
+
+struct ReadOnlyConnection {
+    connection: Connection,
+    read_only_mode_used: String,
+    immutable_mode_used: bool,
+    immutable_mode_reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PageMetrics {
     page_size_bytes: u64,
@@ -272,7 +352,21 @@ struct StorageInspection {
     schema_version: u32,
     db_path: String,
     inspection_read_only: bool,
+    main_db_size_before: u64,
+    main_db_size_after: u64,
+    main_db_mtime_before: Option<u64>,
+    main_db_mtime_after: Option<u64>,
+    main_db_hash_before: Option<String>,
+    main_db_hash_after: Option<String>,
+    main_db_hash_algorithm: String,
+    sidecars_before: Vec<SidecarSnapshot>,
+    sidecars_after: Vec<SidecarSnapshot>,
+    sidecar_status: String,
     artifact_mutated_during_inspection: bool,
+    sidecar_only_change: bool,
+    read_only_mode_used: String,
+    immutable_mode_used: bool,
+    immutable_mode_reason: String,
     dbstat_available: bool,
     integrity_check: Value,
     file_family: FileFamilySize,
@@ -296,6 +390,22 @@ struct SchemaValidationReport {
     schema_version: u32,
     db_path: String,
     status: String,
+    inspection_read_only: bool,
+    main_db_size_before: u64,
+    main_db_size_after: u64,
+    main_db_mtime_before: Option<u64>,
+    main_db_mtime_after: Option<u64>,
+    main_db_hash_before: Option<String>,
+    main_db_hash_after: Option<String>,
+    main_db_hash_algorithm: String,
+    sidecars_before: Vec<SidecarSnapshot>,
+    sidecars_after: Vec<SidecarSnapshot>,
+    sidecar_status: String,
+    artifact_mutated_during_inspection: bool,
+    sidecar_only_change: bool,
+    read_only_mode_used: String,
+    immutable_mode_used: bool,
+    immutable_mode_reason: String,
     user_version: u32,
     expected_columns: Vec<SchemaColumnCheck>,
     views: Vec<SchemaCompileCheck>,
@@ -886,6 +996,35 @@ fn run_storage_command(args: &[String]) -> Result<Value, String> {
     }))
 }
 
+fn run_storage_micro_command(args: &[String]) -> Result<Value, String> {
+    let options = parse_storage_micro_options(args)?;
+    let report = run_storage_micro(&options)?;
+    let markdown = render_storage_micro_markdown(&report);
+    let json_path = options
+        .json_path
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(report["reports"]["json"].as_str().unwrap_or_default()));
+    let markdown_path = options.markdown_path.clone().unwrap_or_else(|| {
+        PathBuf::from(report["reports"]["markdown"].as_str().unwrap_or_default())
+    });
+    write_json(&json_path, &report)?;
+    write_text(&markdown_path, &markdown)?;
+    Ok(json!({
+        "status": "ok",
+        "audit": "storage_micro",
+        "command_namespace": "audit",
+        "run_dir": report["run_dir"],
+        "json_output": path_string(&json_path),
+        "markdown_output": path_string(&markdown_path),
+        "case_count": report["cases"].as_array().map(Vec::len).unwrap_or(0),
+        "artifacts_kept": report["artifacts_kept"],
+        "normal_codegraph_db_created": report["safety"]["normal_codegraph_db_created"],
+        "dbstat_available_all_cases": report["dbstat_available_all_cases"],
+        "context_pack_ran": report["context_pack_checks"]["ran"],
+        "storage_budget": report["storage_budget"].clone(),
+    }))
+}
+
 fn run_schema_check_command(args: &[String]) -> Result<Value, String> {
     let options = parse_schema_check_options(args)?;
     let report = validate_schema(&options.db_path)?;
@@ -1066,6 +1205,162 @@ fn parse_storage_options(args: &[String]) -> Result<StorageOptions, String> {
         json_path,
         markdown_path,
     })
+}
+
+fn parse_storage_micro_options(args: &[String]) -> Result<StorageMicroOptions, String> {
+    let mut out_dir = None;
+    let mut cases = storage_micro_all_cases();
+    let mut batch_sizes = vec![1, 10, 100];
+    let mut keep_artifacts = false;
+    let mut json_path = None;
+    let mut markdown_path = None;
+    let mut no_context_pack = false;
+    let mut respect_gitignore = true;
+    let mut storage_budget = storage_budget::StorageBudgetOptions::fixture_smoke();
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--out" | "--output-dir" => out_dir = Some(take_path(args, &mut index, "--out")?),
+            "--cases" => {
+                let raw = take_value(args, &mut index, "--cases")?;
+                cases = parse_storage_micro_cases(&raw)?;
+            }
+            "--n" | "--batch-sizes" | "--batch_sizes" => {
+                let raw = take_value(args, &mut index, "--batch-sizes")?;
+                batch_sizes = parse_storage_micro_batch_sizes(&raw)?;
+            }
+            "--keep-artifacts" | "--keep_artifacts" => keep_artifacts = true,
+            "--json" => {
+                if args
+                    .get(index + 1)
+                    .is_some_and(|value| !value.starts_with("--"))
+                {
+                    json_path = Some(take_path(args, &mut index, "--json")?);
+                }
+            }
+            "--markdown" | "--md" => {
+                if args
+                    .get(index + 1)
+                    .is_some_and(|value| !value.starts_with("--"))
+                {
+                    markdown_path = Some(take_path(args, &mut index, "--markdown")?);
+                }
+            }
+            "--no-context-pack" | "--no_context_pack" => no_context_pack = true,
+            "--respect-gitignore" | "--respect_gitignore" => {
+                let raw = take_value(args, &mut index, "--respect-gitignore")?;
+                respect_gitignore = parse_bool_value(&raw, "--respect-gitignore")?;
+            }
+            "--help" | "-h" => {
+                return Err(storage_micro_usage());
+            }
+            value => {
+                if storage_budget::parse_storage_budget_flag(args, &mut index, &mut storage_budget)?
+                {
+                    index += 1;
+                    continue;
+                }
+                return Err(format!("unknown audit storage-micro option: {value}"));
+            }
+        }
+        index += 1;
+    }
+    let Some(out_dir) = out_dir else {
+        return Err(storage_micro_usage());
+    };
+    Ok(StorageMicroOptions {
+        out_dir,
+        cases,
+        batch_sizes,
+        keep_artifacts,
+        json_path,
+        markdown_path,
+        no_context_pack,
+        respect_gitignore,
+        storage_budget,
+    })
+}
+
+fn storage_micro_usage() -> String {
+    "Usage: codegraph-mcp audit storage-micro --out <dir> [--cases simple,expression,inline-tests,duplicates,excluded-junk,all] [--batch-sizes 1,10,100] [--keep-artifacts] [--json [path]] [--markdown [path]] [--no-context-pack] [--respect-gitignore true|false] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]".to_string()
+}
+
+fn storage_micro_all_cases() -> BTreeSet<StorageMicroCaseKind> {
+    BTreeSet::from([
+        StorageMicroCaseKind::Simple,
+        StorageMicroCaseKind::Expression,
+        StorageMicroCaseKind::InlineTests,
+        StorageMicroCaseKind::Duplicates,
+        StorageMicroCaseKind::ExcludedJunk,
+    ])
+}
+
+fn parse_storage_micro_cases(raw: &str) -> Result<BTreeSet<StorageMicroCaseKind>, String> {
+    let mut cases = BTreeSet::new();
+    for part in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        match part.to_ascii_lowercase().as_str() {
+            "all" => cases.extend(storage_micro_all_cases()),
+            "simple" => {
+                cases.insert(StorageMicroCaseKind::Simple);
+            }
+            "expression" | "expressions" | "expression-heavy" => {
+                cases.insert(StorageMicroCaseKind::Expression);
+            }
+            "inline-tests" | "inline_tests" | "tests" => {
+                cases.insert(StorageMicroCaseKind::InlineTests);
+            }
+            "duplicates" | "duplicate" => {
+                cases.insert(StorageMicroCaseKind::Duplicates);
+            }
+            "excluded-junk" | "excluded_junk" | "junk" => {
+                cases.insert(StorageMicroCaseKind::ExcludedJunk);
+            }
+            other => {
+                return Err(format!(
+                    "invalid --cases value: {other}; expected simple, expression, inline-tests, duplicates, excluded-junk, or all"
+                ))
+            }
+        }
+    }
+    if cases.is_empty() {
+        return Err("--cases must select at least one case".to_string());
+    }
+    Ok(cases)
+}
+
+fn parse_storage_micro_batch_sizes(raw: &str) -> Result<Vec<usize>, String> {
+    let mut sizes = Vec::new();
+    for part in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        let size = part
+            .parse::<usize>()
+            .map_err(|_| format!("invalid --batch-sizes value: {part}"))?;
+        if size == 0 {
+            return Err("--batch-sizes values must be greater than zero".to_string());
+        }
+        sizes.push(size);
+    }
+    sizes.sort_unstable();
+    sizes.dedup();
+    if sizes.is_empty() {
+        return Err("--batch-sizes must contain at least one value".to_string());
+    }
+    Ok(sizes)
+}
+
+fn parse_bool_value(raw: &str, flag: &str) -> Result<bool, String> {
+    match raw.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => Err(format!("{flag} requires true or false")),
+    }
 }
 
 fn parse_schema_check_options(args: &[String]) -> Result<SchemaCheckOptions, String> {
@@ -1331,29 +1626,75 @@ fn parse_summarize_labels_options(args: &[String]) -> Result<SummarizeLabelsOpti
 }
 
 fn inspect_storage(db_path: &Path) -> Result<StorageInspection, String> {
-    let connection = open_read_only(db_path)?;
-    let file_family = file_family_size(db_path);
-    let integrity_check = sqlite_integrity_check(&connection);
-    let page_metrics = page_metrics(&connection)?;
-    let object_types = sqlite_object_types(&connection)?;
-    let (dbstat_available, mut objects) =
-        dbstat_objects(&connection, &object_types, file_family.database_bytes)?;
-    if !dbstat_available {
-        objects = fallback_objects(&connection, &object_types, file_family.database_bytes)?;
-    }
-    let object_bytes = objects
-        .iter()
-        .map(|object| (object.name.clone(), object.total_bytes))
-        .collect::<HashMap<_, _>>();
-    let categories = storage_category_breakdown(&objects);
-    let table_row_metrics = table_row_metrics(&objects);
-    let aggregate_metrics = aggregate_storage_metrics(&objects, &file_family);
-    let dictionary_metrics = dictionary_metrics(&connection, &object_bytes)?;
-    let qualified_name_metric = qualified_name_metric(&connection, &object_bytes)?;
-    let fts_storage = fts_storage_metric(&connection, &object_bytes)?;
-    let edge_fact_mix = edge_fact_mix(&connection)?;
-    let core_query_plans = core_query_plan_reports(&connection);
-    let index_usage = index_usage_report(&connection, &object_bytes, &core_query_plans)?;
+    let before = db_file_snapshot(db_path);
+    let read_only = open_read_only_with_snapshot(db_path, &before)?;
+    let read_only_mode_used = read_only.read_only_mode_used.clone();
+    let immutable_mode_used = read_only.immutable_mode_used;
+    let immutable_mode_reason = read_only.immutable_mode_reason.clone();
+    let (
+        file_family,
+        integrity_check,
+        page_metrics,
+        dbstat_available,
+        objects,
+        categories,
+        table_row_metrics,
+        aggregate_metrics,
+        dictionary_metrics,
+        qualified_name_metric,
+        fts_storage,
+        edge_fact_mix,
+        index_usage,
+        core_query_plans,
+    ) = {
+        let connection = read_only.connection;
+        let file_family = file_family_size(db_path);
+        let integrity_check = sqlite_integrity_check(&connection);
+        let page_metrics = page_metrics(&connection)?;
+        let object_types = sqlite_object_types(&connection)?;
+        let (dbstat_available, mut objects) =
+            dbstat_objects(&connection, &object_types, file_family.database_bytes)?;
+        if !dbstat_available {
+            objects = fallback_objects(&connection, &object_types, file_family.database_bytes)?;
+        }
+        let object_bytes = objects
+            .iter()
+            .map(|object| (object.name.clone(), object.total_bytes))
+            .collect::<HashMap<_, _>>();
+        let categories = storage_category_breakdown(&objects);
+        let table_row_metrics = table_row_metrics(&objects);
+        let aggregate_metrics = aggregate_storage_metrics(&objects, &file_family);
+        let dictionary_metrics = dictionary_metrics(&connection, &object_bytes)?;
+        let qualified_name_metric = qualified_name_metric(&connection, &object_bytes)?;
+        let fts_storage = fts_storage_metric(&connection, &object_bytes)?;
+        let edge_fact_mix = edge_fact_mix(&connection)?;
+        let core_query_plans = core_query_plan_reports(&connection);
+        let index_usage = index_usage_report(&connection, &object_bytes, &core_query_plans)?;
+        (
+            file_family,
+            integrity_check,
+            page_metrics,
+            dbstat_available,
+            objects,
+            categories,
+            table_row_metrics,
+            aggregate_metrics,
+            dictionary_metrics,
+            qualified_name_metric,
+            fts_storage,
+            edge_fact_mix,
+            index_usage,
+            core_query_plans,
+        )
+    };
+    let after = db_file_snapshot(db_path);
+    let inspection = read_only_inspection_audit(
+        before,
+        after,
+        read_only_mode_used,
+        immutable_mode_used,
+        immutable_mode_reason,
+    );
     let mut notes = vec![
         "Read-only audit: no VACUUM, ANALYZE, index drop, or storage rewrite was applied."
             .to_string(),
@@ -1369,7 +1710,21 @@ fn inspect_storage(db_path: &Path) -> Result<StorageInspection, String> {
         schema_version: AUDIT_SCHEMA_VERSION,
         db_path: path_string(db_path),
         inspection_read_only: true,
-        artifact_mutated_during_inspection: false,
+        main_db_size_before: inspection.main_db_size_before,
+        main_db_size_after: inspection.main_db_size_after,
+        main_db_mtime_before: inspection.main_db_mtime_before,
+        main_db_mtime_after: inspection.main_db_mtime_after,
+        main_db_hash_before: inspection.main_db_hash_before,
+        main_db_hash_after: inspection.main_db_hash_after,
+        main_db_hash_algorithm: inspection.main_db_hash_algorithm,
+        sidecars_before: inspection.sidecars_before,
+        sidecars_after: inspection.sidecars_after,
+        sidecar_status: inspection.sidecar_status,
+        artifact_mutated_during_inspection: inspection.artifact_mutated_during_inspection,
+        sidecar_only_change: inspection.sidecar_only_change,
+        read_only_mode_used: inspection.read_only_mode_used,
+        immutable_mode_used: inspection.immutable_mode_used,
+        immutable_mode_reason: inspection.immutable_mode_reason,
         dbstat_available,
         integrity_check,
         file_family,
@@ -1394,7 +1749,12 @@ fn inspect_storage(db_path: &Path) -> Result<StorageInspection, String> {
 }
 
 fn validate_schema(db_path: &Path) -> Result<SchemaValidationReport, String> {
-    let connection = open_read_only(db_path)?;
+    let before = db_file_snapshot(db_path);
+    let read_only = open_read_only_with_snapshot(db_path, &before)?;
+    let read_only_mode_used = read_only.read_only_mode_used.clone();
+    let immutable_mode_used = read_only.immutable_mode_used;
+    let immutable_mode_reason = read_only.immutable_mode_reason.clone();
+    let connection = read_only.connection;
     let user_version = connection
         .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
         .map_err(|error| error.to_string())?;
@@ -1522,6 +1882,15 @@ fn validate_schema(db_path: &Path) -> Result<SchemaValidationReport, String> {
             ));
         }
     }
+    drop(connection);
+    let after = db_file_snapshot(db_path);
+    let inspection = read_only_inspection_audit(
+        before,
+        after,
+        read_only_mode_used,
+        immutable_mode_used,
+        immutable_mode_reason,
+    );
 
     Ok(SchemaValidationReport {
         schema_version: AUDIT_SCHEMA_VERSION,
@@ -1531,6 +1900,22 @@ fn validate_schema(db_path: &Path) -> Result<SchemaValidationReport, String> {
         } else {
             "failed".to_string()
         },
+        inspection_read_only: true,
+        main_db_size_before: inspection.main_db_size_before,
+        main_db_size_after: inspection.main_db_size_after,
+        main_db_mtime_before: inspection.main_db_mtime_before,
+        main_db_mtime_after: inspection.main_db_mtime_after,
+        main_db_hash_before: inspection.main_db_hash_before,
+        main_db_hash_after: inspection.main_db_hash_after,
+        main_db_hash_algorithm: inspection.main_db_hash_algorithm,
+        sidecars_before: inspection.sidecars_before,
+        sidecars_after: inspection.sidecars_after,
+        sidecar_status: inspection.sidecar_status,
+        artifact_mutated_during_inspection: inspection.artifact_mutated_during_inspection,
+        sidecar_only_change: inspection.sidecar_only_change,
+        read_only_mode_used: inspection.read_only_mode_used,
+        immutable_mode_used: inspection.immutable_mode_used,
+        immutable_mode_reason: inspection.immutable_mode_reason,
         user_version,
         expected_columns,
         views,
@@ -5049,15 +5434,170 @@ fn relation_count_rows(
 }
 
 fn open_read_only(db_path: &Path) -> Result<Connection, String> {
+    let before = db_file_snapshot(db_path);
+    open_read_only_with_snapshot(db_path, &before).map(|read_only| read_only.connection)
+}
+
+fn open_read_only_with_snapshot(
+    db_path: &Path,
+    before: &DbFileSnapshot,
+) -> Result<ReadOnlyConnection, String> {
     if !db_path.exists() {
         return Err(format!("database does not exist: {}", db_path.display()));
     }
-    let connection = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| format!("failed to open {} read-only: {error}", db_path.display()))?;
+    let immutable_mode_used = before.sidecars.is_empty();
+    let immutable_mode_reason = if immutable_mode_used {
+        "immutable=1 used because no WAL/SHM sidecars were present before inspection".to_string()
+    } else {
+        "immutable=1 not used because WAL/SHM sidecars were present; strict mode=ro preserves WAL visibility".to_string()
+    };
+    let uri = sqlite_read_only_uri(db_path, immutable_mode_used)?;
+    let connection = Connection::open_with_flags(
+        &uri,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .map_err(|error| format!("failed to open {} read-only: {error}", db_path.display()))?;
     connection
         .pragma_update(None, "query_only", true)
         .map_err(|error| format!("failed to mark {} query-only: {error}", db_path.display()))?;
-    Ok(connection)
+    Ok(ReadOnlyConnection {
+        connection,
+        read_only_mode_used: if immutable_mode_used {
+            "sqlite_uri_mode_ro_immutable_query_only".to_string()
+        } else {
+            "sqlite_uri_mode_ro_query_only".to_string()
+        },
+        immutable_mode_used,
+        immutable_mode_reason,
+    })
+}
+
+fn sqlite_read_only_uri(db_path: &Path, immutable: bool) -> Result<String, String> {
+    let absolute = if db_path.is_absolute() {
+        db_path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| error.to_string())?
+            .join(db_path)
+    };
+    let mut raw = absolute.to_string_lossy().replace('\\', "/");
+    if let Some(stripped) = raw.strip_prefix("//?/") {
+        raw = stripped.to_string();
+    }
+    let encoded = percent_encode_sqlite_uri_path(&raw);
+    let path = encoded.trim_start_matches('/');
+    let immutable_param = if immutable { "&immutable=1" } else { "" };
+    Ok(format!("file:///{path}?mode=ro{immutable_param}"))
+}
+
+fn percent_encode_sqlite_uri_path(path: &str) -> String {
+    let mut encoded = String::new();
+    for byte in path.bytes() {
+        let keep =
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':');
+        if keep {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+fn db_file_snapshot(db_path: &Path) -> DbFileSnapshot {
+    let main_metadata = fs::metadata(db_path).ok();
+    DbFileSnapshot {
+        main_db_size: main_metadata.as_ref().map(fs::Metadata::len).unwrap_or(0),
+        main_db_mtime_unix_ms: main_metadata
+            .and_then(|metadata| metadata.modified().ok())
+            .map(system_time_unix_ms),
+        main_db_hash: stable_file_hash(db_path),
+        sidecars: sqlite_sidecar_snapshots(db_path),
+    }
+}
+
+fn sqlite_sidecar_snapshots(db_path: &Path) -> Vec<SidecarSnapshot> {
+    let mut sidecars = ["wal", "shm"]
+        .into_iter()
+        .filter_map(|kind| {
+            let path = PathBuf::from(format!("{}-{kind}", db_path.display()));
+            let metadata = fs::metadata(&path).ok()?;
+            Some(SidecarSnapshot {
+                kind: kind.to_string(),
+                path: path_string(&path),
+                size: metadata.len(),
+                mtime_unix_ms: metadata.modified().ok().map(system_time_unix_ms),
+                hash: stable_file_hash(&path),
+            })
+        })
+        .collect::<Vec<_>>();
+    sidecars.sort_by(|left, right| left.kind.cmp(&right.kind));
+    sidecars
+}
+
+fn read_only_inspection_audit(
+    before: DbFileSnapshot,
+    after: DbFileSnapshot,
+    read_only_mode_used: String,
+    immutable_mode_used: bool,
+    immutable_mode_reason: String,
+) -> ReadOnlyInspectionAudit {
+    let main_changed = before.main_db_size != after.main_db_size
+        || before.main_db_mtime_unix_ms != after.main_db_mtime_unix_ms
+        || before.main_db_hash != after.main_db_hash;
+    let sidecars_changed = before.sidecars != after.sidecars;
+    let sidecar_status = if main_changed {
+        "main_db_changed"
+    } else if sidecars_changed {
+        "sidecar_only_change"
+    } else if after.sidecars.is_empty() {
+        "none"
+    } else {
+        "unchanged"
+    }
+    .to_string();
+    ReadOnlyInspectionAudit {
+        main_db_size_before: before.main_db_size,
+        main_db_size_after: after.main_db_size,
+        main_db_mtime_before: before.main_db_mtime_unix_ms,
+        main_db_mtime_after: after.main_db_mtime_unix_ms,
+        main_db_hash_before: before.main_db_hash,
+        main_db_hash_after: after.main_db_hash,
+        main_db_hash_algorithm: "fnv1a64".to_string(),
+        sidecars_before: before.sidecars,
+        sidecars_after: after.sidecars,
+        sidecar_status,
+        artifact_mutated_during_inspection: main_changed,
+        sidecar_only_change: !main_changed && sidecars_changed,
+        read_only_mode_used,
+        immutable_mode_used,
+        immutable_mode_reason,
+    }
+}
+
+fn stable_file_hash(path: &Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let mut hash = 0xcbf29ce484222325u64;
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = file.read(&mut buffer).ok()?;
+        if read == 0 {
+            break;
+        }
+        for byte in &buffer[..read] {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    Some(format!("{hash:016x}"))
+}
+
+fn system_time_unix_ms(value: SystemTime) -> u64 {
+    value
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
 }
 
 fn page_metrics(connection: &Connection) -> Result<PageMetrics, String> {
@@ -6031,9 +6571,26 @@ fn render_storage_markdown(report: &StorageInspection) -> String {
     output.push_str("# Storage Inspection\n\n");
     output.push_str(&format!("Database: `{}`\n\n", report.db_path));
     output.push_str(&format!(
-        "- Inspection read-only: `{}`\n- Artifact mutated during inspection: `{}`\n- DBSTAT available: `{}`\n- Database bytes: `{}`\n- WAL bytes: `{}`\n- SHM bytes: `{}`\n- File family bytes: `{}`\n- Page size: `{}`\n- Page count: `{}`\n- Freelist count: `{}`\n\n",
+        "- Inspection read-only: `{}`\n- Artifact mutated during inspection: `{}`\n- Sidecar-only change: `{}`\n- Sidecar status: `{}`\n- Read-only mode: `{}`\n- Immutable mode used: `{}`\n- Immutable mode reason: `{}`\n- Main DB size before: `{}`\n- Main DB size after: `{}`\n- Main DB mtime before: `{}`\n- Main DB mtime after: `{}`\n- Main DB hash before: `{}`\n- Main DB hash after: `{}`\n- DBSTAT available: `{}`\n- Database bytes: `{}`\n- WAL bytes: `{}`\n- SHM bytes: `{}`\n- File family bytes: `{}`\n- Page size: `{}`\n- Page count: `{}`\n- Freelist count: `{}`\n\n",
         report.inspection_read_only,
         report.artifact_mutated_during_inspection,
+        report.sidecar_only_change,
+        report.sidecar_status,
+        report.read_only_mode_used,
+        report.immutable_mode_used,
+        report.immutable_mode_reason.replace('`', "'"),
+        report.main_db_size_before,
+        report.main_db_size_after,
+        report
+            .main_db_mtime_before
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        report
+            .main_db_mtime_after
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        report.main_db_hash_before.as_deref().unwrap_or("unknown"),
+        report.main_db_hash_after.as_deref().unwrap_or("unknown"),
         report.dbstat_available,
         report.file_family.database_bytes,
         report.file_family.wal_bytes,
@@ -6244,7 +6801,21 @@ fn render_schema_validation_markdown(report: &SchemaValidationReport) -> String 
     output.push_str(&format!("- Status: `{}`\n", report.status));
     output.push_str(&format!("- Database: `{}`\n", report.db_path));
     output.push_str(&format!("- User version: `{}`\n", report.user_version));
-    output.push_str(&format!("- Failure count: `{}`\n\n", report.failures.len()));
+    output.push_str(&format!(
+        "- Failure count: `{}`\n- Inspection read-only: `{}`\n- Artifact mutated during inspection: `{}`\n- Sidecar-only change: `{}`\n- Sidecar status: `{}`\n- Read-only mode: `{}`\n- Immutable mode used: `{}`\n- Immutable mode reason: `{}`\n- Main DB size before: `{}`\n- Main DB size after: `{}`\n- Main DB hash before: `{}`\n- Main DB hash after: `{}`\n\n",
+        report.failures.len(),
+        report.inspection_read_only,
+        report.artifact_mutated_during_inspection,
+        report.sidecar_only_change,
+        report.sidecar_status,
+        report.read_only_mode_used,
+        report.immutable_mode_used,
+        report.immutable_mode_reason.replace('`', "'"),
+        report.main_db_size_before,
+        report.main_db_size_after,
+        report.main_db_hash_before.as_deref().unwrap_or("unknown"),
+        report.main_db_hash_after.as_deref().unwrap_or("unknown"),
+    ));
 
     output.push_str("## Expected Columns\n\n");
     output.push_str("| Table | Column | Status |\n");
@@ -6842,6 +7413,1237 @@ fn render_type_counts(counts: &[TypeCount]) -> String {
         .join(", ")
 }
 
+fn run_storage_micro(options: &StorageMicroOptions) -> Result<Value, String> {
+    let started = Instant::now();
+    let output_root = absolutize_storage_micro_path(&options.out_dir)?;
+    let preflight = storage_budget::storage_budget_preflight(
+        &options.storage_budget,
+        storage_budget::StorageBudgetContext {
+            command: "codegraph-mcp audit storage-micro".to_string(),
+            repo_root: std::env::current_dir().ok(),
+            db_path: None,
+            out_path: Some(output_root.clone()),
+            explicit_db: false,
+            explicit_out: true,
+            diagnostic_only: true,
+        },
+    );
+    if preflight.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp audit storage-micro",
+                &preflight,
+            ),
+        ));
+    }
+    fs::create_dir_all(&output_root).map_err(|error| error.to_string())?;
+    let run_id = storage_micro_run_id();
+    let run_dir = output_root.join(format!("storage-micro-{run_id}"));
+    fs::create_dir_all(&run_dir).map_err(|error| error.to_string())?;
+    let fixtures_dir = run_dir.join("fixtures");
+    let dbs_dir = run_dir.join("dbs");
+    let reports_dir = run_dir.join("reports");
+    let logs_dir = run_dir.join("logs");
+    for directory in [&fixtures_dir, &dbs_dir, &reports_dir, &logs_dir] {
+        fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    }
+
+    let json_path = options
+        .json_path
+        .clone()
+        .unwrap_or_else(|| run_dir.join("storage-micro.json"));
+    let markdown_path = options
+        .markdown_path
+        .clone()
+        .unwrap_or_else(|| run_dir.join("storage-micro.md"));
+    let mut cases = Vec::new();
+    let baseline = StorageMicroCaseSpec {
+        name: "schema_baseline_empty_repo".to_string(),
+        kind: StorageMicroCaseKind::Simple,
+        file_count: 0,
+    };
+    let baseline_case = run_storage_micro_case(
+        &baseline,
+        &fixtures_dir,
+        &dbs_dir,
+        &reports_dir,
+        &logs_dir,
+        options,
+    )?;
+    let baseline_bytes = baseline_case["db_absolute_bytes"].as_u64().unwrap_or(0);
+    cases.push(baseline_case);
+
+    for spec in storage_micro_case_specs(options) {
+        let mut case = run_storage_micro_case(
+            &spec,
+            &fixtures_dir,
+            &dbs_dir,
+            &reports_dir,
+            &logs_dir,
+            options,
+        )?;
+        let db_bytes = case["db_absolute_bytes"].as_u64().unwrap_or(0);
+        let source_bytes = case["source_bytes"].as_u64().unwrap_or(0);
+        let delta = db_bytes.saturating_sub(baseline_bytes);
+        case["db_delta_vs_schema_baseline"] = json!(delta);
+        case["db_bytes_per_source_kb"] = json!(bytes_per_source_kb(db_bytes, source_bytes));
+        case["db_delta_bytes_per_source_kb"] = json!(bytes_per_source_kb(delta, source_bytes));
+        write_json(&reports_dir.join(format!("{}.json", spec.name)), &case)?;
+        cases.push(case);
+    }
+
+    let cases = add_storage_micro_series_deltas(cases);
+    for case in &cases {
+        if let Some(name) = case["case"].as_str() {
+            write_json(&reports_dir.join(format!("{name}.json")), case)?;
+        }
+    }
+
+    let context_pack_checks = if options.no_context_pack {
+        json!({
+            "ran": false,
+            "reason": "--no-context-pack was supplied"
+        })
+    } else {
+        run_storage_micro_context_pack_checks(&cases, &logs_dir)?
+    };
+    let excluded_scope = storage_micro_excluded_scope_metrics(&cases);
+    let duplicate_metrics = storage_micro_duplicate_metrics(&cases);
+    let cumulative = storage_micro_cumulative_analysis(&cases);
+    let normal_codegraph_db_created = cases.iter().any(|case| {
+        case["normal_codegraph_db_exists_after_index"]
+            .as_bool()
+            .unwrap_or(false)
+    });
+    let dbstat_available_all_cases = cases
+        .iter()
+        .all(|case| case["dbstat_available"].as_bool().unwrap_or(false));
+    let db_paths = cases
+        .iter()
+        .filter_map(|case| case["db_path"].as_str().map(PathBuf::from))
+        .collect::<Vec<_>>();
+    let storage_budget = storage_budget::storage_budget_postflight(
+        preflight,
+        &db_paths,
+        &[
+            fixtures_dir.clone(),
+            dbs_dir.clone(),
+            reports_dir.clone(),
+            logs_dir.clone(),
+        ],
+    );
+    let cleanup = if options.keep_artifacts {
+        json!({
+            "fixtures_removed": false,
+            "dbs_removed": false,
+            "reason": "--keep-artifacts was supplied"
+        })
+    } else {
+        let fixtures_removed = remove_dir_if_exists(&fixtures_dir)?;
+        let dbs_removed = remove_dir_if_exists(&dbs_dir)?;
+        json!({
+            "fixtures_removed": fixtures_removed,
+            "dbs_removed": dbs_removed,
+            "reason": "default cleanup removes generated fixture repos and DB files after reports are written"
+        })
+    };
+    let manifest_path = run_dir.join("artifact_manifest.json");
+    let report = json!({
+        "schema_version": STORAGE_MICRO_SCHEMA_VERSION,
+        "report": "storage_micro",
+        "status": "ok",
+        "diagnostic_only": true,
+        "command_namespace": "audit",
+        "command": "codegraph-mcp audit storage-micro",
+        "run_id": run_id,
+        "run_dir": path_string(&run_dir),
+        "output_root": path_string(&output_root),
+        "generated_at_unix_ms": current_unix_ms(),
+        "duration_ms": elapsed_ms(started),
+        "options": {
+            "cases": storage_micro_case_names(&options.cases),
+            "batch_sizes": options.batch_sizes,
+            "keep_artifacts": options.keep_artifacts,
+            "no_context_pack": options.no_context_pack,
+            "respect_gitignore": options.respect_gitignore,
+            "max_db_mib": options.storage_budget.max_db_mib,
+            "max_artifacts_mib": options.storage_budget.max_artifacts_mib,
+            "min_free_disk_gib": options.storage_budget.min_free_disk_gib,
+            "extended": options.storage_budget.extended,
+            "stress_corpus": options.storage_budget.stress_corpus_normalized(),
+        },
+        "reports": {
+            "json": path_string(&json_path),
+            "markdown": path_string(&markdown_path),
+            "per_case_dir": path_string(&reports_dir),
+            "logs_dir": path_string(&logs_dir),
+            "artifact_manifest": path_string(&manifest_path),
+        },
+        "artifact_dirs": {
+            "fixtures": path_string(&fixtures_dir),
+            "dbs": path_string(&dbs_dir),
+            "reports": path_string(&reports_dir),
+            "logs": path_string(&logs_dir),
+        },
+        "artifacts_kept": options.keep_artifacts,
+        "cleanup": cleanup,
+        "cases": cases,
+        "cumulative_analysis": cumulative,
+        "duplicate_template_reuse": duplicate_metrics,
+        "inline_test_classification": context_pack_checks.clone(),
+        "context_pack_checks": context_pack_checks,
+        "excluded_junk_scope": excluded_scope,
+        "dbstat_available_all_cases": dbstat_available_all_cases,
+        "storage_budget": storage_budget.to_json(),
+        "safety": {
+            "normal_codegraph_db_created": normal_codegraph_db_created,
+            "normal_codegraph_db_mutation": normal_codegraph_db_created,
+            "production_agent_use_db_touched": false,
+            "db_paths_are_explicit_absolute": cases.iter().all(|case| case["db_path"].as_str().map(|value| Path::new(value).is_absolute()).unwrap_or(false)),
+            "temp_db_root": path_string(&dbs_dir),
+        },
+        "claim_boundaries": [
+            "This command is diagnostic-only.",
+            "No final intended-performance pass is claimed.",
+            "No CodeGraph vs CGC superiority claim is made.",
+            "No CGC run is performed.",
+            "No Autoresearch run is performed.",
+            "No real-world recall claim is made.",
+            "No precision claim is made for absent proof-mode relations."
+        ],
+    });
+    write_json(&manifest_path, &storage_micro_manifest(&report))?;
+    if storage_budget.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp audit storage-micro",
+                &storage_budget,
+            ),
+        ));
+    }
+    Ok(report)
+}
+
+fn storage_micro_case_specs(options: &StorageMicroOptions) -> Vec<StorageMicroCaseSpec> {
+    let mut specs = Vec::new();
+    if options.cases.contains(&StorageMicroCaseKind::Simple) {
+        for size in &options.batch_sizes {
+            specs.push(StorageMicroCaseSpec {
+                name: format!("n{size}_simple_2kb_files"),
+                kind: StorageMicroCaseKind::Simple,
+                file_count: *size,
+            });
+        }
+    }
+    if options.cases.contains(&StorageMicroCaseKind::Expression) {
+        specs.push(StorageMicroCaseSpec {
+            name: "n10_expression_heavy_2kb_files".to_string(),
+            kind: StorageMicroCaseKind::Expression,
+            file_count: 10,
+        });
+    }
+    if options.cases.contains(&StorageMicroCaseKind::InlineTests) {
+        specs.push(StorageMicroCaseSpec {
+            name: "n10_inline_rust_tests_2kb_files".to_string(),
+            kind: StorageMicroCaseKind::InlineTests,
+            file_count: 10,
+        });
+    }
+    if options.cases.contains(&StorageMicroCaseKind::Duplicates) {
+        specs.push(StorageMicroCaseSpec {
+            name: "n10_duplicate_same_content_files".to_string(),
+            kind: StorageMicroCaseKind::Duplicates,
+            file_count: 10,
+        });
+    }
+    if options.cases.contains(&StorageMicroCaseKind::ExcludedJunk) {
+        specs.push(StorageMicroCaseSpec {
+            name: "excluded_junk_dirs_control".to_string(),
+            kind: StorageMicroCaseKind::ExcludedJunk,
+            file_count: 1,
+        });
+    }
+    specs
+}
+
+fn run_storage_micro_case(
+    spec: &StorageMicroCaseSpec,
+    fixtures_dir: &Path,
+    dbs_dir: &Path,
+    reports_dir: &Path,
+    logs_dir: &Path,
+    options: &StorageMicroOptions,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let repo = fixtures_dir.join(&spec.name);
+    fs::create_dir_all(&repo).map_err(|error| error.to_string())?;
+    let fixture = write_storage_micro_fixture(&repo, spec)?;
+    let db_path = dbs_dir.join(format!("{}.sqlite", spec.name));
+    remove_sqlite_family_if_exists(&db_path)?;
+    let index_started = Instant::now();
+    let summary = index_repo_to_db_with_options(
+        &repo,
+        &db_path,
+        IndexOptions {
+            profile: true,
+            json: false,
+            storage_mode: StorageMode::Proof,
+            build_mode: IndexBuildMode::ProofBuildOnly,
+            scope: IndexScopeOptions {
+                respect_gitignore: options.respect_gitignore,
+                ..IndexScopeOptions::default()
+            },
+            ..IndexOptions::default()
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    let index_wall_ms = elapsed_ms(index_started);
+    let storage_started = Instant::now();
+    let storage = inspect_storage(&db_path)?;
+    let storage_wall_ms = elapsed_ms(storage_started);
+    let storage_json = reports_dir.join(format!("{}.storage_audit.json", spec.name));
+    let storage_md = reports_dir.join(format!("{}.storage_audit.md", spec.name));
+    write_json(&storage_json, &storage)?;
+    write_text(&storage_md, &render_storage_markdown(&storage))?;
+    let requested_counts = storage_micro_requested_counts(&db_path, &storage)?;
+    let file_paths = storage_micro_file_paths(&db_path)?;
+    let normal_db_after = repo.join(".codegraph").join("codegraph.sqlite").exists();
+    let db_bytes = storage.file_family.database_bytes;
+    let source_bytes = fixture["source_bytes"].as_u64().unwrap_or(0);
+    let log = json!({
+        "case": spec.name,
+        "repo": path_string(&repo),
+        "db": path_string(&db_path),
+        "index_status": "ok",
+        "index_wall_ms": index_wall_ms,
+        "storage_audit_status": "ok",
+        "storage_audit_wall_ms": storage_wall_ms,
+        "total_wall_ms": elapsed_ms(started),
+        "normal_codegraph_db_exists_after_index": normal_db_after,
+    });
+    write_json(&logs_dir.join(format!("{}.log.json", spec.name)), &log)?;
+    let table_bytes = storage
+        .objects
+        .iter()
+        .filter(|object| object.object_type == "table" || object.object_type == "schema")
+        .map(|object| object.total_bytes)
+        .sum::<u64>();
+    let index_bytes = storage
+        .objects
+        .iter()
+        .filter(|object| object.object_type == "index" || object.object_type == "autoindex")
+        .map(|object| object.total_bytes)
+        .sum::<u64>();
+    let largest_tables = storage_micro_largest_objects(&storage, true);
+    let largest_indexes = storage_micro_largest_objects(&storage, false);
+    let read_only_inspection = json!({
+        "main_db_size_before": storage.main_db_size_before,
+        "main_db_size_after": storage.main_db_size_after,
+        "main_db_mtime_before": storage.main_db_mtime_before,
+        "main_db_mtime_after": storage.main_db_mtime_after,
+        "main_db_hash_before": storage.main_db_hash_before,
+        "main_db_hash_after": storage.main_db_hash_after,
+        "main_db_hash_algorithm": storage.main_db_hash_algorithm,
+        "sidecars_before": storage.sidecars_before,
+        "sidecars_after": storage.sidecars_after,
+        "sidecar_status": storage.sidecar_status,
+        "artifact_mutated_during_inspection": storage.artifact_mutated_during_inspection,
+        "sidecar_only_change": storage.sidecar_only_change,
+        "read_only_mode_used": storage.read_only_mode_used,
+        "immutable_mode_used": storage.immutable_mode_used,
+        "immutable_mode_reason": storage.immutable_mode_reason,
+    });
+    let mut case = json!({
+        "case": spec.name,
+        "kind": storage_micro_case_kind_name(spec.kind),
+        "file_count": spec.file_count,
+        "repo_path": path_string(&repo),
+        "db_path": path_string(&db_path),
+        "db_path_is_absolute": db_path.is_absolute(),
+        "source_bytes": source_bytes,
+        "all_generated_source_bytes": fixture["all_generated_source_bytes"].clone(),
+        "all_generated_code_files_approximately_2kb": fixture["all_generated_code_files_approximately_2kb"].clone(),
+        "index_wall_ms": index_wall_ms,
+        "storage_audit_wall_ms": storage_wall_ms,
+        "db_absolute_bytes": db_bytes,
+        "db_family_bytes": storage.file_family.total_bytes,
+        "db_delta_vs_schema_baseline": 0,
+        "db_delta_vs_previous_n_case": Value::Null,
+        "db_bytes_per_source_kb": bytes_per_source_kb(db_bytes, source_bytes),
+        "db_delta_bytes_per_source_kb": Value::Null,
+        "dbstat_available": storage.dbstat_available,
+        "table_bytes": table_bytes,
+        "index_bytes": index_bytes,
+        "storage_audit_json": path_string(&storage_json),
+        "storage_audit_markdown": path_string(&storage_md),
+        "case_log": path_string(&logs_dir.join(format!("{}.log.json", spec.name))),
+        "normal_codegraph_db_exists_after_index": normal_db_after,
+    });
+    if let Some(object) = case.as_object_mut() {
+        object.insert("source_files".to_string(), fixture["source_files"].clone());
+        object.insert("junk_files".to_string(), fixture["junk_files"].clone());
+        object.insert("index_summary".to_string(), json!(summary));
+        object.insert("largest_tables".to_string(), largest_tables);
+        object.insert("largest_indexes".to_string(), largest_indexes);
+        object.insert("requested_row_counts".to_string(), requested_counts);
+        object.insert(
+            "all_table_counts".to_string(),
+            json!(storage.table_row_metrics),
+        );
+        object.insert(
+            "dictionary_metrics".to_string(),
+            json!(storage.dictionary_metrics),
+        );
+        object.insert(
+            "qualified_name_metric".to_string(),
+            json!(storage.qualified_name_metric),
+        );
+        object.insert("file_paths".to_string(), json!(file_paths));
+        object.insert("read_only_inspection".to_string(), read_only_inspection);
+    }
+    Ok(case)
+}
+
+fn write_storage_micro_fixture(repo: &Path, spec: &StorageMicroCaseSpec) -> Result<Value, String> {
+    let mut source_files = Vec::new();
+    let mut junk_files = Vec::new();
+    match spec.kind {
+        StorageMicroCaseKind::Simple if spec.file_count == 0 => {}
+        StorageMicroCaseKind::Simple => {
+            for index in 0..spec.file_count {
+                let label = format!("simple_{index:03}");
+                source_files.push(write_storage_micro_source(
+                    repo,
+                    &format!("src/{label}.rs"),
+                    &storage_micro_simple_rust(&label),
+                )?);
+            }
+        }
+        StorageMicroCaseKind::Expression => {
+            for index in 0..spec.file_count {
+                let label = format!("expr_{index:03}");
+                source_files.push(write_storage_micro_source(
+                    repo,
+                    &format!("src/{label}.rs"),
+                    &storage_micro_expression_rust(&label),
+                )?);
+            }
+        }
+        StorageMicroCaseKind::InlineTests => {
+            for index in 0..spec.file_count {
+                source_files.push(write_storage_micro_source(
+                    repo,
+                    &format!("src/inline_prod_{index:03}.rs"),
+                    &storage_micro_inline_test_rust(index),
+                )?);
+            }
+        }
+        StorageMicroCaseKind::Duplicates => {
+            let source = storage_micro_duplicate_rust();
+            for index in 0..spec.file_count {
+                source_files.push(write_storage_micro_source(
+                    repo,
+                    &format!("src/duplicates/dup_{index:03}.rs"),
+                    &source,
+                )?);
+            }
+        }
+        StorageMicroCaseKind::ExcludedJunk => {
+            source_files.push(write_storage_micro_source(
+                repo,
+                "src/kept_control.rs",
+                &storage_micro_simple_rust("kept_control"),
+            )?);
+            for (path, source) in [
+                (
+                    "target/generated.rs",
+                    storage_micro_simple_rust("target_generated"),
+                ),
+                (
+                    "node_modules/pkg/index.js",
+                    storage_micro_js_fixture("ignored_node"),
+                ),
+                ("dist/bundle.rs", storage_micro_simple_rust("dist_bundle")),
+                ("build/output.rs", storage_micro_simple_rust("build_output")),
+                (
+                    "reports/audit/generated.rs",
+                    storage_micro_simple_rust("reports_generated"),
+                ),
+                (
+                    ".venv/script.py",
+                    storage_micro_python_fixture("ignored_python"),
+                ),
+                (
+                    "__pycache__/cached.py",
+                    storage_micro_python_fixture("cached_value"),
+                ),
+            ] {
+                junk_files.push(write_storage_micro_source(repo, path, &source)?);
+            }
+        }
+    }
+    let source_bytes = source_files
+        .iter()
+        .map(|file| file["bytes"].as_u64().unwrap_or(0))
+        .sum::<u64>();
+    let junk_bytes = junk_files
+        .iter()
+        .map(|file| file["bytes"].as_u64().unwrap_or(0))
+        .sum::<u64>();
+    let all_files = source_files
+        .iter()
+        .chain(junk_files.iter())
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "source_files": source_files,
+        "junk_files": junk_files,
+        "source_bytes": source_bytes,
+        "all_generated_source_bytes": source_bytes + junk_bytes,
+        "all_generated_code_files_approximately_2kb": all_files.iter().all(|file| {
+            let bytes = file["bytes"].as_u64().unwrap_or(0);
+            (1536..=3072).contains(&bytes)
+        }),
+    }))
+}
+
+fn write_storage_micro_source(repo: &Path, relative: &str, source: &str) -> Result<Value, String> {
+    let path = repo.join(relative);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::write(&path, source).map_err(|error| error.to_string())?;
+    Ok(json!({
+        "path": relative.replace('\\', "/"),
+        "bytes": file_size(&path),
+        "approximately_2kb": (1536..=3072).contains(&file_size(&path)),
+    }))
+}
+
+fn storage_micro_simple_rust(label: &str) -> String {
+    storage_micro_pad_rust(
+        format!(
+            "pub fn {label}_score(seed: i32) -> i32 {{\n    let base = seed.wrapping_mul(3);\n    base + 17\n}}\n\npub fn {label}_message(name: &str, seed: i32) -> String {{\n    let score = {label}_score(seed);\n    format!(\"{{name}}:{{score}}\")\n}}\n\npub fn {label}_entry() -> String {{\n    {label}_message(\"{label}\", 7)\n}}\n\npub fn {label}_threshold(seed: i32) -> bool {{\n    {label}_score(seed) > 30\n}}\n"
+        ),
+        label,
+    )
+}
+
+fn storage_micro_expression_rust(label: &str) -> String {
+    storage_micro_pad_rust(
+        format!(
+            "pub fn {label}_bucket(value: i32) -> &'static str {{\n    match value {{\n        v if v < 0 => \"negative\",\n        0 => \"zero\",\n        1..=20 => \"small\",\n        21..=100 => \"medium\",\n        _ => \"large\",\n    }}\n}}\n\npub fn {label}_score(input: &[i32]) -> i32 {{\n    input.iter().enumerate().map(|(idx, value)| if idx % 2 == 0 {{ value * 2 }} else {{ value - 3 }}).filter(|value| value % 3 != 0).fold(0, |acc, value| acc + value)\n}}\n\npub fn {label}_entry() -> String {{\n    let seed = [1, 3, 5, 8, 13, 21, 34];\n    let score = {label}_score(&seed);\n    format!(\"{{}}:{{}}\", {label}_bucket(score), score)\n}}\n"
+        ),
+        label,
+    )
+}
+
+fn storage_micro_inline_test_rust(index: usize) -> String {
+    let label = format!("inline_prod_{index:03}");
+    storage_micro_pad_rust(
+        format!(
+            "pub fn {label}(name: &str) -> String {{\n    format!(\"hello {{name}}\")\n}}\n\npub fn inline_bridge_{index:03}() -> String {{\n    {label}(\"wasif\")\n}}\n\npub fn inline_upper_{index:03}(name: &str) -> String {{\n    inline_bridge_{index:03}().to_uppercase() + \":\" + name\n}}\n\n#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    #[test]\n    fn {label}_works() {{\n        assert_eq!({label}(\"wasif\"), \"hello wasif\");\n    }}\n}}\n"
+        ),
+        &label,
+    )
+}
+
+fn storage_micro_duplicate_rust() -> String {
+    storage_micro_pad_rust(
+        "pub fn duplicate_shared_score(seed: i32) -> i32 {\n    let doubled = seed.wrapping_mul(2);\n    doubled + 41\n}\n\npub fn duplicate_shared_message(name: &str) -> String {\n    let score = duplicate_shared_score(9);\n    format!(\"{name}:{score}\")\n}\n\npub fn duplicate_shared_entry() -> String {\n    duplicate_shared_message(\"duplicate\")\n}\n".to_string(),
+        "duplicate_shared",
+    )
+}
+
+fn storage_micro_js_fixture(label: &str) -> String {
+    let mut source = format!("export function {label}(value) {{\n  return value + 1;\n}}\n");
+    while source.len() < 2048 {
+        let index = source.len();
+        source.push_str(&format!(
+            "export function {label}_{index}(value) {{\n  const shifted = value + {index};\n  return shifted * 2;\n}}\n"
+        ));
+    }
+    source
+}
+
+fn storage_micro_python_fixture(label: &str) -> String {
+    let mut source = format!("def {label}(value):\n    return value + 1\n\n");
+    while source.len() < 2048 {
+        let index = source.len();
+        source.push_str(&format!(
+            "def {label}_{index}(value):\n    shifted = value + {index}\n    return shifted * 2\n\n"
+        ));
+    }
+    source
+}
+
+fn storage_micro_pad_rust(mut source: String, label: &str) -> String {
+    let mut index = 0usize;
+    while source.len() < 2048 {
+        source.push_str(&format!(
+            "\npub fn {label}_pad_{index}(value: i32) -> i32 {{\n    let shifted = value.wrapping_add({});\n    shifted ^ {}\n}}\n",
+            index + 3,
+            index + 11
+        ));
+        index += 1;
+    }
+    source
+}
+
+fn storage_micro_requested_counts(
+    db_path: &Path,
+    storage: &StorageInspection,
+) -> Result<Value, String> {
+    let connection = open_read_only(db_path)?;
+    let object_types = sqlite_object_types(&connection)?;
+    let object_bytes = storage
+        .objects
+        .iter()
+        .map(|object| (object.name.clone(), object.total_bytes))
+        .collect::<HashMap<_, _>>();
+    let requested = [
+        "files",
+        "file_instance",
+        "file_instances",
+        "source_content_template",
+        "template_entities",
+        "template_edges",
+        "file_entities",
+        "file_edges",
+        "file_source_spans",
+        "source_spans",
+        "path_evidence",
+        "path_evidence_edges",
+        "symbol_dict",
+        "qname_prefix_dict",
+        "qualified_name_dict",
+        "entities",
+        "edges",
+        "proof_edges",
+    ];
+    let mut counts = serde_json::Map::new();
+    for name in requested {
+        let present = storage_micro_object_exists(&connection, name)?;
+        let rows = if present {
+            row_count(&connection, name).ok()
+        } else {
+            None
+        };
+        counts.insert(
+            name.to_string(),
+            json!({
+                "present": present,
+                "type": object_types.get(name),
+                "rows": rows,
+                "bytes": object_bytes.get(name).copied(),
+            }),
+        );
+    }
+    if counts
+        .get("proof_edges")
+        .and_then(|value| value["present"].as_bool())
+        != Some(true)
+    {
+        if let Some(edges) = counts.get("edges").cloned() {
+            counts.insert(
+                "proof_edges".to_string(),
+                json!({
+                    "present": false,
+                    "current_equivalent": "edges",
+                    "equivalent_rows": edges["rows"],
+                    "equivalent_bytes": edges["bytes"],
+                }),
+            );
+        }
+    }
+    Ok(Value::Object(counts))
+}
+
+fn storage_micro_object_exists(connection: &Connection, name: &str) -> Result<bool, String> {
+    connection
+        .query_row(
+            "SELECT 1 FROM sqlite_schema WHERE name = ?1 AND type IN ('table', 'view') LIMIT 1",
+            [name],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|value| value.is_some())
+        .map_err(|error| error.to_string())
+}
+
+fn storage_micro_file_paths(db_path: &Path) -> Result<Vec<String>, String> {
+    let connection = open_read_only(db_path)?;
+    let attempts = [
+        "SELECT repo_relative_path FROM file_instance ORDER BY repo_relative_path",
+        "SELECT path_dict.value FROM files JOIN path_dict ON path_dict.id = files.path_id ORDER BY path_dict.value",
+    ];
+    for sql in attempts {
+        if let Ok(mut statement) = connection.prepare(sql) {
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| error.to_string())?;
+            let mut paths = Vec::new();
+            for row in rows {
+                paths.push(row.map_err(|error| error.to_string())?.replace('\\', "/"));
+            }
+            return Ok(paths);
+        }
+    }
+    Ok(Vec::new())
+}
+
+fn storage_micro_largest_objects(storage: &StorageInspection, tables: bool) -> Value {
+    let values = storage
+        .objects
+        .iter()
+        .filter(|object| {
+            if tables {
+                object.object_type == "table" || object.object_type == "schema"
+            } else {
+                object.object_type == "index" || object.object_type == "autoindex"
+            }
+        })
+        .take(10)
+        .map(|object| {
+            json!({
+                "name": object.name,
+                "object_type": object.object_type,
+                "row_count": object.row_count,
+                "bytes": object.total_bytes,
+                "payload_bytes": object.payload_bytes,
+                "unused_bytes": object.unused_bytes,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!(values)
+}
+
+fn add_storage_micro_series_deltas(mut cases: Vec<Value>) -> Vec<Value> {
+    let baseline = cases
+        .iter()
+        .find(|case| case["case"].as_str() == Some("schema_baseline_empty_repo"))
+        .and_then(|case| case["db_absolute_bytes"].as_u64())
+        .unwrap_or(0);
+    let mut previous_simple: Option<(usize, u64)> = None;
+    for case in &mut cases {
+        let db_bytes = case["db_absolute_bytes"].as_u64().unwrap_or(0);
+        let source_bytes = case["source_bytes"].as_u64().unwrap_or(0);
+        let delta = db_bytes.saturating_sub(baseline);
+        case["db_delta_vs_schema_baseline"] = json!(delta);
+        case["db_bytes_per_source_kb"] = json!(bytes_per_source_kb(db_bytes, source_bytes));
+        case["db_delta_bytes_per_source_kb"] = json!(bytes_per_source_kb(delta, source_bytes));
+        if case["kind"].as_str() == Some("simple") && case["file_count"].as_u64().unwrap_or(0) > 0 {
+            let file_count = case["file_count"].as_u64().unwrap_or(0) as usize;
+            case["db_delta_vs_previous_n_case"] = if let Some((_, previous_bytes)) = previous_simple
+            {
+                json!(db_bytes.saturating_sub(previous_bytes))
+            } else {
+                Value::Null
+            };
+            previous_simple = Some((file_count, db_bytes));
+        }
+    }
+    cases
+}
+
+fn storage_micro_cumulative_analysis(cases: &[Value]) -> Value {
+    let mut simple = cases
+        .iter()
+        .filter(|case| case["kind"].as_str() == Some("simple"))
+        .filter(|case| case["file_count"].as_u64().unwrap_or(0) > 0)
+        .collect::<Vec<_>>();
+    simple.sort_by_key(|case| case["file_count"].as_u64().unwrap_or(0));
+    let mut slopes = Vec::new();
+    for pair in simple.windows(2) {
+        let left = pair[0];
+        let right = pair[1];
+        let left_count = left["file_count"].as_u64().unwrap_or(0);
+        let right_count = right["file_count"].as_u64().unwrap_or(0);
+        if right_count <= left_count {
+            continue;
+        }
+        let file_delta = (right_count - left_count) as f64;
+        let db_delta = right["db_absolute_bytes"].as_u64().unwrap_or(0) as f64
+            - left["db_absolute_bytes"].as_u64().unwrap_or(0) as f64;
+        let entity_delta = storage_micro_count(right, "entities") as f64
+            - storage_micro_count(left, "entities") as f64;
+        let edge_delta =
+            storage_micro_count(right, "edges") as f64 - storage_micro_count(left, "edges") as f64;
+        slopes.push(json!({
+            "from_case": left["case"],
+            "to_case": right["case"],
+            "main_db_bytes_per_file": round3(db_delta / file_delta),
+            "bytes_per_entity": if entity_delta > 0.0 { json!(round3(db_delta / entity_delta)) } else { Value::Null },
+            "bytes_per_edge": if edge_delta > 0.0 { json!(round3(db_delta / edge_delta)) } else { Value::Null },
+        }));
+    }
+    json!({
+        "fixed_overhead_schema_baseline_bytes": cases.iter().find(|case| case["case"].as_str() == Some("schema_baseline_empty_repo")).and_then(|case| case["db_absolute_bytes"].as_u64()),
+        "simple_series": simple,
+        "slope_estimates": slopes,
+    })
+}
+
+fn storage_micro_count(case: &Value, table: &str) -> u64 {
+    case["requested_row_counts"][table]["rows"]
+        .as_u64()
+        .or_else(|| case["requested_row_counts"][table]["equivalent_rows"].as_u64())
+        .unwrap_or(0)
+}
+
+fn storage_micro_duplicate_metrics(cases: &[Value]) -> Value {
+    let Some(case) = cases
+        .iter()
+        .find(|case| case["case"].as_str() == Some("n10_duplicate_same_content_files"))
+    else {
+        return json!({"ran": false, "reason": "duplicates case was not selected"});
+    };
+    let files = storage_micro_count(case, "files");
+    let templates = storage_micro_count(case, "source_content_template");
+    json!({
+        "ran": true,
+        "files_rows": files,
+        "source_content_template_rows": templates,
+        "template_reuse_observed": files > templates && templates == 1,
+    })
+}
+
+fn storage_micro_excluded_scope_metrics(cases: &[Value]) -> Value {
+    let Some(case) = cases
+        .iter()
+        .find(|case| case["case"].as_str() == Some("excluded_junk_dirs_control"))
+    else {
+        return json!({"ran": false, "reason": "excluded-junk case was not selected"});
+    };
+    let paths = case["file_paths"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+        .collect::<Vec<_>>();
+    let prefixes = [
+        "target/",
+        "node_modules/",
+        "dist/",
+        "build/",
+        "reports/",
+        ".venv/",
+        "__pycache__/",
+    ];
+    let mut checks = serde_json::Map::new();
+    for prefix in prefixes {
+        let matches = paths
+            .iter()
+            .filter(|path| path.starts_with(prefix) || path.contains(&format!("/{prefix}")))
+            .cloned()
+            .collect::<Vec<_>>();
+        checks.insert(
+            prefix.trim_end_matches('/').to_string(),
+            json!({
+                "status": if matches.is_empty() { "excluded" } else { "included" },
+                "matches": matches,
+            }),
+        );
+    }
+    json!({
+        "ran": true,
+        "file_paths_observed": paths,
+        "all_junk_prefixes_absent": checks.values().all(|value| value["status"].as_str() == Some("excluded")),
+        "dist_policy_observed": checks.get("dist").and_then(|value| value["status"].as_str()).unwrap_or("unknown"),
+        "build_policy_observed": checks.get("build").and_then(|value| value["status"].as_str()).unwrap_or("unknown"),
+        "prefix_checks": Value::Object(checks),
+    })
+}
+
+fn run_storage_micro_context_pack_checks(
+    cases: &[Value],
+    logs_dir: &Path,
+) -> Result<Value, String> {
+    let Some(case) = cases
+        .iter()
+        .find(|case| case["case"].as_str() == Some("n10_inline_rust_tests_2kb_files"))
+    else {
+        return Ok(json!({"ran": false, "reason": "inline-tests case was not selected"}));
+    };
+    let repo = PathBuf::from(case["repo_path"].as_str().unwrap_or_default());
+    let db = PathBuf::from(case["db_path"].as_str().unwrap_or_default());
+    let production_args = vec![
+        "--task".to_string(),
+        "storage micro production context for inline_prod_000".to_string(),
+        "--seed".to_string(),
+        "inline_prod_000".to_string(),
+        "--mode".to_string(),
+        "production".to_string(),
+        "--agent-json".to_string(),
+        "--limit-paths".to_string(),
+        "5".to_string(),
+        "--limit-snippets".to_string(),
+        "8".to_string(),
+        "--max-output-bytes".to_string(),
+        "25000".to_string(),
+    ];
+    let test_args = vec![
+        "--task".to_string(),
+        "storage micro test impact for inline_prod_000_works".to_string(),
+        "--seed".to_string(),
+        "inline_prod_000_works".to_string(),
+        "--mode".to_string(),
+        "test-impact".to_string(),
+        "--agent-json".to_string(),
+        "--limit-paths".to_string(),
+        "5".to_string(),
+        "--limit-snippets".to_string(),
+        "8".to_string(),
+        "--max-output-bytes".to_string(),
+        "25000".to_string(),
+    ];
+    let production_started = Instant::now();
+    let production = super::with_repo_db_context(&repo, &db, || {
+        super::run_context_pack_command(&production_args)
+    })?;
+    let production_wall_ms = elapsed_ms(production_started);
+    let test_started = Instant::now();
+    let test_impact =
+        super::with_repo_db_context(&repo, &db, || super::run_context_pack_command(&test_args))?;
+    let test_wall_ms = elapsed_ms(test_started);
+    write_json(
+        &logs_dir.join("context_pack_inline_production.json"),
+        &production,
+    )?;
+    write_json(
+        &logs_dir.join("context_pack_inline_test_impact.json"),
+        &test_impact,
+    )?;
+    let production_text = serde_json::to_string(&production).map_err(|error| error.to_string())?;
+    let test_text = serde_json::to_string(&test_impact).map_err(|error| error.to_string())?;
+    let production_roles = collect_json_strings_by_key(&production, "evidence_role");
+    let test_roles = collect_json_strings_by_key(&test_impact, "evidence_role");
+    Ok(json!({
+        "ran": true,
+        "production_wall_ms": production_wall_ms,
+        "test_impact_wall_ms": test_wall_ms,
+        "production_context_excludes_inline_tests": !production_text.contains("inline_prod_000_works") && !production_text.contains("#[test]") && !production_text.contains("cfg(test)"),
+        "test_impact_surfaces_inline_tests": test_text.contains("inline_prod_000_works") && (test_text.contains("#[test]") || test_roles.iter().any(|role| role == "test" || role == "mixed")),
+        "production_evidence_roles": production_roles,
+        "test_impact_evidence_roles": test_roles,
+        "fallback_sources": collect_json_strings_by_key(&test_impact, "fallback_source"),
+        "recommended_tests": collect_recommended_test_strings(&test_impact),
+        "production_log": path_string(&logs_dir.join("context_pack_inline_production.json")),
+        "test_impact_log": path_string(&logs_dir.join("context_pack_inline_test_impact.json")),
+    }))
+}
+
+fn collect_recommended_test_strings(value: &Value) -> Vec<String> {
+    let mut tests = BTreeSet::new();
+    for recommended in collect_json_values_by_key(value, "recommended_tests") {
+        match recommended {
+            Value::Array(items) => {
+                for item in items {
+                    if let Some(test) = item.as_str() {
+                        tests.insert(test.to_string());
+                    }
+                }
+            }
+            Value::String(test) => {
+                tests.insert(test);
+            }
+            _ => {}
+        }
+    }
+    tests.into_iter().collect()
+}
+
+fn collect_json_strings_by_key(value: &Value, key: &str) -> Vec<String> {
+    let mut values = BTreeSet::new();
+    collect_json_strings_by_key_inner(value, key, &mut values);
+    values.into_iter().collect()
+}
+
+fn collect_json_strings_by_key_inner(value: &Value, key: &str, values: &mut BTreeSet<String>) {
+    match value {
+        Value::Object(map) => {
+            for (current_key, current_value) in map {
+                if current_key == key {
+                    if let Some(text) = current_value.as_str() {
+                        values.insert(text.to_string());
+                    }
+                }
+                collect_json_strings_by_key_inner(current_value, key, values);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_json_strings_by_key_inner(item, key, values);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_json_values_by_key(value: &Value, key: &str) -> Vec<Value> {
+    let mut values = Vec::new();
+    collect_json_values_by_key_inner(value, key, &mut values);
+    values
+}
+
+fn collect_json_values_by_key_inner(value: &Value, key: &str, values: &mut Vec<Value>) {
+    match value {
+        Value::Object(map) => {
+            for (current_key, current_value) in map {
+                if current_key == key {
+                    values.push(current_value.clone());
+                }
+                collect_json_values_by_key_inner(current_value, key, values);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_json_values_by_key_inner(item, key, values);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn storage_micro_manifest(report: &Value) -> Value {
+    json!({
+        "schema_version": STORAGE_MICRO_SCHEMA_VERSION,
+        "report": "storage_micro_artifact_manifest",
+        "run_id": report["run_id"],
+        "run_dir": report["run_dir"],
+        "reports": report["reports"],
+        "artifact_dirs": report["artifact_dirs"],
+        "artifacts_kept": report["artifacts_kept"],
+        "cleanup": report["cleanup"],
+        "storage_budget": report["storage_budget"],
+        "case_count": report["cases"].as_array().map(Vec::len).unwrap_or(0),
+        "claim_boundaries": report["claim_boundaries"],
+    })
+}
+
+fn render_storage_micro_markdown(report: &Value) -> String {
+    let mut output = String::new();
+    output.push_str("# Storage Micro Diagnostic\n\n");
+    output.push_str(&format!(
+        "Run ID: `{}`\n\n",
+        report["run_id"].as_str().unwrap_or("unknown")
+    ));
+    output.push_str("This is a diagnostic storage micro-lab. It uses isolated generated fixtures and explicit external DB paths under the requested output directory.\n\n");
+    output.push_str("No final intended-performance pass, CGC superiority, real-world recall, or unsupported relation precision claim is made.\n\n");
+    output.push_str("## Summary\n\n");
+    output.push_str(&format!(
+        "- Run dir: `{}`\n",
+        report["run_dir"].as_str().unwrap_or("")
+    ));
+    output.push_str(&format!(
+        "- Artifacts kept: `{}`\n",
+        report["artifacts_kept"].as_bool().unwrap_or(false)
+    ));
+    output.push_str(&format!(
+        "- Normal `.codegraph` DB created: `{}`\n",
+        report["safety"]["normal_codegraph_db_created"]
+            .as_bool()
+            .unwrap_or(false)
+    ));
+    output.push_str(&format!(
+        "- DBSTAT available all cases: `{}`\n\n",
+        report["dbstat_available_all_cases"]
+            .as_bool()
+            .unwrap_or(false)
+    ));
+    output.push_str("## Storage Budget\n\n");
+    output.push_str(&format!(
+        "- Status: `{}`\n",
+        report["storage_budget"]["budget_status"]
+            .as_str()
+            .unwrap_or("unknown")
+    ));
+    output.push_str(&format!(
+        "- DB bytes: `{}` / max `{}` MiB\n",
+        report["storage_budget"]["db_bytes"].as_u64().unwrap_or(0),
+        display_json_number(&report["storage_budget"]["max_db_mib"])
+    ));
+    output.push_str(&format!(
+        "- Artifact bytes: `{}` / max `{}` MiB\n",
+        report["storage_budget"]["artifact_bytes"]
+            .as_u64()
+            .unwrap_or(0),
+        display_json_number(&report["storage_budget"]["max_artifacts_mib"])
+    ));
+    output.push_str(&format!(
+        "- Extended: `{}`; stress corpus: `{}`\n\n",
+        report["storage_budget"]["extended"]
+            .as_bool()
+            .unwrap_or(false),
+        report["storage_budget"]["stress_corpus"]
+            .as_str()
+            .unwrap_or("none")
+    ));
+    output.push_str("## Case Matrix\n\n");
+    output.push_str("| Case | Files | Source bytes | DB bytes | Delta vs baseline | Bytes/source KB | files rows | templates | edges | path evidence |\n");
+    output.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    if let Some(cases) = report["cases"].as_array() {
+        for case in cases {
+            output.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                case["case"].as_str().unwrap_or("unknown"),
+                case["file_count"].as_u64().unwrap_or(0),
+                case["source_bytes"].as_u64().unwrap_or(0),
+                case["db_absolute_bytes"].as_u64().unwrap_or(0),
+                case["db_delta_vs_schema_baseline"].as_u64().unwrap_or(0),
+                display_json_number(&case["db_bytes_per_source_kb"]),
+                storage_micro_count(case, "files"),
+                storage_micro_count(case, "source_content_template"),
+                storage_micro_count(case, "edges"),
+                storage_micro_count(case, "path_evidence"),
+            ));
+        }
+    }
+    output.push_str("\n## Slope Estimates\n\n");
+    if let Some(slopes) = report["cumulative_analysis"]["slope_estimates"].as_array() {
+        for slope in slopes {
+            output.push_str(&format!(
+                "- `{}` -> `{}`: `{}` main DB bytes/file; `{}` bytes/entity; `{}` bytes/edge\n",
+                slope["from_case"].as_str().unwrap_or("unknown"),
+                slope["to_case"].as_str().unwrap_or("unknown"),
+                display_json_number(&slope["main_db_bytes_per_file"]),
+                display_json_number(&slope["bytes_per_entity"]),
+                display_json_number(&slope["bytes_per_edge"]),
+            ));
+        }
+    }
+    output.push_str("\n## Inline Test Classification\n\n");
+    output.push_str(&format!(
+        "- Context-pack ran: `{}`\n",
+        report["context_pack_checks"]["ran"]
+            .as_bool()
+            .unwrap_or(false)
+    ));
+    output.push_str(&format!(
+        "- Production excludes inline tests: `{}`\n",
+        report["context_pack_checks"]["production_context_excludes_inline_tests"]
+            .as_bool()
+            .unwrap_or(false)
+    ));
+    output.push_str(&format!(
+        "- Test-impact surfaces inline tests: `{}`\n",
+        report["context_pack_checks"]["test_impact_surfaces_inline_tests"]
+            .as_bool()
+            .unwrap_or(false)
+    ));
+    output.push_str("\n## Excluded Junk Scope\n\n");
+    output.push_str(&format!(
+        "- Ran: `{}`\n",
+        report["excluded_junk_scope"]["ran"]
+            .as_bool()
+            .unwrap_or(false)
+    ));
+    output.push_str(&format!(
+        "- All junk prefixes absent: `{}`\n",
+        report["excluded_junk_scope"]["all_junk_prefixes_absent"]
+            .as_bool()
+            .unwrap_or(false)
+    ));
+    output.push_str(&format!(
+        "- `dist/` policy observed: `{}`\n",
+        report["excluded_junk_scope"]["dist_policy_observed"]
+            .as_str()
+            .unwrap_or("unknown")
+    ));
+    output.push_str(&format!(
+        "- `build/` policy observed: `{}`\n",
+        report["excluded_junk_scope"]["build_policy_observed"]
+            .as_str()
+            .unwrap_or("unknown")
+    ));
+    output.push_str("\n## Claim Boundaries\n\n");
+    if let Some(boundaries) = report["claim_boundaries"].as_array() {
+        for boundary in boundaries {
+            output.push_str(&format!("- {}\n", boundary.as_str().unwrap_or("")));
+        }
+    }
+    output
+}
+
+fn display_json_number(value: &Value) -> String {
+    if value.is_null() {
+        "null".to_string()
+    } else if let Some(number) = value.as_f64() {
+        format!("{number:.3}")
+    } else {
+        value.to_string()
+    }
+}
+
+fn bytes_per_source_kb(bytes: u64, source_bytes: u64) -> Value {
+    if source_bytes == 0 {
+        Value::Null
+    } else {
+        json!(round3(bytes as f64 / (source_bytes as f64 / 1024.0)))
+    }
+}
+
+fn storage_micro_case_kind_name(kind: StorageMicroCaseKind) -> &'static str {
+    match kind {
+        StorageMicroCaseKind::Simple => "simple",
+        StorageMicroCaseKind::Expression => "expression",
+        StorageMicroCaseKind::InlineTests => "inline-tests",
+        StorageMicroCaseKind::Duplicates => "duplicates",
+        StorageMicroCaseKind::ExcludedJunk => "excluded-junk",
+    }
+}
+
+fn storage_micro_case_names(cases: &BTreeSet<StorageMicroCaseKind>) -> Vec<&'static str> {
+    cases
+        .iter()
+        .map(|case| storage_micro_case_kind_name(*case))
+        .collect()
+}
+
+fn storage_micro_run_id() -> String {
+    format!("{}-{}", current_unix_ms(), std::process::id())
+}
+
+fn current_unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn round3(value: f64) -> f64 {
+    (value * 1000.0).round() / 1000.0
+}
+
+fn absolutize_storage_micro_path(path: &Path) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        Ok(std::env::current_dir()
+            .map_err(|error| error.to_string())?
+            .join(path))
+    }
+}
+
+fn remove_dir_if_exists(path: &Path) -> Result<bool, String> {
+    if path.exists() {
+        fs::remove_dir_all(path).map_err(|error| error.to_string())?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn remove_sqlite_family_if_exists(db_path: &Path) -> Result<(), String> {
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let candidate = PathBuf::from(format!("{}{}", db_path.display(), suffix));
+        if candidate.exists() {
+            fs::remove_file(&candidate).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 fn write_optional_outputs<T: Serialize>(
     report: &T,
     markdown: &str,
@@ -7131,10 +8933,26 @@ mod tests {
         let root = temp_audit_dir("storage-inspection-forensics");
         let db = root.join("codegraph.sqlite");
         create_storage_experiment_fixture_db(&db);
+        remove_test_sidecars(&db);
 
         let report = inspect_storage(&db).expect("storage inspection");
         let value = serde_json::to_value(&report).expect("storage JSON");
 
+        assert_eq!(
+            value["artifact_mutated_during_inspection"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(value["sidecar_only_change"].as_bool(), Some(false));
+        assert_eq!(value["sidecar_status"].as_str(), Some("none"));
+        assert_eq!(value["immutable_mode_used"].as_bool(), Some(true));
+        assert!(value["sidecars_before"]
+            .as_array()
+            .expect("sidecars before")
+            .is_empty());
+        assert!(value["sidecars_after"]
+            .as_array()
+            .expect("sidecars after")
+            .is_empty());
         assert_eq!(value["integrity_check"]["status"].as_str(), Some("ok"));
         assert!(value["aggregate_metrics"]["average_database_bytes_per_edge"].is_number());
         assert!(value["table_row_metrics"]
@@ -7160,6 +8978,93 @@ mod tests {
             ));
         assert!(render_storage_markdown(&report).contains("Core Query Plans"));
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn schema_check_uses_immutable_read_only_without_creating_sidecars() {
+        let root = temp_audit_dir("schema-check-read-only");
+        let db = root.join("codegraph.sqlite");
+        create_storage_experiment_fixture_db(&db);
+        remove_test_sidecars(&db);
+        let before = db_file_snapshot(&db);
+        assert!(before.sidecars.is_empty());
+
+        let report = validate_schema(&db).expect("schema check");
+        let after = db_file_snapshot(&db);
+
+        assert_eq!(report.artifact_mutated_during_inspection, false);
+        assert_eq!(report.sidecar_only_change, false);
+        assert_eq!(report.sidecar_status, "none");
+        assert!(report.immutable_mode_used);
+        assert_eq!(before.main_db_size, after.main_db_size);
+        assert_eq!(before.main_db_mtime_unix_ms, after.main_db_mtime_unix_ms);
+        assert_eq!(before.main_db_hash, after.main_db_hash);
+        assert!(after.sidecars.is_empty());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn schema_check_does_not_migrate_old_schema_db() {
+        let root = temp_audit_dir("schema-check-old-schema");
+        let db = root.join("old.sqlite");
+        {
+            let connection = Connection::open(&db).expect("open old schema");
+            connection
+                .execute_batch(
+                    "
+                    PRAGMA user_version = 1;
+                    CREATE TABLE legacy_only(id INTEGER PRIMARY KEY);
+                    ",
+                )
+                .expect("create old schema");
+        }
+        remove_test_sidecars(&db);
+
+        let report = validate_schema(&db).expect("schema check old db");
+        let user_version_after = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("open old db read-only")
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+            .expect("user version");
+
+        assert_eq!(report.user_version, 1);
+        assert_eq!(user_version_after, 1);
+        assert_eq!(report.artifact_mutated_during_inspection, false);
+        assert!(!report.failures.is_empty());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn inspection_audit_classifies_sidecar_only_changes() {
+        let before = DbFileSnapshot {
+            main_db_size: 10,
+            main_db_mtime_unix_ms: Some(100),
+            main_db_hash: Some("abc".to_string()),
+            sidecars: Vec::new(),
+        };
+        let after = DbFileSnapshot {
+            main_db_size: 10,
+            main_db_mtime_unix_ms: Some(100),
+            main_db_hash: Some("abc".to_string()),
+            sidecars: vec![SidecarSnapshot {
+                kind: "shm".to_string(),
+                path: "db.sqlite-shm".to_string(),
+                size: 32768,
+                mtime_unix_ms: Some(101),
+                hash: Some("def".to_string()),
+            }],
+        };
+
+        let audit = read_only_inspection_audit(
+            before,
+            after,
+            "sqlite_uri_mode_ro_query_only".to_string(),
+            false,
+            "immutable=1 not used because WAL/SHM sidecars were present".to_string(),
+        );
+
+        assert_eq!(audit.artifact_mutated_during_inspection, false);
+        assert_eq!(audit.sidecar_only_change, true);
+        assert_eq!(audit.sidecar_status, "sidecar_only_change");
     }
 
     #[test]
@@ -7437,6 +9342,12 @@ mod tests {
                 metadata: Default::default(),
             })
             .expect("edge");
+    }
+
+    fn remove_test_sidecars(db: &Path) {
+        for suffix in ["wal", "shm"] {
+            let _ = fs::remove_file(PathBuf::from(format!("{}-{suffix}", db.display())));
+        }
     }
 
     fn create_path_evidence_fixture_db(path: &Path) {

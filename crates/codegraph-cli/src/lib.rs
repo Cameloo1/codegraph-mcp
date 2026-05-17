@@ -65,10 +65,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 mod audit;
+mod storage_budget;
 
 pub const BIN_NAME: &str = "codegraph-mcp";
 pub const PHASE: &str = "30";
 pub const BUNDLE_SCHEMA_VERSION: u32 = 2;
+const GLOBAL_REPO_SOURCE_ENV: &str = "CODEGRAPH_REPO_SOURCE";
+const GLOBAL_DB_SOURCE_ENV: &str = "CODEGRAPH_DB_SOURCE";
 const DEFAULT_UI_NODE_CAP: usize = 80;
 const MAX_UI_NODE_CAP: usize = 250;
 const SYMBOL_SEARCH_MIN_FTS_CANDIDATES: usize = 128;
@@ -103,7 +106,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "index",
-        usage: "codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]",
+        usage: "codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]",
         description: "Index a repository into the local graph store.",
     },
     CommandSpec {
@@ -163,7 +166,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "bench",
-        usage: "codegraph-mcp bench [--baseline <mode>]... [--format <json|markdown>] [--output <path>]\n  codegraph-mcp bench graph-truth --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--fail-on-forbidden] [--fail-on-missing-source-span] [--fail-on-unresolved-exact] [--fail-on-derived-without-provenance] [--fail-on-test-mock-production-leak] [--update-mode] [--keep-workdirs] [--verbose]\n  codegraph-mcp bench context-packet --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--top-k <k>] [--budget <tokens>]\n  codegraph-mcp bench retrieval-ablation --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--mode <mode>]... [--top-k <k>]\n  codegraph-mcp bench update-integrity [--mode <update-fast|update-validated|update-debug>] [--loop-kind <combined|repeat-fast|update-fast>] [--iterations <n>] [--autoresearch-iterations <n>] [--timeout-ms <n>] [--workers <n>] [--out-json <path>] [--out-md <path>] [--workdir <path>] [--skip-autoresearch] [--only-autoresearch] [--autoresearch-repo <path>] [--autoresearch-seed-db <path>]\n  codegraph-mcp bench query-surface [--repo <path>] [--db <path>] [--fresh] [--iterations <n>] [--out-json <path>] [--out-md <path>]\n  codegraph-mcp bench proof-build-only <repo>|--repo <path> [--db <path>] [--workers <n>] [--allow-debug-timing]\n  codegraph-mcp bench proof-build-validated <repo>|--repo <path> [--db <path>] [--workers <n>]\n  codegraph-mcp bench comprehensive [--fresh|--use-existing-artifact <db>] [--artifact-metadata <path>] [--fail-on-stale-artifact] [--repo <path>] [--workers <n>] [--output-dir <dir>] [--baseline <path>] [--compact-gate-json <path>] [--previous <path>] [--timestamp <id>] [--allow-debug-timing]\n  codegraph-mcp bench retrieval-quality [--run-id <id>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>] [--autoresearch-repo <path>]\n  codegraph-mcp bench agent-quality [--run-id <id>] [--timeout-ms <ms>] [--competitor-bin <path>] [--fake-agent]\n  codegraph-mcp bench final-gate [--output-dir <dir>] [--workspace-root <dir>] [--timeout-ms <ms>] [--competitor-bin <path>] [--cgc-db-size-bytes <n>]\n  codegraph-mcp bench gaps [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>]\n  codegraph-mcp bench synthetic-index --output-dir <dir> [--files <n>]\n  codegraph-mcp bench real-repo-corpus\n  codegraph-mcp bench parity-report [--output-dir <dir>]\n  codegraph-mcp bench cgc-comparison [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>]",
+        usage: "codegraph-mcp bench [--baseline <mode>]... [--format <json|markdown>] [--output <path>]\n  codegraph-mcp bench graph-truth --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--fail-on-forbidden] [--fail-on-missing-source-span] [--fail-on-unresolved-exact] [--fail-on-derived-without-provenance] [--fail-on-test-mock-production-leak] [--update-mode] [--keep-workdirs] [--verbose]\n  codegraph-mcp bench context-packet --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--top-k <k>] [--budget <tokens>]\n  codegraph-mcp bench retrieval-ablation --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--mode <mode>]... [--top-k <k>]\n  codegraph-mcp bench update-integrity [--mode <update-fast|update-validated|update-debug>] [--loop-kind <combined|repeat-fast|update-fast>] [--iterations <n>] [--autoresearch-iterations <n>] [--timeout-ms <n>] [--workers <n>] [--out-json <path>] [--out-md <path>] [--workdir <path>] [--skip-autoresearch] [--only-autoresearch] [--autoresearch-repo <path>] [--autoresearch-seed-db <path>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp bench query-surface [--repo <path>] [--db <path>] [--fresh] [--iterations <n>] [--out-json <path>] [--out-md <path>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp bench proof-build-only <repo>|--repo <path> [--db <path>] [--workers <n>] [--allow-debug-timing] [--max-db-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp bench proof-build-validated <repo>|--repo <path> [--db <path>] [--workers <n>] [--max-db-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp bench comprehensive [--fresh|--use-existing-artifact <db>] [--artifact-metadata <path>] [--fail-on-stale-artifact] [--repo <path>] [--workers <n>] [--output-dir <dir>] [--baseline <path>] [--compact-gate-json <path>] [--previous <path>] [--timestamp <id>] [--allow-debug-timing] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp bench retrieval-quality [--run-id <id>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>] [--autoresearch-repo <path>]\n  codegraph-mcp bench agent-quality [--run-id <id>] [--timeout-ms <ms>] [--competitor-bin <path>] [--fake-agent]\n  codegraph-mcp bench final-gate [--output-dir <dir>] [--workspace-root <dir>] [--timeout-ms <ms>] [--competitor-bin <path>] [--cgc-db-size-bytes <n>]\n  codegraph-mcp bench gaps [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>]\n  codegraph-mcp bench synthetic-index --output-dir <dir> [--files <n>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp bench real-repo-corpus\n  codegraph-mcp bench parity-report [--output-dir <dir>]\n  codegraph-mcp bench cgc-comparison [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]",
         description: "Run local reproducible CodeGraph benchmarks, including optional external CGC comparison.",
     },
     CommandSpec {
@@ -173,7 +176,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "audit",
-        usage: "codegraph-mcp audit storage --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit schema-check --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit storage-experiments --db <path> [--workdir <dir>] [--json <path>] [--markdown <path>] [--keep-copies]\n  codegraph-mcp audit sample-edges --db <path> [--relation <RELATION>] [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets]\n  codegraph-mcp audit sample-paths --db <path> [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets] [--max-edge-load <n>] [--timeout-ms <ms>] [--mode <proof|audit|debug>]\n  codegraph-mcp audit relation-counts --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit label-samples --edges-json <path> [--edges-md <path>] [--paths-json <path>] [--paths-md <path>] [--json <path>] [--markdown <path>]\n  codegraph-mcp audit summarize-labels [--labels <path>] [--dir <path>] [--json <path>] [--markdown <path>]",
+        usage: "codegraph-mcp audit storage --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit storage-micro --out <dir> [--cases simple,expression,inline-tests,duplicates,excluded-junk,all] [--batch-sizes 1,10,100] [--keep-artifacts] [--json [path]] [--markdown [path]] [--no-context-pack] [--respect-gitignore true|false] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp audit schema-check --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit storage-experiments --db <path> [--workdir <dir>] [--json <path>] [--markdown <path>] [--keep-copies]\n  codegraph-mcp audit sample-edges --db <path> [--relation <RELATION>] [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets]\n  codegraph-mcp audit sample-paths --db <path> [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets] [--max-edge-load <n>] [--timeout-ms <ms>] [--mode <proof|audit|debug>]\n  codegraph-mcp audit relation-counts --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit label-samples --edges-json <path> [--edges-md <path>] [--paths-json <path>] [--paths-md <path>] [--json <path>] [--markdown <path>]\n  codegraph-mcp audit summarize-labels [--labels <path>] [--dir <path>] [--json <path>] [--markdown <path>]",
         description: "Run read-only audit inspections for storage, sampled edges, relation counts, and manual sample labels.",
     },
     CommandSpec {
@@ -364,6 +367,7 @@ struct BenchOptions {
 struct SyntheticIndexOptions {
     output_dir: PathBuf,
     files: usize,
+    storage_budget: storage_budget::StorageBudgetOptions,
 }
 
 #[derive(Debug, Clone)]
@@ -382,6 +386,7 @@ struct UpdateIntegrityHarnessOptions {
     only_autoresearch: bool,
     autoresearch_repo: PathBuf,
     autoresearch_seed_db: Option<PathBuf>,
+    storage_budget: storage_budget::StorageBudgetOptions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -468,6 +473,7 @@ struct CgcComparisonOptions {
     timeout_ms: u64,
     top_k: usize,
     competitor_executable: Option<PathBuf>,
+    storage_budget: storage_budget::StorageBudgetOptions,
 }
 
 #[derive(Debug, Clone)]
@@ -483,6 +489,7 @@ struct ComprehensiveBenchmarkOptions {
     fail_on_stale_artifact: bool,
     workers: Option<usize>,
     allow_debug_timing: bool,
+    storage_budget: storage_budget::StorageBudgetOptions,
 }
 
 #[derive(Debug, Clone)]
@@ -500,6 +507,7 @@ struct QuerySurfaceBenchmarkOptions {
     out_json: PathBuf,
     out_md: PathBuf,
     workers: Option<usize>,
+    storage_budget: storage_budget::StorageBudgetOptions,
 }
 
 #[derive(Debug, Clone)]
@@ -633,9 +641,18 @@ where
                 &format!("--repo could not be used as current directory: {error}"),
             );
         }
+        std::env::set_var(GLOBAL_REPO_SOURCE_ENV, "global --repo");
+    } else {
+        std::env::remove_var(GLOBAL_REPO_SOURCE_ENV);
     }
     if let Some(db) = &globals.db {
-        std::env::set_var("CODEGRAPH_DB_PATH", db);
+        let resolved_db = absolutize_path(db).unwrap_or_else(|_| db.to_path_buf());
+        std::env::set_var("CODEGRAPH_DB_PATH", &resolved_db);
+        std::env::set_var(GLOBAL_DB_SOURCE_ENV, "global --db");
+    } else if std::env::var_os("CODEGRAPH_DB_PATH").is_some() {
+        std::env::set_var(GLOBAL_DB_SOURCE_ENV, "env CODEGRAPH_DB_PATH");
+    } else {
+        std::env::remove_var(GLOBAL_DB_SOURCE_ENV);
     }
 
     let rest = rest.as_slice();
@@ -718,13 +735,20 @@ fn run_json_command(error_kind: &str, result: Result<Value, String>) -> CliOutpu
         Ok(value) => success(json_line(value)),
         Err(error) if error_kind == "bench_failed" => command_error_json(
             error_kind,
-            add_benchmark_binary_metadata(json!({
-                "status": "error",
-                "error": error_kind,
-                "message": error,
-            })),
+            add_benchmark_binary_metadata(serde_json::from_str::<Value>(&error).unwrap_or_else(
+                |_| {
+                    json!({
+                        "status": "error",
+                        "error": error_kind,
+                        "message": error,
+                    })
+                },
+            )),
         ),
-        Err(error) => command_error(error_kind, &error),
+        Err(error) => match serde_json::from_str::<Value>(&error) {
+            Ok(value) => command_error_json(error_kind, value),
+            Err(_) => command_error(error_kind, &error),
+        },
     }
 }
 
@@ -957,8 +981,30 @@ fn run_init_command(args: &[String]) -> Result<Value, String> {
 }
 
 fn run_index_command(args: &[String]) -> Result<Value, String> {
-    let (repo, db, options, output_mode) = parse_index_command_options(args)?;
+    let (repo, db, options, output_mode, budget_options) = parse_index_command_options(args)?;
     let started = Instant::now();
+    let repo_root = resolve_repo_root(Path::new(&repo))?;
+    let db_path = db
+        .clone()
+        .map(|path| normalize_db_path_for_repo(&repo_root, &path))
+        .unwrap_or_else(|| default_db_path(&repo_root));
+    let preflight = storage_budget::storage_budget_preflight(
+        &budget_options,
+        storage_budget::StorageBudgetContext {
+            command: "codegraph-mcp index".to_string(),
+            repo_root: Some(repo_root.clone()),
+            db_path: Some(db_path.clone()),
+            out_path: None,
+            explicit_db: db.is_some(),
+            explicit_out: false,
+            diagnostic_only: false,
+        },
+    );
+    if preflight.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value("codegraph-mcp index", &preflight),
+        ));
+    }
     let summary = if let Some(db) = db {
         index_repo_to_db_with_options(Path::new(&repo), &db, options)
     } else {
@@ -966,17 +1012,27 @@ fn run_index_command(args: &[String]) -> Result<Value, String> {
     }
     .map_err(|error| error.to_string())?;
     let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
-    match output_mode {
+    let budget = storage_budget::storage_budget_postflight(preflight, &[db_path], &[]);
+    let mut value = match output_mode {
         IndexJsonOutputMode::Audit => index_summary_json(&summary),
         IndexJsonOutputMode::Agent => index_summary_agent_json(&summary, wall_ms),
         IndexJsonOutputMode::Concise => index_summary_concise_json(&summary, wall_ms),
+    }?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("storage_budget".to_string(), budget.to_json());
     }
+    if budget.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value("codegraph-mcp index", &budget),
+        ));
+    }
+    Ok(value)
 }
 
 fn run_status_command(args: &[String]) -> Result<Value, String> {
     let repo = optional_repo_arg(args)?;
     let repo_root = resolve_repo_root(&repo)?;
-    let db_path = default_db_path(&repo_root);
+    let db_path = resolved_db_path_for_repo(&repo_root);
     let preflight = inspect_read_db_lifecycle_preflight(&repo_root, &db_path, None)?;
     let sqlite_sidecars = sqlite_sidecars_status_from_health(&db_path, &preflight.db_health);
     if preflight.path_access_status == "db_missing" {
@@ -1014,7 +1070,7 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
         }));
     }
 
-    let store = SqliteGraphStore::open(&db_path).map_err(|error| error.to_string())?;
+    let store = SqliteGraphStore::open_read_only(&db_path).map_err(|error| error.to_string())?;
     let files = store
         .list_files(10_000)
         .map_err(|error| error.to_string())?;
@@ -1098,7 +1154,7 @@ fn run_doctor_command(args: &[String]) -> Result<Value, String> {
     }
     let _json_output = json_output;
     let repo_root = resolve_repo_root(&repo)?;
-    let db_path = default_db_path(&repo_root);
+    let db_path = resolved_db_path_for_repo(&repo_root);
     let mut checks = Vec::new();
     let mut warnings = 0usize;
     let mut errors = 0usize;
@@ -1308,6 +1364,82 @@ fn sqlite_sidecars_status_from_health(db_path: &Path, health: &DbPreflightReport
     status
 }
 
+struct ReadOnlySqliteOpen {
+    connection: Connection,
+    read_only_mode_used: String,
+    immutable_mode_used: bool,
+    immutable_mode_reason: String,
+}
+
+fn open_sqlite_read_only_side_effect_minimal(db_path: &Path) -> Result<ReadOnlySqliteOpen, String> {
+    if !db_path.exists() {
+        return Err(format!("database does not exist: {}", db_path.display()));
+    }
+    let immutable_mode_used = !sqlite_sidecar_path(db_path, "wal").exists()
+        && !sqlite_sidecar_path(db_path, "shm").exists();
+    let immutable_mode_reason = if immutable_mode_used {
+        "immutable=1 used because no WAL/SHM sidecars were present before inspection".to_string()
+    } else {
+        "immutable=1 not used because WAL/SHM sidecars were present; strict mode=ro preserves WAL visibility".to_string()
+    };
+    let uri = sqlite_read_only_uri(db_path, immutable_mode_used)?;
+    let connection = Connection::open_with_flags(
+        &uri,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .map_err(|error| format!("failed to open {} read-only: {error}", db_path.display()))?;
+    connection
+        .execute_batch(
+            "
+            PRAGMA query_only = ON;
+            PRAGMA busy_timeout = 5000;
+            ",
+        )
+        .map_err(|error| format!("failed to mark {} query-only: {error}", db_path.display()))?;
+    Ok(ReadOnlySqliteOpen {
+        connection,
+        read_only_mode_used: if immutable_mode_used {
+            "sqlite_uri_mode_ro_immutable_query_only".to_string()
+        } else {
+            "sqlite_uri_mode_ro_query_only".to_string()
+        },
+        immutable_mode_used,
+        immutable_mode_reason,
+    })
+}
+
+fn sqlite_read_only_uri(db_path: &Path, immutable: bool) -> Result<String, String> {
+    let absolute = if db_path.is_absolute() {
+        db_path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| error.to_string())?
+            .join(db_path)
+    };
+    let mut raw = absolute.to_string_lossy().replace('\\', "/");
+    if let Some(stripped) = raw.strip_prefix("//?/") {
+        raw = stripped.to_string();
+    }
+    let encoded = percent_encode_sqlite_uri_path(&raw);
+    let path = encoded.trim_start_matches('/');
+    let immutable_param = if immutable { "&immutable=1" } else { "" };
+    Ok(format!("file:///{path}?mode=ro{immutable_param}"))
+}
+
+fn percent_encode_sqlite_uri_path(path: &str) -> String {
+    let mut encoded = String::new();
+    for byte in path.bytes() {
+        let keep =
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':');
+        if keep {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
 fn doctor_lifecycle_field_status(
     preflight: &DbLifecycleSurfacePreflight,
     needles: &[&str],
@@ -1414,7 +1546,7 @@ fn run_query_command(args: &[String]) -> Result<Value, String> {
     if args.first().map(String::as_str) == Some("unresolved-calls") {
         return run_query_command_inner(&args, allow_stale_read, explicit_scope, None);
     }
-    let db_path = default_db_path(&repo_root);
+    let db_path = resolved_db_path_for_repo(&repo_root);
     let db_lifecycle_read = read_db_lifecycle_guard(
         &repo_root,
         &db_path,
@@ -1442,6 +1574,7 @@ fn run_query_command(args: &[String]) -> Result<Value, String> {
             object.insert("db_lifecycle_read".to_string(), db_lifecycle_read);
         }
     }
+    add_query_resolution_fields(&mut value, &repo_root, &db_path);
     Ok(value)
 }
 
@@ -1806,6 +1939,41 @@ fn lifecycle_summary_or_unknown(lifecycle: Option<&Value>) -> Value {
     lifecycle.cloned().unwrap_or_else(unknown_lifecycle_summary)
 }
 
+fn add_query_resolution_fields(value: &mut Value, repo_root: &Path, db_path: &Path) {
+    let lifecycle_status = query_lifecycle_status(value);
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    object
+        .entry("resolved_repo".to_string())
+        .or_insert_with(|| json!(path_string(repo_root)));
+    object
+        .entry("resolved_db".to_string())
+        .or_insert_with(|| json!(path_string(db_path)));
+    object
+        .entry("repo_source".to_string())
+        .or_insert_with(|| json!(repo_source_label()));
+    object
+        .entry("db_source".to_string())
+        .or_insert_with(|| json!(db_source_label()));
+    object
+        .entry("lifecycle_status".to_string())
+        .or_insert(lifecycle_status);
+}
+
+fn query_lifecycle_status(value: &Value) -> Value {
+    for key in ["lifecycle", "db_lifecycle_read"] {
+        if let Some(decision) = value
+            .get(key)
+            .and_then(|lifecycle| lifecycle.get("decision"))
+            .filter(|decision| !decision.is_null())
+        {
+            return decision.clone();
+        }
+    }
+    json!("unknown")
+}
+
 fn agent_timings_json(started: Instant) -> Value {
     json!({
         "wall_ms": started.elapsed().as_secs_f64() * 1000.0,
@@ -1887,8 +2055,16 @@ fn canonical_agent_query_response(
         "command": command,
         "repo": path_string(repo_root),
         "db": path_string(db_path),
+        "resolved_repo": path_string(repo_root),
+        "resolved_db": path_string(db_path),
+        "repo_source": repo_source_label(),
+        "db_source": db_source_label(),
         "output_mode": output_mode.as_str(),
         "lifecycle": lifecycle.clone(),
+        "lifecycle_status": lifecycle
+            .get("decision")
+            .cloned()
+            .unwrap_or_else(|| json!("unknown")),
         "claimable": claimable,
         "diagnostic_only": diagnostic_only,
         "truncation": query_truncation_json(&truncation),
@@ -2685,6 +2861,41 @@ fn run_final_gate_command(args: &[String]) -> Result<Value, String> {
 fn run_comprehensive_benchmark_command(args: &[String]) -> Result<Value, String> {
     let comprehensive_start = Instant::now();
     let options = parse_comprehensive_benchmark_options(args)?;
+    let repo_root = resolve_repo_root(&options.repo)?;
+    let planned_db_path = match &options.artifact_mode {
+        ComprehensiveArtifactMode::Fresh => options
+            .output_dir
+            .join("artifacts")
+            .join(format!("comprehensive_proof_{}.sqlite", options.timestamp)),
+        ComprehensiveArtifactMode::Existing(path) => path.clone(),
+    };
+    let preflight_db_path = match &options.artifact_mode {
+        ComprehensiveArtifactMode::Fresh => None,
+        ComprehensiveArtifactMode::Existing(_) => Some(planned_db_path),
+    };
+    let preflight = storage_budget::storage_budget_preflight(
+        &options.storage_budget,
+        storage_budget::StorageBudgetContext {
+            command: "codegraph-mcp bench comprehensive".to_string(),
+            repo_root: Some(repo_root),
+            db_path: preflight_db_path,
+            out_path: Some(options.output_dir.clone()),
+            explicit_db: matches!(
+                options.artifact_mode,
+                ComprehensiveArtifactMode::Existing(_)
+            ),
+            explicit_out: true,
+            diagnostic_only: false,
+        },
+    );
+    if preflight.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench comprehensive",
+                &preflight,
+            ),
+        ));
+    }
     fs::create_dir_all(&options.output_dir).map_err(|error| error.to_string())?;
     let mut report = build_comprehensive_benchmark_report(&options)?;
     let report_generation_start = Instant::now();
@@ -2709,11 +2920,31 @@ fn run_comprehensive_benchmark_command(args: &[String]) -> Result<Value, String>
         comprehensive_total_ms,
     );
     let markdown = render_comprehensive_benchmark_markdown(&report);
+    let budget_db_path = report["artifact_freshness"]["artifact_path"]
+        .as_str()
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let storage_budget = storage_budget::storage_budget_postflight(
+        preflight,
+        &[budget_db_path],
+        &[options.output_dir.clone()],
+    );
+    if let Some(object) = report.as_object_mut() {
+        object.insert("storage_budget".to_string(), storage_budget.to_json());
+    }
 
     write_json_file(&timestamp_json, &report)?;
     write_text_file(&timestamp_md, &markdown)?;
     write_json_file(&latest_json, &report)?;
     write_text_file(&latest_md, &markdown)?;
+    if storage_budget.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench comprehensive",
+                &storage_budget,
+            ),
+        ));
+    }
 
     Ok(json!({
         "status": "reported",
@@ -2726,6 +2957,7 @@ fn run_comprehensive_benchmark_command(args: &[String]) -> Result<Value, String>
         "timestamped_json": path_string(&timestamp_json),
         "timestamped_md": path_string(&timestamp_md),
         "timing_separation": report["timing_separation"].clone(),
+        "storage_budget": storage_budget.to_json(),
         "proof": "Comprehensive benchmark builds a fresh proof artifact by default; explicit artifact reuse is labeled and cannot claim storage/cold-build passes if stale.",
     }))
 }
@@ -2812,6 +3044,7 @@ fn parse_comprehensive_benchmark_options(
     let mut fail_on_stale_artifact = false;
     let mut workers = None;
     let mut allow_debug_timing = false;
+    let mut storage_budget = storage_budget::StorageBudgetOptions::normal_self_use();
 
     let mut index = 0usize;
     while index < args.len() {
@@ -2882,7 +3115,14 @@ fn parse_comprehensive_benchmark_options(
                 index += 1;
                 timestamp = required_cli_value(args, index, "--timestamp")?.to_string();
             }
-            value => return Err(format!("unknown comprehensive benchmark option: {value}")),
+            value => {
+                if storage_budget::parse_storage_budget_flag(args, &mut index, &mut storage_budget)?
+                {
+                    index += 1;
+                    continue;
+                }
+                return Err(format!("unknown comprehensive benchmark option: {value}"));
+            }
         }
         index += 1;
     }
@@ -2899,20 +3139,55 @@ fn parse_comprehensive_benchmark_options(
         fail_on_stale_artifact,
         workers,
         allow_debug_timing,
+        storage_budget,
     })
 }
 
 fn run_query_surface_benchmark_command(args: &[String]) -> Result<Value, String> {
     let options = parse_query_surface_benchmark_options(args)?;
     let repo = absolutize_path(&options.repo)?;
-    let db_path = if options.fresh {
-        let db_path = options.db_path.clone().unwrap_or_else(|| {
-            PathBuf::from("reports")
-                .join("audit")
-                .join("artifacts")
-                .join(format!("default_query_surface_{}.sqlite", unix_time_ms()))
+    let planned_db_path = options
+        .db_path
+        .clone()
+        .map(|path| absolutize_path(&path))
+        .transpose()?
+        .unwrap_or_else(|| {
+            if options.fresh {
+                PathBuf::from("reports")
+                    .join("audit")
+                    .join("artifacts")
+                    .join(format!("default_query_surface_{}.sqlite", unix_time_ms()))
+            } else {
+                default_db_path(&repo)
+            }
         });
-        let db_path = absolutize_path(&db_path)?;
+    let planned_db_path = absolutize_path(&planned_db_path)?;
+    let preflight = storage_budget::storage_budget_preflight(
+        &options.storage_budget,
+        storage_budget::StorageBudgetContext {
+            command: "codegraph-mcp bench query-surface".to_string(),
+            repo_root: Some(repo.clone()),
+            db_path: if options.fresh && options.db_path.is_none() {
+                None
+            } else {
+                Some(planned_db_path.clone())
+            },
+            out_path: options.out_json.parent().map(Path::to_path_buf),
+            explicit_db: options.db_path.is_some(),
+            explicit_out: true,
+            diagnostic_only: true,
+        },
+    );
+    if preflight.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench query-surface",
+                &preflight,
+            ),
+        ));
+    }
+    let db_path = if options.fresh {
+        let db_path = planned_db_path.clone();
         remove_sqlite_family_if_exists(&db_path)?;
         index_repo_to_db_with_options(
             &repo,
@@ -2929,12 +3204,7 @@ fn run_query_surface_benchmark_command(args: &[String]) -> Result<Value, String>
         .map_err(|error| error.to_string())?;
         db_path
     } else {
-        options
-            .db_path
-            .clone()
-            .map(|path| absolutize_path(&path))
-            .transpose()?
-            .unwrap_or_else(|| default_db_path(&repo))
+        planned_db_path.clone()
     };
 
     let report = build_default_query_surface_report(&repo, &db_path, options.iterations);
@@ -2942,6 +3212,19 @@ fn run_query_surface_benchmark_command(args: &[String]) -> Result<Value, String>
     write_json_file(&options.out_json, &report)?;
     write_text_file(&options.out_md, &markdown)?;
 
+    let storage_budget = storage_budget::storage_budget_postflight(
+        preflight,
+        &[db_path.clone()],
+        &[options.out_json.clone(), options.out_md.clone()],
+    );
+    if storage_budget.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench query-surface",
+                &storage_budget,
+            ),
+        ));
+    }
     Ok(json!({
         "status": report["status"].clone(),
         "phase": PHASE,
@@ -2951,6 +3234,7 @@ fn run_query_surface_benchmark_command(args: &[String]) -> Result<Value, String>
         "iterations": options.iterations,
         "output_json": path_string(&options.out_json),
         "output_md": path_string(&options.out_md),
+        "storage_budget": storage_budget.to_json(),
         "proof": "Default query-surface probes run directly against the compact proof DB and report failures instead of falling back to audit/debug sidecars.",
     }))
 }
@@ -3001,7 +3285,8 @@ fn run_proof_build_mode_benchmark_command(
     }
 
     let started = Instant::now();
-    let (repo, db, options) = parse_index_options(&index_args)?;
+    let (repo, db, options, _output_mode, budget_options) =
+        parse_index_command_options(&index_args)?;
     if options.storage_mode != StorageMode::Proof {
         return Err(format!(
             "bench {} requires --storage-mode proof; got {}",
@@ -3014,6 +3299,31 @@ fn run_proof_build_mode_benchmark_command(
             "bench {} cannot be run with --build-mode {}; use the matching benchmark subcommand",
             build_mode.as_str(),
             options.build_mode.as_str()
+        ));
+    }
+    let repo_root = resolve_repo_root(Path::new(&repo))?;
+    let db_path = db
+        .clone()
+        .map(|path| normalize_db_path_for_repo(&repo_root, &path))
+        .unwrap_or_else(|| default_db_path(&repo_root));
+    let preflight = storage_budget::storage_budget_preflight(
+        &budget_options,
+        storage_budget::StorageBudgetContext {
+            command: format!("codegraph-mcp bench {}", build_mode.as_str()),
+            repo_root: Some(repo_root.clone()),
+            db_path: Some(db_path.clone()),
+            out_path: None,
+            explicit_db: db.is_some(),
+            explicit_out: false,
+            diagnostic_only: cfg!(debug_assertions) || allow_debug_timing,
+        },
+    );
+    if preflight.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                &format!("codegraph-mcp bench {}", build_mode.as_str()),
+                &preflight,
+            ),
         ));
     }
     let summary = if let Some(db) = db {
@@ -3065,6 +3375,19 @@ fn run_proof_build_mode_benchmark_command(
     );
     write_json_file(&artifact_metadata_path, &artifact_metadata)?;
     let report_generation_ms = elapsed_ms(report_generation_start);
+    let storage_budget = storage_budget::storage_budget_postflight(
+        preflight,
+        &[db_path],
+        &[artifact_metadata_path.clone()],
+    );
+    if storage_budget.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                &format!("codegraph-mcp bench {}", build_mode.as_str()),
+                &storage_budget,
+            ),
+        ));
+    }
     Ok(json!({
         "status": "benchmarked",
         "phase": PHASE,
@@ -3095,6 +3418,7 @@ fn run_proof_build_mode_benchmark_command(
         "summary": summary_json,
         "artifact_metadata_path": path_string(&artifact_metadata_path),
         "artifact_metadata": artifact_metadata,
+        "storage_budget": storage_budget.to_json(),
         "mode_separation": {
             "proof_build_only_excludes": [
                 "storage_audit",
@@ -3286,6 +3610,7 @@ fn parse_query_surface_benchmark_options(
         .join("audit")
         .join("default_query_surface.md");
     let mut workers = None;
+    let mut storage_budget = storage_budget::StorageBudgetOptions::fixture_smoke();
 
     let mut index = 0usize;
     while index < args.len() {
@@ -3328,7 +3653,14 @@ fn parse_query_surface_benchmark_options(
                 }
                 workers = Some(parsed);
             }
-            value => return Err(format!("unknown query-surface benchmark option: {value}")),
+            value => {
+                if storage_budget::parse_storage_budget_flag(args, &mut index, &mut storage_budget)?
+                {
+                    index += 1;
+                    continue;
+                }
+                return Err(format!("unknown query-surface benchmark option: {value}"));
+            }
         }
         index += 1;
     }
@@ -3341,6 +3673,7 @@ fn parse_query_surface_benchmark_options(
         out_json,
         out_md,
         workers,
+        storage_budget,
     })
 }
 
@@ -4436,6 +4769,32 @@ fn absolutize_path(path: &Path) -> Result<PathBuf, String> {
             .map(|cwd| cwd.join(path))
             .map_err(|error| error.to_string())
     }
+}
+
+fn normalize_db_path_for_repo(repo_root: &Path, db_path: &Path) -> PathBuf {
+    if db_path.is_absolute() {
+        db_path.to_path_buf()
+    } else {
+        repo_root.join(db_path)
+    }
+}
+
+fn resolved_db_path_for_repo(repo_root: &Path) -> PathBuf {
+    normalize_db_path_for_repo(repo_root, &default_db_path(repo_root))
+}
+
+fn repo_source_label() -> String {
+    std::env::var(GLOBAL_REPO_SOURCE_ENV).unwrap_or_else(|_| "current_directory".to_string())
+}
+
+fn db_source_label() -> String {
+    std::env::var(GLOBAL_DB_SOURCE_ENV).unwrap_or_else(|_| {
+        if std::env::var_os("CODEGRAPH_DB_PATH").is_some() {
+            "env CODEGRAPH_DB_PATH".to_string()
+        } else {
+            "default_repo_db".to_string()
+        }
+    })
 }
 
 fn remove_sqlite_family_if_exists(path: &Path) -> Result<(), String> {
@@ -6275,6 +6634,11 @@ fn build_default_query_surface_report(
             "iterations": iterations,
             "inspection_read_only": true,
             "artifact_mutated_during_inspection": false,
+            "sidecar_only_change": false,
+            "sidecar_status": "not_inspected_lifecycle_blocked",
+            "read_only_mode_used": "not_opened_lifecycle_blocked",
+            "immutable_mode_used": false,
+            "immutable_mode_reason": "lifecycle preflight blocked read-only inspection before SQLite open",
             "lifecycle_status": lifecycle_status,
             "claimable": false,
             "queries": failed,
@@ -6290,8 +6654,8 @@ fn build_default_query_surface_report(
             ],
         });
     }
-    let connection = match Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
-        Ok(connection) => connection,
+    let read_only = match open_sqlite_read_only_side_effect_minimal(&db_path) {
+        Ok(read_only) => read_only,
         Err(error) => {
             let failed = required_query_surface_ids()
                 .into_iter()
@@ -6312,6 +6676,11 @@ fn build_default_query_surface_report(
                 "iterations": iterations,
                 "inspection_read_only": true,
                 "artifact_mutated_during_inspection": false,
+                "sidecar_only_change": false,
+                "sidecar_status": "unknown_open_failed",
+                "read_only_mode_used": "sqlite_uri_mode_ro_attempted",
+                "immutable_mode_used": !sqlite_sidecar_path(&db_path, "wal").exists() && !sqlite_sidecar_path(&db_path, "shm").exists(),
+                "immutable_mode_reason": "read-only open failed before inspection completed",
                 "lifecycle_status": lifecycle_status,
                 "claimable": false,
                 "queries": failed,
@@ -6327,7 +6696,10 @@ fn build_default_query_surface_report(
             });
         }
     };
-    let _ = connection.pragma_update(None, "query_only", true);
+    let read_only_mode_used = read_only.read_only_mode_used.clone();
+    let immutable_mode_used = read_only.immutable_mode_used;
+    let immutable_mode_reason = read_only.immutable_mode_reason.clone();
+    let connection = read_only.connection;
     let seeds = query_surface_seeds(&connection).unwrap_or_else(|error| {
         json!({
             "status": "degraded",
@@ -6493,6 +6865,11 @@ fn build_default_query_surface_report(
         "iterations": iterations,
         "inspection_read_only": true,
         "artifact_mutated_during_inspection": false,
+        "sidecar_only_change": false,
+        "sidecar_status": if immutable_mode_used { "none_expected" } else { "existing_sidecars_preserved" },
+        "read_only_mode_used": read_only_mode_used,
+        "immutable_mode_used": immutable_mode_used,
+        "immutable_mode_reason": immutable_mode_reason,
         "lifecycle_status": lifecycle_status,
         "claimable": claimable,
         "seeds": seeds,
@@ -7835,6 +8212,26 @@ fn format_percent(value: Option<f64>) -> String {
 
 fn run_synthetic_index_benchmark_command(args: &[String]) -> Result<Value, String> {
     let options = parse_synthetic_index_options(args)?;
+    let preflight = storage_budget::storage_budget_preflight(
+        &options.storage_budget,
+        storage_budget::StorageBudgetContext {
+            command: "codegraph-mcp bench synthetic-index".to_string(),
+            repo_root: std::env::current_dir().ok(),
+            db_path: None,
+            out_path: Some(options.output_dir.clone()),
+            explicit_db: false,
+            explicit_out: true,
+            diagnostic_only: true,
+        },
+    );
+    if preflight.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench synthetic-index",
+                &preflight,
+            ),
+        ));
+    }
     if options.output_dir.exists() {
         return Err(format!(
             "synthetic index output directory already exists: {}",
@@ -7868,6 +8265,20 @@ fn run_synthetic_index_benchmark_command(args: &[String]) -> Result<Value, Strin
         serde_json::to_string_pretty(&manifest).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
+    let db_path = default_db_path(&repo_dir);
+    let storage_budget = storage_budget::storage_budget_postflight(
+        preflight,
+        &[db_path],
+        &[options.output_dir.clone()],
+    );
+    if storage_budget.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench synthetic-index",
+                &storage_budget,
+            ),
+        ));
+    }
     Ok(json!({
         "status": "benchmarked",
         "phase": PHASE,
@@ -7876,11 +8287,32 @@ fn run_synthetic_index_benchmark_command(args: &[String]) -> Result<Value, Strin
         "repo_dir": path_string(&repo_dir),
         "manifest": path_string(&manifest_path),
         "index_summary": manifest["index_summary"],
+        "storage_budget": storage_budget.to_json(),
     }))
 }
 
 fn run_update_integrity_harness_command(args: &[String]) -> Result<Value, String> {
     let options = parse_update_integrity_harness_options(args)?;
+    let preflight = storage_budget::storage_budget_preflight(
+        &options.storage_budget,
+        storage_budget::StorageBudgetContext {
+            command: "codegraph-mcp bench update-integrity".to_string(),
+            repo_root: std::env::current_dir().ok(),
+            db_path: None,
+            out_path: Some(options.workdir.clone()),
+            explicit_db: false,
+            explicit_out: true,
+            diagnostic_only: true,
+        },
+    );
+    if preflight.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench update-integrity",
+                &preflight,
+            ),
+        ));
+    }
     let mut report = match run_update_integrity_harness(&options) {
         Ok(report) => report,
         Err(error) => update_integrity_error_report(&options, &error),
@@ -7914,7 +8346,25 @@ fn run_update_integrity_harness_command(args: &[String]) -> Result<Value, String
         "json_write_ms": json_write_ms,
         "markdown_write_ms": md_write_ms,
     });
+    let storage_budget = storage_budget::storage_budget_postflight(
+        preflight,
+        &[],
+        &[
+            options.workdir.clone(),
+            options.out_json.clone(),
+            options.out_md.clone(),
+        ],
+    );
+    report["storage_budget"] = storage_budget.to_json();
     write_json_file(&options.out_json, &report)?;
+    if storage_budget.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench update-integrity",
+                &storage_budget,
+            ),
+        ));
+    }
     Ok(json!({
         "status": report["status"].clone(),
         "phase": PHASE,
@@ -7923,6 +8373,7 @@ fn run_update_integrity_harness_command(args: &[String]) -> Result<Value, String
         "out_json": path_string(&options.out_json),
         "out_md": path_string(&options.out_md),
         "repos": report["repos"].as_array().map(Vec::len).unwrap_or(0),
+        "storage_budget": storage_budget.to_json(),
         "proof": "Update-integrity harness runs cold/seed, repeat unchanged, mutate/update, restore/update, integrity checks, and graph hash comparisons.",
     }))
 }
@@ -8356,6 +8807,26 @@ fn run_update_integrity_repo(
 
 fn run_cgc_comparison_command(args: &[String]) -> Result<Value, String> {
     let options = parse_cgc_comparison_options(args)?;
+    let preflight = storage_budget::storage_budget_preflight(
+        &options.storage_budget,
+        storage_budget::StorageBudgetContext {
+            command: "codegraph-mcp bench cgc-comparison".to_string(),
+            repo_root: std::env::current_dir().ok(),
+            db_path: None,
+            out_path: Some(options.report_dir.clone()),
+            explicit_db: false,
+            explicit_out: true,
+            diagnostic_only: true,
+        },
+    );
+    if preflight.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench cgc-comparison",
+                &preflight,
+            ),
+        ));
+    }
     let report = run_codegraphcontext_comparison(CodeGraphContextComparisonOptions {
         report_dir: options.report_dir.clone(),
         timeout_ms: options.timeout_ms,
@@ -8363,6 +8834,16 @@ fn run_cgc_comparison_command(args: &[String]) -> Result<Value, String> {
         competitor_executable: options.competitor_executable,
     })
     .map_err(|error| error.to_string())?;
+    let storage_budget =
+        storage_budget::storage_budget_postflight(preflight, &[], &[options.report_dir.clone()]);
+    if storage_budget.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench cgc-comparison",
+                &storage_budget,
+            ),
+        ));
+    }
 
     Ok(json!({
         "status": "benchmarked",
@@ -8375,6 +8856,7 @@ fn run_cgc_comparison_command(args: &[String]) -> Result<Value, String> {
         "competitor": report.manifest,
         "aggregate": report.aggregate,
         "runs": report.runs.len(),
+        "storage_budget": storage_budget.to_json(),
     }))
 }
 
@@ -10080,7 +10562,7 @@ fn query_symbols_with_options(
     lifecycle_summary: Option<&Value>,
 ) -> Result<Value, String> {
     let started = Instant::now();
-    let db_path = default_db_path(repo_root);
+    let db_path = resolved_db_path_for_repo(repo_root);
     let store = open_existing_store(repo_root)?;
     let hits = symbol_search_hits(&store, &options.query, options.fetch_limit())?;
 
@@ -10321,7 +10803,7 @@ fn query_text_with_options(
     lifecycle_summary: Option<&Value>,
 ) -> Result<Value, String> {
     let started = Instant::now();
-    let db_path = default_db_path(repo_root);
+    let db_path = resolved_db_path_for_repo(repo_root);
     let store = open_existing_store(repo_root)?;
     let mut hits = store
         .search_text(&options.query, options.fetch_limit())
@@ -10427,7 +10909,7 @@ fn query_files_with_options(
     lifecycle_summary: Option<&Value>,
 ) -> Result<Value, String> {
     let started = Instant::now();
-    let db_path = default_db_path(repo_root);
+    let db_path = resolved_db_path_for_repo(repo_root);
     let store = open_existing_store(repo_root)?;
     let query_lc = options.query.to_ascii_lowercase();
     let mut seen = BTreeSet::new();
@@ -10828,8 +11310,14 @@ fn query_unresolved_calls(
     let total_start = Instant::now();
     let db_path = options
         .db_path
-        .clone()
-        .unwrap_or_else(|| default_db_path(repo_root));
+        .as_ref()
+        .map(|path| normalize_db_path_for_repo(repo_root, path))
+        .unwrap_or_else(|| resolved_db_path_for_repo(repo_root));
+    let db_source = if options.db_path.is_some() {
+        "command --db".to_string()
+    } else {
+        db_source_label()
+    };
     let preflight = require_unresolved_calls_lifecycle_preflight(repo_root, &db_path, &options)?;
     let db_lifecycle_read = db_lifecycle_surface_preflight_json(&preflight);
     let checked_db_path = PathBuf::from(&preflight.exact_db_path_checked);
@@ -10889,6 +11377,14 @@ fn query_unresolved_calls(
     let total_ms = elapsed_ms(total_start);
     Ok(json!({
         "status": "ok",
+        "resolved_repo": path_string(repo_root),
+        "resolved_db": path_string(&checked_db_path),
+        "repo_source": repo_source_label(),
+        "db_source": db_source,
+        "lifecycle_status": db_lifecycle_read
+            .get("decision")
+            .cloned()
+            .unwrap_or_else(|| json!("unknown")),
         "db_lifecycle_read": db_lifecycle_read,
         "claimable": preflight.claimable,
         "diagnostic_only": preflight.diagnostic_only,
@@ -11544,7 +12040,7 @@ fn query_call_relation_with_output(
     lifecycle_summary: Option<&Value>,
 ) -> Result<Value, String> {
     let started = Instant::now();
-    let db_path = default_db_path(repo_root);
+    let db_path = resolved_db_path_for_repo(repo_root);
     let rich = query_call_relation(repo_root, parsed.options.clone(), direction)?;
     if parsed.output.output_mode.is_compact() {
         return Ok(agent_call_relation_response(
@@ -12274,17 +12770,28 @@ impl IndexJsonOutputMode {
     }
 }
 
+#[cfg(test)]
 fn parse_index_options(args: &[String]) -> Result<(String, Option<PathBuf>, IndexOptions), String> {
-    let (repo, db, options, _) = parse_index_command_options(args)?;
+    let (repo, db, options, _, _) = parse_index_command_options(args)?;
     Ok((repo, db, options))
 }
 
 fn parse_index_command_options(
     args: &[String],
-) -> Result<(String, Option<PathBuf>, IndexOptions, IndexJsonOutputMode), String> {
+) -> Result<
+    (
+        String,
+        Option<PathBuf>,
+        IndexOptions,
+        IndexJsonOutputMode,
+        storage_budget::StorageBudgetOptions,
+    ),
+    String,
+> {
     let mut repo = None;
     let mut db = None;
     let mut options = IndexOptions::default();
+    let mut storage_budget = storage_budget::StorageBudgetOptions::normal_self_use();
     let mut output_mode = IndexJsonOutputMode::Concise;
     let mut agent_json_requested = false;
     let mut audit_json_requested = false;
@@ -12391,10 +12898,15 @@ fn parse_index_command_options(
             "--explain-scope" => options.scope.explain_scope = true,
             "--print-included" => options.scope.print_included = true,
             "--print-excluded" => options.scope.print_excluded = true,
-            value if value.starts_with('-') => {
-                return Err(format!("unknown index option: {value}"))
-            }
             value => {
+                if storage_budget::parse_storage_budget_flag(args, &mut index, &mut storage_budget)?
+                {
+                    index += 1;
+                    continue;
+                }
+                if value.starts_with('-') {
+                    return Err(format!("unknown index option: {value}"));
+                }
                 if repo.is_some() {
                     return Err(format!("unexpected index argument: {value}"));
                 }
@@ -12410,11 +12922,12 @@ fn parse_index_command_options(
     }
     Ok((
         repo.ok_or_else(|| {
-            "Usage: codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]".to_string()
+            "Usage: codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]".to_string()
         })?,
         db,
         options,
         output_mode,
+        storage_budget,
     ))
 }
 
@@ -13067,6 +13580,7 @@ fn parse_token_estimate(raw: &str) -> Value {
 fn parse_synthetic_index_options(args: &[String]) -> Result<SyntheticIndexOptions, String> {
     let mut output_dir = None;
     let mut files = 250usize;
+    let mut storage_budget = storage_budget::StorageBudgetOptions::fixture_smoke();
     let mut index = 0usize;
 
     while index < args.len() {
@@ -13090,7 +13604,14 @@ fn parse_synthetic_index_options(args: &[String]) -> Result<SyntheticIndexOption
                     return Err("--files must be greater than zero".to_string());
                 }
             }
-            value => return Err(format!("unknown synthetic-index option: {value}")),
+            value => {
+                if storage_budget::parse_storage_budget_flag(args, &mut index, &mut storage_budget)?
+                {
+                    index += 1;
+                    continue;
+                }
+                return Err(format!("unknown synthetic-index option: {value}"));
+            }
         }
         index += 1;
     }
@@ -13101,6 +13622,7 @@ fn parse_synthetic_index_options(args: &[String]) -> Result<SyntheticIndexOption
                 .to_string()
         })?,
         files,
+        storage_budget,
     })
 }
 
@@ -13131,6 +13653,7 @@ fn parse_update_integrity_harness_options(
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("..").join("autoresearch-codexlab"));
     let mut autoresearch_seed_db = None;
+    let mut storage_budget = storage_budget::StorageBudgetOptions::normal_self_use();
     let mut index = 0;
 
     while index < args.len() {
@@ -13248,7 +13771,14 @@ fn parse_update_integrity_harness_options(
                         "--autoresearch-seed-db requires a path".to_string()
                     })?));
             }
-            value => return Err(format!("unknown update-integrity option: {value}")),
+            value => {
+                if storage_budget::parse_storage_budget_flag(args, &mut index, &mut storage_budget)?
+                {
+                    index += 1;
+                    continue;
+                }
+                return Err(format!("unknown update-integrity option: {value}"));
+            }
         }
         index += 1;
     }
@@ -13274,6 +13804,7 @@ fn parse_update_integrity_harness_options(
             .as_deref()
             .map(absolute_cli_path)
             .transpose()?,
+        storage_budget,
     })
 }
 
@@ -13282,6 +13813,7 @@ fn parse_cgc_comparison_options(args: &[String]) -> Result<CgcComparisonOptions,
     let mut timeout_ms = codegraph_bench::competitors::codegraphcontext::DEFAULT_TIMEOUT_MS;
     let mut top_k = codegraph_bench::competitors::codegraphcontext::DEFAULT_TOP_K;
     let mut competitor_executable = None;
+    let mut storage_budget = storage_budget::StorageBudgetOptions::normal_self_use();
     let mut index = 0;
 
     while index < args.len() {
@@ -13324,7 +13856,14 @@ fn parse_cgc_comparison_options(args: &[String]) -> Result<CgcComparisonOptions,
                 };
                 competitor_executable = Some(PathBuf::from(raw));
             }
-            value => return Err(format!("unknown cgc-comparison option: {value}")),
+            value => {
+                if storage_budget::parse_storage_budget_flag(args, &mut index, &mut storage_budget)?
+                {
+                    index += 1;
+                    continue;
+                }
+                return Err(format!("unknown cgc-comparison option: {value}"));
+            }
         }
         index += 1;
     }
@@ -13334,6 +13873,7 @@ fn parse_cgc_comparison_options(args: &[String]) -> Result<CgcComparisonOptions,
         timeout_ms,
         top_k,
         competitor_executable,
+        storage_budget,
     })
 }
 
@@ -13694,7 +14234,7 @@ fn current_repo_root() -> Result<PathBuf, String> {
 }
 
 fn open_existing_store(repo_root: &Path) -> Result<SqliteGraphStore, String> {
-    let db_path = default_db_path(repo_root);
+    let db_path = resolved_db_path_for_repo(repo_root);
     let _ = read_db_lifecycle_guard(repo_root, &db_path, allow_stale_read_enabled(), None)?;
     SqliteGraphStore::open(db_path).map_err(|error| error.to_string())
 }
@@ -14155,6 +14695,37 @@ fn load_context_entities_by_ids(
         .collect())
 }
 
+fn load_context_entities_by_paths(
+    connection: &Connection,
+    paths: impl IntoIterator<Item = String>,
+    limit: usize,
+) -> Result<Vec<ContextEntitySummary>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let mut entity_keys = BTreeSet::<i64>::new();
+    for path in paths {
+        if entity_keys.len() >= limit {
+            break;
+        }
+        let Some(path_id) = lookup_i64(connection, "path_dict", &path)? else {
+            continue;
+        };
+        let remaining = limit.saturating_sub(entity_keys.len());
+        for key in entity_keys_by_column(connection, "path_id", path_id, remaining)? {
+            entity_keys.insert(key);
+            if entity_keys.len() >= limit {
+                break;
+            }
+        }
+    }
+    load_context_entities_by_keys(
+        connection,
+        &entity_keys.into_iter().collect::<Vec<_>>(),
+        limit,
+    )
+}
+
 fn load_stored_context_path_evidence(
     connection: &Connection,
     seed_ids: &[String],
@@ -14480,6 +15051,11 @@ fn context_pack_test_path(path: &str) -> bool {
         || normalized.ends_with(".spec.tsx")
         || normalized.ends_with(".spec.js")
         || normalized.ends_with(".spec.jsx")
+}
+
+fn context_pack_mock_name(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase();
+    normalized.contains("mock") || normalized.contains("stub")
 }
 
 fn context_pack_role_from_label(value: &str) -> Option<EvidenceRole> {
@@ -15194,9 +15770,23 @@ fn build_test_impact_fallback_evidence(
     let mut evidence = Vec::new();
     let mut seen = BTreeSet::new();
     let evidence_limit = budgets.max_snippets.saturating_mul(2).max(4);
+    let same_file_entities = load_context_entities_by_paths(
+        connection,
+        seed_entities
+            .iter()
+            .map(|entity| entity.repo_relative_path.clone())
+            .collect::<BTreeSet<_>>(),
+        evidence_limit.saturating_mul(4),
+    )?;
+    let seed_has_test_or_mock = seed_entities.iter().any(|entity| {
+        matches!(
+            context_entity_role(entity).role,
+            EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
+        )
+    });
 
     for entity in seed_entities {
-        let role = context_entity_role(entity);
+        let role = context_entity_fallback_role(entity);
         let include_production_seed =
             verified_paths.is_empty() && role.role == EvidenceRole::Production;
         if matches!(
@@ -15215,13 +15805,37 @@ fn build_test_impact_fallback_evidence(
             );
         }
     }
+    for entity in &same_file_entities {
+        let role = context_entity_fallback_role(entity);
+        if !context_fallback_entity_kind_allowed(entity.kind, role.role) {
+            continue;
+        }
+        if matches!(
+            role.role,
+            EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
+        ) || (seed_has_test_or_mock && role.role == EvidenceRole::Production)
+        {
+            push_entity_fallback_evidence(
+                &mut evidence,
+                &mut seen,
+                &proof_span_keys,
+                entity,
+                role,
+                "same_file_source_role",
+                evidence_limit,
+            );
+        }
+        if evidence.len() >= evidence_limit {
+            break;
+        }
+    }
 
     for edge in local_edges {
         let head = endpoint_entities.get(&edge.head_id);
         let tail = endpoint_entities.get(&edge.tail_id);
         let edge_role = classify_edge_evidence_role(edge);
-        let head_role = head.map(context_entity_role);
-        let tail_role = tail.map(context_entity_role);
+        let head_role = head.map(context_entity_fallback_role);
+        let tail_role = tail.map(context_entity_fallback_role);
         let combined_role = combine_context_fallback_roles(
             edge_role.role,
             head_role.as_ref().map(|role| role.role),
@@ -15290,6 +15904,68 @@ fn build_test_impact_fallback_evidence(
     Ok(evidence)
 }
 
+fn context_fallback_entity_kind_allowed(kind: Option<EntityKind>, role: EvidenceRole) -> bool {
+    match role {
+        EvidenceRole::Production => matches!(
+            kind,
+            Some(
+                EntityKind::Class
+                    | EntityKind::Interface
+                    | EntityKind::Trait
+                    | EntityKind::Enum
+                    | EntityKind::Function
+                    | EntityKind::Method
+                    | EntityKind::Constructor
+                    | EntityKind::Route
+                    | EntityKind::Endpoint
+                    | EntityKind::Middleware
+            )
+        ),
+        EvidenceRole::Test | EvidenceRole::Mixed => matches!(
+            kind,
+            Some(
+                EntityKind::Module
+                    | EntityKind::Function
+                    | EntityKind::Method
+                    | EntityKind::TestSuite
+                    | EntityKind::TestCase
+                    | EntityKind::Fixture
+                    | EntityKind::Assertion
+            )
+        ),
+        EvidenceRole::Mock => matches!(
+            kind,
+            Some(
+                EntityKind::Function
+                    | EntityKind::Method
+                    | EntityKind::Class
+                    | EntityKind::Mock
+                    | EntityKind::Stub
+            )
+        ),
+        EvidenceRole::Unknown => false,
+    }
+}
+
+fn context_entity_fallback_role(entity: &ContextEntitySummary) -> CliEvidenceRoleDecision {
+    let role = context_entity_role(entity);
+    if role.role != EvidenceRole::Unknown {
+        return role;
+    }
+    if !context_pack_test_path(&entity.repo_relative_path)
+        && !qualified_name_has_test_module(&entity.qualified_name)
+        && !context_pack_mock_name(&entity.name)
+        && !context_pack_mock_name(&entity.qualified_name)
+    {
+        return CliEvidenceRoleDecision::new(
+            EvidenceRole::Production,
+            "entity is outside detected test/mock context; fallback is non-proof",
+            "source_role_fallback",
+        );
+    }
+    role
+}
+
 fn combine_context_fallback_roles(
     edge_role: EvidenceRole,
     head_role: Option<EvidenceRole>,
@@ -15322,12 +15998,7 @@ fn push_entity_fallback_evidence(
     let Some(span) = entity.source_span.clone() else {
         return;
     };
-    let key = format!(
-        "entity:{}:{}:{}",
-        entity.id,
-        context_span_key(&span),
-        fallback_source
-    );
+    let key = format!("entity:{}:{}", entity.id, context_span_key(&span));
     if proof_span_keys.contains(&context_span_key(&span)) || !seen.insert(key) {
         return;
     }
@@ -15445,7 +16116,8 @@ fn recommended_tests_from_fallback_evidence(
         if matches!(
             evidence.evidence_role,
             EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
-        ) {
+        ) && evidence.kind == "Function"
+        {
             let symbol = evidence.symbol.trim();
             if !symbol.is_empty()
                 && symbol
@@ -16158,6 +16830,7 @@ fn context_snippet_fallback_role(
     fallback_evidence: &[Value],
 ) -> Option<(&'static str, String, String)> {
     let (start, end) = parse_context_snippet_lines(&snippet.lines)?;
+    let mut overlap_candidate = None;
     for evidence in fallback_evidence {
         let Some(span) = evidence
             .get("source_span")
@@ -16194,10 +16867,16 @@ fn context_snippet_fallback_role(
                 .and_then(Value::as_str)
                 .unwrap_or("source_span")
                 .to_string();
-            return Some((context_pack_role_label(role), reason, source));
+            let candidate = (context_pack_role_label(role), reason, source);
+            if span_start as u32 == start && span_end as u32 == end {
+                return Some(candidate);
+            }
+            if overlap_candidate.is_none() {
+                overlap_candidate = Some(candidate);
+            }
         }
     }
-    None
+    overlap_candidate
 }
 
 fn context_pack_role_label(value: &str) -> &'static str {
@@ -18632,10 +19311,11 @@ mod tests {
 
     use codegraph_core::{
         stable_edge_id, stable_entity_id_for_kind, ContextPacket, ContextSnippet, Edge, EdgeClass,
-        EdgeContext, Entity, EntityKind, Exactness, Metadata, PathEvidence, RelationKind,
-        SourceSpan,
+        EdgeContext, Entity, EntityKind, EvidenceRole, Exactness, Metadata, PathEvidence,
+        RelationKind, SourceSpan,
     };
     use codegraph_store::{GraphStore, SqliteGraphStore};
+    use rusqlite::Connection;
     use serde_json::{json, Value};
 
     use super::{
@@ -19143,13 +19823,13 @@ mod tests {
     #[test]
     fn parse_index_command_options_accepts_agent_json_and_audit_json() {
         let agent = vec![".".to_string(), "--agent-json".to_string()];
-        let (_, _, options, mode) =
+        let (_, _, options, mode, _) =
             super::parse_index_command_options(&agent).expect("parse agent index options");
         assert!(options.json);
         assert_eq!(mode, super::IndexJsonOutputMode::Agent);
 
         let audit = vec![".".to_string(), "--audit-json".to_string()];
-        let (_, _, options, mode) =
+        let (_, _, options, mode, _) =
             super::parse_index_command_options(&audit).expect("parse audit index options");
         assert!(options.json);
         assert_eq!(mode, super::IndexJsonOutputMode::Audit);
@@ -19159,7 +19839,7 @@ mod tests {
             "--json".to_string(),
             "--explain-scope".to_string(),
         ];
-        let (_, _, _, mode) =
+        let (_, _, _, mode, _) =
             super::parse_index_command_options(&explain).expect("parse explain index options");
         assert_eq!(mode, super::IndexJsonOutputMode::Audit);
     }
@@ -21264,6 +21944,220 @@ mod tests {
         );
     }
 
+    #[test]
+    fn context_pack_test_impact_fallback_surfaces_inline_test_seed_without_path() {
+        let repo = rust_inline_context_pack_fixture();
+        index_repo(&repo).expect("index inline Rust fixture");
+        let connection = Connection::open(default_db_path(&repo)).expect("open fixture db");
+        let mut options = context_agent_test_options("test-impact", Some(4), Some(4), None);
+        options.task = "greet_works".to_string();
+        options.seeds = vec!["greet_works".to_string()];
+        let budgets = super::ContextPackBudgets::for_options(&options);
+        let raw_seed_values = super::context_pack_seed_values(&options, budgets.max_seed_entities);
+        let seed_entities = super::resolve_context_seed_entities(
+            &connection,
+            &raw_seed_values,
+            budgets.max_seed_entities,
+        )
+        .expect("resolve greet_works seed");
+        let seed_ids =
+            super::context_seed_ids(&raw_seed_values, &seed_entities, budgets.max_seed_entities);
+        let test_seed = seed_entities
+            .iter()
+            .find(|entity| entity.name == "greet_works")
+            .expect("greet_works entity");
+        let test_seed_role = super::context_entity_role(test_seed);
+        assert_eq!(test_seed_role.role, EvidenceRole::Test);
+        assert!(
+            test_seed_role.reason.contains("tests module")
+                || test_seed_role.reason.contains("source_role")
+                || test_seed_role.reason.contains("entity kind"),
+            "{test_seed_role:?}"
+        );
+
+        let test_module_entities = super::resolve_context_seed_entities(
+            &connection,
+            &["tests".to_string()],
+            budgets.max_seed_entities,
+        )
+        .expect("resolve tests module seed");
+        assert!(
+            test_module_entities.iter().any(|entity| {
+                entity.qualified_name.ends_with(".tests")
+                    && super::context_entity_role(entity).role == EvidenceRole::Test
+            }),
+            "{test_module_entities:?}"
+        );
+
+        let local_edges =
+            super::load_bounded_context_edges(&connection, &seed_ids, &options.mode, budgets)
+                .expect("load local fallback edges");
+        let fallback_evidence = super::build_test_impact_fallback_evidence(
+            &connection,
+            &options.mode,
+            &seed_entities,
+            &local_edges,
+            &[],
+            budgets,
+        )
+        .expect("build fallback evidence");
+        assert!(
+            fallback_evidence.iter().any(|evidence| {
+                evidence.symbol == "greet_works" && evidence.evidence_role == EvidenceRole::Test
+            }),
+            "{fallback_evidence:?}"
+        );
+        assert!(
+            fallback_evidence.iter().any(|evidence| {
+                evidence.symbol == "greet" && evidence.evidence_role == EvidenceRole::Production
+            }),
+            "{fallback_evidence:?}"
+        );
+
+        let snippets =
+            super::load_context_fallback_snippets(&repo, &fallback_evidence, budgets.max_snippets)
+                .expect("load fallback snippets");
+        assert!(
+            snippets.iter().any(|snippet| {
+                snippet.text.contains("greet_works")
+                    && snippet.text.contains("#[test]")
+                    && snippet.text.contains("assert_eq!")
+            }),
+            "{snippets:?}"
+        );
+        let fallback_evidence_count = fallback_evidence.len();
+        let packet = super::build_context_packet_from_stored_evidence(
+            &options,
+            &raw_seed_values,
+            &seed_ids,
+            &seed_entities,
+            Vec::new(),
+            snippets,
+            fallback_evidence,
+            None,
+            budgets,
+            0,
+            fallback_evidence_count,
+        );
+        let response = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &json!({"claimable": true, "diagnostic_only": false, "decision": "read_reuse"}),
+            budgets,
+            &repo,
+            &default_db_path(&repo),
+            json!({"wall_ms": 1.0}),
+        );
+
+        assert_eq!(response["proof_path_available"].as_bool(), Some(false));
+        assert!(response["paths"].as_array().expect("paths").is_empty());
+        assert!(response["result_count"].as_u64().unwrap_or_default() > 0);
+        assert!(response["fallback_evidence"]
+            .as_array()
+            .expect("fallback evidence")
+            .iter()
+            .any(|evidence| {
+                evidence["symbol"].as_str() == Some("greet_works")
+                    && evidence["evidence_role"].as_str() == Some("test")
+                    && evidence["proof_path_available"].as_bool() == Some(false)
+            }));
+        assert!(response["snippets"]
+            .as_array()
+            .expect("snippets")
+            .iter()
+            .any(|snippet| {
+                snippet["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("greet_works"))
+                    && snippet["evidence_role"].as_str() == Some("test")
+                    && snippet["fallback_source"].as_str().is_some()
+                    && snippet["proof_path_available"].as_bool() == Some(false)
+            }));
+        assert!(response["recommended_tests"]
+            .as_array()
+            .expect("recommended tests")
+            .iter()
+            .any(|test| test.as_str() == Some("cargo test greet_works")));
+
+        drop(connection);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn context_pack_test_impact_fallback_finds_inline_test_for_production_seed() {
+        let repo = rust_inline_context_pack_fixture();
+        index_repo(&repo).expect("index inline Rust fixture");
+        let connection = Connection::open(default_db_path(&repo)).expect("open fixture db");
+        let mut options = context_agent_test_options("test-impact", Some(4), Some(4), None);
+        options.task = "greet".to_string();
+        options.seeds = vec!["greet".to_string()];
+        let budgets = super::ContextPackBudgets::for_options(&options);
+        let raw_seed_values = super::context_pack_seed_values(&options, budgets.max_seed_entities);
+        let seed_entities = super::resolve_context_seed_entities(
+            &connection,
+            &raw_seed_values,
+            budgets.max_seed_entities,
+        )
+        .expect("resolve greet seed");
+        assert!(
+            seed_entities.iter().any(|entity| entity.name == "greet"),
+            "{seed_entities:?}"
+        );
+        let seed_ids =
+            super::context_seed_ids(&raw_seed_values, &seed_entities, budgets.max_seed_entities);
+        let local_edges =
+            super::load_bounded_context_edges(&connection, &seed_ids, &options.mode, budgets)
+                .expect("load local fallback edges");
+        let fallback_evidence = super::build_test_impact_fallback_evidence(
+            &connection,
+            &options.mode,
+            &seed_entities,
+            &local_edges,
+            &[],
+            budgets,
+        )
+        .expect("build fallback evidence");
+
+        assert!(
+            fallback_evidence.iter().any(|evidence| {
+                evidence.symbol == "greet_works" && evidence.evidence_role == EvidenceRole::Test
+            }),
+            "{fallback_evidence:?}"
+        );
+        assert!(
+            fallback_evidence.iter().any(|evidence| {
+                evidence.symbol == "greet" && evidence.evidence_role == EvidenceRole::Production
+            }),
+            "{fallback_evidence:?}"
+        );
+        let snippets =
+            super::load_context_fallback_snippets(&repo, &fallback_evidence, budgets.max_snippets)
+                .expect("load fallback snippets");
+        assert!(
+            snippets
+                .iter()
+                .any(|snippet| snippet.text.contains("greet_works")),
+            "{snippets:?}"
+        );
+
+        let production_fallback = super::build_test_impact_fallback_evidence(
+            &connection,
+            "production",
+            &seed_entities,
+            &local_edges,
+            &[],
+            budgets,
+        )
+        .expect("production mode fallback");
+        assert!(
+            production_fallback.is_empty(),
+            "production mode must not add test-impact fallback evidence"
+        );
+
+        drop(connection);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
     struct CallerCalleePrecisionFixture {
         repo: PathBuf,
         alpha_target_id: String,
@@ -21400,6 +22294,39 @@ mod tests {
             confidence: 1.0,
             metadata,
         }
+    }
+
+    fn rust_inline_context_pack_fixture() -> PathBuf {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::write(
+            repo.join("Cargo.toml"),
+            "[package]\nname = \"inline_context_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .expect("write cargo manifest");
+        fs::write(
+            repo.join("src").join("lib.rs"),
+            r#"pub fn greet(name: &str) -> String {
+    format!("hello {name}")
+}
+
+pub fn main_call() -> String {
+    greet("wasif")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn greet_works() {
+        assert_eq!(greet("wasif"), "hello wasif");
+    }
+}
+"#,
+        )
+        .expect("write inline Rust fixture");
+        repo
     }
 
     fn serialized_len_for_test(value: &Value) -> usize {

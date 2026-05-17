@@ -431,7 +431,13 @@ impl SqliteGraphStore {
 
     pub fn open_read_only(path: impl AsRef<Path>) -> StoreResult<Self> {
         let connection_start = Instant::now();
-        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let path = path.as_ref();
+        let immutable = existing_sqlite_sidecars(path).is_empty();
+        let uri = sqlite_read_only_uri(path, immutable)?;
+        let connection = Connection::open_with_flags(
+            &uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        )?;
         record_sqlite_profile("open_read_only_connection", connection_start.elapsed());
         connection.execute_batch(
             "
@@ -2694,7 +2700,28 @@ pub fn inspect_db_preflight(
     }
 
     let mut reasons = Vec::new();
-    let connection = match Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+    let sqlite_uri = match sqlite_read_only_uri(db_path, sqlite_sidecars.is_empty()) {
+        Ok(uri) => uri,
+        Err(error) => {
+            return db_preflight_report_with_problem(
+                db_path,
+                "unknown".to_string(),
+                Some("db_open_failed".to_string()),
+                "db_open_failed".to_string(),
+                Some(error.to_string()),
+                false,
+                vec![format!("read-only SQLite URI build failed: {error}")],
+                None,
+                None,
+                sqlite_sidecars,
+                true,
+            );
+        }
+    };
+    let connection = match Connection::open_with_flags(
+        &sqlite_uri,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    ) {
         Ok(connection) => connection,
         Err(error) => {
             let (passport_status, db_problem_kind, path_access_status) =
@@ -2714,6 +2741,7 @@ pub fn inspect_db_preflight(
             );
         }
     };
+    let _ = connection.pragma_update(None, "query_only", true);
 
     let mut passport_status = "valid".to_string();
     if let Err(error) = validate_sqlite_check_rows(&connection, "quick_check") {
@@ -2874,6 +2902,38 @@ fn existing_sqlite_sidecars(db_path: &Path) -> Vec<PathBuf> {
         }
     }
     sidecars
+}
+
+fn sqlite_read_only_uri(db_path: &Path, immutable: bool) -> StoreResult<String> {
+    let absolute = if db_path.is_absolute() {
+        db_path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| StoreError::Message(error.to_string()))?
+            .join(db_path)
+    };
+    let mut raw = absolute.to_string_lossy().replace('\\', "/");
+    if let Some(stripped) = raw.strip_prefix("//?/") {
+        raw = stripped.to_string();
+    }
+    let encoded = percent_encode_sqlite_uri_path(&raw);
+    let path = encoded.trim_start_matches('/');
+    let immutable_param = if immutable { "&immutable=1" } else { "" };
+    Ok(format!("file:///{path}?mode=ro{immutable_param}"))
+}
+
+fn percent_encode_sqlite_uri_path(path: &str) -> String {
+    let mut encoded = String::new();
+    for byte in path.bytes() {
+        let keep =
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':');
+        if keep {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 fn validate_foreign_key_check(connection: &Connection) -> StoreResult<()> {
@@ -9890,6 +9950,10 @@ mod tests {
 
     fn remove_temp_db_family(path: &Path) {
         let _ = fs::remove_file(path);
+        remove_temp_db_sidecars(path);
+    }
+
+    fn remove_temp_db_sidecars(path: &Path) {
         let _ = fs::remove_file(path.with_extension("sqlite-wal"));
         let _ = fs::remove_file(path.with_extension("sqlite-shm"));
     }
@@ -10637,7 +10701,13 @@ mod tests {
             ok(store.upsert_entity(&entity));
             ok(store.upsert_edge(&edge));
             ok(store.quick_integrity_gate());
+            ok(store
+                .connection
+                .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);"));
         }
+        remove_temp_db_sidecars(&path);
+        assert!(!path.with_extension("sqlite-wal").exists());
+        assert!(!path.with_extension("sqlite-shm").exists());
         let before = file_fingerprint(&path);
         {
             let store = ok(SqliteGraphStore::open_read_only(&path));
@@ -10654,6 +10724,11 @@ mod tests {
         assert_eq!(
             before, after,
             "read-only inspection must not mutate current DBs"
+        );
+        assert!(
+            !path.with_extension("sqlite-wal").exists()
+                && !path.with_extension("sqlite-shm").exists(),
+            "immutable read-only inspection should not create SQLite sidecars when none existed before"
         );
         remove_temp_db_family(&path);
     }

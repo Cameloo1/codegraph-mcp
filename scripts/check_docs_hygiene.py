@@ -33,6 +33,8 @@ STABLE_REPORT_PREFIXES = (
     "reports/final/intended_tool_quality_gate.",
     "reports/final/lifecycle_quality_gate.",
     "reports/final/manual_relation_precision.",
+    "reports/final/agent_use_quality_gate.",
+    "reports/final/agent_trust_and_storage_micro_gate.",
     "reports/comparison/codegraph_vs_cgc_latest.",
     "reports/baselines/",
 )

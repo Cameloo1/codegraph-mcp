@@ -78,6 +78,8 @@ codegraph-competitors/
 !/reports/final/manual_relation_precision.json
 !/reports/final/agent_use_quality_gate.md
 !/reports/final/agent_use_quality_gate.json
+!/reports/final/agent_trust_and_storage_micro_gate.md
+!/reports/final/agent_trust_and_storage_micro_gate.json
 /reports/comparison/artifacts/
 /reports/comparison/fixtures/
 /reports/comparison/normalized_outputs/
