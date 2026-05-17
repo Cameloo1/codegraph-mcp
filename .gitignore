@@ -76,6 +76,8 @@ codegraph-competitors/
 !/reports/final/lifecycle_quality_gate.json
 !/reports/final/manual_relation_precision.md
 !/reports/final/manual_relation_precision.json
+!/reports/final/agent_use_quality_gate.md
+!/reports/final/agent_use_quality_gate.json
 /reports/comparison/artifacts/
 /reports/comparison/fixtures/
 /reports/comparison/normalized_outputs/

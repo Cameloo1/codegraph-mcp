@@ -15,26 +15,30 @@ For long-lived agent use, prefer the agent-use profile from
 binary and a DB outside the source tree, separate from development and benchmark
 indexes.
 
+For CLI-driven agent loops, see [agent-use.md](agent-use.md). The CLI
+`--agent-json` schemas are the stable compact machine-readable contract for
+index, query, callers/callees, and context-pack output.
+
 Suggested generic Codex config:
 
 ```toml
 [mcp_servers.codegraph-mcp]
 command = "codegraph-mcp"
 args = ["serve-mcp"]
-cwd = "C:\\path\\to\\repo"
+cwd = "<repo>"
 ```
 
 Suggested config for an agent-use profile:
 
 ```toml
 [mcp_servers.codegraph-mcp-agent]
-command = "C:\\path\\to\\codegraph-mcp.exe"
+command = "<codegraph-mcp-release-binary>"
 args = [
-  "--repo", "C:\\path\\to\\repo",
-  "--db", "C:\\path\\to\\agent-indexes\\repo.sqlite",
+  "--repo", "<repo>",
+  "--db", "<agent-db>",
   "serve-mcp"
 ]
-cwd = "C:\\path\\to\\repo"
+cwd = "<repo>"
 ```
 
 ## Tools
@@ -113,6 +117,13 @@ Tool responses are compact JSON values suitable for Codex:
 - `resource_links` for files/source spans where available
 - `explain_missing` when a requested path is absent
 - no fake citations or hidden source failures
+
+Context/proof responses label evidence as `production`, `test`, `mock`,
+`mixed`, or `unknown` when that evidence classification is available.
+Production context excludes test/mock/mixed/unknown evidence by default; test
+impact requests include test evidence intentionally. Inline Rust `#[cfg(test)]`
+modules and `#[test]` functions are test evidence even when they are inside a
+normal source file.
 
 `explain_missing` distinguishes no symbol found, symbol found but no matching
 relation, path exceeds traversal bounds, relation unsupported for language, and

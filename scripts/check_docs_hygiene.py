@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 PUBLIC_DOCS = [
     "README.md",
+    "docs/agent-json.md",
     "docs/architecture.md",
     "docs/benchmark-guide.md",
     "docs/cli-reference.md",

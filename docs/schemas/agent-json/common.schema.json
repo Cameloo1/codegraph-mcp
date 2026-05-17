@@ -1,0 +1,275 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codegraph.local/schemas/agent-json/common.schema.json",
+  "title": "CodeGraph Agent JSON common definitions",
+  "$defs": {
+    "status": {
+      "type": "string",
+      "enum": ["ok", "warning", "error"]
+    },
+    "command": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96
+    },
+    "repo": {
+      "type": "string",
+      "minLength": 1
+    },
+    "db": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timings": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "wall_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "available": {
+          "type": "boolean"
+        }
+      }
+    },
+    "bounded_messages": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "required": ["code", "message"],
+        "additionalProperties": true,
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 96
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["info", "warning", "error"]
+          }
+        }
+      }
+    },
+    "lifecycle_summary": {
+      "type": "object",
+      "required": ["claimable", "diagnostic_only"],
+      "additionalProperties": true,
+      "properties": {
+        "claimable": {
+          "type": "boolean"
+        },
+        "diagnostic_only": {
+          "type": "boolean"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "db_problem_kind": {
+          "type": "string"
+        },
+        "passport_status": {
+          "type": "string"
+        },
+        "schema_status": {
+          "type": "string"
+        },
+        "scope_status": {
+          "type": "string"
+        },
+        "repo_root_status": {
+          "type": "string"
+        },
+        "sidecar_status": {
+          "type": "string"
+        }
+      }
+    },
+    "truncation": {
+      "type": "object",
+      "required": [
+        "returned_count",
+        "limit_applied",
+        "omitted_count",
+        "total_available_unknown"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "returned_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit_applied": {
+          "type": "boolean"
+        },
+        "omitted_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omitted_count_is_lower_bound": {
+          "type": "boolean"
+        },
+        "total_available": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_available_unknown": {
+          "type": "boolean"
+        }
+      }
+    },
+    "source_span": {
+      "type": "object",
+      "required": ["file", "start_line", "end_line"],
+      "additionalProperties": true,
+      "properties": {
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "end_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "start_column": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "end_column": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "entity_ref": {
+      "type": "object",
+      "required": ["id", "name"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "qualified_name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "source_role": {
+          "$ref": "#/$defs/evidence_role"
+        },
+        "source_spans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source_span"
+          }
+        }
+      }
+    },
+    "evidence_role": {
+      "type": "string",
+      "enum": ["production", "test", "mock", "mixed", "unknown"]
+    },
+    "exactness": {
+      "type": "string",
+      "enum": [
+        "compiler_verified",
+        "lsp_verified",
+        "parser_verified",
+        "static_heuristic",
+        "inferred",
+        "unknown"
+      ]
+    },
+    "proof_edge": {
+      "type": "object",
+      "required": ["relation", "source", "target", "evidence_role"],
+      "additionalProperties": true,
+      "properties": {
+        "edge_id": {
+          "type": "string"
+        },
+        "relation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/entity_ref"
+        },
+        "target": {
+          "$ref": "#/$defs/entity_ref"
+        },
+        "exactness": {
+          "$ref": "#/$defs/exactness"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "evidence_role": {
+          "$ref": "#/$defs/evidence_role"
+        },
+        "classification_reason": {
+          "type": "string"
+        },
+        "classification_source": {
+          "type": "string"
+        },
+        "source_spans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source_span"
+          }
+        }
+      }
+    },
+    "snippet": {
+      "type": "object",
+      "required": ["file", "lines", "text"],
+      "additionalProperties": true,
+      "properties": {
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lines": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "evidence_role": {
+          "$ref": "#/$defs/evidence_role"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codegraph.local/schemas/agent-json/query_symbols_agent_json.schema.json",
+  "title": "query_symbols_agent_json",
+  "type": "object",
+  "required": [
+    "schema_name",
+    "schema_version",
+    "status",
+    "command",
+    "repo",
+    "db",
+    "lifecycle",
+    "claimable",
+    "diagnostic_only",
+    "truncation",
+    "result_count",
+    "limit",
+    "omitted_count",
+    "warnings",
+    "errors",
+    "timings",
+    "query",
+    "results"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_name": {
+      "const": "query_symbols_agent_json"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "$ref": "common.schema.json#/$defs/status"
+    },
+    "command": {
+      "const": "query symbols"
+    },
+    "repo": {
+      "$ref": "common.schema.json#/$defs/repo"
+    },
+    "db": {
+      "$ref": "common.schema.json#/$defs/db"
+    },
+    "lifecycle": {
+      "$ref": "common.schema.json#/$defs/lifecycle_summary"
+    },
+    "claimable": {
+      "type": "boolean"
+    },
+    "diagnostic_only": {
+      "type": "boolean"
+    },
+    "truncation": {
+      "$ref": "common.schema.json#/$defs/truncation"
+    },
+    "result_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "omitted_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "warnings": {
+      "$ref": "common.schema.json#/$defs/bounded_messages"
+    },
+    "errors": {
+      "$ref": "common.schema.json#/$defs/bounded_messages"
+    },
+    "timings": {
+      "$ref": "common.schema.json#/$defs/timings"
+    },
+    "query": {
+      "type": "object",
+      "required": ["text"],
+      "additionalProperties": true,
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "resolution_mode": {
+          "type": "string"
+        }
+      }
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "symbol", "kind", "score"],
+        "additionalProperties": true,
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "entity": {
+            "$ref": "common.schema.json#/$defs/entity_ref"
+          },
+          "score": {
+            "type": "number"
+          },
+          "evidence_role": {
+            "$ref": "common.schema.json#/$defs/evidence_role"
+          },
+          "classification_reason": {
+            "type": "string"
+          },
+          "match_reason": {
+            "type": "string"
+          },
+          "source_spans": {
+            "type": "array",
+            "items": {
+              "$ref": "common.schema.json#/$defs/source_span"
+            }
+          }
+        }
+      }
+    }
+  }
+}

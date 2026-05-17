@@ -3306,6 +3306,88 @@ fn index_status_and_query_surface_db_lifecycle_evidence() {
 }
 
 #[test]
+fn global_flag_placement_is_targeted_and_literal_query_flags_can_escape() {
+    let repo = fixture_repo();
+    let db_path = repo.join("flag-placement.sqlite");
+    let repo_arg = repo.to_str().expect("repo path");
+    let db_arg = db_path.to_str().expect("db path");
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    stdout_json(&run_codegraph_in(
+        &repo,
+        &["index", ".", "--db", db_arg, "--fresh", "--json"],
+    ));
+
+    let before = stdout_json(&run_codegraph_in(
+        workspace,
+        &[
+            "--repo",
+            repo_arg,
+            "--db",
+            db_arg,
+            "query",
+            "symbols",
+            "login",
+            "--agent-json",
+        ],
+    ));
+    assert_eq!(before["status"].as_str(), Some("ok"));
+    assert_eq!(before["query"]["text"].as_str(), Some("login"));
+
+    let misplaced_db = run_codegraph_in(&repo, &["query", "symbols", "login", "--db", db_arg]);
+    let misplaced_db_json = stderr_json(&misplaced_db);
+    assert_eq!(misplaced_db_json["error"].as_str(), Some("query_failed"));
+    assert!(misplaced_db_json["message"]
+        .as_str()
+        .expect("message")
+        .contains("--db is a global flag"));
+
+    let misplaced_repo =
+        run_codegraph_in(&repo, &["query", "symbols", "login", "--repo", repo_arg]);
+    let misplaced_repo_json = stderr_json(&misplaced_repo);
+    assert!(misplaced_repo_json["message"]
+        .as_str()
+        .expect("message")
+        .contains("--repo is a global flag"));
+
+    let json_after_command = stdout_json(&run_codegraph_in(
+        workspace,
+        &[
+            "--repo", repo_arg, "--db", db_arg, "query", "symbols", "login", "--json",
+        ],
+    ));
+    assert_eq!(json_after_command["status"].as_str(), Some("ok"));
+    assert_eq!(json_after_command["query"].as_str(), Some("login"));
+
+    let literal_flag_query = stdout_json(&run_codegraph_in(
+        workspace,
+        &[
+            "--repo",
+            repo_arg,
+            "--db",
+            db_arg,
+            "query",
+            "text",
+            "--agent-json",
+            "--",
+            "--db",
+        ],
+    ));
+    assert_eq!(literal_flag_query["status"].as_str(), Some("ok"));
+    assert_eq!(literal_flag_query["query"]["text"].as_str(), Some("--db"));
+
+    let doctor_db = run_codegraph_in(&repo, &["doctor", "--db", db_arg]);
+    let doctor_db_json = stderr_json(&doctor_db);
+    assert_eq!(doctor_db_json["error"].as_str(), Some("doctor_failed"));
+    assert!(doctor_db_json["message"]
+        .as_str()
+        .expect("message")
+        .contains("--db is a global flag"));
+
+    fs::remove_dir_all(repo).expect("cleanup flag placement fixture");
+}
+
+#[test]
 fn index_incremental_rejects_corrupt_explicit_db() {
     let repo = fixture_repo();
     fs::write(repo.join("named.sqlite"), "not sqlite").expect("write corrupt DB");

@@ -26,8 +26,9 @@ use codegraph_bench::{
     TwoLayerBenchOptions,
 };
 use codegraph_core::{
-    ContextPacket, ContextSnippet, Edge, Entity, EntityKind, Exactness, FileRecord, Metadata,
-    PathEvidence, RelationKind, RepoIndexState, SourceSpan,
+    classify_edge_evidence_role, classify_entity_source_role, combine_evidence_roles,
+    ContextPacket, ContextSnippet, Edge, Entity, EntityKind, EvidenceRole, EvidenceRoleDecision,
+    Exactness, FileRecord, Metadata, PathEvidence, RelationKind, RepoIndexState, SourceSpan,
 };
 pub use codegraph_index::{
     collect_repo_files, default_db_path, graph_fact_hash, index_repo,
@@ -77,6 +78,22 @@ const SYMBOL_SEARCH_FILE_CANDIDATE_LIMIT: usize = 256;
 const DEFAULT_UNRESOLVED_CALL_LIMIT: usize = 100;
 const MAX_UNRESOLVED_CALL_LIMIT: usize = 500;
 const DEFAULT_QUERY_SURFACE_ITERATIONS: usize = 20;
+const DEFAULT_QUERY_JSON_LIMIT: usize = 10;
+const DEFAULT_QUERY_AGENT_JSON_LIMIT: usize = 5;
+const DEFAULT_QUERY_VERBOSE_LIMIT: usize = 20;
+const MAX_QUERY_RESULT_LIMIT: usize = 500;
+const AGENT_JSON_SCHEMA_VERSION: u32 = 1;
+const INDEX_CONCISE_JSON_SIZE_TARGET_BYTES: usize = 8 * 1024;
+const INDEX_AGENT_JSON_SIZE_TARGET_BYTES: usize = 4 * 1024;
+#[cfg(test)]
+const QUERY_AGENT_JSON_SIZE_TARGET_BYTES: usize = 12 * 1024;
+const DEFAULT_CONTEXT_AGENT_PATH_LIMIT: usize = 5;
+const DEFAULT_CONTEXT_AGENT_SNIPPET_LIMIT: usize = 5;
+const DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES: usize = 16 * 1024;
+const MAX_CONTEXT_AGENT_PATH_LIMIT: usize = 64;
+const MAX_CONTEXT_AGENT_SNIPPET_LIMIT: usize = 64;
+const MIN_CONTEXT_AGENT_MAX_OUTPUT_BYTES: usize = 1024;
+const MAX_CONTEXT_AGENT_MAX_OUTPUT_BYTES: usize = 512 * 1024;
 
 const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
@@ -86,7 +103,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "index",
-        usage: "codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]",
+        usage: "codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]",
         description: "Index a repository into the local graph store.",
     },
     CommandSpec {
@@ -96,7 +113,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "query",
-        usage: "codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]\n  codegraph-mcp query callers|callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] <symbol>\n  codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets]",
+        usage: "codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]\n  codegraph-mcp query symbols|text|files <query> [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain]\n  codegraph-mcp query callers|callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain] <symbol>\n  codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets]",
         description: "Query symbols, text, files, references, definitions, calls, chains, or relation paths.",
     },
     CommandSpec {
@@ -106,7 +123,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "context-pack",
-        usage: "codegraph-mcp context-pack --task <task> [--budget <tokens>] [--mode <mode>] [--seed <symbol>] [--profile]",
+        usage: "codegraph-mcp context-pack --task <task> [--budget <tokens>] [--mode <production|test-impact|debug|impact>] [--seed <symbol>] [--agent-json|--concise] [--limit-paths <n>] [--limit-snippets <n>] [--max-output-bytes <n>] [--profile]",
         description: "Build a compact proof-oriented context packet.",
     },
     CommandSpec {
@@ -650,6 +667,12 @@ where
     {
         command_args.push("--profile".to_string());
     }
+    if globals.verbose
+        && command.name == "index"
+        && !command_args.iter().any(|arg| arg == "--verbose")
+    {
+        command_args.push("--verbose".to_string());
+    }
     if globals.json
         && matches!(command.name, "index" | "doctor" | "languages" | "config")
         && !command_args.iter().any(|arg| arg == "--json")
@@ -741,6 +764,35 @@ fn parse_global_options(args: &[String]) -> Result<(GlobalOptions, Vec<String>),
         index += 1;
     }
     Ok((globals, rest))
+}
+
+fn canonical_global_flag(arg: &str) -> Option<&'static str> {
+    match arg {
+        "--repo" => Some("--repo"),
+        "--db" => Some("--db"),
+        "--json" => Some("--json"),
+        "--no-color" => Some("--no-color"),
+        "--verbose" => Some("--verbose"),
+        "--quiet" => Some("--quiet"),
+        "--profile" => Some("--profile"),
+        _ if arg.starts_with("--repo=") => Some("--repo"),
+        _ if arg.starts_with("--db=") => Some("--db"),
+        _ => None,
+    }
+}
+
+fn misplaced_global_flag_message(flag: &str, command_name: &str) -> String {
+    let value_hint = match flag {
+        "--repo" | "--db" => " <path>",
+        _ => "",
+    };
+    format!(
+        "{flag} is a global flag. Put it before the command: {BIN_NAME} {flag}{value_hint} {command_name} ..."
+    )
+}
+
+fn misplaced_global_flag_error(arg: &str, command_name: &str) -> Option<String> {
+    canonical_global_flag(arg).map(|flag| misplaced_global_flag_message(flag, command_name))
 }
 
 fn success(stdout: String) -> CliOutput {
@@ -905,14 +957,20 @@ fn run_init_command(args: &[String]) -> Result<Value, String> {
 }
 
 fn run_index_command(args: &[String]) -> Result<Value, String> {
-    let (repo, db, options) = parse_index_options(args)?;
+    let (repo, db, options, output_mode) = parse_index_command_options(args)?;
+    let started = Instant::now();
     let summary = if let Some(db) = db {
         index_repo_to_db_with_options(Path::new(&repo), &db, options)
     } else {
         index_repo_with_options(Path::new(&repo), options)
     }
     .map_err(|error| error.to_string())?;
-    index_summary_json(&summary)
+    let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
+    match output_mode {
+        IndexJsonOutputMode::Audit => index_summary_json(&summary),
+        IndexJsonOutputMode::Agent => index_summary_agent_json(&summary, wall_ms),
+        IndexJsonOutputMode::Concise => index_summary_concise_json(&summary, wall_ms),
+    }
 }
 
 fn run_status_command(args: &[String]) -> Result<Value, String> {
@@ -1029,7 +1087,10 @@ fn run_doctor_command(args: &[String]) -> Result<Value, String> {
         match args[index].as_str() {
             "--json" => json_output = true,
             value if value.starts_with('-') => {
-                return Err(format!("unknown doctor option: {value}"))
+                if let Some(error) = misplaced_global_flag_error(value, "doctor") {
+                    return Err(error);
+                }
+                return Err(format!("unknown doctor option: {value}"));
             }
             value => repo = PathBuf::from(value),
         }
@@ -1346,11 +1407,12 @@ fn yes_no(value: bool) -> &'static str {
 
 fn run_query_command(args: &[String]) -> Result<Value, String> {
     let mut args = args.to_vec();
+    reject_misplaced_global_flags_in_query_args(&args)?;
     let allow_stale_read = remove_flag(&mut args, "--allow-stale-read");
     let explicit_scope = parse_read_scope_options(&mut args)?;
     let repo_root = current_repo_root()?;
     if args.first().map(String::as_str) == Some("unresolved-calls") {
-        return run_query_command_inner(&args, allow_stale_read, explicit_scope);
+        return run_query_command_inner(&args, allow_stale_read, explicit_scope, None);
     }
     let db_path = default_db_path(&repo_root);
     let db_lifecycle_read = read_db_lifecycle_guard(
@@ -1363,22 +1425,63 @@ fn run_query_command(args: &[String]) -> Result<Value, String> {
     if allow_stale_read {
         std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", "1");
     }
-    let result = run_query_command_inner(&args, allow_stale_read, explicit_scope);
+    let compact_lifecycle = compact_lifecycle_summary(&db_lifecycle_read);
+    let result = run_query_command_inner(
+        &args,
+        allow_stale_read,
+        explicit_scope,
+        Some(compact_lifecycle),
+    );
     match previous_allow_stale {
         Some(value) => std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", value),
         None => std::env::remove_var("CODEGRAPH_ALLOW_STALE_READ"),
     }
     let mut value = result?;
-    if let Some(object) = value.as_object_mut() {
-        object.insert("db_lifecycle_read".to_string(), db_lifecycle_read);
+    if !query_response_uses_compact_lifecycle(&value) {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("db_lifecycle_read".to_string(), db_lifecycle_read);
+        }
     }
     Ok(value)
+}
+
+fn reject_misplaced_global_flags_in_query_args(args: &[String]) -> Result<(), String> {
+    let Some(subcommand) = args.first().map(String::as_str) else {
+        return Ok(());
+    };
+    if let Some(error) = misplaced_global_flag_error(subcommand, "query") {
+        return Err(error);
+    }
+
+    let disallowed_flags: &[&str] = match subcommand {
+        "symbols" | "text" | "files" | "callers" | "callees" => {
+            &["--repo", "--db", "--no-color", "--quiet", "--profile"]
+        }
+        "unresolved-calls" => &["--repo", "--no-color", "--quiet", "--profile", "--verbose"],
+        _ => &[],
+    };
+    if disallowed_flags.is_empty() {
+        return Ok(());
+    }
+
+    for arg in args.iter().skip(1) {
+        if arg == "--" {
+            break;
+        }
+        if let Some(flag) = canonical_global_flag(arg) {
+            if disallowed_flags.contains(&flag) {
+                return Err(misplaced_global_flag_message(flag, "query"));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn run_query_command_inner(
     args: &[String],
     allow_stale_read: bool,
     explicit_scope_policy: Option<IndexScopeOptions>,
+    lifecycle_summary: Option<Value>,
 ) -> Result<Value, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         return Err("Usage: codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]".to_string());
@@ -1386,24 +1489,24 @@ fn run_query_command_inner(
     match subcommand {
         "symbols" => {
             if args.len() < 2 {
-                return Err("Usage: codegraph-mcp query symbols <query>".to_string());
+                return Err(list_query_usage("symbols"));
             }
-            let query = args[1..].join(" ");
-            query_symbols(&current_repo_root()?, &query, 20)
+            let options = parse_list_query_args("symbols", &args[1..])?;
+            query_symbols_with_options(&current_repo_root()?, &options, lifecycle_summary.as_ref())
         }
         "text" => {
             if args.len() < 2 {
-                return Err("Usage: codegraph-mcp query text <query>".to_string());
+                return Err(list_query_usage("text"));
             }
-            let query = args[1..].join(" ");
-            query_text(&current_repo_root()?, &query, 20)
+            let options = parse_list_query_args("text", &args[1..])?;
+            query_text_with_options(&current_repo_root()?, &options, lifecycle_summary.as_ref())
         }
         "files" => {
             if args.len() < 2 {
-                return Err("Usage: codegraph-mcp query files <query>".to_string());
+                return Err(list_query_usage("files"));
             }
-            let query = args[1..].join(" ");
-            query_files(&current_repo_root()?, &query, 20)
+            let options = parse_list_query_args("files", &args[1..])?;
+            query_files_with_options(&current_repo_root()?, &options, lifecycle_summary.as_ref())
         }
         "references" => {
             if args.len() < 2 {
@@ -1423,15 +1526,25 @@ fn run_query_command_inner(
             if args.len() < 2 {
                 return Err(call_relation_usage("callers"));
             }
-            let options = parse_call_relation_args("callers", &args[1..])?;
-            query_call_relation(&current_repo_root()?, options, CallQueryDirection::Callers)
+            let parsed = parse_call_relation_args_with_output("callers", &args[1..])?;
+            query_call_relation_with_output(
+                &current_repo_root()?,
+                parsed,
+                CallQueryDirection::Callers,
+                lifecycle_summary.as_ref(),
+            )
         }
         "callees" => {
             if args.len() < 2 {
                 return Err(call_relation_usage("callees"));
             }
-            let options = parse_call_relation_args("callees", &args[1..])?;
-            query_call_relation(&current_repo_root()?, options, CallQueryDirection::Callees)
+            let parsed = parse_call_relation_args_with_output("callees", &args[1..])?;
+            query_call_relation_with_output(
+                &current_repo_root()?,
+                parsed,
+                CallQueryDirection::Callees,
+                lifecycle_summary.as_ref(),
+            )
         }
         "chain" => {
             if args.len() != 3 {
@@ -1452,6 +1565,349 @@ fn run_query_command_inner(
             query_path(&current_repo_root()?, &args[1], &args[2])
         }
         other => Err(format!("unknown query subcommand: {other}")),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueryOutputMode {
+    RichJson,
+    Concise,
+    AgentJson,
+}
+
+impl QueryOutputMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::RichJson => "json",
+            Self::Concise => "concise",
+            Self::AgentJson => "agent_json",
+        }
+    }
+
+    fn is_compact(self) -> bool {
+        matches!(self, Self::Concise | Self::AgentJson)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct QueryListOptions {
+    query: String,
+    limit: usize,
+    explicit_limit: bool,
+    output_mode: QueryOutputMode,
+    verbose: bool,
+    debug: bool,
+    explain: bool,
+}
+
+impl QueryListOptions {
+    fn rich(query: &str, limit: usize) -> Self {
+        Self {
+            query: query.to_string(),
+            limit: sanitize_query_limit(limit),
+            explicit_limit: true,
+            output_mode: QueryOutputMode::RichJson,
+            verbose: false,
+            debug: false,
+            explain: false,
+        }
+    }
+
+    fn fetch_limit(&self) -> usize {
+        if self.output_mode.is_compact() {
+            self.limit.saturating_add(1).min(MAX_QUERY_RESULT_LIMIT + 1)
+        } else {
+            self.limit
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct QueryOutputOptions {
+    limit: usize,
+    explicit_limit: bool,
+    output_mode: QueryOutputMode,
+}
+
+impl QueryOutputOptions {
+    fn fetch_limit(&self) -> usize {
+        if self.output_mode.is_compact() {
+            self.limit.saturating_add(1).min(MAX_QUERY_RESULT_LIMIT + 1)
+        } else {
+            self.limit
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ParsedCallRelationArgs {
+    options: CallRelationQueryOptions,
+    output: QueryOutputOptions,
+}
+
+#[derive(Debug, Clone)]
+struct QueryTruncation {
+    returned_count: usize,
+    limit: usize,
+    omitted_count: usize,
+    omitted_count_is_lower_bound: bool,
+    total_available_unknown: bool,
+}
+
+fn sanitize_query_limit(limit: usize) -> usize {
+    limit.clamp(1, MAX_QUERY_RESULT_LIMIT)
+}
+
+fn parse_limit_value(value: &str) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .map(sanitize_query_limit)
+        .map_err(|_| "invalid --limit value".to_string())
+}
+
+fn parse_list_query_args(command_name: &str, args: &[String]) -> Result<QueryListOptions, String> {
+    let mut output_mode = QueryOutputMode::RichJson;
+    let mut explicit_limit = None;
+    let mut verbose = false;
+    let mut debug = false;
+    let mut explain = false;
+    let mut query_parts = Vec::new();
+    let mut index = 0usize;
+    let mut literal_query_terms = false;
+    while index < args.len() {
+        if literal_query_terms {
+            query_parts.push(args[index].to_string());
+            index += 1;
+            continue;
+        }
+        match args[index].as_str() {
+            "--" => {
+                literal_query_terms = true;
+            }
+            "--limit" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(list_query_usage(command_name));
+                };
+                explicit_limit = Some(parse_limit_value(value)?);
+            }
+            "--agent-json" | "--agent_json" => {
+                output_mode = QueryOutputMode::AgentJson;
+            }
+            "--concise" => {
+                if output_mode != QueryOutputMode::AgentJson {
+                    output_mode = QueryOutputMode::Concise;
+                }
+            }
+            "--verbose" => {
+                verbose = true;
+            }
+            "--debug" => {
+                debug = true;
+                verbose = true;
+            }
+            "--explain" => {
+                explain = true;
+            }
+            "--json" => {}
+            value if value.starts_with("--limit=") => {
+                let value = value.trim_start_matches("--limit=");
+                explicit_limit = Some(parse_limit_value(value)?);
+            }
+            value if value.starts_with("--") => {
+                if let Some(error) = misplaced_global_flag_error(value, "query") {
+                    return Err(error);
+                }
+                return Err(format!(
+                    "unknown query {command_name} option: {value}\n{}",
+                    list_query_usage(command_name)
+                ));
+            }
+            value => query_parts.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if query_parts.is_empty() {
+        return Err(list_query_usage(command_name));
+    }
+    let default_limit = match output_mode {
+        QueryOutputMode::AgentJson => DEFAULT_QUERY_AGENT_JSON_LIMIT,
+        QueryOutputMode::Concise => DEFAULT_QUERY_JSON_LIMIT,
+        QueryOutputMode::RichJson if verbose || debug || explain => DEFAULT_QUERY_VERBOSE_LIMIT,
+        QueryOutputMode::RichJson => DEFAULT_QUERY_JSON_LIMIT,
+    };
+    Ok(QueryListOptions {
+        query: query_parts.join(" "),
+        limit: explicit_limit.unwrap_or(default_limit),
+        explicit_limit: explicit_limit.is_some(),
+        output_mode,
+        verbose,
+        debug,
+        explain,
+    })
+}
+
+fn list_query_usage(command_name: &str) -> String {
+    format!(
+        "Usage: codegraph-mcp query {command_name} <query> [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain]\nLiteral flag-like query terms: codegraph-mcp query {command_name} [options] -- --db"
+    )
+}
+
+fn query_response_uses_compact_lifecycle(value: &Value) -> bool {
+    value
+        .get("schema_name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| name.ends_with("_agent_json"))
+        || matches!(
+            value.get("output_mode").and_then(Value::as_str),
+            Some("agent_json" | "concise")
+        )
+}
+
+fn compact_lifecycle_summary(lifecycle: &Value) -> Value {
+    let claimable = lifecycle
+        .get("claimable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let diagnostic_only = lifecycle
+        .get("diagnostic_only")
+        .and_then(Value::as_bool)
+        .unwrap_or(!claimable);
+    let mut object = serde_json::Map::new();
+    object.insert("claimable".to_string(), json!(claimable));
+    object.insert("diagnostic_only".to_string(), json!(diagnostic_only));
+    for key in [
+        "decision",
+        "db_problem_kind",
+        "passport_status",
+        "schema_status",
+        "scope_status",
+        "repo_root_status",
+        "sidecar_status",
+        "path_access_status",
+    ] {
+        if let Some(value) = lifecycle.get(key).filter(|value| !value.is_null()) {
+            object.insert(key.to_string(), value.clone());
+        }
+    }
+    Value::Object(object)
+}
+
+fn unknown_lifecycle_summary() -> Value {
+    json!({
+        "claimable": false,
+        "diagnostic_only": true,
+        "decision": "unknown",
+    })
+}
+
+fn lifecycle_summary_or_unknown(lifecycle: Option<&Value>) -> Value {
+    lifecycle.cloned().unwrap_or_else(unknown_lifecycle_summary)
+}
+
+fn agent_timings_json(started: Instant) -> Value {
+    json!({
+        "wall_ms": started.elapsed().as_secs_f64() * 1000.0,
+    })
+}
+
+fn agent_timings_from_wall_ms(wall_ms: f64) -> Value {
+    json!({
+        "wall_ms": wall_ms,
+    })
+}
+
+fn truncate_for_agent<T>(mut values: Vec<T>, limit: usize) -> (Vec<T>, QueryTruncation) {
+    let fetched = values.len();
+    let omitted_count = usize::from(fetched > limit);
+    if values.len() > limit {
+        values.truncate(limit);
+    }
+    let returned_count = values.len();
+    (
+        values,
+        QueryTruncation {
+            returned_count,
+            limit,
+            omitted_count,
+            omitted_count_is_lower_bound: omitted_count > 0,
+            total_available_unknown: true,
+        },
+    )
+}
+
+fn query_truncation_json(truncation: &QueryTruncation) -> Value {
+    json!({
+        "returned_count": truncation.returned_count,
+        "limit": truncation.limit,
+        "limit_applied": true,
+        "omitted_count": truncation.omitted_count,
+        "omitted_count_is_lower_bound": truncation.omitted_count_is_lower_bound,
+        "total_available_unknown": truncation.total_available_unknown,
+    })
+}
+
+fn bounded_message(code: &str, message: &str, severity: &str) -> Value {
+    json!({
+        "code": code,
+        "message": message,
+        "severity": severity,
+    })
+}
+
+fn canonical_agent_query_response(
+    schema_name: &str,
+    command: &str,
+    repo_root: &Path,
+    db_path: &Path,
+    status: &str,
+    lifecycle: Option<&Value>,
+    truncation: QueryTruncation,
+    query: Value,
+    results: Vec<Value>,
+    warnings: Vec<Value>,
+    errors: Vec<Value>,
+    output_mode: QueryOutputMode,
+    timings: Value,
+) -> Value {
+    let lifecycle = lifecycle_summary_or_unknown(lifecycle);
+    let claimable = lifecycle
+        .get("claimable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let diagnostic_only = lifecycle
+        .get("diagnostic_only")
+        .and_then(Value::as_bool)
+        .unwrap_or(!claimable);
+    json!({
+        "schema_name": schema_name,
+        "schema_version": AGENT_JSON_SCHEMA_VERSION,
+        "status": status,
+        "command": command,
+        "repo": path_string(repo_root),
+        "db": path_string(db_path),
+        "output_mode": output_mode.as_str(),
+        "lifecycle": lifecycle.clone(),
+        "claimable": claimable,
+        "diagnostic_only": diagnostic_only,
+        "truncation": query_truncation_json(&truncation),
+        "result_count": truncation.returned_count,
+        "limit": truncation.limit,
+        "omitted_count": truncation.omitted_count,
+        "timings": timings,
+        "warnings": warnings.into_iter().take(8).collect::<Vec<_>>(),
+        "errors": errors.into_iter().take(8).collect::<Vec<_>>(),
+        "query": query,
+        "results": results,
+    })
+}
+
+fn agent_status_from_rich(status: &str) -> &'static str {
+    match status {
+        "ok" => "ok",
+        "error" => "error",
+        _ => "warning",
     }
 }
 
@@ -1531,7 +1987,7 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
         json!({ "db_path": path_string(&db_path) }),
     ));
 
-    let budgets = ContextPackBudgets::for_mode(&options.mode);
+    let budgets = ContextPackBudgets::for_options(&options);
     let seed_start = Instant::now();
     let raw_seed_values = context_pack_seed_values(&options, budgets.max_seed_entities);
     let seed_entities =
@@ -1583,38 +2039,48 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
             "policy": "used only when stored PathEvidence has no matching candidates"
         }),
     ));
+    let test_impact_fallback_edges = if context_pack_mode_needs_test_impact_fallback(&options.mode)
+    {
+        if fallback_edges.is_empty() {
+            load_bounded_context_edges(&connection, &seed_ids, &options.mode, budgets)?
+        } else {
+            fallback_edges.clone()
+        }
+    } else {
+        Vec::new()
+    };
 
-    let span_source_start = Instant::now();
-    let mut requested_spans = stored_paths
+    let source_load_start = Instant::now();
+    let mut candidate_spans = stored_paths
         .iter()
         .flat_map(|path| path.source_spans.iter().cloned())
         .collect::<Vec<_>>();
-    requested_spans.extend(
+    candidate_spans.extend(
         fallback_edges
             .iter()
             .map(|edge| edge.source_span.clone())
             .collect::<Vec<_>>(),
     );
-    requested_spans.sort_by(|left, right| {
+    candidate_spans.sort_by(|left, right| {
         left.repo_relative_path
             .cmp(&right.repo_relative_path)
             .then_with(|| left.start_line.cmp(&right.start_line))
             .then_with(|| left.end_line.cmp(&right.end_line))
     });
-    requested_spans.dedup();
-    let (sources, snippets, source_bytes, source_files_loaded) =
-        load_context_sources_and_snippets(&repo_root, &requested_spans, budgets.max_snippets)?;
+    candidate_spans.dedup();
+    let (sources, _, source_bytes, source_files_loaded) =
+        load_context_sources_and_snippets(&repo_root, &candidate_spans, 0)?;
     profile_spans.push(profile_span_json(
-        "snippet_loading",
-        span_source_start.elapsed(),
+        "source_loading",
+        source_load_start.elapsed(),
         source_files_loaded as u64,
         source_bytes as u64,
         json!({
             "source_files_loaded": source_files_loaded,
             "source_bytes_loaded": source_bytes,
-            "requested_spans": requested_spans.len(),
-            "snippets_returned": snippets.len(),
-            "policy": "load only files referenced by selected proof/source spans"
+            "candidate_spans": candidate_spans.len(),
+            "snippets_returned": 0,
+            "policy": "load source files referenced by candidate proof/source spans for fallback graph verification; snippets are loaded after evidence-role filtering"
         }),
     ));
 
@@ -1652,6 +2118,37 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
         stored_paths.extend(packet.verified_paths.clone());
     }
     stored_paths = filter_and_sort_context_path_evidence(stored_paths, &options.mode, budgets);
+    let fallback_evidence = build_test_impact_fallback_evidence(
+        &connection,
+        &options.mode,
+        &seed_entities,
+        &test_impact_fallback_edges,
+        &stored_paths,
+        budgets,
+    )?;
+    let snippet_load_start = Instant::now();
+    let requested_spans = context_source_spans_for_paths(&stored_paths);
+    let (_, mut snippets, snippet_source_bytes, snippet_source_files_loaded) =
+        load_context_sources_and_snippets(&repo_root, &requested_spans, budgets.max_snippets)?;
+    let fallback_snippet_budget = budgets.max_snippets.saturating_sub(snippets.len());
+    let fallback_snippets =
+        load_context_fallback_snippets(&repo_root, &fallback_evidence, fallback_snippet_budget)?;
+    snippets.extend(fallback_snippets);
+    let requested_span_count = requested_spans.len() + fallback_evidence.len();
+    profile_spans.push(profile_span_json(
+        "snippet_loading",
+        snippet_load_start.elapsed(),
+        snippet_source_files_loaded as u64,
+        snippet_source_bytes as u64,
+        json!({
+            "source_files_loaded": snippet_source_files_loaded,
+            "source_bytes_loaded": snippet_source_bytes,
+            "requested_spans": requested_spans.len(),
+            "snippets_returned": snippets.len(),
+            "fallback_evidence_count": fallback_evidence.len(),
+            "policy": "load snippets only for evidence-role-filtered proof/source spans"
+        }),
+    ));
     let packet = build_context_packet_from_stored_evidence(
         &options,
         &raw_seed_values,
@@ -1659,10 +2156,11 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
         &seed_entities,
         stored_paths,
         snippets,
+        fallback_evidence,
         fallback_packet,
         budgets,
         stored_path_count,
-        requested_spans.len(),
+        requested_span_count,
     );
     profile_spans.push(profile_span_json(
         "context_pack_graph_and_packet",
@@ -1718,6 +2216,18 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
     } else {
         None
     };
+
+    if options.output_mode.is_compact() {
+        return Ok(context_pack_agent_json_response(
+            &options,
+            &packet,
+            &db_lifecycle_read,
+            budgets,
+            &repo_root,
+            &db_path,
+            agent_timings_json(total_start),
+        ));
+    }
 
     Ok(json!({
         "status": "ok",
@@ -9561,15 +10071,61 @@ fn upsert_cli_db_passport_with_policy(
 }
 
 fn query_symbols(repo_root: &Path, query: &str, limit: usize) -> Result<Value, String> {
+    query_symbols_with_options(repo_root, &QueryListOptions::rich(query, limit), None)
+}
+
+fn query_symbols_with_options(
+    repo_root: &Path,
+    options: &QueryListOptions,
+    lifecycle_summary: Option<&Value>,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let db_path = default_db_path(repo_root);
     let store = open_existing_store(repo_root)?;
-    let hits = symbol_search_hits(&store, query, limit)?
+    let hits = symbol_search_hits(&store, &options.query, options.fetch_limit())?;
+
+    if options.output_mode.is_compact() {
+        let (hits, truncation) = truncate_for_agent(hits, options.limit);
+        let results = hits
+            .iter()
+            .map(agent_symbol_search_hit_json)
+            .collect::<Vec<_>>();
+        return Ok(canonical_agent_query_response(
+            "query_symbols_agent_json",
+            "query symbols",
+            repo_root,
+            &db_path,
+            "ok",
+            lifecycle_summary,
+            truncation,
+            json!({
+                "text": options.query,
+                "explicit_limit": options.explicit_limit,
+            }),
+            results,
+            Vec::new(),
+            Vec::new(),
+            options.output_mode,
+            agent_timings_json(started),
+        ));
+    }
+
+    let hits = hits
         .into_iter()
+        .take(options.limit)
         .map(|hit| symbol_search_hit_json(&hit))
         .collect::<Vec<_>>();
 
     Ok(json!({
         "status": "ok",
-        "query": query,
+        "query": options.query,
+        "result_count": hits.len(),
+        "limit": options.limit,
+        "explicit_limit": options.explicit_limit,
+        "output_mode": options.output_mode.as_str(),
+        "verbose": options.verbose,
+        "debug": options.debug,
+        "explain": options.explain,
         "hits": hits,
         "ranking": [
             "exact symbol match",
@@ -9759,26 +10315,64 @@ fn entity_metadata_search_text(entity: &Entity) -> String {
         .join(" ")
 }
 
-fn query_text(repo_root: &Path, query: &str, limit: usize) -> Result<Value, String> {
+fn query_text_with_options(
+    repo_root: &Path,
+    options: &QueryListOptions,
+    lifecycle_summary: Option<&Value>,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let db_path = default_db_path(repo_root);
     let store = open_existing_store(repo_root)?;
     let mut hits = store
-        .search_text(query, limit)
+        .search_text(&options.query, options.fetch_limit())
         .map_err(|error| error.to_string())?
         .into_iter()
         .map(text_search_hit_json)
         .collect::<Vec<_>>();
-    if hits.len() < limit {
+    if hits.len() < options.fetch_limit() {
         hits.extend(source_scan_text_hits(
             repo_root,
             &store,
-            query,
-            limit.saturating_sub(hits.len()),
+            &options.query,
+            options.fetch_limit().saturating_sub(hits.len()),
         )?);
     }
 
+    if options.output_mode.is_compact() {
+        let (hits, truncation) = truncate_for_agent(hits, options.limit);
+        let results = hits.iter().map(agent_text_hit_json).collect::<Vec<_>>();
+        return Ok(canonical_agent_query_response(
+            "query_text_agent_json",
+            "query text",
+            repo_root,
+            &db_path,
+            "ok",
+            lifecycle_summary,
+            truncation,
+            json!({
+                "text": options.query,
+                "explicit_limit": options.explicit_limit,
+            }),
+            results,
+            Vec::new(),
+            Vec::new(),
+            options.output_mode,
+            agent_timings_json(started),
+        ));
+    }
+
+    hits.truncate(options.limit);
+
     Ok(json!({
         "status": "ok",
-        "query": query,
+        "query": options.query,
+        "result_count": hits.len(),
+        "limit": options.limit,
+        "explicit_limit": options.explicit_limit,
+        "output_mode": options.output_mode.as_str(),
+        "verbose": options.verbose,
+        "debug": options.debug,
+        "explain": options.explain,
         "hits": hits,
         "proof": "Text query uses SQLite FTS when present and falls back to bounded on-demand source scanning over indexed files.",
     }))
@@ -9827,13 +10421,19 @@ fn source_scan_text_hits(
     Ok(hits)
 }
 
-fn query_files(repo_root: &Path, query: &str, limit: usize) -> Result<Value, String> {
+fn query_files_with_options(
+    repo_root: &Path,
+    options: &QueryListOptions,
+    lifecycle_summary: Option<&Value>,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let db_path = default_db_path(repo_root);
     let store = open_existing_store(repo_root)?;
-    let query_lc = query.to_ascii_lowercase();
+    let query_lc = options.query.to_ascii_lowercase();
     let mut seen = BTreeSet::new();
     let mut hits = Vec::new();
     for hit in store
-        .search_text(query, limit)
+        .search_text(&options.query, options.fetch_limit())
         .map_err(|error| error.to_string())?
     {
         if hit.kind == TextSearchKind::File && seen.insert(hit.repo_relative_path.clone()) {
@@ -9844,7 +10444,7 @@ fn query_files(repo_root: &Path, query: &str, limit: usize) -> Result<Value, Str
         .list_files(UNBOUNDED_STORE_READ_LIMIT)
         .map_err(|error| error.to_string())?
     {
-        if hits.len() >= limit {
+        if hits.len() >= options.fetch_limit() {
             break;
         }
         if file
@@ -9865,9 +10465,41 @@ fn query_files(repo_root: &Path, query: &str, limit: usize) -> Result<Value, Str
         }
     }
 
+    if options.output_mode.is_compact() {
+        let (hits, truncation) = truncate_for_agent(hits, options.limit);
+        let results = hits.iter().map(agent_file_hit_json).collect::<Vec<_>>();
+        return Ok(canonical_agent_query_response(
+            "query_files_agent_json",
+            "query files",
+            repo_root,
+            &db_path,
+            "ok",
+            lifecycle_summary,
+            truncation,
+            json!({
+                "text": options.query,
+                "explicit_limit": options.explicit_limit,
+            }),
+            results,
+            Vec::new(),
+            Vec::new(),
+            options.output_mode,
+            agent_timings_json(started),
+        ));
+    }
+
+    hits.truncate(options.limit);
+
     Ok(json!({
         "status": "ok",
-        "query": query,
+        "query": options.query,
+        "result_count": hits.len(),
+        "limit": options.limit,
+        "explicit_limit": options.explicit_limit,
+        "output_mode": options.output_mode.as_str(),
+        "verbose": options.verbose,
+        "debug": options.debug,
+        "explain": options.explain,
         "hits": hits,
         "proof": "File query combines SQLite FTS file-path rows with repo-relative path matching.",
     }))
@@ -10772,21 +11404,43 @@ struct CallRelationQueryOptions {
     fuzzy: bool,
 }
 
+#[cfg(test)]
 fn parse_call_relation_args(
     command_name: &str,
     args: &[String],
 ) -> Result<CallRelationQueryOptions, String> {
+    parse_call_relation_args_with_output(command_name, args).map(|parsed| parsed.options)
+}
+
+fn parse_call_relation_args_with_output(
+    command_name: &str,
+    args: &[String],
+) -> Result<ParsedCallRelationArgs, String> {
     let mut options = CallRelationQueryOptions {
         query: None,
         entity_id: None,
-        limit: 32,
+        limit: DEFAULT_QUERY_JSON_LIMIT,
         exact_resolved: false,
         fuzzy: false,
     };
+    let mut output_mode = QueryOutputMode::RichJson;
+    let mut explicit_limit = None;
+    let mut verbose = false;
+    let mut debug = false;
+    let mut explain = false;
     let mut query_parts = Vec::new();
     let mut index = 0usize;
+    let mut literal_query_terms = false;
     while index < args.len() {
+        if literal_query_terms {
+            query_parts.push(args[index].to_string());
+            index += 1;
+            continue;
+        }
         match args[index].as_str() {
+            "--" => {
+                literal_query_terms = true;
+            }
             "--entity-id" | "--entity_id" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -10805,13 +11459,35 @@ fn parse_call_relation_args(
                 let Some(value) = args.get(index) else {
                     return Err(call_relation_usage(command_name));
                 };
-                options.limit = value
-                    .parse::<usize>()
-                    .map_err(|_| "invalid --limit value".to_string())?
-                    .clamp(1, 500);
+                explicit_limit = Some(parse_limit_value(value)?);
+            }
+            "--agent-json" | "--agent_json" => {
+                output_mode = QueryOutputMode::AgentJson;
+            }
+            "--concise" => {
+                if output_mode != QueryOutputMode::AgentJson {
+                    output_mode = QueryOutputMode::Concise;
+                }
+            }
+            "--verbose" => {
+                verbose = true;
+            }
+            "--debug" => {
+                debug = true;
+                verbose = true;
+            }
+            "--explain" => {
+                explain = true;
             }
             "--json" => {}
+            value if value.starts_with("--limit=") => {
+                let value = value.trim_start_matches("--limit=");
+                explicit_limit = Some(parse_limit_value(value)?);
+            }
             value if value.starts_with("--") => {
+                if let Some(error) = misplaced_global_flag_error(value, "query") {
+                    return Err(error);
+                }
                 return Err(format!(
                     "unknown {command_name} option: {value}\n{}",
                     call_relation_usage(command_name)
@@ -10833,13 +11509,55 @@ fn parse_call_relation_args(
             "--entity-id selects exact mode and cannot be combined with --fuzzy".to_string(),
         );
     }
-    Ok(options)
+    let default_limit = match output_mode {
+        QueryOutputMode::AgentJson => DEFAULT_QUERY_AGENT_JSON_LIMIT,
+        QueryOutputMode::Concise => DEFAULT_QUERY_JSON_LIMIT,
+        QueryOutputMode::RichJson if verbose || debug || explain => 32,
+        QueryOutputMode::RichJson => DEFAULT_QUERY_JSON_LIMIT,
+    };
+    options.limit = explicit_limit.unwrap_or(default_limit);
+    let fetch_limit = QueryOutputOptions {
+        limit: options.limit,
+        explicit_limit: explicit_limit.is_some(),
+        output_mode,
+    }
+    .fetch_limit();
+    let output = QueryOutputOptions {
+        limit: options.limit,
+        explicit_limit: explicit_limit.is_some(),
+        output_mode,
+    };
+    options.limit = fetch_limit;
+    Ok(ParsedCallRelationArgs { options, output })
 }
 
 fn call_relation_usage(command_name: &str) -> String {
     format!(
-        "Usage: codegraph-mcp query {command_name} [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] <symbol>"
+        "Usage: codegraph-mcp query {command_name} [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain] <symbol>\nLiteral flag-like symbols: codegraph-mcp query {command_name} [options] -- --db"
     )
+}
+
+fn query_call_relation_with_output(
+    repo_root: &Path,
+    parsed: ParsedCallRelationArgs,
+    direction: CallQueryDirection,
+    lifecycle_summary: Option<&Value>,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let db_path = default_db_path(repo_root);
+    let rich = query_call_relation(repo_root, parsed.options.clone(), direction)?;
+    if parsed.output.output_mode.is_compact() {
+        return Ok(agent_call_relation_response(
+            &rich,
+            &parsed.output,
+            direction,
+            lifecycle_summary,
+            repo_root,
+            &db_path,
+            agent_timings_json(started),
+        ));
+    }
+    Ok(rich)
 }
 
 fn query_call_relation(
@@ -11083,6 +11801,7 @@ fn call_edge_result_json(
     let unresolved = entity_by_id
         .get(&edge.tail_id)
         .is_some_and(entity_is_unresolved_reference);
+    let role = classify_edge_evidence_role(edge);
     json!({
         "match_kind": match_kind,
         "exact_entity_id": exact_entity_id,
@@ -11090,6 +11809,9 @@ fn call_edge_result_json(
         "callee": entity_by_id.get(&edge.tail_id).map(entity_json),
         "edge": edge_json(edge),
         "source_span": edge.source_span,
+        "evidence_role": role.role.as_str(),
+        "classification_reason": role.reason,
+        "classification_source": role.classification_source,
         "proof_labels": {
             "relation": edge.relation.to_string(),
             "exactness": edge.exactness.to_string(),
@@ -11102,6 +11824,191 @@ fn call_edge_result_json(
         },
         "unresolved": unresolved,
     })
+}
+
+fn agent_call_relation_response(
+    rich: &Value,
+    output: &QueryOutputOptions,
+    direction: CallQueryDirection,
+    lifecycle_summary: Option<&Value>,
+    repo_root: &Path,
+    db_path: &Path,
+    timings: Value,
+) -> Value {
+    let key = match direction {
+        CallQueryDirection::Callers => "callers",
+        CallQueryDirection::Callees => "callees",
+    };
+    let rows = rich
+        .get(key)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let (rows, truncation) = truncate_for_agent(rows, output.limit);
+    let results = rows
+        .iter()
+        .map(agent_call_relation_row_json)
+        .collect::<Vec<_>>();
+    let rich_status = rich
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("warning");
+    let warnings = if rich_status == "ok" {
+        Vec::new()
+    } else {
+        vec![bounded_message(
+            rich_status,
+            &format!("call relation query returned {rich_status}"),
+            "warning",
+        )]
+    };
+    let mut query = serde_json::Map::new();
+    query.insert(
+        "text".to_string(),
+        rich.get("query").cloned().unwrap_or_else(|| json!("")),
+    );
+    if let Some(entity_id) = rich
+        .get("exact_resolved_entity")
+        .and_then(|value| value.get("id"))
+        .and_then(Value::as_str)
+    {
+        query.insert("entity_id".to_string(), json!(entity_id));
+    }
+    if let Some(resolution_mode) = rich.get("resolution_mode").and_then(Value::as_str) {
+        query.insert("resolution_mode".to_string(), json!(resolution_mode));
+    }
+    if let Some(entity) = rich
+        .get("exact_resolved_entity")
+        .filter(|value| !value.is_null())
+    {
+        query.insert(
+            "resolved_entity".to_string(),
+            agent_entity_ref_from_value(entity),
+        );
+    }
+    query.insert("explicit_limit".to_string(), json!(output.explicit_limit));
+
+    let mut response = canonical_agent_query_response(
+        "callers_callees_agent_json",
+        "query callers-callees",
+        repo_root,
+        db_path,
+        agent_status_from_rich(rich_status),
+        lifecycle_summary,
+        truncation,
+        Value::Object(query),
+        results,
+        warnings,
+        Vec::new(),
+        output.output_mode,
+        timings,
+    );
+    if let Some(object) = response.as_object_mut() {
+        object.insert("direction".to_string(), json!(key));
+    }
+    response
+}
+
+fn agent_call_relation_row_json(row: &Value) -> Value {
+    let caller = row
+        .get("caller")
+        .map(agent_entity_ref_from_value)
+        .unwrap_or_else(|| json!({}));
+    let callee = row
+        .get("callee")
+        .map(agent_entity_ref_from_value)
+        .unwrap_or_else(|| json!({}));
+    let edge = row.get("edge").cloned().unwrap_or_else(|| json!({}));
+    let relation = edge
+        .get("relation")
+        .and_then(Value::as_str)
+        .unwrap_or("CALLS");
+    let source_span = row
+        .get("source_span")
+        .and_then(agent_source_span_from_value)
+        .or_else(|| {
+            edge.get("source_span")
+                .and_then(agent_source_span_from_value)
+        });
+    let mut compact_edge = serde_json::Map::new();
+    if let Some(edge_id) = edge.get("id").and_then(Value::as_str) {
+        compact_edge.insert("edge_id".to_string(), json!(edge_id));
+    }
+    compact_edge.insert("relation".to_string(), json!(relation));
+    compact_edge.insert("source".to_string(), caller.clone());
+    compact_edge.insert("target".to_string(), callee.clone());
+    if let Some(exactness) = edge.get("exactness").and_then(Value::as_str) {
+        compact_edge.insert("exactness".to_string(), json!(exactness));
+    }
+    if let Some(confidence) = edge.get("confidence").and_then(Value::as_f64) {
+        compact_edge.insert("confidence".to_string(), json!(confidence));
+    }
+    let evidence_role = row
+        .get("evidence_role")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    compact_edge.insert("evidence_role".to_string(), json!(evidence_role));
+    if let Some(reason) = row.get("classification_reason").and_then(Value::as_str) {
+        compact_edge.insert("classification_reason".to_string(), json!(reason));
+    }
+    if let Some(source) = row.get("classification_source").and_then(Value::as_str) {
+        compact_edge.insert("classification_source".to_string(), json!(source));
+    }
+    if let Some(span) = source_span.clone() {
+        compact_edge.insert("source_spans".to_string(), json!([span]));
+    }
+
+    let mut result = serde_json::Map::new();
+    result.insert("edge".to_string(), Value::Object(compact_edge));
+    result.insert("caller".to_string(), caller);
+    result.insert("callee".to_string(), callee);
+    if let Some(span) = source_span {
+        result.insert("span".to_string(), span.clone());
+        result.insert("source_span".to_string(), span);
+    }
+    if let Some(match_kind) = row.get("match_kind").and_then(Value::as_str) {
+        result.insert("match_reason".to_string(), json!(match_kind));
+    }
+    Value::Object(result)
+}
+
+fn agent_entity_ref_from_value(value: &Value) -> Value {
+    let mut object = serde_json::Map::new();
+    for (target, source) in [
+        ("id", "id"),
+        ("name", "name"),
+        ("qualified_name", "qualified_name"),
+        ("kind", "kind"),
+        ("file", "repo_relative_path"),
+    ] {
+        if let Some(text) = value.get(source).and_then(Value::as_str) {
+            object.insert(target.to_string(), json!(text));
+        }
+    }
+    Value::Object(object)
+}
+
+fn agent_source_span_from_value(value: &Value) -> Option<Value> {
+    let file = value
+        .get("repo_relative_path")
+        .or_else(|| value.get("file"))
+        .and_then(Value::as_str)?;
+    let start_line = value.get("start_line").and_then(Value::as_u64)?;
+    let end_line = value
+        .get("end_line")
+        .and_then(Value::as_u64)
+        .unwrap_or(start_line);
+    let mut object = serde_json::Map::new();
+    object.insert("file".to_string(), json!(file));
+    object.insert("start_line".to_string(), json!(start_line));
+    object.insert("end_line".to_string(), json!(end_line));
+    if let Some(start_column) = value.get("start_column").and_then(Value::as_u64) {
+        object.insert("start_column".to_string(), json!(start_column));
+    }
+    if let Some(end_column) = value.get("end_column").and_then(Value::as_u64) {
+        object.insert("end_column".to_string(), json!(end_column));
+    }
+    Some(Value::Object(object))
 }
 
 fn resolve_symbol_candidates(
@@ -11350,15 +12257,67 @@ fn parse_init_options(args: &[String]) -> Result<InitOptions, String> {
     Ok(options)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IndexJsonOutputMode {
+    Concise,
+    Agent,
+    Audit,
+}
+
+impl IndexJsonOutputMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Concise => "concise",
+            Self::Agent => "agent_json",
+            Self::Audit => "audit_json",
+        }
+    }
+}
+
 fn parse_index_options(args: &[String]) -> Result<(String, Option<PathBuf>, IndexOptions), String> {
+    let (repo, db, options, _) = parse_index_command_options(args)?;
+    Ok((repo, db, options))
+}
+
+fn parse_index_command_options(
+    args: &[String],
+) -> Result<(String, Option<PathBuf>, IndexOptions, IndexJsonOutputMode), String> {
     let mut repo = None;
     let mut db = None;
     let mut options = IndexOptions::default();
+    let mut output_mode = IndexJsonOutputMode::Concise;
+    let mut agent_json_requested = false;
+    let mut audit_json_requested = false;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
-            "--profile" => options.profile = true,
+            "--profile" => {
+                options.profile = true;
+                options.json = true;
+            }
             "--json" => options.json = true,
+            "--agent-json" | "--agent_json" => {
+                options.json = true;
+                output_mode = IndexJsonOutputMode::Agent;
+                agent_json_requested = true;
+            }
+            "--concise" => {
+                options.json = true;
+                if !agent_json_requested {
+                    output_mode = IndexJsonOutputMode::Concise;
+                }
+            }
+            "--audit-json" | "--audit_json" => {
+                options.json = true;
+                output_mode = IndexJsonOutputMode::Audit;
+                audit_json_requested = true;
+            }
+            "--verbose" => {
+                options.profile = true;
+                options.json = true;
+                output_mode = IndexJsonOutputMode::Audit;
+                audit_json_requested = true;
+            }
             "--db" => {
                 index += 1;
                 let Some(raw) = args.get(index) else {
@@ -11444,12 +12403,18 @@ fn parse_index_options(args: &[String]) -> Result<(String, Option<PathBuf>, Inde
         }
         index += 1;
     }
+    if !agent_json_requested
+        && (audit_json_requested || options.profile || options.scope.has_print_or_explain())
+    {
+        output_mode = IndexJsonOutputMode::Audit;
+    }
     Ok((
         repo.ok_or_else(|| {
-            "Usage: codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]".to_string()
+            "Usage: codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]".to_string()
         })?,
         db,
         options,
+        output_mode,
     ))
 }
 
@@ -12499,6 +13464,10 @@ struct ContextPackOptions {
     seeds: Vec<String>,
     stage0_candidates: Vec<String>,
     profile: bool,
+    output_mode: QueryOutputMode,
+    limit_paths: Option<usize>,
+    limit_snippets: Option<usize>,
+    max_output_bytes: Option<usize>,
     allow_stale_read: bool,
     explicit_scope_policy: Option<IndexScopeOptions>,
 }
@@ -12512,6 +13481,10 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
     let mut seeds = Vec::new();
     let mut stage0_candidates = Vec::new();
     let mut profile = false;
+    let mut output_mode = QueryOutputMode::RichJson;
+    let mut limit_paths = None;
+    let mut limit_snippets = None;
+    let mut max_output_bytes = None;
     let mut allow_stale_read = false;
     let mut index = 0;
     while index < args.len() {
@@ -12553,6 +13526,50 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
             "--profile" => {
                 profile = true;
             }
+            "--agent-json" | "--agent_json" => {
+                output_mode = QueryOutputMode::AgentJson;
+            }
+            "--concise" => {
+                if output_mode != QueryOutputMode::AgentJson {
+                    output_mode = QueryOutputMode::Concise;
+                }
+            }
+            "--limit-paths" | "--limit_paths" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--limit-paths requires a value".to_string());
+                };
+                limit_paths = Some(parse_context_pack_limit(
+                    value,
+                    "--limit-paths",
+                    MAX_CONTEXT_AGENT_PATH_LIMIT,
+                )?);
+            }
+            "--limit-snippets" | "--limit_snippets" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--limit-snippets requires a value".to_string());
+                };
+                limit_snippets = Some(parse_context_pack_limit(
+                    value,
+                    "--limit-snippets",
+                    MAX_CONTEXT_AGENT_SNIPPET_LIMIT,
+                )?);
+            }
+            "--max-output-bytes" | "--max-bytes" | "--max_output_bytes" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--max-output-bytes requires a value".to_string());
+                };
+                max_output_bytes = Some(parse_context_pack_max_output_bytes(value)?);
+            }
+            "--verbose" => {
+                profile = true;
+            }
+            "--debug" => {
+                mode = "debug".to_string();
+                profile = true;
+            }
             "--allow-stale-read" => {
                 allow_stale_read = true;
             }
@@ -12573,9 +13590,32 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
         seeds,
         stage0_candidates,
         profile,
+        output_mode,
+        limit_paths,
+        limit_snippets,
+        max_output_bytes,
         allow_stale_read,
         explicit_scope_policy,
     })
+}
+
+fn parse_context_pack_limit(value: &str, flag: &str, max_limit: usize) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .map(|limit| limit.clamp(1, max_limit))
+        .map_err(|_| format!("{flag} must be an integer"))
+}
+
+fn parse_context_pack_max_output_bytes(value: &str) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .map(|bytes| {
+            bytes.clamp(
+                MIN_CONTEXT_AGENT_MAX_OUTPUT_BYTES,
+                MAX_CONTEXT_AGENT_MAX_OUTPUT_BYTES,
+            )
+        })
+        .map_err(|_| "--max-output-bytes must be an integer".to_string())
 }
 
 fn parse_output_arg(args: &[String]) -> Result<PathBuf, String> {
@@ -12589,6 +13629,9 @@ fn optional_repo_arg(args: &[String]) -> Result<PathBuf, String> {
     match args {
         [] => Ok(PathBuf::from(".")),
         [repo] => Ok(PathBuf::from(repo)),
+        [flag, ..] if misplaced_global_flag_error(flag, "status").is_some() => {
+            Err(misplaced_global_flag_error(flag, "status").unwrap())
+        }
         _ => Err("Usage: codegraph-mcp status [repo]".to_string()),
     }
 }
@@ -12811,6 +13854,33 @@ impl ContextPackBudgets {
             max_traversal_depth: 3,
         }
     }
+
+    fn for_options(options: &ContextPackOptions) -> Self {
+        let mut budgets = Self::for_mode(&options.mode);
+        if options.output_mode.is_compact() {
+            budgets.max_returned_proof_paths = budgets.max_returned_proof_paths.min(
+                options
+                    .limit_paths
+                    .unwrap_or(DEFAULT_CONTEXT_AGENT_PATH_LIMIT),
+            );
+            budgets.max_snippets = budgets.max_snippets.min(
+                options
+                    .limit_snippets
+                    .unwrap_or(DEFAULT_CONTEXT_AGENT_SNIPPET_LIMIT),
+            );
+        } else {
+            if let Some(limit) = options.limit_paths {
+                budgets.max_returned_proof_paths = budgets.max_returned_proof_paths.min(limit);
+            }
+            if let Some(limit) = options.limit_snippets {
+                budgets.max_snippets = budgets.max_snippets.min(limit);
+            }
+        }
+        budgets.max_candidate_paths = budgets
+            .max_candidate_paths
+            .min(budgets.max_returned_proof_paths.saturating_mul(16).max(16));
+        budgets
+    }
 }
 
 fn open_context_pack_connection(db_path: &Path) -> Result<Connection, String> {
@@ -12888,6 +13958,9 @@ struct ContextEntitySummary {
     name: String,
     qualified_name: String,
     repo_relative_path: String,
+    kind: Option<EntityKind>,
+    source_span: Option<SourceSpan>,
+    metadata: Metadata,
 }
 
 fn resolve_context_seed_entities(
@@ -12997,12 +14070,17 @@ fn load_context_entities_by_keys(
     let sql = format!(
         "
         SELECT oid.value AS id, name.value AS name,
-               qname.value AS qualified_name, path.value AS repo_relative_path
+               qname.value AS qualified_name, path.value AS repo_relative_path,
+               kind.value AS kind, span_path.value AS span_repo_relative_path,
+               e.start_line, e.start_column, e.end_line, e.end_column,
+               e.metadata_json
         FROM entities e
         JOIN object_id_lookup oid ON oid.id = e.id_key
         JOIN symbol_dict name ON name.id = e.name_id
         JOIN qualified_name_lookup qname ON qname.id = e.qualified_name_id
         JOIN path_dict path ON path.id = e.path_id
+        LEFT JOIN entity_kind_dict kind ON kind.id = e.kind_id
+        LEFT JOIN path_dict span_path ON span_path.id = e.span_path_id
         WHERE e.id_key IN ({placeholders})
         ORDER BY qname.value, oid.value
         LIMIT {}
@@ -13014,15 +14092,67 @@ fn load_context_entities_by_keys(
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map(rusqlite::params_from_iter(keys.iter()), |row| {
+            let span_repo_relative_path =
+                row.get::<_, Option<String>>("span_repo_relative_path")?;
+            let start_line = row.get::<_, Option<u32>>("start_line")?;
+            let end_line = row.get::<_, Option<u32>>("end_line")?;
+            let source_span = match (span_repo_relative_path, start_line, end_line) {
+                (Some(path), Some(start_line), Some(end_line)) => Some(SourceSpan {
+                    repo_relative_path: path,
+                    start_line,
+                    start_column: row.get::<_, Option<u32>>("start_column")?,
+                    end_line,
+                    end_column: row.get::<_, Option<u32>>("end_column")?,
+                }),
+                _ => None,
+            };
+            let metadata_json = row
+                .get::<_, Option<String>>("metadata_json")?
+                .unwrap_or_else(|| "{}".to_string());
             Ok(ContextEntitySummary {
                 id: row.get("id")?,
                 name: row.get("name")?,
                 qualified_name: row.get("qualified_name")?,
                 repo_relative_path: row.get("repo_relative_path")?,
+                kind: row
+                    .get::<_, Option<String>>("kind")?
+                    .as_deref()
+                    .and_then(|raw| raw.parse().ok()),
+                source_span,
+                metadata: serde_json::from_str::<Metadata>(&metadata_json)
+                    .map_err(sql_json_error)?,
             })
         })
         .map_err(|error| error.to_string())?;
     collect_sql_rows(rows)
+}
+
+fn load_context_entities_by_ids(
+    connection: &Connection,
+    ids: impl IntoIterator<Item = String>,
+    limit: usize,
+) -> Result<BTreeMap<String, ContextEntitySummary>, String> {
+    if limit == 0 {
+        return Ok(BTreeMap::new());
+    }
+    let mut entity_keys = BTreeSet::<i64>::new();
+    for id in ids {
+        if entity_keys.len() >= limit {
+            break;
+        }
+        if let Some(key) = lookup_i64(connection, "object_id_lookup", &id)? {
+            entity_keys.insert(key);
+        }
+    }
+    let entities = load_context_entities_by_keys(
+        connection,
+        &entity_keys.into_iter().collect::<Vec<_>>(),
+        limit,
+    )?;
+    Ok(entities
+        .into_iter()
+        .map(|entity| (entity.id.clone(), entity))
+        .collect())
 }
 
 fn load_stored_context_path_evidence(
@@ -13095,7 +14225,9 @@ struct StoredContextPathEdgeMetadata {
     path_id: String,
     ordinal: usize,
     edge_id: String,
+    head_id: String,
     relation: String,
+    tail_id: String,
     source_span_path: Option<String>,
     exactness: Option<String>,
     confidence: Option<f64>,
@@ -13103,6 +14235,268 @@ struct StoredContextPathEdgeMetadata {
     edge_class: Option<String>,
     context: Option<String>,
     provenance_edges: Vec<String>,
+    head_entity: Option<StoredContextEntityMetadata>,
+    tail_entity: Option<StoredContextEntityMetadata>,
+}
+
+#[derive(Debug, Clone)]
+struct StoredContextEntityMetadata {
+    id: String,
+    kind: Option<EntityKind>,
+    name: String,
+    qualified_name: String,
+    repo_relative_path: String,
+    source_span: Option<SourceSpan>,
+    metadata: Metadata,
+}
+
+#[derive(Debug, Clone)]
+struct CliEvidenceRoleDecision {
+    role: EvidenceRole,
+    reason: String,
+    source: String,
+}
+
+impl CliEvidenceRoleDecision {
+    fn new(role: EvidenceRole, reason: impl Into<String>, source: impl Into<String>) -> Self {
+        Self {
+            role,
+            reason: reason.into(),
+            source: source.into(),
+        }
+    }
+}
+
+fn stored_context_entity_from_row(
+    row: &rusqlite::Row<'_>,
+    prefix: &str,
+) -> rusqlite::Result<Option<StoredContextEntityMetadata>> {
+    let kind_column = format!("{prefix}_kind");
+    let name_column = format!("{prefix}_name");
+    let qname_column = format!("{prefix}_qualified_name");
+    let path_column = format!("{prefix}_repo_relative_path");
+    let span_path_column = format!("{prefix}_span_repo_relative_path");
+    let start_line_column = format!("{prefix}_start_line");
+    let start_column_column = format!("{prefix}_start_column");
+    let end_line_column = format!("{prefix}_end_line");
+    let end_column_column = format!("{prefix}_end_column");
+    let metadata_column = format!("{prefix}_metadata_json");
+
+    let Some(name) = row.get::<_, Option<String>>(name_column.as_str())? else {
+        return Ok(None);
+    };
+    let kind_raw = row.get::<_, Option<String>>(kind_column.as_str())?;
+    let qualified_name = row
+        .get::<_, Option<String>>(qname_column.as_str())?
+        .unwrap_or_else(|| name.clone());
+    let repo_relative_path = row
+        .get::<_, Option<String>>(path_column.as_str())?
+        .unwrap_or_default();
+    let span_repo_relative_path = row.get::<_, Option<String>>(span_path_column.as_str())?;
+    let start_line = row.get::<_, Option<u32>>(start_line_column.as_str())?;
+    let end_line = row.get::<_, Option<u32>>(end_line_column.as_str())?;
+    let source_span = match (span_repo_relative_path, start_line, end_line) {
+        (Some(path), Some(start_line), Some(end_line)) => Some(SourceSpan {
+            repo_relative_path: path,
+            start_line,
+            start_column: row.get::<_, Option<u32>>(start_column_column.as_str())?,
+            end_line,
+            end_column: row.get::<_, Option<u32>>(end_column_column.as_str())?,
+        }),
+        _ => None,
+    };
+    let metadata_json = row
+        .get::<_, Option<String>>(metadata_column.as_str())?
+        .unwrap_or_else(|| "{}".to_string());
+    let metadata = serde_json::from_str::<Metadata>(&metadata_json).map_err(sql_json_error)?;
+    let id_column = format!("{prefix}_id");
+    Ok(Some(StoredContextEntityMetadata {
+        id: row.get::<_, String>(id_column.as_str()).unwrap_or_default(),
+        kind: kind_raw.as_deref().and_then(|raw| raw.parse().ok()),
+        name,
+        qualified_name,
+        repo_relative_path,
+        source_span,
+        metadata,
+    }))
+}
+
+fn stored_context_entity_role(
+    entity: Option<&StoredContextEntityMetadata>,
+) -> CliEvidenceRoleDecision {
+    let Some(entity) = entity else {
+        return CliEvidenceRoleDecision::new(
+            EvidenceRole::Unknown,
+            "missing endpoint entity metadata",
+            "fallback",
+        );
+    };
+    if let Some(kind) = entity.kind {
+        let classified = classify_entity_source_role(&Entity {
+            id: entity.id.clone(),
+            kind,
+            name: entity.name.clone(),
+            qualified_name: entity.qualified_name.clone(),
+            repo_relative_path: entity.repo_relative_path.clone(),
+            source_span: entity.source_span.clone(),
+            content_hash: None,
+            file_hash: None,
+            created_from: "context-pack-hydration".to_string(),
+            confidence: 1.0,
+            metadata: entity.metadata.clone(),
+        });
+        return CliEvidenceRoleDecision::new(
+            classified.role,
+            classified.reason,
+            classified.classification_source,
+        );
+    }
+    if qualified_name_has_test_module(&entity.qualified_name) {
+        return CliEvidenceRoleDecision::new(
+            EvidenceRole::Test,
+            "qualified name contains tests module",
+            "qualified_name",
+        );
+    }
+    CliEvidenceRoleDecision::new(
+        EvidenceRole::Unknown,
+        "endpoint entity kind/source role metadata missing",
+        "fallback",
+    )
+}
+
+fn context_entity_role(entity: &ContextEntitySummary) -> CliEvidenceRoleDecision {
+    if let Some(kind) = entity.kind {
+        let classified = classify_entity_source_role(&Entity {
+            id: entity.id.clone(),
+            kind,
+            name: entity.name.clone(),
+            qualified_name: entity.qualified_name.clone(),
+            repo_relative_path: entity.repo_relative_path.clone(),
+            source_span: entity.source_span.clone(),
+            content_hash: None,
+            file_hash: None,
+            created_from: "context-pack-seed".to_string(),
+            confidence: 1.0,
+            metadata: entity.metadata.clone(),
+        });
+        return CliEvidenceRoleDecision::new(
+            classified.role,
+            classified.reason,
+            classified.classification_source,
+        );
+    }
+    if qualified_name_has_test_module(&entity.qualified_name) {
+        return CliEvidenceRoleDecision::new(
+            EvidenceRole::Test,
+            "qualified name contains tests module",
+            "qualified_name",
+        );
+    }
+    CliEvidenceRoleDecision::new(
+        EvidenceRole::Unknown,
+        "entity kind/source role metadata missing",
+        "fallback",
+    )
+}
+
+fn stored_context_edge_role(row: &StoredContextPathEdgeMetadata) -> CliEvidenceRoleDecision {
+    let relation_role = match row.relation.as_str() {
+        "MOCKS" | "STUBS" => Some((EvidenceRole::Mock, "relation kind is mock/stub evidence")),
+        "TESTS" | "ASSERTS" | "COVERS" | "FIXTURES_FOR" => Some((
+            EvidenceRole::Test,
+            "relation kind is test/assertion evidence",
+        )),
+        _ => None,
+    };
+    if let Some((role, reason)) = relation_role {
+        return CliEvidenceRoleDecision::new(role, reason, "relation_kind");
+    }
+    if row
+        .source_span_path
+        .as_deref()
+        .is_some_and(context_pack_test_path)
+    {
+        return CliEvidenceRoleDecision::new(
+            EvidenceRole::Test,
+            "edge source span is in a test/spec path",
+            "file_path",
+        );
+    }
+
+    let head = stored_context_entity_role(row.head_entity.as_ref());
+    let tail = stored_context_entity_role(row.tail_entity.as_ref());
+    let endpoint_role = combine_evidence_roles([head.role, tail.role]);
+    if endpoint_role != EvidenceRole::Unknown {
+        return CliEvidenceRoleDecision::new(
+            endpoint_role,
+            format!("head: {}; tail: {}", head.reason, tail.reason),
+            format!("endpoint:{}+{}", head.source, tail.source),
+        );
+    }
+
+    match row
+        .context
+        .as_deref()
+        .and_then(context_pack_role_from_label)
+    {
+        Some(EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed) => {
+            let role = context_pack_role_from_label(row.context.as_deref().unwrap_or_default())
+                .unwrap_or(EvidenceRole::Unknown);
+            CliEvidenceRoleDecision::new(role, "materialized edge context", "materialized_context")
+        }
+        Some(EvidenceRole::Production) => CliEvidenceRoleDecision::new(
+            EvidenceRole::Unknown,
+            "materialized production context lacks source-role metadata",
+            "fallback",
+        ),
+        Some(EvidenceRole::Unknown) | None => CliEvidenceRoleDecision::new(
+            EvidenceRole::Unknown,
+            "missing edge source-role metadata",
+            "fallback",
+        ),
+    }
+}
+
+fn qualified_name_has_test_module(value: &str) -> bool {
+    let normalized = value.replace('\\', "/").to_ascii_lowercase();
+    normalized == "tests"
+        || normalized.starts_with("tests.")
+        || normalized.contains(".tests.")
+        || normalized.contains("::tests::")
+        || normalized.ends_with(".tests")
+        || normalized.ends_with("::tests")
+}
+
+fn context_pack_test_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    normalized.contains("/tests/")
+        || normalized.contains("/test/")
+        || normalized.ends_with(".test.ts")
+        || normalized.ends_with(".test.tsx")
+        || normalized.ends_with(".test.js")
+        || normalized.ends_with(".test.jsx")
+        || normalized.ends_with(".spec.ts")
+        || normalized.ends_with(".spec.tsx")
+        || normalized.ends_with(".spec.js")
+        || normalized.ends_with(".spec.jsx")
+}
+
+fn context_pack_role_from_label(value: &str) -> Option<EvidenceRole> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.contains("mixed") {
+        Some(EvidenceRole::Mixed)
+    } else if normalized.contains("mock") || normalized.contains("stub") {
+        Some(EvidenceRole::Mock)
+    } else if normalized.contains("test") || normalized.contains("spec") {
+        Some(EvidenceRole::Test)
+    } else if normalized.contains("production") {
+        Some(EvidenceRole::Production)
+    } else if normalized.contains("unknown") || normalized.contains("unresolved") {
+        Some(EvidenceRole::Unknown)
+    } else {
+        None
+    }
 }
 
 fn hydrate_stored_path_evidence_metadata(
@@ -13117,6 +14511,8 @@ fn hydrate_stored_path_evidence_metadata(
         || !sqlite_table_has_column(connection, "path_evidence_edges", "edge_class")?
         || !sqlite_table_has_column(connection, "path_evidence_edges", "context")?
         || !sqlite_table_has_column(connection, "path_evidence_edges", "provenance_edges_json")?
+        || !sqlite_table_has_column(connection, "path_evidence_edges", "head_id")?
+        || !sqlite_table_has_column(connection, "path_evidence_edges", "tail_id")?
     {
         return Ok(());
     }
@@ -13124,11 +14520,38 @@ fn hydrate_stored_path_evidence_metadata(
     let placeholders = sql_placeholders(ids.len());
     let sql = format!(
         "
-        SELECT path_id, ordinal, edge_id, relation, source_span_path,
-               exactness, confidence, derived, edge_class, context, provenance_edges_json
-        FROM path_evidence_edges
-        WHERE path_id IN ({placeholders})
-        ORDER BY path_id, ordinal
+        SELECT pe.path_id, pe.ordinal, pe.edge_id, pe.head_id, pe.relation, pe.tail_id,
+               pe.source_span_path, pe.exactness, pe.confidence, pe.derived,
+               pe.edge_class, pe.context, pe.provenance_edges_json,
+               head_kind.value AS head_kind, head_name.value AS head_name,
+               head_qname.value AS head_qualified_name, head_path.value AS head_repo_relative_path,
+               head_span_path.value AS head_span_repo_relative_path,
+               head_e.start_line AS head_start_line, head_e.start_column AS head_start_column,
+               head_e.end_line AS head_end_line, head_e.end_column AS head_end_column,
+               head_e.metadata_json AS head_metadata_json,
+               tail_kind.value AS tail_kind, tail_name.value AS tail_name,
+               tail_qname.value AS tail_qualified_name, tail_path.value AS tail_repo_relative_path,
+               tail_span_path.value AS tail_span_repo_relative_path,
+               tail_e.start_line AS tail_start_line, tail_e.start_column AS tail_start_column,
+               tail_e.end_line AS tail_end_line, tail_e.end_column AS tail_end_column,
+               tail_e.metadata_json AS tail_metadata_json
+        FROM path_evidence_edges pe
+        LEFT JOIN object_id_lookup head_oid ON head_oid.value = pe.head_id
+        LEFT JOIN entities head_e ON head_e.id_key = head_oid.id
+        LEFT JOIN entity_kind_dict head_kind ON head_kind.id = head_e.kind_id
+        LEFT JOIN symbol_dict head_name ON head_name.id = head_e.name_id
+        LEFT JOIN qualified_name_lookup head_qname ON head_qname.id = head_e.qualified_name_id
+        LEFT JOIN path_dict head_path ON head_path.id = head_e.path_id
+        LEFT JOIN path_dict head_span_path ON head_span_path.id = head_e.span_path_id
+        LEFT JOIN object_id_lookup tail_oid ON tail_oid.value = pe.tail_id
+        LEFT JOIN entities tail_e ON tail_e.id_key = tail_oid.id
+        LEFT JOIN entity_kind_dict tail_kind ON tail_kind.id = tail_e.kind_id
+        LEFT JOIN symbol_dict tail_name ON tail_name.id = tail_e.name_id
+        LEFT JOIN qualified_name_lookup tail_qname ON tail_qname.id = tail_e.qualified_name_id
+        LEFT JOIN path_dict tail_path ON tail_path.id = tail_e.path_id
+        LEFT JOIN path_dict tail_span_path ON tail_span_path.id = tail_e.span_path_id
+        WHERE pe.path_id IN ({placeholders})
+        ORDER BY pe.path_id, pe.ordinal
         "
     );
     let mut statement = connection
@@ -13145,7 +14568,9 @@ fn hydrate_stored_path_evidence_metadata(
                 path_id: row.get("path_id")?,
                 ordinal: row.get::<_, i64>("ordinal")?.max(0) as usize,
                 edge_id: row.get("edge_id")?,
+                head_id: row.get("head_id")?,
                 relation: row.get("relation")?,
+                tail_id: row.get("tail_id")?,
                 source_span_path: row.get("source_span_path")?,
                 exactness: row.get("exactness")?,
                 confidence: row.get("confidence")?,
@@ -13153,6 +14578,8 @@ fn hydrate_stored_path_evidence_metadata(
                 edge_class: row.get("edge_class")?,
                 context: row.get("context")?,
                 provenance_edges,
+                head_entity: stored_context_entity_from_row(row, "head")?,
+                tail_entity: stored_context_entity_from_row(row, "tail")?,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -13197,11 +14624,7 @@ fn hydrate_stored_path_evidence_metadata(
             "production_test_mock_labels".to_string(),
             json!(rows
                 .iter()
-                .map(|row| {
-                    row.context
-                        .clone()
-                        .unwrap_or_else(|| "production".to_string())
-                })
+                .map(|row| stored_context_edge_role(row).role.as_str().to_string())
                 .collect::<Vec<_>>()),
         );
         path.metadata.insert(
@@ -13209,9 +14632,12 @@ fn hydrate_stored_path_evidence_metadata(
             json!(
                 rows.iter()
                     .map(|row| {
+                        let role = stored_context_edge_role(row);
                         json!({
                             "edge_id": row.edge_id.clone(),
+                            "head_id": row.head_id.clone(),
                             "relation": row.relation.clone(),
+                            "tail_id": row.tail_id.clone(),
                             "source_span": row.source_span_path.clone(),
                             "exactness": row.exactness.clone().unwrap_or_else(|| path.exactness.to_string()),
                             "confidence": row.confidence.unwrap_or(path.confidence),
@@ -13219,6 +14645,11 @@ fn hydrate_stored_path_evidence_metadata(
                             "edge_class": row.edge_class.clone(),
                             "fact_class": row.edge_class.clone(),
                             "context": row.context.clone().unwrap_or_else(|| "production".to_string()),
+                            "evidence_role": role.role.as_str(),
+                            "classification_reason": role.reason,
+                            "classification_source": role.source,
+                            "head_source_role": stored_context_entity_role(row.head_entity.as_ref()).role.as_str(),
+                            "tail_source_role": stored_context_entity_role(row.tail_entity.as_ref()).role.as_str(),
                             "provenance_edges": row.provenance_edges.clone(),
                         })
                     })
@@ -13247,6 +14678,7 @@ fn hydrate_stored_path_evidence_metadata(
             "metadata_storage".to_string(),
             json!("hydrated_materialized_rows"),
         );
+        annotate_context_path_evidence_role(path);
     }
     Ok(())
 }
@@ -13370,6 +14802,7 @@ fn filter_and_sort_context_path_evidence(
     let mut seen = BTreeSet::new();
     let mut filtered = paths
         .into_iter()
+        .flat_map(|path| context_path_evidence_candidates_for_mode(path, mode))
         .filter(|path| path.length <= budgets.max_traversal_depth)
         .filter(|path| context_path_evidence_allowed_for_mode(path, mode))
         .filter(|path| context_path_evidence_relation_allowed(path, mode))
@@ -13387,6 +14820,246 @@ fn filter_and_sort_context_path_evidence(
     filtered
 }
 
+fn context_path_evidence_candidates_for_mode(
+    mut path: PathEvidence,
+    mode: &str,
+) -> Vec<PathEvidence> {
+    annotate_context_path_evidence_role(&mut path);
+    if context_pack_mode_allows_test_mock(mode) {
+        return vec![path];
+    }
+    if path.metadata.get("evidence_role").and_then(Value::as_str) == Some("mixed") {
+        if let Some(split) = production_subpath_from_mixed_path_evidence(&path) {
+            return vec![split, path];
+        }
+    }
+    vec![path]
+}
+
+fn annotate_context_path_evidence_role(path: &mut PathEvidence) {
+    let mut roles = context_path_edge_roles(path);
+    if roles.is_empty() {
+        roles = path
+            .metapath
+            .iter()
+            .filter_map(|relation| match relation {
+                RelationKind::Mocks | RelationKind::Stubs => Some(EvidenceRole::Mock),
+                RelationKind::Tests
+                | RelationKind::Asserts
+                | RelationKind::Covers
+                | RelationKind::FixturesFor => Some(EvidenceRole::Test),
+                _ => None,
+            })
+            .collect();
+    }
+    let role = if roles.is_empty() {
+        EvidenceRole::Unknown
+    } else {
+        combine_evidence_roles(roles.iter().copied())
+    };
+    let role_labels = if roles.is_empty() {
+        vec![EvidenceRole::Unknown.as_str().to_string()]
+    } else {
+        roles
+            .iter()
+            .map(|role| role.as_str().to_string())
+            .collect::<Vec<_>>()
+    };
+    let (classification_source, classification_reason) = context_path_classification_summary(path);
+    path.metadata
+        .insert("evidence_role".to_string(), json!(role.as_str()));
+    path.metadata
+        .insert("path_context".to_string(), json!(role.as_str()));
+    path.metadata.insert(
+        "production_test_mock_labels".to_string(),
+        json!(role_labels),
+    );
+    path.metadata.insert(
+        "classification_source".to_string(),
+        json!(classification_source),
+    );
+    path.metadata.insert(
+        "classification_reason".to_string(),
+        json!(classification_reason),
+    );
+    let proof_grade_edges = path
+        .metadata
+        .get("proof_grade_edge_classes")
+        .and_then(Value::as_bool)
+        .unwrap_or(!matches!(
+            path.exactness,
+            Exactness::StaticHeuristic | Exactness::Inferred
+        ));
+    path.metadata.insert(
+        "production_proof_eligible".to_string(),
+        json!(role == EvidenceRole::Production && proof_grade_edges),
+    );
+    path.metadata.insert(
+        "proof_scope".to_string(),
+        json!(if role == EvidenceRole::Production {
+            "production"
+        } else if role == EvidenceRole::Unknown {
+            "unknown"
+        } else {
+            "test_or_mock"
+        }),
+    );
+}
+
+fn context_path_edge_roles(path: &PathEvidence) -> Vec<EvidenceRole> {
+    path.metadata
+        .get("edge_labels")
+        .and_then(Value::as_array)
+        .map(|labels| {
+            labels
+                .iter()
+                .filter_map(|label| {
+                    label
+                        .get("evidence_role")
+                        .or_else(|| label.get("source_role"))
+                        .or_else(|| label.get("context"))
+                        .and_then(Value::as_str)
+                        .and_then(context_pack_role_from_label)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn context_path_classification_summary(path: &PathEvidence) -> (String, String) {
+    let Some(labels) = path.metadata.get("edge_labels").and_then(Value::as_array) else {
+        return (
+            "fallback".to_string(),
+            "missing edge source-role metadata".to_string(),
+        );
+    };
+    let sources = labels
+        .iter()
+        .filter_map(|label| {
+            label
+                .get("classification_source")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .collect::<Vec<_>>();
+    let reasons = labels
+        .iter()
+        .filter_map(|label| {
+            label
+                .get("classification_reason")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .collect::<Vec<_>>();
+    (
+        if sources.is_empty() {
+            "fallback".to_string()
+        } else {
+            sources.join("+")
+        },
+        if reasons.is_empty() {
+            "missing edge source-role metadata".to_string()
+        } else {
+            reasons.join("; ")
+        },
+    )
+}
+
+fn production_subpath_from_mixed_path_evidence(path: &PathEvidence) -> Option<PathEvidence> {
+    let labels = path.metadata.get("edge_labels")?.as_array()?;
+    let roles = labels
+        .iter()
+        .map(|label| {
+            label
+                .get("evidence_role")
+                .or_else(|| label.get("source_role"))
+                .or_else(|| label.get("context"))
+                .and_then(Value::as_str)
+                .and_then(context_pack_role_from_label)
+                .unwrap_or(EvidenceRole::Unknown)
+        })
+        .collect::<Vec<_>>();
+    let mut best_start = 0usize;
+    let mut best_len = 0usize;
+    let mut current_start = 0usize;
+    let mut current_len = 0usize;
+    for (index, role) in roles.iter().enumerate() {
+        if *role == EvidenceRole::Production {
+            if current_len == 0 {
+                current_start = index;
+            }
+            current_len += 1;
+            if current_len > best_len {
+                best_start = current_start;
+                best_len = current_len;
+            }
+        } else {
+            current_len = 0;
+        }
+    }
+    if best_len == 0 || best_len == path.edges.len() {
+        return None;
+    }
+    let end = best_start + best_len;
+    let mut split = path.clone();
+    split.id = format!("{}::production-subpath:{}-{}", path.id, best_start, end - 1);
+    split.edges = path.edges[best_start..end].to_vec();
+    split.metapath = path.metapath[best_start..end].to_vec();
+    split.source_spans = path.source_spans[best_start..end].to_vec();
+    split.length = split.edges.len();
+    if let Some((head, _, _)) = split.edges.first() {
+        split.source = head.clone();
+    }
+    if let Some((_, _, tail)) = split.edges.last() {
+        split.target = tail.clone();
+    }
+    split.metadata.insert(
+        "edge_labels".to_string(),
+        json!(labels[best_start..end].to_vec()),
+    );
+    split.metadata.insert(
+        "source_spans".to_string(),
+        json!(split.source_spans.clone()),
+    );
+    split.metadata.insert(
+        "evidence_role".to_string(),
+        json!(EvidenceRole::Production.as_str()),
+    );
+    split.metadata.insert(
+        "path_context".to_string(),
+        json!(EvidenceRole::Production.as_str()),
+    );
+    split.metadata.insert(
+        "production_test_mock_labels".to_string(),
+        json!(vec![EvidenceRole::Production.as_str(); split.length]),
+    );
+    split
+        .metadata
+        .insert("classification_source".to_string(), json!("split"));
+    split.metadata.insert(
+        "classification_reason".to_string(),
+        json!("mixed path split to production-only subpath"),
+    );
+    split
+        .metadata
+        .insert("split_from_path_id".to_string(), json!(path.id.clone()));
+    split.metadata.insert(
+        "production_proof_eligible".to_string(),
+        json!(path
+            .metadata
+            .get("production_proof_eligible")
+            .and_then(Value::as_bool)
+            .unwrap_or(!matches!(
+                split.exactness,
+                Exactness::StaticHeuristic | Exactness::Inferred
+            ))),
+    );
+    split
+        .metadata
+        .insert("proof_scope".to_string(), json!("production"));
+    Some(split)
+}
+
 fn context_path_evidence_allowed_for_mode(path: &PathEvidence, mode: &str) -> bool {
     let normalized = mode.to_ascii_lowercase();
     if !normalized.contains("debug")
@@ -13400,21 +15073,12 @@ fn context_path_evidence_allowed_for_mode(path: &PathEvidence, mode: &str) -> bo
     if context_pack_mode_allows_test_mock(mode) {
         return true;
     }
-    let path_context = path
+    let evidence_role = path
         .metadata
-        .get("path_context")
+        .get("evidence_role")
         .and_then(Value::as_str)
-        .unwrap_or("production");
-    !matches!(path_context, "test" | "mock" | "mixed")
-        && path
-            .metadata
-            .get("production_test_mock_labels")
-            .and_then(Value::as_array)
-            .is_none_or(|labels| {
-                labels
-                    .iter()
-                    .all(|label| !matches!(label.as_str(), Some("test" | "mock" | "mixed")))
-            })
+        .unwrap_or("unknown");
+    evidence_role == "production"
 }
 
 fn context_pack_mode_allows_test_mock(mode: &str) -> bool {
@@ -13480,6 +15144,361 @@ fn context_pack_allowed_relation_names(mode: &str) -> Vec<&'static str> {
     relations
 }
 
+#[derive(Debug, Clone)]
+struct ContextPackFallbackEvidence {
+    id: String,
+    symbol: String,
+    kind: String,
+    source_span: SourceSpan,
+    evidence_role: EvidenceRole,
+    classification_reason: String,
+    classification_source: String,
+    fallback_source: String,
+}
+
+fn context_pack_mode_needs_test_impact_fallback(mode: &str) -> bool {
+    mode.to_ascii_lowercase().contains("test")
+}
+
+fn build_test_impact_fallback_evidence(
+    connection: &Connection,
+    mode: &str,
+    seed_entities: &[ContextEntitySummary],
+    local_edges: &[Edge],
+    verified_paths: &[PathEvidence],
+    budgets: ContextPackBudgets,
+) -> Result<Vec<ContextPackFallbackEvidence>, String> {
+    if !context_pack_mode_needs_test_impact_fallback(mode) {
+        return Ok(Vec::new());
+    }
+
+    let mut endpoint_ids = BTreeSet::new();
+    for edge in local_edges {
+        endpoint_ids.insert(edge.head_id.clone());
+        endpoint_ids.insert(edge.tail_id.clone());
+    }
+    let endpoint_entities = load_context_entities_by_ids(
+        connection,
+        endpoint_ids,
+        budgets
+            .max_seed_entities
+            .saturating_add(local_edges.len().saturating_mul(2))
+            .max(1),
+    )?;
+
+    let proof_span_keys = verified_paths
+        .iter()
+        .flat_map(|path| path.source_spans.iter())
+        .map(context_span_key)
+        .collect::<BTreeSet<_>>();
+    let mut evidence = Vec::new();
+    let mut seen = BTreeSet::new();
+    let evidence_limit = budgets.max_snippets.saturating_mul(2).max(4);
+
+    for entity in seed_entities {
+        let role = context_entity_role(entity);
+        let include_production_seed =
+            verified_paths.is_empty() && role.role == EvidenceRole::Production;
+        if matches!(
+            role.role,
+            EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
+        ) || include_production_seed
+        {
+            push_entity_fallback_evidence(
+                &mut evidence,
+                &mut seen,
+                &proof_span_keys,
+                entity,
+                role,
+                "symbol/source_role/source_span",
+                evidence_limit,
+            );
+        }
+    }
+
+    for edge in local_edges {
+        let head = endpoint_entities.get(&edge.head_id);
+        let tail = endpoint_entities.get(&edge.tail_id);
+        let edge_role = classify_edge_evidence_role(edge);
+        let head_role = head.map(context_entity_role);
+        let tail_role = tail.map(context_entity_role);
+        let combined_role = combine_context_fallback_roles(
+            edge_role.role,
+            head_role.as_ref().map(|role| role.role),
+            tail_role.as_ref().map(|role| role.role),
+        );
+        let test_related = matches!(
+            combined_role,
+            EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
+        ) || matches!(edge_role.role, EvidenceRole::Test | EvidenceRole::Mock);
+
+        if test_related {
+            push_edge_fallback_evidence(
+                &mut evidence,
+                &mut seen,
+                &proof_span_keys,
+                edge,
+                combined_role,
+                fallback_edge_reason(&edge_role, head_role.as_ref(), tail_role.as_ref()),
+                fallback_edge_source(&edge_role, head_role.as_ref(), tail_role.as_ref()),
+                evidence_limit,
+            );
+            if let Some((entity, role)) = head.zip(head_role.as_ref()) {
+                if matches!(
+                    role.role,
+                    EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
+                ) {
+                    push_entity_fallback_evidence(
+                        &mut evidence,
+                        &mut seen,
+                        &proof_span_keys,
+                        entity,
+                        role.clone(),
+                        "local_relation_endpoint",
+                        evidence_limit,
+                    );
+                }
+            }
+            if let Some((entity, role)) = tail.zip(tail_role.as_ref()) {
+                if matches!(
+                    role.role,
+                    EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
+                ) || (head_role.as_ref().is_some_and(|head| {
+                    matches!(
+                        head.role,
+                        EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
+                    )
+                }) && role.role == EvidenceRole::Production)
+                {
+                    push_entity_fallback_evidence(
+                        &mut evidence,
+                        &mut seen,
+                        &proof_span_keys,
+                        entity,
+                        role.clone(),
+                        "local_relation_endpoint",
+                        evidence_limit,
+                    );
+                }
+            }
+        }
+        if evidence.len() >= evidence_limit {
+            break;
+        }
+    }
+
+    Ok(evidence)
+}
+
+fn combine_context_fallback_roles(
+    edge_role: EvidenceRole,
+    head_role: Option<EvidenceRole>,
+    tail_role: Option<EvidenceRole>,
+) -> EvidenceRole {
+    let roles = [Some(edge_role), head_role, tail_role]
+        .into_iter()
+        .flatten()
+        .filter(|role| *role != EvidenceRole::Unknown)
+        .collect::<Vec<_>>();
+    if roles.is_empty() {
+        EvidenceRole::Unknown
+    } else {
+        combine_evidence_roles(roles)
+    }
+}
+
+fn push_entity_fallback_evidence(
+    evidence: &mut Vec<ContextPackFallbackEvidence>,
+    seen: &mut BTreeSet<String>,
+    proof_span_keys: &BTreeSet<String>,
+    entity: &ContextEntitySummary,
+    role: CliEvidenceRoleDecision,
+    fallback_source: &str,
+    limit: usize,
+) {
+    if evidence.len() >= limit {
+        return;
+    }
+    let Some(span) = entity.source_span.clone() else {
+        return;
+    };
+    let key = format!(
+        "entity:{}:{}:{}",
+        entity.id,
+        context_span_key(&span),
+        fallback_source
+    );
+    if proof_span_keys.contains(&context_span_key(&span)) || !seen.insert(key) {
+        return;
+    }
+    evidence.push(ContextPackFallbackEvidence {
+        id: entity.id.clone(),
+        symbol: entity.name.clone(),
+        kind: entity
+            .kind
+            .map(|kind| kind.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        source_span: span,
+        evidence_role: role.role,
+        classification_reason: role.reason,
+        classification_source: role.source,
+        fallback_source: fallback_source.to_string(),
+    });
+}
+
+fn push_edge_fallback_evidence(
+    evidence: &mut Vec<ContextPackFallbackEvidence>,
+    seen: &mut BTreeSet<String>,
+    proof_span_keys: &BTreeSet<String>,
+    edge: &Edge,
+    role: EvidenceRole,
+    classification_reason: String,
+    classification_source: String,
+    limit: usize,
+) {
+    if evidence.len() >= limit {
+        return;
+    }
+    let span = edge.source_span.clone();
+    let key = format!("edge:{}:{}", edge.id, context_span_key(&span));
+    if proof_span_keys.contains(&context_span_key(&span)) || !seen.insert(key) {
+        return;
+    }
+    evidence.push(ContextPackFallbackEvidence {
+        id: edge.id.clone(),
+        symbol: format!("{} {} {}", edge.head_id, edge.relation, edge.tail_id),
+        kind: "relation".to_string(),
+        source_span: span,
+        evidence_role: role,
+        classification_reason,
+        classification_source,
+        fallback_source: "local_relation/source_span".to_string(),
+    });
+}
+
+fn fallback_edge_reason(
+    edge: &EvidenceRoleDecision,
+    head: Option<&CliEvidenceRoleDecision>,
+    tail: Option<&CliEvidenceRoleDecision>,
+) -> String {
+    let mut parts = vec![format!("edge: {}", edge.reason)];
+    if let Some(head) = head {
+        parts.push(format!("head: {}", head.reason));
+    }
+    if let Some(tail) = tail {
+        parts.push(format!("tail: {}", tail.reason));
+    }
+    parts.join("; ")
+}
+
+fn fallback_edge_source(
+    edge: &EvidenceRoleDecision,
+    head: Option<&CliEvidenceRoleDecision>,
+    tail: Option<&CliEvidenceRoleDecision>,
+) -> String {
+    let mut parts = vec![format!("edge:{}", edge.classification_source)];
+    if let Some(head) = head {
+        parts.push(format!("head:{}", head.source));
+    }
+    if let Some(tail) = tail {
+        parts.push(format!("tail:{}", tail.source));
+    }
+    parts.join("+")
+}
+
+fn context_span_key(span: &SourceSpan) -> String {
+    format!(
+        "{}:{}:{}",
+        span.repo_relative_path, span.start_line, span.end_line
+    )
+}
+
+fn context_line_range_for_span(span: &SourceSpan) -> String {
+    if span.start_line == span.end_line {
+        span.start_line.to_string()
+    } else {
+        format!("{}-{}", span.start_line, span.end_line)
+    }
+}
+
+fn fallback_evidence_json(evidence: &ContextPackFallbackEvidence) -> Value {
+    json!({
+        "id": evidence.id,
+        "symbol": evidence.symbol,
+        "kind": evidence.kind,
+        "file": evidence.source_span.repo_relative_path,
+        "span": agent_source_span_json(&evidence.source_span),
+        "source_span": agent_source_span_json(&evidence.source_span),
+        "evidence_role": evidence.evidence_role.as_str(),
+        "classification_reason": evidence.classification_reason,
+        "classification_source": evidence.classification_source,
+        "fallback_source": evidence.fallback_source,
+        "proof_path_available": false,
+    })
+}
+
+fn recommended_tests_from_fallback_evidence(
+    fallback_evidence: &[ContextPackFallbackEvidence],
+) -> Vec<String> {
+    let mut tests = BTreeSet::new();
+    for evidence in fallback_evidence {
+        if matches!(
+            evidence.evidence_role,
+            EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
+        ) {
+            let symbol = evidence.symbol.trim();
+            if !symbol.is_empty()
+                && symbol
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '_')
+            {
+                tests.insert(format!("cargo test {symbol}"));
+            }
+        }
+    }
+    tests.into_iter().take(12).collect()
+}
+
+fn load_context_fallback_snippets(
+    repo_root: &Path,
+    fallback_evidence: &[ContextPackFallbackEvidence],
+    max_snippets: usize,
+) -> Result<Vec<ContextSnippet>, String> {
+    if fallback_evidence.is_empty() || max_snippets == 0 {
+        return Ok(Vec::new());
+    }
+    let spans = fallback_evidence
+        .iter()
+        .map(|evidence| evidence.source_span.clone())
+        .collect::<Vec<_>>();
+    let (_, mut snippets, _, _) =
+        load_context_sources_and_snippets(repo_root, &spans, max_snippets)?;
+    let reason_by_key = fallback_evidence
+        .iter()
+        .map(|evidence| {
+            (
+                format!(
+                    "{}:{}",
+                    evidence.source_span.repo_relative_path,
+                    context_line_range_for_span(&evidence.source_span)
+                ),
+                format!(
+                    "{} fallback ({})",
+                    evidence.fallback_source, evidence.classification_reason
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    for snippet in &mut snippets {
+        if let Some(reason) = reason_by_key.get(&format!("{}:{}", snippet.file, snippet.lines)) {
+            snippet.reason = reason.clone();
+        } else {
+            snippet.reason = "test-impact fallback source span".to_string();
+        }
+    }
+    Ok(snippets)
+}
+
 fn build_context_packet_from_stored_evidence(
     options: &ContextPackOptions,
     raw_seed_values: &[String],
@@ -13487,6 +15506,7 @@ fn build_context_packet_from_stored_evidence(
     seed_entities: &[ContextEntitySummary],
     verified_paths: Vec<PathEvidence>,
     snippets: Vec<ContextSnippet>,
+    fallback_evidence: Vec<ContextPackFallbackEvidence>,
     fallback_packet: Option<ContextPacket>,
     budgets: ContextPackBudgets,
     stored_path_count: usize,
@@ -13513,6 +15533,11 @@ fn build_context_packet_from_stored_evidence(
                 verified_paths
                     .iter()
                     .flat_map(|path| [path.source.clone(), path.target.clone()]),
+            )
+            .chain(
+                fallback_evidence
+                    .iter()
+                    .map(|evidence| evidence.symbol.clone()),
             ),
         budgets.max_seed_entities * 4,
     );
@@ -13520,6 +15545,7 @@ fn build_context_packet_from_stored_evidence(
     symbols.dedup();
 
     let mut recommended_tests = recommended_tests_from_path_evidence(&verified_paths);
+    recommended_tests.extend(recommended_tests_from_fallback_evidence(&fallback_evidence));
     let mut risks = risks_from_path_evidence(&verified_paths);
     if let Some(packet) = fallback_packet {
         recommended_tests.extend(packet.recommended_tests);
@@ -13577,6 +15603,19 @@ fn build_context_packet_from_stored_evidence(
             snippets.len() as f64 / requested_span_count as f64
         }),
     );
+    metadata.insert(
+        "proof_path_available".to_string(),
+        json!(!verified_paths.is_empty()),
+    );
+    if !fallback_evidence.is_empty() {
+        metadata.insert(
+            "fallback_evidence".to_string(),
+            json!(fallback_evidence
+                .iter()
+                .map(fallback_evidence_json)
+                .collect::<Vec<_>>()),
+        );
+    }
 
     let mut packet = ContextPacket {
         task: options.task.clone(),
@@ -13590,6 +15629,595 @@ fn build_context_packet_from_stored_evidence(
     };
     compact_context_packet_for_cli(&mut packet, options.token_budget.max(32));
     packet
+}
+
+fn context_pack_agent_json_response(
+    options: &ContextPackOptions,
+    packet: &ContextPacket,
+    db_lifecycle_read: &Value,
+    budgets: ContextPackBudgets,
+    repo_root: &Path,
+    db_path: &Path,
+    timings: Value,
+) -> Value {
+    let lifecycle = compact_lifecycle_summary(db_lifecycle_read);
+    let path_limit = budgets.max_returned_proof_paths;
+    let snippet_limit = budgets.max_snippets;
+    let max_output_bytes = options
+        .max_output_bytes
+        .unwrap_or(DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES);
+
+    let paths = packet
+        .verified_paths
+        .iter()
+        .take(path_limit)
+        .map(agent_context_path_json)
+        .collect::<Vec<_>>();
+    let fallback_evidence = packet
+        .metadata
+        .get("fallback_evidence")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let proof_path_available = packet
+        .metadata
+        .get("proof_path_available")
+        .and_then(Value::as_bool)
+        .unwrap_or(!packet.verified_paths.is_empty());
+    let snippets = packet
+        .snippets
+        .iter()
+        .take(snippet_limit)
+        .map(|snippet| {
+            agent_context_snippet_json(snippet, &packet.verified_paths, &fallback_evidence)
+        })
+        .collect::<Vec<_>>();
+    let recommended_tests = packet
+        .recommended_tests
+        .iter()
+        .take(12)
+        .cloned()
+        .collect::<Vec<_>>();
+    let risks = packet.risks.iter().take(12).cloned().collect::<Vec<_>>();
+
+    let candidate_paths = packet
+        .metadata
+        .get("candidate_path_count_before_dedup")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(packet.verified_paths.len());
+    let requested_spans = packet
+        .metadata
+        .get("requested_source_span_count")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(packet.snippets.len());
+    let mut omitted_paths = candidate_paths.saturating_sub(paths.len());
+    let mut omitted_snippets = requested_spans.saturating_sub(snippets.len());
+    let mut omitted_fallback_evidence = packet
+        .metadata
+        .get("fallback_evidence")
+        .and_then(Value::as_array)
+        .map(|values| values.len().saturating_sub(fallback_evidence.len()))
+        .unwrap_or_default();
+    let mut omitted_recommended_tests = packet.recommended_tests.len().saturating_sub(12);
+    let mut omitted_risks = packet.risks.len().saturating_sub(12);
+
+    let mut response = json!({
+        "schema_name": "context_pack_agent_json",
+        "schema_version": AGENT_JSON_SCHEMA_VERSION,
+        "status": "ok",
+        "command": "context-pack",
+        "repo": path_string(repo_root),
+        "db": path_string(db_path),
+        "output_mode": options.output_mode.as_str(),
+        "task": packet.task,
+        "mode": packet.mode,
+        "lifecycle": lifecycle,
+        "claimable": db_lifecycle_read.get("claimable").and_then(Value::as_bool).unwrap_or(false),
+        "diagnostic_only": db_lifecycle_read.get("diagnostic_only").and_then(Value::as_bool).unwrap_or_else(|| {
+            !db_lifecycle_read.get("claimable").and_then(Value::as_bool).unwrap_or(false)
+        }),
+        "critical_symbols": packet.symbols,
+        "symbols": packet.symbols,
+        "paths": paths,
+        "proof_paths": Value::Null,
+        "proof_path_available": proof_path_available,
+        "proof_path_count": packet.verified_paths.len(),
+        "fallback_evidence": fallback_evidence,
+        "fallback_evidence_count": packet.metadata
+            .get("fallback_evidence")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default(),
+        "snippets": snippets,
+        "recommended_tests": recommended_tests,
+        "risks": risks,
+        "warnings": [],
+        "errors": [],
+        "result_count": paths.len() + packet.metadata
+            .get("fallback_evidence")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default(),
+        "limit": path_limit,
+        "omitted_count": 0,
+        "timings": timings,
+        "limits": {
+            "paths": path_limit,
+            "snippets": snippet_limit,
+            "fallback_evidence": snippet_limit,
+            "recommended_tests": 12,
+            "risks": 12,
+            "max_output_bytes": max_output_bytes,
+        },
+    });
+
+    if let Some(object) = response.as_object_mut() {
+        if let Some(paths) = object.get("paths").cloned() {
+            object.insert("proof_paths".to_string(), paths);
+        }
+    }
+
+    let mut max_output_bytes_exceeded = false;
+    for _ in 0..8 {
+        let omitted_by_size =
+            enforce_context_agent_max_output_bytes(&mut response, max_output_bytes);
+        omitted_paths += omitted_by_size.paths;
+        omitted_snippets += omitted_by_size.snippets;
+        omitted_fallback_evidence += omitted_by_size.fallback_evidence;
+        omitted_recommended_tests += omitted_by_size.recommended_tests;
+        omitted_risks += omitted_by_size.risks;
+        max_output_bytes_exceeded |= omitted_by_size.max_output_bytes_exceeded;
+        update_context_agent_truncation(
+            &mut response,
+            path_limit,
+            omitted_paths,
+            omitted_snippets,
+            omitted_fallback_evidence,
+            omitted_recommended_tests,
+            omitted_risks,
+            max_output_bytes_exceeded,
+        );
+        if serialized_json_len(&response) <= max_output_bytes || max_output_bytes_exceeded {
+            break;
+        }
+    }
+    update_context_agent_truncation(
+        &mut response,
+        path_limit,
+        omitted_paths,
+        omitted_snippets,
+        omitted_fallback_evidence,
+        omitted_recommended_tests,
+        omitted_risks,
+        max_output_bytes_exceeded,
+    );
+    response
+}
+
+#[derive(Debug, Default)]
+struct ContextAgentSizeOmissions {
+    paths: usize,
+    snippets: usize,
+    fallback_evidence: usize,
+    recommended_tests: usize,
+    risks: usize,
+    max_output_bytes_exceeded: bool,
+}
+
+fn enforce_context_agent_max_output_bytes(
+    response: &mut Value,
+    max_output_bytes: usize,
+) -> ContextAgentSizeOmissions {
+    let mut omitted = ContextAgentSizeOmissions::default();
+    while serde_json::to_vec(response)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
+        > max_output_bytes
+    {
+        if pop_context_agent_array_item(response, "snippets") {
+            omitted.snippets += 1;
+            continue;
+        }
+        if pop_context_agent_array_item(response, "recommended_tests") {
+            omitted.recommended_tests += 1;
+            continue;
+        }
+        if pop_context_agent_array_item(response, "risks") {
+            omitted.risks += 1;
+            continue;
+        }
+        if pop_context_agent_array_item(response, "fallback_evidence") {
+            omitted.fallback_evidence += 1;
+            if let Some(object) = response.as_object_mut() {
+                let fallback_count = object
+                    .get("fallback_evidence")
+                    .and_then(Value::as_array)
+                    .map(Vec::len)
+                    .unwrap_or_default();
+                object.insert("fallback_evidence_count".to_string(), json!(fallback_count));
+            }
+            continue;
+        }
+        if pop_context_agent_array_item(response, "paths") {
+            omitted.paths += 1;
+            if let Some(object) = response.as_object_mut() {
+                if let Some(paths) = object.get("paths").cloned() {
+                    object.insert("proof_paths".to_string(), paths);
+                }
+            }
+            continue;
+        }
+        omitted.max_output_bytes_exceeded = true;
+        break;
+    }
+    omitted
+}
+
+fn serialized_json_len(value: &Value) -> usize {
+    serde_json::to_vec(value)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
+}
+
+fn pop_context_agent_array_item(response: &mut Value, key: &str) -> bool {
+    let Some(array) = response.get_mut(key).and_then(Value::as_array_mut) else {
+        return false;
+    };
+    if array.is_empty() {
+        return false;
+    }
+    array.pop();
+    true
+}
+
+fn update_context_agent_truncation(
+    response: &mut Value,
+    path_limit: usize,
+    omitted_paths: usize,
+    omitted_snippets: usize,
+    omitted_fallback_evidence: usize,
+    omitted_recommended_tests: usize,
+    omitted_risks: usize,
+    max_output_bytes_exceeded: bool,
+) {
+    let returned_paths = response
+        .get("paths")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let returned_fallback_evidence = response
+        .get("fallback_evidence")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let omitted_count = omitted_paths
+        + omitted_snippets
+        + omitted_fallback_evidence
+        + omitted_recommended_tests
+        + omitted_risks;
+    let byte_count = serde_json::to_vec(response)
+        .map(|bytes| bytes.len())
+        .unwrap_or_default();
+    if let Some(object) = response.as_object_mut() {
+        object.insert("omitted_count".to_string(), json!(omitted_count));
+        object.insert(
+            "fallback_evidence_count".to_string(),
+            json!(returned_fallback_evidence),
+        );
+        object.insert(
+            "result_count".to_string(),
+            json!(returned_paths + returned_fallback_evidence),
+        );
+        object.insert(
+            "omitted".to_string(),
+            json!({
+                "paths": omitted_paths,
+                "snippets": omitted_snippets,
+                "fallback_evidence": omitted_fallback_evidence,
+                "recommended_tests": omitted_recommended_tests,
+                "risks": omitted_risks,
+            }),
+        );
+        object.insert(
+            "truncation".to_string(),
+            json!({
+                "returned_count": returned_paths,
+                "limit": path_limit,
+                "limit_applied": true,
+                "omitted_count": omitted_count,
+                "omitted_count_is_lower_bound": true,
+                "total_available_unknown": true,
+                "output_bytes": byte_count,
+            }),
+        );
+        if max_output_bytes_exceeded {
+            object.insert("status".to_string(), json!("warning"));
+            object.insert(
+                "warnings".to_string(),
+                json!([{
+                    "code": "max_output_bytes_exceeded",
+                    "message": "context-pack agent JSON could not fit under --max-output-bytes without removing all compact sections",
+                    "severity": "warning"
+                }]),
+            );
+        }
+    }
+}
+
+fn agent_context_path_json(path: &PathEvidence) -> Value {
+    let evidence_role = path
+        .metadata
+        .get("evidence_role")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let classification_reason = path
+        .metadata
+        .get("classification_reason")
+        .and_then(Value::as_str)
+        .unwrap_or("missing edge source-role metadata");
+    let classification_source = path
+        .metadata
+        .get("classification_source")
+        .and_then(Value::as_str)
+        .unwrap_or("fallback");
+    let edge_labels = path
+        .metadata
+        .get("edge_labels")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let source_spans = path
+        .source_spans
+        .iter()
+        .map(agent_source_span_json)
+        .collect::<Vec<_>>();
+    let edges = path
+        .edges
+        .iter()
+        .enumerate()
+        .map(|(index, (head, relation, tail))| {
+            let label = edge_labels.get(index);
+            let edge_role = label
+                .and_then(|label| label.get("evidence_role"))
+                .and_then(Value::as_str)
+                .unwrap_or(evidence_role);
+            let edge_reason = label
+                .and_then(|label| label.get("classification_reason"))
+                .and_then(Value::as_str)
+                .unwrap_or(classification_reason);
+            let edge_source = label
+                .and_then(|label| label.get("classification_source"))
+                .and_then(Value::as_str)
+                .unwrap_or(classification_source);
+            let mut edge = serde_json::Map::new();
+            if let Some(edge_id) = label
+                .and_then(|label| label.get("edge_id"))
+                .and_then(Value::as_str)
+            {
+                edge.insert("edge_id".to_string(), json!(edge_id));
+            }
+            edge.insert("relation".to_string(), json!(relation.to_string()));
+            edge.insert("source".to_string(), agent_context_entity_ref(head));
+            edge.insert("target".to_string(), agent_context_entity_ref(tail));
+            edge.insert("exactness".to_string(), json!(path.exactness.to_string()));
+            edge.insert("confidence".to_string(), json!(path.confidence));
+            edge.insert("evidence_role".to_string(), json!(edge_role));
+            edge.insert("classification_reason".to_string(), json!(edge_reason));
+            edge.insert("classification_source".to_string(), json!(edge_source));
+            if let Some(span) = path.source_spans.get(index) {
+                edge.insert(
+                    "source_spans".to_string(),
+                    json!([agent_source_span_json(span)]),
+                );
+            }
+            Value::Object(edge)
+        })
+        .collect::<Vec<_>>();
+    let mut object = serde_json::Map::new();
+    object.insert("path_id".to_string(), json!(path.id));
+    if let Some(summary) = path.summary.as_deref() {
+        object.insert("summary".to_string(), json!(summary));
+    }
+    object.insert("evidence_role".to_string(), json!(evidence_role));
+    object.insert(
+        "classification_reason".to_string(),
+        json!(classification_reason),
+    );
+    object.insert(
+        "classification_source".to_string(),
+        json!(classification_source),
+    );
+    object.insert(
+        "production_proof_eligible".to_string(),
+        json!(path
+            .metadata
+            .get("production_proof_eligible")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)),
+    );
+    object.insert(
+        "relations".to_string(),
+        json!(path
+            .metapath
+            .iter()
+            .map(|relation| relation.to_string())
+            .collect::<Vec<_>>()),
+    );
+    object.insert("edges".to_string(), json!(edges));
+    object.insert("source_spans".to_string(), json!(source_spans));
+    object.insert("exactness".to_string(), json!(path.exactness.to_string()));
+    object.insert("confidence".to_string(), json!(path.confidence));
+    Value::Object(object)
+}
+
+fn agent_context_entity_ref(id: &str) -> Value {
+    json!({
+        "id": id,
+        "name": id,
+    })
+}
+
+fn agent_context_snippet_json(
+    snippet: &ContextSnippet,
+    paths: &[PathEvidence],
+    fallback_evidence: &[Value],
+) -> Value {
+    let label = context_snippet_label(snippet, paths, fallback_evidence);
+    let mut object = serde_json::Map::new();
+    object.insert("file".to_string(), json!(snippet.file));
+    object.insert("lines".to_string(), json!(snippet.lines));
+    object.insert("text".to_string(), json!(snippet.text));
+    object.insert("reason".to_string(), json!(snippet.reason));
+    object.insert("evidence_role".to_string(), json!(label.role));
+    object.insert(
+        "classification_reason".to_string(),
+        json!(label.classification_reason),
+    );
+    object.insert(
+        "proof_path_available".to_string(),
+        json!(label.proof_path_available),
+    );
+    if let Some(source) = label.fallback_source {
+        object.insert("fallback_source".to_string(), json!(source));
+    }
+    Value::Object(object)
+}
+
+#[derive(Debug)]
+struct ContextSnippetLabel {
+    role: &'static str,
+    classification_reason: String,
+    fallback_source: Option<String>,
+    proof_path_available: bool,
+}
+
+fn context_snippet_label(
+    snippet: &ContextSnippet,
+    paths: &[PathEvidence],
+    fallback_evidence: &[Value],
+) -> ContextSnippetLabel {
+    if let Some((role, reason)) = context_snippet_proof_role(snippet, paths) {
+        return ContextSnippetLabel {
+            role,
+            classification_reason: reason,
+            fallback_source: None,
+            proof_path_available: true,
+        };
+    }
+    if let Some((role, reason, source)) = context_snippet_fallback_role(snippet, fallback_evidence)
+    {
+        return ContextSnippetLabel {
+            role,
+            classification_reason: reason,
+            fallback_source: Some(source),
+            proof_path_available: false,
+        };
+    }
+    ContextSnippetLabel {
+        role: "unknown",
+        classification_reason:
+            "snippet did not match a returned proof path or fallback source span".to_string(),
+        fallback_source: None,
+        proof_path_available: false,
+    }
+}
+
+fn context_snippet_proof_role(
+    snippet: &ContextSnippet,
+    paths: &[PathEvidence],
+) -> Option<(&'static str, String)> {
+    let (start, end) = parse_context_snippet_lines(&snippet.lines)?;
+    for path in paths {
+        let role = path
+            .metadata
+            .get("evidence_role")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        for span in &path.source_spans {
+            if span.repo_relative_path == snippet.file
+                && span.start_line <= end
+                && span.end_line >= start
+            {
+                let reason = path
+                    .metadata
+                    .get("classification_reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("matched proof path source span")
+                    .to_string();
+                return Some((context_pack_role_label(role), reason));
+            }
+        }
+    }
+    None
+}
+
+fn context_snippet_fallback_role(
+    snippet: &ContextSnippet,
+    fallback_evidence: &[Value],
+) -> Option<(&'static str, String, String)> {
+    let (start, end) = parse_context_snippet_lines(&snippet.lines)?;
+    for evidence in fallback_evidence {
+        let Some(span) = evidence
+            .get("source_span")
+            .or_else(|| evidence.get("span"))
+            .and_then(Value::as_object)
+        else {
+            continue;
+        };
+        let Some(file) = span.get("file").and_then(Value::as_str) else {
+            continue;
+        };
+        if file != snippet.file {
+            continue;
+        }
+        let Some(span_start) = span.get("start_line").and_then(Value::as_u64) else {
+            continue;
+        };
+        let span_end = span
+            .get("end_line")
+            .and_then(Value::as_u64)
+            .unwrap_or(span_start);
+        if span_start as u32 <= end && span_end as u32 >= start {
+            let role = evidence
+                .get("evidence_role")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let reason = evidence
+                .get("classification_reason")
+                .and_then(Value::as_str)
+                .unwrap_or("matched fallback source span")
+                .to_string();
+            let source = evidence
+                .get("fallback_source")
+                .and_then(Value::as_str)
+                .unwrap_or("source_span")
+                .to_string();
+            return Some((context_pack_role_label(role), reason, source));
+        }
+    }
+    None
+}
+
+fn context_pack_role_label(value: &str) -> &'static str {
+    match context_pack_role_from_label(value).unwrap_or(EvidenceRole::Unknown) {
+        EvidenceRole::Production => "production",
+        EvidenceRole::Test => "test",
+        EvidenceRole::Mock => "mock",
+        EvidenceRole::Mixed => "mixed",
+        EvidenceRole::Unknown => "unknown",
+    }
+}
+
+fn parse_context_snippet_lines(value: &str) -> Option<(u32, u32)> {
+    if let Some((start, end)) = value.split_once('-') {
+        let start = start.trim().parse::<u32>().ok()?;
+        let end = end.trim().parse::<u32>().ok()?;
+        return Some((start, end));
+    }
+    let line = value.trim().parse::<u32>().ok()?;
+    Some((line, line))
 }
 
 fn recommended_tests_from_path_evidence(paths: &[PathEvidence]) -> Vec<String> {
@@ -13702,6 +16330,21 @@ fn load_context_sources_and_snippets(
     }
     let source_files_loaded = sources.len();
     Ok((sources, snippets, source_bytes, source_files_loaded))
+}
+
+fn context_source_spans_for_paths(paths: &[PathEvidence]) -> Vec<SourceSpan> {
+    let mut spans = paths
+        .iter()
+        .flat_map(|path| path.source_spans.iter().cloned())
+        .collect::<Vec<_>>();
+    spans.sort_by(|left, right| {
+        left.repo_relative_path
+            .cmp(&right.repo_relative_path)
+            .then_with(|| left.start_line.cmp(&right.start_line))
+            .then_with(|| left.end_line.cmp(&right.end_line))
+    });
+    spans.dedup();
+    spans
 }
 
 fn source_snippet_for_span(source: &str, span: &SourceSpan) -> String {
@@ -14067,6 +16710,115 @@ fn symbol_search_hit_json(hit: &SymbolSearchHit) -> Value {
     })
 }
 
+fn agent_source_span_json(span: &SourceSpan) -> Value {
+    let mut object = serde_json::Map::new();
+    object.insert("file".to_string(), json!(span.repo_relative_path));
+    object.insert("start_line".to_string(), json!(span.start_line));
+    object.insert("end_line".to_string(), json!(span.end_line));
+    if let Some(start_column) = span.start_column {
+        object.insert("start_column".to_string(), json!(start_column));
+    }
+    if let Some(end_column) = span.end_column {
+        object.insert("end_column".to_string(), json!(end_column));
+    }
+    Value::Object(object)
+}
+
+fn agent_entity_ref_json(entity: &Entity) -> Value {
+    json!({
+        "id": entity.id,
+        "name": entity.name,
+        "qualified_name": entity.qualified_name,
+        "kind": entity.kind.to_string(),
+        "file": entity.repo_relative_path,
+    })
+}
+
+fn agent_symbol_search_hit_json(hit: &SymbolSearchHit) -> Value {
+    let role = classify_entity_source_role(&hit.entity);
+    let mut object = serde_json::Map::new();
+    object.insert("file".to_string(), json!(hit.entity.repo_relative_path));
+    object.insert("symbol".to_string(), json!(hit.entity.name));
+    object.insert("kind".to_string(), json!(hit.entity.kind.to_string()));
+    if let Some(span) = hit.entity.source_span.as_ref().map(agent_source_span_json) {
+        object.insert("span".to_string(), span);
+    }
+    object.insert("score".to_string(), json!(hit.score));
+    object.insert("evidence_role".to_string(), json!(role.role.as_str()));
+    if role.role != EvidenceRole::Unknown {
+        object.insert("classification_reason".to_string(), json!(role.reason));
+        object.insert(
+            "classification_source".to_string(),
+            json!(role.classification_source),
+        );
+    }
+    object.insert("entity".to_string(), agent_entity_ref_json(&hit.entity));
+    Value::Object(object)
+}
+
+fn agent_text_hit_json(hit: &Value) -> Value {
+    let file = hit
+        .get("repo_relative_path")
+        .or_else(|| hit.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let line = hit.get("line").and_then(Value::as_u64);
+    let span = line.map(|line| {
+        json!({
+            "file": file,
+            "start_line": line,
+            "end_line": line,
+        })
+    });
+    let lines = line
+        .map(|line| line.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let score = hit.get("score").and_then(Value::as_f64).unwrap_or(0.0);
+    let match_reason = hit
+        .get("match")
+        .or_else(|| hit.get("kind"))
+        .and_then(Value::as_str)
+        .unwrap_or("text_match");
+    let mut object = serde_json::Map::new();
+    object.insert("file".to_string(), json!(file));
+    object.insert("score".to_string(), json!(score));
+    if let Some(span) = span {
+        object.insert("span".to_string(), span.clone());
+        object.insert("source_span".to_string(), span);
+    }
+    object.insert(
+        "snippet".to_string(),
+        json!({
+            "file": file,
+            "lines": lines,
+            "text": hit.get("text").and_then(Value::as_str).unwrap_or_default(),
+            "reason": match_reason,
+        }),
+    );
+    object.insert("match_reason".to_string(), json!(match_reason));
+    Value::Object(object)
+}
+
+fn agent_file_hit_json(hit: &Value) -> Value {
+    let file = hit
+        .get("repo_relative_path")
+        .or_else(|| hit.get("title"))
+        .or_else(|| hit.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let score = hit.get("score").and_then(Value::as_f64).unwrap_or(0.0);
+    let match_reason = hit
+        .get("match")
+        .or_else(|| hit.get("kind"))
+        .and_then(Value::as_str)
+        .unwrap_or("file_match");
+    json!({
+        "file": file,
+        "score": score,
+        "match_reason": match_reason,
+    })
+}
+
 fn entities_by_id(entities: &[Entity]) -> BTreeMap<String, Entity> {
     entities
         .iter()
@@ -14281,6 +17033,339 @@ fn index_summary_json(summary: &IndexSummary) -> Result<Value, String> {
     };
     object.insert("status".to_string(), json!("indexed"));
     Ok(value)
+}
+
+fn index_summary_concise_json(summary: &IndexSummary, wall_ms: f64) -> Result<Value, String> {
+    let counts = index_graph_counts(summary);
+    let lifecycle = index_lifecycle_summary_json(summary);
+    Ok(json!({
+        "schema_version": AGENT_JSON_SCHEMA_VERSION,
+        "status": "indexed",
+        "output_mode": IndexJsonOutputMode::Concise.as_str(),
+        "repo_root": summary.repo_root,
+        "db_path": summary.db_path,
+        "lifecycle": lifecycle,
+        "db_lifecycle": lifecycle,
+        "claimable": index_summary_claimable(summary),
+        "diagnostic_only": !index_summary_claimable(summary),
+        "build_mode": summary.build_mode,
+        "storage_policy": summary.storage_policy,
+        "files_seen": summary.files_seen,
+        "files_indexed": summary.files_indexed,
+        "files_parsed": summary.files_parsed,
+        "files_skipped": summary.files_skipped,
+        "files_metadata_unchanged": summary.files_metadata_unchanged,
+        "entities": summary.entities,
+        "edges": summary.edges,
+        "source_spans": counts.source_spans,
+        "counts": {
+            "files": index_file_counts_json(summary),
+            "graph": index_graph_counts_json(summary, counts.source_spans),
+            "batches": {
+                "total": summary.batches_total,
+                "completed": summary.batches_completed,
+            }
+        },
+        "timing": index_timing_summary_json(summary, wall_ms),
+        "warnings_count": index_warning_count(summary),
+        "issue_counts": summary.issue_counts,
+        "issues_count": summary.issues.len(),
+        "scope": index_scope_summary_json(summary),
+        "artifact_freshness": index_artifact_freshness_json(summary),
+        "output_contract": {
+            "scope_examples_included": false,
+            "audit_payload_included": false,
+            "audit_flags": ["--audit-json", "--verbose", "--explain-scope", "--print-included", "--print-excluded"],
+            "size_target_bytes": INDEX_CONCISE_JSON_SIZE_TARGET_BYTES,
+        },
+    }))
+}
+
+fn index_summary_agent_json(summary: &IndexSummary, wall_ms: f64) -> Result<Value, String> {
+    let counts = index_graph_counts(summary);
+    let warnings = index_warning_messages(summary);
+    let status = if warnings.is_empty() { "ok" } else { "warning" };
+    let mut summary_object = serde_json::Map::new();
+    summary_object.insert("repo".to_string(), json!(summary.repo_root));
+    summary_object.insert("db_path".to_string(), json!(summary.db_path));
+    summary_object.insert("build_mode".to_string(), json!(summary.build_mode));
+    summary_object.insert("storage_policy".to_string(), json!(summary.storage_policy));
+    summary_object.insert("files_seen".to_string(), json!(summary.files_seen));
+    summary_object.insert("files_indexed".to_string(), json!(summary.files_indexed));
+    summary_object.insert("files_parsed".to_string(), json!(summary.files_parsed));
+    summary_object.insert("files_skipped".to_string(), json!(summary.files_skipped));
+    summary_object.insert(
+        "files_metadata_unchanged".to_string(),
+        json!(summary.files_metadata_unchanged),
+    );
+    summary_object.insert("entities".to_string(), json!(summary.entities));
+    summary_object.insert("edges".to_string(), json!(summary.edges));
+    if let Some(source_spans) = counts.source_spans {
+        summary_object.insert("source_spans".to_string(), json!(source_spans));
+    }
+    summary_object.insert("duration_ms".to_string(), json!(wall_ms));
+    summary_object.insert(
+        "warnings_count".to_string(),
+        json!(index_warning_count(summary)),
+    );
+    summary_object.insert("scope".to_string(), index_scope_summary_json(summary));
+    summary_object.insert(
+        "artifact_freshness".to_string(),
+        index_artifact_freshness_json(summary),
+    );
+
+    Ok(json!({
+        "schema_name": "index_agent_json",
+        "schema_version": AGENT_JSON_SCHEMA_VERSION,
+        "status": status,
+        "command": "index",
+        "repo": summary.repo_root,
+        "db": summary.db_path,
+        "output_mode": IndexJsonOutputMode::Agent.as_str(),
+        "lifecycle": index_lifecycle_summary_json(summary),
+        "claimable": index_summary_claimable(summary),
+        "diagnostic_only": !index_summary_claimable(summary),
+        "summary": Value::Object(summary_object),
+        "truncation": {
+            "returned_count": 1,
+            "limit_applied": false,
+            "omitted_count": 0,
+            "total_available_unknown": false,
+        },
+        "result_count": 1,
+        "limit": 1,
+        "omitted_count": 0,
+        "timings": agent_timings_from_wall_ms(wall_ms),
+        "warnings": warnings,
+        "errors": [],
+        "limits": {
+            "max_output_bytes_target": INDEX_AGENT_JSON_SIZE_TARGET_BYTES,
+        },
+    }))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IndexGraphCounts {
+    source_spans: Option<u64>,
+}
+
+fn index_graph_counts(summary: &IndexSummary) -> IndexGraphCounts {
+    match graph_counts_for_db(Path::new(&summary.db_path)) {
+        Ok((_, _, source_spans)) => IndexGraphCounts {
+            source_spans: Some(source_spans),
+        },
+        Err(_) => IndexGraphCounts { source_spans: None },
+    }
+}
+
+fn index_summary_claimable(summary: &IndexSummary) -> bool {
+    summary
+        .db_lifecycle
+        .as_ref()
+        .map(|lifecycle| lifecycle.claimable)
+        .unwrap_or(false)
+}
+
+fn index_lifecycle_summary_json(summary: &IndexSummary) -> Value {
+    let claimable = index_summary_claimable(summary);
+    let mut object = serde_json::Map::new();
+    object.insert("claimable".to_string(), json!(claimable));
+    object.insert("diagnostic_only".to_string(), json!(!claimable));
+    if let Some(lifecycle) = summary.db_lifecycle.as_ref() {
+        object.insert("mode".to_string(), json!(lifecycle.mode));
+        object.insert("decision".to_string(), json!(lifecycle.decision));
+        object.insert(
+            "passport_status".to_string(),
+            json!(lifecycle.passport_status),
+        );
+        object.insert("old_db_used".to_string(), json!(lifecycle.old_db_used));
+        object.insert(
+            "old_db_replaced".to_string(),
+            json!(lifecycle.old_db_replaced),
+        );
+        object.insert(
+            "explicit_db_path".to_string(),
+            json!(lifecycle.explicit_db_path),
+        );
+        object.insert("reasons_count".to_string(), json!(lifecycle.reasons.len()));
+        if let Some(preflight) = lifecycle.preflight.as_ref() {
+            if let Some(kind) = preflight.db_problem_kind.as_deref() {
+                object.insert("db_problem_kind".to_string(), json!(kind));
+            }
+            object.insert(
+                "path_access_status".to_string(),
+                json!(preflight.path_access_status),
+            );
+            object.insert(
+                "schema_status".to_string(),
+                json!(preflight.passport_status),
+            );
+            object.insert(
+                "sidecar_status".to_string(),
+                json!(preflight.sidecar_status),
+            );
+            if let Some(schema_version) = preflight.schema_version {
+                object.insert("db_schema_version".to_string(), json!(schema_version));
+            }
+        }
+    } else {
+        object.insert("decision".to_string(), json!("unknown"));
+    }
+    Value::Object(object)
+}
+
+fn index_file_counts_json(summary: &IndexSummary) -> Value {
+    json!({
+        "seen": summary.files_seen,
+        "walked": summary.files_walked,
+        "metadata_unchanged": summary.files_metadata_unchanged,
+        "read": summary.files_read,
+        "hashed": summary.files_hashed,
+        "parsed": summary.files_parsed,
+        "indexed": summary.files_indexed,
+        "skipped": summary.files_skipped,
+        "deleted": summary.files_deleted,
+        "renamed": summary.files_renamed,
+        "stale_deleted": summary.stale_files_deleted,
+        "failed_deleted": summary.failed_files_deleted,
+        "parse_errors": summary.parse_errors,
+        "syntax_errors": summary.syntax_errors,
+    })
+}
+
+fn index_graph_counts_json(summary: &IndexSummary, source_spans: Option<u64>) -> Value {
+    let mut object = serde_json::Map::new();
+    object.insert("entities".to_string(), json!(summary.entities));
+    object.insert("edges".to_string(), json!(summary.edges));
+    object.insert(
+        "duplicate_edges_upserted".to_string(),
+        json!(summary.duplicate_edges_upserted),
+    );
+    if let Some(source_spans) = source_spans {
+        object.insert("source_spans".to_string(), json!(source_spans));
+    }
+    Value::Object(object)
+}
+
+fn index_timing_summary_json(summary: &IndexSummary, wall_ms: f64) -> Value {
+    let mut object = serde_json::Map::new();
+    object.insert("wall_ms".to_string(), json!(wall_ms));
+    object.insert(
+        "profile_available".to_string(),
+        json!(summary.profile.is_some()),
+    );
+    if let Some(profile) = summary.profile.as_ref() {
+        object.insert("total_wall_ms".to_string(), json!(profile.total_wall_ms));
+        object.insert(
+            "file_discovery_ms".to_string(),
+            json!(profile.file_discovery_ms),
+        );
+        object.insert("parse_ms".to_string(), json!(profile.parse_ms));
+        object.insert("extraction_ms".to_string(), json!(profile.extraction_ms));
+        object.insert("db_write_ms".to_string(), json!(profile.db_write_ms));
+        object.insert("worker_count".to_string(), json!(profile.worker_count));
+    }
+    Value::Object(object)
+}
+
+fn index_warning_count(summary: &IndexSummary) -> usize {
+    summary
+        .scope
+        .as_ref()
+        .map(|scope| scope.warnings)
+        .unwrap_or_default()
+        + summary.issues.len()
+        + summary.parse_errors
+        + summary.syntax_errors
+}
+
+fn index_warning_messages(summary: &IndexSummary) -> Vec<Value> {
+    let mut warnings = Vec::new();
+    if let Some(scope) = summary.scope.as_ref() {
+        if scope.warnings > 0 {
+            warnings.push(json!({
+                "code": "scope_warnings",
+                "message": format!("index scope produced {} warning(s)", scope.warnings),
+                "severity": "warning",
+            }));
+        }
+    }
+    if summary.parse_errors > 0 {
+        warnings.push(json!({
+            "code": "parse_errors",
+            "message": format!("{} file(s) had parse errors", summary.parse_errors),
+            "severity": "warning",
+        }));
+    }
+    if summary.syntax_errors > 0 {
+        warnings.push(json!({
+            "code": "syntax_errors",
+            "message": format!("{} syntax error(s) were observed", summary.syntax_errors),
+            "severity": "warning",
+        }));
+    }
+    if !summary.issues.is_empty() {
+        warnings.push(json!({
+            "code": "index_issues",
+            "message": format!("{} index issue(s) were recorded", summary.issues.len()),
+            "severity": "warning",
+        }));
+    }
+    warnings.truncate(8);
+    warnings
+}
+
+fn index_scope_summary_json(summary: &IndexSummary) -> Value {
+    let Some(scope) = summary.scope.as_ref() else {
+        return json!({
+            "available": false,
+            "examples_included": false,
+        });
+    };
+    json!({
+        "available": true,
+        "default_excludes_enabled": scope.default_excludes_enabled,
+        "include_ignored": scope.include_ignored,
+        "no_default_excludes": scope.no_default_excludes,
+        "respect_gitignore": scope.respect_gitignore,
+        "include_patterns_count": scope.include_patterns.len(),
+        "exclude_patterns_count": scope.exclude_patterns.len(),
+        "paths_evaluated": scope.paths_evaluated,
+        "files_included": scope.files_included,
+        "paths_excluded": scope.paths_excluded,
+        "files_excluded": scope.files_excluded,
+        "warnings": scope.warnings,
+        "included_examples_count": scope.included_examples.len(),
+        "excluded_examples_count": scope.excluded_examples.len(),
+        "warning_examples_count": scope.warning_examples.len(),
+        "directory_prune_decisions_count": scope.directory_prune_decisions.len(),
+        "examples_included": false,
+    })
+}
+
+fn index_artifact_freshness_json(summary: &IndexSummary) -> Value {
+    let Some(lifecycle) = summary.db_lifecycle.as_ref() else {
+        return json!({
+            "status": "unknown",
+        });
+    };
+    let status = if lifecycle.decision.contains("fresh") {
+        "fresh"
+    } else if lifecycle.old_db_used {
+        "warm_reuse"
+    } else {
+        "unknown"
+    };
+    json!({
+        "status": status,
+        "decision": lifecycle.decision,
+        "mode": lifecycle.mode,
+        "passport_status": lifecycle.passport_status,
+        "claimable": lifecycle.claimable,
+        "old_db_used": lifecycle.old_db_used,
+        "old_db_replaced": lifecycle.old_db_replaced,
+        "explicit_db_path": lifecycle.explicit_db_path,
+    })
 }
 
 fn detect_tooling(repo_root: &Path) -> Result<Vec<String>, String> {
@@ -15532,6 +18617,7 @@ fn not_implemented_json(command: &CommandSpec, args: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeSet,
         fs,
         io::{ErrorKind, Read, Write},
         net::{SocketAddr, TcpListener, TcpStream},
@@ -15545,8 +18631,9 @@ mod tests {
     };
 
     use codegraph_core::{
-        stable_edge_id, stable_entity_id_for_kind, Edge, EdgeClass, EdgeContext, Entity,
-        EntityKind, Exactness, RelationKind, SourceSpan,
+        stable_edge_id, stable_entity_id_for_kind, ContextPacket, ContextSnippet, Edge, EdgeClass,
+        EdgeContext, Entity, EntityKind, Exactness, Metadata, PathEvidence, RelationKind,
+        SourceSpan,
     };
     use codegraph_store::{GraphStore, SqliteGraphStore};
     use serde_json::{json, Value};
@@ -15555,13 +18642,15 @@ mod tests {
         benchmark_binary_metadata_for, benchmark_inspection_lifecycle_status, default_db_path,
         generate_large_synthetic_repo, generate_update_integrity_small_repo, index_repo,
         index_repo_to_db_with_options, index_repo_with_options, parse_call_relation_args,
-        parse_extract_pending_files, parse_index_options, path_string, percentile,
-        prepare_watch_startup, query_call_relation, regression_row,
-        render_comprehensive_benchmark_markdown, route_ui_request, run, run_doctor_command,
-        run_status_command, run_update_integrity_repo, serve_ui_loop, should_ignore_path,
-        should_start_new_index_batch, update_changed_files_with_cache, CallQueryDirection,
-        CallRelationQueryOptions, IncrementalIndexCache, IndexOptions, PendingIndexFile,
-        StorageMode, UiResponse, UpdateBenchmarkMode, UpdateLoopKind, WatchDebouncer, BIN_NAME,
+        parse_call_relation_args_with_output, parse_extract_pending_files, parse_index_options,
+        parse_list_query_args, path_string, percentile, prepare_watch_startup, query_call_relation,
+        query_call_relation_with_output, query_files_with_options, query_symbols_with_options,
+        query_text_with_options, regression_row, render_comprehensive_benchmark_markdown,
+        route_ui_request, run, run_doctor_command, run_status_command, run_update_integrity_repo,
+        serve_ui_loop, should_ignore_path, should_start_new_index_batch,
+        update_changed_files_with_cache, CallQueryDirection, CallRelationQueryOptions,
+        IncrementalIndexCache, IndexOptions, PendingIndexFile, QueryOutputMode, StorageMode,
+        UiResponse, UpdateBenchmarkMode, UpdateLoopKind, WatchDebouncer, BIN_NAME,
         DEFAULT_INDEX_BATCH_MAX_FILES, DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, SCHEMA_VERSION,
     };
 
@@ -15910,6 +18999,169 @@ mod tests {
         assert!(options.scope.explain_scope);
         assert!(options.scope.print_included);
         assert!(options.scope.print_excluded);
+    }
+
+    #[test]
+    fn index_json_concise_output_excludes_scope_examples_by_default() {
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+        let value = run_index_output_json(
+            &repo,
+            &db,
+            &["--fresh", "--json", "--exclude", "src/excluded.ts"],
+        );
+
+        assert_eq!(value["status"].as_str(), Some("indexed"));
+        assert_eq!(value["schema_version"].as_u64(), Some(1));
+        assert_eq!(value["output_mode"].as_str(), Some("concise"));
+        assert!(value["repo_root"].as_str().is_some());
+        assert!(value["db_path"].as_str().is_some());
+        assert_eq!(value["scope"]["examples_included"].as_bool(), Some(false));
+        assert!(value["scope"]["included_examples"].is_null());
+        assert!(value["scope"]["excluded_examples"].is_null());
+        assert!(value["db_lifecycle"]["decision"].as_str().is_some());
+        assert!(value["db_lifecycle"]["preflight"].is_null());
+        assert!(value["lifecycle"]["claimable"].as_bool().is_some());
+        assert!(value["counts"]["files"]["seen"].as_u64().is_some());
+        assert!(value["counts"]["graph"]["entities"].as_u64().is_some());
+        assert!(value["counts"]["graph"]["edges"].as_u64().is_some());
+        assert!(value["counts"]["graph"]["source_spans"].as_u64().is_some());
+        assert!(value["timing"]["wall_ms"].as_f64().is_some());
+        assert!(
+            serde_json::to_vec(&value).expect("serialize").len()
+                < super::INDEX_CONCISE_JSON_SIZE_TARGET_BYTES,
+            "{value}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn index_json_scope_audit_flags_preserve_examples() {
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+
+        let explain = run_index_output_json(
+            &repo,
+            &db,
+            &[
+                "--fresh",
+                "--json",
+                "--explain-scope",
+                "--exclude",
+                "src/excluded.ts",
+            ],
+        );
+        assert_eq!(explain["status"].as_str(), Some("indexed"));
+        assert!(explain["scope"]["included_examples"]
+            .as_array()
+            .is_some_and(|examples| !examples.is_empty()));
+        assert!(explain["scope"]["excluded_examples"]
+            .as_array()
+            .is_some_and(|examples| !examples.is_empty()));
+
+        let included =
+            run_index_output_json(&repo, &db, &["--fresh", "--json", "--print-included"]);
+        assert!(included["scope"]["included_examples"]
+            .as_array()
+            .is_some_and(|examples| !examples.is_empty()));
+
+        let excluded = run_index_output_json(
+            &repo,
+            &db,
+            &[
+                "--fresh",
+                "--json",
+                "--print-excluded",
+                "--exclude",
+                "src/excluded.ts",
+            ],
+        );
+        assert!(excluded["scope"]["excluded_examples"]
+            .as_array()
+            .is_some_and(|examples| !examples.is_empty()));
+
+        let audit = run_index_output_json(&repo, &db, &["--fresh", "--audit-json"]);
+        assert!(audit["scope"]["included_examples"].is_array());
+        assert!(audit["db_lifecycle"].is_object());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn index_agent_json_follows_compact_schema() {
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+        let value = run_index_output_json(&repo, &db, &["--fresh", "--agent-json"]);
+
+        assert_eq!(value["schema_name"].as_str(), Some("index_agent_json"));
+        assert_eq!(value["schema_version"].as_u64(), Some(1));
+        assert_eq!(value["status"].as_str(), Some("ok"));
+        assert_eq!(value["output_mode"].as_str(), Some("agent_json"));
+        assert_agent_json_contract(
+            &value,
+            "index_agent_json",
+            "index",
+            super::INDEX_AGENT_JSON_SIZE_TARGET_BYTES,
+        );
+        assert!(value["lifecycle"]["claimable"].as_bool().is_some());
+        assert!(value["summary"]["repo"].as_str().is_some());
+        assert!(value["summary"]["db_path"].as_str().is_some());
+        assert!(value["summary"]["files_seen"].as_u64().is_some());
+        assert!(value["summary"]["files_indexed"].as_u64().is_some());
+        assert!(value["summary"]["source_spans"].as_u64().is_some());
+        assert!(value["summary"]["scope"]["included_examples"].is_null());
+        assert!(value["summary"]["scope"]["excluded_examples"].is_null());
+        assert_eq!(value["truncation"]["limit_applied"].as_bool(), Some(false));
+        assert!(
+            serde_json::to_vec(&value).expect("serialize").len()
+                < super::INDEX_AGENT_JSON_SIZE_TARGET_BYTES
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn warm_noop_index_json_stays_below_concise_size_target() {
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+        let _cold = run_index_output_json(&repo, &db, &["--fresh", "--json"]);
+        let warm = run_index_output_json(&repo, &db, &["--incremental", "--json"]);
+
+        assert_eq!(warm["output_mode"].as_str(), Some("concise"));
+        assert_eq!(warm["scope"]["included_examples"].is_null(), true);
+        assert_eq!(warm["scope"]["excluded_examples"].is_null(), true);
+        let bytes = serde_json::to_vec(&warm).expect("serialize").len();
+        assert!(
+            bytes < super::INDEX_CONCISE_JSON_SIZE_TARGET_BYTES,
+            "warm no-op concise JSON was {bytes} bytes: {warm}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn parse_index_command_options_accepts_agent_json_and_audit_json() {
+        let agent = vec![".".to_string(), "--agent-json".to_string()];
+        let (_, _, options, mode) =
+            super::parse_index_command_options(&agent).expect("parse agent index options");
+        assert!(options.json);
+        assert_eq!(mode, super::IndexJsonOutputMode::Agent);
+
+        let audit = vec![".".to_string(), "--audit-json".to_string()];
+        let (_, _, options, mode) =
+            super::parse_index_command_options(&audit).expect("parse audit index options");
+        assert!(options.json);
+        assert_eq!(mode, super::IndexJsonOutputMode::Audit);
+
+        let explain = vec![
+            ".".to_string(),
+            "--json".to_string(),
+            "--explain-scope".to_string(),
+        ];
+        let (_, _, _, mode) =
+            super::parse_index_command_options(&explain).expect("parse explain index options");
+        assert_eq!(mode, super::IndexJsonOutputMode::Audit);
     }
 
     #[test]
@@ -16365,6 +19617,19 @@ mod tests {
             .contains("Register-ArgumentCompleter"));
 
         fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn doctor_rejects_misplaced_db_global_with_targeted_error() {
+        let output = run([BIN_NAME, "doctor", "--db", "graph.sqlite"]);
+
+        assert_eq!(output.exit_code, 1);
+        let error: Value = serde_json::from_str(&output.stderr).expect("error JSON");
+        assert_eq!(error["error"].as_str(), Some("doctor_failed"));
+        assert!(error["message"]
+            .as_str()
+            .expect("message")
+            .contains("--db is a global flag"));
     }
 
     #[test]
@@ -17038,6 +20303,269 @@ mod tests {
     }
 
     #[test]
+    fn query_symbols_agent_json_is_compact_limited_and_does_not_swallow_flags() {
+        let fixture = caller_callee_precision_fixture();
+        let args = vec![
+            "target".to_string(),
+            "--limit".to_string(),
+            "1".to_string(),
+            "--agent-json".to_string(),
+            "--json".to_string(),
+        ];
+        let options = parse_list_query_args("symbols", &args).expect("parse query options");
+        assert_eq!(options.query, "target");
+        assert_eq!(options.limit, 1);
+        assert_eq!(options.fetch_limit(), 2);
+        assert_eq!(options.output_mode, QueryOutputMode::AgentJson);
+
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+            "passport_status": "valid",
+            "schema_status": "valid",
+            "scope_status": "match",
+        });
+        let result =
+            query_symbols_with_options(&fixture.repo, &options, Some(&lifecycle)).expect("query");
+
+        assert_eq!(
+            result["schema_name"].as_str(),
+            Some("query_symbols_agent_json")
+        );
+        assert_eq!(result["schema_version"].as_u64(), Some(1));
+        assert_eq!(result["status"].as_str(), Some("ok"));
+        assert_agent_json_contract(
+            &result,
+            "query_symbols_agent_json",
+            "query symbols",
+            super::QUERY_AGENT_JSON_SIZE_TARGET_BYTES,
+        );
+        assert_eq!(result["query"]["text"].as_str(), Some("target"));
+        assert_eq!(result["result_count"].as_u64(), Some(1));
+        assert_eq!(result["limit"].as_u64(), Some(1));
+        assert!(result["db_lifecycle_read"].is_null());
+        let results = result["results"].as_array().expect("results");
+        assert_eq!(results.len(), 1, "{result:?}");
+        assert!(results[0]["file"].as_str().is_some());
+        assert!(results[0]["symbol"].as_str().is_some());
+        assert!(results[0]["kind"].as_str().is_some());
+        assert!(results[0]["score"].as_f64().is_some());
+        assert!(results[0]["evidence_role"].as_str().is_some());
+        assert!(result["lifecycle"]["claimable"].as_bool().unwrap_or(false));
+        assert!(!result["lifecycle"]["diagnostic_only"]
+            .as_bool()
+            .unwrap_or(true));
+        let diagnostic_result =
+            query_symbols_with_options(&fixture.repo, &options, None).expect("query diagnostic");
+        assert_eq!(
+            diagnostic_result["claimable"].as_bool(),
+            Some(false),
+            "{diagnostic_result}"
+        );
+        assert_eq!(
+            diagnostic_result["diagnostic_only"].as_bool(),
+            Some(true),
+            "{diagnostic_result}"
+        );
+
+        fs::remove_dir_all(fixture.repo).expect("cleanup");
+    }
+
+    #[test]
+    fn query_compact_parsers_apply_documented_default_limits() {
+        let normal = parse_list_query_args(
+            "symbols",
+            &["knownSymbol".to_string(), "--json".to_string()],
+        )
+        .expect("parse normal json");
+        assert_eq!(normal.query, "knownSymbol");
+        assert_eq!(normal.limit, 10);
+
+        let agent = parse_list_query_args(
+            "symbols",
+            &["knownSymbol".to_string(), "--agent-json".to_string()],
+        )
+        .expect("parse agent json");
+        assert_eq!(agent.query, "knownSymbol");
+        assert_eq!(agent.limit, 5);
+        assert_eq!(agent.fetch_limit(), 6);
+
+        let callers = parse_call_relation_args_with_output(
+            "callers",
+            &["knownSymbol".to_string(), "--agent-json".to_string()],
+        )
+        .expect("parse callers");
+        assert_eq!(callers.output.limit, 5);
+        assert_eq!(callers.options.limit, 6);
+    }
+
+    #[test]
+    fn query_parsers_reject_misplaced_globals_and_escape_literal_flags() {
+        let misplaced_db = parse_list_query_args(
+            "symbols",
+            &[
+                "knownSymbol".to_string(),
+                "--db".to_string(),
+                "graph.sqlite".to_string(),
+            ],
+        )
+        .expect_err("misplaced --db should be rejected");
+        assert!(misplaced_db.contains("--db is a global flag"));
+        assert!(misplaced_db.contains("codegraph-mcp --db <path> query ..."));
+
+        let misplaced_repo = super::reject_misplaced_global_flags_in_query_args(&[
+            "symbols".to_string(),
+            "knownSymbol".to_string(),
+            "--repo".to_string(),
+            ".".to_string(),
+        ])
+        .expect_err("misplaced --repo should be rejected before DB preflight");
+        assert!(misplaced_repo.contains("--repo is a global flag"));
+
+        let literal = parse_list_query_args(
+            "text",
+            &[
+                "--agent-json".to_string(),
+                "--".to_string(),
+                "--db".to_string(),
+            ],
+        )
+        .expect("literal flag-like query term");
+        assert_eq!(literal.query, "--db");
+        assert_eq!(literal.output_mode, QueryOutputMode::AgentJson);
+
+        let relation_literal = parse_call_relation_args_with_output(
+            "callers",
+            &["--".to_string(), "--db".to_string()],
+        )
+        .expect("literal flag-like relation symbol");
+        assert_eq!(relation_literal.options.query.as_deref(), Some("--db"));
+    }
+
+    #[test]
+    fn query_text_and_files_agent_json_use_same_compact_contract() {
+        let fixture = caller_callee_precision_fixture();
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+        });
+
+        let text_args = vec![
+            "seed".to_string(),
+            "--limit=5".to_string(),
+            "--agent-json".to_string(),
+        ];
+        let text_options = parse_list_query_args("text", &text_args).expect("parse text");
+        assert_eq!(text_options.query, "seed");
+        let text =
+            query_text_with_options(&fixture.repo, &text_options, Some(&lifecycle)).expect("text");
+        assert_eq!(text["schema_name"].as_str(), Some("query_text_agent_json"));
+        assert_agent_json_contract(
+            &text,
+            "query_text_agent_json",
+            "query text",
+            super::QUERY_AGENT_JSON_SIZE_TARGET_BYTES,
+        );
+        assert!(text["results"].as_array().expect("text results").len() <= 5);
+        assert_eq!(text["truncation"]["limit"].as_u64(), Some(5));
+
+        let file_args = vec![
+            "seed.ts".to_string(),
+            "--agent-json".to_string(),
+            "--limit".to_string(),
+            "5".to_string(),
+        ];
+        let file_options = parse_list_query_args("files", &file_args).expect("parse files");
+        assert_eq!(file_options.query, "seed.ts");
+        let files = query_files_with_options(&fixture.repo, &file_options, Some(&lifecycle))
+            .expect("files");
+        assert_eq!(
+            files["schema_name"].as_str(),
+            Some("query_files_agent_json")
+        );
+        assert_agent_json_contract(
+            &files,
+            "query_files_agent_json",
+            "query files",
+            super::QUERY_AGENT_JSON_SIZE_TARGET_BYTES,
+        );
+        assert!(files["results"].as_array().expect("file results").len() <= 5);
+        assert!(files["results"][0]["file"].as_str().is_some());
+
+        fs::remove_dir_all(fixture.repo).expect("cleanup");
+    }
+
+    #[test]
+    fn query_symbols_verbose_keeps_rich_output_available() {
+        let fixture = caller_callee_precision_fixture();
+        let args = vec!["target".to_string(), "--verbose".to_string()];
+        let options = parse_list_query_args("symbols", &args).expect("parse query options");
+        assert_eq!(options.output_mode, QueryOutputMode::RichJson);
+        assert_eq!(options.limit, 20);
+
+        let result = query_symbols_with_options(&fixture.repo, &options, None).expect("query");
+        assert_eq!(result["status"].as_str(), Some("ok"));
+        assert!(result["hits"].is_array());
+        assert!(result["ranking"].is_array());
+        assert!(result["proof"].as_str().is_some());
+        assert!(result["schema_name"].is_null());
+
+        fs::remove_dir_all(fixture.repo).expect("cleanup");
+    }
+
+    #[test]
+    fn callers_agent_json_is_limited_and_compact() {
+        let fixture = caller_callee_precision_fixture();
+        let args = vec![
+            "--fuzzy".to_string(),
+            "target".to_string(),
+            "--limit".to_string(),
+            "1".to_string(),
+            "--agent-json".to_string(),
+        ];
+        let parsed = parse_call_relation_args_with_output("callers", &args).expect("parse callers");
+        assert_eq!(parsed.output.limit, 1);
+        assert_eq!(parsed.options.limit, 2);
+        assert_eq!(parsed.output.output_mode, QueryOutputMode::AgentJson);
+
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+        });
+        let result = query_call_relation_with_output(
+            &fixture.repo,
+            parsed,
+            CallQueryDirection::Callers,
+            Some(&lifecycle),
+        )
+        .expect("query callers");
+
+        assert_eq!(
+            result["schema_name"].as_str(),
+            Some("callers_callees_agent_json")
+        );
+        assert_agent_json_contract(
+            &result,
+            "callers_callees_agent_json",
+            "query callers-callees",
+            super::QUERY_AGENT_JSON_SIZE_TARGET_BYTES,
+        );
+        assert_eq!(result["direction"].as_str(), Some("callers"));
+        assert_eq!(result["result_count"].as_u64(), Some(1));
+        assert_eq!(result["limit"].as_u64(), Some(1));
+        assert!(result["results"].as_array().expect("results").len() <= 1);
+        assert!(result["results"][0]["edge"]["evidence_role"]
+            .as_str()
+            .is_some());
+        assert!(result["results"][0]["edge"]["source_spans"].is_array());
+
+        fs::remove_dir_all(fixture.repo).expect("cleanup");
+    }
+
+    #[test]
     fn callers_default_to_exact_results_when_symbol_is_unambiguous() {
         let fixture = caller_callee_precision_fixture();
 
@@ -17222,6 +20750,520 @@ mod tests {
         fs::remove_dir_all(fixture.repo).expect("cleanup");
     }
 
+    #[test]
+    fn context_pack_old_path_without_source_role_metadata_is_unknown_not_production() {
+        let span = SourceSpan::with_columns("src/lib.rs", 8, 5, 8, 17);
+        let mut metadata = Metadata::new();
+        metadata.insert("path_context".to_string(), json!("production"));
+        let path = PathEvidence {
+            id: "legacy-path".to_string(),
+            summary: None,
+            source: "src::lib.legacy".to_string(),
+            target: "src::lib.prod_value".to_string(),
+            metapath: vec![RelationKind::Calls],
+            edges: vec![(
+                "src::lib.legacy".to_string(),
+                RelationKind::Calls,
+                "src::lib.prod_value".to_string(),
+            )],
+            source_spans: vec![span],
+            exactness: Exactness::ParserVerified,
+            length: 1,
+            confidence: 1.0,
+            metadata,
+        };
+        let budgets = super::ContextPackBudgets::for_mode("impact");
+
+        let production =
+            super::filter_and_sort_context_path_evidence(vec![path.clone()], "impact", budgets);
+        assert!(
+            production.is_empty(),
+            "missing source-role metadata must not be accepted as production proof"
+        );
+
+        let debug = super::filter_and_sort_context_path_evidence(vec![path], "debug", budgets);
+        let debug_path = debug.first().expect("debug keeps unknown evidence");
+        assert_eq!(
+            debug_path
+                .metadata
+                .get("evidence_role")
+                .and_then(Value::as_str),
+            Some("unknown")
+        );
+        assert_eq!(
+            debug_path
+                .metadata
+                .get("classification_source")
+                .and_then(Value::as_str),
+            Some("fallback")
+        );
+    }
+
+    #[test]
+    fn context_pack_hydrates_inline_test_role_from_endpoint_qualified_name() {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::write(
+            repo.join("src").join("lib.rs"),
+            "pub fn prod_value() -> i32 { 1 }\n",
+        )
+        .expect("write seed");
+        index_repo(&repo).expect("index repo");
+        let db_path = default_db_path(&repo);
+        let store = SqliteGraphStore::open(&db_path).expect("open store");
+
+        let inline_test = test_function_entity(
+            "src/lib.rs",
+            "calls_prod_value",
+            "src::lib.tests.calls_prod_value",
+            12,
+        );
+        let production = test_function_entity("src/lib.rs", "prod_value", "src::lib.prod_value", 1);
+        store
+            .upsert_entity(&inline_test)
+            .expect("upsert test entity");
+        store
+            .upsert_entity(&production)
+            .expect("upsert production entity");
+        let edge = test_call_edge(&inline_test, &production, "src/lib.rs", 13);
+        store.upsert_edge(&edge).expect("upsert edge");
+
+        let mut metadata = Metadata::new();
+        metadata.insert("path_context".to_string(), json!("production"));
+        metadata.insert(
+            "production_test_mock_labels".to_string(),
+            json!(["production"]),
+        );
+        metadata.insert(
+            "edge_labels".to_string(),
+            json!([{
+                "edge_id": edge.id.clone(),
+                "relation": "CALLS",
+                "source_span": edge.source_span.to_string(),
+                "exactness": "parser_verified",
+                "confidence": 1.0,
+                "derived": false,
+                "edge_class": "base_exact",
+                "fact_class": "base_exact",
+                "context": "production",
+                "provenance_edges": []
+            }]),
+        );
+        let path = PathEvidence {
+            id: "inline-test-path".to_string(),
+            summary: None,
+            source: inline_test.id.clone(),
+            target: production.id.clone(),
+            metapath: vec![RelationKind::Calls],
+            edges: vec![(
+                inline_test.id.clone(),
+                RelationKind::Calls,
+                production.id.clone(),
+            )],
+            source_spans: vec![edge.source_span.clone()],
+            exactness: Exactness::ParserVerified,
+            length: 1,
+            confidence: 1.0,
+            metadata,
+        };
+        store.upsert_path_evidence(&path).expect("upsert path");
+        drop(store);
+
+        let connection = rusqlite::Connection::open(&db_path).expect("open connection");
+        let budgets = super::ContextPackBudgets::for_mode("impact");
+        let production_paths = super::load_stored_context_path_evidence(
+            &connection,
+            &[production.id.clone()],
+            "impact",
+            budgets,
+        )
+        .expect("load production paths");
+        assert!(
+            production_paths.is_empty(),
+            "endpoint qname tests module should exclude inline test evidence"
+        );
+
+        let test_paths = super::load_stored_context_path_evidence(
+            &connection,
+            &[production.id.clone()],
+            "test-impact",
+            budgets,
+        )
+        .expect("load test-impact paths");
+        let hydrated = test_paths
+            .iter()
+            .find(|path| path.id == "inline-test-path")
+            .expect("test-impact includes hydrated inline test path");
+        assert_eq!(
+            hydrated
+                .metadata
+                .get("evidence_role")
+                .and_then(Value::as_str),
+            Some("mixed")
+        );
+        let first_label = hydrated
+            .metadata
+            .get("edge_labels")
+            .and_then(Value::as_array)
+            .and_then(|labels| labels.first())
+            .expect("edge label");
+        assert_eq!(first_label["head_source_role"].as_str(), Some("test"));
+        assert!(first_label["classification_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("tests module")));
+
+        drop(connection);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn context_pack_production_snippets_exclude_inline_test_spans() {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::write(
+            repo.join("src").join("lib.rs"),
+            r#"pub fn prod_value() -> i32 {
+    1
+}
+
+pub fn prod_neighbor() -> i32 {
+    prod_value() + 1
+}
+
+#[test]
+fn standalone_test() {
+    prod_value();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prod_value_test_shadow() -> i32 {
+        prod_value()
+    }
+
+    #[test]
+    fn calls_prod_value() {
+        prod_value_test_shadow();
+        prod_value();
+    }
+}
+"#,
+        )
+        .expect("write inline test fixture");
+
+        let production_span = SourceSpan::with_columns("src/lib.rs", 6, 5, 6, 17);
+        let test_span = SourceSpan::with_columns("src/lib.rs", 19, 9, 19, 21);
+        let production_path = PathEvidence {
+            id: "production-path".to_string(),
+            summary: None,
+            source: "src::lib.prod_neighbor".to_string(),
+            target: "src::lib.prod_value".to_string(),
+            metapath: vec![RelationKind::Calls],
+            edges: vec![(
+                "src::lib.prod_neighbor".to_string(),
+                RelationKind::Calls,
+                "src::lib.prod_value".to_string(),
+            )],
+            source_spans: vec![production_span],
+            exactness: Exactness::ParserVerified,
+            length: 1,
+            confidence: 1.0,
+            metadata: {
+                let mut metadata = Metadata::new();
+                metadata.insert(
+                    "edge_labels".to_string(),
+                    json!([{
+                        "evidence_role": "production",
+                        "classification_source": "stored_metadata",
+                        "classification_reason": "source role metadata"
+                    }]),
+                );
+                metadata
+            },
+        };
+        let test_path = PathEvidence {
+            id: "inline-test-path".to_string(),
+            summary: None,
+            source: "src::lib.tests.prod_value_test_shadow".to_string(),
+            target: "src::lib.prod_value".to_string(),
+            metapath: vec![RelationKind::Calls],
+            edges: vec![(
+                "src::lib.tests.prod_value_test_shadow".to_string(),
+                RelationKind::Calls,
+                "src::lib.prod_value".to_string(),
+            )],
+            source_spans: vec![test_span],
+            exactness: Exactness::ParserVerified,
+            length: 1,
+            confidence: 1.0,
+            metadata: {
+                let mut metadata = Metadata::new();
+                metadata.insert(
+                    "edge_labels".to_string(),
+                    json!([{
+                        "evidence_role": "test",
+                        "classification_source": "endpoint:qualified_name",
+                        "classification_reason": "qualified name contains tests module"
+                    }]),
+                );
+                metadata
+            },
+        };
+        let budgets = super::ContextPackBudgets::for_mode("impact");
+        let production_paths = super::filter_and_sort_context_path_evidence(
+            vec![production_path.clone(), test_path.clone()],
+            "impact",
+            budgets,
+        );
+        assert!(
+            production_paths.iter().all(|path| {
+                path.metadata
+                    .get("evidence_role")
+                    .and_then(Value::as_str)
+                    .is_some_and(|role| role == "production")
+            }),
+            "{production_paths:?}"
+        );
+        let requested_spans = super::context_source_spans_for_paths(&production_paths);
+        assert_eq!(requested_spans.len(), 1);
+        assert_eq!(requested_spans[0].start_line, 6);
+        let (_, production_snippets, _, _) =
+            super::load_context_sources_and_snippets(&repo, &requested_spans, 24)
+                .expect("load production snippets");
+        assert!(!production_snippets.is_empty());
+        for snippet in &production_snippets {
+            let text = snippet.text.as_str();
+            assert!(!text.contains("#[test]"), "{text}");
+            assert!(!text.contains("standalone_test"), "{text}");
+            assert!(!text.contains("mod tests"), "{text}");
+            assert!(!text.contains("prod_value_test_shadow"), "{text}");
+            assert!(!text.contains("calls_prod_value"), "{text}");
+        }
+
+        let test_paths = super::filter_and_sort_context_path_evidence(
+            vec![production_path, test_path],
+            "test-impact",
+            budgets,
+        );
+        assert!(
+            test_paths.iter().any(|path| {
+                matches!(
+                    path.metadata.get("evidence_role").and_then(Value::as_str),
+                    Some("test" | "mock" | "mixed")
+                )
+            }),
+            "{test_paths:?}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn context_pack_compact_parser_supports_agent_limits_and_verbose_audit() {
+        let agent = super::parse_context_pack_args(&[
+            "--task".to_string(),
+            "Change prod_value".to_string(),
+            "--mode".to_string(),
+            "production".to_string(),
+            "--seed".to_string(),
+            "prod_value".to_string(),
+            "--agent-json".to_string(),
+            "--limit-paths".to_string(),
+            "3".to_string(),
+            "--limit-snippets".to_string(),
+            "2".to_string(),
+            "--max-output-bytes".to_string(),
+            "4096".to_string(),
+        ])
+        .expect("parse agent context-pack");
+
+        assert_eq!(agent.mode, "production");
+        assert_eq!(agent.output_mode, QueryOutputMode::AgentJson);
+        assert_eq!(agent.limit_paths, Some(3));
+        assert_eq!(agent.limit_snippets, Some(2));
+        assert_eq!(agent.max_output_bytes, Some(4096));
+        let budgets = super::ContextPackBudgets::for_options(&agent);
+        assert_eq!(budgets.max_returned_proof_paths, 3);
+        assert_eq!(budgets.max_snippets, 2);
+
+        let verbose = super::parse_context_pack_args(&[
+            "--task".to_string(),
+            "Change prod_value".to_string(),
+            "--verbose".to_string(),
+        ])
+        .expect("parse verbose context-pack");
+        assert_eq!(verbose.output_mode, QueryOutputMode::RichJson);
+        assert!(verbose.profile);
+    }
+
+    #[test]
+    fn context_pack_agent_json_is_compact_and_proof_labeled() {
+        let options = context_agent_test_options("production", Some(2), Some(2), None);
+        let packet = context_agent_test_packet("production", 1, 1, "production");
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+            "passport_status": "valid",
+        });
+        let result = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+
+        assert_eq!(
+            result["schema_name"].as_str(),
+            Some("context_pack_agent_json")
+        );
+        assert_eq!(result["schema_version"].as_u64(), Some(1));
+        assert_eq!(result["status"].as_str(), Some("ok"));
+        assert_agent_json_contract(
+            &result,
+            "context_pack_agent_json",
+            "context-pack",
+            super::DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES,
+        );
+        assert_eq!(result["mode"].as_str(), Some("production"));
+        assert_eq!(result["claimable"].as_bool(), Some(true));
+        assert_eq!(result["diagnostic_only"].as_bool(), Some(false));
+        assert_eq!(result["lifecycle"]["claimable"].as_bool(), Some(true));
+        assert!(result.get("db_lifecycle_read").is_none());
+        assert!(result.get("profile").is_none());
+
+        let paths = result["paths"].as_array().expect("paths");
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0]["evidence_role"].as_str(), Some("production"));
+        assert_eq!(
+            paths[0]["classification_reason"].as_str(),
+            Some("stored source-role metadata")
+        );
+        assert_eq!(paths[0]["production_proof_eligible"].as_bool(), Some(true));
+        assert!(paths[0].get("summary").is_none());
+        assert!(paths[0]["edges"][0]["source_spans"]
+            .as_array()
+            .is_some_and(|spans| !spans.is_empty()));
+
+        let snippets = result["snippets"].as_array().expect("snippets");
+        assert_eq!(snippets.len(), 1);
+        assert_eq!(snippets[0]["evidence_role"].as_str(), Some("production"));
+        assert_eq!(result["truncation"]["limit"].as_u64(), Some(2));
+        assert!(serialized_len_for_test(&result) <= super::DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn context_pack_agent_json_keeps_test_impact_labels_explicit() {
+        let options = context_agent_test_options("test-impact", Some(2), Some(2), None);
+        let packet = context_agent_test_packet("test-impact", 1, 1, "test");
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+        });
+        let result = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+
+        assert_eq!(result["mode"].as_str(), Some("test-impact"));
+        assert_eq!(result["paths"][0]["evidence_role"].as_str(), Some("test"));
+        assert_eq!(
+            result["paths"][0]["classification_reason"].as_str(),
+            Some("qualified name contains tests module")
+        );
+        assert_eq!(
+            result["snippets"][0]["evidence_role"].as_str(),
+            Some("test")
+        );
+    }
+
+    #[test]
+    fn context_pack_agent_json_respects_max_output_bytes_without_dropping_labels() {
+        let max_output_bytes = 4096usize;
+        let options =
+            context_agent_test_options("production", Some(8), Some(8), Some(max_output_bytes));
+        let packet = context_agent_test_packet("production", 10, 10, "production");
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+        });
+        let result = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+
+        assert!(
+            serialized_len_for_test(&result) <= max_output_bytes,
+            "{} bytes: {result}",
+            serialized_len_for_test(&result)
+        );
+        assert!(result["omitted_count"].as_u64().unwrap_or_default() > 0);
+        assert_eq!(result["truncation"]["limit_applied"].as_bool(), Some(true));
+        assert_eq!(
+            result["limits"]["max_output_bytes"].as_u64(),
+            Some(max_output_bytes as u64)
+        );
+        for path in result["paths"].as_array().expect("paths") {
+            assert!(path["evidence_role"].as_str().is_some());
+            assert!(path["classification_reason"].as_str().is_some());
+            assert!(path["source_spans"]
+                .as_array()
+                .is_some_and(|spans| !spans.is_empty()));
+        }
+    }
+
+    #[test]
+    fn context_pack_agent_json_production_excludes_inline_test_evidence() {
+        let production_path = context_agent_test_path("prod-path", 6, "production");
+        let test_path = context_agent_test_path("test-path", 18, "test");
+        let budgets = super::ContextPackBudgets::for_mode("production");
+
+        let production_paths = super::filter_and_sort_context_path_evidence(
+            vec![production_path.clone(), test_path.clone()],
+            "production",
+            budgets,
+        );
+        assert_eq!(production_paths.len(), 1);
+        assert_eq!(
+            production_paths[0]
+                .metadata
+                .get("evidence_role")
+                .and_then(Value::as_str),
+            Some("production")
+        );
+
+        let test_paths = super::filter_and_sort_context_path_evidence(
+            vec![production_path, test_path],
+            "test-impact",
+            budgets,
+        );
+        assert!(
+            test_paths.iter().any(|path| path
+                .metadata
+                .get("evidence_role")
+                .and_then(Value::as_str)
+                == Some("test")),
+            "{test_paths:?}"
+        );
+    }
+
     struct CallerCalleePrecisionFixture {
         repo: PathBuf,
         alpha_target_id: String,
@@ -17229,6 +21271,305 @@ mod tests {
         unique_target_id: String,
         alpha_caller_id: String,
         beta_caller_id: String,
+    }
+
+    fn context_agent_test_options(
+        mode: &str,
+        limit_paths: Option<usize>,
+        limit_snippets: Option<usize>,
+        max_output_bytes: Option<usize>,
+    ) -> super::ContextPackOptions {
+        super::ContextPackOptions {
+            task: "Change prod_value".to_string(),
+            mode: mode.to_string(),
+            token_budget: 2_000,
+            seeds: vec!["prod_value".to_string()],
+            stage0_candidates: Vec::new(),
+            profile: false,
+            output_mode: QueryOutputMode::AgentJson,
+            limit_paths,
+            limit_snippets,
+            max_output_bytes,
+            allow_stale_read: false,
+            explicit_scope_policy: None,
+        }
+    }
+
+    fn context_agent_test_packet(
+        mode: &str,
+        path_count: usize,
+        snippet_count: usize,
+        role: &str,
+    ) -> ContextPacket {
+        let paths = (0..path_count)
+            .map(|index| {
+                context_agent_test_path(&format!("{role}-path-{index}"), index as u32 + 3, role)
+            })
+            .collect::<Vec<_>>();
+        let snippets = (0..snippet_count)
+            .map(|index| ContextSnippet {
+                file: "src/lib.rs".to_string(),
+                lines: format!("{}", index as u32 + 3),
+                text: format!(
+                    "{}: pub fn {}_{}() -> i32 {{ {} }}",
+                    index + 3,
+                    role,
+                    index,
+                    "x".repeat(256)
+                ),
+                reason: "proof path source span".to_string(),
+            })
+            .collect::<Vec<_>>();
+        let mut metadata = Metadata::new();
+        metadata.insert(
+            "candidate_path_count_before_dedup".to_string(),
+            json!(path_count + 3),
+        );
+        metadata.insert(
+            "requested_source_span_count".to_string(),
+            json!(snippet_count + 3),
+        );
+        ContextPacket {
+            task: "Change prod_value".to_string(),
+            mode: mode.to_string(),
+            symbols: vec!["prod_value".to_string()],
+            verified_paths: paths,
+            risks: (0..8)
+                .map(|index| format!("risk {index}: {}", "r".repeat(128)))
+                .collect(),
+            recommended_tests: (0..8)
+                .map(|index| format!("cargo test context_agent_{index}"))
+                .collect(),
+            snippets,
+            metadata,
+        }
+    }
+
+    fn context_agent_test_path(id: &str, line: u32, role: &str) -> PathEvidence {
+        let span = SourceSpan::with_columns("src/lib.rs", line, 5, line, 24);
+        let (source, target, reason, classification_source) = match role {
+            "test" => (
+                "src::lib.tests.calls_prod_value",
+                "src::lib.prod_value",
+                "qualified name contains tests module",
+                "endpoint:qualified_name",
+            ),
+            "mock" => (
+                "src::lib.MockService",
+                "src::lib.prod_value",
+                "entity kind/name identifies mock evidence",
+                "entity_metadata",
+            ),
+            _ => (
+                "src::lib.prod_neighbor",
+                "src::lib.prod_value",
+                "stored source-role metadata",
+                "stored_metadata",
+            ),
+        };
+        let mut metadata = Metadata::new();
+        metadata.insert("evidence_role".to_string(), json!(role));
+        metadata.insert("classification_reason".to_string(), json!(reason));
+        metadata.insert(
+            "classification_source".to_string(),
+            json!(classification_source),
+        );
+        metadata.insert(
+            "production_proof_eligible".to_string(),
+            json!(role == "production"),
+        );
+        metadata.insert(
+            "edge_labels".to_string(),
+            json!([{
+                "edge_id": format!("{id}-edge"),
+                "evidence_role": role,
+                "classification_reason": reason,
+                "classification_source": classification_source
+            }]),
+        );
+        PathEvidence {
+            id: id.to_string(),
+            summary: None,
+            source: source.to_string(),
+            target: target.to_string(),
+            metapath: vec![RelationKind::Calls],
+            edges: vec![(source.to_string(), RelationKind::Calls, target.to_string())],
+            source_spans: vec![span],
+            exactness: Exactness::ParserVerified,
+            length: 1,
+            confidence: 1.0,
+            metadata,
+        }
+    }
+
+    fn serialized_len_for_test(value: &Value) -> usize {
+        serde_json::to_vec(value).expect("serialize JSON").len()
+    }
+
+    fn schema_repo_root_for_test() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
+    }
+
+    fn schema_path_for_test(schema_name: &str) -> PathBuf {
+        schema_repo_root_for_test()
+            .join("docs")
+            .join("schemas")
+            .join("agent-json")
+            .join(format!("{schema_name}.schema.json"))
+    }
+
+    fn assert_schema_required_fields_present(value: &Value, schema_name: &str) {
+        let schema_path = schema_path_for_test(schema_name);
+        let schema_text = fs::read_to_string(&schema_path)
+            .unwrap_or_else(|error| panic!("read schema {}: {error}", schema_path.display()));
+        let schema: Value = serde_json::from_str(&schema_text)
+            .unwrap_or_else(|error| panic!("parse schema {}: {error}", schema_path.display()));
+        let required = schema["required"].as_array().unwrap_or_else(|| {
+            panic!(
+                "schema {} missing top-level required array",
+                schema_path.display()
+            )
+        });
+        for field in required {
+            let field = field.as_str().expect("required field name");
+            assert!(
+                value.get(field).is_some(),
+                "{schema_name} output missing required field {field}: {value}"
+            );
+        }
+    }
+
+    fn value_contains_nonempty_array_for_key(value: &Value, key: &str) -> bool {
+        match value {
+            Value::Object(object) => object.iter().any(|(name, child)| {
+                (name == key && child.as_array().is_some_and(|items| !items.is_empty()))
+                    || value_contains_nonempty_array_for_key(child, key)
+            }),
+            Value::Array(items) => items
+                .iter()
+                .any(|child| value_contains_nonempty_array_for_key(child, key)),
+            _ => false,
+        }
+    }
+
+    fn assert_agent_json_contract(
+        value: &Value,
+        schema_name: &str,
+        command: &str,
+        max_bytes: usize,
+    ) {
+        assert_schema_required_fields_present(value, schema_name);
+        assert_eq!(value["schema_name"].as_str(), Some(schema_name));
+        assert_eq!(value["schema_version"].as_u64(), Some(1));
+        assert_eq!(value["command"].as_str(), Some(command));
+        assert!(value["repo"].as_str().is_some_and(|repo| !repo.is_empty()));
+        assert!(value["db"].as_str().is_some_and(|db| !db.is_empty()));
+        assert!(matches!(
+            value["status"].as_str(),
+            Some("ok" | "warning" | "error")
+        ));
+        assert!(value["lifecycle"]["claimable"].as_bool().is_some());
+        assert!(value["lifecycle"]["diagnostic_only"].as_bool().is_some());
+        assert!(value["claimable"].as_bool().is_some());
+        assert!(value["diagnostic_only"].as_bool().is_some());
+        assert!(value["warnings"].as_array().is_some());
+        assert!(value["errors"].as_array().is_some());
+        assert!(value["timings"].is_object(), "{schema_name}: {value}");
+        assert!(
+            !value_contains_nonempty_array_for_key(value, "included_examples"),
+            "{schema_name} leaked included scope examples: {value}"
+        );
+        assert!(
+            !value_contains_nonempty_array_for_key(value, "excluded_examples"),
+            "{schema_name} leaked excluded scope examples: {value}"
+        );
+        let bytes = serialized_len_for_test(value);
+        assert!(
+            bytes <= max_bytes,
+            "{schema_name} exceeded size target {max_bytes} with {bytes} bytes: {value}"
+        );
+    }
+
+    #[test]
+    fn agent_json_schema_files_parse_and_require_common_fields() {
+        let schemas = [
+            "index_agent_json",
+            "query_symbols_agent_json",
+            "query_text_agent_json",
+            "query_files_agent_json",
+            "context_pack_agent_json",
+            "callers_callees_agent_json",
+            "status_compact_json",
+            "doctor_compact_json",
+        ];
+        let common_required = [
+            "schema_name",
+            "schema_version",
+            "status",
+            "command",
+            "repo",
+            "db",
+            "lifecycle",
+            "claimable",
+            "diagnostic_only",
+            "warnings",
+            "errors",
+            "timings",
+        ];
+        for schema_name in schemas {
+            let schema_path = schema_path_for_test(schema_name);
+            let schema_text = fs::read_to_string(&schema_path)
+                .unwrap_or_else(|error| panic!("read schema {}: {error}", schema_path.display()));
+            let schema: Value = serde_json::from_str(&schema_text)
+                .unwrap_or_else(|error| panic!("parse schema {}: {error}", schema_path.display()));
+            assert_eq!(schema["title"].as_str(), Some(schema_name));
+            let required = schema["required"]
+                .as_array()
+                .expect("required schema fields")
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<BTreeSet<_>>();
+            for field in common_required {
+                assert!(
+                    required.contains(field),
+                    "{schema_name} schema does not require {field}"
+                );
+            }
+        }
+    }
+
+    fn index_output_fixture_repo() -> PathBuf {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::write(
+            repo.join("src").join("service.ts"),
+            "export function indexOutputService(value: number) { return value + 1; }\n",
+        )
+        .expect("write service");
+        fs::write(
+            repo.join("src").join("excluded.ts"),
+            "export function excludedFromIndexOutput() { return 0; }\n",
+        )
+        .expect("write excluded");
+        repo
+    }
+
+    fn run_index_output_json(repo: &Path, db: &Path, extra_args: &[&str]) -> Value {
+        let mut args = vec![
+            BIN_NAME.to_string(),
+            "index".to_string(),
+            path_string(repo),
+            "--db".to_string(),
+            path_string(db),
+        ];
+        args.extend(extra_args.iter().map(|arg| arg.to_string()));
+        let output = run(args);
+        assert_eq!(
+            output.exit_code, 0,
+            "stdout:\n{}\nstderr:\n{}",
+            output.stdout, output.stderr
+        );
+        serde_json::from_str(&output.stdout).expect("index JSON")
     }
 
     fn caller_callee_precision_fixture() -> CallerCalleePrecisionFixture {

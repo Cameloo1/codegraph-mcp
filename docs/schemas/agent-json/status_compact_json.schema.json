@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codegraph.local/schemas/agent-json/status_compact_json.schema.json",
+  "title": "status_compact_json",
+  "type": "object",
+  "required": [
+    "schema_name",
+    "schema_version",
+    "status",
+    "command",
+    "repo",
+    "db",
+    "lifecycle",
+    "claimable",
+    "diagnostic_only",
+    "truncation",
+    "result_count",
+    "limit",
+    "omitted_count",
+    "warnings",
+    "errors",
+    "timings"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_name": {
+      "const": "status_compact_json"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "$ref": "common.schema.json#/$defs/status"
+    },
+    "command": {
+      "const": "status"
+    },
+    "repo": {
+      "$ref": "common.schema.json#/$defs/repo"
+    },
+    "db": {
+      "$ref": "common.schema.json#/$defs/db"
+    },
+    "lifecycle": {
+      "$ref": "common.schema.json#/$defs/lifecycle_summary"
+    },
+    "claimable": {
+      "type": "boolean"
+    },
+    "diagnostic_only": {
+      "type": "boolean"
+    },
+    "truncation": {
+      "$ref": "common.schema.json#/$defs/truncation"
+    },
+    "result_count": {
+      "const": 1
+    },
+    "limit": {
+      "const": 1
+    },
+    "omitted_count": {
+      "const": 0
+    },
+    "warnings": {
+      "$ref": "common.schema.json#/$defs/bounded_messages"
+    },
+    "errors": {
+      "$ref": "common.schema.json#/$defs/bounded_messages"
+    },
+    "timings": {
+      "$ref": "common.schema.json#/$defs/timings"
+    }
+  }
+}

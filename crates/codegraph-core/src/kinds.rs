@@ -333,3 +333,20 @@ string_enum! {
         Unknown => "unknown",
     }
 }
+
+string_enum! {
+    /// Source/evidence role used by context-pack production/test filtering.
+    pub enum EvidenceRole {
+        Production => "production",
+        Test => "test",
+        Mock => "mock",
+        Mixed => "mixed",
+        Unknown => "unknown",
+    }
+}
+
+impl EvidenceRole {
+    pub const fn is_production(self) -> bool {
+        matches!(self, Self::Production)
+    }
+}

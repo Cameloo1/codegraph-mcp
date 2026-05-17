@@ -16,11 +16,14 @@ mod validation;
 pub use ids::{
     normalize_repo_relative_path, stable_edge_id, stable_entity_id, stable_entity_id_for_kind,
 };
-pub use kinds::{EdgeClass, EdgeContext, EntityKind, Exactness, ParseEnumError, RelationKind};
+pub use kinds::{
+    EdgeClass, EdgeContext, EntityKind, EvidenceRole, Exactness, ParseEnumError, RelationKind,
+};
 pub use model::{
+    classify_edge_evidence_role, classify_entity_source_role, combine_evidence_roles,
     infer_edge_class, infer_edge_context, normalize_edge_classification, ContextPacket,
-    ContextSnippet, DerivedClosureEdge, Edge, Entity, FileRecord, Metadata, PathEvidence,
-    RepoIndexState, SourceSpan,
+    ContextSnippet, DerivedClosureEdge, Edge, Entity, EvidenceRoleDecision, FileRecord, Metadata,
+    PathEvidence, RepoIndexState, SourceSpan,
 };
 pub use validation::{relation_allows, RelationEndpointClass};
 

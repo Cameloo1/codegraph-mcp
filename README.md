@@ -83,8 +83,26 @@ If `codegraph-mcp` is on your `PATH`, drop the
 `cargo run --bin codegraph-mcp --` prefix. Full CLI surface:
 [docs/cli-reference.md](docs/cli-reference.md).
 
+Agent-use loop:
+
+```bash
+cargo build --release --bin codegraph-mcp
+codegraph-mcp --repo <repo> --db <agent-db> index <repo> --json
+codegraph-mcp --repo <repo> --db <agent-db> query symbols <symbol> --limit 5 --agent-json
+codegraph-mcp --repo <repo> --db <agent-db> context-pack \
+    --task "Trace the change impact" \
+    --seed <symbol> \
+    --mode production \
+    --agent-json
+```
+
+Use `context-pack --mode test-impact --agent-json` when the agent explicitly
+needs test/mock evidence. Production context excludes test/mock/mixed/unknown
+evidence by default.
+
 For long-lived agent use, keep the agent-facing index separate from temporary
 benchmark and development databases. See
+[docs/agent-use.md](docs/agent-use.md) and
 [docs/operational-profiles.md](docs/operational-profiles.md).
 
 ## How It Works
@@ -396,6 +414,8 @@ Stable report summaries:
 Reference docs:
 
 - [docs/architecture.md](docs/architecture.md)
+- [docs/agent-use.md](docs/agent-use.md)
+- [docs/agent-json.md](docs/agent-json.md)
 - [docs/benchmark-guide.md](docs/benchmark-guide.md)
 - [docs/mcp-reference.md](docs/mcp-reference.md)
 - [docs/operational-profiles.md](docs/operational-profiles.md)

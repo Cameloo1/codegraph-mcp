@@ -16,7 +16,7 @@ Then retry `status`, `query`, `impact`, `context-pack`, MCP, or UI commands.
 For long-lived agent use, prefer an agent-use DB outside the repo:
 
 ```powershell
-codegraph-mcp --repo C:\path\to\repo --db C:\path\to\agent-indexes\repo.sqlite index C:\path\to\repo
+codegraph-mcp --repo <repo> --db <agent-db> index <repo> --json
 ```
 
 That keeps generated graph state out of the source tree.
@@ -79,11 +79,21 @@ Use an exact seed:
 
 ```powershell
 codegraph-mcp query symbols <query>
-codegraph-mcp context-pack --task "..." --seed <resolved-symbol>
+codegraph-mcp context-pack --task "..." --seed <resolved-symbol> --mode production
 ```
 
 Vectors suggest candidates, but exact graph/source verification controls final
 packet evidence.
+
+If the agent needs tests, request them explicitly:
+
+```powershell
+codegraph-mcp context-pack --task "..." --seed <resolved-symbol> --mode test-impact --agent-json
+```
+
+Production mode excludes test/mock/mixed/unknown evidence by default. Inline
+Rust `#[cfg(test)] mod tests` and `#[test]` functions are test evidence even
+when they live in `src/lib.rs`.
 
 For documentation-heavy prompts, CodeGraph may return DB health and exact
 symbol matches but no proof paths/snippets. That is not a green or red product
@@ -94,6 +104,21 @@ missing packet evidence honestly.
 
 Call `tools/list` through the MCP client and match the tool schema. Invalid
 inputs return structured errors instead of partial results.
+
+## Global Flag Placement Error
+
+Global flags such as `--repo` and `--db` belong before the command:
+
+```powershell
+codegraph-mcp --repo <repo> --db <agent-db> query symbols <symbol> --agent-json
+```
+
+If a query command reports that `--db` or `--repo` is a global flag, move it
+before `query`. To search for a literal flag-like term, use `--`:
+
+```powershell
+codegraph-mcp --repo <repo> --db <agent-db> query text --agent-json -- --db
+```
 
 ## Watcher Does Not React
 

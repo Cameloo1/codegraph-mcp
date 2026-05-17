@@ -46,23 +46,34 @@ Example:
 
 ```powershell
 cargo build --release --bin codegraph-mcp
-codegraph-mcp --repo C:\path\to\repo --db C:\path\to\agent-indexes\repo.sqlite index C:\path\to\repo
-codegraph-mcp --repo C:\path\to\repo --db C:\path\to\agent-indexes\repo.sqlite context-pack `
+codegraph-mcp --repo <repo> --db <agent-db> index <repo> --json
+codegraph-mcp --repo <repo> --db <agent-db> query symbols <symbol> `
+  --limit 5 --agent-json
+codegraph-mcp --repo <repo> --db <agent-db> context-pack `
   --task "Trace the indexing entry point" `
-  --seed index_repo_to_db
+  --seed index_repo_to_db `
+  --mode production `
+  --limit-paths 5 `
+  --limit-snippets 5 `
+  --agent-json
+codegraph-mcp --repo <repo> --db <agent-db> context-pack `
+  --task "Find impacted tests" `
+  --seed index_repo_to_db `
+  --mode test-impact `
+  --agent-json
 ```
 
 Suggested MCP config:
 
 ```toml
 [mcp_servers.codegraph-mcp-agent]
-command = "C:\\path\\to\\codegraph-mcp.exe"
+command = "<codegraph-mcp-release-binary>"
 args = [
-  "--repo", "C:\\path\\to\\repo",
-  "--db", "C:\\path\\to\\agent-indexes\\repo.sqlite",
+  "--repo", "<repo>",
+  "--db", "<agent-db>",
   "serve-mcp"
 ]
-cwd = "C:\\path\\to\\repo"
+cwd = "<repo>"
 ```
 
 ## Operating Rules
@@ -88,6 +99,12 @@ Expected local flow:
 4. Use the returned files, symbols, source spans, and paths as evidence.
 5. Keep normal code edits and verification separate from CodeGraph benchmark
    claims.
+
+Use `--agent-json` and explicit limits for agent loops. Use production
+context-pack mode for production proof context; use `test-impact` only when the
+agent intentionally needs test/mock evidence. Inline Rust test modules and
+`#[test]` functions are test evidence and are excluded from production context
+by default.
 
 This makes CodeGraph part of the everyday coding loop without letting its
 development artifacts become the evidence source for itself.

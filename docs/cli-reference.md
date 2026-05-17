@@ -27,6 +27,42 @@ Global flags are accepted before the command name:
 outside the source tree instead of reusing temporary development or benchmark
 DBs.
 
+Command-local flags remain after the command. Ambiguous global flags after
+query subcommands return targeted corrections instead of becoming query text.
+For example, `query symbols greet --db <db>` fails with guidance to put `--db`
+before `query`. Use `--` for literal flag-shaped search terms, such as
+`query text --agent-json -- --db`.
+
+## Agent-Friendly Output
+
+Use `--agent-json` for tight coding-agent loops and `--limit <n>` to keep
+results bounded:
+
+```powershell
+codegraph-mcp --repo <repo> --db <agent-db> query symbols <symbol> `
+  --limit 5 --agent-json
+
+codegraph-mcp --repo <repo> --db <agent-db> context-pack `
+  --task "Trace the change impact" `
+  --seed <symbol> `
+  --mode production `
+  --limit-paths 5 `
+  --limit-snippets 5 `
+  --agent-json
+```
+
+Supported compact modes:
+
+- `--agent-json`: schema-versioned, bounded JSON for agent loops.
+- `--concise`: compact output where supported.
+- `--verbose`, `--debug`, `--profile`, and `--audit-json`: explicit rich or
+  audit detail.
+- `--explain-scope`, `--print-included`, and `--print-excluded`: explicit
+  index scope examples.
+
+`index --json` is concise by default. It excludes full scope examples and audit
+payloads unless one of the explicit audit/scope flags is supplied.
+
 ## Commands
 
 `init [repo] [--dry-run] [--with-codex-config] [--with-agents] [--with-skills] [--with-hooks] [--with-templates] [--index]`
@@ -34,7 +70,7 @@ DBs.
 Detects repo tooling, creates `.codegraph/`, and can install Codex config,
 `AGENTS.md`, skill templates, hook templates, and an initial index.
 
-`index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json]`
+`index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json|--agent-json|--concise|--audit-json] [--verbose]`
 
 Indexes supported language frontends into `.codegraph/codegraph.sqlite`.
 Unchanged files are skipped by content hash. Changed files are parsed and
@@ -65,17 +101,17 @@ passport, and read paths validate against it.
 Reports schema version, file/entity/edge counts, detected tooling, DB
 lifecycle health, passport status, and SQLite sidecar status.
 
-`query symbols <query>`
+`query symbols <query> [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain]`
 
 Ranks symbols across simple names, qualified names, file paths, namespaces,
 doc/signature metadata, alias/import names, identifier tokens, and
 relation-neighbor text. Exact and qualified matches outrank fuzzy matches.
 
-`query text <query>`
+`query text <query> [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain]`
 
 Searches the local SQLite FTS/BM25 index across files, entities, and snippets.
 
-`query files <query>`
+`query files <query> [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain]`
 
 Finds repo-relative files by FTS and path proximity.
 
@@ -88,7 +124,7 @@ same-name placeholders.
 
 Returns declaration/executable symbol hits.
 
-`query callers [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] <symbol>`
+`query callers [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] <symbol>`
 
 Returns `CALLS` edges whose callee resolves to the symbol. When a symbol
 resolves to exactly one persisted entity, default output uses exact resolved
@@ -97,7 +133,7 @@ pretending broad results are exact. Use `--entity-id` for exact persisted-entity
 traversal, `--exact-resolved` to require one symbol match, or `--fuzzy` for the
 older broad alias/global behavior.
 
-`query callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] <symbol>`
+`query callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] <symbol>`
 
 Returns `CALLS` edges emitted by the symbol. It uses the same exact,
 ambiguous, and fuzzy modes as `query callers`.
@@ -122,10 +158,15 @@ Runs exact graph path tracing with source spans and PathEvidence.
 Returns blast-radius sections for calls, mutations/dataflow, DB/schema,
 API/auth/security, events, and tests.
 
-`context-pack --task <task> [--budget <tokens>] [--mode <mode>] [--seed <symbol>] [--stage0-candidate <id>]`
+`context-pack --task <task> [--budget <tokens>] [--mode <production|test-impact|debug|impact>] [--seed <symbol>] [--stage0-candidate <id>] [--agent-json|--concise] [--limit-paths <n>] [--limit-snippets <n>] [--max-output-bytes <n>]`
 
 Builds a compact proof-oriented context packet from verified graph paths and
 source snippets.
+
+Production mode excludes test, mock, mixed, and unknown evidence by default.
+`test-impact` mode intentionally includes test/mock evidence and labels it.
+Inline Rust `#[cfg(test)] mod tests` and `#[test]` functions are classified as
+test evidence even when they live in `src/lib.rs`.
 
 Read paths run the DB passport/preflight guard. If the configured DB is from a
 different repo, stale scope, incompatible storage mode, failed run, corrupt
