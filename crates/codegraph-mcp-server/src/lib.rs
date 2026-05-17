@@ -28,7 +28,9 @@ use codegraph_query::{
     ExactGraphQueryEngine, GraphPath, QueryLimits, RetrievalDocument, RetrievalFunnel,
     RetrievalFunnelConfig, RetrievalFunnelRequest, RetrievalTraceStage,
 };
-use codegraph_store::{GraphStore, SqliteGraphStore, TextSearchHit, TextSearchKind};
+use codegraph_store::{
+    DbPreflightReport, GraphStore, SqliteGraphStore, TextSearchHit, TextSearchKind,
+};
 use codegraph_trace::{TraceConfig, TraceLogger};
 use serde_json::{json, Map, Value};
 
@@ -38,6 +40,8 @@ use codegraph_index::scope_policy_hash;
 pub const SERVER_NAME: &str = "codegraph-mcp";
 pub const PHASE: &str = "30";
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+const EXTERNAL_PROFILE_DB_NOTE: &str =
+    "This profile DB is outside the workspace; grant access or choose a workspace-local DB.";
 const DEFAULT_RESULT_LIMIT: usize = 20;
 const DEFAULT_GRAPH_EDGE_LIMIT: usize = 100_000;
 
@@ -245,6 +249,8 @@ struct RepoContext {
     repo_root: PathBuf,
     db_path: PathBuf,
     indexed: bool,
+    db_path_outside_workspace: bool,
+    outside_workspace_note: Option<String>,
     detected_dbs: Vec<String>,
 }
 
@@ -254,6 +260,8 @@ impl RepoContext {
             "repo_root": path_string(&self.repo_root),
             "db_path": path_string(&self.db_path),
             "indexed": self.indexed,
+            "db_path_outside_workspace": self.db_path_outside_workspace,
+            "outside_workspace_note": self.outside_workspace_note.clone(),
             "detected_indexed_dbs": self.detected_dbs,
             "index_command": format!("codegraph-mcp --db \"{}\" index \"{}\"", self.db_path.display(), self.repo_root.display()),
             "index_tool": {
@@ -866,20 +874,53 @@ impl McpServer {
         let context = self.context_discovery(args)?;
         let repo_root = context.repo_root.clone();
         let db_path = context.db_path.clone();
-        if !context.indexed {
+        let explicit_scope = mcp_explicit_scope_policy(args)?;
+        let preflight = inspect_db_lifecycle_preflight(&repo_root, &db_path, explicit_scope)
+            .map_err(ToolCallError::from)?;
+        let sqlite_sidecars =
+            mcp_sqlite_sidecars_status_from_health(&db_path, &preflight.db_health);
+        if !preflight.safe {
+            let problem = mcp_db_problem_kind(&preflight);
+            let status = if problem == "db_missing" {
+                "missing"
+            } else {
+                "db_problem"
+            };
+            let problem_value = if problem == "db_missing" {
+                "index_required"
+            } else {
+                problem
+            };
+            let suggested_next = if problem == "db_missing" {
+                "Call codegraph.index_repo with the shown repo/db_path before search or analysis."
+            } else if preflight.db_path_outside_workspace {
+                "Grant filesystem access to the configured DB path or choose a workspace-local DB, then retry."
+            } else {
+                "Call codegraph.index_repo to rebuild the unsafe DB before search or analysis."
+            };
             return Ok(json!({
-                "status": "missing",
-                "problem": "index_required",
-                "db_problem": "db_missing",
+                "status": status,
+                "problem": problem_value,
+                "db_problem": problem,
                 "safe_to_query": false,
                 "server": SERVER_NAME,
                 "phase": PHASE,
                 "repo_root": path_string(&repo_root),
                 "db_path": path_string(&db_path),
+                "db_path_outside_workspace": preflight.db_path_outside_workspace,
+                "outside_workspace_note": preflight.outside_workspace_note.clone(),
+                "path_access_status": preflight.path_access_status.clone(),
+                "path_access_error": preflight.path_access_error.clone(),
                 "repo_context": context.to_json(),
-                "blockers": [format!("db_missing: {}", db_path.display())],
-                "warnings": [],
-                "suggested_next": "Call codegraph.index_repo with the shown repo/db_path before search or analysis.",
+                "db_health": preflight.db_health.clone(),
+                "sqlite_sidecars": sqlite_sidecars.clone(),
+                "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
+                "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
+                "passport_summary": mcp_passport_summary_json(&preflight),
+                "scope_source": preflight.scope_source.clone(),
+                "blockers": preflight.blockers.clone(),
+                "warnings": preflight.warnings.clone(),
+                "suggested_next": suggested_next,
                 "read_mostly": true,
                 "workflow": "single-agent-only",
             }));
@@ -920,8 +961,14 @@ impl McpServer {
             "phase": PHASE,
             "repo_root": path_string(&repo_root),
             "db_path": path_string(&db_path),
+            "db_path_outside_workspace": preflight.db_path_outside_workspace,
+            "outside_workspace_note": preflight.outside_workspace_note.clone(),
+            "path_access_status": preflight.path_access_status.clone(),
+            "path_access_error": preflight.path_access_error.clone(),
             "repo_context": context.to_json(),
             "db_health": preflight.db_health.clone(),
+            "sqlite_sidecars": sqlite_sidecars.clone(),
+            "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
             "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
             "passport_summary": mcp_passport_summary_json(&preflight),
             "scope_source": preflight.scope_source.clone(),
@@ -1197,9 +1244,25 @@ impl McpServer {
         args: &Map<String, Value>,
         query_name: &str,
     ) -> Result<Value, ToolCallError> {
-        let entity_id = entity_id_arg(args)?;
         let limits = query_limits(args)?;
         let (store, preflight) = self.open_store_with_preflight(args)?;
+        let (entity_id, resolution_mode, exact_entity, ambiguous_symbol_matches, suggestion) =
+            self.resolve_relation_query_entity(args, &store, query_name)?;
+        if !ambiguous_symbol_matches.is_empty() {
+            return Ok(json!({
+                "status": "ambiguous_symbol",
+                "query": query_name,
+                "resolution_mode": resolution_mode,
+                "entity_id": null,
+                "exact_resolved_entity": null,
+                "exact_resolved_entity_results": [],
+                "fuzzy_or_global_results": [],
+                "ambiguous_symbol_matches": ambiguous_symbol_matches,
+                "suggestion": suggestion,
+                "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
+                "proof": "Caller/callee MCP tools require one exact entity id before returning traversal proof.",
+            }));
+        }
         let engine = self.query_engine(&store, args)?;
         let paths = match query_name {
             "callers" => engine.find_callers(&entity_id, limits),
@@ -1216,12 +1279,83 @@ impl McpServer {
         };
         let mut value = paths_response(query_name, &engine, paths, args, None)?;
         if let Some(object) = value.as_object_mut() {
+            let paths = object.get("paths").cloned().unwrap_or_else(|| json!([]));
+            object.insert("entity_id".to_string(), json!(entity_id));
+            object.insert("resolution_mode".to_string(), json!(resolution_mode));
+            object.insert(
+                "exact_resolved_entity".to_string(),
+                exact_entity
+                    .as_ref()
+                    .map(entity_json)
+                    .unwrap_or(Value::Null),
+            );
+            object.insert("exact_resolved_entity_results".to_string(), paths);
+            object.insert("fuzzy_or_global_results".to_string(), json!([]));
+            object.insert("ambiguous_symbol_matches".to_string(), json!([]));
             object.insert(
                 "db_lifecycle_read".to_string(),
                 mcp_db_lifecycle_preflight_json(&preflight),
             );
         }
         Ok(value)
+    }
+
+    fn resolve_relation_query_entity(
+        &self,
+        args: &Map<String, Value>,
+        store: &SqliteGraphStore,
+        query_name: &str,
+    ) -> Result<(String, &'static str, Option<Entity>, Vec<Value>, Value), ToolCallError> {
+        if let Some(entity_id) =
+            optional_string(args, "entity_id").or_else(|| optional_string(args, "id"))
+        {
+            let exact_entity = store.get_entity(&entity_id).map_err(mcp_store_error)?;
+            return Ok((
+                entity_id,
+                "entity_id",
+                exact_entity,
+                Vec::new(),
+                Value::Null,
+            ));
+        }
+
+        let Some(query) =
+            optional_string(args, "query").or_else(|| optional_string(args, "symbol"))
+        else {
+            return Err(ToolCallError::new(
+                "invalid_input",
+                "entity_id, id, query, or symbol is required",
+            ));
+        };
+        let hits = store
+            .find_entities_by_exact_symbol(&query)
+            .map_err(mcp_store_error)?;
+        match hits.len() {
+            1 => {
+                let entity = hits[0].clone();
+                Ok((
+                    entity.id.clone(),
+                    "exact_resolved",
+                    Some(entity),
+                    Vec::new(),
+                    Value::Null,
+                ))
+            }
+            0 => Err(ToolCallError::new(
+                "not_found",
+                format!("no indexed entity matched symbol/query: {query}"),
+            )),
+            _ => Ok((
+                String::new(),
+                "ambiguous_symbol",
+                None,
+                hits.iter().map(entity_json).collect(),
+                json!({
+                    "reason": "Symbol resolved to multiple entities; choose one candidate id for exact caller/callee proof.",
+                    "rerun": format!("codegraph.find_{query_name} with entity_id=<candidate-id>"),
+                }),
+            )),
+        }
     }
 
     fn explain_edge(&self, args: &Map<String, Value>) -> Result<Value, ToolCallError> {
@@ -1284,12 +1418,23 @@ impl McpServer {
         let hits = store
             .find_entities_by_exact_symbol(query)
             .map_err(mcp_store_error)?;
-        hits.first().map(|entity| entity.id.clone()).ok_or_else(|| {
-            ToolCallError::new(
+        match hits.len() {
+            1 => Ok(hits[0].id.clone()),
+            0 => Err(ToolCallError::new(
                 "not_found",
                 format!("no indexed entity matched symbol/query: {query}"),
-            )
-        })
+            )),
+            _ => Err(ToolCallError::new(
+                "ambiguous_symbol",
+                format!(
+                    "symbol/query matched multiple entities; pass entity_id explicitly: {}",
+                    hits.iter()
+                        .map(|entity| entity.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            )),
+        }
     }
 
     fn read_resource(&self, uri: &str, args: &Map<String, Value>) -> Result<Value, ToolCallError> {
@@ -1336,12 +1481,17 @@ impl McpServer {
     fn context_discovery(&self, args: &Map<String, Value>) -> Result<RepoContext, ToolCallError> {
         let repo_root = self.repo_root(args)?;
         let db_path = self.db_path(args, &repo_root)?;
-        let indexed = db_path.exists();
+        let indexed = db_path_present_or_inaccessible(&db_path);
+        let db_path_outside_workspace = mcp_db_path_outside_workspace(&db_path, &repo_root);
+        let outside_workspace_note =
+            db_path_outside_workspace.then(|| EXTERNAL_PROFILE_DB_NOTE.to_string());
         let detected_dbs = detect_indexed_repos(&repo_root);
         Ok(RepoContext {
             repo_root,
             db_path,
             indexed,
+            db_path_outside_workspace,
+            outside_workspace_note,
             detected_dbs,
         })
     }
@@ -1403,15 +1553,6 @@ impl McpServer {
     ) -> Result<(SqliteGraphStore, DbLifecyclePreflight), ToolCallError> {
         let repo_root = self.repo_root(args)?;
         let db_path = self.db_path(args, &repo_root)?;
-        if !db_path.exists() {
-            return Err(ToolCallError::new(
-                "not_indexed",
-                format!(
-                    "CodeGraph index does not exist yet at {}; call codegraph.index_repo first",
-                    db_path.display()
-                ),
-            ));
-        }
         let explicit_scope = mcp_explicit_scope_policy(args)?;
         let preflight = inspect_db_lifecycle_preflight(&repo_root, &db_path, explicit_scope)
             .map_err(ToolCallError::from)?;
@@ -1422,12 +1563,20 @@ impl McpServer {
                     mcp_scope_mismatch_message(&db_path, mismatch),
                 ));
             }
+            let outside_note = preflight
+                .outside_workspace_note
+                .as_deref()
+                .map(|note| format!("; {note}"))
+                .unwrap_or_default();
+            let problem_kind = mcp_db_problem_kind(&preflight);
             return Err(ToolCallError::new(
-                "db_lifecycle_blocked",
+                problem_kind,
                 format!(
-                    "CodeGraph DB is not safe to read at {}: {}; call codegraph.index_repo to rebuild",
+                    "CodeGraph DB is not safe to read at {}: kind={}; {}{}; call codegraph.index_repo to rebuild",
                     db_path.display(),
-                    preflight.blockers.join("; ")
+                    problem_kind,
+                    preflight.blockers.join("; "),
+                    outside_note
                 ),
             ));
         }
@@ -1800,6 +1949,18 @@ fn entity_query_schema() -> Value {
             json!({"type": "string", "description": "Entity id or qualified symbol."}),
         );
         properties.insert(
+            "query".to_string(),
+            json!({"type": "string", "description": "Symbol name to resolve when entity_id is unknown."}),
+        );
+        properties.insert(
+            "symbol".to_string(),
+            json!({"type": "string", "description": "Alias for query when entity_id is unknown."}),
+        );
+        properties.insert(
+            "id".to_string(),
+            json!({"type": "string", "description": "Alias for entity_id."}),
+        );
+        properties.insert(
             "max_depth".to_string(),
             json!({"type": "integer", "minimum": 1, "maximum": 12}),
         );
@@ -1820,7 +1981,7 @@ fn entity_query_schema() -> Value {
             json!({"type": "string", "enum": ["compact", "verbose", "explain"]}),
         );
     }
-    schema["required"] = json!(["entity_id"]);
+    schema["required"] = json!([]);
     schema
 }
 
@@ -2417,6 +2578,11 @@ fn recommended_workflow() -> Value {
 fn not_indexed_response(tool: &str, context: &RepoContext) -> Value {
     json!({
         "status": "not_indexed",
+        "db_problem": "db_missing",
+        "db_problem_kind": "db_missing",
+        "path_access_status": "db_missing",
+        "db_path_outside_workspace": context.db_path_outside_workspace,
+        "outside_workspace_note": context.outside_workspace_note.clone(),
         "tool": format!("codegraph.{tool}"),
         "repo_context": context.to_json(),
         "suggested_next": "Index this repo first with codegraph.index_repo using the shown repo/db_path.",
@@ -2440,6 +2606,60 @@ fn detect_indexed_repos(repo_root: &Path) -> Vec<String> {
         .map(|path| path_string(&path))
         .filter(|path| seen.insert(path.clone()))
         .collect()
+}
+
+fn db_path_present_or_inaccessible(db_path: &Path) -> bool {
+    match fs::metadata(db_path) {
+        Ok(_) => true,
+        Err(error) => error.kind() != io::ErrorKind::NotFound,
+    }
+}
+
+fn mcp_db_path_outside_workspace(db_path: &Path, workspace_root: &Path) -> bool {
+    let db_path = if db_path.is_absolute() {
+        db_path.to_path_buf()
+    } else {
+        workspace_root.join(db_path)
+    };
+    let db_path = canonicalize_existing_prefix(&db_path);
+    let workspace_root = canonicalize_existing_prefix(workspace_root);
+    !mcp_path_starts_with_workspace(&db_path, &workspace_root)
+}
+
+fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
+    if let Ok(canonical) = fs::canonicalize(path) {
+        return canonical;
+    }
+    let mut current = path.to_path_buf();
+    let mut suffix = Vec::<std::ffi::OsString>::new();
+    while let Some(file_name) = current.file_name().map(|value| value.to_os_string()) {
+        suffix.push(file_name);
+        if !current.pop() {
+            return path.to_path_buf();
+        }
+        if let Ok(mut canonical) = fs::canonicalize(&current) {
+            for component in suffix.iter().rev() {
+                canonical.push(component);
+            }
+            return canonical;
+        }
+    }
+    path.to_path_buf()
+}
+
+#[cfg(windows)]
+fn mcp_path_starts_with_workspace(path: &Path, workspace_root: &Path) -> bool {
+    let path = path.display().to_string().to_ascii_lowercase();
+    let workspace_root = workspace_root.display().to_string().to_ascii_lowercase();
+    path == workspace_root
+        || path
+            .strip_prefix(&workspace_root)
+            .is_some_and(|rest| rest.starts_with('\\') || rest.starts_with('/'))
+}
+
+#[cfg(not(windows))]
+fn mcp_path_starts_with_workspace(path: &Path, workspace_root: &Path) -> bool {
+    path.starts_with(workspace_root)
 }
 
 fn retrieval_documents(store: &SqliteGraphStore) -> Result<Vec<RetrievalDocument>, ToolCallError> {
@@ -2711,8 +2931,22 @@ fn optional_scope_patterns(
     Ok(values)
 }
 
-fn mcp_db_problem_kind(preflight: &DbLifecyclePreflight) -> &'static str {
-    if preflight.repo_root_status == "mismatched" {
+fn mcp_db_problem_kind(preflight: &DbLifecyclePreflight) -> &str {
+    if matches!(
+        preflight.db_problem_kind.as_deref(),
+        Some(
+            "db_missing"
+                | "filesystem_inaccessible"
+                | "permission_denied"
+                | "db_locked"
+                | "sqlite_corrupt"
+        )
+    ) {
+        preflight
+            .db_problem_kind
+            .as_deref()
+            .unwrap_or("passport_invalid")
+    } else if preflight.repo_root_status == "mismatched" {
         "repo_root_mismatch"
     } else if preflight.scope_status == "mismatched" {
         "scope_mismatch"
@@ -2724,6 +2958,8 @@ fn mcp_db_problem_kind(preflight: &DbLifecyclePreflight) -> &'static str {
         "passport_missing"
     } else if preflight.db_health.passport_status == "corrupt" {
         "passport_corrupt"
+    } else if let Some(kind) = preflight.db_problem_kind.as_deref() {
+        kind
     } else {
         "passport_invalid"
     }
@@ -2733,6 +2969,9 @@ fn mcp_passport_summary_json(preflight: &DbLifecyclePreflight) -> Value {
     let passport = preflight.db_health.passport.as_ref();
     json!({
         "passport_status": preflight.db_health.passport_status.clone(),
+        "db_problem_kind": preflight.db_problem_kind.clone(),
+        "path_access_status": preflight.path_access_status.clone(),
+        "path_access_error": preflight.path_access_error.clone(),
         "schema_version": preflight.db_health.schema_version,
         "passport_version": passport.map(|value| value.passport_version),
         "codegraph_schema_version": passport.map(|value| value.codegraph_schema_version),
@@ -2754,10 +2993,21 @@ fn mcp_db_lifecycle_preflight_json(preflight: &DbLifecyclePreflight) -> Value {
     json!({
         "decision": if preflight.safe { "read_reuse" } else { "blocked" },
         "passport_status": preflight.db_health.passport_status.clone(),
+        "db_problem_kind": preflight.db_problem_kind.clone(),
+        "path_access_status": preflight.path_access_status.clone(),
+        "path_access_error": preflight.path_access_error.clone(),
         "safe": preflight.safe,
         "claimable": preflight.safe,
+        "sqlite_sidecars": preflight.db_health.sqlite_sidecars.clone(),
+        "sidecar_status": preflight.db_health.sidecar_status.clone(),
+        "orphan_sidecars": preflight.db_health.orphan_sidecars.clone(),
+        "orphan_sidecars_deprecated": true,
         "blockers": preflight.blockers.clone(),
         "warnings": preflight.warnings.clone(),
+        "exact_db_path_checked": preflight.exact_db_path_checked.clone(),
+        "repo_root_expected": preflight.repo_root_expected.clone(),
+        "db_path_outside_workspace": preflight.db_path_outside_workspace,
+        "outside_workspace_note": preflight.outside_workspace_note.clone(),
         "repo_root_status": preflight.repo_root_status.clone(),
         "schema_status": preflight.schema_status.clone(),
         "storage_mode_status": preflight.storage_mode_status.clone(),
@@ -2845,6 +3095,81 @@ fn read_indexed_file(
         sources.insert(file.repo_relative_path.clone(), fs::read_to_string(path)?);
     }
     Ok(())
+}
+
+fn mcp_sqlite_sidecars_status_for_path(db_path: &Path) -> Value {
+    let wal_path = mcp_sqlite_sidecar_path(db_path, "wal");
+    let shm_path = mcp_sqlite_sidecar_path(db_path, "shm");
+    let wal_bytes = metadata_len(&wal_path);
+    let shm_bytes = metadata_len(&shm_path);
+    let wal_exists = wal_bytes > 0 || wal_path.exists();
+    let shm_exists = shm_bytes > 0 || shm_path.exists();
+    let main_exists = db_path.exists();
+    let mut sidecars = Vec::new();
+    if wal_exists {
+        sidecars.push(path_string(&wal_path));
+    }
+    if shm_exists {
+        sidecars.push(path_string(&shm_path));
+    }
+    let sidecar_status = if !main_exists && !sidecars.is_empty() {
+        "orphan_without_main_db"
+    } else {
+        "normal"
+    };
+    let orphan_sidecars = if sidecar_status == "orphan_without_main_db" {
+        sidecars.clone()
+    } else {
+        Vec::new()
+    };
+    json!({
+        "status": sidecar_status,
+        "sidecar_status": sidecar_status,
+        "main_db_exists": main_exists,
+        "wal_path": path_string(&wal_path),
+        "wal_exists": wal_exists,
+        "wal_bytes": wal_bytes,
+        "shm_path": path_string(&shm_path),
+        "shm_exists": shm_exists,
+        "shm_bytes": shm_bytes,
+        "sqlite_sidecars": sidecars,
+        "orphan_sidecars": orphan_sidecars,
+        "orphan_sidecars_deprecated": true,
+    })
+}
+
+fn mcp_sqlite_sidecars_status_from_health(db_path: &Path, health: &DbPreflightReport) -> Value {
+    let mut status = mcp_sqlite_sidecars_status_for_path(db_path);
+    if let Some(object) = status.as_object_mut() {
+        object.insert(
+            "status".to_string(),
+            Value::String(health.sidecar_status.clone()),
+        );
+        object.insert(
+            "sidecar_status".to_string(),
+            Value::String(health.sidecar_status.clone()),
+        );
+        object.insert(
+            "sqlite_sidecars".to_string(),
+            json!(health.sqlite_sidecars.clone()),
+        );
+        object.insert(
+            "orphan_sidecars".to_string(),
+            json!(health.orphan_sidecars.clone()),
+        );
+        object.insert("orphan_sidecars_deprecated".to_string(), json!(true));
+    }
+    status
+}
+
+fn mcp_sqlite_sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
+    PathBuf::from(format!("{}-{}", db_path.display(), suffix))
+}
+
+fn metadata_len(path: &Path) -> u64 {
+    fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
 }
 
 fn path_string(path: &Path) -> String {
@@ -2949,6 +3274,101 @@ mod tests {
                 .any(|reason| reason.as_str().is_some_and(|text| text.contains(expected))),
             "expected blocker containing {expected:?}: {status:?}"
         );
+    }
+
+    #[test]
+    fn mcp_call_relation_query_resolves_unambiguous_symbol_exactly() {
+        let (server, repo, target_id) = mcp_relation_precision_fixture();
+
+        let result = ok(server.call_tool(
+            "codegraph.find_callers",
+            &json!({"repo": path_string(&repo), "query": "preciseTarget"}),
+        ));
+
+        assert_eq!(result["status"].as_str(), Some("ok"));
+        assert_eq!(result["resolution_mode"].as_str(), Some("exact_resolved"));
+        assert_eq!(
+            result["exact_resolved_entity"]["id"].as_str(),
+            Some(target_id.as_str())
+        );
+        assert!(result["exact_resolved_entity_results"].is_array());
+        assert!(result["fuzzy_or_global_results"]
+            .as_array()
+            .expect("fuzzy section")
+            .is_empty());
+        assert!(result["ambiguous_symbol_matches"]
+            .as_array()
+            .expect("ambiguous section")
+            .is_empty());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    fn mcp_relation_precision_fixture() -> (McpServer, PathBuf, String) {
+        let repo = fixture_repo();
+        let server = McpServer::new(McpServerConfig::for_repo(&repo));
+        ok(server.call_tool("codegraph.index_repo", &json!({"repo": path_string(&repo)})));
+        let store = SqliteGraphStore::open(default_db_path(&repo)).expect("open store");
+        let target = mcp_test_function_entity(
+            "src/precise.ts",
+            "preciseTarget",
+            "precise.preciseTarget",
+            20,
+        );
+        let caller = mcp_test_function_entity(
+            "src/precise.ts",
+            "preciseCaller",
+            "precise.preciseCaller",
+            25,
+        );
+        store.upsert_entity(&target).expect("upsert target");
+        store.upsert_entity(&caller).expect("upsert caller");
+        store
+            .upsert_edge(&mcp_test_call_edge(&caller, &target, "src/precise.ts", 26))
+            .expect("upsert edge");
+        (server, repo, target.id)
+    }
+
+    fn mcp_test_function_entity(path: &str, name: &str, qualified_name: &str, line: u32) -> Entity {
+        Entity {
+            id: codegraph_core::stable_entity_id_for_kind(
+                path,
+                codegraph_core::EntityKind::Function,
+                qualified_name,
+                Some(qualified_name),
+            ),
+            kind: codegraph_core::EntityKind::Function,
+            name: name.to_string(),
+            qualified_name: qualified_name.to_string(),
+            repo_relative_path: path.to_string(),
+            source_span: Some(SourceSpan::with_columns(path, line, 1, line, 20)),
+            content_hash: None,
+            file_hash: None,
+            created_from: "unit-test".to_string(),
+            confidence: 1.0,
+            metadata: Default::default(),
+        }
+    }
+
+    fn mcp_test_call_edge(head: &Entity, tail: &Entity, path: &str, line: u32) -> Edge {
+        let span = SourceSpan::with_columns(path, line, 3, line, 24);
+        Edge {
+            id: codegraph_core::stable_edge_id(&head.id, RelationKind::Calls, &tail.id, &span),
+            head_id: head.id.clone(),
+            relation: RelationKind::Calls,
+            tail_id: tail.id.clone(),
+            source_span: span,
+            repo_commit: None,
+            file_hash: None,
+            extractor: "unit-test".to_string(),
+            confidence: 1.0,
+            exactness: codegraph_core::Exactness::ParserVerified,
+            edge_class: codegraph_core::EdgeClass::BaseExact,
+            context: codegraph_core::EdgeContext::Production,
+            derived: false,
+            provenance_edges: Vec::new(),
+            metadata: Default::default(),
+        }
     }
 
     #[test]
@@ -3156,6 +3576,8 @@ mod tests {
 
         assert_eq!(status["status"].as_str(), Some("ok"));
         assert_eq!(status["safe_to_query"].as_bool(), Some(true));
+        assert_eq!(status["path_access_status"].as_str(), Some("ok"));
+        assert_eq!(status["db_path_outside_workspace"].as_bool(), Some(false));
         assert_eq!(status["scope_source"].as_str(), Some("passport"));
         assert_eq!(
             status["db_lifecycle_read"]["scope_source"].as_str(),
@@ -3187,8 +3609,10 @@ mod tests {
         assert_eq!(status["status"].as_str(), Some("missing"));
         assert_eq!(status["problem"].as_str(), Some("index_required"));
         assert_eq!(status["db_problem"].as_str(), Some("db_missing"));
+        assert_eq!(status["path_access_status"].as_str(), Some("db_missing"));
+        assert_eq!(status["db_path_outside_workspace"].as_bool(), Some(false));
         assert_eq!(status["safe_to_query"].as_bool(), Some(false));
-        assert_blocker_contains(&status, "db_missing");
+        assert_blocker_contains(&status, "main DB does not exist");
         assert!(status.get("files").is_none());
         assert!(status.get("entities").is_none());
         assert!(status.get("edges").is_none());
@@ -3212,12 +3636,17 @@ mod tests {
                 &json!({"repo": repo_arg, "query": "login"}),
             )
             .expect_err("search should reject mismatched passport");
-        assert_eq!(search.code, "db_lifecycle_blocked");
+        assert_eq!(search.code, "repo_root_mismatch");
         assert!(search.message.contains("repo root mismatch"));
 
         let status = ok(server.call_tool("codegraph.status", &json!({"repo": repo_arg})));
         assert_eq!(status["status"].as_str(), Some("db_problem"));
         assert_eq!(status["problem"].as_str(), Some("repo_root_mismatch"));
+        assert_eq!(status["db_problem"].as_str(), Some("repo_root_mismatch"));
+        assert_eq!(
+            status["db_lifecycle_read"]["db_problem_kind"].as_str(),
+            Some("repo_root_mismatch")
+        );
         assert_eq!(status["safe_to_query"].as_bool(), Some(false));
         assert_eq!(
             status["db_health"]["passport_status"].as_str(),

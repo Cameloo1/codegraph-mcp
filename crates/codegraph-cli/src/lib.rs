@@ -26,18 +26,21 @@ use codegraph_bench::{
     TwoLayerBenchOptions,
 };
 use codegraph_core::{
-    ContextPacket, ContextSnippet, Edge, Entity, EntityKind, Exactness, FileRecord, Metadata,
-    PathEvidence, RelationKind, RepoIndexState, SourceSpan,
+    classify_edge_evidence_role, classify_entity_source_role, combine_evidence_roles,
+    ContextPacket, ContextSnippet, Edge, Entity, EntityKind, EvidenceRole, EvidenceRoleDecision,
+    Exactness, FileRecord, Metadata, PathEvidence, RelationKind, RepoIndexState, SourceSpan,
 };
 pub use codegraph_index::{
-    collect_repo_files, default_db_path, index_repo, index_repo_to_db_with_options,
-    index_repo_with_options, inspect_db_lifecycle_preflight, inspect_repo_db_passport,
-    parse_extract_pending_files, require_reusable_db_passport, scope_policy_hash,
-    should_ignore_path, should_start_new_index_batch, update_changed_files,
-    update_changed_files_to_db, update_changed_files_with_cache, DbLifecyclePolicy,
-    DbLifecyclePreflight, IncrementalIndexCache, IncrementalIndexSummary, IndexBuildMode,
-    IndexError, IndexIssue, IndexOptions, IndexProfile, IndexScopeOptions, IndexSummary,
-    LocalFactBundle, PendingIndexFile, StorageMode, DEFAULT_INDEX_BATCH_MAX_FILES,
+    collect_repo_files, default_db_path, graph_fact_hash, index_repo,
+    index_repo_to_db_with_options, index_repo_with_options, inspect_db_lifecycle_preflight,
+    inspect_db_lifecycle_surface_preflight, inspect_repo_db_passport, parse_extract_pending_files,
+    require_reusable_db_passport, scope_policy_hash, should_ignore_path,
+    should_start_new_index_batch, update_changed_files, update_changed_files_to_db,
+    update_changed_files_with_cache, update_changed_files_with_cache_to_db,
+    DbLifecycleOperationKind, DbLifecyclePolicy, DbLifecyclePreflight, DbLifecycleSurfacePreflight,
+    DbLifecycleSurfacePreflightRequest, IncrementalIndexCache, IncrementalIndexSummary,
+    IndexBuildMode, IndexError, IndexIssue, IndexOptions, IndexProfile, IndexScopeOptions,
+    IndexSummary, LocalFactBundle, PendingIndexFile, StorageMode, DEFAULT_INDEX_BATCH_MAX_FILES,
     DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY, UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::{
@@ -49,7 +52,8 @@ use codegraph_query::{
     SymbolSearchHit, SymbolSearchIndex, TraversalDirection, TraversalStep,
 };
 use codegraph_store::{
-    DbPassport, GraphStore, SqliteGraphStore, TextSearchKind, DB_PASSPORT_VERSION, SCHEMA_VERSION,
+    DbPassport, DbPreflightReport, GraphStore, SqliteGraphStore, TextSearchKind,
+    DB_PASSPORT_VERSION, SCHEMA_VERSION,
 };
 use codegraph_trace::{
     append_trace_event, replay_trace_file, TraceAppendEvent, TraceConfig, TraceEventType,
@@ -61,10 +65,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 mod audit;
+mod storage_budget;
 
 pub const BIN_NAME: &str = "codegraph-mcp";
 pub const PHASE: &str = "30";
-pub const BUNDLE_SCHEMA_VERSION: u32 = 1;
+pub const BUNDLE_SCHEMA_VERSION: u32 = 2;
+const GLOBAL_REPO_SOURCE_ENV: &str = "CODEGRAPH_REPO_SOURCE";
+const GLOBAL_DB_SOURCE_ENV: &str = "CODEGRAPH_DB_SOURCE";
 const DEFAULT_UI_NODE_CAP: usize = 80;
 const MAX_UI_NODE_CAP: usize = 250;
 const SYMBOL_SEARCH_MIN_FTS_CANDIDATES: usize = 128;
@@ -74,6 +81,22 @@ const SYMBOL_SEARCH_FILE_CANDIDATE_LIMIT: usize = 256;
 const DEFAULT_UNRESOLVED_CALL_LIMIT: usize = 100;
 const MAX_UNRESOLVED_CALL_LIMIT: usize = 500;
 const DEFAULT_QUERY_SURFACE_ITERATIONS: usize = 20;
+const DEFAULT_QUERY_JSON_LIMIT: usize = 10;
+const DEFAULT_QUERY_AGENT_JSON_LIMIT: usize = 5;
+const DEFAULT_QUERY_VERBOSE_LIMIT: usize = 20;
+const MAX_QUERY_RESULT_LIMIT: usize = 500;
+const AGENT_JSON_SCHEMA_VERSION: u32 = 1;
+const INDEX_CONCISE_JSON_SIZE_TARGET_BYTES: usize = 8 * 1024;
+const INDEX_AGENT_JSON_SIZE_TARGET_BYTES: usize = 4 * 1024;
+#[cfg(test)]
+const QUERY_AGENT_JSON_SIZE_TARGET_BYTES: usize = 12 * 1024;
+const DEFAULT_CONTEXT_AGENT_PATH_LIMIT: usize = 5;
+const DEFAULT_CONTEXT_AGENT_SNIPPET_LIMIT: usize = 5;
+const DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES: usize = 16 * 1024;
+const MAX_CONTEXT_AGENT_PATH_LIMIT: usize = 64;
+const MAX_CONTEXT_AGENT_SNIPPET_LIMIT: usize = 64;
+const MIN_CONTEXT_AGENT_MAX_OUTPUT_BYTES: usize = 1024;
+const MAX_CONTEXT_AGENT_MAX_OUTPUT_BYTES: usize = 512 * 1024;
 
 const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
@@ -83,7 +106,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "index",
-        usage: "codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]",
+        usage: "codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]",
         description: "Index a repository into the local graph store.",
     },
     CommandSpec {
@@ -93,7 +116,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "query",
-        usage: "codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]\n  codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets]",
+        usage: "codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]\n  codegraph-mcp query symbols|text|files <query> [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain]\n  codegraph-mcp query callers|callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain] <symbol>\n  codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets]",
         description: "Query symbols, text, files, references, definitions, calls, chains, or relation paths.",
     },
     CommandSpec {
@@ -103,7 +126,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "context-pack",
-        usage: "codegraph-mcp context-pack --task <task> [--budget <tokens>] [--mode <mode>] [--seed <symbol>] [--profile]",
+        usage: "codegraph-mcp context-pack --task <task> [--budget <tokens>] [--mode <production|test-impact|debug|impact>] [--seed <symbol>] [--agent-json|--concise] [--limit-paths <n>] [--limit-snippets <n>] [--max-output-bytes <n>] [--profile]",
         description: "Build a compact proof-oriented context packet.",
     },
     CommandSpec {
@@ -143,7 +166,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "bench",
-        usage: "codegraph-mcp bench [--baseline <mode>]... [--format <json|markdown>] [--output <path>]\n  codegraph-mcp bench graph-truth --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--fail-on-forbidden] [--fail-on-missing-source-span] [--fail-on-unresolved-exact] [--fail-on-derived-without-provenance] [--fail-on-test-mock-production-leak] [--update-mode] [--keep-workdirs] [--verbose]\n  codegraph-mcp bench context-packet --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--top-k <k>] [--budget <tokens>]\n  codegraph-mcp bench retrieval-ablation --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--mode <mode>]... [--top-k <k>]\n  codegraph-mcp bench update-integrity [--mode <update-fast|update-validated|update-debug>] [--loop-kind <combined|repeat-fast|update-fast>] [--iterations <n>] [--autoresearch-iterations <n>] [--timeout-ms <n>] [--workers <n>] [--out-json <path>] [--out-md <path>] [--workdir <path>] [--skip-autoresearch] [--only-autoresearch] [--autoresearch-repo <path>] [--autoresearch-seed-db <path>]\n  codegraph-mcp bench query-surface [--repo <path>] [--db <path>] [--fresh] [--iterations <n>] [--out-json <path>] [--out-md <path>]\n  codegraph-mcp bench proof-build-only <repo>|--repo <path> [--db <path>] [--workers <n>] [--allow-debug-timing]\n  codegraph-mcp bench proof-build-validated <repo>|--repo <path> [--db <path>] [--workers <n>]\n  codegraph-mcp bench comprehensive [--fresh|--use-existing-artifact <db>] [--artifact-metadata <path>] [--fail-on-stale-artifact] [--repo <path>] [--workers <n>] [--output-dir <dir>] [--baseline <path>] [--compact-gate-json <path>] [--previous <path>] [--timestamp <id>] [--allow-debug-timing]\n  codegraph-mcp bench retrieval-quality [--run-id <id>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>] [--autoresearch-repo <path>]\n  codegraph-mcp bench agent-quality [--run-id <id>] [--timeout-ms <ms>] [--competitor-bin <path>] [--fake-agent]\n  codegraph-mcp bench final-gate [--output-dir <dir>] [--workspace-root <dir>] [--timeout-ms <ms>] [--competitor-bin <path>] [--cgc-db-size-bytes <n>]\n  codegraph-mcp bench gaps [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>]\n  codegraph-mcp bench synthetic-index --output-dir <dir> [--files <n>]\n  codegraph-mcp bench real-repo-corpus\n  codegraph-mcp bench parity-report [--output-dir <dir>]\n  codegraph-mcp bench cgc-comparison [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>]",
+        usage: "codegraph-mcp bench [--baseline <mode>]... [--format <json|markdown>] [--output <path>]\n  codegraph-mcp bench graph-truth --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--fail-on-forbidden] [--fail-on-missing-source-span] [--fail-on-unresolved-exact] [--fail-on-derived-without-provenance] [--fail-on-test-mock-production-leak] [--update-mode] [--keep-workdirs] [--verbose]\n  codegraph-mcp bench context-packet --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--top-k <k>] [--budget <tokens>]\n  codegraph-mcp bench retrieval-ablation --cases <path> --fixture-root <path> --out-json <path> --out-md <path> [--mode <mode>]... [--top-k <k>]\n  codegraph-mcp bench update-integrity [--mode <update-fast|update-validated|update-debug>] [--loop-kind <combined|repeat-fast|update-fast>] [--iterations <n>] [--autoresearch-iterations <n>] [--timeout-ms <n>] [--workers <n>] [--out-json <path>] [--out-md <path>] [--workdir <path>] [--skip-autoresearch] [--only-autoresearch] [--autoresearch-repo <path>] [--autoresearch-seed-db <path>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp bench query-surface [--repo <path>] [--db <path>] [--fresh] [--iterations <n>] [--out-json <path>] [--out-md <path>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp bench proof-build-only <repo>|--repo <path> [--db <path>] [--workers <n>] [--allow-debug-timing] [--max-db-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp bench proof-build-validated <repo>|--repo <path> [--db <path>] [--workers <n>] [--max-db-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp bench comprehensive [--fresh|--use-existing-artifact <db>] [--artifact-metadata <path>] [--fail-on-stale-artifact] [--repo <path>] [--workers <n>] [--output-dir <dir>] [--baseline <path>] [--compact-gate-json <path>] [--previous <path>] [--timestamp <id>] [--allow-debug-timing] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp bench retrieval-quality [--run-id <id>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>] [--autoresearch-repo <path>]\n  codegraph-mcp bench agent-quality [--run-id <id>] [--timeout-ms <ms>] [--competitor-bin <path>] [--fake-agent]\n  codegraph-mcp bench final-gate [--output-dir <dir>] [--workspace-root <dir>] [--timeout-ms <ms>] [--competitor-bin <path>] [--cgc-db-size-bytes <n>]\n  codegraph-mcp bench gaps [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>]\n  codegraph-mcp bench synthetic-index --output-dir <dir> [--files <n>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp bench real-repo-corpus\n  codegraph-mcp bench parity-report [--output-dir <dir>]\n  codegraph-mcp bench cgc-comparison [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]",
         description: "Run local reproducible CodeGraph benchmarks, including optional external CGC comparison.",
     },
     CommandSpec {
@@ -153,7 +176,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "audit",
-        usage: "codegraph-mcp audit storage --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit schema-check --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit storage-experiments --db <path> [--workdir <dir>] [--json <path>] [--markdown <path>] [--keep-copies]\n  codegraph-mcp audit sample-edges --db <path> [--relation <RELATION>] [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets]\n  codegraph-mcp audit sample-paths --db <path> [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets] [--max-edge-load <n>] [--timeout-ms <ms>] [--mode <proof|audit|debug>]\n  codegraph-mcp audit relation-counts --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit label-samples --edges-json <path> [--edges-md <path>] [--paths-json <path>] [--paths-md <path>] [--json <path>] [--markdown <path>]\n  codegraph-mcp audit summarize-labels [--labels <path>] [--dir <path>] [--json <path>] [--markdown <path>]",
+        usage: "codegraph-mcp audit storage --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit storage-micro --out <dir> [--cases simple,expression,inline-tests,duplicates,excluded-junk,all] [--batch-sizes 1,10,100] [--keep-artifacts] [--json [path]] [--markdown [path]] [--no-context-pack] [--respect-gitignore true|false] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp audit schema-check --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit storage-experiments --db <path> [--workdir <dir>] [--json <path>] [--markdown <path>] [--keep-copies]\n  codegraph-mcp audit sample-edges --db <path> [--relation <RELATION>] [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets]\n  codegraph-mcp audit sample-paths --db <path> [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets] [--max-edge-load <n>] [--timeout-ms <ms>] [--mode <proof|audit|debug>]\n  codegraph-mcp audit relation-counts --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit label-samples --edges-json <path> [--edges-md <path>] [--paths-json <path>] [--paths-md <path>] [--json <path>] [--markdown <path>]\n  codegraph-mcp audit summarize-labels [--labels <path>] [--dir <path>] [--json <path>] [--markdown <path>]",
         description: "Run read-only audit inspections for storage, sampled edges, relation counts, and manual sample labels.",
     },
     CommandSpec {
@@ -302,6 +325,15 @@ struct WatchOptions {
     changed_paths: Vec<PathBuf>,
 }
 
+struct WatchStartup {
+    repo_root: PathBuf,
+    requested_db_path: PathBuf,
+    actual_db_path_opened: PathBuf,
+    lifecycle_status: Value,
+    auto_index_enabled: bool,
+    cache: IncrementalIndexCache,
+}
+
 #[derive(Debug, Clone)]
 struct UiOptions {
     repo: PathBuf,
@@ -335,6 +367,7 @@ struct BenchOptions {
 struct SyntheticIndexOptions {
     output_dir: PathBuf,
     files: usize,
+    storage_budget: storage_budget::StorageBudgetOptions,
 }
 
 #[derive(Debug, Clone)]
@@ -353,6 +386,7 @@ struct UpdateIntegrityHarnessOptions {
     only_autoresearch: bool,
     autoresearch_repo: PathBuf,
     autoresearch_seed_db: Option<PathBuf>,
+    storage_budget: storage_budget::StorageBudgetOptions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -439,6 +473,7 @@ struct CgcComparisonOptions {
     timeout_ms: u64,
     top_k: usize,
     competitor_executable: Option<PathBuf>,
+    storage_budget: storage_budget::StorageBudgetOptions,
 }
 
 #[derive(Debug, Clone)]
@@ -454,6 +489,7 @@ struct ComprehensiveBenchmarkOptions {
     fail_on_stale_artifact: bool,
     workers: Option<usize>,
     allow_debug_timing: bool,
+    storage_budget: storage_budget::StorageBudgetOptions,
 }
 
 #[derive(Debug, Clone)]
@@ -471,6 +507,7 @@ struct QuerySurfaceBenchmarkOptions {
     out_json: PathBuf,
     out_md: PathBuf,
     workers: Option<usize>,
+    storage_budget: storage_budget::StorageBudgetOptions,
 }
 
 #[derive(Debug, Clone)]
@@ -500,9 +537,79 @@ struct BundleManifest {
     created_by: String,
     created_at_unix_ms: u64,
     repo_root: String,
+    #[serde(default)]
+    repo_identity: Option<String>,
+    #[serde(default)]
+    canonical_repo_root: Option<String>,
+    #[serde(default)]
+    repo_head: Option<String>,
+    #[serde(default)]
+    scope_hash: Option<String>,
+    #[serde(default)]
+    scope_policy_json: Option<String>,
+    #[serde(default)]
+    storage_mode: Option<String>,
+    #[serde(default)]
+    db_schema_version: Option<u32>,
+    #[serde(default)]
+    graph_digest: Option<String>,
     file_count: usize,
     entity_count: usize,
     edge_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BundleImportMode {
+    Fresh,
+    Replace,
+    Merge,
+}
+
+impl BundleImportMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Replace => "replace",
+            Self::Merge => "merge",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BundleImportOptions {
+    input: PathBuf,
+    mode: BundleImportMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BundleManifestEvidence {
+    repo_identity: String,
+    canonical_repo_root: String,
+    repo_head: Option<String>,
+    scope_hash: String,
+    scope_policy_json: String,
+    storage_mode: StorageMode,
+    db_schema_version: u32,
+    graph_digest: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BundleTargetState {
+    Missing,
+    Empty,
+    NonEmpty,
+    Uninspectable,
+}
+
+impl BundleTargetState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Empty => "empty",
+            Self::NonEmpty => "non_empty",
+            Self::Uninspectable => "uninspectable",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -534,9 +641,18 @@ where
                 &format!("--repo could not be used as current directory: {error}"),
             );
         }
+        std::env::set_var(GLOBAL_REPO_SOURCE_ENV, "global --repo");
+    } else {
+        std::env::remove_var(GLOBAL_REPO_SOURCE_ENV);
     }
     if let Some(db) = &globals.db {
-        std::env::set_var("CODEGRAPH_DB_PATH", db);
+        let resolved_db = absolutize_path(db).unwrap_or_else(|_| db.to_path_buf());
+        std::env::set_var("CODEGRAPH_DB_PATH", &resolved_db);
+        std::env::set_var(GLOBAL_DB_SOURCE_ENV, "global --db");
+    } else if std::env::var_os("CODEGRAPH_DB_PATH").is_some() {
+        std::env::set_var(GLOBAL_DB_SOURCE_ENV, "env CODEGRAPH_DB_PATH");
+    } else {
+        std::env::remove_var(GLOBAL_DB_SOURCE_ENV);
     }
 
     let rest = rest.as_slice();
@@ -567,6 +683,12 @@ where
         && !command_args.iter().any(|arg| arg == "--profile")
     {
         command_args.push("--profile".to_string());
+    }
+    if globals.verbose
+        && command.name == "index"
+        && !command_args.iter().any(|arg| arg == "--verbose")
+    {
+        command_args.push("--verbose".to_string());
     }
     if globals.json
         && matches!(command.name, "index" | "doctor" | "languages" | "config")
@@ -613,13 +735,20 @@ fn run_json_command(error_kind: &str, result: Result<Value, String>) -> CliOutpu
         Ok(value) => success(json_line(value)),
         Err(error) if error_kind == "bench_failed" => command_error_json(
             error_kind,
-            add_benchmark_binary_metadata(json!({
-                "status": "error",
-                "error": error_kind,
-                "message": error,
-            })),
+            add_benchmark_binary_metadata(serde_json::from_str::<Value>(&error).unwrap_or_else(
+                |_| {
+                    json!({
+                        "status": "error",
+                        "error": error_kind,
+                        "message": error,
+                    })
+                },
+            )),
         ),
-        Err(error) => command_error(error_kind, &error),
+        Err(error) => match serde_json::from_str::<Value>(&error) {
+            Ok(value) => command_error_json(error_kind, value),
+            Err(_) => command_error(error_kind, &error),
+        },
     }
 }
 
@@ -659,6 +788,35 @@ fn parse_global_options(args: &[String]) -> Result<(GlobalOptions, Vec<String>),
         index += 1;
     }
     Ok((globals, rest))
+}
+
+fn canonical_global_flag(arg: &str) -> Option<&'static str> {
+    match arg {
+        "--repo" => Some("--repo"),
+        "--db" => Some("--db"),
+        "--json" => Some("--json"),
+        "--no-color" => Some("--no-color"),
+        "--verbose" => Some("--verbose"),
+        "--quiet" => Some("--quiet"),
+        "--profile" => Some("--profile"),
+        _ if arg.starts_with("--repo=") => Some("--repo"),
+        _ if arg.starts_with("--db=") => Some("--db"),
+        _ => None,
+    }
+}
+
+fn misplaced_global_flag_message(flag: &str, command_name: &str) -> String {
+    let value_hint = match flag {
+        "--repo" | "--db" => " <path>",
+        _ => "",
+    };
+    format!(
+        "{flag} is a global flag. Put it before the command: {BIN_NAME} {flag}{value_hint} {command_name} ..."
+    )
+}
+
+fn misplaced_global_flag_error(arg: &str, command_name: &str) -> Option<String> {
+    canonical_global_flag(arg).map(|flag| misplaced_global_flag_message(flag, command_name))
 }
 
 fn success(stdout: String) -> CliOutput {
@@ -823,42 +981,96 @@ fn run_init_command(args: &[String]) -> Result<Value, String> {
 }
 
 fn run_index_command(args: &[String]) -> Result<Value, String> {
-    let (repo, db, options) = parse_index_options(args)?;
+    let (repo, db, options, output_mode, budget_options) = parse_index_command_options(args)?;
+    let started = Instant::now();
+    let repo_root = resolve_repo_root(Path::new(&repo))?;
+    let db_path = db
+        .clone()
+        .map(|path| normalize_db_path_for_repo(&repo_root, &path))
+        .unwrap_or_else(|| default_db_path(&repo_root));
+    let preflight = storage_budget::storage_budget_preflight(
+        &budget_options,
+        storage_budget::StorageBudgetContext {
+            command: "codegraph-mcp index".to_string(),
+            repo_root: Some(repo_root.clone()),
+            db_path: Some(db_path.clone()),
+            out_path: None,
+            explicit_db: db.is_some(),
+            explicit_out: false,
+            diagnostic_only: false,
+        },
+    );
+    if preflight.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value("codegraph-mcp index", &preflight),
+        ));
+    }
     let summary = if let Some(db) = db {
         index_repo_to_db_with_options(Path::new(&repo), &db, options)
     } else {
         index_repo_with_options(Path::new(&repo), options)
     }
     .map_err(|error| error.to_string())?;
-    index_summary_json(&summary)
+    let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let budget = storage_budget::storage_budget_postflight(preflight, &[db_path], &[]);
+    let mut value = match output_mode {
+        IndexJsonOutputMode::Audit => index_summary_json(&summary),
+        IndexJsonOutputMode::Agent => index_summary_agent_json(&summary, wall_ms),
+        IndexJsonOutputMode::Concise => index_summary_concise_json(&summary, wall_ms),
+    }?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("storage_budget".to_string(), budget.to_json());
+    }
+    if budget.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value("codegraph-mcp index", &budget),
+        ));
+    }
+    Ok(value)
 }
 
 fn run_status_command(args: &[String]) -> Result<Value, String> {
     let repo = optional_repo_arg(args)?;
     let repo_root = resolve_repo_root(&repo)?;
-    let db_path = default_db_path(&repo_root);
-    if !db_path.exists() {
+    let db_path = resolved_db_path_for_repo(&repo_root);
+    let preflight = inspect_read_db_lifecycle_preflight(&repo_root, &db_path, None)?;
+    let sqlite_sidecars = sqlite_sidecars_status_from_health(&db_path, &preflight.db_health);
+    if preflight.path_access_status == "db_missing" {
         return Ok(json!({
             "status": "not_indexed",
+            "db_problem_kind": preflight.db_problem_kind.clone(),
             "repo_root": path_string(&repo_root),
             "db_path": path_string(&db_path),
+            "db_path_outside_workspace": preflight.db_path_outside_workspace,
+            "outside_workspace_note": preflight.outside_workspace_note.clone(),
+            "path_access_status": preflight.path_access_status.clone(),
+            "path_access_error": preflight.path_access_error.clone(),
+            "sqlite_sidecars": sqlite_sidecars.clone(),
+            "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
+            "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true),
             "next_command": "codegraph-mcp index .",
         }));
     }
 
-    let preflight = inspect_read_db_lifecycle_preflight(&repo_root, &db_path, None)?;
     if !preflight.safe {
         return Ok(json!({
             "status": "db_problem",
+            "db_problem_kind": preflight.db_problem_kind.clone(),
             "repo_root": path_string(&repo_root),
             "db_path": path_string(&db_path),
+            "db_path_outside_workspace": preflight.db_path_outside_workspace,
+            "outside_workspace_note": preflight.outside_workspace_note.clone(),
+            "path_access_status": preflight.path_access_status.clone(),
+            "path_access_error": preflight.path_access_error.clone(),
             "db_health": preflight.db_health.clone(),
+            "sqlite_sidecars": sqlite_sidecars.clone(),
+            "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
             "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true),
             "next_command": "codegraph-mcp index . --fresh",
         }));
     }
 
-    let store = SqliteGraphStore::open(&db_path).map_err(|error| error.to_string())?;
+    let store = SqliteGraphStore::open_read_only(&db_path).map_err(|error| error.to_string())?;
     let files = store
         .list_files(10_000)
         .map_err(|error| error.to_string())?;
@@ -886,9 +1098,15 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
         "phase": PHASE,
         "repo_root": path_string(&repo_root),
         "db_path": path_string(&db_path),
+        "db_path_outside_workspace": preflight.db_path_outside_workspace,
+        "outside_workspace_note": preflight.outside_workspace_note.clone(),
+        "path_access_status": preflight.path_access_status.clone(),
+        "path_access_error": preflight.path_access_error.clone(),
         "db_size_bytes": sqlite_family_size_bytes(&db_path).map_err(|error| error.to_string())?,
         "storage_policy": DEFAULT_STORAGE_POLICY,
         "db_health": preflight.db_health.clone(),
+        "sqlite_sidecars": sqlite_sidecars.clone(),
+        "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
         "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true),
         "schema_version": store.schema_version().map_err(|error| error.to_string())?,
         "files": store.count_files().map_err(|error| error.to_string())?,
@@ -925,7 +1143,10 @@ fn run_doctor_command(args: &[String]) -> Result<Value, String> {
         match args[index].as_str() {
             "--json" => json_output = true,
             value if value.starts_with('-') => {
-                return Err(format!("unknown doctor option: {value}"))
+                if let Some(error) = misplaced_global_flag_error(value, "doctor") {
+                    return Err(error);
+                }
+                return Err(format!("unknown doctor option: {value}"));
             }
             value => repo = PathBuf::from(value),
         }
@@ -933,7 +1154,7 @@ fn run_doctor_command(args: &[String]) -> Result<Value, String> {
     }
     let _json_output = json_output;
     let repo_root = resolve_repo_root(&repo)?;
-    let db_path = default_db_path(&repo_root);
+    let db_path = resolved_db_path_for_repo(&repo_root);
     let mut checks = Vec::new();
     let mut warnings = 0usize;
     let mut errors = 0usize;
@@ -952,16 +1173,35 @@ fn run_doctor_command(args: &[String]) -> Result<Value, String> {
             .parent()
             .is_some_and(|parent| parent.exists()),
     );
-    let db_ok = db_path.exists()
-        && SqliteGraphStore::open(&db_path)
-            .and_then(|store| store.schema_version().map(|_| ()))
-            .is_ok();
+    let db_lifecycle = inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
+        repo_root: repo_root.clone(),
+        db_path: db_path.clone(),
+        surface_name: "cli.doctor".to_string(),
+        operation_kind: DbLifecycleOperationKind::NormalRead,
+        allow_stale_read: false,
+        allow_foreign_repo: false,
+        required_storage_mode: None,
+        expected_scope: None,
+    })
+    .map_err(|error| error.to_string())?;
+    let database_exists = db_lifecycle.path_access_status != "db_missing";
+    let lifecycle_evidence = db_lifecycle_surface_preflight_json(&db_lifecycle);
+    let sqlite_sidecars =
+        sqlite_sidecars_status_from_health(&db_path, &db_lifecycle.lifecycle_preflight.db_health);
+    let db_check_status = if database_exists { "error" } else { "warning" };
+    let db_check_message = if db_lifecycle.safe_to_read {
+        "local SQLite graph database is lifecycle-safe to query"
+    } else if database_exists {
+        "local SQLite graph database exists but lifecycle/passport checks block normal reads"
+    } else {
+        "local SQLite graph database is missing; run `codegraph-mcp index .` first"
+    };
     push_doctor_check(
         &mut checks,
         "database",
-        if db_ok { "ok" } else { "warning" },
-        "local SQLite graph database exists and opens",
-        db_ok,
+        db_check_status,
+        db_check_message,
+        db_lifecycle.safe_to_read,
     );
     push_doctor_check(
         &mut checks,
@@ -1001,14 +1241,44 @@ fn run_doctor_command(args: &[String]) -> Result<Value, String> {
             _ => {}
         }
     }
+    let storage_mode = db_lifecycle
+        .lifecycle_preflight
+        .db_health
+        .passport
+        .as_ref()
+        .map(|passport| passport.storage_mode.clone());
+    let schema_status = doctor_lifecycle_field_status(
+        &db_lifecycle,
+        &["schema version mismatch", "passport schema mismatch"],
+        &db_lifecycle.schema_status,
+    );
 
     Ok(json!({
         "status": if errors == 0 { "ok" } else { "error" },
         "phase": PHASE,
         "repo_root": path_string(&repo_root),
         "db_path": path_string(&db_path),
+        "db_path_outside_workspace": db_lifecycle.db_path_outside_workspace,
+        "outside_workspace_note": db_lifecycle.outside_workspace_note.clone(),
+        "db_problem_kind": db_lifecycle.db_problem_kind.clone(),
+        "path_access_status": db_lifecycle.path_access_status.clone(),
+        "path_access_error": db_lifecycle.path_access_error.clone(),
+        "database_exists": database_exists,
+        "safe_to_query": db_lifecycle.safe_to_read,
+        "passport_status": db_lifecycle.passport_status.clone(),
+        "repo_match": db_lifecycle.repo_match,
+        "scope_match": db_lifecycle.scope_match,
+        "schema_status": schema_status,
+        "storage_mode": storage_mode,
+        "storage_mode_status": db_lifecycle.lifecycle_preflight.storage_mode_status.clone(),
+        "blockers": db_lifecycle.blockers.clone(),
+        "lifecycle_warnings": db_lifecycle.warnings.clone(),
+        "sqlite_sidecars": sqlite_sidecars.clone(),
+        "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
+        "db_lifecycle_read": lifecycle_evidence,
         "checks": checks,
         "warnings": warnings,
+        "warning_count": warnings,
         "errors": errors,
         "proof": "Doctor is local-only and treats missing optional components as warnings.",
     }))
@@ -1027,6 +1297,164 @@ fn push_doctor_check(
         "message": message,
         "optional": status_if_missing == "warning",
     }));
+}
+
+fn sqlite_sidecars_status_for_path(db_path: &Path) -> Value {
+    let wal_path = sqlite_sidecar_path(db_path, "wal");
+    let shm_path = sqlite_sidecar_path(db_path, "shm");
+    let wal_bytes = metadata_len(&wal_path).unwrap_or(0);
+    let shm_bytes = metadata_len(&shm_path).unwrap_or(0);
+    let wal_exists = wal_bytes > 0 || wal_path.exists();
+    let shm_exists = shm_bytes > 0 || shm_path.exists();
+    let main_exists = db_path.exists();
+    let mut sidecars = Vec::new();
+    if wal_exists {
+        sidecars.push(path_string(&wal_path));
+    }
+    if shm_exists {
+        sidecars.push(path_string(&shm_path));
+    }
+    let sidecar_status = if !main_exists && !sidecars.is_empty() {
+        "orphan_without_main_db"
+    } else {
+        "normal"
+    };
+    let orphan_sidecars = if sidecar_status == "orphan_without_main_db" {
+        sidecars.clone()
+    } else {
+        Vec::new()
+    };
+    json!({
+        "status": sidecar_status,
+        "sidecar_status": sidecar_status,
+        "main_db_exists": main_exists,
+        "wal_path": path_string(&wal_path),
+        "wal_exists": wal_exists,
+        "wal_bytes": wal_bytes,
+        "shm_path": path_string(&shm_path),
+        "shm_exists": shm_exists,
+        "shm_bytes": shm_bytes,
+        "sqlite_sidecars": sidecars,
+        "orphan_sidecars": orphan_sidecars,
+        "orphan_sidecars_deprecated": true,
+    })
+}
+
+fn sqlite_sidecars_status_from_health(db_path: &Path, health: &DbPreflightReport) -> Value {
+    let mut status = sqlite_sidecars_status_for_path(db_path);
+    if let Some(object) = status.as_object_mut() {
+        object.insert(
+            "status".to_string(),
+            Value::String(health.sidecar_status.clone()),
+        );
+        object.insert(
+            "sidecar_status".to_string(),
+            Value::String(health.sidecar_status.clone()),
+        );
+        object.insert(
+            "sqlite_sidecars".to_string(),
+            json!(health.sqlite_sidecars.clone()),
+        );
+        object.insert(
+            "orphan_sidecars".to_string(),
+            json!(health.orphan_sidecars.clone()),
+        );
+        object.insert("orphan_sidecars_deprecated".to_string(), json!(true));
+    }
+    status
+}
+
+struct ReadOnlySqliteOpen {
+    connection: Connection,
+    read_only_mode_used: String,
+    immutable_mode_used: bool,
+    immutable_mode_reason: String,
+}
+
+fn open_sqlite_read_only_side_effect_minimal(db_path: &Path) -> Result<ReadOnlySqliteOpen, String> {
+    if !db_path.exists() {
+        return Err(format!("database does not exist: {}", db_path.display()));
+    }
+    let immutable_mode_used = !sqlite_sidecar_path(db_path, "wal").exists()
+        && !sqlite_sidecar_path(db_path, "shm").exists();
+    let immutable_mode_reason = if immutable_mode_used {
+        "immutable=1 used because no WAL/SHM sidecars were present before inspection".to_string()
+    } else {
+        "immutable=1 not used because WAL/SHM sidecars were present; strict mode=ro preserves WAL visibility".to_string()
+    };
+    let uri = sqlite_read_only_uri(db_path, immutable_mode_used)?;
+    let connection = Connection::open_with_flags(
+        &uri,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .map_err(|error| format!("failed to open {} read-only: {error}", db_path.display()))?;
+    connection
+        .execute_batch(
+            "
+            PRAGMA query_only = ON;
+            PRAGMA busy_timeout = 5000;
+            ",
+        )
+        .map_err(|error| format!("failed to mark {} query-only: {error}", db_path.display()))?;
+    Ok(ReadOnlySqliteOpen {
+        connection,
+        read_only_mode_used: if immutable_mode_used {
+            "sqlite_uri_mode_ro_immutable_query_only".to_string()
+        } else {
+            "sqlite_uri_mode_ro_query_only".to_string()
+        },
+        immutable_mode_used,
+        immutable_mode_reason,
+    })
+}
+
+fn sqlite_read_only_uri(db_path: &Path, immutable: bool) -> Result<String, String> {
+    let absolute = if db_path.is_absolute() {
+        db_path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| error.to_string())?
+            .join(db_path)
+    };
+    let mut raw = absolute.to_string_lossy().replace('\\', "/");
+    if let Some(stripped) = raw.strip_prefix("//?/") {
+        raw = stripped.to_string();
+    }
+    let encoded = percent_encode_sqlite_uri_path(&raw);
+    let path = encoded.trim_start_matches('/');
+    let immutable_param = if immutable { "&immutable=1" } else { "" };
+    Ok(format!("file:///{path}?mode=ro{immutable_param}"))
+}
+
+fn percent_encode_sqlite_uri_path(path: &str) -> String {
+    let mut encoded = String::new();
+    for byte in path.bytes() {
+        let keep =
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':');
+        if keep {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+fn doctor_lifecycle_field_status(
+    preflight: &DbLifecycleSurfacePreflight,
+    needles: &[&str],
+    fallback: &str,
+) -> String {
+    if preflight
+        .blockers
+        .iter()
+        .chain(preflight.lifecycle_preflight.db_health.reasons.iter())
+        .any(|reason| needles.iter().any(|needle| reason.contains(needle)))
+    {
+        "mismatched".to_string()
+    } else {
+        fallback.to_string()
+    }
 }
 
 fn run_config_command(args: &[String]) -> Result<Value, String> {
@@ -1111,53 +1539,107 @@ fn yes_no(value: bool) -> &'static str {
 
 fn run_query_command(args: &[String]) -> Result<Value, String> {
     let mut args = args.to_vec();
+    reject_misplaced_global_flags_in_query_args(&args)?;
     let allow_stale_read = remove_flag(&mut args, "--allow-stale-read");
     let explicit_scope = parse_read_scope_options(&mut args)?;
     let repo_root = current_repo_root()?;
-    let db_path = default_db_path(&repo_root);
-    let db_lifecycle_read =
-        read_db_lifecycle_guard(&repo_root, &db_path, allow_stale_read, explicit_scope)?;
+    if args.first().map(String::as_str) == Some("unresolved-calls") {
+        return run_query_command_inner(&args, allow_stale_read, explicit_scope, None);
+    }
+    let db_path = resolved_db_path_for_repo(&repo_root);
+    let db_lifecycle_read = read_db_lifecycle_guard(
+        &repo_root,
+        &db_path,
+        allow_stale_read,
+        explicit_scope.clone(),
+    )?;
     let previous_allow_stale = std::env::var("CODEGRAPH_ALLOW_STALE_READ").ok();
     if allow_stale_read {
         std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", "1");
     }
-    let result = run_query_command_inner(&args);
+    let compact_lifecycle = compact_lifecycle_summary(&db_lifecycle_read);
+    let result = run_query_command_inner(
+        &args,
+        allow_stale_read,
+        explicit_scope,
+        Some(compact_lifecycle),
+    );
     match previous_allow_stale {
         Some(value) => std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", value),
         None => std::env::remove_var("CODEGRAPH_ALLOW_STALE_READ"),
     }
     let mut value = result?;
-    if let Some(object) = value.as_object_mut() {
-        object.insert("db_lifecycle_read".to_string(), db_lifecycle_read);
+    if !query_response_uses_compact_lifecycle(&value) {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("db_lifecycle_read".to_string(), db_lifecycle_read);
+        }
     }
+    add_query_resolution_fields(&mut value, &repo_root, &db_path);
     Ok(value)
 }
 
-fn run_query_command_inner(args: &[String]) -> Result<Value, String> {
+fn reject_misplaced_global_flags_in_query_args(args: &[String]) -> Result<(), String> {
+    let Some(subcommand) = args.first().map(String::as_str) else {
+        return Ok(());
+    };
+    if let Some(error) = misplaced_global_flag_error(subcommand, "query") {
+        return Err(error);
+    }
+
+    let disallowed_flags: &[&str] = match subcommand {
+        "symbols" | "text" | "files" | "callers" | "callees" => {
+            &["--repo", "--db", "--no-color", "--quiet", "--profile"]
+        }
+        "unresolved-calls" => &["--repo", "--no-color", "--quiet", "--profile", "--verbose"],
+        _ => &[],
+    };
+    if disallowed_flags.is_empty() {
+        return Ok(());
+    }
+
+    for arg in args.iter().skip(1) {
+        if arg == "--" {
+            break;
+        }
+        if let Some(flag) = canonical_global_flag(arg) {
+            if disallowed_flags.contains(&flag) {
+                return Err(misplaced_global_flag_message(flag, "query"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_query_command_inner(
+    args: &[String],
+    allow_stale_read: bool,
+    explicit_scope_policy: Option<IndexScopeOptions>,
+    lifecycle_summary: Option<Value>,
+) -> Result<Value, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         return Err("Usage: codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]".to_string());
     };
     match subcommand {
         "symbols" => {
             if args.len() < 2 {
-                return Err("Usage: codegraph-mcp query symbols <query>".to_string());
+                return Err(list_query_usage("symbols"));
             }
-            let query = args[1..].join(" ");
-            query_symbols(&current_repo_root()?, &query, 20)
+            let options = parse_list_query_args("symbols", &args[1..])?;
+            query_symbols_with_options(&current_repo_root()?, &options, lifecycle_summary.as_ref())
         }
         "text" => {
             if args.len() < 2 {
-                return Err("Usage: codegraph-mcp query text <query>".to_string());
+                return Err(list_query_usage("text"));
             }
-            let query = args[1..].join(" ");
-            query_text(&current_repo_root()?, &query, 20)
+            let options = parse_list_query_args("text", &args[1..])?;
+            query_text_with_options(&current_repo_root()?, &options, lifecycle_summary.as_ref())
         }
         "files" => {
             if args.len() < 2 {
-                return Err("Usage: codegraph-mcp query files <query>".to_string());
+                return Err(list_query_usage("files"));
             }
-            let query = args[1..].join(" ");
-            query_files(&current_repo_root()?, &query, 20)
+            let options = parse_list_query_args("files", &args[1..])?;
+            query_files_with_options(&current_repo_root()?, &options, lifecycle_summary.as_ref())
         }
         "references" => {
             if args.len() < 2 {
@@ -1175,17 +1657,27 @@ fn run_query_command_inner(args: &[String]) -> Result<Value, String> {
         }
         "callers" => {
             if args.len() < 2 {
-                return Err("Usage: codegraph-mcp query callers <symbol>".to_string());
+                return Err(call_relation_usage("callers"));
             }
-            let query = args[1..].join(" ");
-            query_callers(&current_repo_root()?, &query, 32)
+            let parsed = parse_call_relation_args_with_output("callers", &args[1..])?;
+            query_call_relation_with_output(
+                &current_repo_root()?,
+                parsed,
+                CallQueryDirection::Callers,
+                lifecycle_summary.as_ref(),
+            )
         }
         "callees" => {
             if args.len() < 2 {
-                return Err("Usage: codegraph-mcp query callees <symbol>".to_string());
+                return Err(call_relation_usage("callees"));
             }
-            let query = args[1..].join(" ");
-            query_callees(&current_repo_root()?, &query, 32)
+            let parsed = parse_call_relation_args_with_output("callees", &args[1..])?;
+            query_call_relation_with_output(
+                &current_repo_root()?,
+                parsed,
+                CallQueryDirection::Callees,
+                lifecycle_summary.as_ref(),
+            )
         }
         "chain" => {
             if args.len() != 3 {
@@ -1194,7 +1686,9 @@ fn run_query_command_inner(args: &[String]) -> Result<Value, String> {
             query_chain(&current_repo_root()?, &args[1], &args[2])
         }
         "unresolved-calls" => {
-            let options = parse_unresolved_calls_args(&args[1..])?;
+            let mut options = parse_unresolved_calls_args(&args[1..])?;
+            options.allow_stale_read = allow_stale_read;
+            options.explicit_scope_policy = explicit_scope_policy;
             query_unresolved_calls(&current_repo_root()?, options)
         }
         "path" => {
@@ -1204,6 +1698,392 @@ fn run_query_command_inner(args: &[String]) -> Result<Value, String> {
             query_path(&current_repo_root()?, &args[1], &args[2])
         }
         other => Err(format!("unknown query subcommand: {other}")),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueryOutputMode {
+    RichJson,
+    Concise,
+    AgentJson,
+}
+
+impl QueryOutputMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::RichJson => "json",
+            Self::Concise => "concise",
+            Self::AgentJson => "agent_json",
+        }
+    }
+
+    fn is_compact(self) -> bool {
+        matches!(self, Self::Concise | Self::AgentJson)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct QueryListOptions {
+    query: String,
+    limit: usize,
+    explicit_limit: bool,
+    output_mode: QueryOutputMode,
+    verbose: bool,
+    debug: bool,
+    explain: bool,
+}
+
+impl QueryListOptions {
+    fn rich(query: &str, limit: usize) -> Self {
+        Self {
+            query: query.to_string(),
+            limit: sanitize_query_limit(limit),
+            explicit_limit: true,
+            output_mode: QueryOutputMode::RichJson,
+            verbose: false,
+            debug: false,
+            explain: false,
+        }
+    }
+
+    fn fetch_limit(&self) -> usize {
+        if self.output_mode.is_compact() {
+            self.limit.saturating_add(1).min(MAX_QUERY_RESULT_LIMIT + 1)
+        } else {
+            self.limit
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct QueryOutputOptions {
+    limit: usize,
+    explicit_limit: bool,
+    output_mode: QueryOutputMode,
+}
+
+impl QueryOutputOptions {
+    fn fetch_limit(&self) -> usize {
+        if self.output_mode.is_compact() {
+            self.limit.saturating_add(1).min(MAX_QUERY_RESULT_LIMIT + 1)
+        } else {
+            self.limit
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ParsedCallRelationArgs {
+    options: CallRelationQueryOptions,
+    output: QueryOutputOptions,
+}
+
+#[derive(Debug, Clone)]
+struct QueryTruncation {
+    returned_count: usize,
+    limit: usize,
+    omitted_count: usize,
+    omitted_count_is_lower_bound: bool,
+    total_available_unknown: bool,
+}
+
+fn sanitize_query_limit(limit: usize) -> usize {
+    limit.clamp(1, MAX_QUERY_RESULT_LIMIT)
+}
+
+fn parse_limit_value(value: &str) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .map(sanitize_query_limit)
+        .map_err(|_| "invalid --limit value".to_string())
+}
+
+fn parse_list_query_args(command_name: &str, args: &[String]) -> Result<QueryListOptions, String> {
+    let mut output_mode = QueryOutputMode::RichJson;
+    let mut explicit_limit = None;
+    let mut verbose = false;
+    let mut debug = false;
+    let mut explain = false;
+    let mut query_parts = Vec::new();
+    let mut index = 0usize;
+    let mut literal_query_terms = false;
+    while index < args.len() {
+        if literal_query_terms {
+            query_parts.push(args[index].to_string());
+            index += 1;
+            continue;
+        }
+        match args[index].as_str() {
+            "--" => {
+                literal_query_terms = true;
+            }
+            "--limit" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(list_query_usage(command_name));
+                };
+                explicit_limit = Some(parse_limit_value(value)?);
+            }
+            "--agent-json" | "--agent_json" => {
+                output_mode = QueryOutputMode::AgentJson;
+            }
+            "--concise" => {
+                if output_mode != QueryOutputMode::AgentJson {
+                    output_mode = QueryOutputMode::Concise;
+                }
+            }
+            "--verbose" => {
+                verbose = true;
+            }
+            "--debug" => {
+                debug = true;
+                verbose = true;
+            }
+            "--explain" => {
+                explain = true;
+            }
+            "--json" => {}
+            value if value.starts_with("--limit=") => {
+                let value = value.trim_start_matches("--limit=");
+                explicit_limit = Some(parse_limit_value(value)?);
+            }
+            value if value.starts_with("--") => {
+                if let Some(error) = misplaced_global_flag_error(value, "query") {
+                    return Err(error);
+                }
+                return Err(format!(
+                    "unknown query {command_name} option: {value}\n{}",
+                    list_query_usage(command_name)
+                ));
+            }
+            value => query_parts.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if query_parts.is_empty() {
+        return Err(list_query_usage(command_name));
+    }
+    let default_limit = match output_mode {
+        QueryOutputMode::AgentJson => DEFAULT_QUERY_AGENT_JSON_LIMIT,
+        QueryOutputMode::Concise => DEFAULT_QUERY_JSON_LIMIT,
+        QueryOutputMode::RichJson if verbose || debug || explain => DEFAULT_QUERY_VERBOSE_LIMIT,
+        QueryOutputMode::RichJson => DEFAULT_QUERY_JSON_LIMIT,
+    };
+    Ok(QueryListOptions {
+        query: query_parts.join(" "),
+        limit: explicit_limit.unwrap_or(default_limit),
+        explicit_limit: explicit_limit.is_some(),
+        output_mode,
+        verbose,
+        debug,
+        explain,
+    })
+}
+
+fn list_query_usage(command_name: &str) -> String {
+    format!(
+        "Usage: codegraph-mcp query {command_name} <query> [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain]\nLiteral flag-like query terms: codegraph-mcp query {command_name} [options] -- --db"
+    )
+}
+
+fn query_response_uses_compact_lifecycle(value: &Value) -> bool {
+    value
+        .get("schema_name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| name.ends_with("_agent_json"))
+        || matches!(
+            value.get("output_mode").and_then(Value::as_str),
+            Some("agent_json" | "concise")
+        )
+}
+
+fn compact_lifecycle_summary(lifecycle: &Value) -> Value {
+    let claimable = lifecycle
+        .get("claimable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let diagnostic_only = lifecycle
+        .get("diagnostic_only")
+        .and_then(Value::as_bool)
+        .unwrap_or(!claimable);
+    let mut object = serde_json::Map::new();
+    object.insert("claimable".to_string(), json!(claimable));
+    object.insert("diagnostic_only".to_string(), json!(diagnostic_only));
+    for key in [
+        "decision",
+        "db_problem_kind",
+        "passport_status",
+        "schema_status",
+        "scope_status",
+        "repo_root_status",
+        "sidecar_status",
+        "path_access_status",
+    ] {
+        if let Some(value) = lifecycle.get(key).filter(|value| !value.is_null()) {
+            object.insert(key.to_string(), value.clone());
+        }
+    }
+    Value::Object(object)
+}
+
+fn unknown_lifecycle_summary() -> Value {
+    json!({
+        "claimable": false,
+        "diagnostic_only": true,
+        "decision": "unknown",
+    })
+}
+
+fn lifecycle_summary_or_unknown(lifecycle: Option<&Value>) -> Value {
+    lifecycle.cloned().unwrap_or_else(unknown_lifecycle_summary)
+}
+
+fn add_query_resolution_fields(value: &mut Value, repo_root: &Path, db_path: &Path) {
+    let lifecycle_status = query_lifecycle_status(value);
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    object
+        .entry("resolved_repo".to_string())
+        .or_insert_with(|| json!(path_string(repo_root)));
+    object
+        .entry("resolved_db".to_string())
+        .or_insert_with(|| json!(path_string(db_path)));
+    object
+        .entry("repo_source".to_string())
+        .or_insert_with(|| json!(repo_source_label()));
+    object
+        .entry("db_source".to_string())
+        .or_insert_with(|| json!(db_source_label()));
+    object
+        .entry("lifecycle_status".to_string())
+        .or_insert(lifecycle_status);
+}
+
+fn query_lifecycle_status(value: &Value) -> Value {
+    for key in ["lifecycle", "db_lifecycle_read"] {
+        if let Some(decision) = value
+            .get(key)
+            .and_then(|lifecycle| lifecycle.get("decision"))
+            .filter(|decision| !decision.is_null())
+        {
+            return decision.clone();
+        }
+    }
+    json!("unknown")
+}
+
+fn agent_timings_json(started: Instant) -> Value {
+    json!({
+        "wall_ms": started.elapsed().as_secs_f64() * 1000.0,
+    })
+}
+
+fn agent_timings_from_wall_ms(wall_ms: f64) -> Value {
+    json!({
+        "wall_ms": wall_ms,
+    })
+}
+
+fn truncate_for_agent<T>(mut values: Vec<T>, limit: usize) -> (Vec<T>, QueryTruncation) {
+    let fetched = values.len();
+    let omitted_count = usize::from(fetched > limit);
+    if values.len() > limit {
+        values.truncate(limit);
+    }
+    let returned_count = values.len();
+    (
+        values,
+        QueryTruncation {
+            returned_count,
+            limit,
+            omitted_count,
+            omitted_count_is_lower_bound: omitted_count > 0,
+            total_available_unknown: true,
+        },
+    )
+}
+
+fn query_truncation_json(truncation: &QueryTruncation) -> Value {
+    json!({
+        "returned_count": truncation.returned_count,
+        "limit": truncation.limit,
+        "limit_applied": true,
+        "omitted_count": truncation.omitted_count,
+        "omitted_count_is_lower_bound": truncation.omitted_count_is_lower_bound,
+        "total_available_unknown": truncation.total_available_unknown,
+    })
+}
+
+fn bounded_message(code: &str, message: &str, severity: &str) -> Value {
+    json!({
+        "code": code,
+        "message": message,
+        "severity": severity,
+    })
+}
+
+fn canonical_agent_query_response(
+    schema_name: &str,
+    command: &str,
+    repo_root: &Path,
+    db_path: &Path,
+    status: &str,
+    lifecycle: Option<&Value>,
+    truncation: QueryTruncation,
+    query: Value,
+    results: Vec<Value>,
+    warnings: Vec<Value>,
+    errors: Vec<Value>,
+    output_mode: QueryOutputMode,
+    timings: Value,
+) -> Value {
+    let lifecycle = lifecycle_summary_or_unknown(lifecycle);
+    let claimable = lifecycle
+        .get("claimable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let diagnostic_only = lifecycle
+        .get("diagnostic_only")
+        .and_then(Value::as_bool)
+        .unwrap_or(!claimable);
+    json!({
+        "schema_name": schema_name,
+        "schema_version": AGENT_JSON_SCHEMA_VERSION,
+        "status": status,
+        "command": command,
+        "repo": path_string(repo_root),
+        "db": path_string(db_path),
+        "resolved_repo": path_string(repo_root),
+        "resolved_db": path_string(db_path),
+        "repo_source": repo_source_label(),
+        "db_source": db_source_label(),
+        "output_mode": output_mode.as_str(),
+        "lifecycle": lifecycle.clone(),
+        "lifecycle_status": lifecycle
+            .get("decision")
+            .cloned()
+            .unwrap_or_else(|| json!("unknown")),
+        "claimable": claimable,
+        "diagnostic_only": diagnostic_only,
+        "truncation": query_truncation_json(&truncation),
+        "result_count": truncation.returned_count,
+        "limit": truncation.limit,
+        "omitted_count": truncation.omitted_count,
+        "timings": timings,
+        "warnings": warnings.into_iter().take(8).collect::<Vec<_>>(),
+        "errors": errors.into_iter().take(8).collect::<Vec<_>>(),
+        "query": query,
+        "results": results,
+    })
+}
+
+fn agent_status_from_rich(status: &str) -> &'static str {
+    match status {
+        "ok" => "ok",
+        "error" => "error",
+        _ => "warning",
     }
 }
 
@@ -1283,7 +2163,7 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
         json!({ "db_path": path_string(&db_path) }),
     ));
 
-    let budgets = ContextPackBudgets::for_mode(&options.mode);
+    let budgets = ContextPackBudgets::for_options(&options);
     let seed_start = Instant::now();
     let raw_seed_values = context_pack_seed_values(&options, budgets.max_seed_entities);
     let seed_entities =
@@ -1335,38 +2215,48 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
             "policy": "used only when stored PathEvidence has no matching candidates"
         }),
     ));
+    let test_impact_fallback_edges = if context_pack_mode_needs_test_impact_fallback(&options.mode)
+    {
+        if fallback_edges.is_empty() {
+            load_bounded_context_edges(&connection, &seed_ids, &options.mode, budgets)?
+        } else {
+            fallback_edges.clone()
+        }
+    } else {
+        Vec::new()
+    };
 
-    let span_source_start = Instant::now();
-    let mut requested_spans = stored_paths
+    let source_load_start = Instant::now();
+    let mut candidate_spans = stored_paths
         .iter()
         .flat_map(|path| path.source_spans.iter().cloned())
         .collect::<Vec<_>>();
-    requested_spans.extend(
+    candidate_spans.extend(
         fallback_edges
             .iter()
             .map(|edge| edge.source_span.clone())
             .collect::<Vec<_>>(),
     );
-    requested_spans.sort_by(|left, right| {
+    candidate_spans.sort_by(|left, right| {
         left.repo_relative_path
             .cmp(&right.repo_relative_path)
             .then_with(|| left.start_line.cmp(&right.start_line))
             .then_with(|| left.end_line.cmp(&right.end_line))
     });
-    requested_spans.dedup();
-    let (sources, snippets, source_bytes, source_files_loaded) =
-        load_context_sources_and_snippets(&repo_root, &requested_spans, budgets.max_snippets)?;
+    candidate_spans.dedup();
+    let (sources, _, source_bytes, source_files_loaded) =
+        load_context_sources_and_snippets(&repo_root, &candidate_spans, 0)?;
     profile_spans.push(profile_span_json(
-        "snippet_loading",
-        span_source_start.elapsed(),
+        "source_loading",
+        source_load_start.elapsed(),
         source_files_loaded as u64,
         source_bytes as u64,
         json!({
             "source_files_loaded": source_files_loaded,
             "source_bytes_loaded": source_bytes,
-            "requested_spans": requested_spans.len(),
-            "snippets_returned": snippets.len(),
-            "policy": "load only files referenced by selected proof/source spans"
+            "candidate_spans": candidate_spans.len(),
+            "snippets_returned": 0,
+            "policy": "load source files referenced by candidate proof/source spans for fallback graph verification; snippets are loaded after evidence-role filtering"
         }),
     ));
 
@@ -1404,6 +2294,37 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
         stored_paths.extend(packet.verified_paths.clone());
     }
     stored_paths = filter_and_sort_context_path_evidence(stored_paths, &options.mode, budgets);
+    let fallback_evidence = build_test_impact_fallback_evidence(
+        &connection,
+        &options.mode,
+        &seed_entities,
+        &test_impact_fallback_edges,
+        &stored_paths,
+        budgets,
+    )?;
+    let snippet_load_start = Instant::now();
+    let requested_spans = context_source_spans_for_paths(&stored_paths);
+    let (_, mut snippets, snippet_source_bytes, snippet_source_files_loaded) =
+        load_context_sources_and_snippets(&repo_root, &requested_spans, budgets.max_snippets)?;
+    let fallback_snippet_budget = budgets.max_snippets.saturating_sub(snippets.len());
+    let fallback_snippets =
+        load_context_fallback_snippets(&repo_root, &fallback_evidence, fallback_snippet_budget)?;
+    snippets.extend(fallback_snippets);
+    let requested_span_count = requested_spans.len() + fallback_evidence.len();
+    profile_spans.push(profile_span_json(
+        "snippet_loading",
+        snippet_load_start.elapsed(),
+        snippet_source_files_loaded as u64,
+        snippet_source_bytes as u64,
+        json!({
+            "source_files_loaded": snippet_source_files_loaded,
+            "source_bytes_loaded": snippet_source_bytes,
+            "requested_spans": requested_spans.len(),
+            "snippets_returned": snippets.len(),
+            "fallback_evidence_count": fallback_evidence.len(),
+            "policy": "load snippets only for evidence-role-filtered proof/source spans"
+        }),
+    ));
     let packet = build_context_packet_from_stored_evidence(
         &options,
         &raw_seed_values,
@@ -1411,10 +2332,11 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
         &seed_entities,
         stored_paths,
         snippets,
+        fallback_evidence,
         fallback_packet,
         budgets,
         stored_path_count,
-        requested_spans.len(),
+        requested_span_count,
     );
     profile_spans.push(profile_span_json(
         "context_pack_graph_and_packet",
@@ -1470,6 +2392,18 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
     } else {
         None
     };
+
+    if options.output_mode.is_compact() {
+        return Ok(context_pack_agent_json_response(
+            &options,
+            &packet,
+            &db_lifecycle_read,
+            budgets,
+            &repo_root,
+            &db_path,
+            agent_timings_json(total_start),
+        ));
+    }
 
     Ok(json!({
         "status": "ok",
@@ -1927,6 +2861,41 @@ fn run_final_gate_command(args: &[String]) -> Result<Value, String> {
 fn run_comprehensive_benchmark_command(args: &[String]) -> Result<Value, String> {
     let comprehensive_start = Instant::now();
     let options = parse_comprehensive_benchmark_options(args)?;
+    let repo_root = resolve_repo_root(&options.repo)?;
+    let planned_db_path = match &options.artifact_mode {
+        ComprehensiveArtifactMode::Fresh => options
+            .output_dir
+            .join("artifacts")
+            .join(format!("comprehensive_proof_{}.sqlite", options.timestamp)),
+        ComprehensiveArtifactMode::Existing(path) => path.clone(),
+    };
+    let preflight_db_path = match &options.artifact_mode {
+        ComprehensiveArtifactMode::Fresh => None,
+        ComprehensiveArtifactMode::Existing(_) => Some(planned_db_path),
+    };
+    let preflight = storage_budget::storage_budget_preflight(
+        &options.storage_budget,
+        storage_budget::StorageBudgetContext {
+            command: "codegraph-mcp bench comprehensive".to_string(),
+            repo_root: Some(repo_root),
+            db_path: preflight_db_path,
+            out_path: Some(options.output_dir.clone()),
+            explicit_db: matches!(
+                options.artifact_mode,
+                ComprehensiveArtifactMode::Existing(_)
+            ),
+            explicit_out: true,
+            diagnostic_only: false,
+        },
+    );
+    if preflight.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench comprehensive",
+                &preflight,
+            ),
+        ));
+    }
     fs::create_dir_all(&options.output_dir).map_err(|error| error.to_string())?;
     let mut report = build_comprehensive_benchmark_report(&options)?;
     let report_generation_start = Instant::now();
@@ -1951,11 +2920,31 @@ fn run_comprehensive_benchmark_command(args: &[String]) -> Result<Value, String>
         comprehensive_total_ms,
     );
     let markdown = render_comprehensive_benchmark_markdown(&report);
+    let budget_db_path = report["artifact_freshness"]["artifact_path"]
+        .as_str()
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let storage_budget = storage_budget::storage_budget_postflight(
+        preflight,
+        &[budget_db_path],
+        &[options.output_dir.clone()],
+    );
+    if let Some(object) = report.as_object_mut() {
+        object.insert("storage_budget".to_string(), storage_budget.to_json());
+    }
 
     write_json_file(&timestamp_json, &report)?;
     write_text_file(&timestamp_md, &markdown)?;
     write_json_file(&latest_json, &report)?;
     write_text_file(&latest_md, &markdown)?;
+    if storage_budget.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench comprehensive",
+                &storage_budget,
+            ),
+        ));
+    }
 
     Ok(json!({
         "status": "reported",
@@ -1968,6 +2957,7 @@ fn run_comprehensive_benchmark_command(args: &[String]) -> Result<Value, String>
         "timestamped_json": path_string(&timestamp_json),
         "timestamped_md": path_string(&timestamp_md),
         "timing_separation": report["timing_separation"].clone(),
+        "storage_budget": storage_budget.to_json(),
         "proof": "Comprehensive benchmark builds a fresh proof artifact by default; explicit artifact reuse is labeled and cannot claim storage/cold-build passes if stale.",
     }))
 }
@@ -2054,6 +3044,7 @@ fn parse_comprehensive_benchmark_options(
     let mut fail_on_stale_artifact = false;
     let mut workers = None;
     let mut allow_debug_timing = false;
+    let mut storage_budget = storage_budget::StorageBudgetOptions::normal_self_use();
 
     let mut index = 0usize;
     while index < args.len() {
@@ -2124,7 +3115,14 @@ fn parse_comprehensive_benchmark_options(
                 index += 1;
                 timestamp = required_cli_value(args, index, "--timestamp")?.to_string();
             }
-            value => return Err(format!("unknown comprehensive benchmark option: {value}")),
+            value => {
+                if storage_budget::parse_storage_budget_flag(args, &mut index, &mut storage_budget)?
+                {
+                    index += 1;
+                    continue;
+                }
+                return Err(format!("unknown comprehensive benchmark option: {value}"));
+            }
         }
         index += 1;
     }
@@ -2141,20 +3139,55 @@ fn parse_comprehensive_benchmark_options(
         fail_on_stale_artifact,
         workers,
         allow_debug_timing,
+        storage_budget,
     })
 }
 
 fn run_query_surface_benchmark_command(args: &[String]) -> Result<Value, String> {
     let options = parse_query_surface_benchmark_options(args)?;
     let repo = absolutize_path(&options.repo)?;
-    let db_path = if options.fresh {
-        let db_path = options.db_path.clone().unwrap_or_else(|| {
-            PathBuf::from("reports")
-                .join("audit")
-                .join("artifacts")
-                .join(format!("default_query_surface_{}.sqlite", unix_time_ms()))
+    let planned_db_path = options
+        .db_path
+        .clone()
+        .map(|path| absolutize_path(&path))
+        .transpose()?
+        .unwrap_or_else(|| {
+            if options.fresh {
+                PathBuf::from("reports")
+                    .join("audit")
+                    .join("artifacts")
+                    .join(format!("default_query_surface_{}.sqlite", unix_time_ms()))
+            } else {
+                default_db_path(&repo)
+            }
         });
-        let db_path = absolutize_path(&db_path)?;
+    let planned_db_path = absolutize_path(&planned_db_path)?;
+    let preflight = storage_budget::storage_budget_preflight(
+        &options.storage_budget,
+        storage_budget::StorageBudgetContext {
+            command: "codegraph-mcp bench query-surface".to_string(),
+            repo_root: Some(repo.clone()),
+            db_path: if options.fresh && options.db_path.is_none() {
+                None
+            } else {
+                Some(planned_db_path.clone())
+            },
+            out_path: options.out_json.parent().map(Path::to_path_buf),
+            explicit_db: options.db_path.is_some(),
+            explicit_out: true,
+            diagnostic_only: true,
+        },
+    );
+    if preflight.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench query-surface",
+                &preflight,
+            ),
+        ));
+    }
+    let db_path = if options.fresh {
+        let db_path = planned_db_path.clone();
         remove_sqlite_family_if_exists(&db_path)?;
         index_repo_to_db_with_options(
             &repo,
@@ -2171,12 +3204,7 @@ fn run_query_surface_benchmark_command(args: &[String]) -> Result<Value, String>
         .map_err(|error| error.to_string())?;
         db_path
     } else {
-        options
-            .db_path
-            .clone()
-            .map(|path| absolutize_path(&path))
-            .transpose()?
-            .unwrap_or_else(|| default_db_path(&repo))
+        planned_db_path.clone()
     };
 
     let report = build_default_query_surface_report(&repo, &db_path, options.iterations);
@@ -2184,6 +3212,19 @@ fn run_query_surface_benchmark_command(args: &[String]) -> Result<Value, String>
     write_json_file(&options.out_json, &report)?;
     write_text_file(&options.out_md, &markdown)?;
 
+    let storage_budget = storage_budget::storage_budget_postflight(
+        preflight,
+        &[db_path.clone()],
+        &[options.out_json.clone(), options.out_md.clone()],
+    );
+    if storage_budget.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench query-surface",
+                &storage_budget,
+            ),
+        ));
+    }
     Ok(json!({
         "status": report["status"].clone(),
         "phase": PHASE,
@@ -2193,6 +3234,7 @@ fn run_query_surface_benchmark_command(args: &[String]) -> Result<Value, String>
         "iterations": options.iterations,
         "output_json": path_string(&options.out_json),
         "output_md": path_string(&options.out_md),
+        "storage_budget": storage_budget.to_json(),
         "proof": "Default query-surface probes run directly against the compact proof DB and report failures instead of falling back to audit/debug sidecars.",
     }))
 }
@@ -2243,7 +3285,8 @@ fn run_proof_build_mode_benchmark_command(
     }
 
     let started = Instant::now();
-    let (repo, db, options) = parse_index_options(&index_args)?;
+    let (repo, db, options, _output_mode, budget_options) =
+        parse_index_command_options(&index_args)?;
     if options.storage_mode != StorageMode::Proof {
         return Err(format!(
             "bench {} requires --storage-mode proof; got {}",
@@ -2256,6 +3299,31 @@ fn run_proof_build_mode_benchmark_command(
             "bench {} cannot be run with --build-mode {}; use the matching benchmark subcommand",
             build_mode.as_str(),
             options.build_mode.as_str()
+        ));
+    }
+    let repo_root = resolve_repo_root(Path::new(&repo))?;
+    let db_path = db
+        .clone()
+        .map(|path| normalize_db_path_for_repo(&repo_root, &path))
+        .unwrap_or_else(|| default_db_path(&repo_root));
+    let preflight = storage_budget::storage_budget_preflight(
+        &budget_options,
+        storage_budget::StorageBudgetContext {
+            command: format!("codegraph-mcp bench {}", build_mode.as_str()),
+            repo_root: Some(repo_root.clone()),
+            db_path: Some(db_path.clone()),
+            out_path: None,
+            explicit_db: db.is_some(),
+            explicit_out: false,
+            diagnostic_only: cfg!(debug_assertions) || allow_debug_timing,
+        },
+    );
+    if preflight.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                &format!("codegraph-mcp bench {}", build_mode.as_str()),
+                &preflight,
+            ),
         ));
     }
     let summary = if let Some(db) = db {
@@ -2307,6 +3375,19 @@ fn run_proof_build_mode_benchmark_command(
     );
     write_json_file(&artifact_metadata_path, &artifact_metadata)?;
     let report_generation_ms = elapsed_ms(report_generation_start);
+    let storage_budget = storage_budget::storage_budget_postflight(
+        preflight,
+        &[db_path],
+        &[artifact_metadata_path.clone()],
+    );
+    if storage_budget.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                &format!("codegraph-mcp bench {}", build_mode.as_str()),
+                &storage_budget,
+            ),
+        ));
+    }
     Ok(json!({
         "status": "benchmarked",
         "phase": PHASE,
@@ -2337,6 +3418,7 @@ fn run_proof_build_mode_benchmark_command(
         "summary": summary_json,
         "artifact_metadata_path": path_string(&artifact_metadata_path),
         "artifact_metadata": artifact_metadata,
+        "storage_budget": storage_budget.to_json(),
         "mode_separation": {
             "proof_build_only_excludes": [
                 "storage_audit",
@@ -2528,6 +3610,7 @@ fn parse_query_surface_benchmark_options(
         .join("audit")
         .join("default_query_surface.md");
     let mut workers = None;
+    let mut storage_budget = storage_budget::StorageBudgetOptions::fixture_smoke();
 
     let mut index = 0usize;
     while index < args.len() {
@@ -2570,7 +3653,14 @@ fn parse_query_surface_benchmark_options(
                 }
                 workers = Some(parsed);
             }
-            value => return Err(format!("unknown query-surface benchmark option: {value}")),
+            value => {
+                if storage_budget::parse_storage_budget_flag(args, &mut index, &mut storage_budget)?
+                {
+                    index += 1;
+                    continue;
+                }
+                return Err(format!("unknown query-surface benchmark option: {value}"));
+            }
         }
         index += 1;
     }
@@ -2583,6 +3673,7 @@ fn parse_query_surface_benchmark_options(
         out_json,
         out_md,
         workers,
+        storage_budget,
     })
 }
 
@@ -2971,6 +4062,13 @@ fn build_fresh_comprehensive_proof_artifact(
     audit::run_audit_command(&audit_args)?;
     let audit_ms = elapsed_ms(audit_start);
     let proof_storage = read_json_file(&storage_json_path)?;
+    let lifecycle_status = benchmark_inspection_lifecycle_status(
+        &options.repo,
+        &db_path,
+        "bench.comprehensive.fresh_storage_audit",
+        Some(StorageMode::Proof),
+    );
+    let lifecycle_claimable = benchmark_inspection_claimable(&lifecycle_status);
     let schema_version = sqlite_user_version_read_only(&db_path).unwrap_or(SCHEMA_VERSION);
     let integrity_status = value_string(&proof_storage, &["integrity_check", "status"])
         .unwrap_or_else(|| {
@@ -3000,67 +4098,117 @@ fn build_fresh_comprehensive_proof_artifact(
     } else {
         json!(NON_CLAIMABLE_DEBUG_TIMING)
     };
-    let metadata = json!({
-        "artifact_path": path_string(&db_path),
-        "artifact_created_at": file_modified_unix_ms(&db_path).unwrap_or_else(unix_time_ms),
-        "git_commit": current_git_commit(),
-        "schema_version": schema_version,
-        "current_schema_version": SCHEMA_VERSION,
-        "migration_version": schema_version,
-        "current_migration_version": SCHEMA_VERSION,
-        "storage_mode": "proof",
-        "build_command": comprehensive_fresh_build_command(options, &db_path),
-        "build_duration_ms": build_duration_ms,
-        "proof_build_only_ms": proof_build_only_value,
-        "diagnostic_debug_proof_build_only_ms": if diagnostic_only {
+    let artifact_validation = json!({
+        "validated": false,
+        "claimable_as_validated": false,
+        "validation_mode": "not_run",
+        "publish_gate": "proof-build-only quick_check",
+        "integrity_check_source": "post_build_storage_audit",
+        "notes": [
+            "The comprehensive fresh artifact is built in proof-build-only mode for timing.",
+            "The later storage audit integrity_check is reported as audit_ms and does not make proof_build_only_ms a validation-mode timing."
+        ]
+    });
+    let timing_note = if claimable_for_thresholds {
+        "Proof-build timing came from a release binary and is claimable for production thresholds."
+    } else {
+        "Proof-build timing came from a debug binary; it is diagnostic_only and not claimable for production thresholds."
+    };
+    let mut metadata_object = serde_json::Map::new();
+    metadata_object.insert("artifact_path".to_string(), json!(path_string(&db_path)));
+    metadata_object.insert(
+        "artifact_created_at".to_string(),
+        json!(file_modified_unix_ms(&db_path).unwrap_or_else(unix_time_ms)),
+    );
+    metadata_object.insert("git_commit".to_string(), json!(current_git_commit()));
+    metadata_object.insert("schema_version".to_string(), json!(schema_version));
+    metadata_object.insert("current_schema_version".to_string(), json!(SCHEMA_VERSION));
+    metadata_object.insert("migration_version".to_string(), json!(schema_version));
+    metadata_object.insert(
+        "current_migration_version".to_string(),
+        json!(SCHEMA_VERSION),
+    );
+    metadata_object.insert("storage_mode".to_string(), json!("proof"));
+    metadata_object.insert(
+        "build_command".to_string(),
+        json!(comprehensive_fresh_build_command(options, &db_path)),
+    );
+    metadata_object.insert("build_duration_ms".to_string(), json!(build_duration_ms));
+    metadata_object.insert("proof_build_only_ms".to_string(), proof_build_only_value);
+    metadata_object.insert(
+        "diagnostic_debug_proof_build_only_ms".to_string(),
+        if diagnostic_only {
             json!(build_duration_ms)
         } else {
             Value::Null
         },
-        "validation_ms": 0,
-        "audit_ms": audit_ms,
-        "report_generation_ms": Value::Null,
-        "comprehensive_total_ms": Value::Null,
-        "db_size_bytes": db_size_bytes,
-        "integrity_status": integrity_status,
-        "artifact_validation": {
-            "validated": false,
-            "claimable_as_validated": false,
-            "validation_mode": "not_run",
-            "publish_gate": "proof-build-only quick_check",
-            "integrity_check_source": "post_build_storage_audit",
-            "notes": [
-                "The comprehensive fresh artifact is built in proof-build-only mode for timing.",
-                "The later storage audit integrity_check is reported as audit_ms and does not make proof_build_only_ms a validation-mode timing."
-            ]
-        },
-        "benchmark_run_id": options.timestamp,
-        "artifact_metadata_path": path_string(&metadata_path),
-        "current_exe": binary_metadata["current_exe"].clone(),
-        "debug_assertions": binary_metadata["debug_assertions"].clone(),
-        "binary_profile": binary_metadata["binary_profile"].clone(),
-        "exact_command": binary_metadata["exact_command"].clone(),
-        "claimable_for_thresholds": claimable_for_thresholds,
-        "diagnostic_only": diagnostic_only,
-        "timing_classification": timing_classification,
-        "binary_metadata": binary_metadata,
-        "freshness_metadata_present": true,
-        "artifact_reuse": false,
-        "freshly_built": true,
-        "stale": false,
-        "stale_reasons": [],
-        "freshness_status": "fresh",
-        "storage_result_claimable": true,
-        "cold_build_result_claimable": claimable_for_thresholds,
-        "notes": [
+    );
+    metadata_object.insert("validation_ms".to_string(), json!(0));
+    metadata_object.insert("audit_ms".to_string(), json!(audit_ms));
+    metadata_object.insert("report_generation_ms".to_string(), Value::Null);
+    metadata_object.insert("comprehensive_total_ms".to_string(), Value::Null);
+    metadata_object.insert("inspection_read_only".to_string(), json!(true));
+    metadata_object.insert(
+        "artifact_mutated_during_inspection".to_string(),
+        json!(false),
+    );
+    metadata_object.insert("lifecycle_status".to_string(), lifecycle_status);
+    metadata_object.insert("db_size_bytes".to_string(), json!(db_size_bytes));
+    metadata_object.insert("integrity_status".to_string(), json!(integrity_status));
+    metadata_object.insert("artifact_validation".to_string(), artifact_validation);
+    metadata_object.insert("benchmark_run_id".to_string(), json!(options.timestamp));
+    metadata_object.insert(
+        "artifact_metadata_path".to_string(),
+        json!(path_string(&metadata_path)),
+    );
+    metadata_object.insert(
+        "current_exe".to_string(),
+        binary_metadata["current_exe"].clone(),
+    );
+    metadata_object.insert(
+        "debug_assertions".to_string(),
+        binary_metadata["debug_assertions"].clone(),
+    );
+    metadata_object.insert(
+        "binary_profile".to_string(),
+        binary_metadata["binary_profile"].clone(),
+    );
+    metadata_object.insert(
+        "exact_command".to_string(),
+        binary_metadata["exact_command"].clone(),
+    );
+    metadata_object.insert(
+        "claimable_for_thresholds".to_string(),
+        json!(claimable_for_thresholds),
+    );
+    metadata_object.insert("diagnostic_only".to_string(), json!(diagnostic_only));
+    metadata_object.insert(
+        "timing_classification".to_string(),
+        json!(timing_classification),
+    );
+    metadata_object.insert("binary_metadata".to_string(), binary_metadata);
+    metadata_object.insert("freshness_metadata_present".to_string(), json!(true));
+    metadata_object.insert("artifact_reuse".to_string(), json!(false));
+    metadata_object.insert("freshly_built".to_string(), json!(true));
+    metadata_object.insert("stale".to_string(), json!(false));
+    metadata_object.insert("stale_reasons".to_string(), json!([]));
+    metadata_object.insert("freshness_status".to_string(), json!("fresh"));
+    metadata_object.insert(
+        "storage_result_claimable".to_string(),
+        json!(lifecycle_claimable),
+    );
+    metadata_object.insert(
+        "cold_build_result_claimable".to_string(),
+        json!(lifecycle_claimable && claimable_for_thresholds),
+    );
+    metadata_object.insert(
+        "notes".to_string(),
+        json!([
             "Fresh proof DB built by comprehensive benchmark before storage and cold-build metrics were read.",
-            if claimable_for_thresholds {
-                "Proof-build timing came from a release binary and is claimable for production thresholds."
-            } else {
-                "Proof-build timing came from a debug binary; it is diagnostic_only and not claimable for production thresholds."
-            }
-        ]
-    });
+            timing_note
+        ]),
+    );
+    let metadata = Value::Object(metadata_object);
     write_json_file(&metadata_path, &metadata)?;
     patch_gate_with_proof_artifact(
         gate,
@@ -3111,6 +4259,13 @@ fn inspect_existing_comprehensive_proof_artifact(
     audit::run_audit_command(&audit_args)?;
     let proof_storage = read_json_file(&storage_json_path)?;
     let actual_schema_version = sqlite_user_version_read_only(db_path);
+    let lifecycle_status = benchmark_inspection_lifecycle_status(
+        &options.repo,
+        db_path,
+        "bench.comprehensive.existing_artifact",
+        Some(StorageMode::Proof),
+    );
+    let lifecycle_claimable = benchmark_inspection_claimable(&lifecycle_status);
     let actual_db_size_bytes = metadata_len(db_path).map_err(|error| error.to_string())?;
     let integrity_status = value_string(&proof_storage, &["integrity_check", "status"])
         .unwrap_or_else(|| {
@@ -3201,6 +4356,20 @@ fn inspect_existing_comprehensive_proof_artifact(
     if integrity_status != "ok" {
         stale_reasons.push(format!("integrity status is {integrity_status}"));
     }
+    if !lifecycle_claimable {
+        let blockers = lifecycle_status["blockers"]
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| "lifecycle preflight blocked claimability".to_string());
+        stale_reasons.push(format!("lifecycle preflight not claimable: {blockers}"));
+    }
 
     let stale = !stale_reasons.is_empty();
     if options.fail_on_stale_artifact && stale {
@@ -3241,6 +4410,9 @@ fn inspect_existing_comprehensive_proof_artifact(
         } else {
             Value::Null
         },
+        "inspection_read_only": true,
+        "artifact_mutated_during_inspection": false,
+        "lifecycle_status": lifecycle_status,
         "db_size_bytes": actual_db_size_bytes,
         "metadata_db_size_bytes": metadata_db_size,
         "integrity_status": integrity_status,
@@ -3266,8 +4438,8 @@ fn inspect_existing_comprehensive_proof_artifact(
         "stale": stale,
         "stale_reasons": stale_reasons,
         "freshness_status": if stale { "stale" } else { "fresh" },
-        "storage_result_claimable": !stale,
-        "cold_build_result_claimable": !stale && metadata_build_duration.is_some() && claimable_for_thresholds,
+        "storage_result_claimable": !stale && lifecycle_claimable,
+        "cold_build_result_claimable": !stale && lifecycle_claimable && metadata_build_duration.is_some() && claimable_for_thresholds,
         "notes": if stale {
             vec!["stale artifact; storage result not claimable".to_string(), "stale artifact; cold-build result not claimable".to_string()]
         } else if !claimable_for_thresholds {
@@ -3599,6 +4771,32 @@ fn absolutize_path(path: &Path) -> Result<PathBuf, String> {
     }
 }
 
+fn normalize_db_path_for_repo(repo_root: &Path, db_path: &Path) -> PathBuf {
+    if db_path.is_absolute() {
+        db_path.to_path_buf()
+    } else {
+        repo_root.join(db_path)
+    }
+}
+
+fn resolved_db_path_for_repo(repo_root: &Path) -> PathBuf {
+    normalize_db_path_for_repo(repo_root, &default_db_path(repo_root))
+}
+
+fn repo_source_label() -> String {
+    std::env::var(GLOBAL_REPO_SOURCE_ENV).unwrap_or_else(|_| "current_directory".to_string())
+}
+
+fn db_source_label() -> String {
+    std::env::var(GLOBAL_DB_SOURCE_ENV).unwrap_or_else(|_| {
+        if std::env::var_os("CODEGRAPH_DB_PATH").is_some() {
+            "env CODEGRAPH_DB_PATH".to_string()
+        } else {
+            "default_repo_db".to_string()
+        }
+    })
+}
+
 fn remove_sqlite_family_if_exists(path: &Path) -> Result<(), String> {
     for candidate in [
         path.to_path_buf(),
@@ -3642,6 +4840,64 @@ fn sqlite_quick_check_status(path: &Path) -> Option<String> {
     connection
         .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
         .ok()
+}
+
+fn benchmark_inspection_lifecycle_status(
+    repo_root: &Path,
+    db_path: &Path,
+    surface_name: &str,
+    required_storage_mode: Option<StorageMode>,
+) -> Value {
+    match inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
+        repo_root: repo_root.to_path_buf(),
+        db_path: db_path.to_path_buf(),
+        surface_name: surface_name.to_string(),
+        operation_kind: DbLifecycleOperationKind::BenchmarkInspection,
+        allow_stale_read: false,
+        allow_foreign_repo: false,
+        required_storage_mode,
+        expected_scope: None,
+    }) {
+        Ok(preflight) => db_lifecycle_surface_preflight_json(&preflight),
+        Err(error) => json!({
+            "decision": "blocked",
+            "surface_name": surface_name,
+            "operation_kind": DbLifecycleOperationKind::BenchmarkInspection.as_str(),
+            "safe_to_read": false,
+            "safe_to_write": false,
+            "passport_status": "unknown",
+            "claimable": false,
+            "diagnostic_only": true,
+            "contaminated": true,
+            "repo_match": false,
+            "scope_match": false,
+            "schema_status": "unknown",
+            "storage_mode_match": false,
+            "reasons": [],
+            "blockers": [error.to_string()],
+            "warnings": [],
+            "exact_db_path_checked": path_string(db_path),
+            "repo_root_expected": path_string(repo_root),
+            "repo_root_observed": Value::Null,
+            "artifact_freshness": Value::Null,
+            "scope_source": Value::Null,
+            "passport_scope_hash": Value::Null,
+            "explicit_scope_hash": Value::Null,
+        }),
+    }
+}
+
+fn benchmark_inspection_claimable(lifecycle_status: &Value) -> bool {
+    lifecycle_status["safe_to_read"].as_bool() == Some(true)
+        && lifecycle_status["claimable"].as_bool() == Some(true)
+}
+
+fn json_object(entries: Vec<(&str, Value)>) -> Value {
+    let mut object = serde_json::Map::new();
+    for (key, value) in entries {
+        object.insert(key.to_string(), value);
+    }
+    Value::Object(object)
 }
 
 fn current_git_commit() -> String {
@@ -5339,8 +6595,67 @@ fn build_default_query_surface_report(
     let mut queries = Vec::new();
     let db_path = absolutize_path(db_path).unwrap_or_else(|_| db_path.to_path_buf());
     let repo_root = absolutize_path(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
-    let connection = match Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
-        Ok(connection) => connection,
+    let lifecycle_status = benchmark_inspection_lifecycle_status(
+        &repo_root,
+        &db_path,
+        "bench.query_surface",
+        Some(StorageMode::Proof),
+    );
+    let claimable = benchmark_inspection_claimable(&lifecycle_status);
+    if lifecycle_status["safe_to_read"].as_bool() != Some(true) {
+        let blockers = lifecycle_status["blockers"]
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| "benchmark lifecycle preflight blocked DB inspection".to_string());
+        let failed = required_query_surface_ids()
+            .into_iter()
+            .map(|(id, target)| {
+                query_surface_failure_metric(
+                    id,
+                    target,
+                    &format!("benchmark lifecycle preflight blocked DB inspection: {blockers}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        return json!({
+            "schema_version": 1,
+            "status": "failed",
+            "generated_at_unix_ms": unix_time_ms(),
+            "repo_root": path_string(&repo_root),
+            "db_path": path_string(&db_path),
+            "storage_mode": "proof",
+            "iterations": iterations,
+            "inspection_read_only": true,
+            "artifact_mutated_during_inspection": false,
+            "sidecar_only_change": false,
+            "sidecar_status": "not_inspected_lifecycle_blocked",
+            "read_only_mode_used": "not_opened_lifecycle_blocked",
+            "immutable_mode_used": false,
+            "immutable_mode_reason": "lifecycle preflight blocked read-only inspection before SQLite open",
+            "lifecycle_status": lifecycle_status,
+            "claimable": false,
+            "queries": failed,
+            "summary": {
+                "failed_queries": required_query_surface_ids().len(),
+                "passed_queries": 0,
+                "elapsed_ms": elapsed_ms(started),
+                "all_default_queries_complete": false,
+            },
+            "notes": [
+                "The query surface benchmark refused to inspect a DB that failed lifecycle preflight.",
+                "No benchmark result from this artifact is claimable."
+            ],
+        });
+    }
+    let read_only = match open_sqlite_read_only_side_effect_minimal(&db_path) {
+        Ok(read_only) => read_only,
         Err(error) => {
             let failed = required_query_surface_ids()
                 .into_iter()
@@ -5359,11 +6674,21 @@ fn build_default_query_surface_report(
                 "repo_root": path_string(&repo_root),
                 "db_path": path_string(&db_path),
                 "iterations": iterations,
+                "inspection_read_only": true,
+                "artifact_mutated_during_inspection": false,
+                "sidecar_only_change": false,
+                "sidecar_status": "unknown_open_failed",
+                "read_only_mode_used": "sqlite_uri_mode_ro_attempted",
+                "immutable_mode_used": !sqlite_sidecar_path(&db_path, "wal").exists() && !sqlite_sidecar_path(&db_path, "shm").exists(),
+                "immutable_mode_reason": "read-only open failed before inspection completed",
+                "lifecycle_status": lifecycle_status,
+                "claimable": false,
                 "queries": failed,
                 "summary": {
                     "failed_queries": required_query_surface_ids().len(),
                     "passed_queries": 0,
                     "elapsed_ms": elapsed_ms(started),
+                    "all_default_queries_complete": false,
                 },
                 "notes": [
                     "The query surface could not open the compact proof DB."
@@ -5371,7 +6696,10 @@ fn build_default_query_surface_report(
             });
         }
     };
-    let _ = connection.pragma_update(None, "query_only", true);
+    let read_only_mode_used = read_only.read_only_mode_used.clone();
+    let immutable_mode_used = read_only.immutable_mode_used;
+    let immutable_mode_reason = read_only.immutable_mode_reason.clone();
+    let connection = read_only.connection;
     let seeds = query_surface_seeds(&connection).unwrap_or_else(|error| {
         json!({
             "status": "degraded",
@@ -5535,6 +6863,15 @@ fn build_default_query_surface_report(
         "db_path": path_string(&db_path),
         "storage_mode": "proof",
         "iterations": iterations,
+        "inspection_read_only": true,
+        "artifact_mutated_during_inspection": false,
+        "sidecar_only_change": false,
+        "sidecar_status": if immutable_mode_used { "none_expected" } else { "existing_sidecars_preserved" },
+        "read_only_mode_used": read_only_mode_used,
+        "immutable_mode_used": immutable_mode_used,
+        "immutable_mode_reason": immutable_mode_reason,
+        "lifecycle_status": lifecycle_status,
+        "claimable": claimable,
         "seeds": seeds,
         "queries": queries,
         "summary": {
@@ -5802,6 +7139,35 @@ fn benchmark_unresolved_calls_surface_query(
     iterations: usize,
 ) -> Value {
     let explain_plan = unresolved_calls_query_plan(connection, 20, 0).ok();
+    let preflight_options = UnresolvedCallsOptions {
+        db_path: Some(db_path.to_path_buf()),
+        requested_limit: 20,
+        limit: 20,
+        offset: 0,
+        include_snippets: false,
+        source_scan: false,
+        count_total: false,
+        allow_stale_read: false,
+        explicit_scope_policy: None,
+        surface_name: "bench.query_surface.unresolved_calls".to_string(),
+        operation_kind: DbLifecycleOperationKind::BenchmarkInspection,
+    };
+    let mut lifecycle_read =
+        unresolved_calls_lifecycle_preflight(repo_root, db_path, &preflight_options)
+            .map(|preflight| db_lifecycle_surface_preflight_json(&preflight))
+            .unwrap_or_else(|error| {
+                json!({
+                    "decision": "blocked",
+                    "surface_name": "bench.query_surface.unresolved_calls",
+                    "operation_kind": DbLifecycleOperationKind::BenchmarkInspection.as_str(),
+                    "safe_to_read": false,
+                    "claimable": false,
+                    "diagnostic_only": true,
+                    "exact_db_path_checked": path_string(db_path),
+                    "blockers": [error],
+                    "warnings": [],
+                })
+            });
     let mut samples = Vec::new();
     let mut rows_returned = 0usize;
     let mut error = None;
@@ -5815,9 +7181,16 @@ fn benchmark_unresolved_calls_surface_query(
             include_snippets: false,
             source_scan: false,
             count_total: false,
+            allow_stale_read: false,
+            explicit_scope_policy: None,
+            surface_name: "bench.query_surface.unresolved_calls".to_string(),
+            operation_kind: DbLifecycleOperationKind::BenchmarkInspection,
         };
         match query_unresolved_calls(repo_root, options) {
             Ok(value) => {
+                if let Some(value_lifecycle) = value.get("db_lifecycle_read") {
+                    lifecycle_read = value_lifecycle.clone();
+                }
                 rows_returned = value
                     .get("calls")
                     .and_then(Value::as_array)
@@ -5831,7 +7204,7 @@ fn benchmark_unresolved_calls_surface_query(
             }
         }
     }
-    query_surface_metric(
+    let mut metric = query_surface_metric(
         "unresolved_calls_paginated",
         "codegraph-mcp query unresolved-calls --limit 20",
         1000.0,
@@ -5843,7 +7216,11 @@ fn benchmark_unresolved_calls_surface_query(
         vec![
             "Unresolved-calls pagination may read the heuristic/debug sidecar by design, but it must remain explicit and bounded.".to_string(),
         ],
-    )
+    );
+    if let Some(object) = metric.as_object_mut() {
+        object.insert("db_lifecycle_read".to_string(), lifecycle_read);
+    }
+    metric
 }
 
 fn query_surface_metric(
@@ -6835,6 +8212,26 @@ fn format_percent(value: Option<f64>) -> String {
 
 fn run_synthetic_index_benchmark_command(args: &[String]) -> Result<Value, String> {
     let options = parse_synthetic_index_options(args)?;
+    let preflight = storage_budget::storage_budget_preflight(
+        &options.storage_budget,
+        storage_budget::StorageBudgetContext {
+            command: "codegraph-mcp bench synthetic-index".to_string(),
+            repo_root: std::env::current_dir().ok(),
+            db_path: None,
+            out_path: Some(options.output_dir.clone()),
+            explicit_db: false,
+            explicit_out: true,
+            diagnostic_only: true,
+        },
+    );
+    if preflight.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench synthetic-index",
+                &preflight,
+            ),
+        ));
+    }
     if options.output_dir.exists() {
         return Err(format!(
             "synthetic index output directory already exists: {}",
@@ -6868,6 +8265,20 @@ fn run_synthetic_index_benchmark_command(args: &[String]) -> Result<Value, Strin
         serde_json::to_string_pretty(&manifest).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
+    let db_path = default_db_path(&repo_dir);
+    let storage_budget = storage_budget::storage_budget_postflight(
+        preflight,
+        &[db_path],
+        &[options.output_dir.clone()],
+    );
+    if storage_budget.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench synthetic-index",
+                &storage_budget,
+            ),
+        ));
+    }
     Ok(json!({
         "status": "benchmarked",
         "phase": PHASE,
@@ -6876,11 +8287,32 @@ fn run_synthetic_index_benchmark_command(args: &[String]) -> Result<Value, Strin
         "repo_dir": path_string(&repo_dir),
         "manifest": path_string(&manifest_path),
         "index_summary": manifest["index_summary"],
+        "storage_budget": storage_budget.to_json(),
     }))
 }
 
 fn run_update_integrity_harness_command(args: &[String]) -> Result<Value, String> {
     let options = parse_update_integrity_harness_options(args)?;
+    let preflight = storage_budget::storage_budget_preflight(
+        &options.storage_budget,
+        storage_budget::StorageBudgetContext {
+            command: "codegraph-mcp bench update-integrity".to_string(),
+            repo_root: std::env::current_dir().ok(),
+            db_path: None,
+            out_path: Some(options.workdir.clone()),
+            explicit_db: false,
+            explicit_out: true,
+            diagnostic_only: true,
+        },
+    );
+    if preflight.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench update-integrity",
+                &preflight,
+            ),
+        ));
+    }
     let mut report = match run_update_integrity_harness(&options) {
         Ok(report) => report,
         Err(error) => update_integrity_error_report(&options, &error),
@@ -6914,7 +8346,25 @@ fn run_update_integrity_harness_command(args: &[String]) -> Result<Value, String
         "json_write_ms": json_write_ms,
         "markdown_write_ms": md_write_ms,
     });
+    let storage_budget = storage_budget::storage_budget_postflight(
+        preflight,
+        &[],
+        &[
+            options.workdir.clone(),
+            options.out_json.clone(),
+            options.out_md.clone(),
+        ],
+    );
+    report["storage_budget"] = storage_budget.to_json();
     write_json_file(&options.out_json, &report)?;
+    if storage_budget.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench update-integrity",
+                &storage_budget,
+            ),
+        ));
+    }
     Ok(json!({
         "status": report["status"].clone(),
         "phase": PHASE,
@@ -6923,6 +8373,7 @@ fn run_update_integrity_harness_command(args: &[String]) -> Result<Value, String
         "out_json": path_string(&options.out_json),
         "out_md": path_string(&options.out_md),
         "repos": report["repos"].as_array().map(Vec::len).unwrap_or(0),
+        "storage_budget": storage_budget.to_json(),
         "proof": "Update-integrity harness runs cold/seed, repeat unchanged, mutate/update, restore/update, integrity checks, and graph hash comparisons.",
     }))
 }
@@ -7029,6 +8480,10 @@ fn run_update_integrity_harness(options: &UpdateIntegrityHarnessOptions) -> Resu
         .filter(|repo| repo["status"].as_str() != Some("passed"))
         .count();
     let status = if failures == 0 { "passed" } else { "failed" };
+    let claimable = status == "passed"
+        && repos
+            .iter()
+            .all(|repo| repo["claimable"].as_bool() == Some(true));
     Ok(json!({
         "schema_version": 1,
         "status": status,
@@ -7042,6 +8497,16 @@ fn run_update_integrity_harness(options: &UpdateIntegrityHarnessOptions) -> Resu
         "autoresearch_iterations_requested": options.autoresearch_iterations,
         "workers": options.workers,
         "workdir": path_string(&options.workdir),
+        "inspection_read_only": true,
+        "artifact_mutated_during_inspection": false,
+        "mutation_capable_operations": [
+            "cold_index_or_seed_db_copy_setup",
+            "repeat_index_setup",
+            "source_file_mutation_setup",
+            "update_changed_files_to_db",
+            "repo_graph_digest_prime_for_fast_mode"
+        ],
+        "claimable": claimable,
         "repos": repos,
     }))
 }
@@ -7092,7 +8557,7 @@ fn run_update_integrity_repo(
         let start = Instant::now();
         let summary = index_repo_to_db_with_options(repo, db, options.clone())
             .map_err(|error| format!("cold index failed for {name}: {error}"))?;
-        update_integrity_step_from_index("cold_index", start.elapsed(), &summary, db, mode)?
+        update_integrity_step_from_index("cold_index", start.elapsed(), &summary, repo, db, mode)?
     };
     let cold_hash = cold["graph_fact_hash"].as_str().unwrap_or("").to_string();
     if mode == UpdateBenchmarkMode::Fast && !cold_hash.is_empty() {
@@ -7144,6 +8609,7 @@ fn run_update_integrity_repo(
             "repeat_unchanged_index",
             start.elapsed(),
             &repeat_summary,
+            repo,
             db,
             mode,
         )?;
@@ -7217,6 +8683,7 @@ fn run_update_integrity_repo(
             "single_file_update",
             mutate_start.elapsed(),
             &update_summary,
+            update_repo,
             db,
             mode,
         )?;
@@ -7234,6 +8701,7 @@ fn run_update_integrity_repo(
             "restore_update",
             restore_start.elapsed(),
             &restore_summary,
+            update_repo,
             db,
             mode,
         )?;
@@ -7298,6 +8766,20 @@ fn run_update_integrity_repo(
     } else {
         "failed"
     };
+    let claimable = status == "passed"
+        && std::iter::once(&cold)
+            .chain(
+                repeat_iterations
+                    .iter()
+                    .filter_map(|iteration| iteration.get("repeat")),
+            )
+            .chain(iteration_results.iter().flat_map(|iteration| {
+                [
+                    iteration.get("update").unwrap(),
+                    iteration.get("restore").unwrap(),
+                ]
+            }))
+            .all(|step| step["claimable"].as_bool() == Some(true));
 
     Ok(json!({
         "name": name,
@@ -7317,11 +8799,34 @@ fn run_update_integrity_repo(
         "changed_file_updates_graph_fact_hash": changed_hash_ok,
         "restore_returns_to_repeat_graph_fact_hash": restore_hash_ok,
         "all_integrity_checks_passed": all_integrity_ok,
+        "inspection_read_only": true,
+        "artifact_mutated_during_inspection": false,
+        "claimable": claimable,
     }))
 }
 
 fn run_cgc_comparison_command(args: &[String]) -> Result<Value, String> {
     let options = parse_cgc_comparison_options(args)?;
+    let preflight = storage_budget::storage_budget_preflight(
+        &options.storage_budget,
+        storage_budget::StorageBudgetContext {
+            command: "codegraph-mcp bench cgc-comparison".to_string(),
+            repo_root: std::env::current_dir().ok(),
+            db_path: None,
+            out_path: Some(options.report_dir.clone()),
+            explicit_db: false,
+            explicit_out: true,
+            diagnostic_only: true,
+        },
+    );
+    if preflight.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench cgc-comparison",
+                &preflight,
+            ),
+        ));
+    }
     let report = run_codegraphcontext_comparison(CodeGraphContextComparisonOptions {
         report_dir: options.report_dir.clone(),
         timeout_ms: options.timeout_ms,
@@ -7329,6 +8834,16 @@ fn run_cgc_comparison_command(args: &[String]) -> Result<Value, String> {
         competitor_executable: options.competitor_executable,
     })
     .map_err(|error| error.to_string())?;
+    let storage_budget =
+        storage_budget::storage_budget_postflight(preflight, &[], &[options.report_dir.clone()]);
+    if storage_budget.is_refused() {
+        return Err(storage_budget::structured_error_string(
+            storage_budget::storage_budget_error_value(
+                "codegraph-mcp bench cgc-comparison",
+                &storage_budget,
+            ),
+        ));
+    }
 
     Ok(json!({
         "status": "benchmarked",
@@ -7341,6 +8856,7 @@ fn run_cgc_comparison_command(args: &[String]) -> Result<Value, String> {
         "competitor": report.manifest,
         "aggregate": report.aggregate,
         "runs": report.runs.len(),
+        "storage_budget": storage_budget.to_json(),
     }))
 }
 
@@ -7393,44 +8909,53 @@ fn run_watch_command(args: &[String]) -> CliOutput {
         Err(error) => return command_error("watch_failed", &error),
     };
 
+    let repo_root = match resolve_repo_root(&options.repo) {
+        Ok(repo_root) => repo_root,
+        Err(error) => return command_error("watch_failed", &error),
+    };
+    let requested_db_path = watch_requested_db_path(&repo_root, options.db.as_deref());
+
     if options.once {
         let changed_paths = if options.changed_paths.is_empty() {
             Vec::new()
         } else {
             options.changed_paths
         };
-        let update = if let Some(db) = &options.db {
-            update_changed_files_to_db(&options.repo, &changed_paths, db)
-        } else {
-            update_changed_files(&options.repo, &changed_paths)
-        };
+        let update = update_changed_files_to_db(&repo_root, &changed_paths, &requested_db_path);
         return run_json_command(
             "watch_failed",
             update
                 .and_then(|summary| {
-                    serde_json::to_value(summary)
-                        .map_err(|error| IndexError::Message(error.to_string()))
+                    let lifecycle = watch_update_lifecycle_metadata(
+                        &repo_root,
+                        &requested_db_path,
+                        "cli.watch.once",
+                        true,
+                    )?;
+                    let mut value = serde_json::to_value(summary)
+                        .map_err(|error| IndexError::Message(error.to_string()))?;
+                    if let Some(object) = value.as_object_mut() {
+                        object.insert("watch_db".to_string(), lifecycle);
+                    }
+                    Ok(value)
                 })
                 .map_err(|error| error.to_string()),
         );
     }
 
-    match watch_repo(&options.repo, options.debounce) {
+    match watch_repo(&repo_root, Some(&requested_db_path), options.debounce) {
         Ok(()) => success(String::new()),
         Err(error) => command_error("watch_failed", &error.to_string()),
     }
 }
 
-fn watch_repo(repo_path: &Path, debounce: Duration) -> Result<(), IndexError> {
-    if !repo_path.exists() {
-        return Err(IndexError::RepoNotFound(repo_path.to_path_buf()));
-    }
-
-    let repo_root = fs::canonicalize(repo_path)?;
-    let mut cache = IncrementalIndexCache::new(256)?;
-    fs::create_dir_all(repo_root.join(".codegraph"))?;
-    let store = SqliteGraphStore::open(default_db_path(&repo_root))?;
-    cache.refresh_from_store(&store)?;
+fn watch_repo(
+    repo_path: &Path,
+    requested_db_path: Option<&Path>,
+    debounce: Duration,
+) -> Result<(), IndexError> {
+    let mut startup =
+        prepare_watch_startup(repo_path, requested_db_path, "cli.watch.long_running")?;
 
     let (sender, receiver) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |result| {
@@ -7438,13 +8963,20 @@ fn watch_repo(repo_path: &Path, debounce: Duration) -> Result<(), IndexError> {
     })
     .map_err(|error| IndexError::Message(format!("watcher init failed: {error}")))?;
     watcher
-        .watch(&repo_root, RecursiveMode::Recursive)
+        .watch(&startup.repo_root, RecursiveMode::Recursive)
         .map_err(|error| IndexError::Message(format!("watcher start failed: {error}")))?;
 
     eprintln!(
-        "codegraph watch: watching {} with {}ms debounce",
-        repo_root.display(),
-        debounce.as_millis()
+        "codegraph watch: lifecycle {}",
+        json_line(startup.lifecycle_status.clone()).trim_end()
+    );
+    eprintln!(
+        "codegraph watch: watching {} with {}ms debounce requested_db={} actual_db={} auto_index_enabled={}",
+        startup.repo_root.display(),
+        debounce.as_millis(),
+        startup.requested_db_path.display(),
+        startup.actual_db_path_opened.display(),
+        startup.auto_index_enabled
     );
 
     let mut debouncer = WatchDebouncer::new(debounce);
@@ -7475,9 +9007,131 @@ fn watch_repo(repo_path: &Path, debounce: Duration) -> Result<(), IndexError> {
             continue;
         }
 
-        let summary = update_changed_files_with_cache(&repo_root, &ready, &mut cache)?;
+        let summary = update_changed_files_with_cache_to_db(
+            &startup.repo_root,
+            &ready,
+            &startup.actual_db_path_opened,
+            &mut startup.cache,
+        )?;
         log_watch_summary(&summary);
     }
+}
+
+fn watch_requested_db_path(repo_root: &Path, db_path: Option<&Path>) -> PathBuf {
+    db_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_db_path(repo_root))
+}
+
+fn prepare_watch_startup(
+    repo_path: &Path,
+    requested_db_path: Option<&Path>,
+    surface_name: &str,
+) -> Result<WatchStartup, IndexError> {
+    if !repo_path.exists() {
+        return Err(IndexError::RepoNotFound(repo_path.to_path_buf()));
+    }
+    let repo_root = fs::canonicalize(repo_path)?;
+    let requested_db_path = watch_requested_db_path(&repo_root, requested_db_path);
+    let preflight = inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
+        repo_root: repo_root.clone(),
+        db_path: requested_db_path.clone(),
+        surface_name: surface_name.to_string(),
+        operation_kind: DbLifecycleOperationKind::WriteUpdate,
+        allow_stale_read: false,
+        allow_foreign_repo: false,
+        required_storage_mode: None,
+        expected_scope: None,
+    })
+    .map_err(|error| IndexError::Message(error.to_string()))?;
+    if !preflight.safe_to_write {
+        return Err(IndexError::Message(watch_lifecycle_error(&preflight)));
+    }
+    let actual_db_path_opened = PathBuf::from(&preflight.exact_db_path_checked);
+    let lifecycle_status = watch_lifecycle_status_json(&preflight, &requested_db_path, false);
+    let mut cache = IncrementalIndexCache::new(256)?;
+    let store = SqliteGraphStore::open(&actual_db_path_opened)?;
+    cache.refresh_from_store(&store)?;
+    drop(store);
+    Ok(WatchStartup {
+        repo_root,
+        requested_db_path,
+        actual_db_path_opened,
+        lifecycle_status,
+        auto_index_enabled: false,
+        cache,
+    })
+}
+
+fn watch_update_lifecycle_metadata(
+    repo_root: &Path,
+    requested_db_path: &Path,
+    surface_name: &str,
+    safe_to_write: bool,
+) -> Result<Value, IndexError> {
+    let preflight = inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
+        repo_root: repo_root.to_path_buf(),
+        db_path: requested_db_path.to_path_buf(),
+        surface_name: surface_name.to_string(),
+        operation_kind: DbLifecycleOperationKind::WriteUpdate,
+        allow_stale_read: false,
+        allow_foreign_repo: false,
+        required_storage_mode: None,
+        expected_scope: None,
+    })
+    .map_err(|error| IndexError::Message(error.to_string()))?;
+    let mut value = watch_lifecycle_status_json(&preflight, requested_db_path, false);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("safe_to_write".to_string(), Value::Bool(safe_to_write));
+    }
+    Ok(value)
+}
+
+fn watch_lifecycle_status_json(
+    preflight: &DbLifecycleSurfacePreflight,
+    requested_db_path: &Path,
+    auto_index_enabled: bool,
+) -> Value {
+    json!({
+        "requested_db_path": path_string(requested_db_path),
+        "actual_db_path_opened": preflight.exact_db_path_checked.clone(),
+        "lifecycle_status": if preflight.safe_to_write { "safe_to_write" } else { "blocked" },
+        "auto_index_enabled": auto_index_enabled,
+        "safe_to_read": preflight.safe_to_read,
+        "safe_to_write": preflight.safe_to_write,
+        "claimable": preflight.claimable,
+        "diagnostic_only": preflight.diagnostic_only,
+        "passport_status": preflight.passport_status.clone(),
+        "repo_match": preflight.repo_match,
+        "scope_match": preflight.scope_match,
+        "schema_status": preflight.schema_status.clone(),
+        "storage_mode_match": preflight.storage_mode_match,
+        "blockers": preflight.blockers.clone(),
+        "warnings": preflight.warnings.clone(),
+        "repo_root_expected": preflight.repo_root_expected.clone(),
+        "repo_root_observed": preflight.repo_root_observed.clone(),
+        "artifact_freshness": preflight.artifact_freshness.clone(),
+        "operation_kind": preflight.operation_kind.as_str(),
+        "surface_name": preflight.surface_name.clone(),
+    })
+}
+
+fn watch_lifecycle_error(preflight: &DbLifecycleSurfacePreflight) -> String {
+    let db_path = &preflight.exact_db_path_checked;
+    let blockers = if preflight.blockers.is_empty() {
+        "unknown lifecycle blocker".to_string()
+    } else {
+        preflight.blockers.join("; ")
+    };
+    if preflight.artifact_freshness.as_deref() == Some("missing")
+        || preflight.passport_status == "missing"
+    {
+        return format!(
+            "CodeGraph index does not exist or is missing a valid passport at {db_path}; run `codegraph-mcp index . --db {}` first. Long-running watch does not auto-index by default.",
+            db_path
+        );
+    }
+    format!("CodeGraph DB is not safe for watch updates at {db_path}: {blockers}")
 }
 
 fn enqueue_event_paths(debouncer: &mut WatchDebouncer, event: Event, now: Instant) {
@@ -7873,6 +9527,7 @@ fn ui_unresolved_calls(
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(0),
             include_snippets,
+            surface_name: "ui.unresolved_calls".to_string(),
             ..UnresolvedCallsOptions::default()
         },
     )
@@ -8358,6 +10013,7 @@ fn run_bundle_export(args: &[String]) -> Result<Value, String> {
     let output = parse_output_arg(args)?;
     let repo_root = current_repo_root()?;
     let store = open_existing_store(&repo_root)?;
+    let passport = store.get_db_passport().map_err(|error| error.to_string())?;
     let files = store
         .list_files(UNBOUNDED_STORE_READ_LIMIT)
         .map_err(|error| error.to_string())?;
@@ -8367,12 +10023,38 @@ fn run_bundle_export(args: &[String]) -> Result<Value, String> {
     let edges = store
         .list_edges(UNBOUNDED_STORE_READ_LIMIT)
         .map_err(|error| error.to_string())?;
+    let graph_digest = graph_fact_hash(&entities, &edges);
+    let default_scope = IndexScopeOptions::default();
+    let scope_hash = passport
+        .as_ref()
+        .map(|passport| passport.index_scope_policy_hash.clone())
+        .unwrap_or_else(|| {
+            scope_policy_hash(&default_scope).unwrap_or_else(|_| "unknown".to_string())
+        });
+    let scope_policy_json = passport
+        .as_ref()
+        .map(|passport| passport.scope_policy_json.clone())
+        .unwrap_or_else(|| {
+            serde_json::to_string(&default_scope).unwrap_or_else(|_| "{}".to_string())
+        });
+    let storage_mode = passport
+        .as_ref()
+        .map(|passport| passport.storage_mode.clone())
+        .unwrap_or_else(|| StorageMode::Proof.as_str().to_string());
     let bundle = CodeGraphBundle {
         manifest: BundleManifest {
             schema_version: BUNDLE_SCHEMA_VERSION,
             created_by: format!("{BIN_NAME} phase {PHASE}"),
             created_at_unix_ms: unix_time_ms(),
             repo_root: path_string(&repo_root),
+            repo_identity: Some(bundle_repo_identity(&repo_root)),
+            canonical_repo_root: Some(path_string(&repo_root)),
+            repo_head: git_head(&repo_root),
+            scope_hash: Some(scope_hash),
+            scope_policy_json: Some(scope_policy_json),
+            storage_mode: Some(storage_mode),
+            db_schema_version: Some(store.schema_version().map_err(|error| error.to_string())?),
+            graph_digest: Some(graph_digest),
             file_count: files.len(),
             entity_count: entities.len(),
             edge_count: edges.len(),
@@ -8392,10 +10074,8 @@ fn run_bundle_export(args: &[String]) -> Result<Value, String> {
 }
 
 fn run_bundle_import(args: &[String]) -> Result<Value, String> {
-    if args.len() != 1 {
-        return Err("Usage: codegraph-mcp bundle import repo.cgc-bundle".to_string());
-    }
-    let input = PathBuf::from(&args[0]);
+    let options = parse_bundle_import_options(args)?;
+    let input = options.input;
     let source = fs::read_to_string(&input).map_err(|error| error.to_string())?;
     let bundle: CodeGraphBundle =
         serde_json::from_str(&source).map_err(|error| error.to_string())?;
@@ -8407,9 +10087,306 @@ fn run_bundle_import(args: &[String]) -> Result<Value, String> {
     }
 
     let repo_root = current_repo_root()?;
-    fs::create_dir_all(repo_root.join(".codegraph")).map_err(|error| error.to_string())?;
-    let store =
-        SqliteGraphStore::open(default_db_path(&repo_root)).map_err(|error| error.to_string())?;
+    let evidence = validate_bundle_manifest(&bundle, &repo_root)?;
+    if options.mode == BundleImportMode::Merge {
+        return Ok(json!({
+            "status": "merge_refused",
+            "mode": options.mode.as_str(),
+            "input": path_string(&input),
+            "repo_root": path_string(&repo_root),
+            "manifest": bundle.manifest,
+            "claimable": false,
+            "diagnostic_only": true,
+            "database_mutated": false,
+            "provenance": {
+                "bundle_repo_identity": evidence.repo_identity,
+                "bundle_graph_digest": evidence.graph_digest,
+                "merge_policy": "refused_until_per_fact_provenance_is_defined"
+            },
+            "message": "bundle import --merge is explicit but currently diagnostic-only: merge mutation is refused until merged facts have a product-grade provenance and claimability contract"
+        }));
+    }
+
+    let db_path = default_db_path(&repo_root);
+    let target_state = inspect_bundle_target_state(&db_path);
+    if options.mode == BundleImportMode::Fresh
+        && !matches!(
+            target_state,
+            BundleTargetState::Missing | BundleTargetState::Empty
+        )
+    {
+        return Err(format!(
+            "bundle import refuses to write into {} DB at {} without --replace or explicit --merge",
+            target_state.as_str(),
+            db_path.display()
+        ));
+    }
+
+    let temp_db_path = bundle_import_temp_db_path(&db_path);
+    let import_result = (|| {
+        remove_sqlite_file_family(&temp_db_path)?;
+        import_bundle_to_temp_db(&temp_db_path, &repo_root, &bundle, &evidence, true)?;
+        let temp_preflight =
+            inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
+                repo_root: repo_root.clone(),
+                db_path: temp_db_path.clone(),
+                surface_name: "cli.bundle.import.temp".to_string(),
+                operation_kind: DbLifecycleOperationKind::NormalRead,
+                allow_stale_read: false,
+                allow_foreign_repo: false,
+                required_storage_mode: Some(evidence.storage_mode),
+                expected_scope: None,
+            })
+            .map_err(|error| error.to_string())?;
+        if !temp_preflight.safe_to_read {
+            return Err(format!(
+                "bundle import temp DB failed lifecycle validation: {}",
+                temp_preflight.blockers.join("; ")
+            ));
+        }
+        publish_bundle_import_db(&temp_db_path, &db_path)?;
+        let final_preflight =
+            inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
+                repo_root: repo_root.clone(),
+                db_path: db_path.clone(),
+                surface_name: "cli.bundle.import.final".to_string(),
+                operation_kind: DbLifecycleOperationKind::NormalRead,
+                allow_stale_read: false,
+                allow_foreign_repo: false,
+                required_storage_mode: Some(evidence.storage_mode),
+                expected_scope: None,
+            })
+            .map_err(|error| error.to_string())?;
+        if !final_preflight.safe_to_read {
+            return Err(format!(
+                "bundle import final DB failed lifecycle validation: {}",
+                final_preflight.blockers.join("; ")
+            ));
+        }
+        Ok(final_preflight)
+    })();
+    if import_result.is_err() {
+        let _ = remove_sqlite_file_family(&temp_db_path);
+    }
+    let final_preflight = import_result?;
+
+    Ok(json!({
+        "status": "imported",
+        "mode": options.mode.as_str(),
+        "input": path_string(&input),
+        "repo_root": path_string(&repo_root),
+        "db_path": path_string(&db_path),
+        "target_state_before_import": target_state.as_str(),
+        "old_db_replaced": target_state != BundleTargetState::Missing,
+        "atomic_publish": true,
+        "claimable": true,
+        "diagnostic_only": false,
+        "db_lifecycle_read": db_lifecycle_surface_preflight_json(&final_preflight),
+        "manifest": bundle.manifest,
+    }))
+}
+
+fn parse_bundle_import_options(args: &[String]) -> Result<BundleImportOptions, String> {
+    let mut input = None;
+    let mut mode = BundleImportMode::Fresh;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--replace" => {
+                if mode != BundleImportMode::Fresh {
+                    return Err(
+                        "bundle import accepts only one of --replace or --merge".to_string()
+                    );
+                }
+                mode = BundleImportMode::Replace;
+            }
+            "--merge" => {
+                if mode != BundleImportMode::Fresh {
+                    return Err(
+                        "bundle import accepts only one of --replace or --merge".to_string()
+                    );
+                }
+                mode = BundleImportMode::Merge;
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("unknown bundle import option: {value}"));
+            }
+            value => {
+                if input.is_some() {
+                    return Err(bundle_import_usage());
+                }
+                input = Some(PathBuf::from(value));
+            }
+        }
+        index += 1;
+    }
+    let Some(input) = input else {
+        return Err(bundle_import_usage());
+    };
+    Ok(BundleImportOptions { input, mode })
+}
+
+fn bundle_import_usage() -> String {
+    "Usage: codegraph-mcp bundle import repo.cgc-bundle [--replace|--merge]".to_string()
+}
+
+fn validate_bundle_manifest(
+    bundle: &CodeGraphBundle,
+    repo_root: &Path,
+) -> Result<BundleManifestEvidence, String> {
+    if bundle.manifest.file_count != bundle.files.len() {
+        return Err(format!(
+            "bundle file_count mismatch: manifest {}, observed {}",
+            bundle.manifest.file_count,
+            bundle.files.len()
+        ));
+    }
+    if bundle.manifest.entity_count != bundle.entities.len() {
+        return Err(format!(
+            "bundle entity_count mismatch: manifest {}, observed {}",
+            bundle.manifest.entity_count,
+            bundle.entities.len()
+        ));
+    }
+    if bundle.manifest.edge_count != bundle.edges.len() {
+        return Err(format!(
+            "bundle edge_count mismatch: manifest {}, observed {}",
+            bundle.manifest.edge_count,
+            bundle.edges.len()
+        ));
+    }
+
+    let repo_identity = required_bundle_string(&bundle.manifest.repo_identity, "repo_identity")?;
+    let canonical_repo_root =
+        required_bundle_string(&bundle.manifest.canonical_repo_root, "canonical_repo_root")?;
+    let expected_identity = bundle_repo_identity(repo_root);
+    let expected_canonical = path_string(repo_root);
+    if repo_identity != expected_identity || canonical_repo_root != expected_canonical {
+        return Err(format!(
+            "bundle repo identity mismatch: expected repo_identity={} canonical_repo_root={}, observed repo_identity={} canonical_repo_root={}",
+            expected_identity, expected_canonical, repo_identity, canonical_repo_root
+        ));
+    }
+
+    let scope_hash = required_bundle_string(&bundle.manifest.scope_hash, "scope_hash")?;
+    let scope_policy_json =
+        required_bundle_string(&bundle.manifest.scope_policy_json, "scope_policy_json")?;
+    let scope_policy: IndexScopeOptions =
+        serde_json::from_str(&scope_policy_json).map_err(|error| {
+            format!("bundle scope_policy_json is not a valid IndexScopeOptions value: {error}")
+        })?;
+    let computed_scope_hash =
+        scope_policy_hash(&scope_policy).map_err(|error| error.to_string())?;
+    if computed_scope_hash != scope_hash {
+        return Err(format!(
+            "bundle scope hash mismatch: manifest {}, computed {}",
+            scope_hash, computed_scope_hash
+        ));
+    }
+
+    let storage_mode_text = required_bundle_string(&bundle.manifest.storage_mode, "storage_mode")?;
+    let storage_mode = storage_mode_text.parse::<StorageMode>()?;
+    let db_schema_version = bundle
+        .manifest
+        .db_schema_version
+        .ok_or_else(|| "bundle manifest missing required field db_schema_version".to_string())?;
+    if db_schema_version != SCHEMA_VERSION {
+        return Err(format!(
+            "bundle DB schema mismatch: expected {}, got {}",
+            SCHEMA_VERSION, db_schema_version
+        ));
+    }
+
+    let graph_digest = required_bundle_string(&bundle.manifest.graph_digest, "graph_digest")?;
+    let computed_graph_digest = graph_fact_hash(&bundle.entities, &bundle.edges);
+    if computed_graph_digest != graph_digest {
+        return Err(format!(
+            "bundle graph digest mismatch: manifest {}, computed {}",
+            graph_digest, computed_graph_digest
+        ));
+    }
+
+    Ok(BundleManifestEvidence {
+        repo_identity,
+        canonical_repo_root,
+        repo_head: bundle.manifest.repo_head.clone(),
+        scope_hash,
+        scope_policy_json,
+        storage_mode,
+        db_schema_version,
+        graph_digest,
+    })
+}
+
+fn required_bundle_string(value: &Option<String>, name: &str) -> Result<String, String> {
+    value
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .ok_or_else(|| format!("bundle manifest missing required field {name}"))
+}
+
+fn bundle_repo_identity(repo_root: &Path) -> String {
+    format!("repo-root:{}", path_string(repo_root))
+}
+
+fn git_head(repo_root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+fn inspect_bundle_target_state(db_path: &Path) -> BundleTargetState {
+    if !db_path.exists() {
+        return BundleTargetState::Missing;
+    }
+    let Ok(connection) = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    else {
+        return BundleTargetState::Uninspectable;
+    };
+    let mut total_rows = 0u64;
+    for table in ["files", "entities", "edges", "codegraph_db_passport"] {
+        let exists = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [table],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(false);
+        if exists {
+            total_rows += connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, u64>(0)
+                })
+                .unwrap_or(1);
+        }
+    }
+    if total_rows == 0 {
+        BundleTargetState::Empty
+    } else {
+        BundleTargetState::NonEmpty
+    }
+}
+
+fn import_bundle_to_temp_db(
+    temp_db_path: &Path,
+    repo_root: &Path,
+    bundle: &CodeGraphBundle,
+    evidence: &BundleManifestEvidence,
+    claimable: bool,
+) -> Result<(), String> {
+    if let Some(parent) = temp_db_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let store = SqliteGraphStore::open(temp_db_path).map_err(|error| error.to_string())?;
     store
         .transaction(|tx| {
             for file in &bundle.files {
@@ -8431,48 +10408,140 @@ fn run_bundle_import(args: &[String]) -> Result<Value, String> {
     store
         .quick_integrity_gate()
         .map_err(|error| error.to_string())?;
-    upsert_cli_db_passport(
+    upsert_cli_db_passport_with_policy(
         &store,
-        &repo_root,
-        StorageMode::Proof,
+        repo_root,
+        evidence,
         bundle.manifest.file_count,
         bundle.manifest.file_count,
+        if claimable {
+            "ok"
+        } else {
+            "diagnostic_merge_non_claimable"
+        },
     )?;
-
-    Ok(json!({
-        "status": "imported",
-        "input": path_string(&input),
-        "repo_root": path_string(&repo_root),
-        "manifest": bundle.manifest,
-    }))
+    store
+        .quick_integrity_gate()
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
-fn upsert_cli_db_passport(
+fn bundle_import_temp_db_path(final_db_path: &Path) -> PathBuf {
+    let parent = final_db_path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = final_db_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("codegraph.sqlite");
+    parent.join(format!(
+        ".{file_name}.bundle-import-tmp-{}-{}",
+        std::process::id(),
+        unix_time_ms()
+    ))
+}
+
+fn bundle_import_backup_db_path(final_db_path: &Path) -> PathBuf {
+    let parent = final_db_path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = final_db_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("codegraph.sqlite");
+    parent.join(format!(
+        ".{file_name}.bundle-import-backup-{}-{}",
+        std::process::id(),
+        unix_time_ms()
+    ))
+}
+
+fn publish_bundle_import_db(temp_db_path: &Path, final_db_path: &Path) -> Result<(), String> {
+    let parent = final_db_path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let backup_db_path = bundle_import_backup_db_path(final_db_path);
+    let had_old_db = final_db_path.exists();
+    if had_old_db {
+        if let Err(error) = rename_sqlite_file_family(final_db_path, &backup_db_path) {
+            let _ = rename_sqlite_file_family(&backup_db_path, final_db_path);
+            return Err(error);
+        }
+    } else {
+        remove_sqlite_sidecars(final_db_path)?;
+    }
+
+    match fs::rename(temp_db_path, final_db_path) {
+        Ok(()) => {
+            remove_sqlite_sidecars(temp_db_path)?;
+            if had_old_db {
+                remove_sqlite_file_family(&backup_db_path)?;
+            }
+            Ok(())
+        }
+        Err(error) => {
+            let _ = remove_sqlite_file_family(final_db_path);
+            if had_old_db {
+                let _ = rename_sqlite_file_family(&backup_db_path, final_db_path);
+            }
+            Err(error.to_string())
+        }
+    }
+}
+
+fn rename_sqlite_file_family(from: &Path, to: &Path) -> Result<(), String> {
+    rename_file_if_exists(from, to)?;
+    rename_file_if_exists(
+        &sqlite_sidecar_path(from, "wal"),
+        &sqlite_sidecar_path(to, "wal"),
+    )?;
+    rename_file_if_exists(
+        &sqlite_sidecar_path(from, "shm"),
+        &sqlite_sidecar_path(to, "shm"),
+    )?;
+    Ok(())
+}
+
+fn remove_sqlite_file_family(path: &Path) -> Result<(), String> {
+    remove_file_if_exists(path)?;
+    remove_sqlite_sidecars(path)
+}
+
+fn remove_sqlite_sidecars(path: &Path) -> Result<(), String> {
+    remove_file_if_exists(&sqlite_sidecar_path(path, "wal"))?;
+    remove_file_if_exists(&sqlite_sidecar_path(path, "shm"))?;
+    Ok(())
+}
+
+fn rename_file_if_exists(from: &Path, to: &Path) -> Result<(), String> {
+    match fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn upsert_cli_db_passport_with_policy(
     store: &SqliteGraphStore,
     repo_root: &Path,
-    storage_mode: StorageMode,
+    evidence: &BundleManifestEvidence,
     files_seen: usize,
     files_indexed: usize,
+    integrity_gate_result: &str,
 ) -> Result<(), String> {
     let canonical_repo_root = resolve_repo_root(repo_root)?;
-    let scope = IndexScopeOptions::default();
     let now = unix_time_ms();
     let passport = DbPassport {
         passport_version: DB_PASSPORT_VERSION,
         codegraph_schema_version: SCHEMA_VERSION,
-        storage_mode: storage_mode.as_str().to_string(),
-        index_scope_policy_hash: scope_policy_hash(&scope).map_err(|error| error.to_string())?,
-        scope_policy_json: serde_json::to_string(&scope).map_err(|error| error.to_string())?,
+        storage_mode: evidence.storage_mode.as_str().to_string(),
+        index_scope_policy_hash: evidence.scope_hash.clone(),
+        scope_policy_json: evidence.scope_policy_json.clone(),
         canonical_repo_root: path_string(&canonical_repo_root),
         git_remote: None,
         worktree_root: Some(path_string(&canonical_repo_root)),
-        repo_head: None,
+        repo_head: evidence.repo_head.clone(),
         source_discovery_policy_version: "scope-policy-v1".to_string(),
         codegraph_build_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         last_successful_index_timestamp: Some(now),
         last_completed_run_id: Some(format!("cli-import-{now}-{}", std::process::id())),
         last_run_status: "completed".to_string(),
-        integrity_gate_result: "ok".to_string(),
+        integrity_gate_result: integrity_gate_result.to_string(),
         files_seen: files_seen as u64,
         files_indexed: files_indexed as u64,
         created_at_unix_ms: now,
@@ -8484,15 +10553,61 @@ fn upsert_cli_db_passport(
 }
 
 fn query_symbols(repo_root: &Path, query: &str, limit: usize) -> Result<Value, String> {
+    query_symbols_with_options(repo_root, &QueryListOptions::rich(query, limit), None)
+}
+
+fn query_symbols_with_options(
+    repo_root: &Path,
+    options: &QueryListOptions,
+    lifecycle_summary: Option<&Value>,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let db_path = resolved_db_path_for_repo(repo_root);
     let store = open_existing_store(repo_root)?;
-    let hits = symbol_search_hits(&store, query, limit)?
+    let hits = symbol_search_hits(&store, &options.query, options.fetch_limit())?;
+
+    if options.output_mode.is_compact() {
+        let (hits, truncation) = truncate_for_agent(hits, options.limit);
+        let results = hits
+            .iter()
+            .map(agent_symbol_search_hit_json)
+            .collect::<Vec<_>>();
+        return Ok(canonical_agent_query_response(
+            "query_symbols_agent_json",
+            "query symbols",
+            repo_root,
+            &db_path,
+            "ok",
+            lifecycle_summary,
+            truncation,
+            json!({
+                "text": options.query,
+                "explicit_limit": options.explicit_limit,
+            }),
+            results,
+            Vec::new(),
+            Vec::new(),
+            options.output_mode,
+            agent_timings_json(started),
+        ));
+    }
+
+    let hits = hits
         .into_iter()
+        .take(options.limit)
         .map(|hit| symbol_search_hit_json(&hit))
         .collect::<Vec<_>>();
 
     Ok(json!({
         "status": "ok",
-        "query": query,
+        "query": options.query,
+        "result_count": hits.len(),
+        "limit": options.limit,
+        "explicit_limit": options.explicit_limit,
+        "output_mode": options.output_mode.as_str(),
+        "verbose": options.verbose,
+        "debug": options.debug,
+        "explain": options.explain,
         "hits": hits,
         "ranking": [
             "exact symbol match",
@@ -8682,26 +10797,64 @@ fn entity_metadata_search_text(entity: &Entity) -> String {
         .join(" ")
 }
 
-fn query_text(repo_root: &Path, query: &str, limit: usize) -> Result<Value, String> {
+fn query_text_with_options(
+    repo_root: &Path,
+    options: &QueryListOptions,
+    lifecycle_summary: Option<&Value>,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let db_path = resolved_db_path_for_repo(repo_root);
     let store = open_existing_store(repo_root)?;
     let mut hits = store
-        .search_text(query, limit)
+        .search_text(&options.query, options.fetch_limit())
         .map_err(|error| error.to_string())?
         .into_iter()
         .map(text_search_hit_json)
         .collect::<Vec<_>>();
-    if hits.len() < limit {
+    if hits.len() < options.fetch_limit() {
         hits.extend(source_scan_text_hits(
             repo_root,
             &store,
-            query,
-            limit.saturating_sub(hits.len()),
+            &options.query,
+            options.fetch_limit().saturating_sub(hits.len()),
         )?);
     }
 
+    if options.output_mode.is_compact() {
+        let (hits, truncation) = truncate_for_agent(hits, options.limit);
+        let results = hits.iter().map(agent_text_hit_json).collect::<Vec<_>>();
+        return Ok(canonical_agent_query_response(
+            "query_text_agent_json",
+            "query text",
+            repo_root,
+            &db_path,
+            "ok",
+            lifecycle_summary,
+            truncation,
+            json!({
+                "text": options.query,
+                "explicit_limit": options.explicit_limit,
+            }),
+            results,
+            Vec::new(),
+            Vec::new(),
+            options.output_mode,
+            agent_timings_json(started),
+        ));
+    }
+
+    hits.truncate(options.limit);
+
     Ok(json!({
         "status": "ok",
-        "query": query,
+        "query": options.query,
+        "result_count": hits.len(),
+        "limit": options.limit,
+        "explicit_limit": options.explicit_limit,
+        "output_mode": options.output_mode.as_str(),
+        "verbose": options.verbose,
+        "debug": options.debug,
+        "explain": options.explain,
         "hits": hits,
         "proof": "Text query uses SQLite FTS when present and falls back to bounded on-demand source scanning over indexed files.",
     }))
@@ -8750,13 +10903,19 @@ fn source_scan_text_hits(
     Ok(hits)
 }
 
-fn query_files(repo_root: &Path, query: &str, limit: usize) -> Result<Value, String> {
+fn query_files_with_options(
+    repo_root: &Path,
+    options: &QueryListOptions,
+    lifecycle_summary: Option<&Value>,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let db_path = resolved_db_path_for_repo(repo_root);
     let store = open_existing_store(repo_root)?;
-    let query_lc = query.to_ascii_lowercase();
+    let query_lc = options.query.to_ascii_lowercase();
     let mut seen = BTreeSet::new();
     let mut hits = Vec::new();
     for hit in store
-        .search_text(query, limit)
+        .search_text(&options.query, options.fetch_limit())
         .map_err(|error| error.to_string())?
     {
         if hit.kind == TextSearchKind::File && seen.insert(hit.repo_relative_path.clone()) {
@@ -8767,7 +10926,7 @@ fn query_files(repo_root: &Path, query: &str, limit: usize) -> Result<Value, Str
         .list_files(UNBOUNDED_STORE_READ_LIMIT)
         .map_err(|error| error.to_string())?
     {
-        if hits.len() >= limit {
+        if hits.len() >= options.fetch_limit() {
             break;
         }
         if file
@@ -8788,9 +10947,41 @@ fn query_files(repo_root: &Path, query: &str, limit: usize) -> Result<Value, Str
         }
     }
 
+    if options.output_mode.is_compact() {
+        let (hits, truncation) = truncate_for_agent(hits, options.limit);
+        let results = hits.iter().map(agent_file_hit_json).collect::<Vec<_>>();
+        return Ok(canonical_agent_query_response(
+            "query_files_agent_json",
+            "query files",
+            repo_root,
+            &db_path,
+            "ok",
+            lifecycle_summary,
+            truncation,
+            json!({
+                "text": options.query,
+                "explicit_limit": options.explicit_limit,
+            }),
+            results,
+            Vec::new(),
+            Vec::new(),
+            options.output_mode,
+            agent_timings_json(started),
+        ));
+    }
+
+    hits.truncate(options.limit);
+
     Ok(json!({
         "status": "ok",
-        "query": query,
+        "query": options.query,
+        "result_count": hits.len(),
+        "limit": options.limit,
+        "explicit_limit": options.explicit_limit,
+        "output_mode": options.output_mode.as_str(),
+        "verbose": options.verbose,
+        "debug": options.debug,
+        "explain": options.explain,
         "hits": hits,
         "proof": "File query combines SQLite FTS file-path rows with repo-relative path matching.",
     }))
@@ -8859,14 +11050,6 @@ fn query_references(repo_root: &Path, query: &str, limit: usize) -> Result<Value
     }))
 }
 
-fn query_callers(repo_root: &Path, query: &str, limit: usize) -> Result<Value, String> {
-    query_call_relation(repo_root, query, limit, CallQueryDirection::Callers)
-}
-
-fn query_callees(repo_root: &Path, query: &str, limit: usize) -> Result<Value, String> {
-    query_call_relation(repo_root, query, limit, CallQueryDirection::Callees)
-}
-
 fn query_chain(repo_root: &Path, source: &str, target: &str) -> Result<Value, String> {
     let store = open_existing_store(repo_root)?;
     let entities = store
@@ -8919,6 +11102,10 @@ struct UnresolvedCallsOptions {
     include_snippets: bool,
     source_scan: bool,
     count_total: bool,
+    allow_stale_read: bool,
+    explicit_scope_policy: Option<IndexScopeOptions>,
+    surface_name: String,
+    operation_kind: DbLifecycleOperationKind,
 }
 
 impl Default for UnresolvedCallsOptions {
@@ -8931,6 +11118,10 @@ impl Default for UnresolvedCallsOptions {
             include_snippets: false,
             source_scan: false,
             count_total: false,
+            allow_stale_read: false,
+            explicit_scope_policy: None,
+            surface_name: "cli.query.unresolved_calls".to_string(),
+            operation_kind: DbLifecycleOperationKind::NormalRead,
         }
     }
 }
@@ -8992,6 +11183,126 @@ fn unresolved_calls_usage() -> String {
     "Usage: codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets] [--include-snippets] [--db <path>]".to_string()
 }
 
+fn unresolved_calls_lifecycle_preflight(
+    repo_root: &Path,
+    db_path: &Path,
+    options: &UnresolvedCallsOptions,
+) -> Result<DbLifecycleSurfacePreflight, String> {
+    let allow_stale_read = options.allow_stale_read || allow_stale_read_enabled();
+    let request = DbLifecycleSurfacePreflightRequest {
+        repo_root: repo_root.to_path_buf(),
+        db_path: db_path.to_path_buf(),
+        surface_name: options.surface_name.clone(),
+        operation_kind: options.operation_kind,
+        allow_stale_read: false,
+        allow_foreign_repo: false,
+        required_storage_mode: None,
+        expected_scope: options.explicit_scope_policy.clone(),
+    };
+
+    if options.operation_kind == DbLifecycleOperationKind::NormalRead && allow_stale_read {
+        let normal = inspect_db_lifecycle_surface_preflight(request.clone())
+            .map_err(|error| error.to_string())?;
+        if normal.safe_to_read {
+            return Ok(normal);
+        }
+        let mut diagnostic = request;
+        diagnostic.operation_kind = DbLifecycleOperationKind::DiagnosticRead;
+        diagnostic.allow_stale_read = true;
+        diagnostic.allow_foreign_repo = true;
+        return inspect_db_lifecycle_surface_preflight(diagnostic)
+            .map_err(|error| error.to_string());
+    }
+
+    let mut request = request;
+    if matches!(
+        request.operation_kind,
+        DbLifecycleOperationKind::DiagnosticRead | DbLifecycleOperationKind::BenchmarkInspection
+    ) {
+        request.allow_stale_read = allow_stale_read;
+        request.allow_foreign_repo = allow_stale_read;
+    }
+    inspect_db_lifecycle_surface_preflight(request).map_err(|error| error.to_string())
+}
+
+fn require_unresolved_calls_lifecycle_preflight(
+    repo_root: &Path,
+    db_path: &Path,
+    options: &UnresolvedCallsOptions,
+) -> Result<DbLifecycleSurfacePreflight, String> {
+    let preflight = unresolved_calls_lifecycle_preflight(repo_root, db_path, options)?;
+    if preflight.safe_to_read {
+        return Ok(preflight);
+    }
+    if let Some(mismatch) = preflight.lifecycle_preflight.scope_mismatch.as_ref() {
+        return Err(scope_mismatch_message(db_path, mismatch));
+    }
+    let outside_note = preflight
+        .outside_workspace_note
+        .as_deref()
+        .map(|note| format!("; {note}"))
+        .unwrap_or_default();
+    Err(format!(
+        "CodeGraph DB is not safe to read at {}: kind={}; {}{}; run `codegraph-mcp index . --fresh` or pass --allow-stale-read for diagnostic-only output",
+        preflight.exact_db_path_checked,
+        preflight
+            .db_problem_kind
+            .as_deref()
+            .unwrap_or("unknown"),
+        preflight.blockers.join("; "),
+        outside_note
+    ))
+}
+
+fn db_lifecycle_surface_preflight_json(preflight: &DbLifecycleSurfacePreflight) -> Value {
+    json!({
+        "decision": if preflight.safe_to_read && preflight.claimable {
+            "read_reuse"
+        } else if preflight.safe_to_read && preflight.diagnostic_only {
+            "diagnostic_stale_reuse"
+        } else {
+            "blocked"
+        },
+        "surface_name": preflight.surface_name.clone(),
+        "operation_kind": preflight.operation_kind.as_str(),
+        "safe_to_read": preflight.safe_to_read,
+        "safe_to_write": preflight.safe_to_write,
+        "db_problem_kind": preflight.db_problem_kind.clone(),
+        "path_access_status": preflight.path_access_status.clone(),
+        "path_access_error": preflight.path_access_error.clone(),
+        "passport_status": preflight.passport_status.clone(),
+        "claimable": preflight.claimable,
+        "diagnostic_only": preflight.diagnostic_only,
+        "contaminated": preflight.diagnostic_only || !preflight.claimable,
+        "repo_match": preflight.repo_match,
+        "scope_match": preflight.scope_match,
+        "schema_status": preflight.schema_status.clone(),
+        "storage_mode_match": preflight.storage_mode_match,
+        "reasons": preflight.lifecycle_preflight.db_health.reasons.clone(),
+        "sqlite_sidecars": preflight.lifecycle_preflight.db_health.sqlite_sidecars.clone(),
+        "sidecar_status": preflight.lifecycle_preflight.db_health.sidecar_status.clone(),
+        "orphan_sidecars": preflight.lifecycle_preflight.db_health.orphan_sidecars.clone(),
+        "orphan_sidecars_deprecated": true,
+        "blockers": preflight.blockers.clone(),
+        "warnings": preflight.warnings.clone(),
+        "exact_db_path_checked": preflight.exact_db_path_checked.clone(),
+        "repo_root_expected": preflight.repo_root_expected.clone(),
+        "db_path_outside_workspace": preflight.db_path_outside_workspace,
+        "outside_workspace_note": preflight.outside_workspace_note.clone(),
+        "repo_root_observed": preflight.repo_root_observed.clone(),
+        "artifact_freshness": preflight.artifact_freshness.clone(),
+        "repo_root_status": preflight.lifecycle_preflight.repo_root_status.clone(),
+        "storage_mode_status": preflight.lifecycle_preflight.storage_mode_status.clone(),
+        "scope_status": preflight.lifecycle_preflight.scope_status.clone(),
+        "scope_source": preflight.scope_source.clone(),
+        "passport_scope_hash": preflight.passport_scope_hash.clone(),
+        "explicit_scope_hash": preflight.explicit_scope_hash.clone(),
+        "scope_mismatch": preflight.lifecycle_preflight.scope_mismatch.clone(),
+        "passport_scope_policy": preflight.lifecycle_preflight.passport_scope_policy.clone(),
+        "explicit_scope_policy": preflight.lifecycle_preflight.explicit_scope_policy.clone(),
+    })
+}
+
 fn query_unresolved_calls(
     repo_root: &Path,
     options: UnresolvedCallsOptions,
@@ -8999,18 +11310,22 @@ fn query_unresolved_calls(
     let total_start = Instant::now();
     let db_path = options
         .db_path
-        .clone()
-        .unwrap_or_else(|| default_db_path(repo_root));
-    if !db_path.exists() {
-        return Err(format!(
-            "CodeGraph index does not exist at {}; run `codegraph-mcp index .` first",
-            db_path.display()
-        ));
-    }
+        .as_ref()
+        .map(|path| normalize_db_path_for_repo(repo_root, path))
+        .unwrap_or_else(|| resolved_db_path_for_repo(repo_root));
+    let db_source = if options.db_path.is_some() {
+        "command --db".to_string()
+    } else {
+        db_source_label()
+    };
+    let preflight = require_unresolved_calls_lifecycle_preflight(repo_root, &db_path, &options)?;
+    let db_lifecycle_read = db_lifecycle_surface_preflight_json(&preflight);
+    let checked_db_path = PathBuf::from(&preflight.exact_db_path_checked);
 
     let open_start = Instant::now();
-    let connection = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| error.to_string())?;
+    let connection =
+        Connection::open_with_flags(&checked_db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| error.to_string())?;
     let open_ms = elapsed_ms(open_start);
 
     let explain_start = Instant::now();
@@ -9044,7 +11359,7 @@ fn query_unresolved_calls(
     });
     if options.source_scan && unresolved.len() < options.limit {
         let scan_start = Instant::now();
-        let store = SqliteGraphStore::open(&db_path).map_err(|error| error.to_string())?;
+        let store = SqliteGraphStore::open(&checked_db_path).map_err(|error| error.to_string())?;
         let before = unresolved.len();
         unresolved.extend(source_scan_unresolved_calls(
             repo_root,
@@ -9062,6 +11377,18 @@ fn query_unresolved_calls(
     let total_ms = elapsed_ms(total_start);
     Ok(json!({
         "status": "ok",
+        "resolved_repo": path_string(repo_root),
+        "resolved_db": path_string(&checked_db_path),
+        "repo_source": repo_source_label(),
+        "db_source": db_source,
+        "lifecycle_status": db_lifecycle_read
+            .get("decision")
+            .cloned()
+            .unwrap_or_else(|| json!("unknown")),
+        "db_lifecycle_read": db_lifecycle_read,
+        "claimable": preflight.claimable,
+        "diagnostic_only": preflight.diagnostic_only,
+        "exact_db_path_checked": preflight.exact_db_path_checked,
         "calls": unresolved,
         "pagination": {
             "requested_limit": options.requested_limit,
@@ -9082,7 +11409,7 @@ fn query_unresolved_calls(
             },
         },
         "instrumentation": {
-            "db_path": db_path,
+            "db_path": checked_db_path,
             "sql": {
                 "page_query": UNRESOLVED_CALLS_PAGE_SQL,
                 "count_query": if options.count_total { Value::String(UNRESOLVED_CALLS_COUNT_SQL.to_string()) } else { Value::Null },
@@ -9564,10 +11891,174 @@ enum CallQueryDirection {
     Callees,
 }
 
+#[derive(Debug, Clone)]
+struct CallRelationQueryOptions {
+    query: Option<String>,
+    entity_id: Option<String>,
+    limit: usize,
+    exact_resolved: bool,
+    fuzzy: bool,
+}
+
+#[cfg(test)]
+fn parse_call_relation_args(
+    command_name: &str,
+    args: &[String],
+) -> Result<CallRelationQueryOptions, String> {
+    parse_call_relation_args_with_output(command_name, args).map(|parsed| parsed.options)
+}
+
+fn parse_call_relation_args_with_output(
+    command_name: &str,
+    args: &[String],
+) -> Result<ParsedCallRelationArgs, String> {
+    let mut options = CallRelationQueryOptions {
+        query: None,
+        entity_id: None,
+        limit: DEFAULT_QUERY_JSON_LIMIT,
+        exact_resolved: false,
+        fuzzy: false,
+    };
+    let mut output_mode = QueryOutputMode::RichJson;
+    let mut explicit_limit = None;
+    let mut verbose = false;
+    let mut debug = false;
+    let mut explain = false;
+    let mut query_parts = Vec::new();
+    let mut index = 0usize;
+    let mut literal_query_terms = false;
+    while index < args.len() {
+        if literal_query_terms {
+            query_parts.push(args[index].to_string());
+            index += 1;
+            continue;
+        }
+        match args[index].as_str() {
+            "--" => {
+                literal_query_terms = true;
+            }
+            "--entity-id" | "--entity_id" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(call_relation_usage(command_name));
+                };
+                options.entity_id = Some(value.clone());
+            }
+            "--exact-resolved" | "--exact_resolved" => {
+                options.exact_resolved = true;
+            }
+            "--fuzzy" | "--global" => {
+                options.fuzzy = true;
+            }
+            "--limit" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(call_relation_usage(command_name));
+                };
+                explicit_limit = Some(parse_limit_value(value)?);
+            }
+            "--agent-json" | "--agent_json" => {
+                output_mode = QueryOutputMode::AgentJson;
+            }
+            "--concise" => {
+                if output_mode != QueryOutputMode::AgentJson {
+                    output_mode = QueryOutputMode::Concise;
+                }
+            }
+            "--verbose" => {
+                verbose = true;
+            }
+            "--debug" => {
+                debug = true;
+                verbose = true;
+            }
+            "--explain" => {
+                explain = true;
+            }
+            "--json" => {}
+            value if value.starts_with("--limit=") => {
+                let value = value.trim_start_matches("--limit=");
+                explicit_limit = Some(parse_limit_value(value)?);
+            }
+            value if value.starts_with("--") => {
+                if let Some(error) = misplaced_global_flag_error(value, "query") {
+                    return Err(error);
+                }
+                return Err(format!(
+                    "unknown {command_name} option: {value}\n{}",
+                    call_relation_usage(command_name)
+                ));
+            }
+            value => query_parts.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if !query_parts.is_empty() {
+        options.query = Some(query_parts.join(" "));
+    }
+    if options.entity_id.is_none() && options.query.is_none() {
+        return Err(call_relation_usage(command_name));
+    }
+    if options.entity_id.is_some() && options.fuzzy {
+        return Err(
+            "--entity-id selects exact mode and cannot be combined with --fuzzy".to_string(),
+        );
+    }
+    let default_limit = match output_mode {
+        QueryOutputMode::AgentJson => DEFAULT_QUERY_AGENT_JSON_LIMIT,
+        QueryOutputMode::Concise => DEFAULT_QUERY_JSON_LIMIT,
+        QueryOutputMode::RichJson if verbose || debug || explain => 32,
+        QueryOutputMode::RichJson => DEFAULT_QUERY_JSON_LIMIT,
+    };
+    options.limit = explicit_limit.unwrap_or(default_limit);
+    let fetch_limit = QueryOutputOptions {
+        limit: options.limit,
+        explicit_limit: explicit_limit.is_some(),
+        output_mode,
+    }
+    .fetch_limit();
+    let output = QueryOutputOptions {
+        limit: options.limit,
+        explicit_limit: explicit_limit.is_some(),
+        output_mode,
+    };
+    options.limit = fetch_limit;
+    Ok(ParsedCallRelationArgs { options, output })
+}
+
+fn call_relation_usage(command_name: &str) -> String {
+    format!(
+        "Usage: codegraph-mcp query {command_name} [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain] <symbol>\nLiteral flag-like symbols: codegraph-mcp query {command_name} [options] -- --db"
+    )
+}
+
+fn query_call_relation_with_output(
+    repo_root: &Path,
+    parsed: ParsedCallRelationArgs,
+    direction: CallQueryDirection,
+    lifecycle_summary: Option<&Value>,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let db_path = resolved_db_path_for_repo(repo_root);
+    let rich = query_call_relation(repo_root, parsed.options.clone(), direction)?;
+    if parsed.output.output_mode.is_compact() {
+        return Ok(agent_call_relation_response(
+            &rich,
+            &parsed.output,
+            direction,
+            lifecycle_summary,
+            repo_root,
+            &db_path,
+            agent_timings_json(started),
+        ));
+    }
+    Ok(rich)
+}
+
 fn query_call_relation(
     repo_root: &Path,
-    query: &str,
-    limit: usize,
+    options: CallRelationQueryOptions,
     direction: CallQueryDirection,
 ) -> Result<Value, String> {
     let store = open_existing_store(repo_root)?;
@@ -9575,12 +12066,186 @@ fn query_call_relation(
         .list_entities(UNBOUNDED_STORE_READ_LIMIT)
         .map_err(|error| error.to_string())?;
     let entity_by_id = entities_by_id(&entities);
-    let seeds = resolve_symbol_candidates(&store, query, 8)?;
+
+    let key = match direction {
+        CallQueryDirection::Callers => "callers",
+        CallQueryDirection::Callees => "callees",
+    };
+    let query_label = options
+        .query
+        .as_deref()
+        .or(options.entity_id.as_deref())
+        .unwrap_or_default()
+        .to_string();
+
+    let mut resolved_symbols = Vec::new();
+    let mut exact_resolved_entity_results = Vec::new();
+    let mut fuzzy_or_global_results = Vec::new();
+    let mut ambiguous_symbol_matches = Vec::new();
+    let mut exact_entity = None;
+    let mut status = "ok";
+    let mut resolution_mode = "fuzzy_or_global";
+    let mut suggestion = Value::Null;
+
+    if let Some(entity_id) = options.entity_id.as_deref() {
+        let entity = store
+            .get_entity(entity_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("entity_id not found: {entity_id}"))?;
+        exact_resolved_entity_results = exact_call_relation_rows(
+            &store,
+            &entity_by_id,
+            &entity.id,
+            options.limit,
+            direction,
+            "entity_id",
+        )?;
+        resolved_symbols.push(entity.clone());
+        exact_entity = Some(entity);
+        resolution_mode = "entity_id";
+    } else if let Some(query) = options.query.as_deref() {
+        let exact_candidates = resolve_exact_symbol_candidates(&store, query)?;
+        resolved_symbols = resolve_symbol_candidates(&store, query, 8)?;
+        if options.fuzzy {
+            fuzzy_or_global_results = fuzzy_call_relation_rows(
+                &store,
+                &entity_by_id,
+                &resolved_symbols,
+                query,
+                options.limit,
+                direction,
+            )?;
+            resolution_mode = "fuzzy_or_global";
+        } else if exact_candidates.len() == 1 {
+            let entity = exact_candidates[0].clone();
+            exact_resolved_entity_results = exact_call_relation_rows(
+                &store,
+                &entity_by_id,
+                &entity.id,
+                options.limit,
+                direction,
+                "exact_resolved",
+            )?;
+            exact_entity = Some(entity);
+            resolution_mode = "exact_resolved";
+        } else if exact_candidates.len() > 1 {
+            status = "ambiguous_symbol";
+            resolution_mode = "ambiguous_symbol";
+            ambiguous_symbol_matches = exact_candidates.iter().map(entity_json).collect();
+            fuzzy_or_global_results = fuzzy_call_relation_rows(
+                &store,
+                &entity_by_id,
+                &resolved_symbols,
+                query,
+                options.limit,
+                direction,
+            )?;
+            suggestion = json!({
+                "reason": "Symbol resolved to multiple entities; choose one candidate id for exact caller/callee proof.",
+                "rerun": format!("codegraph-mcp query {key} --entity-id <candidate-id>"),
+            });
+        } else if options.exact_resolved {
+            status = "not_found";
+            resolution_mode = "exact_resolved_not_found";
+            suggestion = json!({
+                "reason": "--exact-resolved requires exactly one symbol match.",
+                "rerun": format!("codegraph-mcp query {key} --fuzzy {query}"),
+            });
+        } else {
+            fuzzy_or_global_results = fuzzy_call_relation_rows(
+                &store,
+                &entity_by_id,
+                &resolved_symbols,
+                query,
+                options.limit,
+                direction,
+            )?;
+            resolution_mode = "fuzzy_or_global";
+        }
+    }
+
+    let legacy_rows = if exact_entity.is_some() {
+        exact_resolved_entity_results.clone()
+    } else if status == "ambiguous_symbol" && !options.fuzzy {
+        Vec::new()
+    } else {
+        fuzzy_or_global_results.clone()
+    };
+
+    let mut response = json!({
+        "status": status,
+        "query": query_label,
+        "resolution_mode": resolution_mode,
+        "exact_mode_available": exact_entity.is_some(),
+        "exact_resolved_entity": exact_entity.as_ref().map(entity_json),
+        "resolved_symbols": resolved_symbols.iter().map(entity_json).collect::<Vec<_>>(),
+        "exact_resolved_entity_results": exact_resolved_entity_results,
+        "fuzzy_or_global_results": fuzzy_or_global_results,
+        "ambiguous_symbol_matches": ambiguous_symbol_matches,
+        "suggestion": suggestion,
+        "proof": "Caller/callee results preserve CALLS edge exactness, confidence, source spans, and proof labels. Exact modes match a single persisted entity id; --fuzzy keeps alias/global matching available.",
+    });
+    if let Some(object) = response.as_object_mut() {
+        object.insert(key.to_string(), json!(legacy_rows));
+    }
+    Ok(response)
+}
+
+fn resolve_exact_symbol_candidates(
+    store: &SqliteGraphStore,
+    value: &str,
+) -> Result<Vec<Entity>, String> {
+    let mut seen = BTreeSet::new();
+    let mut entities = Vec::new();
+    for entity in store
+        .find_entities_by_exact_symbol(value)
+        .map_err(|error| error.to_string())?
+    {
+        if seen.insert(entity.id.clone()) {
+            entities.push(entity);
+        }
+    }
+    Ok(entities)
+}
+
+fn exact_call_relation_rows(
+    store: &SqliteGraphStore,
+    entity_by_id: &BTreeMap<String, Entity>,
+    entity_id: &str,
+    limit: usize,
+    direction: CallQueryDirection,
+    match_kind: &str,
+) -> Result<Vec<Value>, String> {
+    let edges = match direction {
+        CallQueryDirection::Callers => {
+            store.find_edges_by_tail_relation(entity_id, RelationKind::Calls)
+        }
+        CallQueryDirection::Callees => {
+            store.find_edges_by_head_relation(entity_id, RelationKind::Calls)
+        }
+    }
+    .map_err(|error| error.to_string())?;
+
+    Ok(edges
+        .into_iter()
+        .take(limit)
+        .map(|edge| call_edge_result_json(&edge, entity_by_id, match_kind, Some(entity_id)))
+        .collect())
+}
+
+fn fuzzy_call_relation_rows(
+    store: &SqliteGraphStore,
+    entity_by_id: &BTreeMap<String, Entity>,
+    seeds: &[Entity],
+    query: &str,
+    limit: usize,
+    direction: CallQueryDirection,
+) -> Result<Vec<Value>, String> {
     let seed_ids = seeds
         .iter()
         .map(|entity| entity.id.clone())
         .collect::<BTreeSet<_>>();
-    let seed_aliases = alias_set_for_entities(&seeds)
+    let seed_aliases = alias_set_for_entities(seeds)
         .into_iter()
         .chain([normalize_symbol_alias(query)])
         .collect::<BTreeSet<_>>();
@@ -9612,29 +12277,234 @@ fn query_call_relation(
             }
         };
         if matches {
-            rows.push(json!({
-                "caller": entity_by_id.get(&edge.head_id).map(entity_json),
-                "callee": entity_by_id.get(&edge.tail_id).map(entity_json),
-                "edge": edge_json(&edge),
-                "unresolved": entity_by_id.get(&edge.tail_id).is_some_and(entity_is_unresolved_reference),
-            }));
+            rows.push(call_edge_result_json(
+                &edge,
+                entity_by_id,
+                "fuzzy_or_global",
+                None,
+            ));
         }
     }
+    Ok(rows)
+}
 
+fn call_edge_result_json(
+    edge: &Edge,
+    entity_by_id: &BTreeMap<String, Entity>,
+    match_kind: &str,
+    exact_entity_id: Option<&str>,
+) -> Value {
+    let unresolved = entity_by_id
+        .get(&edge.tail_id)
+        .is_some_and(entity_is_unresolved_reference);
+    let role = classify_edge_evidence_role(edge);
+    json!({
+        "match_kind": match_kind,
+        "exact_entity_id": exact_entity_id,
+        "caller": entity_by_id.get(&edge.head_id).map(entity_json),
+        "callee": entity_by_id.get(&edge.tail_id).map(entity_json),
+        "edge": edge_json(edge),
+        "source_span": edge.source_span,
+        "evidence_role": role.role.as_str(),
+        "classification_reason": role.reason,
+        "classification_source": role.classification_source,
+        "proof_labels": {
+            "relation": edge.relation.to_string(),
+            "exactness": edge.exactness.to_string(),
+            "confidence": edge.confidence,
+            "edge_class": edge.edge_class.to_string(),
+            "context": edge.context.to_string(),
+            "derived": edge.derived,
+            "provenance_edges": edge.provenance_edges,
+            "unresolved": unresolved,
+        },
+        "unresolved": unresolved,
+    })
+}
+
+fn agent_call_relation_response(
+    rich: &Value,
+    output: &QueryOutputOptions,
+    direction: CallQueryDirection,
+    lifecycle_summary: Option<&Value>,
+    repo_root: &Path,
+    db_path: &Path,
+    timings: Value,
+) -> Value {
     let key = match direction {
         CallQueryDirection::Callers => "callers",
         CallQueryDirection::Callees => "callees",
     };
-    let mut response = json!({
-        "status": "ok",
-        "query": query,
-        "resolved_symbols": seeds.iter().map(entity_json).collect::<Vec<_>>(),
-        "proof": "Caller/callee results are CALLS edges with exactness, confidence, and unresolved-call labels preserved.",
-    });
-    if let Some(object) = response.as_object_mut() {
-        object.insert(key.to_string(), json!(rows));
+    let rows = rich
+        .get(key)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let (rows, truncation) = truncate_for_agent(rows, output.limit);
+    let results = rows
+        .iter()
+        .map(agent_call_relation_row_json)
+        .collect::<Vec<_>>();
+    let rich_status = rich
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("warning");
+    let warnings = if rich_status == "ok" {
+        Vec::new()
+    } else {
+        vec![bounded_message(
+            rich_status,
+            &format!("call relation query returned {rich_status}"),
+            "warning",
+        )]
+    };
+    let mut query = serde_json::Map::new();
+    query.insert(
+        "text".to_string(),
+        rich.get("query").cloned().unwrap_or_else(|| json!("")),
+    );
+    if let Some(entity_id) = rich
+        .get("exact_resolved_entity")
+        .and_then(|value| value.get("id"))
+        .and_then(Value::as_str)
+    {
+        query.insert("entity_id".to_string(), json!(entity_id));
     }
-    Ok(response)
+    if let Some(resolution_mode) = rich.get("resolution_mode").and_then(Value::as_str) {
+        query.insert("resolution_mode".to_string(), json!(resolution_mode));
+    }
+    if let Some(entity) = rich
+        .get("exact_resolved_entity")
+        .filter(|value| !value.is_null())
+    {
+        query.insert(
+            "resolved_entity".to_string(),
+            agent_entity_ref_from_value(entity),
+        );
+    }
+    query.insert("explicit_limit".to_string(), json!(output.explicit_limit));
+
+    let mut response = canonical_agent_query_response(
+        "callers_callees_agent_json",
+        "query callers-callees",
+        repo_root,
+        db_path,
+        agent_status_from_rich(rich_status),
+        lifecycle_summary,
+        truncation,
+        Value::Object(query),
+        results,
+        warnings,
+        Vec::new(),
+        output.output_mode,
+        timings,
+    );
+    if let Some(object) = response.as_object_mut() {
+        object.insert("direction".to_string(), json!(key));
+    }
+    response
+}
+
+fn agent_call_relation_row_json(row: &Value) -> Value {
+    let caller = row
+        .get("caller")
+        .map(agent_entity_ref_from_value)
+        .unwrap_or_else(|| json!({}));
+    let callee = row
+        .get("callee")
+        .map(agent_entity_ref_from_value)
+        .unwrap_or_else(|| json!({}));
+    let edge = row.get("edge").cloned().unwrap_or_else(|| json!({}));
+    let relation = edge
+        .get("relation")
+        .and_then(Value::as_str)
+        .unwrap_or("CALLS");
+    let source_span = row
+        .get("source_span")
+        .and_then(agent_source_span_from_value)
+        .or_else(|| {
+            edge.get("source_span")
+                .and_then(agent_source_span_from_value)
+        });
+    let mut compact_edge = serde_json::Map::new();
+    if let Some(edge_id) = edge.get("id").and_then(Value::as_str) {
+        compact_edge.insert("edge_id".to_string(), json!(edge_id));
+    }
+    compact_edge.insert("relation".to_string(), json!(relation));
+    compact_edge.insert("source".to_string(), caller.clone());
+    compact_edge.insert("target".to_string(), callee.clone());
+    if let Some(exactness) = edge.get("exactness").and_then(Value::as_str) {
+        compact_edge.insert("exactness".to_string(), json!(exactness));
+    }
+    if let Some(confidence) = edge.get("confidence").and_then(Value::as_f64) {
+        compact_edge.insert("confidence".to_string(), json!(confidence));
+    }
+    let evidence_role = row
+        .get("evidence_role")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    compact_edge.insert("evidence_role".to_string(), json!(evidence_role));
+    if let Some(reason) = row.get("classification_reason").and_then(Value::as_str) {
+        compact_edge.insert("classification_reason".to_string(), json!(reason));
+    }
+    if let Some(source) = row.get("classification_source").and_then(Value::as_str) {
+        compact_edge.insert("classification_source".to_string(), json!(source));
+    }
+    if let Some(span) = source_span.clone() {
+        compact_edge.insert("source_spans".to_string(), json!([span]));
+    }
+
+    let mut result = serde_json::Map::new();
+    result.insert("edge".to_string(), Value::Object(compact_edge));
+    result.insert("caller".to_string(), caller);
+    result.insert("callee".to_string(), callee);
+    if let Some(span) = source_span {
+        result.insert("span".to_string(), span.clone());
+        result.insert("source_span".to_string(), span);
+    }
+    if let Some(match_kind) = row.get("match_kind").and_then(Value::as_str) {
+        result.insert("match_reason".to_string(), json!(match_kind));
+    }
+    Value::Object(result)
+}
+
+fn agent_entity_ref_from_value(value: &Value) -> Value {
+    let mut object = serde_json::Map::new();
+    for (target, source) in [
+        ("id", "id"),
+        ("name", "name"),
+        ("qualified_name", "qualified_name"),
+        ("kind", "kind"),
+        ("file", "repo_relative_path"),
+    ] {
+        if let Some(text) = value.get(source).and_then(Value::as_str) {
+            object.insert(target.to_string(), json!(text));
+        }
+    }
+    Value::Object(object)
+}
+
+fn agent_source_span_from_value(value: &Value) -> Option<Value> {
+    let file = value
+        .get("repo_relative_path")
+        .or_else(|| value.get("file"))
+        .and_then(Value::as_str)?;
+    let start_line = value.get("start_line").and_then(Value::as_u64)?;
+    let end_line = value
+        .get("end_line")
+        .and_then(Value::as_u64)
+        .unwrap_or(start_line);
+    let mut object = serde_json::Map::new();
+    object.insert("file".to_string(), json!(file));
+    object.insert("start_line".to_string(), json!(start_line));
+    object.insert("end_line".to_string(), json!(end_line));
+    if let Some(start_column) = value.get("start_column").and_then(Value::as_u64) {
+        object.insert("start_column".to_string(), json!(start_column));
+    }
+    if let Some(end_column) = value.get("end_column").and_then(Value::as_u64) {
+        object.insert("end_column".to_string(), json!(end_column));
+    }
+    Some(Value::Object(object))
 }
 
 fn resolve_symbol_candidates(
@@ -9883,15 +12753,78 @@ fn parse_init_options(args: &[String]) -> Result<InitOptions, String> {
     Ok(options)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IndexJsonOutputMode {
+    Concise,
+    Agent,
+    Audit,
+}
+
+impl IndexJsonOutputMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Concise => "concise",
+            Self::Agent => "agent_json",
+            Self::Audit => "audit_json",
+        }
+    }
+}
+
+#[cfg(test)]
 fn parse_index_options(args: &[String]) -> Result<(String, Option<PathBuf>, IndexOptions), String> {
+    let (repo, db, options, _, _) = parse_index_command_options(args)?;
+    Ok((repo, db, options))
+}
+
+fn parse_index_command_options(
+    args: &[String],
+) -> Result<
+    (
+        String,
+        Option<PathBuf>,
+        IndexOptions,
+        IndexJsonOutputMode,
+        storage_budget::StorageBudgetOptions,
+    ),
+    String,
+> {
     let mut repo = None;
     let mut db = None;
     let mut options = IndexOptions::default();
+    let mut storage_budget = storage_budget::StorageBudgetOptions::normal_self_use();
+    let mut output_mode = IndexJsonOutputMode::Concise;
+    let mut agent_json_requested = false;
+    let mut audit_json_requested = false;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
-            "--profile" => options.profile = true,
+            "--profile" => {
+                options.profile = true;
+                options.json = true;
+            }
             "--json" => options.json = true,
+            "--agent-json" | "--agent_json" => {
+                options.json = true;
+                output_mode = IndexJsonOutputMode::Agent;
+                agent_json_requested = true;
+            }
+            "--concise" => {
+                options.json = true;
+                if !agent_json_requested {
+                    output_mode = IndexJsonOutputMode::Concise;
+                }
+            }
+            "--audit-json" | "--audit_json" => {
+                options.json = true;
+                output_mode = IndexJsonOutputMode::Audit;
+                audit_json_requested = true;
+            }
+            "--verbose" => {
+                options.profile = true;
+                options.json = true;
+                output_mode = IndexJsonOutputMode::Audit;
+                audit_json_requested = true;
+            }
             "--db" => {
                 index += 1;
                 let Some(raw) = args.get(index) else {
@@ -9965,10 +12898,15 @@ fn parse_index_options(args: &[String]) -> Result<(String, Option<PathBuf>, Inde
             "--explain-scope" => options.scope.explain_scope = true,
             "--print-included" => options.scope.print_included = true,
             "--print-excluded" => options.scope.print_excluded = true,
-            value if value.starts_with('-') => {
-                return Err(format!("unknown index option: {value}"))
-            }
             value => {
+                if storage_budget::parse_storage_budget_flag(args, &mut index, &mut storage_budget)?
+                {
+                    index += 1;
+                    continue;
+                }
+                if value.starts_with('-') {
+                    return Err(format!("unknown index option: {value}"));
+                }
                 if repo.is_some() {
                     return Err(format!("unexpected index argument: {value}"));
                 }
@@ -9977,12 +12915,19 @@ fn parse_index_options(args: &[String]) -> Result<(String, Option<PathBuf>, Inde
         }
         index += 1;
     }
+    if !agent_json_requested
+        && (audit_json_requested || options.profile || options.scope.has_print_or_explain())
+    {
+        output_mode = IndexJsonOutputMode::Audit;
+    }
     Ok((
         repo.ok_or_else(|| {
-            "Usage: codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]".to_string()
+            "Usage: codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]".to_string()
         })?,
         db,
         options,
+        output_mode,
+        storage_budget,
     ))
 }
 
@@ -10635,6 +13580,7 @@ fn parse_token_estimate(raw: &str) -> Value {
 fn parse_synthetic_index_options(args: &[String]) -> Result<SyntheticIndexOptions, String> {
     let mut output_dir = None;
     let mut files = 250usize;
+    let mut storage_budget = storage_budget::StorageBudgetOptions::fixture_smoke();
     let mut index = 0usize;
 
     while index < args.len() {
@@ -10658,7 +13604,14 @@ fn parse_synthetic_index_options(args: &[String]) -> Result<SyntheticIndexOption
                     return Err("--files must be greater than zero".to_string());
                 }
             }
-            value => return Err(format!("unknown synthetic-index option: {value}")),
+            value => {
+                if storage_budget::parse_storage_budget_flag(args, &mut index, &mut storage_budget)?
+                {
+                    index += 1;
+                    continue;
+                }
+                return Err(format!("unknown synthetic-index option: {value}"));
+            }
         }
         index += 1;
     }
@@ -10669,6 +13622,7 @@ fn parse_synthetic_index_options(args: &[String]) -> Result<SyntheticIndexOption
                 .to_string()
         })?,
         files,
+        storage_budget,
     })
 }
 
@@ -10699,6 +13653,7 @@ fn parse_update_integrity_harness_options(
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("..").join("autoresearch-codexlab"));
     let mut autoresearch_seed_db = None;
+    let mut storage_budget = storage_budget::StorageBudgetOptions::normal_self_use();
     let mut index = 0;
 
     while index < args.len() {
@@ -10816,7 +13771,14 @@ fn parse_update_integrity_harness_options(
                         "--autoresearch-seed-db requires a path".to_string()
                     })?));
             }
-            value => return Err(format!("unknown update-integrity option: {value}")),
+            value => {
+                if storage_budget::parse_storage_budget_flag(args, &mut index, &mut storage_budget)?
+                {
+                    index += 1;
+                    continue;
+                }
+                return Err(format!("unknown update-integrity option: {value}"));
+            }
         }
         index += 1;
     }
@@ -10842,6 +13804,7 @@ fn parse_update_integrity_harness_options(
             .as_deref()
             .map(absolute_cli_path)
             .transpose()?,
+        storage_budget,
     })
 }
 
@@ -10850,6 +13813,7 @@ fn parse_cgc_comparison_options(args: &[String]) -> Result<CgcComparisonOptions,
     let mut timeout_ms = codegraph_bench::competitors::codegraphcontext::DEFAULT_TIMEOUT_MS;
     let mut top_k = codegraph_bench::competitors::codegraphcontext::DEFAULT_TOP_K;
     let mut competitor_executable = None;
+    let mut storage_budget = storage_budget::StorageBudgetOptions::normal_self_use();
     let mut index = 0;
 
     while index < args.len() {
@@ -10892,7 +13856,14 @@ fn parse_cgc_comparison_options(args: &[String]) -> Result<CgcComparisonOptions,
                 };
                 competitor_executable = Some(PathBuf::from(raw));
             }
-            value => return Err(format!("unknown cgc-comparison option: {value}")),
+            value => {
+                if storage_budget::parse_storage_budget_flag(args, &mut index, &mut storage_budget)?
+                {
+                    index += 1;
+                    continue;
+                }
+                return Err(format!("unknown cgc-comparison option: {value}"));
+            }
         }
         index += 1;
     }
@@ -10902,6 +13873,7 @@ fn parse_cgc_comparison_options(args: &[String]) -> Result<CgcComparisonOptions,
         timeout_ms,
         top_k,
         competitor_executable,
+        storage_budget,
     })
 }
 
@@ -11032,6 +14004,10 @@ struct ContextPackOptions {
     seeds: Vec<String>,
     stage0_candidates: Vec<String>,
     profile: bool,
+    output_mode: QueryOutputMode,
+    limit_paths: Option<usize>,
+    limit_snippets: Option<usize>,
+    max_output_bytes: Option<usize>,
     allow_stale_read: bool,
     explicit_scope_policy: Option<IndexScopeOptions>,
 }
@@ -11045,6 +14021,10 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
     let mut seeds = Vec::new();
     let mut stage0_candidates = Vec::new();
     let mut profile = false;
+    let mut output_mode = QueryOutputMode::RichJson;
+    let mut limit_paths = None;
+    let mut limit_snippets = None;
+    let mut max_output_bytes = None;
     let mut allow_stale_read = false;
     let mut index = 0;
     while index < args.len() {
@@ -11086,6 +14066,50 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
             "--profile" => {
                 profile = true;
             }
+            "--agent-json" | "--agent_json" => {
+                output_mode = QueryOutputMode::AgentJson;
+            }
+            "--concise" => {
+                if output_mode != QueryOutputMode::AgentJson {
+                    output_mode = QueryOutputMode::Concise;
+                }
+            }
+            "--limit-paths" | "--limit_paths" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--limit-paths requires a value".to_string());
+                };
+                limit_paths = Some(parse_context_pack_limit(
+                    value,
+                    "--limit-paths",
+                    MAX_CONTEXT_AGENT_PATH_LIMIT,
+                )?);
+            }
+            "--limit-snippets" | "--limit_snippets" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--limit-snippets requires a value".to_string());
+                };
+                limit_snippets = Some(parse_context_pack_limit(
+                    value,
+                    "--limit-snippets",
+                    MAX_CONTEXT_AGENT_SNIPPET_LIMIT,
+                )?);
+            }
+            "--max-output-bytes" | "--max-bytes" | "--max_output_bytes" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--max-output-bytes requires a value".to_string());
+                };
+                max_output_bytes = Some(parse_context_pack_max_output_bytes(value)?);
+            }
+            "--verbose" => {
+                profile = true;
+            }
+            "--debug" => {
+                mode = "debug".to_string();
+                profile = true;
+            }
             "--allow-stale-read" => {
                 allow_stale_read = true;
             }
@@ -11106,9 +14130,32 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
         seeds,
         stage0_candidates,
         profile,
+        output_mode,
+        limit_paths,
+        limit_snippets,
+        max_output_bytes,
         allow_stale_read,
         explicit_scope_policy,
     })
+}
+
+fn parse_context_pack_limit(value: &str, flag: &str, max_limit: usize) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .map(|limit| limit.clamp(1, max_limit))
+        .map_err(|_| format!("{flag} must be an integer"))
+}
+
+fn parse_context_pack_max_output_bytes(value: &str) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .map(|bytes| {
+            bytes.clamp(
+                MIN_CONTEXT_AGENT_MAX_OUTPUT_BYTES,
+                MAX_CONTEXT_AGENT_MAX_OUTPUT_BYTES,
+            )
+        })
+        .map_err(|_| "--max-output-bytes must be an integer".to_string())
 }
 
 fn parse_output_arg(args: &[String]) -> Result<PathBuf, String> {
@@ -11122,6 +14169,9 @@ fn optional_repo_arg(args: &[String]) -> Result<PathBuf, String> {
     match args {
         [] => Ok(PathBuf::from(".")),
         [repo] => Ok(PathBuf::from(repo)),
+        [flag, ..] if misplaced_global_flag_error(flag, "status").is_some() => {
+            Err(misplaced_global_flag_error(flag, "status").unwrap())
+        }
         _ => Err("Usage: codegraph-mcp status [repo]".to_string()),
     }
 }
@@ -11184,13 +14234,7 @@ fn current_repo_root() -> Result<PathBuf, String> {
 }
 
 fn open_existing_store(repo_root: &Path) -> Result<SqliteGraphStore, String> {
-    let db_path = default_db_path(repo_root);
-    if !db_path.exists() {
-        return Err(format!(
-            "CodeGraph index does not exist at {}; run `codegraph-mcp index .` first",
-            db_path.display()
-        ));
-    }
+    let db_path = resolved_db_path_for_repo(repo_root);
     let _ = read_db_lifecycle_guard(repo_root, &db_path, allow_stale_read_enabled(), None)?;
     SqliteGraphStore::open(db_path).map_err(|error| error.to_string())
 }
@@ -11226,10 +14270,20 @@ fn read_db_lifecycle_guard(
     if let Some(mismatch) = preflight.scope_mismatch.as_ref() {
         return Err(scope_mismatch_message(db_path, mismatch));
     }
+    let outside_note = preflight
+        .outside_workspace_note
+        .as_deref()
+        .map(|note| format!("; {note}"))
+        .unwrap_or_default();
     Err(format!(
-        "CodeGraph DB is not safe to read at {}: {}; run `codegraph-mcp index . --fresh` or pass --allow-stale-read for diagnostic-only output",
+        "CodeGraph DB is not safe to read at {}: kind={}; {}{}; run `codegraph-mcp index . --fresh` or pass --allow-stale-read for diagnostic-only output",
         db_path.display(),
-        preflight.blockers.join("; ")
+        preflight
+            .db_problem_kind
+            .as_deref()
+            .unwrap_or("unknown"),
+        preflight.blockers.join("; "),
+        outside_note
     ))
 }
 
@@ -11249,12 +14303,23 @@ fn scope_mismatch_message(
 fn db_lifecycle_preflight_json(preflight: &DbLifecyclePreflight, claimable: bool) -> Value {
     json!({
         "decision": if preflight.safe { "read_reuse" } else { "diagnostic_stale_reuse" },
+        "db_problem_kind": preflight.db_problem_kind.clone(),
+        "path_access_status": preflight.path_access_status.clone(),
+        "path_access_error": preflight.path_access_error.clone(),
         "passport_status": preflight.db_health.passport_status,
         "claimable": claimable && preflight.safe,
         "contaminated": !preflight.safe,
         "reasons": preflight.db_health.reasons.clone(),
+        "sqlite_sidecars": preflight.db_health.sqlite_sidecars.clone(),
+        "sidecar_status": preflight.db_health.sidecar_status.clone(),
+        "orphan_sidecars": preflight.db_health.orphan_sidecars.clone(),
+        "orphan_sidecars_deprecated": true,
         "blockers": preflight.blockers.clone(),
         "warnings": preflight.warnings.clone(),
+        "exact_db_path_checked": preflight.exact_db_path_checked.clone(),
+        "repo_root_expected": preflight.repo_root_expected.clone(),
+        "db_path_outside_workspace": preflight.db_path_outside_workspace,
+        "outside_workspace_note": preflight.outside_workspace_note.clone(),
         "repo_root_status": preflight.repo_root_status.clone(),
         "schema_status": preflight.schema_status.clone(),
         "storage_mode_status": preflight.storage_mode_status.clone(),
@@ -11328,6 +14393,33 @@ impl ContextPackBudgets {
             max_snippets: 12,
             max_traversal_depth: 3,
         }
+    }
+
+    fn for_options(options: &ContextPackOptions) -> Self {
+        let mut budgets = Self::for_mode(&options.mode);
+        if options.output_mode.is_compact() {
+            budgets.max_returned_proof_paths = budgets.max_returned_proof_paths.min(
+                options
+                    .limit_paths
+                    .unwrap_or(DEFAULT_CONTEXT_AGENT_PATH_LIMIT),
+            );
+            budgets.max_snippets = budgets.max_snippets.min(
+                options
+                    .limit_snippets
+                    .unwrap_or(DEFAULT_CONTEXT_AGENT_SNIPPET_LIMIT),
+            );
+        } else {
+            if let Some(limit) = options.limit_paths {
+                budgets.max_returned_proof_paths = budgets.max_returned_proof_paths.min(limit);
+            }
+            if let Some(limit) = options.limit_snippets {
+                budgets.max_snippets = budgets.max_snippets.min(limit);
+            }
+        }
+        budgets.max_candidate_paths = budgets
+            .max_candidate_paths
+            .min(budgets.max_returned_proof_paths.saturating_mul(16).max(16));
+        budgets
     }
 }
 
@@ -11406,6 +14498,9 @@ struct ContextEntitySummary {
     name: String,
     qualified_name: String,
     repo_relative_path: String,
+    kind: Option<EntityKind>,
+    source_span: Option<SourceSpan>,
+    metadata: Metadata,
 }
 
 fn resolve_context_seed_entities(
@@ -11515,12 +14610,17 @@ fn load_context_entities_by_keys(
     let sql = format!(
         "
         SELECT oid.value AS id, name.value AS name,
-               qname.value AS qualified_name, path.value AS repo_relative_path
+               qname.value AS qualified_name, path.value AS repo_relative_path,
+               kind.value AS kind, span_path.value AS span_repo_relative_path,
+               e.start_line, e.start_column, e.end_line, e.end_column,
+               e.metadata_json
         FROM entities e
         JOIN object_id_lookup oid ON oid.id = e.id_key
         JOIN symbol_dict name ON name.id = e.name_id
         JOIN qualified_name_lookup qname ON qname.id = e.qualified_name_id
         JOIN path_dict path ON path.id = e.path_id
+        LEFT JOIN entity_kind_dict kind ON kind.id = e.kind_id
+        LEFT JOIN path_dict span_path ON span_path.id = e.span_path_id
         WHERE e.id_key IN ({placeholders})
         ORDER BY qname.value, oid.value
         LIMIT {}
@@ -11532,15 +14632,98 @@ fn load_context_entities_by_keys(
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map(rusqlite::params_from_iter(keys.iter()), |row| {
+            let span_repo_relative_path =
+                row.get::<_, Option<String>>("span_repo_relative_path")?;
+            let start_line = row.get::<_, Option<u32>>("start_line")?;
+            let end_line = row.get::<_, Option<u32>>("end_line")?;
+            let source_span = match (span_repo_relative_path, start_line, end_line) {
+                (Some(path), Some(start_line), Some(end_line)) => Some(SourceSpan {
+                    repo_relative_path: path,
+                    start_line,
+                    start_column: row.get::<_, Option<u32>>("start_column")?,
+                    end_line,
+                    end_column: row.get::<_, Option<u32>>("end_column")?,
+                }),
+                _ => None,
+            };
+            let metadata_json = row
+                .get::<_, Option<String>>("metadata_json")?
+                .unwrap_or_else(|| "{}".to_string());
             Ok(ContextEntitySummary {
                 id: row.get("id")?,
                 name: row.get("name")?,
                 qualified_name: row.get("qualified_name")?,
                 repo_relative_path: row.get("repo_relative_path")?,
+                kind: row
+                    .get::<_, Option<String>>("kind")?
+                    .as_deref()
+                    .and_then(|raw| raw.parse().ok()),
+                source_span,
+                metadata: serde_json::from_str::<Metadata>(&metadata_json)
+                    .map_err(sql_json_error)?,
             })
         })
         .map_err(|error| error.to_string())?;
     collect_sql_rows(rows)
+}
+
+fn load_context_entities_by_ids(
+    connection: &Connection,
+    ids: impl IntoIterator<Item = String>,
+    limit: usize,
+) -> Result<BTreeMap<String, ContextEntitySummary>, String> {
+    if limit == 0 {
+        return Ok(BTreeMap::new());
+    }
+    let mut entity_keys = BTreeSet::<i64>::new();
+    for id in ids {
+        if entity_keys.len() >= limit {
+            break;
+        }
+        if let Some(key) = lookup_i64(connection, "object_id_lookup", &id)? {
+            entity_keys.insert(key);
+        }
+    }
+    let entities = load_context_entities_by_keys(
+        connection,
+        &entity_keys.into_iter().collect::<Vec<_>>(),
+        limit,
+    )?;
+    Ok(entities
+        .into_iter()
+        .map(|entity| (entity.id.clone(), entity))
+        .collect())
+}
+
+fn load_context_entities_by_paths(
+    connection: &Connection,
+    paths: impl IntoIterator<Item = String>,
+    limit: usize,
+) -> Result<Vec<ContextEntitySummary>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let mut entity_keys = BTreeSet::<i64>::new();
+    for path in paths {
+        if entity_keys.len() >= limit {
+            break;
+        }
+        let Some(path_id) = lookup_i64(connection, "path_dict", &path)? else {
+            continue;
+        };
+        let remaining = limit.saturating_sub(entity_keys.len());
+        for key in entity_keys_by_column(connection, "path_id", path_id, remaining)? {
+            entity_keys.insert(key);
+            if entity_keys.len() >= limit {
+                break;
+            }
+        }
+    }
+    load_context_entities_by_keys(
+        connection,
+        &entity_keys.into_iter().collect::<Vec<_>>(),
+        limit,
+    )
 }
 
 fn load_stored_context_path_evidence(
@@ -11613,7 +14796,9 @@ struct StoredContextPathEdgeMetadata {
     path_id: String,
     ordinal: usize,
     edge_id: String,
+    head_id: String,
     relation: String,
+    tail_id: String,
     source_span_path: Option<String>,
     exactness: Option<String>,
     confidence: Option<f64>,
@@ -11621,6 +14806,273 @@ struct StoredContextPathEdgeMetadata {
     edge_class: Option<String>,
     context: Option<String>,
     provenance_edges: Vec<String>,
+    head_entity: Option<StoredContextEntityMetadata>,
+    tail_entity: Option<StoredContextEntityMetadata>,
+}
+
+#[derive(Debug, Clone)]
+struct StoredContextEntityMetadata {
+    id: String,
+    kind: Option<EntityKind>,
+    name: String,
+    qualified_name: String,
+    repo_relative_path: String,
+    source_span: Option<SourceSpan>,
+    metadata: Metadata,
+}
+
+#[derive(Debug, Clone)]
+struct CliEvidenceRoleDecision {
+    role: EvidenceRole,
+    reason: String,
+    source: String,
+}
+
+impl CliEvidenceRoleDecision {
+    fn new(role: EvidenceRole, reason: impl Into<String>, source: impl Into<String>) -> Self {
+        Self {
+            role,
+            reason: reason.into(),
+            source: source.into(),
+        }
+    }
+}
+
+fn stored_context_entity_from_row(
+    row: &rusqlite::Row<'_>,
+    prefix: &str,
+) -> rusqlite::Result<Option<StoredContextEntityMetadata>> {
+    let kind_column = format!("{prefix}_kind");
+    let name_column = format!("{prefix}_name");
+    let qname_column = format!("{prefix}_qualified_name");
+    let path_column = format!("{prefix}_repo_relative_path");
+    let span_path_column = format!("{prefix}_span_repo_relative_path");
+    let start_line_column = format!("{prefix}_start_line");
+    let start_column_column = format!("{prefix}_start_column");
+    let end_line_column = format!("{prefix}_end_line");
+    let end_column_column = format!("{prefix}_end_column");
+    let metadata_column = format!("{prefix}_metadata_json");
+
+    let Some(name) = row.get::<_, Option<String>>(name_column.as_str())? else {
+        return Ok(None);
+    };
+    let kind_raw = row.get::<_, Option<String>>(kind_column.as_str())?;
+    let qualified_name = row
+        .get::<_, Option<String>>(qname_column.as_str())?
+        .unwrap_or_else(|| name.clone());
+    let repo_relative_path = row
+        .get::<_, Option<String>>(path_column.as_str())?
+        .unwrap_or_default();
+    let span_repo_relative_path = row.get::<_, Option<String>>(span_path_column.as_str())?;
+    let start_line = row.get::<_, Option<u32>>(start_line_column.as_str())?;
+    let end_line = row.get::<_, Option<u32>>(end_line_column.as_str())?;
+    let source_span = match (span_repo_relative_path, start_line, end_line) {
+        (Some(path), Some(start_line), Some(end_line)) => Some(SourceSpan {
+            repo_relative_path: path,
+            start_line,
+            start_column: row.get::<_, Option<u32>>(start_column_column.as_str())?,
+            end_line,
+            end_column: row.get::<_, Option<u32>>(end_column_column.as_str())?,
+        }),
+        _ => None,
+    };
+    let metadata_json = row
+        .get::<_, Option<String>>(metadata_column.as_str())?
+        .unwrap_or_else(|| "{}".to_string());
+    let metadata = serde_json::from_str::<Metadata>(&metadata_json).map_err(sql_json_error)?;
+    let id_column = format!("{prefix}_id");
+    Ok(Some(StoredContextEntityMetadata {
+        id: row.get::<_, String>(id_column.as_str()).unwrap_or_default(),
+        kind: kind_raw.as_deref().and_then(|raw| raw.parse().ok()),
+        name,
+        qualified_name,
+        repo_relative_path,
+        source_span,
+        metadata,
+    }))
+}
+
+fn stored_context_entity_role(
+    entity: Option<&StoredContextEntityMetadata>,
+) -> CliEvidenceRoleDecision {
+    let Some(entity) = entity else {
+        return CliEvidenceRoleDecision::new(
+            EvidenceRole::Unknown,
+            "missing endpoint entity metadata",
+            "fallback",
+        );
+    };
+    if let Some(kind) = entity.kind {
+        let classified = classify_entity_source_role(&Entity {
+            id: entity.id.clone(),
+            kind,
+            name: entity.name.clone(),
+            qualified_name: entity.qualified_name.clone(),
+            repo_relative_path: entity.repo_relative_path.clone(),
+            source_span: entity.source_span.clone(),
+            content_hash: None,
+            file_hash: None,
+            created_from: "context-pack-hydration".to_string(),
+            confidence: 1.0,
+            metadata: entity.metadata.clone(),
+        });
+        return CliEvidenceRoleDecision::new(
+            classified.role,
+            classified.reason,
+            classified.classification_source,
+        );
+    }
+    if qualified_name_has_test_module(&entity.qualified_name) {
+        return CliEvidenceRoleDecision::new(
+            EvidenceRole::Test,
+            "qualified name contains tests module",
+            "qualified_name",
+        );
+    }
+    CliEvidenceRoleDecision::new(
+        EvidenceRole::Unknown,
+        "endpoint entity kind/source role metadata missing",
+        "fallback",
+    )
+}
+
+fn context_entity_role(entity: &ContextEntitySummary) -> CliEvidenceRoleDecision {
+    if let Some(kind) = entity.kind {
+        let classified = classify_entity_source_role(&Entity {
+            id: entity.id.clone(),
+            kind,
+            name: entity.name.clone(),
+            qualified_name: entity.qualified_name.clone(),
+            repo_relative_path: entity.repo_relative_path.clone(),
+            source_span: entity.source_span.clone(),
+            content_hash: None,
+            file_hash: None,
+            created_from: "context-pack-seed".to_string(),
+            confidence: 1.0,
+            metadata: entity.metadata.clone(),
+        });
+        return CliEvidenceRoleDecision::new(
+            classified.role,
+            classified.reason,
+            classified.classification_source,
+        );
+    }
+    if qualified_name_has_test_module(&entity.qualified_name) {
+        return CliEvidenceRoleDecision::new(
+            EvidenceRole::Test,
+            "qualified name contains tests module",
+            "qualified_name",
+        );
+    }
+    CliEvidenceRoleDecision::new(
+        EvidenceRole::Unknown,
+        "entity kind/source role metadata missing",
+        "fallback",
+    )
+}
+
+fn stored_context_edge_role(row: &StoredContextPathEdgeMetadata) -> CliEvidenceRoleDecision {
+    let relation_role = match row.relation.as_str() {
+        "MOCKS" | "STUBS" => Some((EvidenceRole::Mock, "relation kind is mock/stub evidence")),
+        "TESTS" | "ASSERTS" | "COVERS" | "FIXTURES_FOR" => Some((
+            EvidenceRole::Test,
+            "relation kind is test/assertion evidence",
+        )),
+        _ => None,
+    };
+    if let Some((role, reason)) = relation_role {
+        return CliEvidenceRoleDecision::new(role, reason, "relation_kind");
+    }
+    if row
+        .source_span_path
+        .as_deref()
+        .is_some_and(context_pack_test_path)
+    {
+        return CliEvidenceRoleDecision::new(
+            EvidenceRole::Test,
+            "edge source span is in a test/spec path",
+            "file_path",
+        );
+    }
+
+    let head = stored_context_entity_role(row.head_entity.as_ref());
+    let tail = stored_context_entity_role(row.tail_entity.as_ref());
+    let endpoint_role = combine_evidence_roles([head.role, tail.role]);
+    if endpoint_role != EvidenceRole::Unknown {
+        return CliEvidenceRoleDecision::new(
+            endpoint_role,
+            format!("head: {}; tail: {}", head.reason, tail.reason),
+            format!("endpoint:{}+{}", head.source, tail.source),
+        );
+    }
+
+    match row
+        .context
+        .as_deref()
+        .and_then(context_pack_role_from_label)
+    {
+        Some(EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed) => {
+            let role = context_pack_role_from_label(row.context.as_deref().unwrap_or_default())
+                .unwrap_or(EvidenceRole::Unknown);
+            CliEvidenceRoleDecision::new(role, "materialized edge context", "materialized_context")
+        }
+        Some(EvidenceRole::Production) => CliEvidenceRoleDecision::new(
+            EvidenceRole::Unknown,
+            "materialized production context lacks source-role metadata",
+            "fallback",
+        ),
+        Some(EvidenceRole::Unknown) | None => CliEvidenceRoleDecision::new(
+            EvidenceRole::Unknown,
+            "missing edge source-role metadata",
+            "fallback",
+        ),
+    }
+}
+
+fn qualified_name_has_test_module(value: &str) -> bool {
+    let normalized = value.replace('\\', "/").to_ascii_lowercase();
+    normalized == "tests"
+        || normalized.starts_with("tests.")
+        || normalized.contains(".tests.")
+        || normalized.contains("::tests::")
+        || normalized.ends_with(".tests")
+        || normalized.ends_with("::tests")
+}
+
+fn context_pack_test_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    normalized.contains("/tests/")
+        || normalized.contains("/test/")
+        || normalized.ends_with(".test.ts")
+        || normalized.ends_with(".test.tsx")
+        || normalized.ends_with(".test.js")
+        || normalized.ends_with(".test.jsx")
+        || normalized.ends_with(".spec.ts")
+        || normalized.ends_with(".spec.tsx")
+        || normalized.ends_with(".spec.js")
+        || normalized.ends_with(".spec.jsx")
+}
+
+fn context_pack_mock_name(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase();
+    normalized.contains("mock") || normalized.contains("stub")
+}
+
+fn context_pack_role_from_label(value: &str) -> Option<EvidenceRole> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.contains("mixed") {
+        Some(EvidenceRole::Mixed)
+    } else if normalized.contains("mock") || normalized.contains("stub") {
+        Some(EvidenceRole::Mock)
+    } else if normalized.contains("test") || normalized.contains("spec") {
+        Some(EvidenceRole::Test)
+    } else if normalized.contains("production") {
+        Some(EvidenceRole::Production)
+    } else if normalized.contains("unknown") || normalized.contains("unresolved") {
+        Some(EvidenceRole::Unknown)
+    } else {
+        None
+    }
 }
 
 fn hydrate_stored_path_evidence_metadata(
@@ -11635,6 +15087,8 @@ fn hydrate_stored_path_evidence_metadata(
         || !sqlite_table_has_column(connection, "path_evidence_edges", "edge_class")?
         || !sqlite_table_has_column(connection, "path_evidence_edges", "context")?
         || !sqlite_table_has_column(connection, "path_evidence_edges", "provenance_edges_json")?
+        || !sqlite_table_has_column(connection, "path_evidence_edges", "head_id")?
+        || !sqlite_table_has_column(connection, "path_evidence_edges", "tail_id")?
     {
         return Ok(());
     }
@@ -11642,11 +15096,38 @@ fn hydrate_stored_path_evidence_metadata(
     let placeholders = sql_placeholders(ids.len());
     let sql = format!(
         "
-        SELECT path_id, ordinal, edge_id, relation, source_span_path,
-               exactness, confidence, derived, edge_class, context, provenance_edges_json
-        FROM path_evidence_edges
-        WHERE path_id IN ({placeholders})
-        ORDER BY path_id, ordinal
+        SELECT pe.path_id, pe.ordinal, pe.edge_id, pe.head_id, pe.relation, pe.tail_id,
+               pe.source_span_path, pe.exactness, pe.confidence, pe.derived,
+               pe.edge_class, pe.context, pe.provenance_edges_json,
+               head_kind.value AS head_kind, head_name.value AS head_name,
+               head_qname.value AS head_qualified_name, head_path.value AS head_repo_relative_path,
+               head_span_path.value AS head_span_repo_relative_path,
+               head_e.start_line AS head_start_line, head_e.start_column AS head_start_column,
+               head_e.end_line AS head_end_line, head_e.end_column AS head_end_column,
+               head_e.metadata_json AS head_metadata_json,
+               tail_kind.value AS tail_kind, tail_name.value AS tail_name,
+               tail_qname.value AS tail_qualified_name, tail_path.value AS tail_repo_relative_path,
+               tail_span_path.value AS tail_span_repo_relative_path,
+               tail_e.start_line AS tail_start_line, tail_e.start_column AS tail_start_column,
+               tail_e.end_line AS tail_end_line, tail_e.end_column AS tail_end_column,
+               tail_e.metadata_json AS tail_metadata_json
+        FROM path_evidence_edges pe
+        LEFT JOIN object_id_lookup head_oid ON head_oid.value = pe.head_id
+        LEFT JOIN entities head_e ON head_e.id_key = head_oid.id
+        LEFT JOIN entity_kind_dict head_kind ON head_kind.id = head_e.kind_id
+        LEFT JOIN symbol_dict head_name ON head_name.id = head_e.name_id
+        LEFT JOIN qualified_name_lookup head_qname ON head_qname.id = head_e.qualified_name_id
+        LEFT JOIN path_dict head_path ON head_path.id = head_e.path_id
+        LEFT JOIN path_dict head_span_path ON head_span_path.id = head_e.span_path_id
+        LEFT JOIN object_id_lookup tail_oid ON tail_oid.value = pe.tail_id
+        LEFT JOIN entities tail_e ON tail_e.id_key = tail_oid.id
+        LEFT JOIN entity_kind_dict tail_kind ON tail_kind.id = tail_e.kind_id
+        LEFT JOIN symbol_dict tail_name ON tail_name.id = tail_e.name_id
+        LEFT JOIN qualified_name_lookup tail_qname ON tail_qname.id = tail_e.qualified_name_id
+        LEFT JOIN path_dict tail_path ON tail_path.id = tail_e.path_id
+        LEFT JOIN path_dict tail_span_path ON tail_span_path.id = tail_e.span_path_id
+        WHERE pe.path_id IN ({placeholders})
+        ORDER BY pe.path_id, pe.ordinal
         "
     );
     let mut statement = connection
@@ -11663,7 +15144,9 @@ fn hydrate_stored_path_evidence_metadata(
                 path_id: row.get("path_id")?,
                 ordinal: row.get::<_, i64>("ordinal")?.max(0) as usize,
                 edge_id: row.get("edge_id")?,
+                head_id: row.get("head_id")?,
                 relation: row.get("relation")?,
+                tail_id: row.get("tail_id")?,
                 source_span_path: row.get("source_span_path")?,
                 exactness: row.get("exactness")?,
                 confidence: row.get("confidence")?,
@@ -11671,6 +15154,8 @@ fn hydrate_stored_path_evidence_metadata(
                 edge_class: row.get("edge_class")?,
                 context: row.get("context")?,
                 provenance_edges,
+                head_entity: stored_context_entity_from_row(row, "head")?,
+                tail_entity: stored_context_entity_from_row(row, "tail")?,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -11715,11 +15200,7 @@ fn hydrate_stored_path_evidence_metadata(
             "production_test_mock_labels".to_string(),
             json!(rows
                 .iter()
-                .map(|row| {
-                    row.context
-                        .clone()
-                        .unwrap_or_else(|| "production".to_string())
-                })
+                .map(|row| stored_context_edge_role(row).role.as_str().to_string())
                 .collect::<Vec<_>>()),
         );
         path.metadata.insert(
@@ -11727,9 +15208,12 @@ fn hydrate_stored_path_evidence_metadata(
             json!(
                 rows.iter()
                     .map(|row| {
+                        let role = stored_context_edge_role(row);
                         json!({
                             "edge_id": row.edge_id.clone(),
+                            "head_id": row.head_id.clone(),
                             "relation": row.relation.clone(),
+                            "tail_id": row.tail_id.clone(),
                             "source_span": row.source_span_path.clone(),
                             "exactness": row.exactness.clone().unwrap_or_else(|| path.exactness.to_string()),
                             "confidence": row.confidence.unwrap_or(path.confidence),
@@ -11737,6 +15221,11 @@ fn hydrate_stored_path_evidence_metadata(
                             "edge_class": row.edge_class.clone(),
                             "fact_class": row.edge_class.clone(),
                             "context": row.context.clone().unwrap_or_else(|| "production".to_string()),
+                            "evidence_role": role.role.as_str(),
+                            "classification_reason": role.reason,
+                            "classification_source": role.source,
+                            "head_source_role": stored_context_entity_role(row.head_entity.as_ref()).role.as_str(),
+                            "tail_source_role": stored_context_entity_role(row.tail_entity.as_ref()).role.as_str(),
                             "provenance_edges": row.provenance_edges.clone(),
                         })
                     })
@@ -11765,6 +15254,7 @@ fn hydrate_stored_path_evidence_metadata(
             "metadata_storage".to_string(),
             json!("hydrated_materialized_rows"),
         );
+        annotate_context_path_evidence_role(path);
     }
     Ok(())
 }
@@ -11888,6 +15378,7 @@ fn filter_and_sort_context_path_evidence(
     let mut seen = BTreeSet::new();
     let mut filtered = paths
         .into_iter()
+        .flat_map(|path| context_path_evidence_candidates_for_mode(path, mode))
         .filter(|path| path.length <= budgets.max_traversal_depth)
         .filter(|path| context_path_evidence_allowed_for_mode(path, mode))
         .filter(|path| context_path_evidence_relation_allowed(path, mode))
@@ -11905,6 +15396,246 @@ fn filter_and_sort_context_path_evidence(
     filtered
 }
 
+fn context_path_evidence_candidates_for_mode(
+    mut path: PathEvidence,
+    mode: &str,
+) -> Vec<PathEvidence> {
+    annotate_context_path_evidence_role(&mut path);
+    if context_pack_mode_allows_test_mock(mode) {
+        return vec![path];
+    }
+    if path.metadata.get("evidence_role").and_then(Value::as_str) == Some("mixed") {
+        if let Some(split) = production_subpath_from_mixed_path_evidence(&path) {
+            return vec![split, path];
+        }
+    }
+    vec![path]
+}
+
+fn annotate_context_path_evidence_role(path: &mut PathEvidence) {
+    let mut roles = context_path_edge_roles(path);
+    if roles.is_empty() {
+        roles = path
+            .metapath
+            .iter()
+            .filter_map(|relation| match relation {
+                RelationKind::Mocks | RelationKind::Stubs => Some(EvidenceRole::Mock),
+                RelationKind::Tests
+                | RelationKind::Asserts
+                | RelationKind::Covers
+                | RelationKind::FixturesFor => Some(EvidenceRole::Test),
+                _ => None,
+            })
+            .collect();
+    }
+    let role = if roles.is_empty() {
+        EvidenceRole::Unknown
+    } else {
+        combine_evidence_roles(roles.iter().copied())
+    };
+    let role_labels = if roles.is_empty() {
+        vec![EvidenceRole::Unknown.as_str().to_string()]
+    } else {
+        roles
+            .iter()
+            .map(|role| role.as_str().to_string())
+            .collect::<Vec<_>>()
+    };
+    let (classification_source, classification_reason) = context_path_classification_summary(path);
+    path.metadata
+        .insert("evidence_role".to_string(), json!(role.as_str()));
+    path.metadata
+        .insert("path_context".to_string(), json!(role.as_str()));
+    path.metadata.insert(
+        "production_test_mock_labels".to_string(),
+        json!(role_labels),
+    );
+    path.metadata.insert(
+        "classification_source".to_string(),
+        json!(classification_source),
+    );
+    path.metadata.insert(
+        "classification_reason".to_string(),
+        json!(classification_reason),
+    );
+    let proof_grade_edges = path
+        .metadata
+        .get("proof_grade_edge_classes")
+        .and_then(Value::as_bool)
+        .unwrap_or(!matches!(
+            path.exactness,
+            Exactness::StaticHeuristic | Exactness::Inferred
+        ));
+    path.metadata.insert(
+        "production_proof_eligible".to_string(),
+        json!(role == EvidenceRole::Production && proof_grade_edges),
+    );
+    path.metadata.insert(
+        "proof_scope".to_string(),
+        json!(if role == EvidenceRole::Production {
+            "production"
+        } else if role == EvidenceRole::Unknown {
+            "unknown"
+        } else {
+            "test_or_mock"
+        }),
+    );
+}
+
+fn context_path_edge_roles(path: &PathEvidence) -> Vec<EvidenceRole> {
+    path.metadata
+        .get("edge_labels")
+        .and_then(Value::as_array)
+        .map(|labels| {
+            labels
+                .iter()
+                .filter_map(|label| {
+                    label
+                        .get("evidence_role")
+                        .or_else(|| label.get("source_role"))
+                        .or_else(|| label.get("context"))
+                        .and_then(Value::as_str)
+                        .and_then(context_pack_role_from_label)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn context_path_classification_summary(path: &PathEvidence) -> (String, String) {
+    let Some(labels) = path.metadata.get("edge_labels").and_then(Value::as_array) else {
+        return (
+            "fallback".to_string(),
+            "missing edge source-role metadata".to_string(),
+        );
+    };
+    let sources = labels
+        .iter()
+        .filter_map(|label| {
+            label
+                .get("classification_source")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .collect::<Vec<_>>();
+    let reasons = labels
+        .iter()
+        .filter_map(|label| {
+            label
+                .get("classification_reason")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .collect::<Vec<_>>();
+    (
+        if sources.is_empty() {
+            "fallback".to_string()
+        } else {
+            sources.join("+")
+        },
+        if reasons.is_empty() {
+            "missing edge source-role metadata".to_string()
+        } else {
+            reasons.join("; ")
+        },
+    )
+}
+
+fn production_subpath_from_mixed_path_evidence(path: &PathEvidence) -> Option<PathEvidence> {
+    let labels = path.metadata.get("edge_labels")?.as_array()?;
+    let roles = labels
+        .iter()
+        .map(|label| {
+            label
+                .get("evidence_role")
+                .or_else(|| label.get("source_role"))
+                .or_else(|| label.get("context"))
+                .and_then(Value::as_str)
+                .and_then(context_pack_role_from_label)
+                .unwrap_or(EvidenceRole::Unknown)
+        })
+        .collect::<Vec<_>>();
+    let mut best_start = 0usize;
+    let mut best_len = 0usize;
+    let mut current_start = 0usize;
+    let mut current_len = 0usize;
+    for (index, role) in roles.iter().enumerate() {
+        if *role == EvidenceRole::Production {
+            if current_len == 0 {
+                current_start = index;
+            }
+            current_len += 1;
+            if current_len > best_len {
+                best_start = current_start;
+                best_len = current_len;
+            }
+        } else {
+            current_len = 0;
+        }
+    }
+    if best_len == 0 || best_len == path.edges.len() {
+        return None;
+    }
+    let end = best_start + best_len;
+    let mut split = path.clone();
+    split.id = format!("{}::production-subpath:{}-{}", path.id, best_start, end - 1);
+    split.edges = path.edges[best_start..end].to_vec();
+    split.metapath = path.metapath[best_start..end].to_vec();
+    split.source_spans = path.source_spans[best_start..end].to_vec();
+    split.length = split.edges.len();
+    if let Some((head, _, _)) = split.edges.first() {
+        split.source = head.clone();
+    }
+    if let Some((_, _, tail)) = split.edges.last() {
+        split.target = tail.clone();
+    }
+    split.metadata.insert(
+        "edge_labels".to_string(),
+        json!(labels[best_start..end].to_vec()),
+    );
+    split.metadata.insert(
+        "source_spans".to_string(),
+        json!(split.source_spans.clone()),
+    );
+    split.metadata.insert(
+        "evidence_role".to_string(),
+        json!(EvidenceRole::Production.as_str()),
+    );
+    split.metadata.insert(
+        "path_context".to_string(),
+        json!(EvidenceRole::Production.as_str()),
+    );
+    split.metadata.insert(
+        "production_test_mock_labels".to_string(),
+        json!(vec![EvidenceRole::Production.as_str(); split.length]),
+    );
+    split
+        .metadata
+        .insert("classification_source".to_string(), json!("split"));
+    split.metadata.insert(
+        "classification_reason".to_string(),
+        json!("mixed path split to production-only subpath"),
+    );
+    split
+        .metadata
+        .insert("split_from_path_id".to_string(), json!(path.id.clone()));
+    split.metadata.insert(
+        "production_proof_eligible".to_string(),
+        json!(path
+            .metadata
+            .get("production_proof_eligible")
+            .and_then(Value::as_bool)
+            .unwrap_or(!matches!(
+                split.exactness,
+                Exactness::StaticHeuristic | Exactness::Inferred
+            ))),
+    );
+    split
+        .metadata
+        .insert("proof_scope".to_string(), json!("production"));
+    Some(split)
+}
+
 fn context_path_evidence_allowed_for_mode(path: &PathEvidence, mode: &str) -> bool {
     let normalized = mode.to_ascii_lowercase();
     if !normalized.contains("debug")
@@ -11918,21 +15649,12 @@ fn context_path_evidence_allowed_for_mode(path: &PathEvidence, mode: &str) -> bo
     if context_pack_mode_allows_test_mock(mode) {
         return true;
     }
-    let path_context = path
+    let evidence_role = path
         .metadata
-        .get("path_context")
+        .get("evidence_role")
         .and_then(Value::as_str)
-        .unwrap_or("production");
-    !matches!(path_context, "test" | "mock" | "mixed")
-        && path
-            .metadata
-            .get("production_test_mock_labels")
-            .and_then(Value::as_array)
-            .is_none_or(|labels| {
-                labels
-                    .iter()
-                    .all(|label| !matches!(label.as_str(), Some("test" | "mock" | "mixed")))
-            })
+        .unwrap_or("unknown");
+    evidence_role == "production"
 }
 
 fn context_pack_mode_allows_test_mock(mode: &str) -> bool {
@@ -11998,6 +15720,457 @@ fn context_pack_allowed_relation_names(mode: &str) -> Vec<&'static str> {
     relations
 }
 
+#[derive(Debug, Clone)]
+struct ContextPackFallbackEvidence {
+    id: String,
+    symbol: String,
+    kind: String,
+    source_span: SourceSpan,
+    evidence_role: EvidenceRole,
+    classification_reason: String,
+    classification_source: String,
+    fallback_source: String,
+}
+
+fn context_pack_mode_needs_test_impact_fallback(mode: &str) -> bool {
+    mode.to_ascii_lowercase().contains("test")
+}
+
+fn build_test_impact_fallback_evidence(
+    connection: &Connection,
+    mode: &str,
+    seed_entities: &[ContextEntitySummary],
+    local_edges: &[Edge],
+    verified_paths: &[PathEvidence],
+    budgets: ContextPackBudgets,
+) -> Result<Vec<ContextPackFallbackEvidence>, String> {
+    if !context_pack_mode_needs_test_impact_fallback(mode) {
+        return Ok(Vec::new());
+    }
+
+    let mut endpoint_ids = BTreeSet::new();
+    for edge in local_edges {
+        endpoint_ids.insert(edge.head_id.clone());
+        endpoint_ids.insert(edge.tail_id.clone());
+    }
+    let endpoint_entities = load_context_entities_by_ids(
+        connection,
+        endpoint_ids,
+        budgets
+            .max_seed_entities
+            .saturating_add(local_edges.len().saturating_mul(2))
+            .max(1),
+    )?;
+
+    let proof_span_keys = verified_paths
+        .iter()
+        .flat_map(|path| path.source_spans.iter())
+        .map(context_span_key)
+        .collect::<BTreeSet<_>>();
+    let mut evidence = Vec::new();
+    let mut seen = BTreeSet::new();
+    let evidence_limit = budgets.max_snippets.saturating_mul(2).max(4);
+    let same_file_entities = load_context_entities_by_paths(
+        connection,
+        seed_entities
+            .iter()
+            .map(|entity| entity.repo_relative_path.clone())
+            .collect::<BTreeSet<_>>(),
+        evidence_limit.saturating_mul(4),
+    )?;
+    let seed_has_test_or_mock = seed_entities.iter().any(|entity| {
+        matches!(
+            context_entity_role(entity).role,
+            EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
+        )
+    });
+
+    for entity in seed_entities {
+        let role = context_entity_fallback_role(entity);
+        let include_production_seed =
+            verified_paths.is_empty() && role.role == EvidenceRole::Production;
+        if matches!(
+            role.role,
+            EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
+        ) || include_production_seed
+        {
+            push_entity_fallback_evidence(
+                &mut evidence,
+                &mut seen,
+                &proof_span_keys,
+                entity,
+                role,
+                "symbol/source_role/source_span",
+                evidence_limit,
+            );
+        }
+    }
+    for entity in &same_file_entities {
+        let role = context_entity_fallback_role(entity);
+        if !context_fallback_entity_kind_allowed(entity.kind, role.role) {
+            continue;
+        }
+        if matches!(
+            role.role,
+            EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
+        ) || (seed_has_test_or_mock && role.role == EvidenceRole::Production)
+        {
+            push_entity_fallback_evidence(
+                &mut evidence,
+                &mut seen,
+                &proof_span_keys,
+                entity,
+                role,
+                "same_file_source_role",
+                evidence_limit,
+            );
+        }
+        if evidence.len() >= evidence_limit {
+            break;
+        }
+    }
+
+    for edge in local_edges {
+        let head = endpoint_entities.get(&edge.head_id);
+        let tail = endpoint_entities.get(&edge.tail_id);
+        let edge_role = classify_edge_evidence_role(edge);
+        let head_role = head.map(context_entity_fallback_role);
+        let tail_role = tail.map(context_entity_fallback_role);
+        let combined_role = combine_context_fallback_roles(
+            edge_role.role,
+            head_role.as_ref().map(|role| role.role),
+            tail_role.as_ref().map(|role| role.role),
+        );
+        let test_related = matches!(
+            combined_role,
+            EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
+        ) || matches!(edge_role.role, EvidenceRole::Test | EvidenceRole::Mock);
+
+        if test_related {
+            push_edge_fallback_evidence(
+                &mut evidence,
+                &mut seen,
+                &proof_span_keys,
+                edge,
+                combined_role,
+                fallback_edge_reason(&edge_role, head_role.as_ref(), tail_role.as_ref()),
+                fallback_edge_source(&edge_role, head_role.as_ref(), tail_role.as_ref()),
+                evidence_limit,
+            );
+            if let Some((entity, role)) = head.zip(head_role.as_ref()) {
+                if matches!(
+                    role.role,
+                    EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
+                ) {
+                    push_entity_fallback_evidence(
+                        &mut evidence,
+                        &mut seen,
+                        &proof_span_keys,
+                        entity,
+                        role.clone(),
+                        "local_relation_endpoint",
+                        evidence_limit,
+                    );
+                }
+            }
+            if let Some((entity, role)) = tail.zip(tail_role.as_ref()) {
+                if matches!(
+                    role.role,
+                    EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
+                ) || (head_role.as_ref().is_some_and(|head| {
+                    matches!(
+                        head.role,
+                        EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
+                    )
+                }) && role.role == EvidenceRole::Production)
+                {
+                    push_entity_fallback_evidence(
+                        &mut evidence,
+                        &mut seen,
+                        &proof_span_keys,
+                        entity,
+                        role.clone(),
+                        "local_relation_endpoint",
+                        evidence_limit,
+                    );
+                }
+            }
+        }
+        if evidence.len() >= evidence_limit {
+            break;
+        }
+    }
+
+    Ok(evidence)
+}
+
+fn context_fallback_entity_kind_allowed(kind: Option<EntityKind>, role: EvidenceRole) -> bool {
+    match role {
+        EvidenceRole::Production => matches!(
+            kind,
+            Some(
+                EntityKind::Class
+                    | EntityKind::Interface
+                    | EntityKind::Trait
+                    | EntityKind::Enum
+                    | EntityKind::Function
+                    | EntityKind::Method
+                    | EntityKind::Constructor
+                    | EntityKind::Route
+                    | EntityKind::Endpoint
+                    | EntityKind::Middleware
+            )
+        ),
+        EvidenceRole::Test | EvidenceRole::Mixed => matches!(
+            kind,
+            Some(
+                EntityKind::Module
+                    | EntityKind::Function
+                    | EntityKind::Method
+                    | EntityKind::TestSuite
+                    | EntityKind::TestCase
+                    | EntityKind::Fixture
+                    | EntityKind::Assertion
+            )
+        ),
+        EvidenceRole::Mock => matches!(
+            kind,
+            Some(
+                EntityKind::Function
+                    | EntityKind::Method
+                    | EntityKind::Class
+                    | EntityKind::Mock
+                    | EntityKind::Stub
+            )
+        ),
+        EvidenceRole::Unknown => false,
+    }
+}
+
+fn context_entity_fallback_role(entity: &ContextEntitySummary) -> CliEvidenceRoleDecision {
+    let role = context_entity_role(entity);
+    if role.role != EvidenceRole::Unknown {
+        return role;
+    }
+    if !context_pack_test_path(&entity.repo_relative_path)
+        && !qualified_name_has_test_module(&entity.qualified_name)
+        && !context_pack_mock_name(&entity.name)
+        && !context_pack_mock_name(&entity.qualified_name)
+    {
+        return CliEvidenceRoleDecision::new(
+            EvidenceRole::Production,
+            "entity is outside detected test/mock context; fallback is non-proof",
+            "source_role_fallback",
+        );
+    }
+    role
+}
+
+fn combine_context_fallback_roles(
+    edge_role: EvidenceRole,
+    head_role: Option<EvidenceRole>,
+    tail_role: Option<EvidenceRole>,
+) -> EvidenceRole {
+    let roles = [Some(edge_role), head_role, tail_role]
+        .into_iter()
+        .flatten()
+        .filter(|role| *role != EvidenceRole::Unknown)
+        .collect::<Vec<_>>();
+    if roles.is_empty() {
+        EvidenceRole::Unknown
+    } else {
+        combine_evidence_roles(roles)
+    }
+}
+
+fn push_entity_fallback_evidence(
+    evidence: &mut Vec<ContextPackFallbackEvidence>,
+    seen: &mut BTreeSet<String>,
+    proof_span_keys: &BTreeSet<String>,
+    entity: &ContextEntitySummary,
+    role: CliEvidenceRoleDecision,
+    fallback_source: &str,
+    limit: usize,
+) {
+    if evidence.len() >= limit {
+        return;
+    }
+    let Some(span) = entity.source_span.clone() else {
+        return;
+    };
+    let key = format!("entity:{}:{}", entity.id, context_span_key(&span));
+    if proof_span_keys.contains(&context_span_key(&span)) || !seen.insert(key) {
+        return;
+    }
+    evidence.push(ContextPackFallbackEvidence {
+        id: entity.id.clone(),
+        symbol: entity.name.clone(),
+        kind: entity
+            .kind
+            .map(|kind| kind.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        source_span: span,
+        evidence_role: role.role,
+        classification_reason: role.reason,
+        classification_source: role.source,
+        fallback_source: fallback_source.to_string(),
+    });
+}
+
+fn push_edge_fallback_evidence(
+    evidence: &mut Vec<ContextPackFallbackEvidence>,
+    seen: &mut BTreeSet<String>,
+    proof_span_keys: &BTreeSet<String>,
+    edge: &Edge,
+    role: EvidenceRole,
+    classification_reason: String,
+    classification_source: String,
+    limit: usize,
+) {
+    if evidence.len() >= limit {
+        return;
+    }
+    let span = edge.source_span.clone();
+    let key = format!("edge:{}:{}", edge.id, context_span_key(&span));
+    if proof_span_keys.contains(&context_span_key(&span)) || !seen.insert(key) {
+        return;
+    }
+    evidence.push(ContextPackFallbackEvidence {
+        id: edge.id.clone(),
+        symbol: format!("{} {} {}", edge.head_id, edge.relation, edge.tail_id),
+        kind: "relation".to_string(),
+        source_span: span,
+        evidence_role: role,
+        classification_reason,
+        classification_source,
+        fallback_source: "local_relation/source_span".to_string(),
+    });
+}
+
+fn fallback_edge_reason(
+    edge: &EvidenceRoleDecision,
+    head: Option<&CliEvidenceRoleDecision>,
+    tail: Option<&CliEvidenceRoleDecision>,
+) -> String {
+    let mut parts = vec![format!("edge: {}", edge.reason)];
+    if let Some(head) = head {
+        parts.push(format!("head: {}", head.reason));
+    }
+    if let Some(tail) = tail {
+        parts.push(format!("tail: {}", tail.reason));
+    }
+    parts.join("; ")
+}
+
+fn fallback_edge_source(
+    edge: &EvidenceRoleDecision,
+    head: Option<&CliEvidenceRoleDecision>,
+    tail: Option<&CliEvidenceRoleDecision>,
+) -> String {
+    let mut parts = vec![format!("edge:{}", edge.classification_source)];
+    if let Some(head) = head {
+        parts.push(format!("head:{}", head.source));
+    }
+    if let Some(tail) = tail {
+        parts.push(format!("tail:{}", tail.source));
+    }
+    parts.join("+")
+}
+
+fn context_span_key(span: &SourceSpan) -> String {
+    format!(
+        "{}:{}:{}",
+        span.repo_relative_path, span.start_line, span.end_line
+    )
+}
+
+fn context_line_range_for_span(span: &SourceSpan) -> String {
+    if span.start_line == span.end_line {
+        span.start_line.to_string()
+    } else {
+        format!("{}-{}", span.start_line, span.end_line)
+    }
+}
+
+fn fallback_evidence_json(evidence: &ContextPackFallbackEvidence) -> Value {
+    json!({
+        "id": evidence.id,
+        "symbol": evidence.symbol,
+        "kind": evidence.kind,
+        "file": evidence.source_span.repo_relative_path,
+        "span": agent_source_span_json(&evidence.source_span),
+        "source_span": agent_source_span_json(&evidence.source_span),
+        "evidence_role": evidence.evidence_role.as_str(),
+        "classification_reason": evidence.classification_reason,
+        "classification_source": evidence.classification_source,
+        "fallback_source": evidence.fallback_source,
+        "proof_path_available": false,
+    })
+}
+
+fn recommended_tests_from_fallback_evidence(
+    fallback_evidence: &[ContextPackFallbackEvidence],
+) -> Vec<String> {
+    let mut tests = BTreeSet::new();
+    for evidence in fallback_evidence {
+        if matches!(
+            evidence.evidence_role,
+            EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
+        ) && evidence.kind == "Function"
+        {
+            let symbol = evidence.symbol.trim();
+            if !symbol.is_empty()
+                && symbol
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '_')
+            {
+                tests.insert(format!("cargo test {symbol}"));
+            }
+        }
+    }
+    tests.into_iter().take(12).collect()
+}
+
+fn load_context_fallback_snippets(
+    repo_root: &Path,
+    fallback_evidence: &[ContextPackFallbackEvidence],
+    max_snippets: usize,
+) -> Result<Vec<ContextSnippet>, String> {
+    if fallback_evidence.is_empty() || max_snippets == 0 {
+        return Ok(Vec::new());
+    }
+    let spans = fallback_evidence
+        .iter()
+        .map(|evidence| evidence.source_span.clone())
+        .collect::<Vec<_>>();
+    let (_, mut snippets, _, _) =
+        load_context_sources_and_snippets(repo_root, &spans, max_snippets)?;
+    let reason_by_key = fallback_evidence
+        .iter()
+        .map(|evidence| {
+            (
+                format!(
+                    "{}:{}",
+                    evidence.source_span.repo_relative_path,
+                    context_line_range_for_span(&evidence.source_span)
+                ),
+                format!(
+                    "{} fallback ({})",
+                    evidence.fallback_source, evidence.classification_reason
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    for snippet in &mut snippets {
+        if let Some(reason) = reason_by_key.get(&format!("{}:{}", snippet.file, snippet.lines)) {
+            snippet.reason = reason.clone();
+        } else {
+            snippet.reason = "test-impact fallback source span".to_string();
+        }
+    }
+    Ok(snippets)
+}
+
 fn build_context_packet_from_stored_evidence(
     options: &ContextPackOptions,
     raw_seed_values: &[String],
@@ -12005,6 +16178,7 @@ fn build_context_packet_from_stored_evidence(
     seed_entities: &[ContextEntitySummary],
     verified_paths: Vec<PathEvidence>,
     snippets: Vec<ContextSnippet>,
+    fallback_evidence: Vec<ContextPackFallbackEvidence>,
     fallback_packet: Option<ContextPacket>,
     budgets: ContextPackBudgets,
     stored_path_count: usize,
@@ -12031,6 +16205,11 @@ fn build_context_packet_from_stored_evidence(
                 verified_paths
                     .iter()
                     .flat_map(|path| [path.source.clone(), path.target.clone()]),
+            )
+            .chain(
+                fallback_evidence
+                    .iter()
+                    .map(|evidence| evidence.symbol.clone()),
             ),
         budgets.max_seed_entities * 4,
     );
@@ -12038,6 +16217,7 @@ fn build_context_packet_from_stored_evidence(
     symbols.dedup();
 
     let mut recommended_tests = recommended_tests_from_path_evidence(&verified_paths);
+    recommended_tests.extend(recommended_tests_from_fallback_evidence(&fallback_evidence));
     let mut risks = risks_from_path_evidence(&verified_paths);
     if let Some(packet) = fallback_packet {
         recommended_tests.extend(packet.recommended_tests);
@@ -12095,6 +16275,19 @@ fn build_context_packet_from_stored_evidence(
             snippets.len() as f64 / requested_span_count as f64
         }),
     );
+    metadata.insert(
+        "proof_path_available".to_string(),
+        json!(!verified_paths.is_empty()),
+    );
+    if !fallback_evidence.is_empty() {
+        metadata.insert(
+            "fallback_evidence".to_string(),
+            json!(fallback_evidence
+                .iter()
+                .map(fallback_evidence_json)
+                .collect::<Vec<_>>()),
+        );
+    }
 
     let mut packet = ContextPacket {
         task: options.task.clone(),
@@ -12108,6 +16301,602 @@ fn build_context_packet_from_stored_evidence(
     };
     compact_context_packet_for_cli(&mut packet, options.token_budget.max(32));
     packet
+}
+
+fn context_pack_agent_json_response(
+    options: &ContextPackOptions,
+    packet: &ContextPacket,
+    db_lifecycle_read: &Value,
+    budgets: ContextPackBudgets,
+    repo_root: &Path,
+    db_path: &Path,
+    timings: Value,
+) -> Value {
+    let lifecycle = compact_lifecycle_summary(db_lifecycle_read);
+    let path_limit = budgets.max_returned_proof_paths;
+    let snippet_limit = budgets.max_snippets;
+    let max_output_bytes = options
+        .max_output_bytes
+        .unwrap_or(DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES);
+
+    let paths = packet
+        .verified_paths
+        .iter()
+        .take(path_limit)
+        .map(agent_context_path_json)
+        .collect::<Vec<_>>();
+    let fallback_evidence = packet
+        .metadata
+        .get("fallback_evidence")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let proof_path_available = packet
+        .metadata
+        .get("proof_path_available")
+        .and_then(Value::as_bool)
+        .unwrap_or(!packet.verified_paths.is_empty());
+    let snippets = packet
+        .snippets
+        .iter()
+        .take(snippet_limit)
+        .map(|snippet| {
+            agent_context_snippet_json(snippet, &packet.verified_paths, &fallback_evidence)
+        })
+        .collect::<Vec<_>>();
+    let recommended_tests = packet
+        .recommended_tests
+        .iter()
+        .take(12)
+        .cloned()
+        .collect::<Vec<_>>();
+    let risks = packet.risks.iter().take(12).cloned().collect::<Vec<_>>();
+
+    let candidate_paths = packet
+        .metadata
+        .get("candidate_path_count_before_dedup")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(packet.verified_paths.len());
+    let requested_spans = packet
+        .metadata
+        .get("requested_source_span_count")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(packet.snippets.len());
+    let mut omitted_paths = candidate_paths.saturating_sub(paths.len());
+    let mut omitted_snippets = requested_spans.saturating_sub(snippets.len());
+    let mut omitted_fallback_evidence = packet
+        .metadata
+        .get("fallback_evidence")
+        .and_then(Value::as_array)
+        .map(|values| values.len().saturating_sub(fallback_evidence.len()))
+        .unwrap_or_default();
+    let mut omitted_recommended_tests = packet.recommended_tests.len().saturating_sub(12);
+    let mut omitted_risks = packet.risks.len().saturating_sub(12);
+
+    let mut response = json!({
+        "schema_name": "context_pack_agent_json",
+        "schema_version": AGENT_JSON_SCHEMA_VERSION,
+        "status": "ok",
+        "command": "context-pack",
+        "repo": path_string(repo_root),
+        "db": path_string(db_path),
+        "output_mode": options.output_mode.as_str(),
+        "task": packet.task,
+        "mode": packet.mode,
+        "lifecycle": lifecycle,
+        "claimable": db_lifecycle_read.get("claimable").and_then(Value::as_bool).unwrap_or(false),
+        "diagnostic_only": db_lifecycle_read.get("diagnostic_only").and_then(Value::as_bool).unwrap_or_else(|| {
+            !db_lifecycle_read.get("claimable").and_then(Value::as_bool).unwrap_or(false)
+        }),
+        "critical_symbols": packet.symbols,
+        "symbols": packet.symbols,
+        "paths": paths,
+        "proof_paths": Value::Null,
+        "proof_path_available": proof_path_available,
+        "proof_path_count": packet.verified_paths.len(),
+        "fallback_evidence": fallback_evidence,
+        "fallback_evidence_count": packet.metadata
+            .get("fallback_evidence")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default(),
+        "snippets": snippets,
+        "recommended_tests": recommended_tests,
+        "risks": risks,
+        "warnings": [],
+        "errors": [],
+        "result_count": paths.len() + packet.metadata
+            .get("fallback_evidence")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default(),
+        "limit": path_limit,
+        "omitted_count": 0,
+        "timings": timings,
+        "limits": {
+            "paths": path_limit,
+            "snippets": snippet_limit,
+            "fallback_evidence": snippet_limit,
+            "recommended_tests": 12,
+            "risks": 12,
+            "max_output_bytes": max_output_bytes,
+        },
+    });
+
+    if let Some(object) = response.as_object_mut() {
+        if let Some(paths) = object.get("paths").cloned() {
+            object.insert("proof_paths".to_string(), paths);
+        }
+    }
+
+    let mut max_output_bytes_exceeded = false;
+    for _ in 0..8 {
+        let omitted_by_size =
+            enforce_context_agent_max_output_bytes(&mut response, max_output_bytes);
+        omitted_paths += omitted_by_size.paths;
+        omitted_snippets += omitted_by_size.snippets;
+        omitted_fallback_evidence += omitted_by_size.fallback_evidence;
+        omitted_recommended_tests += omitted_by_size.recommended_tests;
+        omitted_risks += omitted_by_size.risks;
+        max_output_bytes_exceeded |= omitted_by_size.max_output_bytes_exceeded;
+        update_context_agent_truncation(
+            &mut response,
+            path_limit,
+            omitted_paths,
+            omitted_snippets,
+            omitted_fallback_evidence,
+            omitted_recommended_tests,
+            omitted_risks,
+            max_output_bytes_exceeded,
+        );
+        if serialized_json_len(&response) <= max_output_bytes || max_output_bytes_exceeded {
+            break;
+        }
+    }
+    update_context_agent_truncation(
+        &mut response,
+        path_limit,
+        omitted_paths,
+        omitted_snippets,
+        omitted_fallback_evidence,
+        omitted_recommended_tests,
+        omitted_risks,
+        max_output_bytes_exceeded,
+    );
+    response
+}
+
+#[derive(Debug, Default)]
+struct ContextAgentSizeOmissions {
+    paths: usize,
+    snippets: usize,
+    fallback_evidence: usize,
+    recommended_tests: usize,
+    risks: usize,
+    max_output_bytes_exceeded: bool,
+}
+
+fn enforce_context_agent_max_output_bytes(
+    response: &mut Value,
+    max_output_bytes: usize,
+) -> ContextAgentSizeOmissions {
+    let mut omitted = ContextAgentSizeOmissions::default();
+    while serde_json::to_vec(response)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
+        > max_output_bytes
+    {
+        if pop_context_agent_array_item(response, "snippets") {
+            omitted.snippets += 1;
+            continue;
+        }
+        if pop_context_agent_array_item(response, "recommended_tests") {
+            omitted.recommended_tests += 1;
+            continue;
+        }
+        if pop_context_agent_array_item(response, "risks") {
+            omitted.risks += 1;
+            continue;
+        }
+        if pop_context_agent_array_item(response, "fallback_evidence") {
+            omitted.fallback_evidence += 1;
+            if let Some(object) = response.as_object_mut() {
+                let fallback_count = object
+                    .get("fallback_evidence")
+                    .and_then(Value::as_array)
+                    .map(Vec::len)
+                    .unwrap_or_default();
+                object.insert("fallback_evidence_count".to_string(), json!(fallback_count));
+            }
+            continue;
+        }
+        if pop_context_agent_array_item(response, "paths") {
+            omitted.paths += 1;
+            if let Some(object) = response.as_object_mut() {
+                if let Some(paths) = object.get("paths").cloned() {
+                    object.insert("proof_paths".to_string(), paths);
+                }
+            }
+            continue;
+        }
+        omitted.max_output_bytes_exceeded = true;
+        break;
+    }
+    omitted
+}
+
+fn serialized_json_len(value: &Value) -> usize {
+    serde_json::to_vec(value)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
+}
+
+fn pop_context_agent_array_item(response: &mut Value, key: &str) -> bool {
+    let Some(array) = response.get_mut(key).and_then(Value::as_array_mut) else {
+        return false;
+    };
+    if array.is_empty() {
+        return false;
+    }
+    array.pop();
+    true
+}
+
+fn update_context_agent_truncation(
+    response: &mut Value,
+    path_limit: usize,
+    omitted_paths: usize,
+    omitted_snippets: usize,
+    omitted_fallback_evidence: usize,
+    omitted_recommended_tests: usize,
+    omitted_risks: usize,
+    max_output_bytes_exceeded: bool,
+) {
+    let returned_paths = response
+        .get("paths")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let returned_fallback_evidence = response
+        .get("fallback_evidence")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let omitted_count = omitted_paths
+        + omitted_snippets
+        + omitted_fallback_evidence
+        + omitted_recommended_tests
+        + omitted_risks;
+    let byte_count = serde_json::to_vec(response)
+        .map(|bytes| bytes.len())
+        .unwrap_or_default();
+    if let Some(object) = response.as_object_mut() {
+        object.insert("omitted_count".to_string(), json!(omitted_count));
+        object.insert(
+            "fallback_evidence_count".to_string(),
+            json!(returned_fallback_evidence),
+        );
+        object.insert(
+            "result_count".to_string(),
+            json!(returned_paths + returned_fallback_evidence),
+        );
+        object.insert(
+            "omitted".to_string(),
+            json!({
+                "paths": omitted_paths,
+                "snippets": omitted_snippets,
+                "fallback_evidence": omitted_fallback_evidence,
+                "recommended_tests": omitted_recommended_tests,
+                "risks": omitted_risks,
+            }),
+        );
+        object.insert(
+            "truncation".to_string(),
+            json!({
+                "returned_count": returned_paths,
+                "limit": path_limit,
+                "limit_applied": true,
+                "omitted_count": omitted_count,
+                "omitted_count_is_lower_bound": true,
+                "total_available_unknown": true,
+                "output_bytes": byte_count,
+            }),
+        );
+        if max_output_bytes_exceeded {
+            object.insert("status".to_string(), json!("warning"));
+            object.insert(
+                "warnings".to_string(),
+                json!([{
+                    "code": "max_output_bytes_exceeded",
+                    "message": "context-pack agent JSON could not fit under --max-output-bytes without removing all compact sections",
+                    "severity": "warning"
+                }]),
+            );
+        }
+    }
+}
+
+fn agent_context_path_json(path: &PathEvidence) -> Value {
+    let evidence_role = path
+        .metadata
+        .get("evidence_role")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let classification_reason = path
+        .metadata
+        .get("classification_reason")
+        .and_then(Value::as_str)
+        .unwrap_or("missing edge source-role metadata");
+    let classification_source = path
+        .metadata
+        .get("classification_source")
+        .and_then(Value::as_str)
+        .unwrap_or("fallback");
+    let edge_labels = path
+        .metadata
+        .get("edge_labels")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let source_spans = path
+        .source_spans
+        .iter()
+        .map(agent_source_span_json)
+        .collect::<Vec<_>>();
+    let edges = path
+        .edges
+        .iter()
+        .enumerate()
+        .map(|(index, (head, relation, tail))| {
+            let label = edge_labels.get(index);
+            let edge_role = label
+                .and_then(|label| label.get("evidence_role"))
+                .and_then(Value::as_str)
+                .unwrap_or(evidence_role);
+            let edge_reason = label
+                .and_then(|label| label.get("classification_reason"))
+                .and_then(Value::as_str)
+                .unwrap_or(classification_reason);
+            let edge_source = label
+                .and_then(|label| label.get("classification_source"))
+                .and_then(Value::as_str)
+                .unwrap_or(classification_source);
+            let mut edge = serde_json::Map::new();
+            if let Some(edge_id) = label
+                .and_then(|label| label.get("edge_id"))
+                .and_then(Value::as_str)
+            {
+                edge.insert("edge_id".to_string(), json!(edge_id));
+            }
+            edge.insert("relation".to_string(), json!(relation.to_string()));
+            edge.insert("source".to_string(), agent_context_entity_ref(head));
+            edge.insert("target".to_string(), agent_context_entity_ref(tail));
+            edge.insert("exactness".to_string(), json!(path.exactness.to_string()));
+            edge.insert("confidence".to_string(), json!(path.confidence));
+            edge.insert("evidence_role".to_string(), json!(edge_role));
+            edge.insert("classification_reason".to_string(), json!(edge_reason));
+            edge.insert("classification_source".to_string(), json!(edge_source));
+            if let Some(span) = path.source_spans.get(index) {
+                edge.insert(
+                    "source_spans".to_string(),
+                    json!([agent_source_span_json(span)]),
+                );
+            }
+            Value::Object(edge)
+        })
+        .collect::<Vec<_>>();
+    let mut object = serde_json::Map::new();
+    object.insert("path_id".to_string(), json!(path.id));
+    if let Some(summary) = path.summary.as_deref() {
+        object.insert("summary".to_string(), json!(summary));
+    }
+    object.insert("evidence_role".to_string(), json!(evidence_role));
+    object.insert(
+        "classification_reason".to_string(),
+        json!(classification_reason),
+    );
+    object.insert(
+        "classification_source".to_string(),
+        json!(classification_source),
+    );
+    object.insert(
+        "production_proof_eligible".to_string(),
+        json!(path
+            .metadata
+            .get("production_proof_eligible")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)),
+    );
+    object.insert(
+        "relations".to_string(),
+        json!(path
+            .metapath
+            .iter()
+            .map(|relation| relation.to_string())
+            .collect::<Vec<_>>()),
+    );
+    object.insert("edges".to_string(), json!(edges));
+    object.insert("source_spans".to_string(), json!(source_spans));
+    object.insert("exactness".to_string(), json!(path.exactness.to_string()));
+    object.insert("confidence".to_string(), json!(path.confidence));
+    Value::Object(object)
+}
+
+fn agent_context_entity_ref(id: &str) -> Value {
+    json!({
+        "id": id,
+        "name": id,
+    })
+}
+
+fn agent_context_snippet_json(
+    snippet: &ContextSnippet,
+    paths: &[PathEvidence],
+    fallback_evidence: &[Value],
+) -> Value {
+    let label = context_snippet_label(snippet, paths, fallback_evidence);
+    let mut object = serde_json::Map::new();
+    object.insert("file".to_string(), json!(snippet.file));
+    object.insert("lines".to_string(), json!(snippet.lines));
+    object.insert("text".to_string(), json!(snippet.text));
+    object.insert("reason".to_string(), json!(snippet.reason));
+    object.insert("evidence_role".to_string(), json!(label.role));
+    object.insert(
+        "classification_reason".to_string(),
+        json!(label.classification_reason),
+    );
+    object.insert(
+        "proof_path_available".to_string(),
+        json!(label.proof_path_available),
+    );
+    if let Some(source) = label.fallback_source {
+        object.insert("fallback_source".to_string(), json!(source));
+    }
+    Value::Object(object)
+}
+
+#[derive(Debug)]
+struct ContextSnippetLabel {
+    role: &'static str,
+    classification_reason: String,
+    fallback_source: Option<String>,
+    proof_path_available: bool,
+}
+
+fn context_snippet_label(
+    snippet: &ContextSnippet,
+    paths: &[PathEvidence],
+    fallback_evidence: &[Value],
+) -> ContextSnippetLabel {
+    if let Some((role, reason)) = context_snippet_proof_role(snippet, paths) {
+        return ContextSnippetLabel {
+            role,
+            classification_reason: reason,
+            fallback_source: None,
+            proof_path_available: true,
+        };
+    }
+    if let Some((role, reason, source)) = context_snippet_fallback_role(snippet, fallback_evidence)
+    {
+        return ContextSnippetLabel {
+            role,
+            classification_reason: reason,
+            fallback_source: Some(source),
+            proof_path_available: false,
+        };
+    }
+    ContextSnippetLabel {
+        role: "unknown",
+        classification_reason:
+            "snippet did not match a returned proof path or fallback source span".to_string(),
+        fallback_source: None,
+        proof_path_available: false,
+    }
+}
+
+fn context_snippet_proof_role(
+    snippet: &ContextSnippet,
+    paths: &[PathEvidence],
+) -> Option<(&'static str, String)> {
+    let (start, end) = parse_context_snippet_lines(&snippet.lines)?;
+    for path in paths {
+        let role = path
+            .metadata
+            .get("evidence_role")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        for span in &path.source_spans {
+            if span.repo_relative_path == snippet.file
+                && span.start_line <= end
+                && span.end_line >= start
+            {
+                let reason = path
+                    .metadata
+                    .get("classification_reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("matched proof path source span")
+                    .to_string();
+                return Some((context_pack_role_label(role), reason));
+            }
+        }
+    }
+    None
+}
+
+fn context_snippet_fallback_role(
+    snippet: &ContextSnippet,
+    fallback_evidence: &[Value],
+) -> Option<(&'static str, String, String)> {
+    let (start, end) = parse_context_snippet_lines(&snippet.lines)?;
+    let mut overlap_candidate = None;
+    for evidence in fallback_evidence {
+        let Some(span) = evidence
+            .get("source_span")
+            .or_else(|| evidence.get("span"))
+            .and_then(Value::as_object)
+        else {
+            continue;
+        };
+        let Some(file) = span.get("file").and_then(Value::as_str) else {
+            continue;
+        };
+        if file != snippet.file {
+            continue;
+        }
+        let Some(span_start) = span.get("start_line").and_then(Value::as_u64) else {
+            continue;
+        };
+        let span_end = span
+            .get("end_line")
+            .and_then(Value::as_u64)
+            .unwrap_or(span_start);
+        if span_start as u32 <= end && span_end as u32 >= start {
+            let role = evidence
+                .get("evidence_role")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let reason = evidence
+                .get("classification_reason")
+                .and_then(Value::as_str)
+                .unwrap_or("matched fallback source span")
+                .to_string();
+            let source = evidence
+                .get("fallback_source")
+                .and_then(Value::as_str)
+                .unwrap_or("source_span")
+                .to_string();
+            let candidate = (context_pack_role_label(role), reason, source);
+            if span_start as u32 == start && span_end as u32 == end {
+                return Some(candidate);
+            }
+            if overlap_candidate.is_none() {
+                overlap_candidate = Some(candidate);
+            }
+        }
+    }
+    overlap_candidate
+}
+
+fn context_pack_role_label(value: &str) -> &'static str {
+    match context_pack_role_from_label(value).unwrap_or(EvidenceRole::Unknown) {
+        EvidenceRole::Production => "production",
+        EvidenceRole::Test => "test",
+        EvidenceRole::Mock => "mock",
+        EvidenceRole::Mixed => "mixed",
+        EvidenceRole::Unknown => "unknown",
+    }
+}
+
+fn parse_context_snippet_lines(value: &str) -> Option<(u32, u32)> {
+    if let Some((start, end)) = value.split_once('-') {
+        let start = start.trim().parse::<u32>().ok()?;
+        let end = end.trim().parse::<u32>().ok()?;
+        return Some((start, end));
+    }
+    let line = value.trim().parse::<u32>().ok()?;
+    Some((line, line))
 }
 
 fn recommended_tests_from_path_evidence(paths: &[PathEvidence]) -> Vec<String> {
@@ -12220,6 +17009,21 @@ fn load_context_sources_and_snippets(
     }
     let source_files_loaded = sources.len();
     Ok((sources, snippets, source_bytes, source_files_loaded))
+}
+
+fn context_source_spans_for_paths(paths: &[PathEvidence]) -> Vec<SourceSpan> {
+    let mut spans = paths
+        .iter()
+        .flat_map(|path| path.source_spans.iter().cloned())
+        .collect::<Vec<_>>();
+    spans.sort_by(|left, right| {
+        left.repo_relative_path
+            .cmp(&right.repo_relative_path)
+            .then_with(|| left.start_line.cmp(&right.start_line))
+            .then_with(|| left.end_line.cmp(&right.end_line))
+    });
+    spans.dedup();
+    spans
 }
 
 fn source_snippet_for_span(source: &str, span: &SourceSpan) -> String {
@@ -12546,6 +17350,10 @@ fn edge_json(edge: &Edge) -> Value {
         "source_span": edge.source_span,
         "confidence": edge.confidence,
         "exactness": edge.exactness.to_string(),
+        "edge_class": edge.edge_class.to_string(),
+        "context": edge.context.to_string(),
+        "derived": edge.derived,
+        "provenance_edges": edge.provenance_edges,
         "extractor": edge.extractor,
         "metadata": edge.metadata,
     })
@@ -12578,6 +17386,115 @@ fn symbol_search_hit_json(hit: &SymbolSearchHit) -> Value {
         "features": hit.features,
         "matched_terms": hit.matched_terms,
         "entity": entity_json(&hit.entity),
+    })
+}
+
+fn agent_source_span_json(span: &SourceSpan) -> Value {
+    let mut object = serde_json::Map::new();
+    object.insert("file".to_string(), json!(span.repo_relative_path));
+    object.insert("start_line".to_string(), json!(span.start_line));
+    object.insert("end_line".to_string(), json!(span.end_line));
+    if let Some(start_column) = span.start_column {
+        object.insert("start_column".to_string(), json!(start_column));
+    }
+    if let Some(end_column) = span.end_column {
+        object.insert("end_column".to_string(), json!(end_column));
+    }
+    Value::Object(object)
+}
+
+fn agent_entity_ref_json(entity: &Entity) -> Value {
+    json!({
+        "id": entity.id,
+        "name": entity.name,
+        "qualified_name": entity.qualified_name,
+        "kind": entity.kind.to_string(),
+        "file": entity.repo_relative_path,
+    })
+}
+
+fn agent_symbol_search_hit_json(hit: &SymbolSearchHit) -> Value {
+    let role = classify_entity_source_role(&hit.entity);
+    let mut object = serde_json::Map::new();
+    object.insert("file".to_string(), json!(hit.entity.repo_relative_path));
+    object.insert("symbol".to_string(), json!(hit.entity.name));
+    object.insert("kind".to_string(), json!(hit.entity.kind.to_string()));
+    if let Some(span) = hit.entity.source_span.as_ref().map(agent_source_span_json) {
+        object.insert("span".to_string(), span);
+    }
+    object.insert("score".to_string(), json!(hit.score));
+    object.insert("evidence_role".to_string(), json!(role.role.as_str()));
+    if role.role != EvidenceRole::Unknown {
+        object.insert("classification_reason".to_string(), json!(role.reason));
+        object.insert(
+            "classification_source".to_string(),
+            json!(role.classification_source),
+        );
+    }
+    object.insert("entity".to_string(), agent_entity_ref_json(&hit.entity));
+    Value::Object(object)
+}
+
+fn agent_text_hit_json(hit: &Value) -> Value {
+    let file = hit
+        .get("repo_relative_path")
+        .or_else(|| hit.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let line = hit.get("line").and_then(Value::as_u64);
+    let span = line.map(|line| {
+        json!({
+            "file": file,
+            "start_line": line,
+            "end_line": line,
+        })
+    });
+    let lines = line
+        .map(|line| line.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let score = hit.get("score").and_then(Value::as_f64).unwrap_or(0.0);
+    let match_reason = hit
+        .get("match")
+        .or_else(|| hit.get("kind"))
+        .and_then(Value::as_str)
+        .unwrap_or("text_match");
+    let mut object = serde_json::Map::new();
+    object.insert("file".to_string(), json!(file));
+    object.insert("score".to_string(), json!(score));
+    if let Some(span) = span {
+        object.insert("span".to_string(), span.clone());
+        object.insert("source_span".to_string(), span);
+    }
+    object.insert(
+        "snippet".to_string(),
+        json!({
+            "file": file,
+            "lines": lines,
+            "text": hit.get("text").and_then(Value::as_str).unwrap_or_default(),
+            "reason": match_reason,
+        }),
+    );
+    object.insert("match_reason".to_string(), json!(match_reason));
+    Value::Object(object)
+}
+
+fn agent_file_hit_json(hit: &Value) -> Value {
+    let file = hit
+        .get("repo_relative_path")
+        .or_else(|| hit.get("title"))
+        .or_else(|| hit.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let score = hit.get("score").and_then(Value::as_f64).unwrap_or(0.0);
+    let match_reason = hit
+        .get("match")
+        .or_else(|| hit.get("kind"))
+        .and_then(Value::as_str)
+        .unwrap_or("file_match");
+    json!({
+        "file": file,
+        "score": score,
+        "match_reason": match_reason,
     })
 }
 
@@ -12797,6 +17714,339 @@ fn index_summary_json(summary: &IndexSummary) -> Result<Value, String> {
     Ok(value)
 }
 
+fn index_summary_concise_json(summary: &IndexSummary, wall_ms: f64) -> Result<Value, String> {
+    let counts = index_graph_counts(summary);
+    let lifecycle = index_lifecycle_summary_json(summary);
+    Ok(json!({
+        "schema_version": AGENT_JSON_SCHEMA_VERSION,
+        "status": "indexed",
+        "output_mode": IndexJsonOutputMode::Concise.as_str(),
+        "repo_root": summary.repo_root,
+        "db_path": summary.db_path,
+        "lifecycle": lifecycle,
+        "db_lifecycle": lifecycle,
+        "claimable": index_summary_claimable(summary),
+        "diagnostic_only": !index_summary_claimable(summary),
+        "build_mode": summary.build_mode,
+        "storage_policy": summary.storage_policy,
+        "files_seen": summary.files_seen,
+        "files_indexed": summary.files_indexed,
+        "files_parsed": summary.files_parsed,
+        "files_skipped": summary.files_skipped,
+        "files_metadata_unchanged": summary.files_metadata_unchanged,
+        "entities": summary.entities,
+        "edges": summary.edges,
+        "source_spans": counts.source_spans,
+        "counts": {
+            "files": index_file_counts_json(summary),
+            "graph": index_graph_counts_json(summary, counts.source_spans),
+            "batches": {
+                "total": summary.batches_total,
+                "completed": summary.batches_completed,
+            }
+        },
+        "timing": index_timing_summary_json(summary, wall_ms),
+        "warnings_count": index_warning_count(summary),
+        "issue_counts": summary.issue_counts,
+        "issues_count": summary.issues.len(),
+        "scope": index_scope_summary_json(summary),
+        "artifact_freshness": index_artifact_freshness_json(summary),
+        "output_contract": {
+            "scope_examples_included": false,
+            "audit_payload_included": false,
+            "audit_flags": ["--audit-json", "--verbose", "--explain-scope", "--print-included", "--print-excluded"],
+            "size_target_bytes": INDEX_CONCISE_JSON_SIZE_TARGET_BYTES,
+        },
+    }))
+}
+
+fn index_summary_agent_json(summary: &IndexSummary, wall_ms: f64) -> Result<Value, String> {
+    let counts = index_graph_counts(summary);
+    let warnings = index_warning_messages(summary);
+    let status = if warnings.is_empty() { "ok" } else { "warning" };
+    let mut summary_object = serde_json::Map::new();
+    summary_object.insert("repo".to_string(), json!(summary.repo_root));
+    summary_object.insert("db_path".to_string(), json!(summary.db_path));
+    summary_object.insert("build_mode".to_string(), json!(summary.build_mode));
+    summary_object.insert("storage_policy".to_string(), json!(summary.storage_policy));
+    summary_object.insert("files_seen".to_string(), json!(summary.files_seen));
+    summary_object.insert("files_indexed".to_string(), json!(summary.files_indexed));
+    summary_object.insert("files_parsed".to_string(), json!(summary.files_parsed));
+    summary_object.insert("files_skipped".to_string(), json!(summary.files_skipped));
+    summary_object.insert(
+        "files_metadata_unchanged".to_string(),
+        json!(summary.files_metadata_unchanged),
+    );
+    summary_object.insert("entities".to_string(), json!(summary.entities));
+    summary_object.insert("edges".to_string(), json!(summary.edges));
+    if let Some(source_spans) = counts.source_spans {
+        summary_object.insert("source_spans".to_string(), json!(source_spans));
+    }
+    summary_object.insert("duration_ms".to_string(), json!(wall_ms));
+    summary_object.insert(
+        "warnings_count".to_string(),
+        json!(index_warning_count(summary)),
+    );
+    summary_object.insert("scope".to_string(), index_scope_summary_json(summary));
+    summary_object.insert(
+        "artifact_freshness".to_string(),
+        index_artifact_freshness_json(summary),
+    );
+
+    Ok(json!({
+        "schema_name": "index_agent_json",
+        "schema_version": AGENT_JSON_SCHEMA_VERSION,
+        "status": status,
+        "command": "index",
+        "repo": summary.repo_root,
+        "db": summary.db_path,
+        "output_mode": IndexJsonOutputMode::Agent.as_str(),
+        "lifecycle": index_lifecycle_summary_json(summary),
+        "claimable": index_summary_claimable(summary),
+        "diagnostic_only": !index_summary_claimable(summary),
+        "summary": Value::Object(summary_object),
+        "truncation": {
+            "returned_count": 1,
+            "limit_applied": false,
+            "omitted_count": 0,
+            "total_available_unknown": false,
+        },
+        "result_count": 1,
+        "limit": 1,
+        "omitted_count": 0,
+        "timings": agent_timings_from_wall_ms(wall_ms),
+        "warnings": warnings,
+        "errors": [],
+        "limits": {
+            "max_output_bytes_target": INDEX_AGENT_JSON_SIZE_TARGET_BYTES,
+        },
+    }))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IndexGraphCounts {
+    source_spans: Option<u64>,
+}
+
+fn index_graph_counts(summary: &IndexSummary) -> IndexGraphCounts {
+    match graph_counts_for_db(Path::new(&summary.db_path)) {
+        Ok((_, _, source_spans)) => IndexGraphCounts {
+            source_spans: Some(source_spans),
+        },
+        Err(_) => IndexGraphCounts { source_spans: None },
+    }
+}
+
+fn index_summary_claimable(summary: &IndexSummary) -> bool {
+    summary
+        .db_lifecycle
+        .as_ref()
+        .map(|lifecycle| lifecycle.claimable)
+        .unwrap_or(false)
+}
+
+fn index_lifecycle_summary_json(summary: &IndexSummary) -> Value {
+    let claimable = index_summary_claimable(summary);
+    let mut object = serde_json::Map::new();
+    object.insert("claimable".to_string(), json!(claimable));
+    object.insert("diagnostic_only".to_string(), json!(!claimable));
+    if let Some(lifecycle) = summary.db_lifecycle.as_ref() {
+        object.insert("mode".to_string(), json!(lifecycle.mode));
+        object.insert("decision".to_string(), json!(lifecycle.decision));
+        object.insert(
+            "passport_status".to_string(),
+            json!(lifecycle.passport_status),
+        );
+        object.insert("old_db_used".to_string(), json!(lifecycle.old_db_used));
+        object.insert(
+            "old_db_replaced".to_string(),
+            json!(lifecycle.old_db_replaced),
+        );
+        object.insert(
+            "explicit_db_path".to_string(),
+            json!(lifecycle.explicit_db_path),
+        );
+        object.insert("reasons_count".to_string(), json!(lifecycle.reasons.len()));
+        if let Some(preflight) = lifecycle.preflight.as_ref() {
+            if let Some(kind) = preflight.db_problem_kind.as_deref() {
+                object.insert("db_problem_kind".to_string(), json!(kind));
+            }
+            object.insert(
+                "path_access_status".to_string(),
+                json!(preflight.path_access_status),
+            );
+            object.insert(
+                "schema_status".to_string(),
+                json!(preflight.passport_status),
+            );
+            object.insert(
+                "sidecar_status".to_string(),
+                json!(preflight.sidecar_status),
+            );
+            if let Some(schema_version) = preflight.schema_version {
+                object.insert("db_schema_version".to_string(), json!(schema_version));
+            }
+        }
+    } else {
+        object.insert("decision".to_string(), json!("unknown"));
+    }
+    Value::Object(object)
+}
+
+fn index_file_counts_json(summary: &IndexSummary) -> Value {
+    json!({
+        "seen": summary.files_seen,
+        "walked": summary.files_walked,
+        "metadata_unchanged": summary.files_metadata_unchanged,
+        "read": summary.files_read,
+        "hashed": summary.files_hashed,
+        "parsed": summary.files_parsed,
+        "indexed": summary.files_indexed,
+        "skipped": summary.files_skipped,
+        "deleted": summary.files_deleted,
+        "renamed": summary.files_renamed,
+        "stale_deleted": summary.stale_files_deleted,
+        "failed_deleted": summary.failed_files_deleted,
+        "parse_errors": summary.parse_errors,
+        "syntax_errors": summary.syntax_errors,
+    })
+}
+
+fn index_graph_counts_json(summary: &IndexSummary, source_spans: Option<u64>) -> Value {
+    let mut object = serde_json::Map::new();
+    object.insert("entities".to_string(), json!(summary.entities));
+    object.insert("edges".to_string(), json!(summary.edges));
+    object.insert(
+        "duplicate_edges_upserted".to_string(),
+        json!(summary.duplicate_edges_upserted),
+    );
+    if let Some(source_spans) = source_spans {
+        object.insert("source_spans".to_string(), json!(source_spans));
+    }
+    Value::Object(object)
+}
+
+fn index_timing_summary_json(summary: &IndexSummary, wall_ms: f64) -> Value {
+    let mut object = serde_json::Map::new();
+    object.insert("wall_ms".to_string(), json!(wall_ms));
+    object.insert(
+        "profile_available".to_string(),
+        json!(summary.profile.is_some()),
+    );
+    if let Some(profile) = summary.profile.as_ref() {
+        object.insert("total_wall_ms".to_string(), json!(profile.total_wall_ms));
+        object.insert(
+            "file_discovery_ms".to_string(),
+            json!(profile.file_discovery_ms),
+        );
+        object.insert("parse_ms".to_string(), json!(profile.parse_ms));
+        object.insert("extraction_ms".to_string(), json!(profile.extraction_ms));
+        object.insert("db_write_ms".to_string(), json!(profile.db_write_ms));
+        object.insert("worker_count".to_string(), json!(profile.worker_count));
+    }
+    Value::Object(object)
+}
+
+fn index_warning_count(summary: &IndexSummary) -> usize {
+    summary
+        .scope
+        .as_ref()
+        .map(|scope| scope.warnings)
+        .unwrap_or_default()
+        + summary.issues.len()
+        + summary.parse_errors
+        + summary.syntax_errors
+}
+
+fn index_warning_messages(summary: &IndexSummary) -> Vec<Value> {
+    let mut warnings = Vec::new();
+    if let Some(scope) = summary.scope.as_ref() {
+        if scope.warnings > 0 {
+            warnings.push(json!({
+                "code": "scope_warnings",
+                "message": format!("index scope produced {} warning(s)", scope.warnings),
+                "severity": "warning",
+            }));
+        }
+    }
+    if summary.parse_errors > 0 {
+        warnings.push(json!({
+            "code": "parse_errors",
+            "message": format!("{} file(s) had parse errors", summary.parse_errors),
+            "severity": "warning",
+        }));
+    }
+    if summary.syntax_errors > 0 {
+        warnings.push(json!({
+            "code": "syntax_errors",
+            "message": format!("{} syntax error(s) were observed", summary.syntax_errors),
+            "severity": "warning",
+        }));
+    }
+    if !summary.issues.is_empty() {
+        warnings.push(json!({
+            "code": "index_issues",
+            "message": format!("{} index issue(s) were recorded", summary.issues.len()),
+            "severity": "warning",
+        }));
+    }
+    warnings.truncate(8);
+    warnings
+}
+
+fn index_scope_summary_json(summary: &IndexSummary) -> Value {
+    let Some(scope) = summary.scope.as_ref() else {
+        return json!({
+            "available": false,
+            "examples_included": false,
+        });
+    };
+    json!({
+        "available": true,
+        "default_excludes_enabled": scope.default_excludes_enabled,
+        "include_ignored": scope.include_ignored,
+        "no_default_excludes": scope.no_default_excludes,
+        "respect_gitignore": scope.respect_gitignore,
+        "include_patterns_count": scope.include_patterns.len(),
+        "exclude_patterns_count": scope.exclude_patterns.len(),
+        "paths_evaluated": scope.paths_evaluated,
+        "files_included": scope.files_included,
+        "paths_excluded": scope.paths_excluded,
+        "files_excluded": scope.files_excluded,
+        "warnings": scope.warnings,
+        "included_examples_count": scope.included_examples.len(),
+        "excluded_examples_count": scope.excluded_examples.len(),
+        "warning_examples_count": scope.warning_examples.len(),
+        "directory_prune_decisions_count": scope.directory_prune_decisions.len(),
+        "examples_included": false,
+    })
+}
+
+fn index_artifact_freshness_json(summary: &IndexSummary) -> Value {
+    let Some(lifecycle) = summary.db_lifecycle.as_ref() else {
+        return json!({
+            "status": "unknown",
+        });
+    };
+    let status = if lifecycle.decision.contains("fresh") {
+        "fresh"
+    } else if lifecycle.old_db_used {
+        "warm_reuse"
+    } else {
+        "unknown"
+    };
+    json!({
+        "status": status,
+        "decision": lifecycle.decision,
+        "mode": lifecycle.mode,
+        "passport_status": lifecycle.passport_status,
+        "claimable": lifecycle.claimable,
+        "old_db_used": lifecycle.old_db_used,
+        "old_db_replaced": lifecycle.old_db_replaced,
+        "explicit_db_path": lifecycle.explicit_db_path,
+    })
+}
+
 fn detect_tooling(repo_root: &Path) -> Result<Vec<String>, String> {
     let mut detected = BTreeSet::new();
     if repo_root.join("Cargo.toml").exists() {
@@ -12912,7 +18162,7 @@ fn update_integrity_seed_step(
 ) -> Result<Value, String> {
     let started = Instant::now();
     let open_start = Instant::now();
-    let schema_version = SqliteGraphStore::open(db)
+    let schema_version = SqliteGraphStore::open_read_only(db)
         .and_then(|store| store.schema_version())
         .map_err(|error| error.to_string())?;
     let artifact_open_ms = elapsed_ms(open_start);
@@ -12934,46 +18184,65 @@ fn update_integrity_seed_step(
         }
     };
     let integrity_check_ms = integrity_start.elapsed().as_secs_f64() * 1000.0;
-    Ok(json!({
-        "step": "cold_index",
-        "status": "seeded",
-        "source": "seed_db_copy",
-        "seed_db": seed_db.map(path_string),
-        "repo_root": path_string(repo),
-        "wall_ms": elapsed_ms(started),
-        "setup_timings": {
-            "artifact_copy_ms": artifact_copy_ms,
-            "artifact_open_ms": artifact_open_ms,
-            "schema_validation_ms": artifact_open_ms,
-            "graph_fact_hash_ms": graph_fact_hash_ms,
-            "validation_ms": integrity_check_ms,
-        },
-        "schema_version": schema_version,
-        "files_walked": Value::Null,
-        "files_read": Value::Null,
-        "files_hashed": Value::Null,
-        "files_parsed": Value::Null,
-        "entities_inserted": Value::Null,
-        "edges_inserted": Value::Null,
-        "duplicate_edges_upserted": Value::Null,
-        "transaction_status": "seeded_copy_integrity_checked",
-        "integrity_status": integrity_status,
-        "integrity_check_kind": integrity_check_kind,
-        "integrity_check_ms": integrity_check_ms,
-        "graph_fact_hash": graph_fact_hash,
-        "graph_fact_hash_ms": graph_fact_hash_ms,
-        "entity_count": entity_count,
-        "edge_count": edge_count,
-        "source_span_count": source_span_count,
-        "graph_counts_ran": graph_counts_ran,
-        "db_family_size_bytes": sqlite_family_size_bytes(db).unwrap_or(0),
-    }))
+    let lifecycle_status = benchmark_inspection_lifecycle_status(
+        repo,
+        db,
+        "bench.update_integrity.seed",
+        Some(StorageMode::Proof),
+    );
+    let claimable = benchmark_inspection_claimable(&lifecycle_status);
+    Ok(json_object(vec![
+        ("step", json!("cold_index")),
+        ("status", json!("seeded")),
+        ("source", json!("seed_db_copy")),
+        ("seed_db", json!(seed_db.map(path_string))),
+        ("repo_root", json!(path_string(repo))),
+        ("wall_ms", json!(elapsed_ms(started))),
+        (
+            "setup_timings",
+            json!({
+                "artifact_copy_ms": artifact_copy_ms,
+                "artifact_open_ms": artifact_open_ms,
+                "schema_validation_ms": artifact_open_ms,
+                "graph_fact_hash_ms": graph_fact_hash_ms,
+                "validation_ms": integrity_check_ms,
+            }),
+        ),
+        ("schema_version", json!(schema_version)),
+        ("files_walked", Value::Null),
+        ("files_read", Value::Null),
+        ("files_hashed", Value::Null),
+        ("files_parsed", Value::Null),
+        ("entities_inserted", Value::Null),
+        ("edges_inserted", Value::Null),
+        ("duplicate_edges_upserted", Value::Null),
+        ("transaction_status", json!("seeded_copy_integrity_checked")),
+        ("integrity_status", json!(integrity_status)),
+        ("integrity_check_kind", json!(integrity_check_kind)),
+        ("integrity_check_ms", json!(integrity_check_ms)),
+        ("graph_fact_hash", json!(graph_fact_hash)),
+        ("graph_fact_hash_ms", json!(graph_fact_hash_ms)),
+        ("entity_count", entity_count),
+        ("edge_count", edge_count),
+        ("source_span_count", source_span_count),
+        ("graph_counts_ran", json!(graph_counts_ran)),
+        (
+            "db_family_size_bytes",
+            json!(sqlite_family_size_bytes(db).unwrap_or(0)),
+        ),
+        ("inspection_read_only", json!(true)),
+        ("artifact_mutated_during_inspection", json!(false)),
+        ("mutation_capable_operation", json!("seed_db_copy_setup")),
+        ("lifecycle_status", lifecycle_status),
+        ("claimable", json!(claimable)),
+    ]))
 }
 
 fn update_integrity_step_from_index(
     step: &str,
     elapsed: Duration,
     summary: &IndexSummary,
+    repo: &Path,
     db: &Path,
     mode: UpdateBenchmarkMode,
 ) -> Result<Value, String> {
@@ -13010,40 +18279,68 @@ fn update_integrity_step_from_index(
         ),
     };
     let integrity_check_ms = integrity_start.elapsed().as_secs_f64() * 1000.0;
-    Ok(json!({
-        "step": step,
-        "status": "ok",
-        "mode": mode.as_str(),
-        "wall_ms": elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
-        "timings": index_summary_timing_breakdown(summary, graph_fact_hash_ms, integrity_check_ms),
-        "files_walked": summary.files_walked,
-        "files_read": summary.files_read,
-        "files_hashed": summary.files_hashed,
-        "files_parsed": summary.files_parsed,
-        "entities_inserted": summary.entities,
-        "edges_inserted": summary.edges,
-        "duplicate_edges_upserted": summary.duplicate_edges_upserted,
-        "transaction_status": "committed",
-        "integrity_status": integrity_status,
-        "integrity_check_kind": integrity_check_kind,
-        "integrity_check_ms": integrity_check_ms,
-        "graph_fact_hash": graph_fact_hash,
-        "graph_fact_hash_ms": graph_fact_hash_ms,
-        "graph_digest_kind": graph_digest_kind,
-        "global_hash_check_ran": global_hash_check_ran,
-        "entity_count": entity_count,
-        "edge_count": edge_count,
-        "source_span_count": source_span_count,
-        "graph_counts_ran": graph_counts_ran,
-        "db_family_size_bytes": sqlite_family_size_bytes(db).unwrap_or(0),
-        "profile": summary.profile.clone(),
-    }))
+    let lifecycle_status = benchmark_inspection_lifecycle_status(
+        repo,
+        db,
+        "bench.update_integrity.index_step",
+        Some(StorageMode::Proof),
+    );
+    let claimable = benchmark_inspection_claimable(&lifecycle_status);
+    Ok(json_object(vec![
+        ("step", json!(step)),
+        ("status", json!("ok")),
+        ("mode", json!(mode.as_str())),
+        (
+            "wall_ms",
+            json!(elapsed.as_millis().min(u128::from(u64::MAX)) as u64),
+        ),
+        (
+            "timings",
+            index_summary_timing_breakdown(summary, graph_fact_hash_ms, integrity_check_ms),
+        ),
+        ("files_walked", json!(summary.files_walked)),
+        ("files_read", json!(summary.files_read)),
+        ("files_hashed", json!(summary.files_hashed)),
+        ("files_parsed", json!(summary.files_parsed)),
+        ("entities_inserted", json!(summary.entities)),
+        ("edges_inserted", json!(summary.edges)),
+        (
+            "duplicate_edges_upserted",
+            json!(summary.duplicate_edges_upserted),
+        ),
+        ("transaction_status", json!("committed")),
+        ("integrity_status", json!(integrity_status)),
+        ("integrity_check_kind", json!(integrity_check_kind)),
+        ("integrity_check_ms", json!(integrity_check_ms)),
+        ("graph_fact_hash", json!(graph_fact_hash)),
+        ("graph_fact_hash_ms", json!(graph_fact_hash_ms)),
+        ("graph_digest_kind", json!(graph_digest_kind)),
+        ("global_hash_check_ran", json!(global_hash_check_ran)),
+        ("entity_count", entity_count),
+        ("edge_count", edge_count),
+        ("source_span_count", source_span_count),
+        ("graph_counts_ran", json!(graph_counts_ran)),
+        (
+            "db_family_size_bytes",
+            json!(sqlite_family_size_bytes(db).unwrap_or(0)),
+        ),
+        ("profile", json!(summary.profile.clone())),
+        ("inspection_read_only", json!(true)),
+        ("artifact_mutated_during_inspection", json!(false)),
+        (
+            "mutation_capable_operation",
+            json!("index_repo_to_db_with_options"),
+        ),
+        ("lifecycle_status", lifecycle_status),
+        ("claimable", json!(claimable)),
+    ]))
 }
 
 fn update_integrity_step_from_incremental(
     step: &str,
     elapsed: Duration,
     summary: &IncrementalIndexSummary,
+    repo: &Path,
     db: &Path,
     mode: UpdateBenchmarkMode,
 ) -> Result<Value, String> {
@@ -13081,49 +18378,90 @@ fn update_integrity_step_from_incremental(
         ),
     };
     let integrity_check_ms = integrity_start.elapsed().as_secs_f64() * 1000.0;
-    Ok(json!({
-        "step": step,
-        "status": "ok",
-        "mode": mode.as_str(),
-        "wall_ms": elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
-        "timings": incremental_summary_timing_breakdown(
-            summary,
-            graph_fact_hash_ms,
-            integrity_check_ms
+    let lifecycle_status = benchmark_inspection_lifecycle_status(
+        repo,
+        db,
+        "bench.update_integrity.incremental_step",
+        Some(StorageMode::Proof),
+    );
+    let claimable = benchmark_inspection_claimable(&lifecycle_status);
+    Ok(json_object(vec![
+        ("step", json!(step)),
+        ("status", json!("ok")),
+        ("mode", json!(mode.as_str())),
+        (
+            "wall_ms",
+            json!(elapsed.as_millis().min(u128::from(u64::MAX)) as u64),
         ),
-        "files_walked": summary.files_walked,
-        "files_read": summary.files_read,
-        "files_hashed": summary.files_hashed,
-        "files_parsed": summary.files_parsed,
-        "entities_inserted": summary.entities,
-        "edges_inserted": summary.edges,
-        "duplicate_edges_upserted": summary.duplicate_edges_upserted,
-        "transaction_status": "committed",
-        "integrity_status": integrity_status,
-        "integrity_check_ms": integrity_check_ms,
-        "integrity_check_kind": integrity_check_kind,
-        "post_measurement_integrity_check_ran": post_measurement_integrity_check_ran,
-        "graph_fact_hash": graph_fact_hash,
-        "graph_fact_hash_ms": graph_fact_hash_ms,
-        "graph_digest_kind": graph_digest_kind,
-        "entity_count": entity_count,
-        "edge_count": edge_count,
-        "source_span_count": source_span_count,
-        "graph_counts_ran": graph_counts_ran,
-        "db_family_size_bytes": sqlite_family_size_bytes(db).unwrap_or(0),
-        "changed_files": summary.changed_files.clone(),
-        "deleted_fact_files": summary.deleted_fact_files,
-        "dirty_path_evidence_count": summary.dirty_path_evidence_count,
-        "ignored_paths_seen": summary.ignored_paths_seen,
-        "ignored_paths_with_existing_facts": summary.ignored_paths_with_existing_facts,
-        "stale_facts_deleted_for_ignored_paths": summary.stale_facts_deleted_for_ignored_paths,
-        "deleted_file_facts_removed": summary.deleted_file_facts_removed,
-        "path_cleanup_reasons": summary.path_cleanup_reasons.clone(),
-        "global_hash_check_ran": global_hash_check_ran,
-        "storage_audit_ran": summary.storage_audit_ran,
-        "integrity_check_ran": summary.integrity_check_ran,
-        "profile": summary.profile.clone(),
-    }))
+        (
+            "timings",
+            incremental_summary_timing_breakdown(summary, graph_fact_hash_ms, integrity_check_ms),
+        ),
+        ("files_walked", json!(summary.files_walked)),
+        ("files_read", json!(summary.files_read)),
+        ("files_hashed", json!(summary.files_hashed)),
+        ("files_parsed", json!(summary.files_parsed)),
+        ("entities_inserted", json!(summary.entities)),
+        ("edges_inserted", json!(summary.edges)),
+        (
+            "duplicate_edges_upserted",
+            json!(summary.duplicate_edges_upserted),
+        ),
+        ("transaction_status", json!("committed")),
+        ("integrity_status", json!(integrity_status)),
+        ("integrity_check_ms", json!(integrity_check_ms)),
+        ("integrity_check_kind", json!(integrity_check_kind)),
+        (
+            "post_measurement_integrity_check_ran",
+            json!(post_measurement_integrity_check_ran),
+        ),
+        ("graph_fact_hash", json!(graph_fact_hash)),
+        ("graph_fact_hash_ms", json!(graph_fact_hash_ms)),
+        ("graph_digest_kind", json!(graph_digest_kind)),
+        ("entity_count", entity_count),
+        ("edge_count", edge_count),
+        ("source_span_count", source_span_count),
+        ("graph_counts_ran", json!(graph_counts_ran)),
+        (
+            "db_family_size_bytes",
+            json!(sqlite_family_size_bytes(db).unwrap_or(0)),
+        ),
+        ("changed_files", json!(summary.changed_files.clone())),
+        ("deleted_fact_files", json!(summary.deleted_fact_files)),
+        (
+            "dirty_path_evidence_count",
+            json!(summary.dirty_path_evidence_count),
+        ),
+        ("ignored_paths_seen", json!(summary.ignored_paths_seen)),
+        (
+            "ignored_paths_with_existing_facts",
+            json!(summary.ignored_paths_with_existing_facts),
+        ),
+        (
+            "stale_facts_deleted_for_ignored_paths",
+            json!(summary.stale_facts_deleted_for_ignored_paths),
+        ),
+        (
+            "deleted_file_facts_removed",
+            json!(summary.deleted_file_facts_removed),
+        ),
+        (
+            "path_cleanup_reasons",
+            json!(summary.path_cleanup_reasons.clone()),
+        ),
+        ("global_hash_check_ran", json!(global_hash_check_ran)),
+        ("storage_audit_ran", json!(summary.storage_audit_ran)),
+        ("integrity_check_ran", json!(summary.integrity_check_ran)),
+        ("profile", json!(summary.profile.clone())),
+        ("inspection_read_only", json!(true)),
+        ("artifact_mutated_during_inspection", json!(false)),
+        (
+            "mutation_capable_operation",
+            json!("update_changed_files_to_db"),
+        ),
+        ("lifecycle_status", lifecycle_status),
+        ("claimable", json!(claimable)),
+    ]))
 }
 
 fn index_summary_timing_breakdown(
@@ -13189,21 +18527,21 @@ fn profile_span_count(profile: Option<&IndexProfile>, name: &str) -> u64 {
 }
 
 fn quick_integrity_status(db: &Path) -> String {
-    match SqliteGraphStore::open(db).and_then(|store| store.quick_integrity_gate()) {
+    match SqliteGraphStore::open_read_only(db).and_then(|store| store.quick_integrity_gate()) {
         Ok(()) => "ok".to_string(),
         Err(error) => format!("failed: {error}"),
     }
 }
 
 fn full_integrity_status(db: &Path) -> String {
-    match SqliteGraphStore::open(db).and_then(|store| store.full_integrity_gate()) {
+    match SqliteGraphStore::open_read_only(db).and_then(|store| store.full_integrity_gate()) {
         Ok(()) => "ok".to_string(),
         Err(error) => format!("failed: {error}"),
     }
 }
 
 fn graph_counts_for_db(db: &Path) -> Result<(u64, u64, u64), String> {
-    let store = SqliteGraphStore::open(db).map_err(|error| error.to_string())?;
+    let store = SqliteGraphStore::open_read_only(db).map_err(|error| error.to_string())?;
     Ok((
         store.count_entities().map_err(|error| error.to_string())?,
         store.count_edges().map_err(|error| error.to_string())?,
@@ -13214,12 +18552,12 @@ fn graph_counts_for_db(db: &Path) -> Result<(u64, u64, u64), String> {
 }
 
 fn graph_fact_hash_for_db(db: &Path) -> Result<String, String> {
-    let store = SqliteGraphStore::open(db).map_err(|error| error.to_string())?;
+    let store = SqliteGraphStore::open_read_only(db).map_err(|error| error.to_string())?;
     store.graph_fact_digest().map_err(|error| error.to_string())
 }
 
 fn incremental_graph_digest_for_db(db: &Path) -> Result<Option<String>, String> {
-    let store = SqliteGraphStore::open(db).map_err(|error| error.to_string())?;
+    let store = SqliteGraphStore::open_read_only(db).map_err(|error| error.to_string())?;
     store
         .incremental_graph_digest()
         .map_err(|error| error.to_string())
@@ -13958,8 +19296,9 @@ fn not_implemented_json(command: &CommandSpec, args: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeSet,
         fs,
-        io::{Read, Write},
+        io::{ErrorKind, Read, Write},
         net::{SocketAddr, TcpListener, TcpStream},
         path::{Path, PathBuf},
         sync::{
@@ -13970,17 +19309,29 @@ mod tests {
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
+    use codegraph_core::{
+        stable_edge_id, stable_entity_id_for_kind, ContextPacket, ContextSnippet, Edge, EdgeClass,
+        EdgeContext, Entity, EntityKind, EvidenceRole, Exactness, Metadata, PathEvidence,
+        RelationKind, SourceSpan,
+    };
     use codegraph_store::{GraphStore, SqliteGraphStore};
+    use rusqlite::Connection;
     use serde_json::{json, Value};
 
     use super::{
-        benchmark_binary_metadata_for, generate_large_synthetic_repo, index_repo,
-        index_repo_with_options, parse_extract_pending_files, parse_index_options, percentile,
-        regression_row, render_comprehensive_benchmark_markdown, route_ui_request, run,
+        benchmark_binary_metadata_for, benchmark_inspection_lifecycle_status, default_db_path,
+        generate_large_synthetic_repo, generate_update_integrity_small_repo, index_repo,
+        index_repo_to_db_with_options, index_repo_with_options, parse_call_relation_args,
+        parse_call_relation_args_with_output, parse_extract_pending_files, parse_index_options,
+        parse_list_query_args, path_string, percentile, prepare_watch_startup, query_call_relation,
+        query_call_relation_with_output, query_files_with_options, query_symbols_with_options,
+        query_text_with_options, regression_row, render_comprehensive_benchmark_markdown,
+        route_ui_request, run, run_doctor_command, run_status_command, run_update_integrity_repo,
         serve_ui_loop, should_ignore_path, should_start_new_index_batch,
-        update_changed_files_with_cache, IncrementalIndexCache, IndexOptions, PendingIndexFile,
-        UiResponse, WatchDebouncer, BIN_NAME, DEFAULT_INDEX_BATCH_MAX_FILES,
-        DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES,
+        update_changed_files_with_cache, CallQueryDirection, CallRelationQueryOptions,
+        IncrementalIndexCache, IndexOptions, PendingIndexFile, QueryOutputMode, StorageMode,
+        UiResponse, UpdateBenchmarkMode, UpdateLoopKind, WatchDebouncer, BIN_NAME,
+        DEFAULT_INDEX_BATCH_MAX_FILES, DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, SCHEMA_VERSION,
     };
 
     static TEMP_REPO_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -14060,6 +19411,93 @@ mod tests {
             .as_str()
             .expect("exact command")
             .contains("bench proof-build-only"));
+    }
+
+    #[test]
+    fn benchmark_inspection_lifecycle_blocks_mismatched_db_as_nonclaimable() {
+        let repo_a = ui_fixture_repo();
+        let repo_b = ui_fixture_repo();
+        let db_path = repo_a.join("benchmark-custom.sqlite");
+        index_repo_to_db_with_options(&repo_a, &db_path, IndexOptions::default())
+            .expect("index repo A custom DB");
+
+        let lifecycle = benchmark_inspection_lifecycle_status(
+            &repo_b,
+            &db_path,
+            "test.benchmark_mismatch",
+            Some(StorageMode::Proof),
+        );
+
+        assert_eq!(lifecycle["safe_to_read"].as_bool(), Some(false));
+        assert_eq!(lifecycle["claimable"].as_bool(), Some(false));
+        assert_eq!(lifecycle["diagnostic_only"].as_bool(), Some(true));
+        assert_eq!(
+            lifecycle["exact_db_path_checked"].as_str(),
+            Some(path_string(&db_path).as_str())
+        );
+        assert!(
+            lifecycle["blockers"]
+                .as_array()
+                .expect("blockers")
+                .iter()
+                .any(|blocker| blocker
+                    .as_str()
+                    .is_some_and(|value| value.contains("repo root mismatch"))),
+            "{lifecycle:?}"
+        );
+
+        fs::remove_dir_all(repo_a).expect("cleanup repo A");
+        fs::remove_dir_all(repo_b).expect("cleanup repo B");
+    }
+
+    #[test]
+    fn update_integrity_report_marks_inspection_read_only_and_setup_mutations() {
+        let workdir = temp_repo();
+        let repo = workdir.join("repo");
+        let db = workdir.join("fixture.sqlite");
+        let mutation_file =
+            generate_update_integrity_small_repo(&repo).expect("generate small fixture");
+
+        let result = run_update_integrity_repo(
+            "fixture",
+            &repo,
+            &db,
+            &mutation_file,
+            1,
+            1,
+            UpdateBenchmarkMode::Fast,
+            UpdateLoopKind::Repeat,
+            None,
+            None,
+            None,
+        )
+        .expect("run update integrity fixture");
+
+        assert_eq!(result["status"].as_str(), Some("passed"));
+        assert_eq!(result["inspection_read_only"].as_bool(), Some(true));
+        assert_eq!(
+            result["artifact_mutated_during_inspection"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(result["claimable"].as_bool(), Some(true));
+        for step in [
+            result.get("cold").expect("cold"),
+            result.get("repeat_unchanged").expect("repeat"),
+        ] {
+            assert_eq!(step["inspection_read_only"].as_bool(), Some(true));
+            assert_eq!(
+                step["artifact_mutated_during_inspection"].as_bool(),
+                Some(false)
+            );
+            assert_eq!(step["claimable"].as_bool(), Some(true));
+            assert_eq!(step["lifecycle_status"]["claimable"].as_bool(), Some(true));
+        }
+        assert_eq!(
+            result["cold"]["mutation_capable_operation"].as_str(),
+            Some("index_repo_to_db_with_options")
+        );
+
+        fs::remove_dir_all(workdir).expect("cleanup");
     }
 
     #[test]
@@ -14241,6 +19679,169 @@ mod tests {
         assert!(options.scope.explain_scope);
         assert!(options.scope.print_included);
         assert!(options.scope.print_excluded);
+    }
+
+    #[test]
+    fn index_json_concise_output_excludes_scope_examples_by_default() {
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+        let value = run_index_output_json(
+            &repo,
+            &db,
+            &["--fresh", "--json", "--exclude", "src/excluded.ts"],
+        );
+
+        assert_eq!(value["status"].as_str(), Some("indexed"));
+        assert_eq!(value["schema_version"].as_u64(), Some(1));
+        assert_eq!(value["output_mode"].as_str(), Some("concise"));
+        assert!(value["repo_root"].as_str().is_some());
+        assert!(value["db_path"].as_str().is_some());
+        assert_eq!(value["scope"]["examples_included"].as_bool(), Some(false));
+        assert!(value["scope"]["included_examples"].is_null());
+        assert!(value["scope"]["excluded_examples"].is_null());
+        assert!(value["db_lifecycle"]["decision"].as_str().is_some());
+        assert!(value["db_lifecycle"]["preflight"].is_null());
+        assert!(value["lifecycle"]["claimable"].as_bool().is_some());
+        assert!(value["counts"]["files"]["seen"].as_u64().is_some());
+        assert!(value["counts"]["graph"]["entities"].as_u64().is_some());
+        assert!(value["counts"]["graph"]["edges"].as_u64().is_some());
+        assert!(value["counts"]["graph"]["source_spans"].as_u64().is_some());
+        assert!(value["timing"]["wall_ms"].as_f64().is_some());
+        assert!(
+            serde_json::to_vec(&value).expect("serialize").len()
+                < super::INDEX_CONCISE_JSON_SIZE_TARGET_BYTES,
+            "{value}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn index_json_scope_audit_flags_preserve_examples() {
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+
+        let explain = run_index_output_json(
+            &repo,
+            &db,
+            &[
+                "--fresh",
+                "--json",
+                "--explain-scope",
+                "--exclude",
+                "src/excluded.ts",
+            ],
+        );
+        assert_eq!(explain["status"].as_str(), Some("indexed"));
+        assert!(explain["scope"]["included_examples"]
+            .as_array()
+            .is_some_and(|examples| !examples.is_empty()));
+        assert!(explain["scope"]["excluded_examples"]
+            .as_array()
+            .is_some_and(|examples| !examples.is_empty()));
+
+        let included =
+            run_index_output_json(&repo, &db, &["--fresh", "--json", "--print-included"]);
+        assert!(included["scope"]["included_examples"]
+            .as_array()
+            .is_some_and(|examples| !examples.is_empty()));
+
+        let excluded = run_index_output_json(
+            &repo,
+            &db,
+            &[
+                "--fresh",
+                "--json",
+                "--print-excluded",
+                "--exclude",
+                "src/excluded.ts",
+            ],
+        );
+        assert!(excluded["scope"]["excluded_examples"]
+            .as_array()
+            .is_some_and(|examples| !examples.is_empty()));
+
+        let audit = run_index_output_json(&repo, &db, &["--fresh", "--audit-json"]);
+        assert!(audit["scope"]["included_examples"].is_array());
+        assert!(audit["db_lifecycle"].is_object());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn index_agent_json_follows_compact_schema() {
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+        let value = run_index_output_json(&repo, &db, &["--fresh", "--agent-json"]);
+
+        assert_eq!(value["schema_name"].as_str(), Some("index_agent_json"));
+        assert_eq!(value["schema_version"].as_u64(), Some(1));
+        assert_eq!(value["status"].as_str(), Some("ok"));
+        assert_eq!(value["output_mode"].as_str(), Some("agent_json"));
+        assert_agent_json_contract(
+            &value,
+            "index_agent_json",
+            "index",
+            super::INDEX_AGENT_JSON_SIZE_TARGET_BYTES,
+        );
+        assert!(value["lifecycle"]["claimable"].as_bool().is_some());
+        assert!(value["summary"]["repo"].as_str().is_some());
+        assert!(value["summary"]["db_path"].as_str().is_some());
+        assert!(value["summary"]["files_seen"].as_u64().is_some());
+        assert!(value["summary"]["files_indexed"].as_u64().is_some());
+        assert!(value["summary"]["source_spans"].as_u64().is_some());
+        assert!(value["summary"]["scope"]["included_examples"].is_null());
+        assert!(value["summary"]["scope"]["excluded_examples"].is_null());
+        assert_eq!(value["truncation"]["limit_applied"].as_bool(), Some(false));
+        assert!(
+            serde_json::to_vec(&value).expect("serialize").len()
+                < super::INDEX_AGENT_JSON_SIZE_TARGET_BYTES
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn warm_noop_index_json_stays_below_concise_size_target() {
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+        let _cold = run_index_output_json(&repo, &db, &["--fresh", "--json"]);
+        let warm = run_index_output_json(&repo, &db, &["--incremental", "--json"]);
+
+        assert_eq!(warm["output_mode"].as_str(), Some("concise"));
+        assert_eq!(warm["scope"]["included_examples"].is_null(), true);
+        assert_eq!(warm["scope"]["excluded_examples"].is_null(), true);
+        let bytes = serde_json::to_vec(&warm).expect("serialize").len();
+        assert!(
+            bytes < super::INDEX_CONCISE_JSON_SIZE_TARGET_BYTES,
+            "warm no-op concise JSON was {bytes} bytes: {warm}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn parse_index_command_options_accepts_agent_json_and_audit_json() {
+        let agent = vec![".".to_string(), "--agent-json".to_string()];
+        let (_, _, options, mode, _) =
+            super::parse_index_command_options(&agent).expect("parse agent index options");
+        assert!(options.json);
+        assert_eq!(mode, super::IndexJsonOutputMode::Agent);
+
+        let audit = vec![".".to_string(), "--audit-json".to_string()];
+        let (_, _, options, mode, _) =
+            super::parse_index_command_options(&audit).expect("parse audit index options");
+        assert!(options.json);
+        assert_eq!(mode, super::IndexJsonOutputMode::Audit);
+
+        let explain = vec![
+            ".".to_string(),
+            "--json".to_string(),
+            "--explain-scope".to_string(),
+        ];
+        let (_, _, _, mode, _) =
+            super::parse_index_command_options(&explain).expect("parse explain index options");
+        assert_eq!(mode, super::IndexJsonOutputMode::Audit);
     }
 
     #[test]
@@ -14516,6 +20117,112 @@ mod tests {
     }
 
     #[test]
+    fn watch_long_running_startup_uses_external_db_without_touching_default() {
+        let repo = ui_fixture_repo();
+        let external_db = repo.join("watch-external.sqlite");
+        index_repo_to_db_with_options(&repo, &external_db, IndexOptions::default())
+            .expect("index external watch DB");
+        let default_db = repo.join(".codegraph").join("codegraph.sqlite");
+        assert!(
+            !default_db.exists(),
+            "external DB setup should not create default DB"
+        );
+
+        let startup = prepare_watch_startup(&repo, Some(&external_db), "test.watch.long_running")
+            .expect("prepare watch startup");
+
+        assert_eq!(startup.requested_db_path, external_db);
+        assert_eq!(startup.actual_db_path_opened, external_db);
+        assert!(!startup.auto_index_enabled);
+        assert_eq!(
+            startup.lifecycle_status["requested_db_path"].as_str(),
+            Some(external_db.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            startup.lifecycle_status["actual_db_path_opened"].as_str(),
+            Some(external_db.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            startup.lifecycle_status["lifecycle_status"].as_str(),
+            Some("safe_to_write")
+        );
+        assert_eq!(
+            startup.lifecycle_status["auto_index_enabled"].as_bool(),
+            Some(false)
+        );
+        assert!(
+            !default_db.exists(),
+            "long-running watch startup must not touch default DB when --db is supplied"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn watch_long_running_startup_rejects_unsafe_external_db() {
+        let repo_a = ui_fixture_repo();
+        let repo_b = ui_fixture_repo();
+        let external_db = repo_a.join("watch-external.sqlite");
+        index_repo_to_db_with_options(&repo_a, &external_db, IndexOptions::default())
+            .expect("index repo A external DB");
+
+        let error =
+            match prepare_watch_startup(&repo_b, Some(&external_db), "test.watch.long_running") {
+                Ok(_) => panic!("repo B must reject repo A DB"),
+                Err(error) => error,
+            };
+        let message = error.to_string();
+        assert!(message.contains("not safe for watch updates"), "{message}");
+        assert!(message.contains("repo root mismatch"), "{message}");
+
+        fs::remove_dir_all(repo_a).expect("cleanup repo A");
+        fs::remove_dir_all(repo_b).expect("cleanup repo B");
+    }
+
+    #[test]
+    fn watch_long_running_startup_missing_db_is_clear_and_does_not_auto_index() {
+        let repo = ui_fixture_repo();
+        let missing_external = repo.join("missing-watch.sqlite");
+        let error = match prepare_watch_startup(
+            &repo,
+            Some(&missing_external),
+            "test.watch.long_running",
+        ) {
+            Ok(_) => panic!("missing external DB must fail"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("run `codegraph-mcp index . --db"),
+            "{message}"
+        );
+        assert!(
+            message.contains("does not auto-index by default"),
+            "{message}"
+        );
+        assert!(
+            !repo.join(".codegraph").exists(),
+            "missing external DB startup must not create default state"
+        );
+
+        let missing_default = match prepare_watch_startup(&repo, None, "test.watch.long_running") {
+            Ok(_) => panic!("missing default DB must fail"),
+            Err(error) => error,
+        };
+        let default_message = missing_default.to_string();
+        assert!(
+            default_message.contains("does not auto-index by default"),
+            "{default_message}"
+        );
+        assert!(
+            !repo.join(".codegraph").exists(),
+            "missing default DB startup must not auto-create .codegraph"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
     fn large_synthetic_index_generator_smoke_test() {
         let output = temp_repo();
         let repo = output.join("repo");
@@ -14553,6 +20260,15 @@ mod tests {
         let doctor_json: Value = serde_json::from_str(&doctor.stdout).expect("doctor JSON");
         assert_eq!(doctor_json["status"].as_str(), Some("ok"));
         assert!(doctor_json["checks"].as_array().expect("checks").len() >= 5);
+        assert_eq!(doctor_json["database_exists"].as_bool(), Some(false));
+        assert_eq!(doctor_json["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(
+            doctor_json["path_access_status"].as_str(),
+            Some("db_missing")
+        );
+        assert_eq!(doctor_json["db_problem_kind"].as_str(), Some("db_missing"));
+        assert!(doctor_json["db_lifecycle_read"].is_object());
+        assert!(doctor_json["sqlite_sidecars"].is_object());
 
         let metadata = run([BIN_NAME, "config", "release-metadata", "--json"]);
         assert_eq!(metadata.exit_code, 0, "stderr={}", metadata.stderr);
@@ -14579,6 +20295,281 @@ mod tests {
             .as_str()
             .expect("script")
             .contains("Register-ArgumentCompleter"));
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn doctor_rejects_misplaced_db_global_with_targeted_error() {
+        let output = run([BIN_NAME, "doctor", "--db", "graph.sqlite"]);
+
+        assert_eq!(output.exit_code, 1);
+        let error: Value = serde_json::from_str(&output.stderr).expect("error JSON");
+        assert_eq!(error["error"].as_str(), Some("doctor_failed"));
+        assert!(error["message"]
+            .as_str()
+            .expect("message")
+            .contains("--db is a global flag"));
+    }
+
+    #[test]
+    fn doctor_valid_db_reports_readonly_lifecycle_evidence() {
+        let repo = ui_fixture_repo();
+        index_repo(&repo).expect("index fixture");
+        let repo_root = fs::canonicalize(&repo).expect("canonical repo");
+        let db_path = default_db_path(&repo_root);
+
+        let doctor =
+            run_doctor_command(&[path_string(&repo), "--json".to_string()]).expect("doctor");
+
+        assert_eq!(doctor["status"].as_str(), Some("ok"));
+        assert_eq!(doctor["database_exists"].as_bool(), Some(true));
+        assert_eq!(doctor["safe_to_query"].as_bool(), Some(true));
+        assert_eq!(doctor["passport_status"].as_str(), Some("valid"));
+        assert_eq!(doctor["path_access_status"].as_str(), Some("ok"));
+        assert_eq!(doctor["db_path_outside_workspace"].as_bool(), Some(false));
+        assert_eq!(doctor["repo_match"].as_bool(), Some(true));
+        assert_eq!(doctor["scope_match"].as_bool(), Some(true));
+        assert_eq!(doctor["schema_status"].as_str(), Some("ok"));
+        assert_eq!(doctor["storage_mode"].as_str(), Some("proof"));
+        let db_path_string = path_string(&db_path);
+        assert_eq!(
+            doctor["db_lifecycle_read"]["exact_db_path_checked"].as_str(),
+            Some(db_path_string.as_str())
+        );
+        assert_eq!(
+            doctor["db_lifecycle_read"]["safe_to_read"].as_bool(),
+            Some(true)
+        );
+        assert!(doctor["sqlite_sidecars"]["status"].is_string());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn status_and_doctor_report_normal_sqlite_sidecars_for_valid_db() {
+        let repo = ui_fixture_repo();
+        index_repo(&repo).expect("index fixture");
+        let db_path = default_db_path(&repo);
+        let wal_connection = keep_wal_sidecars_for_test(&db_path);
+
+        let status = run_status_command(&[path_string(&repo)]).expect("status");
+        let doctor =
+            run_doctor_command(&[path_string(&repo), "--json".to_string()]).expect("doctor");
+
+        assert_eq!(status["status"].as_str(), Some("ok"));
+        assert_eq!(doctor["status"].as_str(), Some("ok"));
+        assert_eq!(status["sidecar_status"].as_str(), Some("normal"));
+        assert_eq!(doctor["sidecar_status"].as_str(), Some("normal"));
+        assert_eq!(
+            status["sqlite_sidecars"]["sidecar_status"].as_str(),
+            Some("normal")
+        );
+        assert_eq!(
+            doctor["sqlite_sidecars"]["sidecar_status"].as_str(),
+            Some("normal")
+        );
+        assert!(
+            !status["sqlite_sidecars"]["sqlite_sidecars"]
+                .as_array()
+                .expect("status sidecars")
+                .is_empty(),
+            "{status:?}"
+        );
+        assert!(status["db_health"]["orphan_sidecars"]
+            .as_array()
+            .expect("deprecated orphan sidecars")
+            .is_empty());
+        assert!(doctor["sqlite_sidecars"]["orphan_sidecars"]
+            .as_array()
+            .expect("doctor deprecated orphan sidecars")
+            .is_empty());
+
+        drop(wal_connection);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn status_and_doctor_report_orphan_without_main_db_for_sidecars_only() {
+        let repo = temp_repo();
+        let db_path = default_db_path(&repo);
+        fs::create_dir_all(db_path.parent().expect("db parent")).expect("create db parent");
+        fs::write(sqlite_sidecar_path_for_test(&db_path, "wal"), "stale wal")
+            .expect("write stale wal");
+        fs::write(sqlite_sidecar_path_for_test(&db_path, "shm"), "stale shm")
+            .expect("write stale shm");
+
+        let status = run_status_command(&[path_string(&repo)]).expect("status");
+        let doctor =
+            run_doctor_command(&[path_string(&repo), "--json".to_string()]).expect("doctor");
+
+        assert_eq!(status["status"].as_str(), Some("not_indexed"));
+        assert_eq!(status["db_problem_kind"].as_str(), Some("db_missing"));
+        assert_eq!(status["path_access_status"].as_str(), Some("db_missing"));
+        assert_eq!(status["db_path_outside_workspace"].as_bool(), Some(false));
+        assert_eq!(
+            status["sidecar_status"].as_str(),
+            Some("orphan_without_main_db")
+        );
+        assert_eq!(
+            status["sqlite_sidecars"]["sidecar_status"].as_str(),
+            Some("orphan_without_main_db")
+        );
+        assert_eq!(
+            doctor["sidecar_status"].as_str(),
+            Some("orphan_without_main_db")
+        );
+        assert_eq!(
+            doctor["sqlite_sidecars"]["sidecar_status"].as_str(),
+            Some("orphan_without_main_db")
+        );
+        assert!(
+            !doctor["sqlite_sidecars"]["orphan_sidecars"]
+                .as_array()
+                .expect("doctor orphan sidecars")
+                .is_empty(),
+            "{doctor:?}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn doctor_repo_mismatch_matches_status_blockers() {
+        let repo_a = ui_fixture_repo();
+        let repo_b = ui_fixture_repo();
+        index_repo(&repo_a).expect("index repo A");
+        let repo_a_db = default_db_path(&repo_a);
+        let repo_b_db = default_db_path(&repo_b);
+        fs::create_dir_all(repo_b_db.parent().expect("repo B db parent")).expect("create db dir");
+        fs::copy(&repo_a_db, &repo_b_db).expect("copy mismatched DB");
+
+        let doctor =
+            run_doctor_command(&[path_string(&repo_b), "--json".to_string()]).expect("doctor");
+        let status = run_status_command(&[path_string(&repo_b)]).expect("status");
+
+        assert_eq!(doctor["status"].as_str(), Some("error"));
+        assert_eq!(doctor["database_exists"].as_bool(), Some(true));
+        assert_eq!(doctor["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(
+            doctor["db_problem_kind"].as_str(),
+            Some("repo_root_mismatch")
+        );
+        assert_eq!(doctor["repo_match"].as_bool(), Some(false));
+        assert_eq!(status["status"].as_str(), Some("db_problem"));
+        assert!(
+            doctor["blockers"]
+                .as_array()
+                .expect("doctor blockers")
+                .iter()
+                .any(|blocker| blocker
+                    .as_str()
+                    .is_some_and(|value| value.contains("repo root mismatch"))),
+            "{doctor:?}"
+        );
+        assert_eq!(
+            doctor["db_lifecycle_read"]["blockers"],
+            status["db_lifecycle_read"]["blockers"]
+        );
+
+        fs::remove_dir_all(repo_a).expect("cleanup repo A");
+        fs::remove_dir_all(repo_b).expect("cleanup repo B");
+    }
+
+    #[test]
+    fn doctor_reports_scope_mismatch_without_opening_mutably() {
+        let repo = ui_fixture_repo();
+        index_repo(&repo).expect("index fixture");
+        let db_path = default_db_path(&repo);
+        let connection = rusqlite::Connection::open(&db_path).expect("open DB");
+        connection
+            .execute(
+                "UPDATE codegraph_db_passport SET index_scope_policy_hash = 'tampered-scope-hash' WHERE id = 1",
+                [],
+            )
+            .expect("tamper scope hash");
+        drop(connection);
+
+        let doctor =
+            run_doctor_command(&[path_string(&repo), "--json".to_string()]).expect("doctor");
+
+        assert_eq!(doctor["status"].as_str(), Some("error"));
+        assert_eq!(doctor["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(doctor["scope_match"].as_bool(), Some(false));
+        assert_eq!(
+            doctor["db_lifecycle_read"]["scope_status"].as_str(),
+            Some("mismatched")
+        );
+        assert!(
+            doctor["blockers"]
+                .as_array()
+                .expect("blockers")
+                .iter()
+                .any(|blocker| blocker
+                    .as_str()
+                    .is_some_and(|value| value.contains("index scope policy hash mismatch"))),
+            "{doctor:?}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn doctor_reports_missing_passport_for_existing_db() {
+        let repo = temp_repo();
+        let db_path = default_db_path(&repo);
+        fs::create_dir_all(db_path.parent().expect("db parent")).expect("create db dir");
+        let connection = rusqlite::Connection::open(&db_path).expect("create DB");
+        connection
+            .pragma_update(None, "user_version", SCHEMA_VERSION)
+            .expect("set current user_version");
+        drop(connection);
+
+        let doctor =
+            run_doctor_command(&[path_string(&repo), "--json".to_string()]).expect("doctor");
+
+        assert_eq!(doctor["status"].as_str(), Some("error"));
+        assert_eq!(doctor["database_exists"].as_bool(), Some(true));
+        assert_eq!(doctor["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(doctor["passport_status"].as_str(), Some("missing"));
+        assert_eq!(doctor["db_problem_kind"].as_str(), Some("passport_missing"));
+        assert!(
+            doctor["blockers"]
+                .as_array()
+                .expect("blockers")
+                .iter()
+                .any(|blocker| blocker
+                    .as_str()
+                    .is_some_and(|value| value.contains("codegraph_db_passport table is missing"))),
+            "{doctor:?}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn doctor_does_not_migrate_old_schema_db() {
+        let repo = temp_repo();
+        let db_path = default_db_path(&repo);
+        fs::create_dir_all(db_path.parent().expect("db parent")).expect("create db dir");
+        let connection = rusqlite::Connection::open(&db_path).expect("create DB");
+        connection
+            .pragma_update(None, "user_version", 1u32)
+            .expect("set old user_version");
+        drop(connection);
+
+        let doctor =
+            run_doctor_command(&[path_string(&repo), "--json".to_string()]).expect("doctor");
+        let observed_version = sqlite_user_version_for_test(&db_path);
+        let passport_table_exists = sqlite_table_exists_for_test(&db_path, "codegraph_db_passport");
+
+        assert_eq!(doctor["status"].as_str(), Some("error"));
+        assert_eq!(doctor["database_exists"].as_bool(), Some(true));
+        assert_eq!(doctor["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(doctor["schema_status"].as_str(), Some("mismatched"));
+        assert_eq!(doctor["db_problem_kind"].as_str(), Some("schema_mismatch"));
+        assert_eq!(observed_version, 1);
+        assert!(!passport_table_exists);
 
         fs::remove_dir_all(repo).expect("cleanup");
     }
@@ -14715,6 +20706,253 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_calls_ui_endpoint_refuses_unsafe_db() {
+        let repo_a = ui_fixture_repo();
+        let repo_b = ui_fixture_repo();
+        index_repo(&repo_a).expect("index repo A");
+        let repo_a_db = repo_a.join(".codegraph").join("codegraph.sqlite");
+        let repo_b_db_dir = repo_b.join(".codegraph");
+        fs::create_dir_all(&repo_b_db_dir).expect("create repo B DB dir");
+        fs::copy(&repo_a_db, repo_b_db_dir.join("codegraph.sqlite")).expect("copy mismatched DB");
+
+        let response = route_ui_request(&repo_b, "GET", "/api/unresolved-calls?limit=1");
+        assert_eq!(response.status, 500);
+        let body: Value = serde_json::from_str(&response.body).expect("JSON body");
+        assert_eq!(body["status"].as_str(), Some("error"));
+        assert!(
+            body["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("repo root mismatch")),
+            "{body:?}"
+        );
+
+        fs::remove_dir_all(repo_a).expect("cleanup repo A");
+        fs::remove_dir_all(repo_b).expect("cleanup repo B");
+    }
+
+    #[test]
+    fn lifecycle_regression_suite_internal_surfaces_share_guardrails() {
+        let watch_repo = ui_fixture_repo();
+        let external_db = watch_repo.join("suite-long-watch.sqlite");
+        index_repo_to_db_with_options(&watch_repo, &external_db, IndexOptions::default())
+            .expect("index external watch DB");
+        let default_watch_db = default_db_path(&watch_repo);
+        assert!(
+            !default_watch_db.exists(),
+            "external watch setup must not create default DB"
+        );
+        let watch_startup =
+            prepare_watch_startup(&watch_repo, Some(&external_db), "suite.watch.long_running")
+                .expect("prepare long-running watch startup");
+        assert_eq!(watch_startup.requested_db_path, external_db);
+        assert_eq!(watch_startup.actual_db_path_opened, external_db);
+        assert_eq!(
+            watch_startup.lifecycle_status["lifecycle_status"].as_str(),
+            Some("safe_to_write")
+        );
+        assert_eq!(
+            watch_startup.lifecycle_status["auto_index_enabled"].as_bool(),
+            Some(false)
+        );
+        assert!(
+            !default_watch_db.exists(),
+            "long-running watch must not touch default DB when external DB is configured"
+        );
+
+        let ui_repo_a = ui_fixture_repo();
+        let ui_repo_b = ui_fixture_repo();
+        index_repo(&ui_repo_a).expect("index UI repo A");
+        let ui_repo_a_db = default_db_path(&ui_repo_a);
+        let ui_repo_b_db = default_db_path(&ui_repo_b);
+        fs::create_dir_all(ui_repo_b_db.parent().expect("ui repo B db parent"))
+            .expect("create UI repo B db dir");
+        fs::copy(&ui_repo_a_db, &ui_repo_b_db).expect("copy mismatched UI DB");
+        let ui_response = route_ui_request(&ui_repo_b, "GET", "/api/unresolved-calls?limit=1");
+        assert_eq!(ui_response.status, 500);
+        let ui_body: Value = serde_json::from_str(&ui_response.body).expect("UI JSON body");
+        assert_eq!(ui_body["status"].as_str(), Some("error"));
+        assert!(
+            ui_body["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("repo root mismatch")),
+            "{ui_body:?}"
+        );
+
+        let doctor_repo = temp_repo();
+        let doctor_db = default_db_path(&doctor_repo);
+        fs::create_dir_all(doctor_db.parent().expect("doctor db parent"))
+            .expect("create doctor db dir");
+        let doctor_connection = rusqlite::Connection::open(&doctor_db).expect("create old DB");
+        doctor_connection
+            .pragma_update(None, "user_version", 1u32)
+            .expect("set old doctor user_version");
+        drop(doctor_connection);
+        let doctor =
+            run_doctor_command(&[path_string(&doctor_repo), "--json".to_string()]).expect("doctor");
+        assert_eq!(doctor["status"].as_str(), Some("error"));
+        assert_eq!(doctor["database_exists"].as_bool(), Some(true));
+        assert_eq!(doctor["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(doctor["schema_status"].as_str(), Some("mismatched"));
+        assert_eq!(doctor["db_problem_kind"].as_str(), Some("schema_mismatch"));
+        assert!(
+            !doctor["blockers"]
+                .as_array()
+                .expect("doctor blockers")
+                .is_empty(),
+            "{doctor:?}"
+        );
+        assert_eq!(sqlite_user_version_for_test(&doctor_db), 1);
+        assert!(!sqlite_table_exists_for_test(
+            &doctor_db,
+            "codegraph_db_passport"
+        ));
+
+        let benchmark_repo = temp_repo();
+        let benchmark_db = default_db_path(&benchmark_repo);
+        fs::create_dir_all(benchmark_db.parent().expect("benchmark db parent"))
+            .expect("create benchmark db dir");
+        let benchmark_connection =
+            rusqlite::Connection::open(&benchmark_db).expect("create benchmark DB");
+        benchmark_connection
+            .pragma_update(None, "user_version", 1u32)
+            .expect("set benchmark user_version");
+        drop(benchmark_connection);
+        let benchmark_lifecycle = benchmark_inspection_lifecycle_status(
+            &benchmark_repo,
+            &benchmark_db,
+            "suite.benchmark_inspection",
+            Some(StorageMode::Proof),
+        );
+        assert_eq!(benchmark_lifecycle["safe_to_read"].as_bool(), Some(false));
+        assert_eq!(benchmark_lifecycle["claimable"].as_bool(), Some(false));
+        assert_eq!(benchmark_lifecycle["diagnostic_only"].as_bool(), Some(true));
+        assert_eq!(
+            benchmark_lifecycle["exact_db_path_checked"].as_str(),
+            Some(path_string(&benchmark_db).as_str())
+        );
+        assert_eq!(sqlite_user_version_for_test(&benchmark_db), 1);
+        assert!(!sqlite_table_exists_for_test(
+            &benchmark_db,
+            "codegraph_db_passport"
+        ));
+
+        let sidecar_repo = ui_fixture_repo();
+        index_repo(&sidecar_repo).expect("index sidecar repo");
+        let sidecar_db = default_db_path(&sidecar_repo);
+        let wal_connection = keep_wal_sidecars_for_test(&sidecar_db);
+        let sidecar_status = run_status_command(&[path_string(&sidecar_repo)]).expect("status");
+        let sidecar_doctor =
+            run_doctor_command(&[path_string(&sidecar_repo), "--json".to_string()])
+                .expect("doctor");
+        assert_eq!(sidecar_status["status"].as_str(), Some("ok"));
+        assert_eq!(sidecar_doctor["status"].as_str(), Some("ok"));
+        assert_eq!(sidecar_status["sidecar_status"].as_str(), Some("normal"));
+        assert_eq!(sidecar_doctor["sidecar_status"].as_str(), Some("normal"));
+        drop(wal_connection);
+
+        let orphan_repo = temp_repo();
+        let orphan_db = default_db_path(&orphan_repo);
+        fs::create_dir_all(orphan_db.parent().expect("orphan db parent"))
+            .expect("create orphan db dir");
+        fs::write(sqlite_sidecar_path_for_test(&orphan_db, "wal"), "stale wal")
+            .expect("write orphan wal");
+        fs::write(sqlite_sidecar_path_for_test(&orphan_db, "shm"), "stale shm")
+            .expect("write orphan shm");
+        let orphan_status = run_status_command(&[path_string(&orphan_repo)]).expect("status");
+        let orphan_doctor =
+            run_doctor_command(&[path_string(&orphan_repo), "--json".to_string()]).expect("doctor");
+        assert_eq!(
+            orphan_status["sidecar_status"].as_str(),
+            Some("orphan_without_main_db")
+        );
+        assert_eq!(
+            orphan_doctor["sidecar_status"].as_str(),
+            Some("orphan_without_main_db")
+        );
+
+        let call_fixture = caller_callee_precision_fixture();
+        let exact_callers = query_call_relation(
+            &call_fixture.repo,
+            CallRelationQueryOptions {
+                query: Some("uniqueTarget".to_string()),
+                entity_id: None,
+                limit: 32,
+                exact_resolved: false,
+                fuzzy: false,
+            },
+            CallQueryDirection::Callers,
+        )
+        .expect("exact callers");
+        assert_eq!(exact_callers["status"].as_str(), Some("ok"));
+        assert_eq!(
+            exact_callers["resolution_mode"].as_str(),
+            Some("exact_resolved")
+        );
+        assert_eq!(
+            exact_callers["exact_resolved_entity"]["id"].as_str(),
+            Some(call_fixture.unique_target_id.as_str())
+        );
+        assert_eq!(
+            exact_callers["exact_resolved_entity_results"]
+                .as_array()
+                .expect("exact results")
+                .len(),
+            1
+        );
+        assert!(exact_callers["fuzzy_or_global_results"]
+            .as_array()
+            .expect("fuzzy results")
+            .is_empty());
+
+        let ambiguous_callers = query_call_relation(
+            &call_fixture.repo,
+            CallRelationQueryOptions {
+                query: Some("target".to_string()),
+                entity_id: None,
+                limit: 32,
+                exact_resolved: false,
+                fuzzy: false,
+            },
+            CallQueryDirection::Callers,
+        )
+        .expect("ambiguous callers");
+        assert_eq!(
+            ambiguous_callers["status"].as_str(),
+            Some("ambiguous_symbol")
+        );
+        assert_eq!(
+            ambiguous_callers["resolution_mode"].as_str(),
+            Some("ambiguous_symbol")
+        );
+        let candidates = ambiguous_callers["ambiguous_symbol_matches"]
+            .as_array()
+            .expect("ambiguous candidates");
+        assert!(candidates.iter().any(
+            |candidate| candidate["id"].as_str() == Some(call_fixture.alpha_target_id.as_str())
+        ));
+        assert!(candidates.iter().any(
+            |candidate| candidate["id"].as_str() == Some(call_fixture.beta_target_id.as_str())
+        ));
+        assert!(ambiguous_callers["exact_resolved_entity_results"]
+            .as_array()
+            .expect("ambiguous exact results")
+            .is_empty());
+        assert!(ambiguous_callers["suggestion"]["rerun"]
+            .as_str()
+            .expect("rerun suggestion")
+            .contains("--entity-id"));
+
+        fs::remove_dir_all(watch_repo).expect("cleanup watch repo");
+        fs::remove_dir_all(ui_repo_a).expect("cleanup UI repo A");
+        fs::remove_dir_all(ui_repo_b).expect("cleanup UI repo B");
+        fs::remove_dir_all(doctor_repo).expect("cleanup doctor repo");
+        fs::remove_dir_all(benchmark_repo).expect("cleanup benchmark repo");
+        fs::remove_dir_all(sidecar_repo).expect("cleanup sidecar repo");
+        fs::remove_dir_all(orphan_repo).expect("cleanup orphan repo");
+        fs::remove_dir_all(call_fixture.repo).expect("cleanup caller fixture repo");
+    }
+
+    #[test]
     fn context_packet_preview_api_uses_local_context_pack() {
         let repo = ui_fixture_repo();
         index_repo(&repo).expect("index fixture");
@@ -14744,6 +20982,1613 @@ mod tests {
         assert!(output.stderr.contains("\"error\":\"unknown_command\""));
     }
 
+    #[test]
+    fn query_symbols_agent_json_is_compact_limited_and_does_not_swallow_flags() {
+        let fixture = caller_callee_precision_fixture();
+        let args = vec![
+            "target".to_string(),
+            "--limit".to_string(),
+            "1".to_string(),
+            "--agent-json".to_string(),
+            "--json".to_string(),
+        ];
+        let options = parse_list_query_args("symbols", &args).expect("parse query options");
+        assert_eq!(options.query, "target");
+        assert_eq!(options.limit, 1);
+        assert_eq!(options.fetch_limit(), 2);
+        assert_eq!(options.output_mode, QueryOutputMode::AgentJson);
+
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+            "passport_status": "valid",
+            "schema_status": "valid",
+            "scope_status": "match",
+        });
+        let result =
+            query_symbols_with_options(&fixture.repo, &options, Some(&lifecycle)).expect("query");
+
+        assert_eq!(
+            result["schema_name"].as_str(),
+            Some("query_symbols_agent_json")
+        );
+        assert_eq!(result["schema_version"].as_u64(), Some(1));
+        assert_eq!(result["status"].as_str(), Some("ok"));
+        assert_agent_json_contract(
+            &result,
+            "query_symbols_agent_json",
+            "query symbols",
+            super::QUERY_AGENT_JSON_SIZE_TARGET_BYTES,
+        );
+        assert_eq!(result["query"]["text"].as_str(), Some("target"));
+        assert_eq!(result["result_count"].as_u64(), Some(1));
+        assert_eq!(result["limit"].as_u64(), Some(1));
+        assert!(result["db_lifecycle_read"].is_null());
+        let results = result["results"].as_array().expect("results");
+        assert_eq!(results.len(), 1, "{result:?}");
+        assert!(results[0]["file"].as_str().is_some());
+        assert!(results[0]["symbol"].as_str().is_some());
+        assert!(results[0]["kind"].as_str().is_some());
+        assert!(results[0]["score"].as_f64().is_some());
+        assert!(results[0]["evidence_role"].as_str().is_some());
+        assert!(result["lifecycle"]["claimable"].as_bool().unwrap_or(false));
+        assert!(!result["lifecycle"]["diagnostic_only"]
+            .as_bool()
+            .unwrap_or(true));
+        let diagnostic_result =
+            query_symbols_with_options(&fixture.repo, &options, None).expect("query diagnostic");
+        assert_eq!(
+            diagnostic_result["claimable"].as_bool(),
+            Some(false),
+            "{diagnostic_result}"
+        );
+        assert_eq!(
+            diagnostic_result["diagnostic_only"].as_bool(),
+            Some(true),
+            "{diagnostic_result}"
+        );
+
+        fs::remove_dir_all(fixture.repo).expect("cleanup");
+    }
+
+    #[test]
+    fn query_compact_parsers_apply_documented_default_limits() {
+        let normal = parse_list_query_args(
+            "symbols",
+            &["knownSymbol".to_string(), "--json".to_string()],
+        )
+        .expect("parse normal json");
+        assert_eq!(normal.query, "knownSymbol");
+        assert_eq!(normal.limit, 10);
+
+        let agent = parse_list_query_args(
+            "symbols",
+            &["knownSymbol".to_string(), "--agent-json".to_string()],
+        )
+        .expect("parse agent json");
+        assert_eq!(agent.query, "knownSymbol");
+        assert_eq!(agent.limit, 5);
+        assert_eq!(agent.fetch_limit(), 6);
+
+        let callers = parse_call_relation_args_with_output(
+            "callers",
+            &["knownSymbol".to_string(), "--agent-json".to_string()],
+        )
+        .expect("parse callers");
+        assert_eq!(callers.output.limit, 5);
+        assert_eq!(callers.options.limit, 6);
+    }
+
+    #[test]
+    fn query_parsers_reject_misplaced_globals_and_escape_literal_flags() {
+        let misplaced_db = parse_list_query_args(
+            "symbols",
+            &[
+                "knownSymbol".to_string(),
+                "--db".to_string(),
+                "graph.sqlite".to_string(),
+            ],
+        )
+        .expect_err("misplaced --db should be rejected");
+        assert!(misplaced_db.contains("--db is a global flag"));
+        assert!(misplaced_db.contains("codegraph-mcp --db <path> query ..."));
+
+        let misplaced_repo = super::reject_misplaced_global_flags_in_query_args(&[
+            "symbols".to_string(),
+            "knownSymbol".to_string(),
+            "--repo".to_string(),
+            ".".to_string(),
+        ])
+        .expect_err("misplaced --repo should be rejected before DB preflight");
+        assert!(misplaced_repo.contains("--repo is a global flag"));
+
+        let literal = parse_list_query_args(
+            "text",
+            &[
+                "--agent-json".to_string(),
+                "--".to_string(),
+                "--db".to_string(),
+            ],
+        )
+        .expect("literal flag-like query term");
+        assert_eq!(literal.query, "--db");
+        assert_eq!(literal.output_mode, QueryOutputMode::AgentJson);
+
+        let relation_literal = parse_call_relation_args_with_output(
+            "callers",
+            &["--".to_string(), "--db".to_string()],
+        )
+        .expect("literal flag-like relation symbol");
+        assert_eq!(relation_literal.options.query.as_deref(), Some("--db"));
+    }
+
+    #[test]
+    fn query_text_and_files_agent_json_use_same_compact_contract() {
+        let fixture = caller_callee_precision_fixture();
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+        });
+
+        let text_args = vec![
+            "seed".to_string(),
+            "--limit=5".to_string(),
+            "--agent-json".to_string(),
+        ];
+        let text_options = parse_list_query_args("text", &text_args).expect("parse text");
+        assert_eq!(text_options.query, "seed");
+        let text =
+            query_text_with_options(&fixture.repo, &text_options, Some(&lifecycle)).expect("text");
+        assert_eq!(text["schema_name"].as_str(), Some("query_text_agent_json"));
+        assert_agent_json_contract(
+            &text,
+            "query_text_agent_json",
+            "query text",
+            super::QUERY_AGENT_JSON_SIZE_TARGET_BYTES,
+        );
+        assert!(text["results"].as_array().expect("text results").len() <= 5);
+        assert_eq!(text["truncation"]["limit"].as_u64(), Some(5));
+
+        let file_args = vec![
+            "seed.ts".to_string(),
+            "--agent-json".to_string(),
+            "--limit".to_string(),
+            "5".to_string(),
+        ];
+        let file_options = parse_list_query_args("files", &file_args).expect("parse files");
+        assert_eq!(file_options.query, "seed.ts");
+        let files = query_files_with_options(&fixture.repo, &file_options, Some(&lifecycle))
+            .expect("files");
+        assert_eq!(
+            files["schema_name"].as_str(),
+            Some("query_files_agent_json")
+        );
+        assert_agent_json_contract(
+            &files,
+            "query_files_agent_json",
+            "query files",
+            super::QUERY_AGENT_JSON_SIZE_TARGET_BYTES,
+        );
+        assert!(files["results"].as_array().expect("file results").len() <= 5);
+        assert!(files["results"][0]["file"].as_str().is_some());
+
+        fs::remove_dir_all(fixture.repo).expect("cleanup");
+    }
+
+    #[test]
+    fn query_symbols_verbose_keeps_rich_output_available() {
+        let fixture = caller_callee_precision_fixture();
+        let args = vec!["target".to_string(), "--verbose".to_string()];
+        let options = parse_list_query_args("symbols", &args).expect("parse query options");
+        assert_eq!(options.output_mode, QueryOutputMode::RichJson);
+        assert_eq!(options.limit, 20);
+
+        let result = query_symbols_with_options(&fixture.repo, &options, None).expect("query");
+        assert_eq!(result["status"].as_str(), Some("ok"));
+        assert!(result["hits"].is_array());
+        assert!(result["ranking"].is_array());
+        assert!(result["proof"].as_str().is_some());
+        assert!(result["schema_name"].is_null());
+
+        fs::remove_dir_all(fixture.repo).expect("cleanup");
+    }
+
+    #[test]
+    fn callers_agent_json_is_limited_and_compact() {
+        let fixture = caller_callee_precision_fixture();
+        let args = vec![
+            "--fuzzy".to_string(),
+            "target".to_string(),
+            "--limit".to_string(),
+            "1".to_string(),
+            "--agent-json".to_string(),
+        ];
+        let parsed = parse_call_relation_args_with_output("callers", &args).expect("parse callers");
+        assert_eq!(parsed.output.limit, 1);
+        assert_eq!(parsed.options.limit, 2);
+        assert_eq!(parsed.output.output_mode, QueryOutputMode::AgentJson);
+
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+        });
+        let result = query_call_relation_with_output(
+            &fixture.repo,
+            parsed,
+            CallQueryDirection::Callers,
+            Some(&lifecycle),
+        )
+        .expect("query callers");
+
+        assert_eq!(
+            result["schema_name"].as_str(),
+            Some("callers_callees_agent_json")
+        );
+        assert_agent_json_contract(
+            &result,
+            "callers_callees_agent_json",
+            "query callers-callees",
+            super::QUERY_AGENT_JSON_SIZE_TARGET_BYTES,
+        );
+        assert_eq!(result["direction"].as_str(), Some("callers"));
+        assert_eq!(result["result_count"].as_u64(), Some(1));
+        assert_eq!(result["limit"].as_u64(), Some(1));
+        assert!(result["results"].as_array().expect("results").len() <= 1);
+        assert!(result["results"][0]["edge"]["evidence_role"]
+            .as_str()
+            .is_some());
+        assert!(result["results"][0]["edge"]["source_spans"].is_array());
+
+        fs::remove_dir_all(fixture.repo).expect("cleanup");
+    }
+
+    #[test]
+    fn callers_default_to_exact_results_when_symbol_is_unambiguous() {
+        let fixture = caller_callee_precision_fixture();
+
+        let result = query_call_relation(
+            &fixture.repo,
+            CallRelationQueryOptions {
+                query: Some("uniqueTarget".to_string()),
+                entity_id: None,
+                limit: 32,
+                exact_resolved: false,
+                fuzzy: false,
+            },
+            CallQueryDirection::Callers,
+        )
+        .expect("query callers");
+
+        assert_eq!(result["status"].as_str(), Some("ok"));
+        assert_eq!(result["resolution_mode"].as_str(), Some("exact_resolved"));
+        assert_eq!(
+            result["exact_resolved_entity"]["id"].as_str(),
+            Some(fixture.unique_target_id.as_str())
+        );
+        let exact = result["exact_resolved_entity_results"]
+            .as_array()
+            .expect("exact results");
+        assert_eq!(exact.len(), 1, "{result:?}");
+        assert_eq!(
+            exact[0]["callee"]["id"].as_str(),
+            Some(fixture.unique_target_id.as_str())
+        );
+        assert_eq!(
+            exact[0]["proof_labels"]["exactness"].as_str(),
+            Some("parser_verified")
+        );
+        assert!(exact[0]["source_span"].is_object());
+        assert!(result["fuzzy_or_global_results"]
+            .as_array()
+            .expect("fuzzy results")
+            .is_empty());
+        assert_eq!(
+            result["callers"].as_array().expect("legacy callers").len(),
+            1
+        );
+
+        fs::remove_dir_all(fixture.repo).expect("cleanup");
+    }
+
+    #[test]
+    fn callers_ambiguous_symbol_lists_candidates_without_legacy_exact_noise() {
+        let fixture = caller_callee_precision_fixture();
+
+        let result = query_call_relation(
+            &fixture.repo,
+            CallRelationQueryOptions {
+                query: Some("target".to_string()),
+                entity_id: None,
+                limit: 32,
+                exact_resolved: false,
+                fuzzy: false,
+            },
+            CallQueryDirection::Callers,
+        )
+        .expect("query callers");
+
+        assert_eq!(result["status"].as_str(), Some("ambiguous_symbol"));
+        assert_eq!(result["resolution_mode"].as_str(), Some("ambiguous_symbol"));
+        let candidates = result["ambiguous_symbol_matches"]
+            .as_array()
+            .expect("ambiguous candidates");
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate["id"].as_str() == Some(fixture.alpha_target_id.as_str())),
+            "{candidates:?}"
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate["id"].as_str() == Some(fixture.beta_target_id.as_str())),
+            "{candidates:?}"
+        );
+        assert!(result["exact_resolved_entity_results"]
+            .as_array()
+            .expect("exact results")
+            .is_empty());
+        assert!(result["callers"]
+            .as_array()
+            .expect("legacy callers")
+            .is_empty());
+        assert!(
+            result["fuzzy_or_global_results"]
+                .as_array()
+                .expect("fuzzy section")
+                .len()
+                >= 2
+        );
+        assert!(result["suggestion"]["rerun"]
+            .as_str()
+            .expect("rerun suggestion")
+            .contains("--entity-id"));
+
+        fs::remove_dir_all(fixture.repo).expect("cleanup");
+    }
+
+    #[test]
+    fn callers_entity_id_mode_returns_only_selected_entity_callers() {
+        let fixture = caller_callee_precision_fixture();
+        let options = CallRelationQueryOptions {
+            query: None,
+            entity_id: Some(fixture.alpha_target_id.clone()),
+            limit: 32,
+            exact_resolved: false,
+            fuzzy: false,
+        };
+
+        let result = query_call_relation(&fixture.repo, options, CallQueryDirection::Callers)
+            .expect("exact callers");
+
+        assert_eq!(result["status"].as_str(), Some("ok"));
+        assert_eq!(result["resolution_mode"].as_str(), Some("entity_id"));
+        let callers = result["callers"].as_array().expect("callers");
+        assert_eq!(callers.len(), 1, "{result:?}");
+        assert_eq!(
+            callers[0]["caller"]["id"].as_str(),
+            Some(fixture.alpha_caller_id.as_str())
+        );
+        assert_eq!(
+            callers[0]["callee"]["id"].as_str(),
+            Some(fixture.alpha_target_id.as_str())
+        );
+        assert_ne!(
+            callers[0]["caller"]["id"].as_str(),
+            Some(fixture.beta_caller_id.as_str())
+        );
+
+        fs::remove_dir_all(fixture.repo).expect("cleanup");
+    }
+
+    #[test]
+    fn callees_entity_id_mode_returns_exact_callees_and_fuzzy_mode_still_works() {
+        let fixture = caller_callee_precision_fixture();
+        let exact_options = CallRelationQueryOptions {
+            query: None,
+            entity_id: Some(fixture.alpha_caller_id.clone()),
+            limit: 32,
+            exact_resolved: false,
+            fuzzy: false,
+        };
+
+        let exact = query_call_relation(&fixture.repo, exact_options, CallQueryDirection::Callees)
+            .expect("exact callees");
+
+        assert_eq!(exact["status"].as_str(), Some("ok"));
+        assert_eq!(exact["resolution_mode"].as_str(), Some("entity_id"));
+        let callees = exact["callees"].as_array().expect("callees");
+        assert_eq!(callees.len(), 1, "{exact:?}");
+        assert_eq!(
+            callees[0]["callee"]["id"].as_str(),
+            Some(fixture.alpha_target_id.as_str())
+        );
+
+        let fuzzy_args = vec!["--fuzzy".to_string(), "target".to_string()];
+        let fuzzy_options =
+            parse_call_relation_args("callers", &fuzzy_args).expect("parse fuzzy options");
+        let fuzzy = query_call_relation(&fixture.repo, fuzzy_options, CallQueryDirection::Callers)
+            .expect("fuzzy callers");
+
+        assert_eq!(fuzzy["status"].as_str(), Some("ok"));
+        assert_eq!(fuzzy["resolution_mode"].as_str(), Some("fuzzy_or_global"));
+        assert!(fuzzy["exact_resolved_entity_results"]
+            .as_array()
+            .expect("exact results")
+            .is_empty());
+        assert!(
+            fuzzy["callers"]
+                .as_array()
+                .expect("legacy fuzzy callers")
+                .len()
+                >= 2
+        );
+
+        fs::remove_dir_all(fixture.repo).expect("cleanup");
+    }
+
+    #[test]
+    fn context_pack_old_path_without_source_role_metadata_is_unknown_not_production() {
+        let span = SourceSpan::with_columns("src/lib.rs", 8, 5, 8, 17);
+        let mut metadata = Metadata::new();
+        metadata.insert("path_context".to_string(), json!("production"));
+        let path = PathEvidence {
+            id: "legacy-path".to_string(),
+            summary: None,
+            source: "src::lib.legacy".to_string(),
+            target: "src::lib.prod_value".to_string(),
+            metapath: vec![RelationKind::Calls],
+            edges: vec![(
+                "src::lib.legacy".to_string(),
+                RelationKind::Calls,
+                "src::lib.prod_value".to_string(),
+            )],
+            source_spans: vec![span],
+            exactness: Exactness::ParserVerified,
+            length: 1,
+            confidence: 1.0,
+            metadata,
+        };
+        let budgets = super::ContextPackBudgets::for_mode("impact");
+
+        let production =
+            super::filter_and_sort_context_path_evidence(vec![path.clone()], "impact", budgets);
+        assert!(
+            production.is_empty(),
+            "missing source-role metadata must not be accepted as production proof"
+        );
+
+        let debug = super::filter_and_sort_context_path_evidence(vec![path], "debug", budgets);
+        let debug_path = debug.first().expect("debug keeps unknown evidence");
+        assert_eq!(
+            debug_path
+                .metadata
+                .get("evidence_role")
+                .and_then(Value::as_str),
+            Some("unknown")
+        );
+        assert_eq!(
+            debug_path
+                .metadata
+                .get("classification_source")
+                .and_then(Value::as_str),
+            Some("fallback")
+        );
+    }
+
+    #[test]
+    fn context_pack_hydrates_inline_test_role_from_endpoint_qualified_name() {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::write(
+            repo.join("src").join("lib.rs"),
+            "pub fn prod_value() -> i32 { 1 }\n",
+        )
+        .expect("write seed");
+        index_repo(&repo).expect("index repo");
+        let db_path = default_db_path(&repo);
+        let store = SqliteGraphStore::open(&db_path).expect("open store");
+
+        let inline_test = test_function_entity(
+            "src/lib.rs",
+            "calls_prod_value",
+            "src::lib.tests.calls_prod_value",
+            12,
+        );
+        let production = test_function_entity("src/lib.rs", "prod_value", "src::lib.prod_value", 1);
+        store
+            .upsert_entity(&inline_test)
+            .expect("upsert test entity");
+        store
+            .upsert_entity(&production)
+            .expect("upsert production entity");
+        let edge = test_call_edge(&inline_test, &production, "src/lib.rs", 13);
+        store.upsert_edge(&edge).expect("upsert edge");
+
+        let mut metadata = Metadata::new();
+        metadata.insert("path_context".to_string(), json!("production"));
+        metadata.insert(
+            "production_test_mock_labels".to_string(),
+            json!(["production"]),
+        );
+        metadata.insert(
+            "edge_labels".to_string(),
+            json!([{
+                "edge_id": edge.id.clone(),
+                "relation": "CALLS",
+                "source_span": edge.source_span.to_string(),
+                "exactness": "parser_verified",
+                "confidence": 1.0,
+                "derived": false,
+                "edge_class": "base_exact",
+                "fact_class": "base_exact",
+                "context": "production",
+                "provenance_edges": []
+            }]),
+        );
+        let path = PathEvidence {
+            id: "inline-test-path".to_string(),
+            summary: None,
+            source: inline_test.id.clone(),
+            target: production.id.clone(),
+            metapath: vec![RelationKind::Calls],
+            edges: vec![(
+                inline_test.id.clone(),
+                RelationKind::Calls,
+                production.id.clone(),
+            )],
+            source_spans: vec![edge.source_span.clone()],
+            exactness: Exactness::ParserVerified,
+            length: 1,
+            confidence: 1.0,
+            metadata,
+        };
+        store.upsert_path_evidence(&path).expect("upsert path");
+        drop(store);
+
+        let connection = rusqlite::Connection::open(&db_path).expect("open connection");
+        let budgets = super::ContextPackBudgets::for_mode("impact");
+        let production_paths = super::load_stored_context_path_evidence(
+            &connection,
+            &[production.id.clone()],
+            "impact",
+            budgets,
+        )
+        .expect("load production paths");
+        assert!(
+            production_paths.is_empty(),
+            "endpoint qname tests module should exclude inline test evidence"
+        );
+
+        let test_paths = super::load_stored_context_path_evidence(
+            &connection,
+            &[production.id.clone()],
+            "test-impact",
+            budgets,
+        )
+        .expect("load test-impact paths");
+        let hydrated = test_paths
+            .iter()
+            .find(|path| path.id == "inline-test-path")
+            .expect("test-impact includes hydrated inline test path");
+        assert_eq!(
+            hydrated
+                .metadata
+                .get("evidence_role")
+                .and_then(Value::as_str),
+            Some("mixed")
+        );
+        let first_label = hydrated
+            .metadata
+            .get("edge_labels")
+            .and_then(Value::as_array)
+            .and_then(|labels| labels.first())
+            .expect("edge label");
+        assert_eq!(first_label["head_source_role"].as_str(), Some("test"));
+        assert!(first_label["classification_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("tests module")));
+
+        drop(connection);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn context_pack_production_snippets_exclude_inline_test_spans() {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::write(
+            repo.join("src").join("lib.rs"),
+            r#"pub fn prod_value() -> i32 {
+    1
+}
+
+pub fn prod_neighbor() -> i32 {
+    prod_value() + 1
+}
+
+#[test]
+fn standalone_test() {
+    prod_value();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prod_value_test_shadow() -> i32 {
+        prod_value()
+    }
+
+    #[test]
+    fn calls_prod_value() {
+        prod_value_test_shadow();
+        prod_value();
+    }
+}
+"#,
+        )
+        .expect("write inline test fixture");
+
+        let production_span = SourceSpan::with_columns("src/lib.rs", 6, 5, 6, 17);
+        let test_span = SourceSpan::with_columns("src/lib.rs", 19, 9, 19, 21);
+        let production_path = PathEvidence {
+            id: "production-path".to_string(),
+            summary: None,
+            source: "src::lib.prod_neighbor".to_string(),
+            target: "src::lib.prod_value".to_string(),
+            metapath: vec![RelationKind::Calls],
+            edges: vec![(
+                "src::lib.prod_neighbor".to_string(),
+                RelationKind::Calls,
+                "src::lib.prod_value".to_string(),
+            )],
+            source_spans: vec![production_span],
+            exactness: Exactness::ParserVerified,
+            length: 1,
+            confidence: 1.0,
+            metadata: {
+                let mut metadata = Metadata::new();
+                metadata.insert(
+                    "edge_labels".to_string(),
+                    json!([{
+                        "evidence_role": "production",
+                        "classification_source": "stored_metadata",
+                        "classification_reason": "source role metadata"
+                    }]),
+                );
+                metadata
+            },
+        };
+        let test_path = PathEvidence {
+            id: "inline-test-path".to_string(),
+            summary: None,
+            source: "src::lib.tests.prod_value_test_shadow".to_string(),
+            target: "src::lib.prod_value".to_string(),
+            metapath: vec![RelationKind::Calls],
+            edges: vec![(
+                "src::lib.tests.prod_value_test_shadow".to_string(),
+                RelationKind::Calls,
+                "src::lib.prod_value".to_string(),
+            )],
+            source_spans: vec![test_span],
+            exactness: Exactness::ParserVerified,
+            length: 1,
+            confidence: 1.0,
+            metadata: {
+                let mut metadata = Metadata::new();
+                metadata.insert(
+                    "edge_labels".to_string(),
+                    json!([{
+                        "evidence_role": "test",
+                        "classification_source": "endpoint:qualified_name",
+                        "classification_reason": "qualified name contains tests module"
+                    }]),
+                );
+                metadata
+            },
+        };
+        let budgets = super::ContextPackBudgets::for_mode("impact");
+        let production_paths = super::filter_and_sort_context_path_evidence(
+            vec![production_path.clone(), test_path.clone()],
+            "impact",
+            budgets,
+        );
+        assert!(
+            production_paths.iter().all(|path| {
+                path.metadata
+                    .get("evidence_role")
+                    .and_then(Value::as_str)
+                    .is_some_and(|role| role == "production")
+            }),
+            "{production_paths:?}"
+        );
+        let requested_spans = super::context_source_spans_for_paths(&production_paths);
+        assert_eq!(requested_spans.len(), 1);
+        assert_eq!(requested_spans[0].start_line, 6);
+        let (_, production_snippets, _, _) =
+            super::load_context_sources_and_snippets(&repo, &requested_spans, 24)
+                .expect("load production snippets");
+        assert!(!production_snippets.is_empty());
+        for snippet in &production_snippets {
+            let text = snippet.text.as_str();
+            assert!(!text.contains("#[test]"), "{text}");
+            assert!(!text.contains("standalone_test"), "{text}");
+            assert!(!text.contains("mod tests"), "{text}");
+            assert!(!text.contains("prod_value_test_shadow"), "{text}");
+            assert!(!text.contains("calls_prod_value"), "{text}");
+        }
+
+        let test_paths = super::filter_and_sort_context_path_evidence(
+            vec![production_path, test_path],
+            "test-impact",
+            budgets,
+        );
+        assert!(
+            test_paths.iter().any(|path| {
+                matches!(
+                    path.metadata.get("evidence_role").and_then(Value::as_str),
+                    Some("test" | "mock" | "mixed")
+                )
+            }),
+            "{test_paths:?}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn context_pack_compact_parser_supports_agent_limits_and_verbose_audit() {
+        let agent = super::parse_context_pack_args(&[
+            "--task".to_string(),
+            "Change prod_value".to_string(),
+            "--mode".to_string(),
+            "production".to_string(),
+            "--seed".to_string(),
+            "prod_value".to_string(),
+            "--agent-json".to_string(),
+            "--limit-paths".to_string(),
+            "3".to_string(),
+            "--limit-snippets".to_string(),
+            "2".to_string(),
+            "--max-output-bytes".to_string(),
+            "4096".to_string(),
+        ])
+        .expect("parse agent context-pack");
+
+        assert_eq!(agent.mode, "production");
+        assert_eq!(agent.output_mode, QueryOutputMode::AgentJson);
+        assert_eq!(agent.limit_paths, Some(3));
+        assert_eq!(agent.limit_snippets, Some(2));
+        assert_eq!(agent.max_output_bytes, Some(4096));
+        let budgets = super::ContextPackBudgets::for_options(&agent);
+        assert_eq!(budgets.max_returned_proof_paths, 3);
+        assert_eq!(budgets.max_snippets, 2);
+
+        let verbose = super::parse_context_pack_args(&[
+            "--task".to_string(),
+            "Change prod_value".to_string(),
+            "--verbose".to_string(),
+        ])
+        .expect("parse verbose context-pack");
+        assert_eq!(verbose.output_mode, QueryOutputMode::RichJson);
+        assert!(verbose.profile);
+    }
+
+    #[test]
+    fn context_pack_agent_json_is_compact_and_proof_labeled() {
+        let options = context_agent_test_options("production", Some(2), Some(2), None);
+        let packet = context_agent_test_packet("production", 1, 1, "production");
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+            "passport_status": "valid",
+        });
+        let result = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+
+        assert_eq!(
+            result["schema_name"].as_str(),
+            Some("context_pack_agent_json")
+        );
+        assert_eq!(result["schema_version"].as_u64(), Some(1));
+        assert_eq!(result["status"].as_str(), Some("ok"));
+        assert_agent_json_contract(
+            &result,
+            "context_pack_agent_json",
+            "context-pack",
+            super::DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES,
+        );
+        assert_eq!(result["mode"].as_str(), Some("production"));
+        assert_eq!(result["claimable"].as_bool(), Some(true));
+        assert_eq!(result["diagnostic_only"].as_bool(), Some(false));
+        assert_eq!(result["lifecycle"]["claimable"].as_bool(), Some(true));
+        assert!(result.get("db_lifecycle_read").is_none());
+        assert!(result.get("profile").is_none());
+
+        let paths = result["paths"].as_array().expect("paths");
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0]["evidence_role"].as_str(), Some("production"));
+        assert_eq!(
+            paths[0]["classification_reason"].as_str(),
+            Some("stored source-role metadata")
+        );
+        assert_eq!(paths[0]["production_proof_eligible"].as_bool(), Some(true));
+        assert!(paths[0].get("summary").is_none());
+        assert!(paths[0]["edges"][0]["source_spans"]
+            .as_array()
+            .is_some_and(|spans| !spans.is_empty()));
+
+        let snippets = result["snippets"].as_array().expect("snippets");
+        assert_eq!(snippets.len(), 1);
+        assert_eq!(snippets[0]["evidence_role"].as_str(), Some("production"));
+        assert_eq!(result["truncation"]["limit"].as_u64(), Some(2));
+        assert!(serialized_len_for_test(&result) <= super::DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn context_pack_agent_json_keeps_test_impact_labels_explicit() {
+        let options = context_agent_test_options("test-impact", Some(2), Some(2), None);
+        let packet = context_agent_test_packet("test-impact", 1, 1, "test");
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+        });
+        let result = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+
+        assert_eq!(result["mode"].as_str(), Some("test-impact"));
+        assert_eq!(result["paths"][0]["evidence_role"].as_str(), Some("test"));
+        assert_eq!(
+            result["paths"][0]["classification_reason"].as_str(),
+            Some("qualified name contains tests module")
+        );
+        assert_eq!(
+            result["snippets"][0]["evidence_role"].as_str(),
+            Some("test")
+        );
+    }
+
+    #[test]
+    fn context_pack_agent_json_respects_max_output_bytes_without_dropping_labels() {
+        let max_output_bytes = 4096usize;
+        let options =
+            context_agent_test_options("production", Some(8), Some(8), Some(max_output_bytes));
+        let packet = context_agent_test_packet("production", 10, 10, "production");
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+        });
+        let result = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+
+        assert!(
+            serialized_len_for_test(&result) <= max_output_bytes,
+            "{} bytes: {result}",
+            serialized_len_for_test(&result)
+        );
+        assert!(result["omitted_count"].as_u64().unwrap_or_default() > 0);
+        assert_eq!(result["truncation"]["limit_applied"].as_bool(), Some(true));
+        assert_eq!(
+            result["limits"]["max_output_bytes"].as_u64(),
+            Some(max_output_bytes as u64)
+        );
+        for path in result["paths"].as_array().expect("paths") {
+            assert!(path["evidence_role"].as_str().is_some());
+            assert!(path["classification_reason"].as_str().is_some());
+            assert!(path["source_spans"]
+                .as_array()
+                .is_some_and(|spans| !spans.is_empty()));
+        }
+    }
+
+    #[test]
+    fn context_pack_agent_json_production_excludes_inline_test_evidence() {
+        let production_path = context_agent_test_path("prod-path", 6, "production");
+        let test_path = context_agent_test_path("test-path", 18, "test");
+        let budgets = super::ContextPackBudgets::for_mode("production");
+
+        let production_paths = super::filter_and_sort_context_path_evidence(
+            vec![production_path.clone(), test_path.clone()],
+            "production",
+            budgets,
+        );
+        assert_eq!(production_paths.len(), 1);
+        assert_eq!(
+            production_paths[0]
+                .metadata
+                .get("evidence_role")
+                .and_then(Value::as_str),
+            Some("production")
+        );
+
+        let test_paths = super::filter_and_sort_context_path_evidence(
+            vec![production_path, test_path],
+            "test-impact",
+            budgets,
+        );
+        assert!(
+            test_paths.iter().any(|path| path
+                .metadata
+                .get("evidence_role")
+                .and_then(Value::as_str)
+                == Some("test")),
+            "{test_paths:?}"
+        );
+    }
+
+    #[test]
+    fn context_pack_test_impact_fallback_surfaces_inline_test_seed_without_path() {
+        let repo = rust_inline_context_pack_fixture();
+        index_repo(&repo).expect("index inline Rust fixture");
+        let connection = Connection::open(default_db_path(&repo)).expect("open fixture db");
+        let mut options = context_agent_test_options("test-impact", Some(4), Some(4), None);
+        options.task = "greet_works".to_string();
+        options.seeds = vec!["greet_works".to_string()];
+        let budgets = super::ContextPackBudgets::for_options(&options);
+        let raw_seed_values = super::context_pack_seed_values(&options, budgets.max_seed_entities);
+        let seed_entities = super::resolve_context_seed_entities(
+            &connection,
+            &raw_seed_values,
+            budgets.max_seed_entities,
+        )
+        .expect("resolve greet_works seed");
+        let seed_ids =
+            super::context_seed_ids(&raw_seed_values, &seed_entities, budgets.max_seed_entities);
+        let test_seed = seed_entities
+            .iter()
+            .find(|entity| entity.name == "greet_works")
+            .expect("greet_works entity");
+        let test_seed_role = super::context_entity_role(test_seed);
+        assert_eq!(test_seed_role.role, EvidenceRole::Test);
+        assert!(
+            test_seed_role.reason.contains("tests module")
+                || test_seed_role.reason.contains("source_role")
+                || test_seed_role.reason.contains("entity kind"),
+            "{test_seed_role:?}"
+        );
+
+        let test_module_entities = super::resolve_context_seed_entities(
+            &connection,
+            &["tests".to_string()],
+            budgets.max_seed_entities,
+        )
+        .expect("resolve tests module seed");
+        assert!(
+            test_module_entities.iter().any(|entity| {
+                entity.qualified_name.ends_with(".tests")
+                    && super::context_entity_role(entity).role == EvidenceRole::Test
+            }),
+            "{test_module_entities:?}"
+        );
+
+        let local_edges =
+            super::load_bounded_context_edges(&connection, &seed_ids, &options.mode, budgets)
+                .expect("load local fallback edges");
+        let fallback_evidence = super::build_test_impact_fallback_evidence(
+            &connection,
+            &options.mode,
+            &seed_entities,
+            &local_edges,
+            &[],
+            budgets,
+        )
+        .expect("build fallback evidence");
+        assert!(
+            fallback_evidence.iter().any(|evidence| {
+                evidence.symbol == "greet_works" && evidence.evidence_role == EvidenceRole::Test
+            }),
+            "{fallback_evidence:?}"
+        );
+        assert!(
+            fallback_evidence.iter().any(|evidence| {
+                evidence.symbol == "greet" && evidence.evidence_role == EvidenceRole::Production
+            }),
+            "{fallback_evidence:?}"
+        );
+
+        let snippets =
+            super::load_context_fallback_snippets(&repo, &fallback_evidence, budgets.max_snippets)
+                .expect("load fallback snippets");
+        assert!(
+            snippets.iter().any(|snippet| {
+                snippet.text.contains("greet_works")
+                    && snippet.text.contains("#[test]")
+                    && snippet.text.contains("assert_eq!")
+            }),
+            "{snippets:?}"
+        );
+        let fallback_evidence_count = fallback_evidence.len();
+        let packet = super::build_context_packet_from_stored_evidence(
+            &options,
+            &raw_seed_values,
+            &seed_ids,
+            &seed_entities,
+            Vec::new(),
+            snippets,
+            fallback_evidence,
+            None,
+            budgets,
+            0,
+            fallback_evidence_count,
+        );
+        let response = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &json!({"claimable": true, "diagnostic_only": false, "decision": "read_reuse"}),
+            budgets,
+            &repo,
+            &default_db_path(&repo),
+            json!({"wall_ms": 1.0}),
+        );
+
+        assert_eq!(response["proof_path_available"].as_bool(), Some(false));
+        assert!(response["paths"].as_array().expect("paths").is_empty());
+        assert!(response["result_count"].as_u64().unwrap_or_default() > 0);
+        assert!(response["fallback_evidence"]
+            .as_array()
+            .expect("fallback evidence")
+            .iter()
+            .any(|evidence| {
+                evidence["symbol"].as_str() == Some("greet_works")
+                    && evidence["evidence_role"].as_str() == Some("test")
+                    && evidence["proof_path_available"].as_bool() == Some(false)
+            }));
+        assert!(response["snippets"]
+            .as_array()
+            .expect("snippets")
+            .iter()
+            .any(|snippet| {
+                snippet["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("greet_works"))
+                    && snippet["evidence_role"].as_str() == Some("test")
+                    && snippet["fallback_source"].as_str().is_some()
+                    && snippet["proof_path_available"].as_bool() == Some(false)
+            }));
+        assert!(response["recommended_tests"]
+            .as_array()
+            .expect("recommended tests")
+            .iter()
+            .any(|test| test.as_str() == Some("cargo test greet_works")));
+
+        drop(connection);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn context_pack_test_impact_fallback_finds_inline_test_for_production_seed() {
+        let repo = rust_inline_context_pack_fixture();
+        index_repo(&repo).expect("index inline Rust fixture");
+        let connection = Connection::open(default_db_path(&repo)).expect("open fixture db");
+        let mut options = context_agent_test_options("test-impact", Some(4), Some(4), None);
+        options.task = "greet".to_string();
+        options.seeds = vec!["greet".to_string()];
+        let budgets = super::ContextPackBudgets::for_options(&options);
+        let raw_seed_values = super::context_pack_seed_values(&options, budgets.max_seed_entities);
+        let seed_entities = super::resolve_context_seed_entities(
+            &connection,
+            &raw_seed_values,
+            budgets.max_seed_entities,
+        )
+        .expect("resolve greet seed");
+        assert!(
+            seed_entities.iter().any(|entity| entity.name == "greet"),
+            "{seed_entities:?}"
+        );
+        let seed_ids =
+            super::context_seed_ids(&raw_seed_values, &seed_entities, budgets.max_seed_entities);
+        let local_edges =
+            super::load_bounded_context_edges(&connection, &seed_ids, &options.mode, budgets)
+                .expect("load local fallback edges");
+        let fallback_evidence = super::build_test_impact_fallback_evidence(
+            &connection,
+            &options.mode,
+            &seed_entities,
+            &local_edges,
+            &[],
+            budgets,
+        )
+        .expect("build fallback evidence");
+
+        assert!(
+            fallback_evidence.iter().any(|evidence| {
+                evidence.symbol == "greet_works" && evidence.evidence_role == EvidenceRole::Test
+            }),
+            "{fallback_evidence:?}"
+        );
+        assert!(
+            fallback_evidence.iter().any(|evidence| {
+                evidence.symbol == "greet" && evidence.evidence_role == EvidenceRole::Production
+            }),
+            "{fallback_evidence:?}"
+        );
+        let snippets =
+            super::load_context_fallback_snippets(&repo, &fallback_evidence, budgets.max_snippets)
+                .expect("load fallback snippets");
+        assert!(
+            snippets
+                .iter()
+                .any(|snippet| snippet.text.contains("greet_works")),
+            "{snippets:?}"
+        );
+
+        let production_fallback = super::build_test_impact_fallback_evidence(
+            &connection,
+            "production",
+            &seed_entities,
+            &local_edges,
+            &[],
+            budgets,
+        )
+        .expect("production mode fallback");
+        assert!(
+            production_fallback.is_empty(),
+            "production mode must not add test-impact fallback evidence"
+        );
+
+        drop(connection);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    struct CallerCalleePrecisionFixture {
+        repo: PathBuf,
+        alpha_target_id: String,
+        beta_target_id: String,
+        unique_target_id: String,
+        alpha_caller_id: String,
+        beta_caller_id: String,
+    }
+
+    fn context_agent_test_options(
+        mode: &str,
+        limit_paths: Option<usize>,
+        limit_snippets: Option<usize>,
+        max_output_bytes: Option<usize>,
+    ) -> super::ContextPackOptions {
+        super::ContextPackOptions {
+            task: "Change prod_value".to_string(),
+            mode: mode.to_string(),
+            token_budget: 2_000,
+            seeds: vec!["prod_value".to_string()],
+            stage0_candidates: Vec::new(),
+            profile: false,
+            output_mode: QueryOutputMode::AgentJson,
+            limit_paths,
+            limit_snippets,
+            max_output_bytes,
+            allow_stale_read: false,
+            explicit_scope_policy: None,
+        }
+    }
+
+    fn context_agent_test_packet(
+        mode: &str,
+        path_count: usize,
+        snippet_count: usize,
+        role: &str,
+    ) -> ContextPacket {
+        let paths = (0..path_count)
+            .map(|index| {
+                context_agent_test_path(&format!("{role}-path-{index}"), index as u32 + 3, role)
+            })
+            .collect::<Vec<_>>();
+        let snippets = (0..snippet_count)
+            .map(|index| ContextSnippet {
+                file: "src/lib.rs".to_string(),
+                lines: format!("{}", index as u32 + 3),
+                text: format!(
+                    "{}: pub fn {}_{}() -> i32 {{ {} }}",
+                    index + 3,
+                    role,
+                    index,
+                    "x".repeat(256)
+                ),
+                reason: "proof path source span".to_string(),
+            })
+            .collect::<Vec<_>>();
+        let mut metadata = Metadata::new();
+        metadata.insert(
+            "candidate_path_count_before_dedup".to_string(),
+            json!(path_count + 3),
+        );
+        metadata.insert(
+            "requested_source_span_count".to_string(),
+            json!(snippet_count + 3),
+        );
+        ContextPacket {
+            task: "Change prod_value".to_string(),
+            mode: mode.to_string(),
+            symbols: vec!["prod_value".to_string()],
+            verified_paths: paths,
+            risks: (0..8)
+                .map(|index| format!("risk {index}: {}", "r".repeat(128)))
+                .collect(),
+            recommended_tests: (0..8)
+                .map(|index| format!("cargo test context_agent_{index}"))
+                .collect(),
+            snippets,
+            metadata,
+        }
+    }
+
+    fn context_agent_test_path(id: &str, line: u32, role: &str) -> PathEvidence {
+        let span = SourceSpan::with_columns("src/lib.rs", line, 5, line, 24);
+        let (source, target, reason, classification_source) = match role {
+            "test" => (
+                "src::lib.tests.calls_prod_value",
+                "src::lib.prod_value",
+                "qualified name contains tests module",
+                "endpoint:qualified_name",
+            ),
+            "mock" => (
+                "src::lib.MockService",
+                "src::lib.prod_value",
+                "entity kind/name identifies mock evidence",
+                "entity_metadata",
+            ),
+            _ => (
+                "src::lib.prod_neighbor",
+                "src::lib.prod_value",
+                "stored source-role metadata",
+                "stored_metadata",
+            ),
+        };
+        let mut metadata = Metadata::new();
+        metadata.insert("evidence_role".to_string(), json!(role));
+        metadata.insert("classification_reason".to_string(), json!(reason));
+        metadata.insert(
+            "classification_source".to_string(),
+            json!(classification_source),
+        );
+        metadata.insert(
+            "production_proof_eligible".to_string(),
+            json!(role == "production"),
+        );
+        metadata.insert(
+            "edge_labels".to_string(),
+            json!([{
+                "edge_id": format!("{id}-edge"),
+                "evidence_role": role,
+                "classification_reason": reason,
+                "classification_source": classification_source
+            }]),
+        );
+        PathEvidence {
+            id: id.to_string(),
+            summary: None,
+            source: source.to_string(),
+            target: target.to_string(),
+            metapath: vec![RelationKind::Calls],
+            edges: vec![(source.to_string(), RelationKind::Calls, target.to_string())],
+            source_spans: vec![span],
+            exactness: Exactness::ParserVerified,
+            length: 1,
+            confidence: 1.0,
+            metadata,
+        }
+    }
+
+    fn rust_inline_context_pack_fixture() -> PathBuf {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::write(
+            repo.join("Cargo.toml"),
+            "[package]\nname = \"inline_context_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .expect("write cargo manifest");
+        fs::write(
+            repo.join("src").join("lib.rs"),
+            r#"pub fn greet(name: &str) -> String {
+    format!("hello {name}")
+}
+
+pub fn main_call() -> String {
+    greet("wasif")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn greet_works() {
+        assert_eq!(greet("wasif"), "hello wasif");
+    }
+}
+"#,
+        )
+        .expect("write inline Rust fixture");
+        repo
+    }
+
+    fn serialized_len_for_test(value: &Value) -> usize {
+        serde_json::to_vec(value).expect("serialize JSON").len()
+    }
+
+    fn schema_repo_root_for_test() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
+    }
+
+    fn schema_path_for_test(schema_name: &str) -> PathBuf {
+        schema_repo_root_for_test()
+            .join("docs")
+            .join("schemas")
+            .join("agent-json")
+            .join(format!("{schema_name}.schema.json"))
+    }
+
+    fn assert_schema_required_fields_present(value: &Value, schema_name: &str) {
+        let schema_path = schema_path_for_test(schema_name);
+        let schema_text = fs::read_to_string(&schema_path)
+            .unwrap_or_else(|error| panic!("read schema {}: {error}", schema_path.display()));
+        let schema: Value = serde_json::from_str(&schema_text)
+            .unwrap_or_else(|error| panic!("parse schema {}: {error}", schema_path.display()));
+        let required = schema["required"].as_array().unwrap_or_else(|| {
+            panic!(
+                "schema {} missing top-level required array",
+                schema_path.display()
+            )
+        });
+        for field in required {
+            let field = field.as_str().expect("required field name");
+            assert!(
+                value.get(field).is_some(),
+                "{schema_name} output missing required field {field}: {value}"
+            );
+        }
+    }
+
+    fn value_contains_nonempty_array_for_key(value: &Value, key: &str) -> bool {
+        match value {
+            Value::Object(object) => object.iter().any(|(name, child)| {
+                (name == key && child.as_array().is_some_and(|items| !items.is_empty()))
+                    || value_contains_nonempty_array_for_key(child, key)
+            }),
+            Value::Array(items) => items
+                .iter()
+                .any(|child| value_contains_nonempty_array_for_key(child, key)),
+            _ => false,
+        }
+    }
+
+    fn assert_agent_json_contract(
+        value: &Value,
+        schema_name: &str,
+        command: &str,
+        max_bytes: usize,
+    ) {
+        assert_schema_required_fields_present(value, schema_name);
+        assert_eq!(value["schema_name"].as_str(), Some(schema_name));
+        assert_eq!(value["schema_version"].as_u64(), Some(1));
+        assert_eq!(value["command"].as_str(), Some(command));
+        assert!(value["repo"].as_str().is_some_and(|repo| !repo.is_empty()));
+        assert!(value["db"].as_str().is_some_and(|db| !db.is_empty()));
+        assert!(matches!(
+            value["status"].as_str(),
+            Some("ok" | "warning" | "error")
+        ));
+        assert!(value["lifecycle"]["claimable"].as_bool().is_some());
+        assert!(value["lifecycle"]["diagnostic_only"].as_bool().is_some());
+        assert!(value["claimable"].as_bool().is_some());
+        assert!(value["diagnostic_only"].as_bool().is_some());
+        assert!(value["warnings"].as_array().is_some());
+        assert!(value["errors"].as_array().is_some());
+        assert!(value["timings"].is_object(), "{schema_name}: {value}");
+        assert!(
+            !value_contains_nonempty_array_for_key(value, "included_examples"),
+            "{schema_name} leaked included scope examples: {value}"
+        );
+        assert!(
+            !value_contains_nonempty_array_for_key(value, "excluded_examples"),
+            "{schema_name} leaked excluded scope examples: {value}"
+        );
+        let bytes = serialized_len_for_test(value);
+        assert!(
+            bytes <= max_bytes,
+            "{schema_name} exceeded size target {max_bytes} with {bytes} bytes: {value}"
+        );
+    }
+
+    #[test]
+    fn agent_json_schema_files_parse_and_require_common_fields() {
+        let schemas = [
+            "index_agent_json",
+            "query_symbols_agent_json",
+            "query_text_agent_json",
+            "query_files_agent_json",
+            "context_pack_agent_json",
+            "callers_callees_agent_json",
+            "status_compact_json",
+            "doctor_compact_json",
+        ];
+        let common_required = [
+            "schema_name",
+            "schema_version",
+            "status",
+            "command",
+            "repo",
+            "db",
+            "lifecycle",
+            "claimable",
+            "diagnostic_only",
+            "warnings",
+            "errors",
+            "timings",
+        ];
+        for schema_name in schemas {
+            let schema_path = schema_path_for_test(schema_name);
+            let schema_text = fs::read_to_string(&schema_path)
+                .unwrap_or_else(|error| panic!("read schema {}: {error}", schema_path.display()));
+            let schema: Value = serde_json::from_str(&schema_text)
+                .unwrap_or_else(|error| panic!("parse schema {}: {error}", schema_path.display()));
+            assert_eq!(schema["title"].as_str(), Some(schema_name));
+            let required = schema["required"]
+                .as_array()
+                .expect("required schema fields")
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<BTreeSet<_>>();
+            for field in common_required {
+                assert!(
+                    required.contains(field),
+                    "{schema_name} schema does not require {field}"
+                );
+            }
+        }
+    }
+
+    fn index_output_fixture_repo() -> PathBuf {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::write(
+            repo.join("src").join("service.ts"),
+            "export function indexOutputService(value: number) { return value + 1; }\n",
+        )
+        .expect("write service");
+        fs::write(
+            repo.join("src").join("excluded.ts"),
+            "export function excludedFromIndexOutput() { return 0; }\n",
+        )
+        .expect("write excluded");
+        repo
+    }
+
+    fn run_index_output_json(repo: &Path, db: &Path, extra_args: &[&str]) -> Value {
+        let mut args = vec![
+            BIN_NAME.to_string(),
+            "index".to_string(),
+            path_string(repo),
+            "--db".to_string(),
+            path_string(db),
+        ];
+        args.extend(extra_args.iter().map(|arg| arg.to_string()));
+        let output = run(args);
+        assert_eq!(
+            output.exit_code, 0,
+            "stdout:\n{}\nstderr:\n{}",
+            output.stdout, output.stderr
+        );
+        serde_json::from_str(&output.stdout).expect("index JSON")
+    }
+
+    fn caller_callee_precision_fixture() -> CallerCalleePrecisionFixture {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::write(
+            repo.join("src").join("seed.ts"),
+            "export function seed() {\n  return 1;\n}\n",
+        )
+        .expect("write seed");
+        index_repo(&repo).expect("index seed repo");
+        let store = SqliteGraphStore::open(default_db_path(&repo)).expect("open store");
+
+        let alpha_target = test_function_entity("src/alpha.ts", "target", "alpha.target", 3);
+        let beta_target = test_function_entity("src/beta.ts", "target", "beta.target", 4);
+        let unique_target =
+            test_function_entity("src/unique.ts", "uniqueTarget", "unique.uniqueTarget", 5);
+        let alpha_caller = test_function_entity("src/alpha.ts", "callAlpha", "alpha.callAlpha", 10);
+        let beta_caller = test_function_entity("src/beta.ts", "callBeta", "beta.callBeta", 11);
+        let unique_caller =
+            test_function_entity("src/unique.ts", "callUnique", "unique.callUnique", 12);
+
+        for entity in [
+            &alpha_target,
+            &beta_target,
+            &unique_target,
+            &alpha_caller,
+            &beta_caller,
+            &unique_caller,
+        ] {
+            store.upsert_entity(entity).expect("upsert entity");
+        }
+        for edge in [
+            test_call_edge(&alpha_caller, &alpha_target, "src/alpha.ts", 13),
+            test_call_edge(&beta_caller, &beta_target, "src/beta.ts", 14),
+            test_call_edge(&unique_caller, &unique_target, "src/unique.ts", 15),
+        ] {
+            store.upsert_edge(&edge).expect("upsert edge");
+        }
+
+        CallerCalleePrecisionFixture {
+            repo,
+            alpha_target_id: alpha_target.id,
+            beta_target_id: beta_target.id,
+            unique_target_id: unique_target.id,
+            alpha_caller_id: alpha_caller.id,
+            beta_caller_id: beta_caller.id,
+        }
+    }
+
+    fn test_function_entity(path: &str, name: &str, qualified_name: &str, line: u32) -> Entity {
+        Entity {
+            id: stable_entity_id_for_kind(
+                path,
+                EntityKind::Function,
+                qualified_name,
+                Some(qualified_name),
+            ),
+            kind: EntityKind::Function,
+            name: name.to_string(),
+            qualified_name: qualified_name.to_string(),
+            repo_relative_path: path.to_string(),
+            source_span: Some(SourceSpan::with_columns(path, line, 1, line, 20)),
+            content_hash: None,
+            file_hash: None,
+            created_from: "unit-test".to_string(),
+            confidence: 1.0,
+            metadata: Default::default(),
+        }
+    }
+
+    fn test_call_edge(head: &Entity, tail: &Entity, path: &str, line: u32) -> Edge {
+        let span = SourceSpan::with_columns(path, line, 3, line, 24);
+        Edge {
+            id: stable_edge_id(&head.id, RelationKind::Calls, &tail.id, &span),
+            head_id: head.id.clone(),
+            relation: RelationKind::Calls,
+            tail_id: tail.id.clone(),
+            source_span: span,
+            repo_commit: None,
+            file_hash: None,
+            extractor: "unit-test".to_string(),
+            confidence: 1.0,
+            exactness: Exactness::ParserVerified,
+            edge_class: EdgeClass::BaseExact,
+            context: EdgeContext::Production,
+            derived: false,
+            provenance_edges: Vec::new(),
+            metadata: Default::default(),
+        }
+    }
+
     fn temp_repo() -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -14769,6 +22614,50 @@ mod tests {
         repo
     }
 
+    fn sqlite_user_version_for_test(db_path: &Path) -> u32 {
+        let connection = rusqlite::Connection::open(db_path).expect("open test DB");
+        connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("read user_version")
+    }
+
+    fn sqlite_table_exists_for_test(db_path: &Path, table_name: &str) -> bool {
+        let connection = rusqlite::Connection::open(db_path).expect("open test DB");
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [table_name],
+                |row| row.get(0),
+            )
+            .expect("read sqlite_master")
+    }
+
+    fn sqlite_sidecar_path_for_test(db_path: &Path, suffix: &str) -> PathBuf {
+        PathBuf::from(format!("{}-{}", db_path.display(), suffix))
+    }
+
+    fn keep_wal_sidecars_for_test(db_path: &Path) -> rusqlite::Connection {
+        let connection = rusqlite::Connection::open(db_path).expect("open DB for WAL sidecars");
+        connection
+            .execute_batch(
+                "
+                PRAGMA journal_mode = WAL;
+                CREATE TABLE IF NOT EXISTS codegraph_sidecar_status_test(
+                    id INTEGER PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                INSERT INTO codegraph_sidecar_status_test(value) VALUES ('keep-wal-live');
+                ",
+            )
+            .expect("create WAL sidecars");
+        assert!(
+            sqlite_sidecar_path_for_test(db_path, "wal").exists()
+                || sqlite_sidecar_path_for_test(db_path, "shm").exists(),
+            "expected WAL/SHM sidecars to exist for valid DB test"
+        );
+        connection
+    }
+
     fn http_get_json(addr: SocketAddr, path: &str) -> Value {
         let mut stream = TcpStream::connect(addr).expect("connect UI server");
         write!(
@@ -14777,9 +22666,12 @@ mod tests {
         )
         .expect("write HTTP request");
         let mut response = String::new();
-        stream
-            .read_to_string(&mut response)
-            .expect("read HTTP response");
+        match stream.read_to_string(&mut response) {
+            Ok(_) => {}
+            Err(error)
+                if error.kind() == ErrorKind::ConnectionReset && response.contains("\r\n\r\n") => {}
+            Err(error) => panic!("read HTTP response: {error}"),
+        }
         let (_, body) = response.split_once("\r\n\r\n").expect("HTTP body");
         serde_json::from_str(body).expect("JSON response")
     }

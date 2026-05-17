@@ -1,9 +1,11 @@
 # Language Frontends
 
 The root `README.md` is the public setup contract. CodeGraph stays Rust-first,
-exact graph first, vectors second, and single-agent only: do not use subagents.
+exact graph first, and vectors second.
 
-Phase 27 adds a language frontend registry so broader syntax support feeds the same attributed graph without flattening all languages into text. Phase 28 promotes Python, Go, and Rust to conservative Tier 3 caller/callee extraction while keeping unresolved calls explicitly heuristic.
+Language frontends feed the same attributed graph without flattening all
+languages into text. Python, Go, and Rust currently expose conservative Tier 3
+caller/callee extraction while unresolved calls remain explicitly heuristic.
 
 ## Support Tiers
 

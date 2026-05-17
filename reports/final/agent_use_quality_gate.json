@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "report": "agent_use_quality_gate",
+  "created_at": "2026-05-17T08:32:02.861770+00:00",
+  "sanitized_public_summary": true,
+  "overall_status": "pass",
+  "agent_facing_output_ready": true,
+  "scope": "agent-use output shape, context-pack evidence classification, CLI UX, schemas, docs checks, and isolated release-binary smoke",
+  "not_in_scope": [
+    "cold-build performance gate",
+    "storage gate",
+    "CodeGraph vs CGC comparison gate",
+    "real-world recall benchmark"
+  ],
+  "stable_public_report_decision": {
+    "promote_to_reports_final": true,
+    "rationale": "This is the canonical final pass/fail report for the verified agent-use output contract.",
+    "excluded_from_public_report": [
+      "local absolute paths",
+      "raw command log paths",
+      "temporary DB paths",
+      "smoke fixture paths",
+      "command-level artifact payloads"
+    ],
+    "raw_evidence_policy": "Detailed raw evidence remains in ignored audit artifacts and is not part of this stable public report."
+  },
+  "required_gates": {
+    "cargo_build_workspace": true,
+    "cargo_test_workspace": true,
+    "release_build": true,
+    "context_pack_source_role_tests": true,
+    "query_agent_json_tests": true,
+    "index_json_concise_tests": true,
+    "index_explain_scope_tests": true,
+    "cli_global_flag_tests": true,
+    "agent_json_schema_tests": true,
+    "isolated_self_use_smoke": true,
+    "docs_link_and_hygiene_checks": true,
+    "production_context_excludes_inline_tests": true,
+    "test_impact_includes_inline_tests": true,
+    "query_symbols_limit_or_targeted_correction": true,
+    "agent_json_outputs_bounded": true,
+    "index_json_concise_by_default": true,
+    "audit_scope_only_explicit": true,
+    "global_flag_after_command_targeted": true
+  },
+  "isolated_self_use_smoke_summary": {
+    "release_binary_used": true,
+    "isolated_fixture_used": true,
+    "external_db_used": true,
+    "normal_codegraph_db_created": false,
+    "db_under_fixture_repo": false,
+    "sqlite_files_inside_fixture_repo": 0,
+    "global_flags_before_command_work": true,
+    "global_db_after_query_targeted_error": true,
+    "output_size_bytes": {
+      "release_help": 1818,
+      "index_agent_json": 2248,
+      "index_json_concise": 2543,
+      "query_symbols_agent_json_limit_5": 3181,
+      "context_pack_production_agent_json": 3863,
+      "context_pack_test_impact_agent_json": 6923,
+      "index_json_explain_scope": 3251
+    },
+    "agent_json_bounded": {
+      "index_agent_json_lt_4k": true,
+      "query_agent_json_lt_8k": true,
+      "production_context_lt_16k": true,
+      "test_impact_context_lt_16k": true
+    }
+  },
+  "evidence_classification": {
+    "production_context_roles": [
+      "production"
+    ],
+    "test_impact_context_roles": [
+      "mixed",
+      "unknown"
+    ],
+    "production_inline_tests_appear": false,
+    "test_impact_includes_inline_test_evidence": true
+  },
+  "claim_boundaries": {
+    "final_intended_performance_pass_claimed": false,
+    "codegraph_vs_cgc_superiority_claimed": false,
+    "real_world_recall_claimed": false,
+    "manual_relation_precision_boundary": "sampled precision only unless separate stable reports prove otherwise",
+    "absent_proof_mode_relation_precision_claimed": false
+  },
+  "public_report_hygiene": {
+    "contains_local_absolute_paths": false,
+    "contains_raw_log_paths": false,
+    "contains_temporary_db_paths": false,
+    "contains_smoke_fixture_paths": false,
+    "contains_command_payload_table": false
+  }
+}

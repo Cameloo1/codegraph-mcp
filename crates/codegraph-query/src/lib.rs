@@ -19,9 +19,9 @@ use std::{
 };
 
 use codegraph_core::{
-    infer_edge_class, infer_edge_context, ContextPacket, ContextSnippet, DerivedClosureEdge, Edge,
-    EdgeClass, EdgeContext, Entity, EntityKind, Exactness, FileRecord, Metadata, PathEvidence,
-    RelationKind, SourceSpan,
+    classify_edge_evidence_role, combine_evidence_roles, infer_edge_class, infer_edge_context,
+    ContextPacket, ContextSnippet, DerivedClosureEdge, Edge, EdgeClass, Entity, EntityKind,
+    EvidenceRole, Exactness, FileRecord, Metadata, PathEvidence, RelationKind, SourceSpan,
 };
 use codegraph_vector::{
     BinarySignature, BinaryVectorError, BinaryVectorIndex, CompressedVectorReranker,
@@ -126,6 +126,7 @@ pub enum PathContext {
     Test,
     Mock,
     Mixed,
+    Unknown,
 }
 
 impl PathContext {
@@ -135,6 +136,7 @@ impl PathContext {
             Self::Test => "test",
             Self::Mock => "mock",
             Self::Mixed => "mixed",
+            Self::Unknown => "unknown",
         }
     }
 
@@ -153,12 +155,14 @@ pub fn classify_path_context(path: &GraphPath) -> PathContext {
     let mut saw_production = false;
     let mut saw_test = false;
     let mut saw_mock = false;
+    let mut saw_unknown = false;
 
     for step in &path.steps {
         match classify_edge_context(&step.edge) {
             PathContext::Production => saw_production = true,
             PathContext::Test => saw_test = true,
             PathContext::Mock => saw_mock = true,
+            PathContext::Unknown => saw_unknown = true,
             PathContext::Mixed => {
                 saw_production = true;
                 saw_test = true;
@@ -166,20 +170,25 @@ pub fn classify_path_context(path: &GraphPath) -> PathContext {
         }
     }
 
-    match (saw_production, saw_test, saw_mock) {
-        (true, true, _) | (true, _, true) | (_, true, true) => PathContext::Mixed,
-        (_, _, true) => PathContext::Mock,
-        (_, true, _) => PathContext::Test,
-        _ => PathContext::Production,
+    match (saw_production, saw_test, saw_mock, saw_unknown) {
+        (true, true, _, _) | (true, _, true, _) | (_, true, true, _) => PathContext::Mixed,
+        (true, false, false, true) => PathContext::Mixed,
+        (false, true, false, true) => PathContext::Mixed,
+        (false, false, true, true) => PathContext::Mixed,
+        (_, _, true, false) => PathContext::Mock,
+        (_, true, _, false) => PathContext::Test,
+        (true, false, false, false) => PathContext::Production,
+        _ => PathContext::Unknown,
     }
 }
 
 fn classify_edge_context(edge: &Edge) -> PathContext {
-    match infer_edge_context(edge) {
-        EdgeContext::Production => PathContext::Production,
-        EdgeContext::Test => PathContext::Test,
-        EdgeContext::Mock => PathContext::Mock,
-        EdgeContext::Mixed | EdgeContext::Unknown => PathContext::Mixed,
+    match classify_edge_evidence_role(edge).role {
+        EvidenceRole::Production => PathContext::Production,
+        EvidenceRole::Test => PathContext::Test,
+        EvidenceRole::Mock => PathContext::Mock,
+        EvidenceRole::Mixed => PathContext::Mixed,
+        EvidenceRole::Unknown => PathContext::Unknown,
     }
 }
 
@@ -1549,6 +1558,7 @@ impl ExactGraphQueryEngine {
             .iter()
             .map(|step| {
                 let fact_class = classify_edge_fact(&step.edge);
+                let role = classify_edge_evidence_role(&step.edge);
                 serde_json::json!({
                     "edge_id": step.edge.id,
                     "relation": step.edge.relation.to_string(),
@@ -1563,6 +1573,9 @@ impl ExactGraphQueryEngine {
                     "file_hash": step.edge.file_hash,
                     "fact_class": fact_class.as_str(),
                     "proof_grade_edge_class": fact_class_is_proof_eligible(&step.edge, fact_class),
+                    "evidence_role": role.role.as_str(),
+                    "classification_reason": role.reason,
+                    "classification_source": role.classification_source,
                 })
             })
             .collect::<Vec<_>>();
@@ -1598,10 +1611,30 @@ impl ExactGraphQueryEngine {
         let context_labels = path
             .steps
             .iter()
-            .map(|step| infer_edge_context(&step.edge).as_str().to_string())
+            .map(|step| {
+                classify_edge_evidence_role(&step.edge)
+                    .role
+                    .as_str()
+                    .to_string()
+            })
             .collect::<Vec<_>>();
         let mut metadata = Metadata::new();
         let path_context = path.path_context();
+        let evidence_role = combine_evidence_roles(
+            path.steps
+                .iter()
+                .map(|step| classify_edge_evidence_role(&step.edge).role),
+        );
+        let classification_sources = path
+            .steps
+            .iter()
+            .map(|step| classify_edge_evidence_role(&step.edge).classification_source)
+            .collect::<Vec<_>>();
+        let classification_reasons = path
+            .steps
+            .iter()
+            .map(|step| classify_edge_evidence_role(&step.edge).reason)
+            .collect::<Vec<_>>();
         metadata.insert("cost".to_string(), serde_json::json!(path.cost));
         metadata.insert(
             "uncertainty".to_string(),
@@ -1641,15 +1674,37 @@ impl ExactGraphQueryEngine {
             serde_json::json!(path_context.as_str()),
         );
         metadata.insert(
+            "evidence_role".to_string(),
+            serde_json::json!(evidence_role.as_str()),
+        );
+        metadata.insert(
+            "classification_source".to_string(),
+            serde_json::json!(if classification_sources.is_empty() {
+                "empty_path".to_string()
+            } else {
+                classification_sources.join("+")
+            }),
+        );
+        metadata.insert(
+            "classification_reason".to_string(),
+            serde_json::json!(if classification_reasons.is_empty() {
+                "empty path".to_string()
+            } else {
+                classification_reasons.join("; ")
+            }),
+        );
+        metadata.insert(
             "production_proof_eligible".to_string(),
             serde_json::json!(
-                path_context.is_production() && validate_proof_path_edge_classes(path).is_ok()
+                evidence_role.is_production() && validate_proof_path_edge_classes(path).is_ok()
             ),
         );
         metadata.insert(
             "proof_scope".to_string(),
-            serde_json::json!(if path_context.is_production() {
+            serde_json::json!(if evidence_role.is_production() {
                 "production"
+            } else if evidence_role == EvidenceRole::Unknown {
+                "unknown"
             } else {
                 "test_or_mock"
             }),
@@ -1906,6 +1961,9 @@ impl ExactGraphQueryEngine {
         let candidate_path_count_before_dedup = paths.len();
         paths = unique_paths(paths);
         let candidate_path_count_after_dedup = paths.len();
+        let (split_paths, split_mixed_path_count) =
+            split_mixed_paths_for_context_mode(paths, &request.mode);
+        paths = split_paths;
         let path_context_counts_before = path_context_counts(&paths);
         let rejected_test_mock_path_count = paths
             .iter()
@@ -1951,6 +2009,10 @@ impl ExactGraphQueryEngine {
         metadata.insert(
             "candidate_path_count_after_dedup".to_string(),
             serde_json::json!(candidate_path_count_after_dedup),
+        );
+        metadata.insert(
+            "split_mixed_path_count".to_string(),
+            serde_json::json!(split_mixed_path_count),
         );
         metadata.insert(
             "candidate_path_count_after_filter".to_string(),
@@ -3982,6 +4044,65 @@ fn edge_class_issues_json(issues: &[EdgeClassProofIssue]) -> serde_json::Value {
         .collect::<Vec<_>>())
 }
 
+fn split_mixed_paths_for_context_mode(
+    paths: Vec<GraphPath>,
+    mode: &str,
+) -> (Vec<GraphPath>, usize) {
+    if context_mode_allows_test_mock_edges(mode) {
+        return (paths, 0);
+    }
+
+    let mut split_count = 0usize;
+    let mut output = Vec::new();
+    for path in paths {
+        if path.path_context() == PathContext::Mixed {
+            if let Some(production) = production_subpath_for_mixed_path(&path) {
+                split_count += 1;
+                output.push(production);
+                continue;
+            }
+        }
+        output.push(path);
+    }
+    (output, split_count)
+}
+
+fn production_subpath_for_mixed_path(path: &GraphPath) -> Option<GraphPath> {
+    let mut best_start = 0usize;
+    let mut best_len = 0usize;
+    let mut current_start = 0usize;
+    let mut current_len = 0usize;
+
+    for (index, step) in path.steps.iter().enumerate() {
+        if classify_edge_context(&step.edge) == PathContext::Production {
+            if current_len == 0 {
+                current_start = index;
+            }
+            current_len += 1;
+            if current_len > best_len {
+                best_start = current_start;
+                best_len = current_len;
+            }
+        } else {
+            current_len = 0;
+        }
+    }
+
+    if best_len == 0 || best_len == path.steps.len() {
+        return None;
+    }
+    let steps = path.steps[best_start..best_start + best_len].to_vec();
+    let source = steps.first()?.from.clone();
+    let target = steps.last()?.to.clone();
+    Some(GraphPath {
+        source,
+        target,
+        steps,
+        cost: path.cost,
+        uncertainty: path.uncertainty,
+    })
+}
+
 fn path_allowed_for_context_mode(path: &GraphPath, mode: &str) -> bool {
     context_mode_allows_test_mock_edges(mode) || path.path_context().is_production()
 }
@@ -4011,12 +4132,14 @@ fn path_context_counts(paths: &[GraphPath]) -> serde_json::Value {
     let mut test = 0usize;
     let mut mock = 0usize;
     let mut mixed = 0usize;
+    let mut unknown = 0usize;
     for path in paths {
         match path.path_context() {
             PathContext::Production => production += 1,
             PathContext::Test => test += 1,
             PathContext::Mock => mock += 1,
             PathContext::Mixed => mixed += 1,
+            PathContext::Unknown => unknown += 1,
         }
     }
     serde_json::json!({
@@ -4024,6 +4147,7 @@ fn path_context_counts(paths: &[GraphPath]) -> serde_json::Value {
         "test": test,
         "mock": mock,
         "mixed": mixed,
+        "unknown": unknown,
     })
 }
 
@@ -4272,6 +4396,33 @@ mod tests {
         edge.exactness = Exactness::StaticHeuristic;
         edge.confidence = 0.65;
         edge.extractor = "test-heuristic".to_string();
+        edge
+    }
+
+    fn edge_with_evidence_role(
+        head: &str,
+        relation: RelationKind,
+        tail: &str,
+        span: SourceSpan,
+        role: EvidenceRole,
+        reason: &str,
+    ) -> Edge {
+        let mut edge = edge_with_span(head, relation, tail, span);
+        edge.context = match role {
+            EvidenceRole::Production => EdgeContext::Production,
+            EvidenceRole::Test => EdgeContext::Test,
+            EvidenceRole::Mock => EdgeContext::Mock,
+            EvidenceRole::Mixed => EdgeContext::Mixed,
+            EvidenceRole::Unknown => EdgeContext::Unknown,
+        };
+        edge.metadata
+            .insert("source_role".to_string(), role.as_str().into());
+        edge.metadata
+            .insert("evidence_role".to_string(), role.as_str().into());
+        edge.metadata
+            .insert("classification_reason".to_string(), reason.into());
+        edge.metadata
+            .insert("classification_source".to_string(), "test_fixture".into());
         edge
     }
 
@@ -5373,6 +5524,122 @@ mod tests {
     }
 
     #[test]
+    fn production_context_packet_filters_inline_rust_test_evidence_by_source_role() {
+        let inline_test_edge = edge_with_evidence_role(
+            "src::lib.tests.calls_prod_value",
+            RelationKind::Calls,
+            "src::lib.prod_value",
+            SourceSpan::with_columns("src/lib.rs", 13, 9, 13, 21),
+            EvidenceRole::Test,
+            "qualified name is inside a tests module",
+        );
+        let engine = ExactGraphQueryEngine::new(vec![inline_test_edge]);
+        let sources = single_source(
+            "src/lib.rs",
+            "pub fn prod_value() -> i32 { 1 }\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn calls_prod_value() {\n        prod_value();\n    }\n}\n",
+        );
+
+        let production_packet = engine.context_pack(
+            ContextPackRequest::new(
+                "Change prod_value safely",
+                "impact",
+                2_000,
+                vec!["src::lib.prod_value".to_string()],
+            ),
+            &sources,
+        );
+
+        assert!(production_packet.verified_paths.is_empty());
+        assert_eq!(
+            production_packet
+                .metadata
+                .get("rejected_test_mock_path_count")
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+
+        let test_packet = engine.context_pack(
+            ContextPackRequest::new(
+                "Find tests for prod_value",
+                "test-impact",
+                2_000,
+                vec!["src::lib.prod_value".to_string()],
+            ),
+            &sources,
+        );
+        let evidence = test_packet
+            .verified_paths
+            .first()
+            .expect("test-impact keeps inline test evidence");
+        assert_eq!(
+            evidence
+                .metadata
+                .get("evidence_role")
+                .and_then(serde_json::Value::as_str),
+            Some("test")
+        );
+        assert_eq!(
+            evidence
+                .metadata
+                .get("classification_source")
+                .and_then(serde_json::Value::as_str),
+            Some("metadata")
+        );
+        assert!(evidence
+            .metadata
+            .get("classification_reason")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|reason| reason.contains("tests module")));
+    }
+
+    #[test]
+    fn mixed_paths_can_split_to_production_only_subpath() {
+        let production = edge_with_evidence_role(
+            "api",
+            RelationKind::Calls,
+            "service",
+            SourceSpan::with_columns("src/lib.rs", 2, 3, 2, 12),
+            EvidenceRole::Production,
+            "production source",
+        );
+        let test = edge_with_evidence_role(
+            "service",
+            RelationKind::Calls,
+            "src::lib.tests.assert_service",
+            SourceSpan::with_columns("src/lib.rs", 12, 9, 12, 25),
+            EvidenceRole::Test,
+            "inline test source",
+        );
+        let mixed = GraphPath {
+            source: "api".to_string(),
+            target: "src::lib.tests.assert_service".to_string(),
+            steps: vec![
+                TraversalStep {
+                    edge: production,
+                    direction: TraversalDirection::Forward,
+                    from: "api".to_string(),
+                    to: "service".to_string(),
+                },
+                TraversalStep {
+                    edge: test,
+                    direction: TraversalDirection::Forward,
+                    from: "service".to_string(),
+                    to: "src::lib.tests.assert_service".to_string(),
+                },
+            ],
+            cost: 2.0,
+            uncertainty: 0.0,
+        };
+
+        assert_eq!(mixed.path_context(), PathContext::Mixed);
+        let split = production_subpath_for_mixed_path(&mixed).expect("production split");
+        assert_eq!(split.source, "api");
+        assert_eq!(split.target, "service");
+        assert_eq!(split.steps.len(), 1);
+        assert_eq!(split.path_context(), PathContext::Production);
+    }
+
+    #[test]
     fn test_impact_context_packet_intentionally_includes_test_mock_edges() {
         let engine = ExactGraphQueryEngine::new(vec![
             edge_with_span(
@@ -5420,7 +5687,7 @@ mod tests {
             ContextPackRequest::new(
                 "Find tests and mocks for sendEmail",
                 "test-impact",
-                2_000,
+                3_000,
                 vec!["src/service.sendEmail".to_string()],
             ),
             &sources,
@@ -5951,7 +6218,7 @@ mod tests {
             .and_then(|value| value.as_u64())
             .unwrap_or(u64::MAX);
 
-        assert!(estimated <= 260, "estimated token count was {estimated}");
+        assert!(estimated <= 300, "estimated token count was {estimated}");
     }
 
     #[test]

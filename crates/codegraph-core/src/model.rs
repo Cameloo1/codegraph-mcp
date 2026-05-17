@@ -3,7 +3,8 @@ use std::{collections::BTreeMap, fmt, str::FromStr};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    normalize_repo_relative_path, EdgeClass, EdgeContext, EntityKind, Exactness, RelationKind,
+    normalize_repo_relative_path, EdgeClass, EdgeContext, EntityKind, EvidenceRole, Exactness,
+    RelationKind,
 };
 
 pub type Metadata = BTreeMap<String, serde_json::Value>;
@@ -148,6 +149,27 @@ pub struct Edge {
     pub metadata: Metadata,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvidenceRoleDecision {
+    pub role: EvidenceRole,
+    pub reason: String,
+    pub classification_source: String,
+}
+
+impl EvidenceRoleDecision {
+    pub fn new(
+        role: EvidenceRole,
+        reason: impl Into<String>,
+        classification_source: impl Into<String>,
+    ) -> Self {
+        Self {
+            role,
+            reason: reason.into(),
+            classification_source: classification_source.into(),
+        }
+    }
+}
+
 fn default_edge_class() -> EdgeClass {
     EdgeClass::Unknown
 }
@@ -159,6 +181,134 @@ fn default_edge_context() -> EdgeContext {
 pub fn normalize_edge_classification(edge: &mut Edge) {
     edge.context = infer_edge_context(edge);
     edge.edge_class = infer_edge_class(edge);
+}
+
+pub fn classify_entity_source_role(entity: &Entity) -> EvidenceRoleDecision {
+    if let Some(role) = metadata_evidence_role(&entity.metadata) {
+        return EvidenceRoleDecision::new(
+            role,
+            metadata_reason(&entity.metadata)
+                .unwrap_or_else(|| "entity metadata source_role".into()),
+            "metadata",
+        );
+    }
+    if let Some(role) = entity_kind_source_role(entity.kind) {
+        return EvidenceRoleDecision::new(
+            role,
+            format!("entity kind {}", entity.kind),
+            "entity_kind",
+        );
+    }
+    if qualified_name_contains_test_module(&entity.qualified_name) {
+        return EvidenceRoleDecision::new(
+            EvidenceRole::Test,
+            "qualified name contains tests module",
+            "qualified_name",
+        );
+    }
+    if looks_mock_like(&entity.name) || looks_mock_like(&entity.qualified_name) {
+        return EvidenceRoleDecision::new(
+            EvidenceRole::Mock,
+            "entity name looks like mock/stub",
+            "qualified_name",
+        );
+    }
+    if is_test_path(&entity.repo_relative_path) {
+        return EvidenceRoleDecision::new(
+            EvidenceRole::Test,
+            "entity is in a test/spec path",
+            "file_path",
+        );
+    }
+    EvidenceRoleDecision::new(
+        EvidenceRole::Unknown,
+        "missing source-role metadata",
+        "fallback",
+    )
+}
+
+pub fn classify_edge_evidence_role(edge: &Edge) -> EvidenceRoleDecision {
+    if let Some(role) = metadata_evidence_role(&edge.metadata) {
+        return EvidenceRoleDecision::new(
+            role,
+            metadata_reason(&edge.metadata).unwrap_or_else(|| "edge metadata source_role".into()),
+            "metadata",
+        );
+    }
+    if let Some(role) = relation_source_role(edge.relation) {
+        return EvidenceRoleDecision::new(
+            role,
+            format!("relation kind {}", edge.relation),
+            "relation_kind",
+        );
+    }
+    if is_test_path(&edge.source_span.repo_relative_path) {
+        return EvidenceRoleDecision::new(
+            EvidenceRole::Test,
+            "edge source span is in a test/spec path",
+            "file_path",
+        );
+    }
+    if endpoint_looks_mock(&edge.head_id) || endpoint_looks_mock(&edge.tail_id) {
+        return EvidenceRoleDecision::new(
+            EvidenceRole::Mock,
+            "edge endpoint looks like mock/stub",
+            "endpoint_id",
+        );
+    }
+    if endpoint_looks_test(&edge.head_id) || endpoint_looks_test(&edge.tail_id) {
+        return EvidenceRoleDecision::new(
+            EvidenceRole::Test,
+            "edge endpoint looks like test/spec",
+            "endpoint_id",
+        );
+    }
+    if edge.context != EdgeContext::Unknown {
+        return EvidenceRoleDecision::new(
+            evidence_role_from_edge_context(edge.context),
+            "stored edge context",
+            "edge_context",
+        );
+    }
+    EvidenceRoleDecision::new(
+        EvidenceRole::Unknown,
+        "missing edge source-role metadata",
+        "fallback",
+    )
+}
+
+pub fn combine_evidence_roles<I>(roles: I) -> EvidenceRole
+where
+    I: IntoIterator<Item = EvidenceRole>,
+{
+    let mut saw_production = false;
+    let mut saw_test = false;
+    let mut saw_mock = false;
+    let mut saw_unknown = false;
+
+    for role in roles {
+        match role {
+            EvidenceRole::Production => saw_production = true,
+            EvidenceRole::Test => saw_test = true,
+            EvidenceRole::Mock => saw_mock = true,
+            EvidenceRole::Mixed => {
+                saw_production = true;
+                saw_test = true;
+            }
+            EvidenceRole::Unknown => saw_unknown = true,
+        }
+    }
+
+    match (saw_production, saw_test, saw_mock, saw_unknown) {
+        (true, true, _, _) | (true, _, true, _) | (_, true, true, _) => EvidenceRole::Mixed,
+        (true, false, false, true) => EvidenceRole::Mixed,
+        (false, true, false, true) => EvidenceRole::Mixed,
+        (false, false, true, true) => EvidenceRole::Mixed,
+        (_, _, true, false) => EvidenceRole::Mock,
+        (_, true, _, false) => EvidenceRole::Test,
+        (true, false, false, false) => EvidenceRole::Production,
+        _ => EvidenceRole::Unknown,
+    }
 }
 
 pub fn infer_edge_class(edge: &Edge) -> EdgeClass {
@@ -208,16 +358,98 @@ pub fn infer_edge_context(edge: &Edge) -> EdgeContext {
     {
         return EdgeContext::Test;
     }
+    if edge.context != EdgeContext::Unknown {
+        return edge.context;
+    }
     EdgeContext::Production
 }
 
 fn edge_metadata_context(edge: &Edge) -> Option<EdgeContext> {
-    for key in ["path_context", "context", "execution_context", "scope"] {
+    for key in [
+        "evidence_role",
+        "source_role",
+        "path_context",
+        "context",
+        "execution_context",
+        "scope",
+    ] {
         if let Some(value) = edge.metadata.get(key).and_then(serde_json::Value::as_str) {
             return Some(normalize_context_label(value));
         }
     }
     None
+}
+
+fn metadata_evidence_role(metadata: &Metadata) -> Option<EvidenceRole> {
+    for key in [
+        "evidence_role",
+        "source_role",
+        "path_context",
+        "context",
+        "execution_context",
+        "scope",
+    ] {
+        if let Some(value) = metadata.get(key).and_then(serde_json::Value::as_str) {
+            return Some(evidence_role_from_label(value));
+        }
+    }
+    None
+}
+
+fn metadata_reason(metadata: &Metadata) -> Option<String> {
+    for key in [
+        "classification_reason",
+        "source_role_reason",
+        "evidence_role_reason",
+        "context_reason",
+    ] {
+        if let Some(value) = metadata.get(key).and_then(serde_json::Value::as_str) {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn evidence_role_from_label(value: &str) -> EvidenceRole {
+    match normalize_context_label(value) {
+        EdgeContext::Production => EvidenceRole::Production,
+        EdgeContext::Test => EvidenceRole::Test,
+        EdgeContext::Mock => EvidenceRole::Mock,
+        EdgeContext::Mixed => EvidenceRole::Mixed,
+        EdgeContext::Unknown => EvidenceRole::Unknown,
+    }
+}
+
+fn evidence_role_from_edge_context(context: EdgeContext) -> EvidenceRole {
+    match context {
+        EdgeContext::Production => EvidenceRole::Production,
+        EdgeContext::Test => EvidenceRole::Test,
+        EdgeContext::Mock => EvidenceRole::Mock,
+        EdgeContext::Mixed => EvidenceRole::Mixed,
+        EdgeContext::Unknown => EvidenceRole::Unknown,
+    }
+}
+
+fn entity_kind_source_role(kind: EntityKind) -> Option<EvidenceRole> {
+    match kind {
+        EntityKind::TestFile
+        | EntityKind::TestSuite
+        | EntityKind::TestCase
+        | EntityKind::Fixture
+        | EntityKind::Assertion => Some(EvidenceRole::Test),
+        EntityKind::Mock | EntityKind::Stub => Some(EvidenceRole::Mock),
+        _ => None,
+    }
+}
+
+fn relation_source_role(relation: RelationKind) -> Option<EvidenceRole> {
+    if is_mock_relation(relation) {
+        Some(EvidenceRole::Mock)
+    } else if is_test_relation(relation) {
+        Some(EvidenceRole::Test)
+    } else {
+        None
+    }
 }
 
 fn normalize_context_label(value: &str) -> EdgeContext {
@@ -327,8 +559,25 @@ fn endpoint_looks_test(value: &str) -> bool {
 }
 
 fn endpoint_looks_mock(value: &str) -> bool {
+    looks_mock_like(value)
+}
+
+fn looks_mock_like(value: &str) -> bool {
     let normalized = value.to_ascii_lowercase();
     normalized.contains("mock") || normalized.contains("stub")
+}
+
+fn qualified_name_contains_test_module(value: &str) -> bool {
+    let normalized = value.replace('\\', "/").to_ascii_lowercase();
+    normalized == "tests"
+        || normalized == "test"
+        || normalized.starts_with("tests.")
+        || normalized.starts_with("test.")
+        || normalized.contains(".tests.")
+        || normalized.contains(".test.")
+        || normalized.contains("::tests::")
+        || normalized.ends_with(".tests")
+        || normalized.ends_with("::tests")
 }
 
 fn is_test_path(path: &str) -> bool {

@@ -1,0 +1,139 @@
+# Agent JSON Contract
+
+This document defines the compact agent JSON contract for stable
+`--agent-json` and compact lifecycle output modes. The schemas are public,
+machine-readable contracts, and Rust regression tests assert that emitted agent
+JSON includes the required top-level fields and stays under documented size
+targets.
+
+Schema files live in `docs/schemas/agent-json/`:
+
+- `index_agent_json.schema.json`
+- `query_symbols_agent_json.schema.json`
+- `query_text_agent_json.schema.json`
+- `query_files_agent_json.schema.json`
+- `context_pack_agent_json.schema.json`
+- `callers_callees_agent_json.schema.json`
+- `status_compact_json.schema.json`
+- `doctor_compact_json.schema.json`
+- `common.schema.json`
+
+## Versioning
+
+Every agent JSON response has:
+
+- `schema_name`
+- `schema_version`
+- `command`
+- `repo`
+- `db`
+
+The initial compact contract uses `schema_version: 1`. Additive fields are
+allowed under the same major version. Clients must ignore unknown fields.
+Removing a field, changing field meaning, changing enum semantics, or changing
+the truncation/lifecycle/evidence rules requires a version bump.
+
+## Unknowns
+
+Unknown optional fields are omitted, not set to `null`. Required fields use
+explicit booleans, empty arrays, or bounded strings instead of `null`.
+
+Examples:
+
+- If `total_available` is cheap, include it.
+- If it is not cheap, omit `total_available` and set
+  `total_available_unknown: true`.
+- If a source span is unavailable, omit that source span object rather than
+  emitting a null span.
+
+## Truncation
+
+Agent modes must limit result ids before expensive hydration or serialization.
+Every response includes a `truncation` object with:
+
+- `returned_count`
+- `limit_applied`
+- `omitted_count`
+- `total_available_unknown`
+
+If exact totals are cheap, include `total_available` and make `omitted_count`
+exact. If exact totals are not cheap, implementations should use a cheap
+read-ahead where possible, set `total_available_unknown: true`, and mark
+`omitted_count_is_lower_bound: true` when the omitted count is a lower bound.
+
+## Lifecycle
+
+Every response includes compact lifecycle state in `lifecycle`.
+
+Required lifecycle fields:
+
+- `claimable`
+- `diagnostic_only`
+
+The same claim fields are also repeated at the response top level so tight
+agent loops can branch without walking nested lifecycle structures.
+
+Full DB passport/preflight detail belongs only in verbose, profile, audit, or
+debug output. Compact agent JSON must not embed raw lifecycle payloads by
+default.
+
+## Evidence
+
+When returning context or proof evidence, responses include:
+
+- `evidence_role`
+- `source_spans` when available
+- `classification_reason` when the role is inferred, fallback-derived, mixed,
+  unknown, test, mock, or otherwise non-obvious
+
+Valid evidence roles are `production`, `test`, `mock`, `mixed`, and `unknown`.
+Default production context must not silently treat `test`, `mock`, `mixed`, or
+`unknown` evidence as production proof.
+
+## Status, Warnings, Errors
+
+Every response includes:
+
+- `status`: `ok`, `warning`, or `error`
+- `warnings`: bounded list
+- `errors`: bounded list
+- `timings`: compact timing summary such as `wall_ms` when measured
+
+Raw debug data, full audit payloads, and large lifecycle objects are excluded
+from compact agent JSON by default.
+
+## Size Guards
+
+Regression tests enforce these default size targets:
+
+- `index_agent_json`: 4 KiB
+- query agent JSON surfaces: 12 KiB
+- `context_pack_agent_json`: 16 KiB by default, or the requested
+  `--max-output-bytes` value when supplied
+
+Agent JSON must not include non-empty `scope.included_examples` or
+`scope.excluded_examples` arrays. Scope examples and full audit payloads remain
+available through explicit audit/verbose flags.
+
+## Surface Schemas
+
+`index_agent_json` reports compact index outcome, counts, lifecycle state, and
+truncation metadata without audit-grade scope examples by default.
+
+`query_symbols_agent_json`, `query_text_agent_json`, and
+`query_files_agent_json` return bounded result arrays with source spans where
+available and compact lifecycle/truncation metadata.
+
+`callers_callees_agent_json` returns bounded call edges, resolved-entity
+metadata when available, source spans, exactness/confidence labels, and evidence
+roles.
+
+`context_pack_agent_json` returns bounded symbols, snippets, and proof paths
+with evidence role, classification reason/source when relevant, and production
+proof eligibility.
+
+`status_compact_json` and `doctor_compact_json` define the compact lifecycle
+shape for status-like agent surfaces. The existing `status` and `doctor --json`
+commands still expose their historical rich diagnostic objects unless a compact
+mode is added; clients should treat these schemas as the compact lifecycle
+contract, not as a claim that the rich diagnostics were removed.

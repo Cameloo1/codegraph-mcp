@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codegraph.local/schemas/agent-json/callers_callees_agent_json.schema.json",
+  "title": "callers_callees_agent_json",
+  "type": "object",
+  "required": [
+    "schema_name",
+    "schema_version",
+    "status",
+    "command",
+    "repo",
+    "db",
+    "lifecycle",
+    "claimable",
+    "diagnostic_only",
+    "truncation",
+    "result_count",
+    "limit",
+    "omitted_count",
+    "warnings",
+    "errors",
+    "timings",
+    "direction",
+    "query",
+    "results"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_name": {
+      "const": "callers_callees_agent_json"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "$ref": "common.schema.json#/$defs/status"
+    },
+    "command": {
+      "const": "query callers-callees"
+    },
+    "repo": {
+      "$ref": "common.schema.json#/$defs/repo"
+    },
+    "db": {
+      "$ref": "common.schema.json#/$defs/db"
+    },
+    "lifecycle": {
+      "$ref": "common.schema.json#/$defs/lifecycle_summary"
+    },
+    "claimable": {
+      "type": "boolean"
+    },
+    "diagnostic_only": {
+      "type": "boolean"
+    },
+    "truncation": {
+      "$ref": "common.schema.json#/$defs/truncation"
+    },
+    "result_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "omitted_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "warnings": {
+      "$ref": "common.schema.json#/$defs/bounded_messages"
+    },
+    "errors": {
+      "$ref": "common.schema.json#/$defs/bounded_messages"
+    },
+    "timings": {
+      "$ref": "common.schema.json#/$defs/timings"
+    },
+    "direction": {
+      "type": "string",
+      "enum": ["callers", "callees"]
+    },
+    "query": {
+      "type": "object",
+      "required": ["text"],
+      "additionalProperties": true,
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "entity_id": {
+          "type": "string"
+        },
+        "resolution_mode": {
+          "type": "string"
+        },
+        "resolved_entity": {
+          "$ref": "common.schema.json#/$defs/entity_ref"
+        }
+      }
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["edge", "caller", "callee"],
+        "additionalProperties": true,
+        "properties": {
+          "edge": {
+            "$ref": "common.schema.json#/$defs/proof_edge"
+          },
+          "caller": {
+            "$ref": "common.schema.json#/$defs/entity_ref"
+          },
+          "callee": {
+            "$ref": "common.schema.json#/$defs/entity_ref"
+          }
+        }
+      }
+    }
+  }
+}

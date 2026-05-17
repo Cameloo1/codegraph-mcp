@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
+    fs, io,
     path::{Path, PathBuf},
     str::FromStr,
     time::{Duration, Instant},
@@ -137,27 +138,253 @@ pub struct ExpectedDbPassport {
 pub struct DbPreflightReport {
     pub db_path: String,
     pub passport_status: String,
+    pub db_problem_kind: Option<String>,
+    pub path_access_status: String,
+    pub path_access_error: Option<String>,
     pub valid: bool,
     pub reasons: Vec<String>,
     pub schema_version: Option<u32>,
     pub passport: Option<DbPassport>,
+    pub sqlite_sidecars: Vec<String>,
+    pub sidecar_status: String,
+    /// Deprecated compatibility field. Populated only when sidecars have no
+    /// matching main DB.
     pub orphan_sidecars: Vec<String>,
 }
 
 impl DbPreflightReport {
-    pub fn missing(db_path: &Path, reasons: Vec<String>, orphan_sidecars: Vec<PathBuf>) -> Self {
-        Self {
-            db_path: db_path.display().to_string(),
-            passport_status: "missing".to_string(),
-            valid: false,
+    pub fn missing(db_path: &Path, reasons: Vec<String>, sqlite_sidecars: Vec<PathBuf>) -> Self {
+        db_preflight_report_with_problem(
+            db_path,
+            "missing".to_string(),
+            Some("db_missing".to_string()),
+            "db_missing".to_string(),
+            None,
+            false,
             reasons,
-            schema_version: None,
-            passport: None,
-            orphan_sidecars: orphan_sidecars
-                .into_iter()
-                .map(|path| path.display().to_string())
-                .collect(),
-        }
+            None,
+            None,
+            sqlite_sidecars,
+            false,
+        )
+    }
+}
+
+fn db_preflight_report(
+    db_path: &Path,
+    passport_status: String,
+    valid: bool,
+    reasons: Vec<String>,
+    schema_version: Option<u32>,
+    passport: Option<DbPassport>,
+    sqlite_sidecars: Vec<PathBuf>,
+) -> DbPreflightReport {
+    let problem_kind = db_problem_kind_from_reasons(&passport_status, &reasons);
+    let path_access_status = path_access_status_from_problem(problem_kind.as_deref()).to_string();
+    db_preflight_report_with_problem(
+        db_path,
+        passport_status,
+        problem_kind,
+        path_access_status,
+        None,
+        valid,
+        reasons,
+        schema_version,
+        passport,
+        sqlite_sidecars,
+        db_path.exists(),
+    )
+}
+
+fn db_preflight_report_with_problem(
+    db_path: &Path,
+    passport_status: String,
+    db_problem_kind: Option<String>,
+    path_access_status: String,
+    path_access_error: Option<String>,
+    valid: bool,
+    reasons: Vec<String>,
+    schema_version: Option<u32>,
+    passport: Option<DbPassport>,
+    sqlite_sidecars: Vec<PathBuf>,
+    main_db_exists: bool,
+) -> DbPreflightReport {
+    let sidecar_status = sqlite_sidecar_status(main_db_exists, &sqlite_sidecars, valid);
+    let sqlite_sidecars = sqlite_sidecars
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+    let orphan_sidecars = if sidecar_status == "orphan_without_main_db" {
+        sqlite_sidecars.clone()
+    } else {
+        Vec::new()
+    };
+    DbPreflightReport {
+        db_path: db_path.display().to_string(),
+        passport_status,
+        db_problem_kind,
+        path_access_status,
+        path_access_error,
+        valid,
+        reasons,
+        schema_version,
+        passport,
+        sqlite_sidecars,
+        sidecar_status,
+        orphan_sidecars,
+    }
+}
+
+fn sqlite_sidecar_status(main_db_exists: bool, sqlite_sidecars: &[PathBuf], valid: bool) -> String {
+    if sqlite_sidecars.is_empty() {
+        return "normal".to_string();
+    }
+    if !main_db_exists {
+        return "orphan_without_main_db".to_string();
+    }
+    if !valid {
+        return "stale_cleanup_candidate".to_string();
+    }
+    "normal".to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DbPathAccess {
+    main_db_exists: bool,
+    status: &'static str,
+    problem_kind: Option<&'static str>,
+    error: Option<String>,
+}
+
+fn inspect_db_path_access(db_path: &Path) -> DbPathAccess {
+    match fs::metadata(db_path) {
+        Ok(metadata) if metadata.is_file() => DbPathAccess {
+            main_db_exists: true,
+            status: "ok",
+            problem_kind: None,
+            error: None,
+        },
+        Ok(metadata) if metadata.is_dir() => DbPathAccess {
+            main_db_exists: true,
+            status: "filesystem_inaccessible",
+            problem_kind: Some("filesystem_inaccessible"),
+            error: Some("DB path points to a directory, not a SQLite file".to_string()),
+        },
+        Ok(_) => DbPathAccess {
+            main_db_exists: true,
+            status: "filesystem_inaccessible",
+            problem_kind: Some("filesystem_inaccessible"),
+            error: Some("DB path is not a regular file".to_string()),
+        },
+        Err(error) => db_path_access_from_io_error(&error),
+    }
+}
+
+fn db_path_access_from_io_error(error: &io::Error) -> DbPathAccess {
+    match error.kind() {
+        io::ErrorKind::NotFound => DbPathAccess {
+            main_db_exists: false,
+            status: "db_missing",
+            problem_kind: Some("db_missing"),
+            error: Some(error.to_string()),
+        },
+        io::ErrorKind::PermissionDenied => DbPathAccess {
+            // Permission denied means we cannot prove absence. Treat it as an
+            // access blocker, not a missing DB or corrupt DB.
+            main_db_exists: true,
+            status: "permission_denied",
+            problem_kind: Some("permission_denied"),
+            error: Some(error.to_string()),
+        },
+        _ => DbPathAccess {
+            main_db_exists: true,
+            status: "filesystem_inaccessible",
+            problem_kind: Some("filesystem_inaccessible"),
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+fn classify_sqlite_open_failure(
+    error: &rusqlite::Error,
+) -> (&'static str, &'static str, &'static str) {
+    let message = error.to_string().to_ascii_lowercase();
+    if message.contains("locked") {
+        ("locked", "db_locked", "ok")
+    } else if message.contains("permission denied")
+        || message.contains("access permission denied")
+        || message.contains("authorization denied")
+    {
+        ("unknown", "permission_denied", "permission_denied")
+    } else if message.contains("malformed")
+        || message.contains("not a database")
+        || message.contains("file is not a database")
+    {
+        ("corrupt", "sqlite_corrupt", "ok")
+    } else {
+        (
+            "unknown",
+            "filesystem_inaccessible",
+            "filesystem_inaccessible",
+        )
+    }
+}
+
+fn db_problem_kind_from_reasons(passport_status: &str, reasons: &[String]) -> Option<String> {
+    if reasons
+        .iter()
+        .any(|reason| reason.contains("main DB does not exist"))
+    {
+        Some("db_missing".to_string())
+    } else if reasons.iter().any(|reason| {
+        reason.contains("repo root mismatch") || reason.contains("git remote mismatch")
+    }) {
+        Some("repo_root_mismatch".to_string())
+    } else if reasons.iter().any(|reason| {
+        reason.contains("schema version mismatch") || reason.contains("passport schema mismatch")
+    }) {
+        Some("schema_mismatch".to_string())
+    } else if reasons
+        .iter()
+        .any(|reason| reason.contains("storage mode mismatch"))
+    {
+        Some("storage_mismatch".to_string())
+    } else if reasons
+        .iter()
+        .any(|reason| reason.contains("index scope policy hash mismatch"))
+    {
+        Some("scope_mismatch".to_string())
+    } else if reasons.iter().any(|reason| {
+        reason.contains("codegraph_db_passport table is missing")
+            || reason.contains("codegraph_db_passport row is missing")
+    }) {
+        Some("passport_missing".to_string())
+    } else if reasons
+        .iter()
+        .any(|reason| reason.contains("passport read failed"))
+    {
+        Some("passport_corrupt".to_string())
+    } else if passport_status == "corrupt" {
+        Some("sqlite_corrupt".to_string())
+    } else if passport_status == "locked" {
+        Some("db_locked".to_string())
+    } else if passport_status == "mismatched" {
+        Some("passport_mismatch".to_string())
+    } else if passport_status == "missing" {
+        Some("passport_missing".to_string())
+    } else if passport_status == "unknown" && !reasons.is_empty() {
+        Some("passport_invalid".to_string())
+    } else {
+        None
+    }
+}
+
+fn path_access_status_from_problem(problem_kind: Option<&str>) -> &'static str {
+    match problem_kind {
+        Some("db_missing") => "db_missing",
+        Some("permission_denied") => "permission_denied",
+        Some("filesystem_inaccessible") => "filesystem_inaccessible",
+        _ => "ok",
     }
 }
 
@@ -200,6 +427,31 @@ impl SqliteGraphStore {
         store.migrate()?;
         record_sqlite_profile("migrate_schema", migrate_start.elapsed());
         Ok(store)
+    }
+
+    pub fn open_read_only(path: impl AsRef<Path>) -> StoreResult<Self> {
+        let connection_start = Instant::now();
+        let path = path.as_ref();
+        let immutable = existing_sqlite_sidecars(path).is_empty();
+        let uri = sqlite_read_only_uri(path, immutable)?;
+        let connection = Connection::open_with_flags(
+            &uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        )?;
+        record_sqlite_profile("open_read_only_connection", connection_start.elapsed());
+        connection.execute_batch(
+            "
+            PRAGMA foreign_keys = ON;
+            PRAGMA query_only = ON;
+            PRAGMA busy_timeout = 5000;
+            ",
+        )?;
+        register_sqlite_functions(&connection)?;
+        Ok(Self {
+            connection,
+            dictionary_cache: RefCell::new(DictionaryInternCache::default()),
+            entity_file_cache: RefCell::new(BTreeMap::new()),
+        })
     }
 
     pub fn open_in_memory() -> StoreResult<Self> {
@@ -2410,46 +2662,86 @@ pub fn inspect_db_preflight(
     expected_schema_version: u32,
     expected: &ExpectedDbPassport,
 ) -> DbPreflightReport {
-    let orphan_sidecars = existing_sqlite_sidecars(db_path);
-    if !db_path.exists() {
+    let sqlite_sidecars = existing_sqlite_sidecars(db_path);
+    let path_access = inspect_db_path_access(db_path);
+    if path_access.status == "db_missing" {
         let mut reasons = vec![format!("main DB does not exist: {}", db_path.display())];
-        if !orphan_sidecars.is_empty() {
+        if !sqlite_sidecars.is_empty() {
             reasons.push("sidecar WAL/SHM files exist without a main DB".to_string());
         }
-        return DbPreflightReport::missing(db_path, reasons, orphan_sidecars);
+        return DbPreflightReport::missing(db_path, reasons, sqlite_sidecars);
+    }
+    if path_access.status != "ok" {
+        let reason = match path_access.status {
+            "permission_denied" => format!(
+                "permission denied while inspecting DB path {}: {}",
+                db_path.display(),
+                path_access.error.as_deref().unwrap_or("unknown")
+            ),
+            _ => format!(
+                "filesystem inaccessible while inspecting DB path {}: {}",
+                db_path.display(),
+                path_access.error.as_deref().unwrap_or("unknown")
+            ),
+        };
+        return db_preflight_report_with_problem(
+            db_path,
+            "unknown".to_string(),
+            path_access.problem_kind.map(str::to_string),
+            path_access.status.to_string(),
+            path_access.error,
+            false,
+            vec![reason],
+            None,
+            None,
+            sqlite_sidecars,
+            path_access.main_db_exists,
+        );
     }
 
     let mut reasons = Vec::new();
-    let connection = match Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
-        Ok(connection) => connection,
+    let sqlite_uri = match sqlite_read_only_uri(db_path, sqlite_sidecars.is_empty()) {
+        Ok(uri) => uri,
         Err(error) => {
-            let message = error.to_string();
-            let passport_status = if message.to_ascii_lowercase().contains("locked") {
-                "locked"
-            } else if message.to_ascii_lowercase().contains("malformed")
-                || message.to_ascii_lowercase().contains("not a database")
-                || message
-                    .to_ascii_lowercase()
-                    .contains("file is not a database")
-            {
-                "corrupt"
-            } else {
-                "unknown"
-            };
-            return DbPreflightReport {
-                db_path: db_path.display().to_string(),
-                passport_status: passport_status.to_string(),
-                valid: false,
-                reasons: vec![format!("read-only SQLite open failed: {error}")],
-                schema_version: None,
-                passport: None,
-                orphan_sidecars: orphan_sidecars
-                    .into_iter()
-                    .map(|path| path.display().to_string())
-                    .collect(),
-            };
+            return db_preflight_report_with_problem(
+                db_path,
+                "unknown".to_string(),
+                Some("db_open_failed".to_string()),
+                "db_open_failed".to_string(),
+                Some(error.to_string()),
+                false,
+                vec![format!("read-only SQLite URI build failed: {error}")],
+                None,
+                None,
+                sqlite_sidecars,
+                true,
+            );
         }
     };
+    let connection = match Connection::open_with_flags(
+        &sqlite_uri,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    ) {
+        Ok(connection) => connection,
+        Err(error) => {
+            let (passport_status, db_problem_kind, path_access_status) =
+                classify_sqlite_open_failure(&error);
+            return db_preflight_report_with_problem(
+                db_path,
+                passport_status.to_string(),
+                Some(db_problem_kind.to_string()),
+                path_access_status.to_string(),
+                Some(error.to_string()),
+                false,
+                vec![format!("read-only SQLite open failed: {error}")],
+                None,
+                None,
+                sqlite_sidecars,
+                true,
+            );
+        }
+    };
+    let _ = connection.pragma_update(None, "query_only", true);
 
     let mut passport_status = "valid".to_string();
     if let Err(error) = validate_sqlite_check_rows(&connection, "quick_check") {
@@ -2486,18 +2778,15 @@ pub fn inspect_db_preflight(
             passport_status = "missing".to_string();
         }
         reasons.push("codegraph_db_passport table is missing".to_string());
-        return DbPreflightReport {
-            db_path: db_path.display().to_string(),
+        return db_preflight_report(
+            db_path,
             passport_status,
-            valid: false,
+            false,
             reasons,
             schema_version,
-            passport: None,
-            orphan_sidecars: orphan_sidecars
-                .into_iter()
-                .map(|path| path.display().to_string())
-                .collect(),
-        };
+            None,
+            sqlite_sidecars,
+        );
     }
 
     let passport = match read_db_passport(&connection) {
@@ -2507,34 +2796,28 @@ pub fn inspect_db_preflight(
                 passport_status = "missing".to_string();
             }
             reasons.push("codegraph_db_passport row is missing".to_string());
-            return DbPreflightReport {
-                db_path: db_path.display().to_string(),
+            return db_preflight_report(
+                db_path,
                 passport_status,
-                valid: false,
+                false,
                 reasons,
                 schema_version,
-                passport: None,
-                orphan_sidecars: orphan_sidecars
-                    .into_iter()
-                    .map(|path| path.display().to_string())
-                    .collect(),
-            };
+                None,
+                sqlite_sidecars,
+            );
         }
         Err(error) => {
             passport_status = "corrupt".to_string();
             reasons.push(format!("passport read failed: {error}"));
-            return DbPreflightReport {
-                db_path: db_path.display().to_string(),
+            return db_preflight_report(
+                db_path,
                 passport_status,
-                valid: false,
+                false,
                 reasons,
                 schema_version,
-                passport: None,
-                orphan_sidecars: orphan_sidecars
-                    .into_iter()
-                    .map(|path| path.display().to_string())
-                    .collect(),
-            };
+                None,
+                sqlite_sidecars,
+            );
         }
     };
 
@@ -2599,18 +2882,15 @@ pub fn inspect_db_preflight(
         ));
     }
 
-    DbPreflightReport {
-        db_path: db_path.display().to_string(),
+    db_preflight_report(
+        db_path,
         passport_status,
-        valid: reasons.is_empty(),
+        reasons.is_empty(),
         reasons,
         schema_version,
-        passport: Some(passport),
-        orphan_sidecars: orphan_sidecars
-            .into_iter()
-            .map(|path| path.display().to_string())
-            .collect(),
-    }
+        Some(passport),
+        sqlite_sidecars,
+    )
 }
 
 fn existing_sqlite_sidecars(db_path: &Path) -> Vec<PathBuf> {
@@ -2622,6 +2902,38 @@ fn existing_sqlite_sidecars(db_path: &Path) -> Vec<PathBuf> {
         }
     }
     sidecars
+}
+
+fn sqlite_read_only_uri(db_path: &Path, immutable: bool) -> StoreResult<String> {
+    let absolute = if db_path.is_absolute() {
+        db_path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| StoreError::Message(error.to_string()))?
+            .join(db_path)
+    };
+    let mut raw = absolute.to_string_lossy().replace('\\', "/");
+    if let Some(stripped) = raw.strip_prefix("//?/") {
+        raw = stripped.to_string();
+    }
+    let encoded = percent_encode_sqlite_uri_path(&raw);
+    let path = encoded.trim_start_matches('/');
+    let immutable_param = if immutable { "&immutable=1" } else { "" };
+    Ok(format!("file:///{path}?mode=ro{immutable_param}"))
+}
+
+fn percent_encode_sqlite_uri_path(path: &str) -> String {
+    let mut encoded = String::new();
+    for byte in path.bytes() {
+        let keep =
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':');
+        if keep {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 fn validate_foreign_key_check(connection: &Connection) -> StoreResult<()> {
@@ -9592,8 +9904,9 @@ PRAGMA wal_checkpoint(TRUNCATE);
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::BTreeMap,
+        collections::{hash_map::DefaultHasher, BTreeMap},
         fs,
+        hash::{Hash, Hasher},
         path::Path,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -9602,13 +9915,14 @@ mod tests {
         stable_edge_id, stable_entity_id, DerivedClosureEdge, Edge, EdgeClass, EdgeContext, Entity,
         EntityKind, Exactness, FileRecord, PathEvidence, RelationKind, RepoIndexState, SourceSpan,
     };
-    use rusqlite::Connection;
+    use rusqlite::{params, Connection};
 
     use super::{
-        count_rows, intern_object_id, intern_qualified_name, lookup_object_id,
-        lookup_qualified_name, migrate_dictionary_compaction, register_sqlite_functions,
-        stable_text_hash_key, stable_text_len, table_has_column, GraphStore, RetrievalTraceRecord,
-        SqliteGraphStore, StoreError, TextSearchKind, MAX_QNAME_PREFIX_BYTES,
+        count_rows, db_path_access_from_io_error, inspect_db_preflight, intern_object_id,
+        intern_qualified_name, lookup_object_id, lookup_qualified_name,
+        migrate_dictionary_compaction, register_sqlite_functions, stable_text_hash_key,
+        stable_text_len, table_has_column, ExpectedDbPassport, GraphStore, RetrievalTraceRecord,
+        SqliteGraphStore, StoreError, TextSearchKind, DB_PASSPORT_VERSION, MAX_QNAME_PREFIX_BYTES,
         MAX_QUALIFIED_NAME_BYTES, SCHEMA_SQL, SCHEMA_VERSION,
     };
 
@@ -9636,8 +9950,29 @@ mod tests {
 
     fn remove_temp_db_family(path: &Path) {
         let _ = fs::remove_file(path);
+        remove_temp_db_sidecars(path);
+    }
+
+    fn remove_temp_db_sidecars(path: &Path) {
         let _ = fs::remove_file(path.with_extension("sqlite-wal"));
         let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+
+    fn file_fingerprint(path: &Path) -> u64 {
+        let bytes = fs::read(path).expect("read DB bytes");
+        let mut hasher = DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn expected_passport_for_preflight(repo_root: &Path) -> ExpectedDbPassport {
+        ExpectedDbPassport {
+            canonical_repo_root: repo_root.display().to_string(),
+            storage_mode: "proof".to_string(),
+            index_scope_policy_hash: "scope-hash".to_string(),
+            git_remote: None,
+            worktree_root: Some(repo_root.display().to_string()),
+        }
     }
 
     fn pragma_i64(store: &SqliteGraphStore, pragma_sql: &str) -> i64 {
@@ -10312,6 +10647,165 @@ mod tests {
 
         drop(store);
         remove_temp_db_family(&path);
+    }
+
+    #[test]
+    fn read_only_open_does_not_migrate_old_schema_db() {
+        let path = temp_db_path();
+        {
+            let connection = Connection::open(&path).expect("legacy DB");
+            connection
+                .execute_batch(
+                    "
+                    PRAGMA user_version = 1;
+                    CREATE TABLE legacy_marker(id INTEGER PRIMARY KEY);
+                    INSERT INTO legacy_marker(id) VALUES (1);
+                    ",
+                )
+                .expect("create old schema");
+        }
+        let before = file_fingerprint(&path);
+        {
+            let store = ok(SqliteGraphStore::open_read_only(&path));
+            assert_eq!(ok(store.schema_version()), 1);
+        }
+        let after = file_fingerprint(&path);
+        assert_eq!(
+            before, after,
+            "read-only inspection must not migrate or rewrite old DBs"
+        );
+        remove_temp_db_family(&path);
+    }
+
+    #[test]
+    fn read_only_open_supports_counts_hash_and_integrity_checks() {
+        let path = temp_db_path();
+        {
+            let store = ok(SqliteGraphStore::open(&path));
+            let file = FileRecord {
+                repo_relative_path: "src/auth.ts".to_string(),
+                file_hash: "sha256:file".to_string(),
+                language: Some("typescript".to_string()),
+                size_bytes: 1234,
+                indexed_at_unix_ms: Some(10),
+                metadata: Default::default(),
+            };
+            let entity = entity("login");
+            let edge = sample_edge(
+                "edge-login-self",
+                &entity.id,
+                RelationKind::Calls,
+                &entity.id,
+            );
+            ok(store.upsert_file(&file));
+            ok(store.upsert_entity(&entity));
+            ok(store.upsert_edge(&edge));
+            ok(store.quick_integrity_gate());
+            ok(store
+                .connection
+                .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);"));
+        }
+        remove_temp_db_sidecars(&path);
+        assert!(!path.with_extension("sqlite-wal").exists());
+        assert!(!path.with_extension("sqlite-shm").exists());
+        let before = file_fingerprint(&path);
+        {
+            let store = ok(SqliteGraphStore::open_read_only(&path));
+            assert_eq!(ok(store.schema_version()), SCHEMA_VERSION);
+            assert_eq!(ok(store.count_files()), 1);
+            assert_eq!(ok(store.count_entities()), 1);
+            assert_eq!(ok(store.count_edges()), 1);
+            assert_ne!(ok(store.graph_fact_digest()), "fnv64:0000000000000000");
+            assert_eq!(ok(store.incremental_graph_digest()), None);
+            ok(store.quick_integrity_gate());
+            ok(store.full_integrity_gate());
+        }
+        let after = file_fingerprint(&path);
+        assert_eq!(
+            before, after,
+            "read-only inspection must not mutate current DBs"
+        );
+        assert!(
+            !path.with_extension("sqlite-wal").exists()
+                && !path.with_extension("sqlite-shm").exists(),
+            "immutable read-only inspection should not create SQLite sidecars when none existed before"
+        );
+        remove_temp_db_family(&path);
+    }
+
+    #[test]
+    fn preflight_missing_db_reports_db_missing_not_corrupt() {
+        let path = temp_db_path();
+        let expected = expected_passport_for_preflight(path.parent().expect("temp parent"));
+
+        let report = inspect_db_preflight(&path, SCHEMA_VERSION, &expected);
+
+        assert!(!report.valid);
+        assert_eq!(report.passport_status, "missing");
+        assert_eq!(report.db_problem_kind.as_deref(), Some("db_missing"));
+        assert_eq!(report.path_access_status, "db_missing");
+        assert_ne!(report.passport_status, "corrupt");
+    }
+
+    #[test]
+    fn preflight_missing_passport_is_separate_from_missing_db() {
+        let path = temp_db_path();
+        {
+            let connection = Connection::open(&path).expect("create DB");
+            connection
+                .pragma_update(None, "user_version", SCHEMA_VERSION)
+                .expect("set schema");
+        }
+        let expected = expected_passport_for_preflight(path.parent().expect("temp parent"));
+
+        let report = inspect_db_preflight(&path, SCHEMA_VERSION, &expected);
+
+        assert!(!report.valid);
+        assert_eq!(report.passport_status, "missing");
+        assert_eq!(report.db_problem_kind.as_deref(), Some("passport_missing"));
+        assert_eq!(report.path_access_status, "ok");
+        remove_temp_db_family(&path);
+    }
+
+    #[test]
+    fn preflight_passport_read_error_is_passport_corrupt() {
+        let path = temp_db_path();
+        {
+            let store = ok(SqliteGraphStore::open(&path));
+            store
+                .connection
+                .execute(
+                    "INSERT INTO codegraph_db_passport (
+                        id, passport_version, codegraph_schema_version, storage_mode,
+                        index_scope_policy_hash, scope_policy_json, canonical_repo_root,
+                        source_discovery_policy_version, last_run_status, integrity_gate_result,
+                        files_seen, files_indexed, created_at_unix_ms, updated_at_unix_ms
+                    ) VALUES (1, ?1, ?2, 'proof', 'scope-hash', '{}', 'repo',
+                        'scope-v1', 'completed', 'ok', -1, 0, 1, 1)",
+                    params![DB_PASSPORT_VERSION, SCHEMA_VERSION],
+                )
+                .expect("insert corrupt passport row");
+        }
+        let expected = expected_passport_for_preflight(path.parent().expect("temp parent"));
+
+        let report = inspect_db_preflight(&path, SCHEMA_VERSION, &expected);
+
+        assert!(!report.valid);
+        assert_eq!(report.passport_status, "corrupt");
+        assert_eq!(report.db_problem_kind.as_deref(), Some("passport_corrupt"));
+        assert_eq!(report.path_access_status, "ok");
+        remove_temp_db_family(&path);
+    }
+
+    #[test]
+    fn preflight_permission_denied_classification_is_not_corruption() {
+        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+
+        let access = db_path_access_from_io_error(&error);
+
+        assert_eq!(access.status, "permission_denied");
+        assert_eq!(access.problem_kind, Some("permission_denied"));
+        assert!(access.main_db_exists);
     }
 
     #[test]

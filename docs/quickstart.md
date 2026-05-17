@@ -74,7 +74,7 @@ truncation warnings for large graphs.
 codegraph-mcp bench --output target\codegraph-benchmark-report.json
 codegraph-mcp bench --baseline graph-only --format markdown --output target\graph-only.md
 codegraph-mcp bench real-repo-corpus
-codegraph-mcp bench parity-report --output-dir target\phase30-parity
+codegraph-mcp bench parity-report --output-dir target\parity
 ```
 
 Benchmark reports are deterministic and machine-readable. They compare vanilla,

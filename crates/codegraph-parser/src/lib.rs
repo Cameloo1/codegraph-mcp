@@ -21,7 +21,7 @@ use std::{
 
 use codegraph_core::{
     relation_allows, stable_edge_id, stable_entity_id, stable_entity_id_for_kind, Edge, EdgeClass,
-    EdgeContext, Entity, EntityKind, Exactness, FileRecord, RelationKind, SourceSpan,
+    EdgeContext, Entity, EntityKind, EvidenceRole, Exactness, FileRecord, RelationKind, SourceSpan,
 };
 use serde::{Deserialize, Serialize};
 use tree_sitter::{Node, Parser, Point, Tree};
@@ -1277,6 +1277,7 @@ struct BasicEntityExtractor<'a> {
     entities: Vec<Entity>,
     edges: Vec<Edge>,
     entity_kinds: BTreeMap<String, EntityKind>,
+    entity_source_roles: BTreeMap<String, EvidenceRole>,
     edge_ids: BTreeSet<String>,
     scope_parents: BTreeMap<String, String>,
     symbols_by_scope: BTreeMap<String, BTreeMap<String, SymbolRef>>,
@@ -1324,6 +1325,7 @@ struct GenericLanguageExtractor<'a> {
     entities: Vec<Entity>,
     edges: Vec<Edge>,
     entity_kinds: BTreeMap<String, EntityKind>,
+    entity_source_roles: BTreeMap<String, EvidenceRole>,
     edge_ids: BTreeSet<String>,
     scope_parents: BTreeMap<String, String>,
     symbols_by_scope: BTreeMap<String, BTreeMap<String, SymbolRef>>,
@@ -1339,6 +1341,7 @@ impl<'a> GenericLanguageExtractor<'a> {
             entities: Vec::new(),
             edges: Vec::new(),
             entity_kinds: BTreeMap::new(),
+            entity_source_roles: BTreeMap::new(),
             edge_ids: BTreeSet::new(),
             scope_parents: BTreeMap::new(),
             symbols_by_scope: BTreeMap::new(),
@@ -1670,11 +1673,20 @@ impl<'a> GenericLanguageExtractor<'a> {
         );
         self.entity_kinds.insert(id.clone(), kind);
         if !self.entities.iter().any(|entity| entity.id == id) {
-            self.entities.push(Entity {
+            let role = source_role_annotation(
+                self.parsed.language,
+                &self.parsed.repo_relative_path,
+                kind,
+                name,
+                &qualified_name,
+                Some(node),
+                self.source,
+            );
+            let mut entity = Entity {
                 id: id.clone(),
                 kind,
                 name: name.to_string(),
-                qualified_name,
+                qualified_name: qualified_name.clone(),
                 repo_relative_path: self.parsed.repo_relative_path.clone(),
                 source_span: Some(span),
                 content_hash: None,
@@ -1682,8 +1694,20 @@ impl<'a> GenericLanguageExtractor<'a> {
                 created_from: "tree-sitter-static-heuristic".to_string(),
                 confidence,
                 metadata: Default::default(),
-            });
+            };
+            entity
+                .metadata
+                .insert("source_role".to_string(), role.role.as_str().into());
+            entity
+                .metadata
+                .insert("source_role_reason".to_string(), role.reason.into());
+            entity
+                .metadata
+                .insert("source_role_source".to_string(), role.source.into());
+            self.entity_source_roles.insert(id.clone(), role.role);
+            self.entities.push(entity);
         }
+        self.annotate_entity_source_role(&id, kind, name, &qualified_name, Some(node));
         if let Some(entity) = self.entities.iter_mut().find(|entity| entity.id == id) {
             entity
                 .metadata
@@ -1707,6 +1731,7 @@ impl<'a> GenericLanguageExtractor<'a> {
     ) -> String {
         let span = source_span_for_node(&self.parsed.repo_relative_path, node);
         let id = self.push_entity(kind, name, qualified_name, span.clone());
+        self.annotate_entity_source_role(&id, kind, name, qualified_name, Some(node));
         if is_scope_kind(kind) {
             self.scope_parents.insert(id.clone(), scope_id.to_string());
         }
@@ -1772,9 +1797,59 @@ impl<'a> GenericLanguageExtractor<'a> {
                 "language_frontend".to_string(),
                 self.parsed.language.as_str().into(),
             );
+            let role = source_role_annotation(
+                self.parsed.language,
+                &self.parsed.repo_relative_path,
+                kind,
+                name,
+                qualified_name,
+                None,
+                self.source,
+            );
+            entity
+                .metadata
+                .insert("source_role".to_string(), role.role.as_str().into());
+            entity
+                .metadata
+                .insert("source_role_reason".to_string(), role.reason.into());
+            entity
+                .metadata
+                .insert("source_role_source".to_string(), role.source.into());
+            self.entity_source_roles.insert(id.clone(), role.role);
             self.entities.push(entity);
         }
         id
+    }
+
+    fn annotate_entity_source_role(
+        &mut self,
+        id: &str,
+        kind: EntityKind,
+        name: &str,
+        qualified_name: &str,
+        node: Option<Node<'_>>,
+    ) {
+        let role = source_role_annotation(
+            self.parsed.language,
+            &self.parsed.repo_relative_path,
+            kind,
+            name,
+            qualified_name,
+            node,
+            self.source,
+        );
+        self.entity_source_roles.insert(id.to_string(), role.role);
+        if let Some(entity) = self.entities.iter_mut().find(|entity| entity.id == id) {
+            entity
+                .metadata
+                .insert("source_role".to_string(), role.role.as_str().into());
+            entity
+                .metadata
+                .insert("source_role_reason".to_string(), role.reason.into());
+            entity
+                .metadata
+                .insert("source_role_source".to_string(), role.source.into());
+        }
     }
 
     fn push_edge(
@@ -1816,6 +1891,17 @@ impl<'a> GenericLanguageExtractor<'a> {
         if !self.edge_ids.insert(id.clone()) {
             return;
         }
+        let head_role = self
+            .entity_source_roles
+            .get(head_id)
+            .copied()
+            .unwrap_or(EvidenceRole::Unknown);
+        let tail_role = self
+            .entity_source_roles
+            .get(tail_id)
+            .copied()
+            .unwrap_or(EvidenceRole::Unknown);
+        let role = edge_role_annotation(relation, span, head_role, tail_role);
         let mut edge = Edge {
             id,
             head_id: head_id.to_string(),
@@ -1832,11 +1918,7 @@ impl<'a> GenericLanguageExtractor<'a> {
             } else {
                 EdgeClass::BaseExact
             },
-            context: if is_test_file_path(&span.repo_relative_path) {
-                EdgeContext::Test
-            } else {
-                EdgeContext::Production
-            },
+            context: edge_context_for_role(role.role),
             derived: false,
             provenance_edges: Vec::new(),
             metadata: Default::default(),
@@ -1853,6 +1935,18 @@ impl<'a> GenericLanguageExtractor<'a> {
             "language_frontend".to_string(),
             self.parsed.language.as_str().into(),
         );
+        edge.metadata
+            .insert("source_role".to_string(), role.role.as_str().into());
+        edge.metadata
+            .insert("evidence_role".to_string(), role.role.as_str().into());
+        edge.metadata
+            .insert("classification_reason".to_string(), role.reason.into());
+        edge.metadata
+            .insert("classification_source".to_string(), role.source.into());
+        edge.metadata
+            .insert("head_source_role".to_string(), head_role.as_str().into());
+        edge.metadata
+            .insert("tail_source_role".to_string(), tail_role.as_str().into());
         if exactness == Exactness::StaticHeuristic {
             edge.metadata.insert("heuristic".to_string(), true.into());
             edge.metadata.insert(
@@ -1873,6 +1967,7 @@ impl<'a> BasicEntityExtractor<'a> {
             entities: Vec::new(),
             edges: Vec::new(),
             entity_kinds: BTreeMap::new(),
+            entity_source_roles: BTreeMap::new(),
             edge_ids: BTreeSet::new(),
             scope_parents: BTreeMap::new(),
             symbols_by_scope: BTreeMap::new(),
@@ -3569,6 +3664,7 @@ impl<'a> BasicEntityExtractor<'a> {
                 .metadata
                 .insert("heuristic_reason".to_string(), reason.into());
         }
+        self.annotate_entity_source_role(&id, kind, name, &qualified_name, Some(node));
         id
     }
 
@@ -3598,6 +3694,7 @@ impl<'a> BasicEntityExtractor<'a> {
                 .insert("framework".to_string(), tag.framework.into());
             entity.metadata.insert("phase".to_string(), "07".into());
         }
+        self.annotate_entity_source_role(&id, kind, name, &qualify(scope_name, name), Some(node));
         id
     }
 
@@ -3624,6 +3721,13 @@ impl<'a> BasicEntityExtractor<'a> {
                 .metadata
                 .insert("expression_reason".to_string(), reason.into());
         }
+        self.annotate_entity_source_role(
+            &id,
+            EntityKind::Expression,
+            &compact_name,
+            &qualify(scope_name, &compact_name),
+            Some(node),
+        );
         id
     }
 
@@ -3637,6 +3741,7 @@ impl<'a> BasicEntityExtractor<'a> {
     ) -> String {
         let span = source_span_for_node(&self.parsed.repo_relative_path, node);
         let id = self.push_entity(kind, name, qualified_name, span.clone());
+        self.annotate_entity_source_role(&id, kind, name, qualified_name, Some(node));
         if is_scope_kind(kind) {
             self.scope_parents.insert(id.clone(), scope_id.to_string());
         }
@@ -3720,7 +3825,16 @@ impl<'a> BasicEntityExtractor<'a> {
         );
         self.entity_kinds.insert(id.clone(), kind);
         if !self.entities.iter().any(|entity| entity.id == id) {
-            self.entities.push(Entity {
+            let role = source_role_annotation(
+                self.parsed.language,
+                &self.parsed.repo_relative_path,
+                kind,
+                name,
+                qualified_name,
+                None,
+                self.source,
+            );
+            let mut entity = Entity {
                 id: id.clone(),
                 kind,
                 name: name.to_string(),
@@ -3732,9 +3846,51 @@ impl<'a> BasicEntityExtractor<'a> {
                 created_from: created_from.to_string(),
                 confidence,
                 metadata: Default::default(),
-            });
+            };
+            entity
+                .metadata
+                .insert("source_role".to_string(), role.role.as_str().into());
+            entity
+                .metadata
+                .insert("source_role_reason".to_string(), role.reason.into());
+            entity
+                .metadata
+                .insert("source_role_source".to_string(), role.source.into());
+            self.entity_source_roles.insert(id.clone(), role.role);
+            self.entities.push(entity);
         }
         id
+    }
+
+    fn annotate_entity_source_role(
+        &mut self,
+        id: &str,
+        kind: EntityKind,
+        name: &str,
+        qualified_name: &str,
+        node: Option<Node<'_>>,
+    ) {
+        let role = source_role_annotation(
+            self.parsed.language,
+            &self.parsed.repo_relative_path,
+            kind,
+            name,
+            qualified_name,
+            node,
+            self.source,
+        );
+        self.entity_source_roles.insert(id.to_string(), role.role);
+        if let Some(entity) = self.entities.iter_mut().find(|entity| entity.id == id) {
+            entity
+                .metadata
+                .insert("source_role".to_string(), role.role.as_str().into());
+            entity
+                .metadata
+                .insert("source_role_reason".to_string(), role.reason.into());
+            entity
+                .metadata
+                .insert("source_role_source".to_string(), role.source.into());
+        }
     }
 
     fn push_edge(
@@ -3822,6 +3978,17 @@ impl<'a> BasicEntityExtractor<'a> {
             return;
         }
 
+        let head_role = self
+            .entity_source_roles
+            .get(head_id)
+            .copied()
+            .unwrap_or(EvidenceRole::Unknown);
+        let tail_role = self
+            .entity_source_roles
+            .get(tail_id)
+            .copied()
+            .unwrap_or(EvidenceRole::Unknown);
+        let role = edge_role_annotation(relation, span, head_role, tail_role);
         self.edges.push(Edge {
             id,
             head_id: head_id.to_string(),
@@ -3838,15 +4005,25 @@ impl<'a> BasicEntityExtractor<'a> {
             } else {
                 EdgeClass::BaseExact
             },
-            context: if is_test_file_path(&span.repo_relative_path) {
-                EdgeContext::Test
-            } else {
-                EdgeContext::Production
-            },
+            context: edge_context_for_role(role.role),
             derived: false,
             provenance_edges: Vec::new(),
             metadata: Default::default(),
         });
+        if let Some(edge) = self.edges.last_mut() {
+            edge.metadata
+                .insert("source_role".to_string(), role.role.as_str().into());
+            edge.metadata
+                .insert("evidence_role".to_string(), role.role.as_str().into());
+            edge.metadata
+                .insert("classification_reason".to_string(), role.reason.into());
+            edge.metadata
+                .insert("classification_source".to_string(), role.source.into());
+            edge.metadata
+                .insert("head_source_role".to_string(), head_role.as_str().into());
+            edge.metadata
+                .insert("tail_source_role".to_string(), tail_role.as_str().into());
+        }
         if let Some(tag) = annotation.heuristic {
             if let Some(edge) = self.edges.last_mut() {
                 edge.metadata.insert("phase".to_string(), "07".into());
@@ -3874,6 +4051,196 @@ fn is_test_file_path(path: &str) -> bool {
         || normalized.ends_with(".spec.tsx")
         || normalized.ends_with(".spec.js")
         || normalized.ends_with(".spec.jsx")
+        || normalized.contains("/tests/")
+        || normalized.contains("/test/")
+}
+
+#[derive(Debug, Clone)]
+struct SourceRoleAnnotation {
+    role: EvidenceRole,
+    reason: &'static str,
+    source: &'static str,
+}
+
+fn source_role_annotation(
+    language: SourceLanguage,
+    repo_relative_path: &str,
+    kind: EntityKind,
+    name: &str,
+    qualified_name: &str,
+    node: Option<Node<'_>>,
+    source: &str,
+) -> SourceRoleAnnotation {
+    if matches!(kind, EntityKind::Mock | EntityKind::Stub) {
+        return SourceRoleAnnotation {
+            role: EvidenceRole::Mock,
+            reason: "entity kind is mock/stub",
+            source: "entity_kind",
+        };
+    }
+    if matches!(
+        kind,
+        EntityKind::TestFile
+            | EntityKind::TestSuite
+            | EntityKind::TestCase
+            | EntityKind::Fixture
+            | EntityKind::Assertion
+    ) {
+        return SourceRoleAnnotation {
+            role: EvidenceRole::Test,
+            reason: "entity kind is test/assertion/fixture",
+            source: "entity_kind",
+        };
+    }
+    if language == SourceLanguage::Rust
+        && node.is_some_and(|node| rust_node_has_test_attribute(node, source))
+    {
+        return SourceRoleAnnotation {
+            role: EvidenceRole::Test,
+            reason: "rust #[test] or #[cfg(test)] attribute",
+            source: "rust_attribute",
+        };
+    }
+    if qualified_name_has_tests_module(qualified_name) {
+        return SourceRoleAnnotation {
+            role: EvidenceRole::Test,
+            reason: "qualified name is inside a tests module",
+            source: "module_path",
+        };
+    }
+    if is_test_file_path(repo_relative_path) {
+        return SourceRoleAnnotation {
+            role: EvidenceRole::Test,
+            reason: "file path is a test/spec path",
+            source: "file_path",
+        };
+    }
+    if looks_like_mock_or_stub(name) || looks_like_mock_or_stub(qualified_name) {
+        return SourceRoleAnnotation {
+            role: EvidenceRole::Mock,
+            reason: "name looks like mock/stub",
+            source: "name",
+        };
+    }
+    SourceRoleAnnotation {
+        role: EvidenceRole::Production,
+        reason: "default source role for non-test source",
+        source: "extractor_default",
+    }
+}
+
+fn edge_role_annotation(
+    relation: RelationKind,
+    span: &SourceSpan,
+    head_role: EvidenceRole,
+    tail_role: EvidenceRole,
+) -> SourceRoleAnnotation {
+    if matches!(relation, RelationKind::Mocks | RelationKind::Stubs) {
+        return SourceRoleAnnotation {
+            role: EvidenceRole::Mock,
+            reason: "relation kind is mock/stub evidence",
+            source: "relation_kind",
+        };
+    }
+    if matches!(
+        relation,
+        RelationKind::Tests
+            | RelationKind::Asserts
+            | RelationKind::Covers
+            | RelationKind::FixturesFor
+    ) {
+        return SourceRoleAnnotation {
+            role: EvidenceRole::Test,
+            reason: "relation kind is test/assertion evidence",
+            source: "relation_kind",
+        };
+    }
+    if is_test_file_path(&span.repo_relative_path) {
+        return SourceRoleAnnotation {
+            role: EvidenceRole::Test,
+            reason: "edge source span is in a test/spec path",
+            source: "file_path",
+        };
+    }
+    let role = combine_endpoint_roles(head_role, tail_role);
+    let reason = match role {
+        EvidenceRole::Production => "head and tail entities are production",
+        EvidenceRole::Test => "head or tail entity is test evidence",
+        EvidenceRole::Mock => "head or tail entity is mock/stub evidence",
+        EvidenceRole::Mixed => "edge connects production and test/mock/unknown evidence",
+        EvidenceRole::Unknown => "head or tail entity source role is unknown",
+    };
+    SourceRoleAnnotation {
+        role,
+        reason,
+        source: "endpoint_source_role",
+    }
+}
+
+fn combine_endpoint_roles(head_role: EvidenceRole, tail_role: EvidenceRole) -> EvidenceRole {
+    if matches!(head_role, EvidenceRole::Mock) || matches!(tail_role, EvidenceRole::Mock) {
+        return if head_role == tail_role {
+            EvidenceRole::Mock
+        } else {
+            EvidenceRole::Mixed
+        };
+    }
+    if matches!(head_role, EvidenceRole::Test) || matches!(tail_role, EvidenceRole::Test) {
+        return EvidenceRole::Test;
+    }
+    if matches!(head_role, EvidenceRole::Unknown) || matches!(tail_role, EvidenceRole::Unknown) {
+        return if matches!(head_role, EvidenceRole::Production)
+            || matches!(tail_role, EvidenceRole::Production)
+        {
+            EvidenceRole::Mixed
+        } else {
+            EvidenceRole::Unknown
+        };
+    }
+    EvidenceRole::Production
+}
+
+fn edge_context_for_role(role: EvidenceRole) -> EdgeContext {
+    match role {
+        EvidenceRole::Production => EdgeContext::Production,
+        EvidenceRole::Test => EdgeContext::Test,
+        EvidenceRole::Mock => EdgeContext::Mock,
+        EvidenceRole::Mixed => EdgeContext::Mixed,
+        EvidenceRole::Unknown => EdgeContext::Unknown,
+    }
+}
+
+fn qualified_name_has_tests_module(value: &str) -> bool {
+    let normalized = value.replace('\\', "/").to_ascii_lowercase();
+    normalized == "tests"
+        || normalized.starts_with("tests.")
+        || normalized.contains(".tests.")
+        || normalized.contains("::tests::")
+        || normalized.ends_with(".tests")
+        || normalized.ends_with("::tests")
+}
+
+fn looks_like_mock_or_stub(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase();
+    normalized.contains("mock") || normalized.contains("stub")
+}
+
+fn rust_node_has_test_attribute(node: Node<'_>, source: &str) -> bool {
+    let start_byte = node.start_byte().min(source.len());
+    let bytes = &source.as_bytes()[..start_byte];
+    let mut prefix_start = 0usize;
+    let mut newline_count = 0usize;
+    for index in (0..bytes.len()).rev() {
+        if bytes[index] == b'\n' {
+            newline_count += 1;
+            if newline_count >= 5 {
+                prefix_start = index + 1;
+                break;
+            }
+        }
+    }
+    let prefix = String::from_utf8_lossy(&bytes[prefix_start..]);
+    prefix.contains("#[test]") || prefix.contains("#[cfg(test)]")
 }
 
 fn looks_like_table_constant_name(name: &str) -> bool {
@@ -4843,6 +5210,103 @@ mod tests {
                 .iter()
                 .any(|entity| entity.kind == EntityKind::CallSite));
         }
+    }
+
+    #[test]
+    fn rust_inline_cfg_tests_emit_test_source_role_metadata() {
+        let source = r#"
+pub fn prod_value() -> i32 {
+    1
+}
+
+#[test]
+fn standalone_test() {
+    prod_value();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn same_name() -> i32 {
+        prod_value()
+    }
+
+    #[test]
+    fn calls_prod_value() {
+        same_name();
+        prod_value();
+    }
+}
+"#;
+        let extraction = extraction("src/lib.rs", source);
+
+        let production = extraction
+            .entities
+            .iter()
+            .find(|entity| {
+                entity.name == "prod_value" && !entity.qualified_name.contains(".tests.")
+            })
+            .expect("production function");
+        assert_eq!(
+            production
+                .metadata
+                .get("source_role")
+                .and_then(serde_json::Value::as_str),
+            Some("production")
+        );
+
+        let inline_test_entities = extraction
+            .entities
+            .iter()
+            .filter(|entity| {
+                entity.qualified_name.contains(".tests.") || entity.name == "standalone_test"
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !inline_test_entities.is_empty(),
+            "expected inline test entities"
+        );
+        assert!(inline_test_entities.iter().all(|entity| {
+            entity
+                .metadata
+                .get("source_role")
+                .and_then(serde_json::Value::as_str)
+                == Some("test")
+        }));
+        assert!(inline_test_entities.iter().any(|entity| {
+            entity
+                .metadata
+                .get("source_role_source")
+                .and_then(serde_json::Value::as_str)
+                == Some("rust_attribute")
+                || entity
+                    .metadata
+                    .get("source_role_source")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("module_path")
+        }));
+
+        let inline_test_calls = extraction
+            .edges
+            .iter()
+            .filter(|edge| {
+                edge.relation == RelationKind::Calls
+                    && edge.source_span.repo_relative_path == "src/lib.rs"
+                    && edge
+                        .metadata
+                        .get("evidence_role")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("test")
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !inline_test_calls.is_empty(),
+            "inline test calls should not be production evidence"
+        );
+        assert!(inline_test_calls
+            .iter()
+            .all(|edge| edge.context == codegraph_core::EdgeContext::Test));
     }
 
     #[test]

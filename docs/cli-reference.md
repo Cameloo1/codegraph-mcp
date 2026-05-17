@@ -23,7 +23,45 @@ Global flags are accepted before the command name:
 
 `--repo` sets the working repository, `--db` overrides
 `CODEGRAPH_DB_PATH`, and global `--profile` enables index profiling for the
-`index` command.
+`index` command. For routine agent use, prefer a release-binary agent DB
+outside the source tree instead of reusing temporary development or benchmark
+DBs.
+
+Command-local flags remain after the command. Ambiguous global flags after
+query subcommands return targeted corrections instead of becoming query text.
+For example, `query symbols greet --db <db>` fails with guidance to put `--db`
+before `query`. Use `--` for literal flag-shaped search terms, such as
+`query text --agent-json -- --db`.
+
+## Agent-Friendly Output
+
+Use `--agent-json` for tight coding-agent loops and `--limit <n>` to keep
+results bounded:
+
+```powershell
+codegraph-mcp --repo <repo> --db <agent-db> query symbols <symbol> `
+  --limit 5 --agent-json
+
+codegraph-mcp --repo <repo> --db <agent-db> context-pack `
+  --task "Trace the change impact" `
+  --seed <symbol> `
+  --mode production `
+  --limit-paths 5 `
+  --limit-snippets 5 `
+  --agent-json
+```
+
+Supported compact modes:
+
+- `--agent-json`: schema-versioned, bounded JSON for agent loops.
+- `--concise`: compact output where supported.
+- `--verbose`, `--debug`, `--profile`, and `--audit-json`: explicit rich or
+  audit detail.
+- `--explain-scope`, `--print-included`, and `--print-excluded`: explicit
+  index scope examples.
+
+`index --json` is concise by default. It excludes full scope examples and audit
+payloads unless one of the explicit audit/scope flags is supplied.
 
 ## Commands
 
@@ -32,7 +70,7 @@ Global flags are accepted before the command name:
 Detects repo tooling, creates `.codegraph/`, and can install Codex config,
 `AGENTS.md`, skill templates, hook templates, and an initial index.
 
-`index <repo> [--profile] [--json]`
+`index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json|--agent-json|--concise|--audit-json] [--verbose]`
 
 Indexes supported language frontends into `.codegraph/codegraph.sqlite`.
 Unchanged files are skipped by content hash. Changed files are parsed and
@@ -42,22 +80,38 @@ parse, extraction, semantic resolver, DB write, FTS/search index, signature,
 total wall time, throughput, worker count, unchanged skip count, and memory
 when measurable.
 
+DB lifecycle flags:
+
+- `--fresh` / `--rebuild` always builds a fresh replacement and publishes it
+  only after validation.
+- `--incremental` requires a reusable passported DB and fails if reuse is
+  unsafe.
+- `--fail-on-db-problem` fails instead of safe-auto rebuilding.
+- `--allow-stale-reuse` is diagnostic only; output must be labeled
+  contaminated and not claimable.
+
+Scope flags include `--include-ignored`, `--include <pattern>`,
+`--exclude <pattern>`, `--no-default-excludes`,
+`--respect-gitignore <true|false>`, `--explain-scope`, `--print-included`, and
+`--print-excluded`. A DB built with non-default scope records that scope in the
+passport, and read paths validate against it.
+
 `status [repo]`
 
-Reports schema version, file/entity/edge counts, detected tooling, and whether
-the index exists.
+Reports schema version, file/entity/edge counts, detected tooling, DB
+lifecycle health, passport status, and SQLite sidecar status.
 
-`query symbols <query>`
+`query symbols <query> [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain]`
 
 Ranks symbols across simple names, qualified names, file paths, namespaces,
 doc/signature metadata, alias/import names, identifier tokens, and
 relation-neighbor text. Exact and qualified matches outrank fuzzy matches.
 
-`query text <query>`
+`query text <query> [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain]`
 
 Searches the local SQLite FTS/BM25 index across files, entities, and snippets.
 
-`query files <query>`
+`query files <query> [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain]`
 
 Finds repo-relative files by FTS and path proximity.
 
@@ -70,22 +124,30 @@ same-name placeholders.
 
 Returns declaration/executable symbol hits.
 
-`query callers <symbol>`
+`query callers [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] <symbol>`
 
-Returns `CALLS` edges whose callee resolves to the symbol.
+Returns `CALLS` edges whose callee resolves to the symbol. When a symbol
+resolves to exactly one persisted entity, default output uses exact resolved
+entity results. Ambiguous symbols return candidate entity ids instead of
+pretending broad results are exact. Use `--entity-id` for exact persisted-entity
+traversal, `--exact-resolved` to require one symbol match, or `--fuzzy` for the
+older broad alias/global behavior.
 
-`query callees <symbol>`
+`query callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] <symbol>`
 
-Returns `CALLS` edges emitted by the symbol.
+Returns `CALLS` edges emitted by the symbol. It uses the same exact,
+ambiguous, and fuzzy modes as `query callers`.
 
 `query chain <source> <target>`
 
 Runs cycle-safe call-chain recovery over `CALLS` edges, preserving exactness and
 confidence labels.
 
-`query unresolved-calls`
+`query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets|--include-snippets] [--db <path>]`
 
-Lists retained unresolved calls labeled as `static_heuristic`.
+Lists retained unresolved calls labeled as `static_heuristic`. The exact DB path
+used by this command is checked with the same lifecycle/passport preflight as
+other read paths.
 
 `query path <source> <target>`
 
@@ -96,10 +158,20 @@ Runs exact graph path tracing with source spans and PathEvidence.
 Returns blast-radius sections for calls, mutations/dataflow, DB/schema,
 API/auth/security, events, and tests.
 
-`context-pack --task <task> [--budget <tokens>] [--mode <mode>] [--seed <symbol>] [--stage0-candidate <id>]`
+`context-pack --task <task> [--budget <tokens>] [--mode <production|test-impact|debug|impact>] [--seed <symbol>] [--stage0-candidate <id>] [--agent-json|--concise] [--limit-paths <n>] [--limit-snippets <n>] [--max-output-bytes <n>]`
 
 Builds a compact proof-oriented context packet from verified graph paths and
 source snippets.
+
+Production mode excludes test, mock, mixed, and unknown evidence by default.
+`test-impact` mode intentionally includes test/mock evidence and labels it.
+Inline Rust `#[cfg(test)] mod tests` and `#[test]` functions are classified as
+test evidence even when they live in `src/lib.rs`.
+
+Read paths run the DB passport/preflight guard. If the configured DB is from a
+different repo, stale scope, incompatible storage mode, failed run, corrupt
+file, or unknown old format, the command refuses to answer unless an explicit
+diagnostic stale-read override is used.
 
 `context --task <task> [--budget <tokens>] [--mode <mode>] [--seed <symbol>]`
 
@@ -109,15 +181,19 @@ Alias group for `context-pack`.
 
 Exports files, entities, and edges with a bundle manifest schema.
 
-`bundle import repo.cgc-bundle`
+`bundle import repo.cgc-bundle [--replace|--merge]`
 
-Imports a bundle if the schema version matches.
+Imports a bundle if the schema version and repo identity are safe. The default
+fresh mode refuses to write into a non-empty DB. `--replace` performs an atomic
+replacement after validation. `--merge` is currently diagnostic-only and refuses
+mutation until merged facts have a stronger provenance contract.
 
-`watch [repo] [--debounce-ms <ms>] [--once --changed <path>...]`
+`watch [repo] [--db <path>] [--debounce-ms <ms>] [--once --changed <path>...]`
 
 Watches or updates changed files only. Ignore rules cover `.git`,
 `.codegraph`, dependency folders, build outputs, generated bundles, maps, lock
-files, and minified JS.
+files, and minified JS. Persistent watch mode honors the configured DB path and
+runs lifecycle preflight before opening it.
 
 `serve-mcp`
 
@@ -162,9 +238,9 @@ speed regression checks.
 
 `bench gaps [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>]`
 
-Writes the Phase 26 gap scoreboard with machine-readable win/loss/tie/unknown
-dimensions and nested CodeGraphContext artifacts. If the competitor executable
-is unavailable, the report records `skipped` with a structured reason.
+Writes a gap scoreboard with machine-readable win/loss/tie/unknown dimensions.
+If the competitor executable is unavailable, the report records `skipped` with
+a structured reason.
 
 `bench real-repo-corpus`
 
@@ -174,9 +250,8 @@ Java. It includes pinned commits, task manifests, and an offline replay plan for
 
 `bench parity-report [--output-dir <dir>]`
 
-Writes the final parity artifacts: `summary.json`, `summary.md`, and
-`per_task.jsonl`. Unknown/skipped fields remain explicit, and the report makes no
-SOTA claim without measured evidence.
+Writes parity summaries. Unknown/skipped fields remain explicit, and the report
+makes no SOTA claim without measured evidence.
 
 `bench cgc-comparison [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>]`
 
@@ -184,11 +259,25 @@ Runs the optional external CodeGraphContext / CGC comparison harness. The
 subcommand skips CGC with a structured reason when `CGC_COMPETITOR_BIN`, `cgc`,
 and `codegraphcontext` are unavailable.
 
+`trace append|replay|validate ...`
+
+Appends replayable Agent/MCP JSONL trace events or replays/validates an
+`events.jsonl` file. Trace files are evidence artifacts; keep them out of
+public claims unless summarized.
+
+`audit storage|schema-check|storage-experiments|sample-edges|sample-paths|relation-counts|label-samples|summarize-labels ...`
+
+Runs read-only audit inspections over DBs and manual-label artifacts. Audit
+outputs can support stable summaries, but raw audit DBs/logs are not final
+benchmark artifacts by themselves.
+
 `doctor [repo] [--json]`
 
 Checks the local SQLite DB, language frontends, optional Node/TypeScript
 resolver, `.codex/config.toml`, bundled UI assets, and `.codegraph`
-permissions. Missing optional components are warnings, not fatal errors.
+permissions. DB inspection is read-only and lifecycle-aware. JSON output
+includes passport status plus `sqlite_sidecars` and `sidecar_status`; normal
+WAL/SHM files are not reported as orphaned unless the main DB is missing.
 
 `config [show|completions|release-metadata] [--shell <powershell|bash|zsh|fish>]`
 

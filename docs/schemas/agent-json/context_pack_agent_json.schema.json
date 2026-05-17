@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codegraph.local/schemas/agent-json/context_pack_agent_json.schema.json",
+  "title": "context_pack_agent_json",
+  "type": "object",
+  "required": [
+    "schema_name",
+    "schema_version",
+    "status",
+    "command",
+    "repo",
+    "db",
+    "lifecycle",
+    "claimable",
+    "diagnostic_only",
+    "truncation",
+    "result_count",
+    "limit",
+    "omitted_count",
+    "warnings",
+    "errors",
+    "timings",
+    "task",
+    "mode",
+    "symbols",
+    "paths",
+    "snippets"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_name": {
+      "const": "context_pack_agent_json"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "$ref": "common.schema.json#/$defs/status"
+    },
+    "command": {
+      "const": "context-pack"
+    },
+    "repo": {
+      "$ref": "common.schema.json#/$defs/repo"
+    },
+    "db": {
+      "$ref": "common.schema.json#/$defs/db"
+    },
+    "lifecycle": {
+      "$ref": "common.schema.json#/$defs/lifecycle_summary"
+    },
+    "claimable": {
+      "type": "boolean"
+    },
+    "diagnostic_only": {
+      "type": "boolean"
+    },
+    "truncation": {
+      "$ref": "common.schema.json#/$defs/truncation"
+    },
+    "result_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "omitted_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "warnings": {
+      "$ref": "common.schema.json#/$defs/bounded_messages"
+    },
+    "errors": {
+      "$ref": "common.schema.json#/$defs/bounded_messages"
+    },
+    "timings": {
+      "$ref": "common.schema.json#/$defs/timings"
+    },
+    "task": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string"
+    },
+    "symbols": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "paths": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path_id",
+          "evidence_role",
+          "production_proof_eligible",
+          "relations",
+          "edges",
+          "source_spans"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "path_id": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "evidence_role": {
+            "$ref": "common.schema.json#/$defs/evidence_role"
+          },
+          "classification_reason": {
+            "type": "string"
+          },
+          "classification_source": {
+            "type": "string"
+          },
+          "production_proof_eligible": {
+            "type": "boolean"
+          },
+          "relations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "common.schema.json#/$defs/proof_edge"
+            }
+          },
+          "source_spans": {
+            "type": "array",
+            "items": {
+              "$ref": "common.schema.json#/$defs/source_span"
+            }
+          }
+        }
+      }
+    },
+    "proof_path_available": {
+      "type": "boolean"
+    },
+    "proof_path_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "fallback_evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "symbol",
+          "kind",
+          "file",
+          "source_span",
+          "evidence_role",
+          "classification_reason",
+          "classification_source",
+          "fallback_source",
+          "proof_path_available"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "source_span": {
+            "$ref": "common.schema.json#/$defs/source_span"
+          },
+          "span": {
+            "$ref": "common.schema.json#/$defs/source_span"
+          },
+          "evidence_role": {
+            "$ref": "common.schema.json#/$defs/evidence_role"
+          },
+          "classification_reason": {
+            "type": "string"
+          },
+          "classification_source": {
+            "type": "string"
+          },
+          "fallback_source": {
+            "type": "string"
+          },
+          "proof_path_available": {
+            "const": false
+          }
+        }
+      }
+    },
+    "fallback_evidence_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "snippets": {
+      "type": "array",
+      "items": {
+        "$ref": "common.schema.json#/$defs/snippet"
+      }
+    },
+    "recommended_tests": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "string"
+      }
+    },
+    "risks": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
