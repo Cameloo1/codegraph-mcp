@@ -45,6 +45,14 @@ fn stderr_json(output: &Output) -> Value {
     serde_json::from_slice(&output.stderr).expect("stderr JSON")
 }
 
+fn canonical_path_for_assertion(path: impl AsRef<Path>) -> String {
+    fs::canonicalize(path.as_ref())
+        .unwrap_or_else(|_| path.as_ref().to_path_buf())
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_ascii_lowercase()
+}
+
 fn mcp_server_for_repo(repo: &Path) -> McpServer {
     McpServer::new(McpServerConfig::for_repo(repo).without_trace())
 }
@@ -3923,9 +3931,13 @@ fn global_flag_placement_is_targeted_and_literal_query_flags_can_escape() {
     let observed_relative_db = relative_db_query["resolved_db"]
         .as_str()
         .expect("resolved relative DB");
+    assert!(
+        Path::new(observed_relative_db).exists(),
+        "observed relative DB path should exist: {observed_relative_db}"
+    );
     assert_eq!(
-        observed_relative_db.trim_start_matches(r"\\?\"),
-        relative_db_arg.trim_start_matches(r"\\?\"),
+        canonical_path_for_assertion(observed_relative_db),
+        canonical_path_for_assertion(relative_db_arg),
         "observed_relative_db={observed_relative_db}, expected={relative_db_arg}"
     );
     assert!(relative_db_path.exists());
