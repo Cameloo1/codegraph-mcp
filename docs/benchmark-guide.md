@@ -10,8 +10,8 @@ There are two report classes:
 - **Stable public summaries** are durable Markdown/JSON files linked from the
   README.
 - **Run artifacts** are DBs, WAL/SHM files, raw stdout/stderr, copied fixtures,
-  and temporary benchmark payloads. Keep them ignored unless a report
-  explicitly promotes a small summary artifact.
+  and temporary benchmark payloads. Keep them ignored unless a small summary is
+  explicitly promoted.
 
 ## Stable Reports
 
@@ -141,17 +141,10 @@ Gap scoreboard:
 codegraph-mcp bench gaps --output-dir reports\phase26-gaps
 ```
 
-Output files:
-
-- `summary.json`
-- `summary.md`
-- `per_task.jsonl`
-- `external-codegraphcontext/`
-
 The scoreboard classifies every dimension as `win`, `loss`, `tie`, or
 `unknown`. Missing CodeGraphContext data is `unknown` or `skipped`, never
-guessed. The nested `external-codegraphcontext` directory contains the black-box
-CGC comparison report and raw stdout/stderr artifacts when CGC actually runs.
+guessed. Raw stdout/stderr belongs in ignored run artifacts; publish only the
+curated summary.
 
 Parity report:
 
@@ -194,22 +187,7 @@ The comparison modes are:
 - `codegraph_full_context_packet`
 - `codegraphcontext_cli`
 
-Report layout:
-
-```text
-reports/cgc-comparison/<timestamp>/
-|-- run.json
-|-- per_task.jsonl
-|-- summary.md
-|-- fixtures/
-|-- normalized_outputs/
-|   |-- codegraph/
-|   `-- codegraphcontext/
-`-- raw_artifacts/
-    `-- codegraphcontext/
-```
-
-The harness preserves raw CGC stdout/stderr artifacts and marks unsupported or
+The harness preserves raw CGC stdout/stderr locally and marks unsupported or
 unparseable fields separately from incorrect results. It does not claim SOTA
 superiority unless measured results directly support that claim.
 

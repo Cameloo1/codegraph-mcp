@@ -1,7 +1,7 @@
 # CodeGraphContext Comparison
 
 The root `README.md` is the public setup contract. This external competitor
-benchmark does not weaken graph-first correctness gates. Do not use subagents.
+benchmark does not weaken graph-first correctness gates.
 
 ## Competitor
 
@@ -66,19 +66,11 @@ source spans, and explicitly allowed unsupported fields.
 
 ## Outputs
 
-```text
-reports/cgc-comparison/<timestamp>/
-|-- run.json
-|-- per_task.jsonl
-|-- summary.md
-|-- normalized_outputs/
-|   |-- codegraph/
-|   `-- codegraphcontext/
-`-- raw_artifacts/
-    `-- codegraphcontext/
-```
+Publish the curated summary only. Raw stdout/stderr, normalized task payloads,
+copied fixtures, temporary DBs, and full competitor run directories are local
+run artifacts unless a small summary is explicitly promoted.
 
-`run.json` includes the competitor manifest: source URL, pinned commit when
-provided through `CGC_COMPETITOR_COMMIT`, detected package version when the
+The run summary includes the competitor manifest: source URL, pinned commit
+when provided through `CGC_COMPETITOR_COMMIT`, detected package version when the
 executable reports it, Python version, executable path, backend hint, install
 mode, timestamp, and host/platform metadata.

@@ -1,8 +1,8 @@
 # Operational Profiles
 
-CodeGraph has two different operating modes in this checkout. Keep them
-separate so development experiments do not contaminate the graph used by an
-agent for real work.
+CodeGraph has two practical operating profiles. Keep them separate so
+development experiments and benchmark runs do not contaminate the graph used by
+an agent for real work.
 
 ## Profile: Development / Self-Test
 
@@ -10,10 +10,10 @@ Use this when changing CodeGraph itself.
 
 | Field | Value |
 |---|---|
-| Label | `DEVELOPMENT_SELF_TEST` |
+| Label | Development / self-test |
 | Purpose | Build, test, debug, benchmark, and inspect CodeGraph changes. |
-| Binary | `target/debug/codegraph-mcp.exe` or `cargo run --bin codegraph-mcp -- ...` |
-| DB path | `.codegraph/development-self-test.sqlite` |
+| Binary | debug binary or `cargo run --bin codegraph-mcp -- ...` |
+| DB path | repo-local diagnostic DB |
 | Claim boundary | Diagnostic only unless a benchmark explicitly says otherwise. |
 | Allowed work | Debug timings, fixture indexing, local experiments, failing-gate investigation. |
 | Not allowed | Production readiness claims from debug binaries or contaminated DBs. |
@@ -29,15 +29,15 @@ Example:
 
 ## Profile: Production Agent-Use
 
-Use this when Codex or another coding agent needs CodeGraph context while
-working on this repo.
+Use this when a coding agent needs CodeGraph context while working on a real
+repository.
 
 | Field | Value |
 |---|---|
-| Label | `PRODUCTION_AGENT_USE` |
+| Label | Agent use |
 | Purpose | Stable local context source for agent prompts and implementation work. |
-| Binary | `target/release/codegraph-mcp.exe` or an installed release binary. |
-| DB path | `%LOCALAPPDATA%\CodeGraphMCP\agent-indexes\codegraph-mcp\production-agent-use.sqlite` |
+| Binary | release binary or installed release binary. |
+| DB path | outside the source tree, for example under the user's local application data directory. |
 | Claim boundary | Usable agent context, not a benchmark result by itself. |
 | Allowed work | Status, safe index/update, search, trace, impact, and context-pack calls. |
 | Not allowed | Debug timing claims, benchmark comparison claims, or reuse of dev DB artifacts. |
@@ -46,29 +46,29 @@ Example:
 
 ```powershell
 cargo build --release --bin codegraph-mcp
-.\scripts\codegraph-profile.ps1 -Profile prod-agent -Action index
-.\scripts\codegraph-profile.ps1 -Profile prod-agent -Action context-pack `
-  -Task "Trace README benchmark visual generation" `
-  -Seed generate_readme_agent_benchmark_visuals
+codegraph-mcp --repo C:\path\to\repo --db C:\path\to\agent-indexes\repo.sqlite index C:\path\to\repo
+codegraph-mcp --repo C:\path\to\repo --db C:\path\to\agent-indexes\repo.sqlite context-pack `
+  --task "Trace the indexing entry point" `
+  --seed index_repo_to_db
 ```
 
-Suggested Codex MCP config:
+Suggested MCP config:
 
 ```toml
-[mcp_servers.codegraph-mcp-production]
-command = "C:\\Users\\wamin\\Desktop\\development\\codegraph-mcp\\target\\release\\codegraph-mcp.exe"
+[mcp_servers.codegraph-mcp-agent]
+command = "C:\\path\\to\\codegraph-mcp.exe"
 args = [
-  "--repo", "C:\\Users\\wamin\\Desktop\\development\\codegraph-mcp",
-  "--db", "C:\\Users\\wamin\\AppData\\Local\\CodeGraphMCP\\agent-indexes\\codegraph-mcp\\production-agent-use.sqlite",
+  "--repo", "C:\\path\\to\\repo",
+  "--db", "C:\\path\\to\\agent-indexes\\repo.sqlite",
   "serve-mcp"
 ]
-cwd = "C:\\Users\\wamin\\Desktop\\development\\codegraph-mcp"
+cwd = "C:\\path\\to\\repo"
 ```
 
 ## Operating Rules
 
-- Label every CodeGraph run as `DEVELOPMENT_SELF_TEST` or `PRODUCTION_AGENT_USE`.
-- Use the production profile for routine agent context.
+- Label every CodeGraph run as development, self-test, or agent-use.
+- Use the agent-use profile for routine agent context.
 - Use the development profile only when testing CodeGraph changes.
 - Keep production agent-use DBs outside the source tree.
 - Do not use debug proof-build timings as production gate evidence.
@@ -80,10 +80,10 @@ cwd = "C:\\Users\\wamin\\Desktop\\development\\codegraph-mcp"
 
 ## Routine Agent Workflow
 
-For future prompts on this repo, the expected local flow is:
+Expected local flow:
 
-1. Run production profile `status`.
-2. If missing or stale, run production profile `index`.
+1. Run agent-use `status`.
+2. If missing or stale, run agent-use `index`.
 3. Ask for a focused `context-pack` for the task.
 4. Use the returned files, symbols, source spans, and paths as evidence.
 5. Keep normal code edits and verification separate from CodeGraph benchmark

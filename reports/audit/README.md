@@ -1,8 +1,12 @@
 # CodeGraph Audit Reports
 
-`MVP.md` is the source of truth for this audit scaffold. The audit checks are anchored to the MVP directives that the graph is truth, vectors only suggest, exact graph/source verification proves, and every edge must preserve source span, extractor, confidence, exactness, derived/provenance metadata, and local repo identity.
+This directory is an internal audit index. The public project status lives in
+the stable summaries linked from the root `README.md`.
 
-This directory is report-only. It is for inspection evidence, findings, schemas, and future audit artifacts. It must not change production logic, benchmark scores, graph extraction, storage layout, or retrieval behavior.
+Audit reports are useful for development history and local investigation, but
+they are not public readiness claims by themselves. Raw DBs, logs, copied
+fixtures, benchmark payloads, and temporary report directories belong under
+ignored artifact paths.
 
 ## Audit Phases
 
@@ -20,9 +24,11 @@ This directory is report-only. It is for inspection evidence, findings, schemas,
 
 ## Artifact Locations
 
-- Human audit reports live in `reports/audit/`.
-- Machine-readable audit status lives in `reports/audit/audit_status.json`.
-- Phase scratch outputs, copied benchmark summaries, schema drafts, and command logs should go under `reports/audit/artifacts/`.
+- The curated audit index lives in `reports/audit/README.md`.
+- Local audit reports may be generated under `reports/audit/`, but they are
+  ignored unless intentionally promoted.
+- Scratch outputs, copied benchmark summaries, schema drafts, and command logs
+  should go under `reports/audit/artifacts/`.
 - Future manually labeled graph-truth fixtures should go under `benchmarks/graph_truth/fixtures/`.
 - Future graph-truth JSON schemas should go under `benchmarks/graph_truth/schemas/`.
 - Future standalone audit helpers, if needed, should go under `tools/audit/`.

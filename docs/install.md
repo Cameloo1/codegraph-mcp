@@ -1,8 +1,8 @@
 # Install And Release Notes
 
 The public setup contract is the root `README.md`. CodeGraph remains
-Rust-first, local-first, and single-agent only. No installer, shell completion,
-or release template changes that workflow.
+Rust-first, local-first, and evidence-oriented. No installer, shell completion,
+or release template changes that contract.
 
 ## Install Paths
 
@@ -20,26 +20,25 @@ local install path.
 The npm wrapper path is intentionally not included because it would add
 packaging surface without improving the Rust-first core.
 
-## Recommended Local Agent Setup
+## Recommended Agent Setup
 
-For routine Codex/agent use from this checkout:
+For routine agent use, build or install a release binary and keep the agent DB
+outside the source tree:
 
 ```powershell
 cargo build --release --bin codegraph-mcp
-.\scripts\codegraph-profile.ps1 -Profile prod-agent -Action status
-.\scripts\codegraph-profile.ps1 -Profile prod-agent -Action index
+codegraph-mcp --repo C:\path\to\repo --db C:\path\to\agent-indexes\repo.sqlite status
+codegraph-mcp --repo C:\path\to\repo --db C:\path\to\agent-indexes\repo.sqlite index C:\path\to\repo
 ```
 
-That profile uses `target\release\codegraph-mcp.exe` and stores the agent-use
-DB under LocalAppData instead of inside the source tree. Use the development
-profile only when testing CodeGraph itself.
+Use a development profile only when testing CodeGraph itself.
 
 ## Local Dry Runs
 
 ```powershell
 codegraph-mcp config release-metadata --json
 codegraph-mcp config completions --shell powershell --json
-codegraph-mcp bench synthetic-index --output-dir target\phase29-index-speed --files 250
+codegraph-mcp bench synthetic-index --output-dir target\index-speed --files 250
 powershell -NoProfile -ExecutionPolicy Bypass -File install\install.ps1 -DryRun
 ```
 

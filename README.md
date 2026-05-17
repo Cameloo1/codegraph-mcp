@@ -35,13 +35,11 @@ repository
 |---|---|---|
 | ![Large-Repo Improvement](docs/assets/readme/large_repo_improvement.png) | ![Evidence Reliability](docs/assets/readme/evidence_reliability.png) | ![Warm Agent Loop](docs/assets/readme/warm_agent_loop_latency.png) |
 
-Current development status: semantic-proof and context-packet gates are green,
+Current status: semantic-proof and context-packet gates are green,
 compact-proof storage is under the intended 250 MiB target, and stale or
-mismatched DB reuse is guarded by DB passport preflight. The lifecycle hardening
-gate covers the DB read paths used by CLI, MCP, watch, doctor, bundle import,
-and benchmark inspection. The published Intended Tool Quality Gate is still
-`FAIL` because the stable report records proof-build timing over target; CGC
-comparison remains diagnostic/incomplete, with no superiority claim.
+mismatched DB reuse is guarded by DB passport preflight. The published Intended
+Tool Quality Gate is still not a final green release verdict, and the CGC
+comparison remains diagnostic/incomplete with no superiority claim.
 
 See: [Intended Tool Quality Gate](reports/final/intended_tool_quality_gate.md)
 and [Manual Relation Precision](reports/final/manual_relation_precision.md).
@@ -85,8 +83,8 @@ If `codegraph-mcp` is on your `PATH`, drop the
 `cargo run --bin codegraph-mcp --` prefix. Full CLI surface:
 [docs/cli-reference.md](docs/cli-reference.md).
 
-For day-to-day Codex use, keep the development/self-test profile separate from
-the production agent-use profile. See
+For long-lived agent use, keep the agent-facing index separate from temporary
+benchmark and development databases. See
 [docs/operational-profiles.md](docs/operational-profiles.md).
 
 ## How It Works
@@ -383,8 +381,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke_index.ps1
 ```
 
 The deterministic fixture at [fixtures/smoke/basic_repo](fixtures/smoke/basic_repo)
-is the mandatory CI-sized smoke. Full-repo `index .` is local-only by default
-unless a CI job explicitly opts into it.
+is the mandatory CI-sized smoke. Full-repo indexing is an explicit opt-in check.
 
 ## Reports
 
@@ -392,7 +389,7 @@ Stable report summaries:
 
 - [comprehensive_benchmark_latest.md](reports/final/comprehensive_benchmark_latest.md) / [json](reports/final/comprehensive_benchmark_latest.json) - latest preserved comprehensive gate.
 - [intended_tool_quality_gate.md](reports/final/intended_tool_quality_gate.md) / [json](reports/final/intended_tool_quality_gate.json) - Intended Tool Quality Gate.
-- [lifecycle_quality_gate.md](reports/final/lifecycle_quality_gate.md) / [json](reports/final/lifecycle_quality_gate.json) - development DB lifecycle hardening gate.
+- [lifecycle_quality_gate.md](reports/final/lifecycle_quality_gate.md) / [json](reports/final/lifecycle_quality_gate.json) - DB lifecycle hardening gate.
 - [manual_relation_precision.md](reports/final/manual_relation_precision.md) / [json](reports/final/manual_relation_precision.json) - manual sampled precision boundary.
 - [codegraph_vs_cgc_latest.md](reports/comparison/codegraph_vs_cgc_latest.md) / [json](reports/comparison/codegraph_vs_cgc_latest.json) - CGC comparison status.
 
@@ -430,8 +427,7 @@ Manual precision evidence is sampled precision only:
 - Relation coverage varies by language and extractor.
 - macOS is coming soon; it is not currently tested or supported by this
   baseline.
-- Full-repo indexing is local-only smoke unless a CI job explicitly opts into
-  it.
+- Full-repo indexing is an explicit opt-in check, not a default CI smoke.
 - Knowledge-graph embedding methods such as TransE, RotatE, ComplEx, TuckER,
   hyperbolic relation embeddings, and tensor decomposition are research
   directions for offline prior learning. They are not required for the runtime

@@ -1,8 +1,8 @@
 # MCP Reference
 
 The root `README.md` is the public setup contract. The MCP server is local,
-read-mostly, and evidence-oriented. It does not expose destructive tools and
-does not introduce subagents.
+read-mostly, and evidence-oriented. It does not expose destructive source-edit
+tools.
 
 ## Start
 
@@ -10,10 +10,10 @@ does not introduce subagents.
 codegraph-mcp serve-mcp
 ```
 
-For routine Codex use on this repo, prefer the `PRODUCTION_AGENT_USE` profile
-from [operational-profiles.md](operational-profiles.md). That profile uses a
-release binary and a DB outside the source tree, separate from development
-self-test indexes.
+For long-lived agent use, prefer the agent-use profile from
+[operational-profiles.md](operational-profiles.md). That profile uses a release
+binary and a DB outside the source tree, separate from development and benchmark
+indexes.
 
 Suggested generic Codex config:
 
@@ -24,17 +24,17 @@ args = ["serve-mcp"]
 cwd = "C:\\path\\to\\repo"
 ```
 
-Suggested config for this checkout's production agent-use profile:
+Suggested config for an agent-use profile:
 
 ```toml
-[mcp_servers.codegraph-mcp-production]
-command = "C:\\Users\\wamin\\Desktop\\development\\codegraph-mcp\\target\\release\\codegraph-mcp.exe"
+[mcp_servers.codegraph-mcp-agent]
+command = "C:\\path\\to\\codegraph-mcp.exe"
 args = [
-  "--repo", "C:\\Users\\wamin\\Desktop\\development\\codegraph-mcp",
-  "--db", "C:\\Users\\wamin\\AppData\\Local\\CodeGraphMCP\\agent-indexes\\codegraph-mcp\\production-agent-use.sqlite",
+  "--repo", "C:\\path\\to\\repo",
+  "--db", "C:\\path\\to\\agent-indexes\\repo.sqlite",
   "serve-mcp"
 ]
-cwd = "C:\\Users\\wamin\\Desktop\\development\\codegraph-mcp"
+cwd = "C:\\path\\to\\repo"
 ```
 
 ## Tools

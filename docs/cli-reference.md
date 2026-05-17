@@ -23,9 +23,9 @@ Global flags are accepted before the command name:
 
 `--repo` sets the working repository, `--db` overrides
 `CODEGRAPH_DB_PATH`, and global `--profile` enables index profiling for the
-`index` command. For routine agent use in this checkout, prefer the production
-profile DB documented in [operational-profiles.md](operational-profiles.md)
-instead of reusing development/self-test DBs.
+`index` command. For routine agent use, prefer a release-binary agent DB
+outside the source tree instead of reusing temporary development or benchmark
+DBs.
 
 ## Commands
 
@@ -197,9 +197,9 @@ speed regression checks.
 
 `bench gaps [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>]`
 
-Writes the Phase 26 gap scoreboard with machine-readable win/loss/tie/unknown
-dimensions and nested CodeGraphContext artifacts. If the competitor executable
-is unavailable, the report records `skipped` with a structured reason.
+Writes a gap scoreboard with machine-readable win/loss/tie/unknown dimensions.
+If the competitor executable is unavailable, the report records `skipped` with
+a structured reason.
 
 `bench real-repo-corpus`
 
@@ -209,9 +209,8 @@ Java. It includes pinned commits, task manifests, and an offline replay plan for
 
 `bench parity-report [--output-dir <dir>]`
 
-Writes the final parity artifacts: `summary.json`, `summary.md`, and
-`per_task.jsonl`. Unknown/skipped fields remain explicit, and the report makes no
-SOTA claim without measured evidence.
+Writes parity summaries. Unknown/skipped fields remain explicit, and the report
+makes no SOTA claim without measured evidence.
 
 `bench cgc-comparison [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>]`
 

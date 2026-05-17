@@ -24,8 +24,8 @@ vectors suggest; graph verifies; packet proves
 
 ## Current Evidence Boundary
 
-The current public evidence is in the stable report summaries, not in raw
-development artifacts:
+The current public evidence is in the stable report summaries, not in raw run
+payloads:
 
 - `reports/final/comprehensive_benchmark_latest.md` / `.json` preserves the
   latest comprehensive gate. It is currently **fail** because
@@ -41,7 +41,7 @@ development artifacts:
   diagnostic. CGC recovered enough for smoke/fixture diagnostics, but the
   comparable run did not complete, so no CodeGraph superiority claim is made.
 
-Raw DBs, WAL/SHM files, raw logs, diagnostic lab payloads, and temporary CGC
+Raw DBs, WAL/SHM files, raw logs, diagnostic payloads, and temporary competitor
 artifacts are evidence inputs, not public architecture claims.
 
 ## Major Layers
@@ -65,8 +65,8 @@ artifacts are evidence inputs, not public architecture claims.
 5. `codegraph-vector` implements the Stage 1 local binary-vector sieve and the
    Stage 2 compressed rerank interface with deterministic local reranking,
    int8/PQ/Matryoshka placeholder vectors, and optional backend stubs.
-6. `codegraph-mcp-server` exposes read-mostly evidence tools to Codex through
-   a local stdio JSON-RPC MCP server with input/output schemas, safety
+6. `codegraph-mcp-server` exposes read-mostly evidence tools through a local
+   stdio JSON-RPC MCP server with input/output schemas, safety
    annotations, resources, prompt templates, pagination, resource links, and
    explain-missing output.
 7. `codegraph-cli` provides local commands for indexing, status, querying,
@@ -88,42 +88,29 @@ artifacts are evidence inputs, not public architecture claims.
 
 ## Operational Profiles
 
-Use the two profiles in [operational-profiles.md](operational-profiles.md) to
-keep CodeGraph's own development state separate from the graph used by a coding
+Use the profiles in [operational-profiles.md](operational-profiles.md) to keep
+temporary development or benchmark DBs separate from the graph used by a coding
 agent:
 
-- `DEVELOPMENT_SELF_TEST` uses the debug binary and repo-local diagnostic DBs
-  for testing CodeGraph changes.
-- `PRODUCTION_AGENT_USE` uses the release binary and a DB outside the source
-  tree under LocalAppData for routine Codex context.
+- The development profile uses local diagnostic DBs for testing CodeGraph
+  changes.
+- The agent-use profile uses a release binary and a DB outside the source tree
+  for routine coding-agent context.
 
-The production profile is allowed to answer agent-context questions only after
-the DB lifecycle preflight says the DB is valid, matching, claimable, and not
-contaminated. Development/self-test DBs are never benchmark or superiority
-evidence by themselves.
+Agent-use reads should answer only after the DB lifecycle preflight says the DB
+is valid, matching, claimable, and not contaminated. Development and benchmark
+DBs are never superiority evidence by themselves.
 
-## Phase Ordering
+## Roadmap Boundary
 
-This section is a historical implementation map, not the current pass/fail
-report. The graph/domain model comes before storage. Storage comes before parsing.
-Parsing comes before extraction. Exact graph queries and graph-only context
-packets come before Stage 0 BM25/FTS. Stage 0 comes before the binary-vector
-sieve. Stage 1 comes before compressed reranking. The integrated runtime funnel
-comes before Bayesian calibration. Bayesian calibration comes before MCP. MCP
-comes before CLI completion. CLI completion comes before Skills, Hooks, and
-`AGENTS.md` templates. Templates come before live watching. Watching comes
-before the local Proof-Path UI. The UI comes before benchmarks. Benchmarks,
-language breadth, query hardening, indexing speed, installability, UI/MCP
-ergonomics, and real-repo parity reports stay evidence-gated. Future research
-proposals remain deferred until benchmark evidence shows remaining gaps.
+The current architecture is deliberately local, deterministic, and
+proof-first. Future research features such as dynamic tracing, solver-backed
+verification, LSP memory-buffer overlays, or learned graph priors should remain
+evidence-gated additions. They should not weaken the runtime contract that
+vectors suggest, the graph verifies, and source spans support final context.
 
-Post-MVP features such as eBPF/OpenTelemetry tracing, SMT/Z3 verification, LSP
-memory-buffer overlays, and reinforcement-learning-style optimization are not
-started until the full MVP is accepted.
+## Agent Workflow
 
-## Single-Agent Workflow
-
-No subagents. The product behavior, docs, skills, hooks, and implementation
-prompts must preserve one linear Codex-style agent workflow. Internal Rust code
-may use deterministic parallelism for indexing/query execution, but agent
-reasoning and implementation stay single-agent only.
+The product is designed for a single linear coding-agent workflow. Internal
+Rust code may use deterministic parallelism for indexing and query execution,
+but the exposed context contract should remain inspectable and easy to audit.
