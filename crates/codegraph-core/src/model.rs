@@ -638,6 +638,110 @@ pub struct PathEvidence {
     pub metadata: Metadata,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalCandidateSource {
+    ExactSeed,
+    FilePathSeed,
+    TextEvidence,
+    LexicalFts,
+    SymbolLookup,
+    VectorBinary,
+    VectorRerank,
+    GraphNeighbor,
+    PathEvidence,
+    NoProofFallback,
+    Diagnostic,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalProofStatus {
+    ProofPathFound,
+    NoProofPathFound,
+    NotGraphProof,
+    CandidateOnly,
+    DiagnosticOnly,
+    StaleOrForeignDb,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalVerificationStatus {
+    Unverified,
+    NeedsGraphVerification,
+    GraphVerified,
+    NoProofPathFound,
+    NotGraphProof,
+    CandidateOnly,
+    DiagnosticOnly,
+    StaleOrForeignDb,
+    Omitted,
+    Truncated,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RetrievalCandidate {
+    pub candidate_id: String,
+    pub candidate_source: RetrievalCandidateSource,
+    pub file_id: Option<String>,
+    pub path: Option<String>,
+    pub entity_id: Option<String>,
+    pub span: Option<SourceSpan>,
+    pub evidence_role: EvidenceRole,
+    pub proof_status: RetrievalProofStatus,
+    pub graph_proof: bool,
+    pub claimable: bool,
+    pub diagnostic_only: bool,
+    pub score: Option<f64>,
+    pub rank: Option<usize>,
+    #[serde(default)]
+    pub matched_seeds: Vec<String>,
+    pub requires_graph_verification: bool,
+    pub verification_status: RetrievalVerificationStatus,
+    pub reason: String,
+    #[serde(default)]
+    pub omitted: bool,
+    #[serde(default)]
+    pub truncated: bool,
+    #[serde(default)]
+    pub metadata: Metadata,
+}
+
+impl RetrievalCandidate {
+    pub fn new(
+        candidate_id: impl Into<String>,
+        candidate_source: RetrievalCandidateSource,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            candidate_id: candidate_id.into(),
+            candidate_source,
+            file_id: None,
+            path: None,
+            entity_id: None,
+            span: None,
+            evidence_role: EvidenceRole::Unknown,
+            proof_status: RetrievalProofStatus::Unknown,
+            graph_proof: false,
+            claimable: false,
+            diagnostic_only: false,
+            score: None,
+            rank: None,
+            matched_seeds: Vec::new(),
+            requires_graph_verification: true,
+            verification_status: RetrievalVerificationStatus::Unknown,
+            reason: reason.into(),
+            omitted: false,
+            truncated: false,
+            metadata: Metadata::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DerivedClosureEdge {
     pub id: String,

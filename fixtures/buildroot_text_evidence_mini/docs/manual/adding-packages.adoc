@@ -1,0 +1,7 @@
+= Adding packages to Buildroot
+
+This fixture documents package infrastructure for mini Buildroot text evidence.
+
+A package that uses generic-package also needs a Config.in entry.
+
+Keep examples small so source-span snippets stay bounded.

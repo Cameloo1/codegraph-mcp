@@ -1,0 +1,4 @@
+#!/bin/sh
+# Minimal no-extension support script for Buildroot text evidence fixtures.
+echo "pkg-stats tracks package infrastructure metadata"
+echo "generic-package Config.in BR2_PACKAGE_FOO"

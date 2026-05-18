@@ -1,0 +1,244 @@
+{
+  "schema_version": 1,
+  "fixture_name": "buildroot_text_evidence_mini",
+  "fixture_root": "fixtures/buildroot_text_evidence_mini",
+  "purpose": "Deterministic Buildroot-style Stage 0 text-evidence fixture gate before broad behavior implementation.",
+  "scope": {
+    "should_be_scoped": true,
+    "must_not_create_db_in_fixture": true,
+    "normal_in_repo_codegraph_db_allowed": false
+  },
+  "evidence_contract": {
+    "text_evidence_proves": [
+      "this text exists",
+      "in this file",
+      "at this line/span",
+      "matching this token/query/snippet"
+    ],
+    "text_evidence_does_not_prove": [
+      "CALLS",
+      "READS",
+      "WRITES",
+      "FLOWS_TO",
+      "MUTATES",
+      "TESTS",
+      "ASSERTS",
+      "any typed graph relation"
+    ],
+    "text_evidence_default_proof_status": "not_graph_proof",
+    "fallback_no_proof_status": "no_proof_path_found"
+  },
+  "files": [
+    {
+      "path": "package/foo/foo.mk",
+      "fixture_role": "buildroot_package_makefile",
+      "expected_evidence_kind": "text_evidence",
+      "expected_evidence_role": "text_evidence",
+      "expected_proof_status": "not_graph_proof",
+      "expected_source_file_kind": "makefile_fragment",
+      "expected_tokens": [
+        "FOO_VERSION",
+        "FOO_SITE",
+        "FOO_LICENSE",
+        "FOO_DEPENDENCIES",
+        "generic-package"
+      ],
+      "expected_source_spans": [
+        { "token": "FOO_VERSION", "start_line": 7, "end_line": 7 },
+        { "token": "FOO_SITE", "start_line": 8, "end_line": 8 },
+        { "token": "FOO_LICENSE", "start_line": 9, "end_line": 10 },
+        { "token": "FOO_DEPENDENCIES", "start_line": 11, "end_line": 11 },
+        { "token": "generic-package", "start_line": 13, "end_line": 13 }
+      ]
+    },
+    {
+      "path": "package/foo/Config.in",
+      "fixture_role": "buildroot_kconfig",
+      "expected_evidence_kind": "text_evidence",
+      "expected_evidence_role": "text_evidence",
+      "expected_proof_status": "not_graph_proof",
+      "expected_source_file_kind": "kconfig",
+      "expected_tokens": [
+        "BR2_PACKAGE_FOO",
+        "depends on",
+        "select"
+      ],
+      "expected_source_spans": [
+        { "token": "BR2_PACKAGE_FOO", "start_line": 1, "end_line": 1 },
+        { "token": "depends on", "start_line": 3, "end_line": 3 },
+        { "token": "select", "start_line": 4, "end_line": 4 }
+      ]
+    },
+    {
+      "path": "docs/manual/adding-packages.adoc",
+      "fixture_role": "buildroot_manual_doc",
+      "expected_evidence_kind": "text_evidence",
+      "expected_evidence_role": "text_evidence",
+      "expected_proof_status": "not_graph_proof",
+      "expected_source_file_kind": "asciidoc",
+      "expected_tokens": [
+        "package infrastructure",
+        "generic-package",
+        "Config.in"
+      ],
+      "expected_source_spans": [
+        { "token": "package infrastructure", "start_line": 3, "end_line": 3 },
+        { "token": "generic-package", "start_line": 5, "end_line": 5 },
+        { "token": "Config.in", "start_line": 5, "end_line": 5 }
+      ]
+    },
+    {
+      "path": "support/scripts/pkg-stats",
+      "fixture_role": "buildroot_no_extension_support_script",
+      "expected_evidence_kind": "text_evidence",
+      "expected_evidence_role": "text_evidence",
+      "expected_proof_status": "not_graph_proof",
+      "expected_source_file_kind": "text_like_support_script",
+      "expected_tokens": [
+        "pkg-stats",
+        "package infrastructure",
+        "generic-package",
+        "Config.in",
+        "BR2_PACKAGE_FOO"
+      ],
+      "expected_source_spans": [
+        { "token": "pkg-stats", "start_line": 3, "end_line": 3 },
+        { "token": "package infrastructure", "start_line": 3, "end_line": 3 },
+        { "token": "generic-package", "start_line": 4, "end_line": 4 },
+        { "token": "Config.in", "start_line": 4, "end_line": 4 },
+        { "token": "BR2_PACKAGE_FOO", "start_line": 4, "end_line": 4 }
+      ]
+    },
+    {
+      "path": "src/download.c",
+      "fixture_role": "supported_source_file",
+      "expected_evidence_kind": "graph_parse_candidate",
+      "expected_evidence_role": "graph_proof_candidate",
+      "expected_proof_status": "proof_not_applicable_until_queried",
+      "expected_language": "c",
+      "expected_symbols": [
+        {
+          "name": "download_archive",
+          "kind": "Function",
+          "start_line": 3,
+          "end_line": 11
+        }
+      ]
+    },
+    {
+      "path": "README.md",
+      "fixture_role": "fixture_documentation",
+      "expected_evidence_kind": "text_evidence",
+      "expected_evidence_role": "text_evidence",
+      "expected_proof_status": "not_graph_proof",
+      "expected_source_file_kind": "markdown",
+      "expected_tokens": [
+        "Buildroot Text Evidence Mini Fixture",
+        "Stage 0 text evidence",
+        "not graph proof"
+      ],
+      "expected_source_spans": [
+        { "token": "Buildroot Text Evidence Mini Fixture", "start_line": 1, "end_line": 1 },
+        { "token": "Stage 0 text evidence", "start_line": 3, "end_line": 3 },
+        { "token": "not graph proof", "start_line": 12, "end_line": 12 }
+      ]
+    }
+  ],
+  "expected_queries": [
+    {
+      "command_shape": "query text generic-package",
+      "query": "generic-package",
+      "expected_min_files": [
+        "package/foo/foo.mk",
+        "docs/manual/adding-packages.adoc"
+      ],
+      "allowed_additional_files": [
+        "support/scripts/pkg-stats"
+      ],
+      "expected_evidence_kind": "text_evidence",
+      "expected_proof_status": "not_graph_proof",
+      "forbidden_evidence_kind": "graph_proof"
+    },
+    {
+      "command_shape": "query text BR2_PACKAGE_FOO",
+      "query": "BR2_PACKAGE_FOO",
+      "expected_min_files": [
+        "package/foo/Config.in"
+      ],
+      "allowed_additional_files": [
+        "support/scripts/pkg-stats"
+      ],
+      "expected_evidence_kind": "text_evidence",
+      "expected_proof_status": "not_graph_proof",
+      "forbidden_evidence_kind": "graph_proof"
+    },
+    {
+      "command_shape": "query files Config.in",
+      "query": "Config.in",
+      "expected_min_files": [
+        "package/foo/Config.in"
+      ],
+      "expected_evidence_kind": "text_evidence",
+      "expected_proof_status": "not_graph_proof",
+      "forbidden_evidence_kind": "graph_proof"
+    }
+  ],
+  "expected_context_pack": {
+    "task": "Plan how to add a Buildroot package",
+    "expected_packet_kind": "no_proof_text_fallback",
+    "expected_proof_status": "no_proof_path_found",
+    "expected_proof_path_available": false,
+    "expected_fallback_snippet_files": [
+      "package/foo/foo.mk",
+      "package/foo/Config.in",
+      "docs/manual/adding-packages.adoc"
+    ],
+    "allowed_fallback_snippet_files": [
+      "support/scripts/pkg-stats",
+      "README.md"
+    ],
+    "forbidden_sections": [
+      "proof_paths populated from text_evidence",
+      "verified_paths populated from text_evidence",
+      "PathEvidence rows created from text_evidence"
+    ]
+  },
+  "forbidden_graph_proof_claims": {
+    "text_evidence_files": [
+      "package/foo/foo.mk",
+      "package/foo/Config.in",
+      "docs/manual/adding-packages.adoc",
+      "support/scripts/pkg-stats",
+      "README.md"
+    ],
+    "must_not_claim_relations": [
+      "CALLS",
+      "READS",
+      "WRITES",
+      "FLOWS_TO",
+      "MUTATES",
+      "TESTS",
+      "ASSERTS",
+      "DEPENDS_ON",
+      "SELECTS"
+    ],
+    "must_not_populate": [
+      "proof_edges",
+      "proof_paths",
+      "verified_paths",
+      "PathEvidence"
+    ],
+    "claimability_not_claimable_as": [
+      "typed_graph_relation",
+      "makefile_evaluation",
+      "kconfig_semantics",
+      "package_build_behavior"
+    ]
+  },
+  "implementation_gate_notes": [
+    "This fixture is expected to fail broad text-evidence behavior until Stage 0 implementation lands.",
+    "The C file is included so parser-supported source remains graph-parsed while Buildroot planning surfaces remain text evidence.",
+    "The no-extension support script is deliberately text-like and under support/scripts.",
+    "No real Buildroot checkout or full Buildroot index is required for this fixture gate."
+  ]
+}

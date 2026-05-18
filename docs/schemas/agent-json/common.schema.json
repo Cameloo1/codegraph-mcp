@@ -66,6 +66,12 @@
         "claimable": {
           "type": "boolean"
         },
+        "claimable_for_text": {
+          "type": "boolean"
+        },
+        "claimable_for_graph": {
+          "type": "boolean"
+        },
         "diagnostic_only": {
           "type": "boolean"
         },
@@ -156,6 +162,285 @@
         }
       }
     },
+    "prompt_intent": {
+      "type": "string",
+      "enum": [
+        "entity_lookup",
+        "file_lookup",
+        "text_config_lookup",
+        "build_system_planning",
+        "behavior_trace",
+        "caller_callee_trace",
+        "test_impact",
+        "dataflow_trace",
+        "security_auth_trace",
+        "docs_text",
+        "unknown"
+      ]
+    },
+    "prompt_seed_provenance": {
+      "type": "object",
+      "required": [
+        "seed",
+        "seed_kind",
+        "source_text",
+        "intent_contribution",
+        "exactness"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "seed": {
+          "type": "string"
+        },
+        "seed_kind": {
+          "type": "string",
+          "enum": [
+            "symbol",
+            "file_path",
+            "line_number",
+            "stack_trace",
+            "test_name",
+            "diagnostic",
+            "code_identifier",
+            "config_token",
+            "file_pattern",
+            "path_token",
+            "text_token",
+            "task_verb_ignored",
+            "unknown"
+          ]
+        },
+        "source_text": {
+          "type": "string"
+        },
+        "intent_contribution": {
+          "$ref": "#/$defs/prompt_intent"
+        },
+        "exactness": {
+          "type": "string",
+          "enum": ["exact", "literal_text", "heuristic", "ignored", "unknown"]
+        },
+        "ignored_reason": {
+          "type": ["string", "null"]
+        },
+        "file_path": {
+          "type": ["string", "null"]
+        },
+        "line": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "function": {
+          "type": ["string", "null"]
+        },
+        "exact": {
+          "type": "boolean"
+        }
+      }
+    },
+    "retrieval_candidate_source": {
+      "type": "string",
+      "enum": [
+        "exact_seed",
+        "file_path_seed",
+        "text_evidence",
+        "lexical_fts",
+        "symbol_lookup",
+        "vector_binary",
+        "vector_rerank",
+        "graph_neighbor",
+        "path_evidence",
+        "no_proof_fallback",
+        "diagnostic",
+        "unknown"
+      ]
+    },
+    "retrieval_proof_status": {
+      "type": "string",
+      "enum": [
+        "proof_path_found",
+        "no_proof_path_found",
+        "not_graph_proof",
+        "candidate_only",
+        "diagnostic_only",
+        "stale_or_foreign_db",
+        "unknown"
+      ]
+    },
+    "retrieval_verification_status": {
+      "type": "string",
+      "enum": [
+        "unverified",
+        "needs_graph_verification",
+        "graph_verified",
+        "no_proof_path_found",
+        "not_graph_proof",
+        "candidate_only",
+        "diagnostic_only",
+        "stale_or_foreign_db",
+        "omitted",
+        "truncated",
+        "unknown"
+      ]
+    },
+    "retrieval_candidate": {
+      "type": "object",
+      "required": [
+        "candidate_id",
+        "candidate_source",
+        "file_id",
+        "path",
+        "entity_id",
+        "span",
+        "evidence_role",
+        "proof_status",
+        "graph_proof",
+        "claimable",
+        "diagnostic_only",
+        "score",
+        "rank",
+        "matched_seeds",
+        "requires_graph_verification",
+        "verification_status",
+        "reason",
+        "omitted",
+        "truncated"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidate_source": {
+          "$ref": "#/$defs/retrieval_candidate_source"
+        },
+        "candidate_sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/retrieval_candidate_source"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "file_id": {
+          "type": ["string", "null"]
+        },
+        "path": {
+          "type": ["string", "null"]
+        },
+        "entity_id": {
+          "type": ["string", "null"]
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/source_span"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_role": {
+          "$ref": "#/$defs/evidence_role"
+        },
+        "proof_status": {
+          "$ref": "#/$defs/retrieval_proof_status"
+        },
+        "graph_proof": {
+          "type": "boolean"
+        },
+        "claimable": {
+          "type": "boolean"
+        },
+        "diagnostic_only": {
+          "type": "boolean"
+        },
+        "score": {
+          "type": ["number", "null"]
+        },
+        "rank": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "matched_seeds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_graph_verification": {
+          "type": "boolean"
+        },
+        "verification_status": {
+          "$ref": "#/$defs/retrieval_verification_status"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "omitted": {
+          "type": "boolean"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "source_labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ranking_features": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "exact_seed_match": {
+              "type": "boolean"
+            },
+            "file_path_match": {
+              "type": "boolean"
+            },
+            "text_evidence_match": {
+              "type": "boolean"
+            },
+            "symbol_entity_match": {
+              "type": "boolean"
+            },
+            "graph_proximity": {
+              "type": "boolean"
+            },
+            "source_role_compatible": {
+              "type": "boolean"
+            },
+            "lifecycle_claimable": {
+              "type": "boolean"
+            },
+            "proof_available": {
+              "type": "boolean"
+            }
+          }
+        },
+        "candidate_cap": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "candidate_cap_policy": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
     "entity_ref": {
       "type": "object",
       "required": ["id", "name"],
@@ -191,7 +476,7 @@
     },
     "evidence_role": {
       "type": "string",
-      "enum": ["production", "test", "mock", "mixed", "unknown"]
+      "enum": ["production", "test", "mock", "mixed", "text_evidence", "unknown"]
     },
     "exactness": {
       "type": "string",

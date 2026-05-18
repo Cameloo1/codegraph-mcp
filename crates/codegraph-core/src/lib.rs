@@ -23,7 +23,8 @@ pub use model::{
     classify_edge_evidence_role, classify_entity_source_role, combine_evidence_roles,
     infer_edge_class, infer_edge_context, normalize_edge_classification, ContextPacket,
     ContextSnippet, DerivedClosureEdge, Edge, Entity, EvidenceRoleDecision, FileRecord, Metadata,
-    PathEvidence, RepoIndexState, SourceSpan,
+    PathEvidence, RepoIndexState, RetrievalCandidate, RetrievalCandidateSource,
+    RetrievalProofStatus, RetrievalVerificationStatus, SourceSpan,
 };
 pub use validation::{relation_allows, RelationEndpointClass};
 
@@ -34,7 +35,9 @@ mod tests {
     use super::{
         relation_allows, stable_edge_id, stable_entity_id, stable_entity_id_for_kind,
         ContextPacket, ContextSnippet, DerivedClosureEdge, Edge, EdgeClass, EdgeContext, Entity,
-        EntityKind, Exactness, FileRecord, PathEvidence, RelationKind, RepoIndexState, SourceSpan,
+        EntityKind, EvidenceRole, Exactness, FileRecord, PathEvidence, RelationKind,
+        RepoIndexState, RetrievalCandidate, RetrievalCandidateSource, RetrievalProofStatus,
+        RetrievalVerificationStatus, SourceSpan,
     };
 
     fn ok<T, E: Debug>(result: Result<T, E>) -> T {
@@ -325,6 +328,39 @@ mod tests {
         let edge_json = ok(serde_json::to_string(&edge));
         let edge_back: Edge = ok(serde_json::from_str(&edge_json));
         assert_eq!(edge_back, edge);
+    }
+
+    #[test]
+    fn retrieval_candidate_provenance_serializes_claim_boundaries() {
+        let mut candidate = RetrievalCandidate::new(
+            "candidate://text/src/auth.ts/82",
+            RetrievalCandidateSource::TextEvidence,
+            "text evidence confirms source text existence only",
+        );
+        candidate.path = Some("src/auth.ts".to_string());
+        candidate.span = Some(SourceSpan::new("src/auth.ts", 82, 91));
+        candidate.evidence_role = EvidenceRole::Production;
+        candidate.proof_status = RetrievalProofStatus::NotGraphProof;
+        candidate.graph_proof = false;
+        candidate.claimable = true;
+        candidate.requires_graph_verification = true;
+        candidate.verification_status = RetrievalVerificationStatus::NeedsGraphVerification;
+        candidate
+            .matched_seeds
+            .push("AuthService.login".to_string());
+
+        let value = ok(serde_json::to_value(&candidate));
+        assert_eq!(value["candidate_source"].as_str(), Some("text_evidence"));
+        assert_eq!(value["proof_status"].as_str(), Some("not_graph_proof"));
+        assert_eq!(value["graph_proof"].as_bool(), Some(false));
+        assert_eq!(value["claimable"].as_bool(), Some(true));
+        assert_eq!(
+            value["span"]["repo_relative_path"].as_str(),
+            Some("src/auth.ts")
+        );
+
+        let reparsed: RetrievalCandidate = ok(serde_json::from_value(value));
+        assert_eq!(reparsed, candidate);
     }
 
     #[test]
