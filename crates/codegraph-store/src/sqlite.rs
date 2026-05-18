@@ -479,6 +479,30 @@ impl SqliteGraphStore {
         }
     }
 
+    pub fn insert_file_text(&self, repo_relative_path: &str, text: &str) -> StoreResult<()> {
+        insert_fts_row(
+            &self.connection,
+            TextSearchKind::File,
+            repo_relative_path,
+            repo_relative_path,
+            None,
+            repo_relative_path,
+            text,
+        )
+    }
+
+    pub fn insert_snippet_text(&self, id: &str, span: &SourceSpan, text: &str) -> StoreResult<()> {
+        insert_fts_row(
+            &self.connection,
+            TextSearchKind::Snippet,
+            id,
+            &span.repo_relative_path,
+            Some(span.start_line),
+            &span.to_string(),
+            text,
+        )
+    }
+
     pub fn begin_write_transaction(&self) -> StoreResult<()> {
         self.connection.execute_batch("BEGIN IMMEDIATE")?;
         Ok(())
@@ -9718,9 +9742,7 @@ CREATE INDEX IF NOT EXISTS idx_path_evidence_target ON path_evidence(target, len
 CREATE INDEX IF NOT EXISTS idx_path_evidence_lookup_source ON path_evidence_lookup(source_id, task_class, relation_signature, confidence DESC);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_lookup_target ON path_evidence_lookup(target_id, task_class, relation_signature, confidence DESC);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_lookup_signature ON path_evidence_lookup(relation_signature, confidence DESC);
-CREATE INDEX IF NOT EXISTS idx_path_evidence_symbols_entity ON path_evidence_symbols(entity_id, path_id);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_symbols_path ON path_evidence_symbols(path_id, entity_id);
-CREATE INDEX IF NOT EXISTS idx_path_evidence_edges_path_ordinal ON path_evidence_edges(path_id, ordinal);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_edges_edge ON path_evidence_edges(edge_id, path_id);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_tests_test ON path_evidence_tests(test_id, path_id);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_files_file ON path_evidence_files(file_id, path_id);
@@ -9832,9 +9854,7 @@ CREATE INDEX IF NOT EXISTS idx_path_evidence_target ON path_evidence(target, len
 CREATE INDEX IF NOT EXISTS idx_path_evidence_lookup_source ON path_evidence_lookup(source_id, task_class, relation_signature, confidence DESC);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_lookup_target ON path_evidence_lookup(target_id, task_class, relation_signature, confidence DESC);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_lookup_signature ON path_evidence_lookup(relation_signature, confidence DESC);
-CREATE INDEX IF NOT EXISTS idx_path_evidence_symbols_entity ON path_evidence_symbols(entity_id, path_id);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_symbols_path ON path_evidence_symbols(path_id, entity_id);
-CREATE INDEX IF NOT EXISTS idx_path_evidence_edges_path_ordinal ON path_evidence_edges(path_id, ordinal);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_edges_edge ON path_evidence_edges(edge_id, path_id);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_tests_test ON path_evidence_tests(test_id, path_id);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_files_file ON path_evidence_files(file_id, path_id);
@@ -9883,9 +9903,7 @@ CREATE INDEX IF NOT EXISTS idx_path_evidence_target ON path_evidence(target, len
 CREATE INDEX IF NOT EXISTS idx_path_evidence_lookup_source ON path_evidence_lookup(source_id, task_class, relation_signature, confidence DESC);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_lookup_target ON path_evidence_lookup(target_id, task_class, relation_signature, confidence DESC);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_lookup_signature ON path_evidence_lookup(relation_signature, confidence DESC);
-CREATE INDEX IF NOT EXISTS idx_path_evidence_symbols_entity ON path_evidence_symbols(entity_id, path_id);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_symbols_path ON path_evidence_symbols(path_id, entity_id);
-CREATE INDEX IF NOT EXISTS idx_path_evidence_edges_path_ordinal ON path_evidence_edges(path_id, ordinal);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_edges_edge ON path_evidence_edges(edge_id, path_id);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_tests_test ON path_evidence_tests(test_id, path_id);
 CREATE INDEX IF NOT EXISTS idx_path_evidence_files_file ON path_evidence_files(file_id, path_id);
@@ -10085,8 +10103,6 @@ mod tests {
             "idx_path_evidence_target",
             "idx_path_evidence_lookup_source",
             "idx_path_evidence_lookup_target",
-            "idx_path_evidence_symbols_entity",
-            "idx_path_evidence_edges_path_ordinal",
             "idx_path_evidence_edges_edge",
             "idx_path_evidence_tests_test",
             "idx_path_evidence_files_file",
@@ -10102,6 +10118,15 @@ mod tests {
             "idx_file_fts_rows_object",
         ] {
             assert!(ok(store.index_exists(index)), "missing index {index}");
+        }
+        for redundant_index in [
+            "idx_path_evidence_symbols_entity",
+            "idx_path_evidence_edges_path_ordinal",
+        ] {
+            assert!(
+                !ok(store.index_exists(redundant_index)),
+                "redundant index should not be created: {redundant_index}"
+            );
         }
         assert!(!ok(store.index_exists("idx_files_content_template")));
 

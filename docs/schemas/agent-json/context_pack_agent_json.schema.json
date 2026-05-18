@@ -209,6 +209,249 @@
       "type": "integer",
       "minimum": 0
     },
+    "graph_verification": {
+      "type": "object",
+      "required": [
+        "status",
+        "candidate_count",
+        "proof_status",
+        "graph_proof",
+        "evidence_status",
+        "fallback_evidence_count",
+        "reason",
+        "proof_failure_reason",
+        "contract"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "graph_verified",
+            "no_proof_path_found",
+            "no_graph_candidates",
+            "unknown"
+          ]
+        },
+        "candidate_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "proof_status": {
+          "$ref": "common.schema.json#/$defs/retrieval_proof_status"
+        },
+        "graph_proof": {
+          "type": "boolean"
+        },
+        "evidence_status": {
+          "type": "string"
+        },
+        "fallback_evidence_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "text_only_candidates_require_graph_verification": {
+          "const": false
+        },
+        "source_text_fallback_available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "proof_failure_reason": {
+          "type": ["string", "null"]
+        },
+        "contract": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "proof_failure_reason": {
+      "type": ["string", "null"]
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "common.schema.json#/$defs/retrieval_candidate"
+      }
+    },
+    "candidate_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "candidate_total_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "candidate_omitted_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "candidate_cap": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "candidate_cap_policy": {
+      "type": "string"
+    },
+    "candidate_exact_seed_cap_override": {
+      "type": "boolean"
+    },
+    "retrieval_architecture": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "contract": {
+          "type": "string"
+        },
+        "current_phase_scope": {
+          "type": "string"
+        },
+        "proof_status": {
+          "type": "string"
+        },
+        "graph_proof": {
+          "type": "boolean"
+        },
+        "evidence_status": {
+          "type": "string"
+        },
+        "graph_verification": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "prompt_intent": {
+          "$ref": "common.schema.json#/$defs/prompt_intent"
+        },
+        "prompt_seed_provenance": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "$ref": "common.schema.json#/$defs/prompt_seed_provenance"
+          }
+        },
+        "candidate_flow": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["stage", "status", "proof_contract"],
+            "additionalProperties": true,
+            "properties": {
+              "stage": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "proof_contract": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "inactive_lanes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "retrieval_explain": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "diagnostic_only",
+        "trigger",
+        "prompt_intent",
+        "seeds_extracted",
+        "ignored_seeds",
+        "candidate_sources",
+        "candidate_counts_by_source",
+        "candidate_caps",
+        "dedup_results",
+        "ranking_reasons",
+        "graph_verification_attempts",
+        "proof_paths_found",
+        "no_proof_fallback_reason",
+        "omitted_counts"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "diagnostic_only": {
+          "const": true
+        },
+        "trigger": {
+          "type": "string"
+        },
+        "prompt_intent": {
+          "$ref": "common.schema.json#/$defs/prompt_intent"
+        },
+        "seeds_extracted": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/prompt_seed_provenance"
+          }
+        },
+        "ignored_seeds": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/prompt_seed_provenance"
+          }
+        },
+        "candidate_sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "candidate_counts_by_source": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "candidate_caps": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "dedup_results": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "ranking_reasons": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "graph_verification_attempts": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "proof_paths_found": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "no_proof_fallback_reason": {
+          "type": ["string", "null"]
+        },
+        "omitted_counts": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
     "snippets": {
       "type": "array",
       "items": {

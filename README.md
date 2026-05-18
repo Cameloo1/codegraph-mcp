@@ -1,3 +1,5 @@
+<img src="docs/assets/readme/title-pic.jpeg" alt="CodeGraph MCP" width="100%" />
+
 # CodeGraph MCP
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Cameloo1/codegraph-mcp/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/Cameloo1/codegraph-mcp/actions/workflows/ci.yml)
@@ -31,9 +33,9 @@ repository
 
 ## Agent-Impact Benchmarks
 
-| Large-Repo Improvement | Evidence Reliability | Warm Agent Loop |
+| Real-Repo Index Smoke | Evidence Reliability | Warm Agent Loop |
 |---|---|---|
-| ![Large-Repo Improvement](docs/assets/readme/large_repo_improvement.png) | ![Evidence Reliability](docs/assets/readme/evidence_reliability.png) | ![Warm Agent Loop](docs/assets/readme/warm_agent_loop_latency.png) |
+| ![Real-Repo Index Smoke](docs/assets/readme/large_repo_improvement.png) | ![Evidence Reliability](docs/assets/readme/evidence_reliability.png) | ![Warm Agent Loop](docs/assets/readme/warm_agent_loop_latency.png) |
 
 Current status: semantic-proof and context-packet gates are green,
 compact-proof storage is under the intended 250 MiB target, and stale or

@@ -7,8 +7,11 @@ use std::{
 };
 
 use codegraph_index::{
-    index_repo_to_db_with_options, IndexBuildMode, IndexOptions, IndexScopeOptions, StorageMode,
+    index_repo_to_db_with_options,
+    scope::{self, IndexScope, IndexScopeDecision, ScopeAction, ScopePathKind, ScopeRuleKind},
+    IndexBuildMode, IndexOptions, IndexScopeOptions, StorageMode,
 };
+use codegraph_parser::detect_language;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -99,11 +102,12 @@ const MOCK_RELATIONS: &[&str] = &["MOCKS", "STUBS"];
 pub fn run_audit_command(args: &[String]) -> Result<Value, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         return Err(
-            "Usage: codegraph-mcp audit <storage|storage-micro|schema-check|storage-experiments|sample-edges|sample-paths|relation-counts|label-samples|summarize-labels> [ARGS]".to_string(),
+            "Usage: codegraph-mcp audit <index-scope|storage|storage-micro|schema-check|storage-experiments|sample-edges|sample-paths|relation-counts|label-samples|summarize-labels> [ARGS]".to_string(),
         );
     };
 
     match subcommand {
+        "index-scope" | "index_scope" | "scope" => run_index_scope_command(&args[1..]),
         "storage" | "storage-forensics" => run_storage_command(&args[1..]),
         "storage-micro" | "storage_micro" => run_storage_micro_command(&args[1..]),
         "schema-check" | "schema" | "validate-schema" => run_schema_check_command(&args[1..]),
@@ -122,6 +126,17 @@ struct StorageOptions {
     db_path: PathBuf,
     json_path: Option<PathBuf>,
     markdown_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct IndexScopeAuditOptions {
+    repo: PathBuf,
+    json_path: Option<PathBuf>,
+    markdown_path: Option<PathBuf>,
+    scope: IndexScopeOptions,
+    include_included_examples: bool,
+    include_excluded_examples: bool,
+    example_limit: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -969,6 +984,641 @@ struct StorageExperimentReport {
     notes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ScopeDirStats {
+    count: u64,
+    bytes: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ScopeVisibilityStats {
+    visible: bool,
+    included: u64,
+    graph_parsed: u64,
+    text_evidence_candidates: u64,
+    examples: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ScopeAuditAggregate {
+    paths_walked: u64,
+    files_considered: u64,
+    files_would_be_parsed: u64,
+    files_text_evidence_candidates: u64,
+    files_skipped: u64,
+    bytes_considered: u64,
+    bytes_included: u64,
+    bytes_excluded_files: u64,
+    directory_pruned_count: u64,
+    hard_excluded_directory_count: u64,
+    soft_excluded_path_count: u64,
+    warning_count: u64,
+    action_counts: BTreeMap<String, u64>,
+    rule_counts: BTreeMap<String, u64>,
+    language_counts: BTreeMap<String, u64>,
+    included_bytes_by_top_level: BTreeMap<String, ScopeDirStats>,
+    excluded_bytes_by_top_level: BTreeMap<String, ScopeDirStats>,
+    included_files_by_directory: BTreeMap<String, ScopeDirStats>,
+    excluded_files_by_directory: BTreeMap<String, ScopeDirStats>,
+    extensions: BTreeMap<String, ScopeDirStats>,
+    suspicious_included_dirs: BTreeMap<String, ScopeDirStats>,
+    hard_excluded_directory_hits: Vec<Value>,
+    soft_excluded_warnings: Vec<Value>,
+    warning_examples: Vec<Value>,
+    included_examples: Vec<Value>,
+    excluded_examples: Vec<Value>,
+    makefile: ScopeVisibilityStats,
+    kconfig: ScopeVisibilityStats,
+    docs: ScopeVisibilityStats,
+    configs: ScopeVisibilityStats,
+}
+
+impl Default for ScopeAuditAggregate {
+    fn default() -> Self {
+        Self {
+            paths_walked: 0,
+            files_considered: 0,
+            files_would_be_parsed: 0,
+            files_text_evidence_candidates: 0,
+            files_skipped: 0,
+            bytes_considered: 0,
+            bytes_included: 0,
+            bytes_excluded_files: 0,
+            directory_pruned_count: 0,
+            hard_excluded_directory_count: 0,
+            soft_excluded_path_count: 0,
+            warning_count: 0,
+            action_counts: BTreeMap::new(),
+            rule_counts: BTreeMap::new(),
+            language_counts: BTreeMap::new(),
+            included_bytes_by_top_level: BTreeMap::new(),
+            excluded_bytes_by_top_level: BTreeMap::new(),
+            included_files_by_directory: BTreeMap::new(),
+            excluded_files_by_directory: BTreeMap::new(),
+            extensions: BTreeMap::new(),
+            suspicious_included_dirs: BTreeMap::new(),
+            hard_excluded_directory_hits: Vec::new(),
+            soft_excluded_warnings: Vec::new(),
+            warning_examples: Vec::new(),
+            included_examples: Vec::new(),
+            excluded_examples: Vec::new(),
+            makefile: ScopeVisibilityStats::default(),
+            kconfig: ScopeVisibilityStats::default(),
+            docs: ScopeVisibilityStats::default(),
+            configs: ScopeVisibilityStats::default(),
+        }
+    }
+}
+
+fn run_index_scope_command(args: &[String]) -> Result<Value, String> {
+    let options = parse_index_scope_options(args)?;
+    let started = Instant::now();
+    let repo_root = fs::canonicalize(&options.repo).map_err(|error| {
+        format!(
+            "repository path does not exist or cannot be resolved: {} ({error})",
+            options.repo.display()
+        )
+    })?;
+    if !repo_root.is_dir() {
+        return Err(format!(
+            "repository path is not a directory: {}",
+            repo_root.display()
+        ));
+    }
+
+    let normal_codegraph_before = repo_root.join(".codegraph").exists();
+    let scope = IndexScope::for_repo(&repo_root, options.scope.clone());
+    let mut aggregate = ScopeAuditAggregate::default();
+    walk_index_scope(&repo_root, &repo_root, &scope, &options, &mut aggregate)?;
+    let normal_codegraph_after = repo_root.join(".codegraph").exists();
+
+    let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let files_included = aggregate.files_would_be_parsed + aggregate.files_text_evidence_candidates;
+    let report = json!({
+        "schema_version": 1,
+        "status": "ok",
+        "audit": "index_scope",
+        "command": "codegraph-mcp audit index-scope",
+        "repo_root": path_string(&repo_root),
+        "generated_at_unix_ms": now_unix_ms(),
+        "duration_ms": round3(duration_ms),
+        "dry_run": true,
+        "db_created": false,
+        "db_path": Value::Null,
+        "normal_codegraph_db_before": normal_codegraph_before,
+        "normal_codegraph_db_after": normal_codegraph_after,
+        "normal_codegraph_db_created": !normal_codegraph_before && normal_codegraph_after,
+        "options": {
+            "default_excludes_enabled": !options.scope.no_default_excludes,
+            "include_ignored": options.scope.include_ignored,
+            "no_default_excludes": options.scope.no_default_excludes,
+            "respect_gitignore": options.scope.respect_gitignore,
+            "include_patterns": options.scope.include_patterns,
+            "exclude_patterns": options.scope.exclude_patterns,
+            "examples_requested": options.include_included_examples || options.include_excluded_examples,
+            "example_limit": options.example_limit,
+        },
+        "counts": {
+            "total_paths_walked": aggregate.paths_walked,
+            "paths_walked": aggregate.paths_walked,
+            "files_considered": aggregate.files_considered,
+            "files_included": files_included,
+            "files_that_would_be_parsed": aggregate.files_would_be_parsed,
+            "files_would_be_parsed": aggregate.files_would_be_parsed,
+            "files_text_evidence_candidates": aggregate.files_text_evidence_candidates,
+            "files_skipped": aggregate.files_skipped,
+            "directory_pruned_count": aggregate.directory_pruned_count,
+            "hard_excluded_directory_hits": aggregate.hard_excluded_directory_count,
+            "soft_excluded_paths": aggregate.soft_excluded_path_count,
+            "warnings": aggregate.warning_count,
+            "bytes_considered": aggregate.bytes_considered,
+            "bytes_included": aggregate.bytes_included,
+            "bytes_excluded_files": aggregate.bytes_excluded_files,
+        },
+        "action_counts": aggregate.action_counts,
+        "rule_counts": aggregate.rule_counts,
+        "parsed_language_counts": aggregate.language_counts,
+        "bytes_by_top_level_directory": stats_map_json(&aggregate.included_bytes_by_top_level, 50),
+        "included_bytes_by_top_level_directory": stats_map_json(&aggregate.included_bytes_by_top_level, 50),
+        "excluded_file_bytes_by_top_level_directory": stats_map_json(&aggregate.excluded_bytes_by_top_level, 50),
+        "extensions_by_count_and_bytes": stats_map_json(&aggregate.extensions, 100),
+        "top_included_directories": stats_map_json(&aggregate.included_files_by_directory, 25),
+        "top_excluded_directories": stats_map_json(&aggregate.excluded_files_by_directory, 25),
+        "suspicious_included_directories": stats_map_json(&aggregate.suspicious_included_dirs, 25),
+        "hard_excluded_directory_hits": aggregate.hard_excluded_directory_hits,
+        "soft_excluded_warnings": aggregate.soft_excluded_warnings,
+        "warning_examples": aggregate.warning_examples,
+        "included_examples": if options.include_included_examples { aggregate.included_examples } else { Vec::new() },
+        "excluded_examples": if options.include_excluded_examples { aggregate.excluded_examples } else { Vec::new() },
+        "visibility": {
+            "makefile": visibility_json(&aggregate.makefile),
+            "kconfig": visibility_json(&aggregate.kconfig),
+            "docs": visibility_json(&aggregate.docs),
+            "configs": visibility_json(&aggregate.configs),
+            "makefile_kconfig_visible_as_text_evidence": (aggregate.makefile.text_evidence_candidates + aggregate.kconfig.text_evidence_candidates) > 0,
+            "docs_configs_text_evidence_only_where_not_graph_parsed": true,
+        },
+        "claim_boundaries": {
+            "diagnostic_only": true,
+            "public_benchmark_claim": false,
+            "codegraph_superiority_claim": false,
+            "final_intended_performance_pass_claim": false,
+            "full_index_run": false,
+            "source_parsed": false,
+        },
+        "output_contract": {
+            "concise_for_agent_use": true,
+            "examples_omitted_unless_requested": !(options.include_included_examples || options.include_excluded_examples),
+            "no_db_required": true,
+            "no_indexing_performed": true,
+        },
+        "json_output": options.json_path.as_ref().map(path_string),
+        "markdown_output": options.markdown_path.as_ref().map(path_string),
+    });
+    let markdown = render_index_scope_markdown(&report);
+    write_optional_outputs(
+        &report,
+        &markdown,
+        &options.json_path,
+        &options.markdown_path,
+    )?;
+    Ok(index_scope_stdout_summary(&report))
+}
+
+fn walk_index_scope(
+    root: &Path,
+    path: &Path,
+    scope: &IndexScope,
+    options: &IndexScopeAuditOptions,
+    aggregate: &mut ScopeAuditAggregate,
+) -> Result<(), String> {
+    aggregate.paths_walked += 1;
+    if path.is_dir() {
+        if path != root {
+            let relative = relative_scope_path(root, path);
+            let decision = scope.evaluate_repo_path(&relative, ScopePathKind::Directory);
+            record_scope_decision(aggregate, &decision, 0, None, options);
+            if decision.excluded() {
+                let include_descendant = scope::could_include_descendant_decision(
+                    &relative,
+                    &scope.options().include_patterns,
+                );
+                let pruned = !include_descendant.could_include_descendant;
+                if pruned {
+                    aggregate.directory_pruned_count += 1;
+                    return Ok(());
+                }
+            }
+        }
+
+        let mut entries = match fs::read_dir(path) {
+            Ok(entries) => entries.filter_map(Result::ok).collect::<Vec<_>>(),
+            Err(_) => return Ok(()),
+        };
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            walk_index_scope(root, &entry.path(), scope, options, aggregate)?;
+        }
+        return Ok(());
+    }
+
+    if path.is_file() {
+        let relative = relative_scope_path(root, path);
+        let decision = scope.evaluate_repo_path(&relative, ScopePathKind::File);
+        let bytes = fs::metadata(path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let language = detect_language(path).map(|language| language.as_str().to_string());
+        aggregate.files_considered += 1;
+        aggregate.bytes_considered += bytes;
+        record_scope_decision(aggregate, &decision, bytes, language.as_deref(), options);
+        if decision.excluded() {
+            aggregate.files_skipped += 1;
+            aggregate.bytes_excluded_files += bytes;
+            increment_stats(
+                &mut aggregate.excluded_bytes_by_top_level,
+                top_level_component(&relative),
+                bytes,
+            );
+            increment_stats(
+                &mut aggregate.excluded_files_by_directory,
+                parent_directory(&relative),
+                bytes,
+            );
+        } else if let Some(language) = language {
+            aggregate.files_would_be_parsed += 1;
+            aggregate.bytes_included += bytes;
+            *aggregate.language_counts.entry(language).or_default() += 1;
+            increment_included_file_stats(aggregate, &relative, bytes);
+            record_visibility(aggregate, &relative, true);
+        } else {
+            aggregate.files_text_evidence_candidates += 1;
+            aggregate.bytes_included += bytes;
+            increment_included_file_stats(aggregate, &relative, bytes);
+            record_visibility(aggregate, &relative, false);
+        }
+    }
+
+    Ok(())
+}
+
+fn record_scope_decision(
+    aggregate: &mut ScopeAuditAggregate,
+    decision: &IndexScopeDecision,
+    bytes: u64,
+    language: Option<&str>,
+    options: &IndexScopeAuditOptions,
+) {
+    *aggregate
+        .action_counts
+        .entry(format!("{:?}", decision.action))
+        .or_default() += 1;
+    *aggregate
+        .rule_counts
+        .entry(format!("{:?}", decision.rule_kind))
+        .or_default() += 1;
+
+    let decision_value = scope_decision_json(decision, bytes, language);
+    if decision.path_kind == ScopePathKind::Directory
+        && decision.action == ScopeAction::WouldExclude
+        && decision.rule_kind == ScopeRuleKind::HardExclude
+    {
+        aggregate.hard_excluded_directory_count += 1;
+        push_limited_value(
+            &mut aggregate.hard_excluded_directory_hits,
+            decision_value.clone(),
+            options.example_limit,
+        );
+    }
+    if decision.rule_kind == ScopeRuleKind::SoftExclude {
+        aggregate.soft_excluded_path_count += 1;
+        push_limited_value(
+            &mut aggregate.soft_excluded_warnings,
+            decision_value.clone(),
+            options.example_limit,
+        );
+    }
+    if decision.warned() {
+        aggregate.warning_count += 1;
+        push_limited_value(
+            &mut aggregate.warning_examples,
+            decision_value.clone(),
+            options.example_limit,
+        );
+    }
+    if decision.path_kind == ScopePathKind::File {
+        if decision.excluded() {
+            push_limited_value(
+                &mut aggregate.excluded_examples,
+                decision_value,
+                options.example_limit,
+            );
+        } else {
+            push_limited_value(
+                &mut aggregate.included_examples,
+                decision_value,
+                options.example_limit,
+            );
+        }
+    }
+}
+
+fn increment_included_file_stats(aggregate: &mut ScopeAuditAggregate, relative: &str, bytes: u64) {
+    increment_stats(
+        &mut aggregate.included_bytes_by_top_level,
+        top_level_component(relative),
+        bytes,
+    );
+    increment_stats(
+        &mut aggregate.included_files_by_directory,
+        parent_directory(relative),
+        bytes,
+    );
+    increment_stats(&mut aggregate.extensions, extension_key(relative), bytes);
+    for component in suspicious_components(relative) {
+        increment_stats(&mut aggregate.suspicious_included_dirs, component, bytes);
+    }
+}
+
+fn increment_stats(map: &mut BTreeMap<String, ScopeDirStats>, key: String, bytes: u64) {
+    let entry = map.entry(key).or_default();
+    entry.count += 1;
+    entry.bytes += bytes;
+}
+
+fn record_visibility(aggregate: &mut ScopeAuditAggregate, relative: &str, graph_parsed: bool) {
+    let file_name = Path::new(relative)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(relative);
+    let is_makefile = file_name == "Makefile" || file_name.ends_with(".mk");
+    let is_kconfig = file_name == "Kconfig"
+        || file_name.starts_with("Kconfig.")
+        || file_name.starts_with("Config.in");
+    let is_docs = relative == "docs" || relative.starts_with("docs/");
+    let is_configs = relative == "configs" || relative.starts_with("configs/");
+
+    if is_makefile {
+        update_visibility(&mut aggregate.makefile, relative, graph_parsed);
+    }
+    if is_kconfig {
+        update_visibility(&mut aggregate.kconfig, relative, graph_parsed);
+    }
+    if is_docs {
+        update_visibility(&mut aggregate.docs, relative, graph_parsed);
+    }
+    if is_configs {
+        update_visibility(&mut aggregate.configs, relative, graph_parsed);
+    }
+}
+
+fn update_visibility(stats: &mut ScopeVisibilityStats, relative: &str, graph_parsed: bool) {
+    stats.visible = true;
+    stats.included += 1;
+    if graph_parsed {
+        stats.graph_parsed += 1;
+    } else {
+        stats.text_evidence_candidates += 1;
+    }
+    if stats.examples.len() < 20 {
+        stats.examples.push(relative.to_string());
+    }
+}
+
+fn scope_decision_json(decision: &IndexScopeDecision, bytes: u64, language: Option<&str>) -> Value {
+    json!({
+        "path": decision.normalized_path,
+        "path_kind": format!("{:?}", decision.path_kind),
+        "action": format!("{:?}", decision.action),
+        "rule_kind": format!("{:?}", decision.rule_kind),
+        "matched_rule": decision.matched_rule,
+        "reason": decision.reason,
+        "classification": format!("{:?}", decision.classification),
+        "gitignored": decision.gitignored,
+        "warnings": decision.warnings.iter().map(|warning| format!("{:?}", warning)).collect::<Vec<_>>(),
+        "bytes": bytes,
+        "would_be_graph_parsed": language.is_some(),
+        "language": language,
+        "evidence_type": if language.is_some() { "graph_parse_candidate" } else { "text_evidence_candidate" },
+    })
+}
+
+fn stats_map_json(map: &BTreeMap<String, ScopeDirStats>, limit: usize) -> Vec<Value> {
+    let mut rows = map
+        .iter()
+        .map(|(key, stats)| (key, stats.count, stats.bytes))
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        right
+            .2
+            .cmp(&left.2)
+            .then_with(|| right.1.cmp(&left.1))
+            .then_with(|| left.0.cmp(right.0))
+    });
+    rows.into_iter()
+        .take(limit)
+        .map(|(key, count, bytes)| {
+            json!({
+                "path": key,
+                "count": count,
+                "bytes": bytes,
+            })
+        })
+        .collect()
+}
+
+fn visibility_json(stats: &ScopeVisibilityStats) -> Value {
+    json!({
+        "visible": stats.visible,
+        "included": stats.included,
+        "graph_parsed": stats.graph_parsed,
+        "text_evidence_candidates": stats.text_evidence_candidates,
+        "examples": stats.examples,
+    })
+}
+
+fn render_index_scope_markdown(report: &Value) -> String {
+    let counts = &report["counts"];
+    let visibility = &report["visibility"];
+    format!(
+        "# Index Scope Dry Run\n\n\
+Diagnostic-only release CLI dry run. No index DB is created and no source parse/extraction is performed.\n\n\
+## Summary\n\n\
+- Status: `{}`\n\
+- Repo: `{}`\n\
+- Files considered: `{}`\n\
+- Files that would be parsed: `{}`\n\
+- Text evidence candidates: `{}`\n\
+- Files skipped: `{}`\n\
+- Directory prunes: `{}`\n\
+- Warnings: `{}`\n\
+- Normal `.codegraph` created: `{}`\n\n\
+## Visibility\n\n\
+- Makefile visible: `{}`; text evidence candidates: `{}`; graph parsed: `{}`\n\
+- Kconfig visible: `{}`; text evidence candidates: `{}`; graph parsed: `{}`\n\
+- Docs visible: `{}`; text evidence candidates: `{}`; graph parsed: `{}`\n\
+- Configs visible: `{}`; text evidence candidates: `{}`; graph parsed: `{}`\n\n\
+## Claim Boundaries\n\n\
+This report is diagnostic-only local evidence. It is not a public benchmark, not a performance claim, and not an index result.\n",
+        report["status"].as_str().unwrap_or("unknown"),
+        report["repo_root"].as_str().unwrap_or("unknown"),
+        counts["files_considered"].as_u64().unwrap_or_default(),
+        counts["files_that_would_be_parsed"].as_u64().unwrap_or_default(),
+        counts["files_text_evidence_candidates"].as_u64().unwrap_or_default(),
+        counts["files_skipped"].as_u64().unwrap_or_default(),
+        counts["directory_pruned_count"].as_u64().unwrap_or_default(),
+        counts["warnings"].as_u64().unwrap_or_default(),
+        report["normal_codegraph_db_created"].as_bool().unwrap_or(false),
+        visibility["makefile"]["visible"].as_bool().unwrap_or(false),
+        visibility["makefile"]["text_evidence_candidates"].as_u64().unwrap_or_default(),
+        visibility["makefile"]["graph_parsed"].as_u64().unwrap_or_default(),
+        visibility["kconfig"]["visible"].as_bool().unwrap_or(false),
+        visibility["kconfig"]["text_evidence_candidates"].as_u64().unwrap_or_default(),
+        visibility["kconfig"]["graph_parsed"].as_u64().unwrap_or_default(),
+        visibility["docs"]["visible"].as_bool().unwrap_or(false),
+        visibility["docs"]["text_evidence_candidates"].as_u64().unwrap_or_default(),
+        visibility["docs"]["graph_parsed"].as_u64().unwrap_or_default(),
+        visibility["configs"]["visible"].as_bool().unwrap_or(false),
+        visibility["configs"]["text_evidence_candidates"].as_u64().unwrap_or_default(),
+        visibility["configs"]["graph_parsed"].as_u64().unwrap_or_default(),
+    )
+}
+
+fn index_scope_stdout_summary(report: &Value) -> Value {
+    let hard_hits = report["hard_excluded_directory_hits"]
+        .as_array()
+        .map(|items| items.iter().take(8).cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let soft_warnings = report["soft_excluded_warnings"]
+        .as_array()
+        .map(|items| items.iter().take(8).cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    json!({
+        "schema_version": report["schema_version"].clone(),
+        "status": report["status"].clone(),
+        "audit": report["audit"].clone(),
+        "command": report["command"].clone(),
+        "repo_root": report["repo_root"].clone(),
+        "dry_run": report["dry_run"].clone(),
+        "db_created": report["db_created"].clone(),
+        "normal_codegraph_db_created": report["normal_codegraph_db_created"].clone(),
+        "counts": report["counts"].clone(),
+        "visibility": compact_visibility_summary(&report["visibility"]),
+        "hard_excluded_directory_hits": hard_hits,
+        "soft_excluded_warnings": soft_warnings,
+        "suspicious_included_directories_count": report["suspicious_included_directories"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or_default(),
+        "claim_boundaries": report["claim_boundaries"].clone(),
+        "output_contract": report["output_contract"].clone(),
+        "json_output": report["json_output"].clone(),
+        "markdown_output": report["markdown_output"].clone(),
+    })
+}
+
+fn compact_visibility_summary(visibility: &Value) -> Value {
+    json!({
+        "makefile": compact_visibility_entry(&visibility["makefile"]),
+        "kconfig": compact_visibility_entry(&visibility["kconfig"]),
+        "docs": compact_visibility_entry(&visibility["docs"]),
+        "configs": compact_visibility_entry(&visibility["configs"]),
+        "makefile_kconfig_visible_as_text_evidence": visibility["makefile_kconfig_visible_as_text_evidence"].clone(),
+        "docs_configs_text_evidence_only_where_not_graph_parsed": visibility["docs_configs_text_evidence_only_where_not_graph_parsed"].clone(),
+    })
+}
+
+fn compact_visibility_entry(entry: &Value) -> Value {
+    json!({
+        "visible": entry["visible"].clone(),
+        "included": entry["included"].clone(),
+        "graph_parsed": entry["graph_parsed"].clone(),
+        "text_evidence_candidates": entry["text_evidence_candidates"].clone(),
+        "examples_count": entry["examples"].as_array().map(Vec::len).unwrap_or_default(),
+        "first_example": entry["examples"].as_array().and_then(|items| items.first()).cloned(),
+    })
+}
+
+fn push_limited_value(items: &mut Vec<Value>, value: Value, limit: usize) {
+    if items.len() < limit {
+        items.push(value);
+    }
+}
+
+fn relative_scope_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn top_level_component(relative: &str) -> String {
+    relative
+        .split('/')
+        .find(|component| !component.is_empty())
+        .unwrap_or("(repo_root)")
+        .to_string()
+}
+
+fn parent_directory(relative: &str) -> String {
+    relative
+        .rsplit_once('/')
+        .map(|(parent, _)| {
+            if parent.is_empty() {
+                "(repo_root)".to_string()
+            } else {
+                parent.to_string()
+            }
+        })
+        .unwrap_or_else(|| "(repo_root)".to_string())
+}
+
+fn extension_key(relative: &str) -> String {
+    let file_name = Path::new(relative)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(relative);
+    if file_name == "Makefile" {
+        return "Makefile".to_string();
+    }
+    if file_name == "Kconfig" || file_name.starts_with("Kconfig.") {
+        return "Kconfig".to_string();
+    }
+    if file_name.starts_with("Config.in") {
+        return "Config.in".to_string();
+    }
+    Path::new(relative)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
+        .unwrap_or_else(|| "(none)".to_string())
+}
+
+fn suspicious_components(relative: &str) -> Vec<String> {
+    const SUSPICIOUS: &[&str] = &[
+        "output",
+        "dl",
+        "build",
+        "dist",
+        "generated",
+        "out",
+        "vendor",
+        "third_party",
+        "reports",
+        "target",
+        "node_modules",
+        ".git",
+        ".codegraph",
+    ];
+    let mut observed = Vec::new();
+    for component in relative.split('/') {
+        if SUSPICIOUS.contains(&component) {
+            observed.push(component.to_string());
+        }
+    }
+    observed
+}
+
 fn run_storage_command(args: &[String]) -> Result<Value, String> {
     let options = parse_storage_options(args)?;
     let report = inspect_storage(&options.db_path)?;
@@ -1182,6 +1832,85 @@ fn run_summarize_labels_command(args: &[String]) -> Result<Value, String> {
         "json_output": options.json_path.as_ref().map(path_string),
         "markdown_output": options.markdown_path.as_ref().map(path_string),
     }))
+}
+
+fn parse_index_scope_options(args: &[String]) -> Result<IndexScopeAuditOptions, String> {
+    let mut repo = None;
+    let mut json_path = None;
+    let mut markdown_path = None;
+    let mut scope = IndexScopeOptions::default();
+    let mut include_included_examples = false;
+    let mut include_excluded_examples = false;
+    let mut example_limit = 25usize;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                if args
+                    .get(index + 1)
+                    .is_some_and(|value| !value.starts_with("--"))
+                {
+                    json_path = Some(take_path(args, &mut index, "--json")?);
+                }
+            }
+            "--markdown" | "--md" => {
+                markdown_path = Some(take_path(args, &mut index, "--markdown")?);
+            }
+            "--include-ignored" | "--include_ignored" => scope.include_ignored = true,
+            "--no-default-excludes" | "--no_default_excludes" => scope.no_default_excludes = true,
+            "--respect-gitignore" | "--respect_gitignore" => {
+                let raw = take_value(args, &mut index, "--respect-gitignore")?;
+                scope.respect_gitignore = parse_bool_value(&raw, "--respect-gitignore")?;
+            }
+            "--include" => {
+                let raw = take_value(args, &mut index, "--include")?;
+                scope.include_patterns.push(raw);
+            }
+            "--exclude" => {
+                let raw = take_value(args, &mut index, "--exclude")?;
+                scope.exclude_patterns.push(raw);
+            }
+            "--print-included" | "--print_included" => include_included_examples = true,
+            "--print-excluded" | "--print_excluded" => include_excluded_examples = true,
+            "--explain-scope" | "--explain_scope" => {
+                include_included_examples = true;
+                include_excluded_examples = true;
+            }
+            "--limit-examples" | "--limit_examples" => {
+                let raw = take_value(args, &mut index, "--limit-examples")?;
+                example_limit = raw
+                    .parse::<usize>()
+                    .map_err(|_| format!("invalid --limit-examples value: {raw}"))?;
+            }
+            "--help" | "-h" => return Err(index_scope_usage()),
+            value if value.starts_with('-') => {
+                return Err(format!("unknown audit index-scope option: {value}"));
+            }
+            value => {
+                if repo.is_some() {
+                    return Err(format!("unexpected audit index-scope argument: {value}"));
+                }
+                repo = Some(PathBuf::from(value));
+            }
+        }
+        index += 1;
+    }
+    let Some(repo) = repo else {
+        return Err(index_scope_usage());
+    };
+    Ok(IndexScopeAuditOptions {
+        repo,
+        json_path,
+        markdown_path,
+        scope,
+        include_included_examples,
+        include_excluded_examples,
+        example_limit,
+    })
+}
+
+fn index_scope_usage() -> String {
+    "Usage: codegraph-mcp audit index-scope <repo> [--json [path]] [--markdown <path>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore true|false] [--explain-scope] [--print-included] [--print-excluded] [--limit-examples <n>]".to_string()
 }
 
 fn parse_storage_options(args: &[String]) -> Result<StorageOptions, String> {

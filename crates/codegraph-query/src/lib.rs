@@ -1401,6 +1401,60 @@ struct ContextPacketBuild<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PromptIntent {
+    EntityLookup,
+    FileLookup,
+    TextConfigLookup,
+    BuildSystemPlanning,
+    BehaviorTrace,
+    CallerCalleeTrace,
+    TestImpact,
+    DataflowTrace,
+    SecurityAuthTrace,
+    DocsText,
+    Unknown,
+}
+
+impl PromptIntent {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EntityLookup => "entity_lookup",
+            Self::FileLookup => "file_lookup",
+            Self::TextConfigLookup => "text_config_lookup",
+            Self::BuildSystemPlanning => "build_system_planning",
+            Self::BehaviorTrace => "behavior_trace",
+            Self::CallerCalleeTrace => "caller_callee_trace",
+            Self::TestImpact => "test_impact",
+            Self::DataflowTrace => "dataflow_trace",
+            Self::SecurityAuthTrace => "security_auth_trace",
+            Self::DocsText => "docs_text",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PromptSeedExactness {
+    Exact,
+    LiteralText,
+    Heuristic,
+    Ignored,
+    Unknown,
+}
+
+impl PromptSeedExactness {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::LiteralText => "literal_text",
+            Self::Heuristic => "heuristic",
+            Self::Ignored => "ignored",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PromptSeedKind {
     Symbol,
     FilePath,
@@ -1409,18 +1463,42 @@ pub enum PromptSeedKind {
     TestName,
     ErrorMessage,
     Identifier,
+    ConfigToken,
+    FilePattern,
+    PathToken,
+    TextToken,
+    TaskVerbIgnored,
+    Unknown,
 }
 
 impl PromptSeedKind {
     pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Symbol | Self::TestName | Self::Identifier => "exact_symbol",
+            Self::FilePath | Self::LineNumber | Self::StackTrace | Self::PathToken => "path_token",
+            Self::ConfigToken => "config_token",
+            Self::FilePattern => "file_pattern",
+            Self::TextToken | Self::ErrorMessage => "text_token",
+            Self::TaskVerbIgnored => "task_verb_ignored",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub const fn provenance_kind(self) -> &'static str {
         match self {
             Self::Symbol => "symbol",
             Self::FilePath => "file_path",
             Self::LineNumber => "line_number",
             Self::StackTrace => "stack_trace",
             Self::TestName => "test_name",
-            Self::ErrorMessage => "error_message",
-            Self::Identifier => "identifier",
+            Self::ErrorMessage => "diagnostic",
+            Self::Identifier => "code_identifier",
+            Self::ConfigToken => "config_token",
+            Self::FilePattern => "file_pattern",
+            Self::PathToken => "path_token",
+            Self::TextToken => "text_token",
+            Self::TaskVerbIgnored => "task_verb_ignored",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -1429,6 +1507,10 @@ impl PromptSeedKind {
 pub struct PromptSeed {
     pub kind: PromptSeedKind,
     pub value: String,
+    pub source_text: String,
+    pub intent_contribution: PromptIntent,
+    pub exactness: PromptSeedExactness,
+    pub ignored_reason: Option<String>,
     pub file_path: Option<String>,
     pub line: Option<u32>,
     pub function: Option<String>,
@@ -1437,9 +1519,24 @@ pub struct PromptSeed {
 
 impl PromptSeed {
     fn simple(kind: PromptSeedKind, value: impl Into<String>, exact: bool) -> Self {
+        Self::with_source(kind, value, None::<String>, exact)
+    }
+
+    fn with_source(
+        kind: PromptSeedKind,
+        value: impl Into<String>,
+        source_text: Option<impl Into<String>>,
+        exact: bool,
+    ) -> Self {
+        let value = value.into();
+        let source_text = source_text.map(Into::into).unwrap_or_else(|| value.clone());
         Self {
             kind,
-            value: value.into(),
+            intent_contribution: intent_contribution_for_seed(kind, &value),
+            exactness: seed_exactness(kind, exact),
+            ignored_reason: ignored_reason_for_seed(kind, &value),
+            source_text,
+            value,
             file_path: None,
             line: None,
             function: None,
@@ -1448,6 +1545,9 @@ impl PromptSeed {
     }
 
     pub fn exact_value(&self) -> Option<String> {
+        if !self.exact {
+            return None;
+        }
         match self.kind {
             PromptSeedKind::FilePath => Some(self.value.clone()),
             PromptSeedKind::LineNumber => self
@@ -1461,15 +1561,61 @@ impl PromptSeed {
                 .clone()
                 .or_else(|| self.file_path.clone())
                 .or_else(|| Some(self.value.clone())),
-            PromptSeedKind::Symbol | PromptSeedKind::TestName | PromptSeedKind::Identifier => {
-                Some(self.value.clone())
-            }
-            PromptSeedKind::ErrorMessage => None,
+            PromptSeedKind::Symbol
+            | PromptSeedKind::TestName
+            | PromptSeedKind::Identifier
+            | PromptSeedKind::ConfigToken
+            | PromptSeedKind::FilePattern
+            | PromptSeedKind::PathToken
+            | PromptSeedKind::TextToken => Some(self.value.clone()),
+            PromptSeedKind::ErrorMessage
+            | PromptSeedKind::TaskVerbIgnored
+            | PromptSeedKind::Unknown => None,
         }
+    }
+
+    pub fn provenance_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "seed": &self.value,
+            "seed_kind": self.kind.provenance_kind(),
+            "value": &self.value,
+            "kind": self.kind.as_str(),
+            "source_text": &self.source_text,
+            "intent_contribution": self.intent_contribution.as_str(),
+            "exactness": self.exactness.as_str(),
+            "ignored_reason": &self.ignored_reason,
+            "file_path": &self.file_path,
+            "line": self.line,
+            "function": &self.function,
+            "exact": self.exact,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptSeedExtraction {
+    pub intent: PromptIntent,
+    pub seeds: Vec<PromptSeed>,
+}
+
+impl PromptSeedExtraction {
+    pub fn provenance_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "intent": self.intent.as_str(),
+            "seeds": self
+                .seeds
+                .iter()
+                .map(PromptSeed::provenance_json)
+                .collect::<Vec<_>>(),
+        })
     }
 }
 
 pub fn extract_prompt_seeds(prompt: &str) -> Vec<PromptSeed> {
+    extract_prompt_seed_provenance(prompt).seeds
+}
+
+pub fn extract_prompt_seed_provenance(prompt: &str) -> PromptSeedExtraction {
     let mut seeds = Vec::new();
     for line in prompt.lines() {
         let trimmed = line.trim();
@@ -1481,14 +1627,22 @@ pub fn extract_prompt_seeds(prompt: &str) -> Vec<PromptSeed> {
         extract_error_seed(trimmed, &mut seeds);
         extract_standalone_line_seed(trimmed, &mut seeds);
         extract_test_name_seeds(trimmed, &mut seeds);
+        extract_buildroot_phrase_seeds(trimmed, &mut seeds);
 
         for token in trimmed.split_whitespace() {
             extract_path_and_line_seed(token, &mut seeds);
+            extract_buildroot_token_seed(token, &mut seeds);
             extract_symbol_or_identifier_seed(token, &mut seeds);
         }
     }
 
-    unique_prompt_seeds(seeds)
+    let seeds = unique_prompt_seeds(seeds);
+    let intent = classify_prompt_intent_from_seeds(prompt, &seeds);
+    PromptSeedExtraction { intent, seeds }
+}
+
+pub fn classify_prompt_intent(prompt: &str) -> PromptIntent {
+    extract_prompt_seed_provenance(prompt).intent
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1937,7 +2091,9 @@ impl ExactGraphQueryEngine {
         request: ContextPackRequest,
         sources: &BTreeMap<String, String>,
     ) -> ContextPacket {
-        let prompt_seeds = extract_prompt_seeds(&request.task);
+        let prompt_seed_extraction = extract_prompt_seed_provenance(&request.task);
+        let prompt_intent = prompt_seed_extraction.intent;
+        let prompt_seeds = prompt_seed_extraction.seeds;
         let exact_seed_values = prompt_seeds
             .iter()
             .filter_map(PromptSeed::exact_value)
@@ -1983,19 +2139,21 @@ impl ExactGraphQueryEngine {
             serde_json::json!("exact seeds are preserved and bypass vector filters"),
         );
         metadata.insert(
+            "prompt_intent".to_string(),
+            serde_json::json!(prompt_intent.as_str()),
+        );
+        metadata.insert(
+            "prompt_seed_provenance".to_string(),
+            serde_json::json!(prompt_seeds
+                .iter()
+                .map(PromptSeed::provenance_json)
+                .collect::<Vec<_>>()),
+        );
+        metadata.insert(
             "prompt_seeds".to_string(),
             serde_json::json!(prompt_seeds
                 .iter()
-                .map(|seed| {
-                    serde_json::json!({
-                        "kind": seed.kind.as_str(),
-                        "value": &seed.value,
-                        "file_path": &seed.file_path,
-                        "line": seed.line,
-                        "function": &seed.function,
-                        "exact": seed.exact,
-                    })
-                })
+                .map(PromptSeed::provenance_json)
                 .collect::<Vec<_>>()),
         );
         metadata.insert(
@@ -2557,7 +2715,9 @@ impl RetrievalFunnel {
         &self,
         request: RetrievalFunnelRequest,
     ) -> Result<RetrievalFunnelResult, BinaryVectorError> {
-        let prompt_seeds = extract_prompt_seeds(&request.task);
+        let prompt_seed_extraction = extract_prompt_seed_provenance(&request.task);
+        let prompt_intent = prompt_seed_extraction.intent;
+        let prompt_seeds = prompt_seed_extraction.seeds;
         let prompt_exact_seeds = prompt_seeds
             .iter()
             .filter_map(PromptSeed::exact_value)
@@ -2760,6 +2920,17 @@ impl RetrievalFunnel {
             "policy".to_string(),
             serde_json::json!("vectors suggest; graph verifies; packet proves"),
         );
+        metadata.insert(
+            "prompt_intent".to_string(),
+            serde_json::json!(prompt_intent.as_str()),
+        );
+        metadata.insert(
+            "prompt_seed_provenance".to_string(),
+            serde_json::json!(prompt_seeds
+                .iter()
+                .map(PromptSeed::provenance_json)
+                .collect::<Vec<_>>()),
+        );
         metadata.insert("heavy_kge_required".to_string(), serde_json::json!(false));
         metadata.insert(
             "trace".to_string(),
@@ -2905,6 +3076,243 @@ impl Ord for HeapState {
     }
 }
 
+fn seed_exactness(kind: PromptSeedKind, exact: bool) -> PromptSeedExactness {
+    if matches!(kind, PromptSeedKind::TaskVerbIgnored) {
+        PromptSeedExactness::Ignored
+    } else if exact
+        && matches!(
+            kind,
+            PromptSeedKind::TextToken | PromptSeedKind::ErrorMessage
+        )
+    {
+        PromptSeedExactness::LiteralText
+    } else if exact {
+        PromptSeedExactness::Exact
+    } else if matches!(kind, PromptSeedKind::Unknown) {
+        PromptSeedExactness::Unknown
+    } else {
+        PromptSeedExactness::Heuristic
+    }
+}
+
+fn ignored_reason_for_seed(kind: PromptSeedKind, value: &str) -> Option<String> {
+    if matches!(kind, PromptSeedKind::TaskVerbIgnored) {
+        Some(format!(
+            "generic task verb `{}` is an intent signal, not an exact symbol",
+            value
+        ))
+    } else {
+        None
+    }
+}
+
+fn intent_contribution_for_seed(kind: PromptSeedKind, value: &str) -> PromptIntent {
+    let lower = value.to_ascii_lowercase();
+    match kind {
+        PromptSeedKind::Symbol | PromptSeedKind::Identifier => PromptIntent::EntityLookup,
+        PromptSeedKind::FilePath => {
+            if lower.ends_with(".adoc") || lower.contains("/docs/") || lower.starts_with("docs/") {
+                PromptIntent::DocsText
+            } else if lower.contains("package/") && lower.ends_with(".mk") {
+                PromptIntent::BuildSystemPlanning
+            } else {
+                PromptIntent::FileLookup
+            }
+        }
+        PromptSeedKind::LineNumber | PromptSeedKind::StackTrace | PromptSeedKind::ErrorMessage => {
+            PromptIntent::BehaviorTrace
+        }
+        PromptSeedKind::TestName => PromptIntent::TestImpact,
+        PromptSeedKind::ConfigToken => PromptIntent::TextConfigLookup,
+        PromptSeedKind::FilePattern => {
+            if matches!(lower.as_str(), ".mk" | "*.mk" | "mk") {
+                PromptIntent::BuildSystemPlanning
+            } else if matches!(lower.as_str(), ".adoc" | "*.adoc" | "adoc") {
+                PromptIntent::DocsText
+            } else {
+                PromptIntent::FileLookup
+            }
+        }
+        PromptSeedKind::PathToken => {
+            if lower.starts_with("support/scripts")
+                || lower.starts_with("support/download")
+                || lower.contains("package/")
+            {
+                PromptIntent::BuildSystemPlanning
+            } else {
+                PromptIntent::FileLookup
+            }
+        }
+        PromptSeedKind::TextToken => {
+            if contains_any(
+                &lower,
+                &[
+                    "generic-package",
+                    "host-generic-package",
+                    "package infrastructure",
+                    "dependencies",
+                    "license",
+                    "version",
+                    "source url",
+                ],
+            ) {
+                PromptIntent::BuildSystemPlanning
+            } else if contains_any(&lower, &["depends on", "select"]) {
+                PromptIntent::TextConfigLookup
+            } else if contains_any(&lower, &["docs", ".adoc", "manual"]) {
+                PromptIntent::DocsText
+            } else {
+                PromptIntent::TextConfigLookup
+            }
+        }
+        PromptSeedKind::TaskVerbIgnored => match lower.as_str() {
+            "trace" => PromptIntent::BehaviorTrace,
+            "find" | "plan" | "inspect" | "add" | "where" | "how" => PromptIntent::Unknown,
+            _ => PromptIntent::Unknown,
+        },
+        PromptSeedKind::Unknown => PromptIntent::Unknown,
+    }
+}
+
+fn classify_prompt_intent_from_seeds(prompt: &str, seeds: &[PromptSeed]) -> PromptIntent {
+    let lower = prompt.to_ascii_lowercase();
+    let has_seed_kind = |kind: PromptSeedKind| seeds.iter().any(|seed| seed.kind == kind);
+    let has_contribution =
+        |intent: PromptIntent| seeds.iter().any(|seed| seed.intent_contribution == intent);
+
+    if contains_word_any(
+        &lower,
+        &[
+            "auth",
+            "authorization",
+            "authorize",
+            "permission",
+            "role",
+            "security",
+            "sanitize",
+            "validator",
+            "policy",
+        ],
+    ) || contains_any(
+        &lower,
+        &[
+            "permission check",
+            "role check",
+            "auth check",
+            "security review",
+        ],
+    ) {
+        return PromptIntent::SecurityAuthTrace;
+    }
+    if contains_any(
+        &lower,
+        &[
+            "dataflow",
+            "data flow",
+            "taint",
+            "source to sink",
+            "flow from",
+            "flows to",
+        ],
+    ) {
+        return PromptIntent::DataflowTrace;
+    }
+    if contains_any(
+        &lower,
+        &[
+            "caller",
+            "callers",
+            "callee",
+            "callees",
+            "called by",
+            "calls into",
+        ],
+    ) {
+        return PromptIntent::CallerCalleeTrace;
+    }
+    if has_seed_kind(PromptSeedKind::TestName)
+        || contains_any(
+            &lower,
+            &[
+                "test impact",
+                "failing test",
+                "failed test",
+                "regression test",
+                "unit test",
+            ],
+        )
+        || contains_word_any(&lower, &["test", "tests", "spec", "specs"])
+    {
+        return PromptIntent::TestImpact;
+    }
+    if has_contribution(PromptIntent::BuildSystemPlanning)
+        || (contains_any(&lower, &["buildroot", "package"])
+            && contains_any(
+                &lower,
+                &[
+                    "plan",
+                    "add",
+                    "new package",
+                    ".mk",
+                    "generic-package",
+                    "host-generic-package",
+                    "package infrastructure",
+                ],
+            ))
+    {
+        return PromptIntent::BuildSystemPlanning;
+    }
+    if has_contribution(PromptIntent::TextConfigLookup)
+        || contains_any(
+            &lower,
+            &[
+                "br2_package_",
+                "config.in",
+                "kconfig",
+                "depends on",
+                "select",
+            ],
+        )
+    {
+        return PromptIntent::TextConfigLookup;
+    }
+    if has_contribution(PromptIntent::DocsText)
+        || contains_any(
+            &lower,
+            &["docs", "documentation", "manual", ".adoc", "asciidoc"],
+        )
+    {
+        return PromptIntent::DocsText;
+    }
+    if contains_any(
+        &lower,
+        &[
+            "trace",
+            "behavior",
+            "runtime path",
+            "execution path",
+            "impact",
+        ],
+    ) || has_seed_kind(PromptSeedKind::StackTrace)
+        || has_seed_kind(PromptSeedKind::ErrorMessage)
+    {
+        return PromptIntent::BehaviorTrace;
+    }
+    if has_seed_kind(PromptSeedKind::FilePath) || has_seed_kind(PromptSeedKind::PathToken) {
+        return PromptIntent::FileLookup;
+    }
+    if has_seed_kind(PromptSeedKind::Symbol) || has_seed_kind(PromptSeedKind::Identifier) {
+        return PromptIntent::EntityLookup;
+    }
+    PromptIntent::Unknown
+}
+
+fn contains_word_any(haystack: &str, words: &[&str]) -> bool {
+    haystack
+        .split(|ch: char| !(ch == '_' || ch.is_ascii_alphanumeric()))
+        .any(|part| words.contains(&part))
+}
+
 fn extract_stack_trace_seed(line: &str, seeds: &mut Vec<PromptSeed>) {
     let trimmed = line.trim_start();
     let Some(after_at) = trimmed.strip_prefix("at ") else {
@@ -2920,21 +3328,29 @@ fn extract_stack_trace_seed(line: &str, seeds: &mut Vec<PromptSeed>) {
     };
 
     if let Some((path, line_number, _column)) = parse_path_line_token(location) {
-        seeds.push(PromptSeed {
-            kind: PromptSeedKind::StackTrace,
-            value: match (&function, line_number) {
-                (Some(function), Some(line_number)) => format!("{function} {path}:{line_number}"),
-                (Some(function), None) => format!("{function} {path}"),
-                (None, Some(line_number)) => format!("{path}:{line_number}"),
-                (None, None) => path.clone(),
-            },
-            file_path: Some(path.clone()),
-            line: line_number,
-            function: function.clone(),
-            exact: true,
-        });
+        let value = match (&function, line_number) {
+            (Some(function), Some(line_number)) => format!("{function} {path}:{line_number}"),
+            (Some(function), None) => format!("{function} {path}"),
+            (None, Some(line_number)) => format!("{path}:{line_number}"),
+            (None, None) => path.clone(),
+        };
+        let mut seed = PromptSeed::with_source(
+            PromptSeedKind::StackTrace,
+            value,
+            Some(line.to_string()),
+            true,
+        );
+        seed.file_path = Some(path.clone());
+        seed.line = line_number;
+        seed.function = function.clone();
+        seeds.push(seed);
         if let Some(function) = function.filter(|function| !function.is_empty()) {
-            seeds.push(PromptSeed::simple(PromptSeedKind::Symbol, function, true));
+            seeds.push(PromptSeed::with_source(
+                PromptSeedKind::Symbol,
+                function,
+                Some(line.to_string()),
+                true,
+            ));
         }
     }
 }
@@ -2969,14 +3385,14 @@ fn extract_standalone_line_seed(line: &str, seeds: &mut Vec<PromptSeed>) {
         let Ok(line_number) = digits.parse::<u32>() else {
             continue;
         };
-        seeds.push(PromptSeed {
-            kind: PromptSeedKind::LineNumber,
-            value: format!("line:{line_number}"),
-            file_path: None,
-            line: Some(line_number),
-            function: None,
-            exact: true,
-        });
+        let mut seed = PromptSeed::with_source(
+            PromptSeedKind::LineNumber,
+            format!("line:{line_number}"),
+            Some(line.to_string()),
+            true,
+        );
+        seed.line = Some(line_number);
+        seeds.push(seed);
     }
 }
 
@@ -3017,38 +3433,214 @@ fn extract_path_and_line_seed(token: &str, seeds: &mut Vec<PromptSeed>) {
     let Some((path, line, _column)) = parse_path_line_token(token) else {
         return;
     };
-    seeds.push(PromptSeed {
-        kind: PromptSeedKind::FilePath,
-        value: path.clone(),
-        file_path: Some(path.clone()),
-        line: None,
-        function: None,
-        exact: true,
-    });
+    let mut path_seed = PromptSeed::with_source(
+        PromptSeedKind::FilePath,
+        path.clone(),
+        Some(token.to_string()),
+        true,
+    );
+    path_seed.file_path = Some(path.clone());
+    seeds.push(path_seed);
     if let Some(line_number) = line {
-        seeds.push(PromptSeed {
-            kind: PromptSeedKind::LineNumber,
-            value: format!("{path}:{line_number}"),
-            file_path: Some(path),
-            line: Some(line_number),
-            function: None,
-            exact: true,
-        });
+        let mut line_seed = PromptSeed::with_source(
+            PromptSeedKind::LineNumber,
+            format!("{path}:{line_number}"),
+            Some(token.to_string()),
+            true,
+        );
+        line_seed.file_path = Some(path.clone());
+        line_seed.line = Some(line_number);
+        seeds.push(line_seed);
+    }
+    extract_buildroot_package_name_from_path(&path, seeds);
+    extract_support_script_name_from_path(&path, seeds);
+}
+
+fn extract_buildroot_phrase_seeds(line: &str, seeds: &mut Vec<PromptSeed>) {
+    let lower = line.to_ascii_lowercase();
+    for (needle, value) in [
+        ("generic-package", "generic-package"),
+        ("host-generic-package", "host-generic-package"),
+        ("config.in", "Config.in"),
+        ("package infrastructure", "package infrastructure"),
+        ("depends on", "depends on"),
+        ("source url", "source URL"),
+        ("source_url", "source URL"),
+        ("support/scripts", "support/scripts"),
+    ] {
+        if lower.contains(needle) {
+            let kind = match value {
+                "Config.in" => PromptSeedKind::ConfigToken,
+                "support/scripts" => PromptSeedKind::PathToken,
+                _ => PromptSeedKind::TextToken,
+            };
+            seeds.push(PromptSeed::simple(kind, value, true));
+        }
+    }
+}
+
+fn extract_buildroot_token_seed(token: &str, seeds: &mut Vec<PromptSeed>) {
+    let cleaned = clean_symbol(token);
+    let cleaned_path = clean_path_token(token).replace('\\', "/");
+    let lower = cleaned.to_ascii_lowercase();
+    let lower_path = cleaned_path.to_ascii_lowercase();
+
+    if cleaned.is_empty() {
+        return;
+    }
+    if is_prompt_task_verb(&cleaned) {
+        seeds.push(PromptSeed::with_source(
+            PromptSeedKind::TaskVerbIgnored,
+            cleaned,
+            Some(token.to_string()),
+            false,
+        ));
+        return;
+    }
+    if cleaned.starts_with("BR2_PACKAGE_")
+        && cleaned
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+    {
+        seeds.push(PromptSeed::with_source(
+            PromptSeedKind::ConfigToken,
+            cleaned,
+            Some(token.to_string()),
+            true,
+        ));
+        return;
+    }
+    if lower == "config.in" {
+        seeds.push(PromptSeed::with_source(
+            PromptSeedKind::ConfigToken,
+            "Config.in",
+            Some(token.to_string()),
+            true,
+        ));
+        return;
+    }
+    if matches!(lower.as_str(), "*.mk" | ".mk" | "mk") || lower.ends_with(".mk") {
+        seeds.push(PromptSeed::with_source(
+            PromptSeedKind::FilePattern,
+            ".mk",
+            Some(token.to_string()),
+            true,
+        ));
+    }
+    if matches!(lower.as_str(), "*.adoc" | ".adoc" | "adoc") || lower.ends_with(".adoc") {
+        seeds.push(PromptSeed::with_source(
+            PromptSeedKind::FilePattern,
+            ".adoc",
+            Some(token.to_string()),
+            true,
+        ));
+    }
+    if matches!(
+        lower.as_str(),
+        "generic-package"
+            | "host-generic-package"
+            | "license"
+            | "version"
+            | "dependencies"
+            | "select"
+            | "docs"
+    ) {
+        seeds.push(PromptSeed::with_source(
+            PromptSeedKind::TextToken,
+            cleaned.clone(),
+            Some(token.to_string()),
+            true,
+        ));
+    }
+    if lower_path.starts_with("support/scripts/") || lower_path.starts_with("support/download/") {
+        seeds.push(PromptSeed::with_source(
+            PromptSeedKind::PathToken,
+            cleaned_path.clone(),
+            Some(token.to_string()),
+            true,
+        ));
+        extract_support_script_name_from_path(&cleaned_path, seeds);
+    } else if looks_like_support_script_name(&cleaned) {
+        seeds.push(PromptSeed::with_source(
+            PromptSeedKind::PathToken,
+            cleaned,
+            Some(token.to_string()),
+            true,
+        ));
+    }
+    if lower_path.starts_with("package/") {
+        extract_buildroot_package_name_from_path(&cleaned_path, seeds);
     }
 }
 
 fn extract_symbol_or_identifier_seed(token: &str, seeds: &mut Vec<PromptSeed>) {
     let cleaned = clean_symbol(token);
+    if is_prompt_task_verb(&cleaned) {
+        seeds.push(PromptSeed::with_source(
+            PromptSeedKind::TaskVerbIgnored,
+            cleaned,
+            Some(token.to_string()),
+            false,
+        ));
+        return;
+    }
     if cleaned.len() < 3 || looks_like_path(&cleaned) || is_keyword_or_common_word(&cleaned) {
         return;
     }
 
     if is_symbol(&cleaned) {
-        seeds.push(PromptSeed::simple(PromptSeedKind::Symbol, cleaned, true));
+        seeds.push(PromptSeed::with_source(
+            PromptSeedKind::Symbol,
+            cleaned,
+            Some(token.to_string()),
+            true,
+        ));
     } else if is_identifier(&cleaned) && looks_code_like_identifier(&cleaned) {
-        seeds.push(PromptSeed::simple(
+        seeds.push(PromptSeed::with_source(
             PromptSeedKind::Identifier,
             cleaned,
+            Some(token.to_string()),
+            true,
+        ));
+    }
+}
+
+fn extract_buildroot_package_name_from_path(path: &str, seeds: &mut Vec<PromptSeed>) {
+    let normalized = path.replace('\\', "/");
+    let parts = normalized.split('/').collect::<Vec<_>>();
+    if parts.len() < 3 || parts.first() != Some(&"package") {
+        return;
+    }
+    let Some(file_name) = parts.last() else {
+        return;
+    };
+    if !file_name.ends_with(".mk") {
+        return;
+    }
+    let package_name = parts[parts.len().saturating_sub(2)];
+    let stem = file_name.trim_end_matches(".mk");
+    if package_name == stem && !package_name.is_empty() {
+        seeds.push(PromptSeed::simple(
+            PromptSeedKind::TextToken,
+            package_name.to_string(),
+            true,
+        ));
+    }
+}
+
+fn extract_support_script_name_from_path(path: &str, seeds: &mut Vec<PromptSeed>) {
+    let normalized = path.replace('\\', "/");
+    let lower = normalized.to_ascii_lowercase();
+    if !(lower.starts_with("support/scripts/") || lower.starts_with("support/download/")) {
+        return;
+    }
+    let Some(name) = normalized.rsplit('/').next() else {
+        return;
+    };
+    if !name.is_empty() {
+        seeds.push(PromptSeed::simple(
+            PromptSeedKind::PathToken,
+            name.to_string(),
             true,
         ));
     }
@@ -3131,9 +3723,38 @@ fn clean_symbol(token: &str) -> String {
 
 fn looks_like_path(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
+    if lower.starts_with("support/scripts/")
+        || lower.starts_with("support/download/")
+        || lower.starts_with("docs/")
+    {
+        return true;
+    }
     let has_supported_extension = [
-        ".js", ".jsx", ".ts", ".tsx", ".rs", ".py", ".go", ".java", ".kt", ".cs", ".cpp", ".c",
-        ".h", ".hpp", ".sql", ".json", ".toml", ".yaml", ".yml", ".md",
+        ".js",
+        ".jsx",
+        ".ts",
+        ".tsx",
+        ".rs",
+        ".py",
+        ".go",
+        ".java",
+        ".kt",
+        ".cs",
+        ".cpp",
+        ".c",
+        ".h",
+        ".hpp",
+        ".sql",
+        ".json",
+        ".toml",
+        ".yaml",
+        ".yml",
+        ".md",
+        ".mk",
+        ".adoc",
+        ".asciidoc",
+        ".in",
+        ".sh",
     ]
     .iter()
     .any(|extension| lower.contains(extension));
@@ -3164,9 +3785,26 @@ fn looks_code_like_identifier(value: &str) -> bool {
         || value.ends_with("Exception")
 }
 
-fn is_keyword_or_common_word(value: &str) -> bool {
+fn is_prompt_task_verb(value: &str) -> bool {
     matches!(
-        value,
+        value.to_ascii_lowercase().as_str(),
+        "find" | "plan" | "trace" | "inspect" | "add" | "where" | "how"
+    )
+}
+
+fn looks_like_support_script_name(value: &str) -> bool {
+    value.contains('-')
+        && !value.contains('.')
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+        && value.chars().any(|ch| ch.is_ascii_alphabetic())
+}
+
+fn is_keyword_or_common_word(value: &str) -> bool {
+    let value = value.to_ascii_lowercase();
+    matches!(
+        value.as_str(),
         "about"
             | "after"
             | "before"
@@ -3174,11 +3812,14 @@ fn is_keyword_or_common_word(value: &str) -> bool {
             | "change"
             | "class"
             | "const"
+            | "consumed"
+            | "defined"
             | "error"
             | "false"
             | "file"
             | "from"
             | "function"
+            | "using"
             | "import"
             | "line"
             | "return"
@@ -4294,7 +4935,11 @@ fn compact_packet(packet: &mut ContextPacket, token_budget: usize) {
             packet.snippets.pop();
             continue;
         }
-        if packet.verified_paths.len() > 1 {
+        let estimated_tokens = estimate_packet_tokens(packet);
+        let last_path_overrun_limit = token_budget.saturating_mul(2).saturating_add(60);
+        if packet.verified_paths.len() > 1
+            || (packet.verified_paths.len() == 1 && estimated_tokens > last_path_overrun_limit)
+        {
             packet.verified_paths.pop();
             continue;
         }
@@ -4306,13 +4951,21 @@ fn compact_packet(packet: &mut ContextPacket, token_budget: usize) {
             packet.recommended_tests.pop();
             continue;
         }
+        if compact_packet_metadata(packet, token_budget) {
+            continue;
+        }
         break;
     }
     while estimate_packet_tokens(packet) > token_budget {
         if packet.snippets.pop().is_some() {
             continue;
         }
-        if packet.verified_paths.pop().is_some() {
+        let estimated_tokens = estimate_packet_tokens(packet);
+        let last_path_overrun_limit = token_budget.saturating_mul(2).saturating_add(60);
+        if packet.verified_paths.len() > 1
+            || (packet.verified_paths.len() == 1 && estimated_tokens > last_path_overrun_limit)
+        {
+            packet.verified_paths.pop();
             continue;
         }
         if packet.risks.pop().is_some() {
@@ -4321,12 +4974,55 @@ fn compact_packet(packet: &mut ContextPacket, token_budget: usize) {
         if packet.recommended_tests.pop().is_some() {
             continue;
         }
+        if compact_packet_metadata(packet, token_budget) {
+            continue;
+        }
         break;
     }
     packet.metadata.insert(
         "estimated_tokens".to_string(),
         serde_json::json!(estimate_packet_tokens(packet)),
     );
+}
+
+fn compact_packet_metadata(packet: &mut ContextPacket, token_budget: usize) -> bool {
+    const VERBOSE_METADATA_KEYS: &[&str] = &[
+        "derived_edges",
+        "prompt_seed_provenance",
+        "prompt_seeds",
+        "path_context_counts_before_filter",
+        "path_context_counts_after_filter",
+    ];
+
+    let mut omitted = packet
+        .metadata
+        .get("omitted_metadata_keys")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut changed = false;
+
+    for key in VERBOSE_METADATA_KEYS {
+        if estimate_packet_tokens(packet) <= token_budget {
+            break;
+        }
+        if packet.metadata.remove(*key).is_some() {
+            omitted.push(serde_json::json!(key));
+            changed = true;
+        }
+    }
+
+    if changed {
+        packet
+            .metadata
+            .insert("metadata_truncated".to_string(), serde_json::json!(true));
+        packet.metadata.insert(
+            "omitted_metadata_keys".to_string(),
+            serde_json::json!(omitted),
+        );
+    }
+
+    changed
 }
 
 fn estimate_packet_tokens(packet: &ContextPacket) -> usize {
@@ -5082,6 +5778,207 @@ mod tests {
         assert!(seeds
             .iter()
             .any(|seed| seed.kind == PromptSeedKind::ErrorMessage));
+    }
+
+    #[test]
+    fn prompt_seed_extraction_extracts_buildroot_config_tokens_without_prompt_verbs() {
+        let seeds = extract_prompt_seeds("Find where BR2_PACKAGE_OPENSSL is defined and consumed");
+
+        assert_seed(&seeds, PromptSeedKind::ConfigToken, "BR2_PACKAGE_OPENSSL");
+        assert_ignored_seed(&seeds, "Find");
+        assert_ignored_seed(&seeds, "where");
+        assert_no_exact_symbol_seed(&seeds, "Find");
+        assert_no_exact_symbol_seed(&seeds, "where");
+        assert_no_exact_symbol_seed(&seeds, "defined");
+        assert_no_exact_symbol_seed(&seeds, "consumed");
+    }
+
+    #[test]
+    fn prompt_intent_classifies_buildroot_config_and_build_system_prompts() {
+        let config = extract_prompt_seed_provenance(
+            "Find where BR2_PACKAGE_OPENSSL is selected in Config.in",
+        );
+        assert_eq!(config.intent, PromptIntent::TextConfigLookup);
+        assert!(config.seeds.iter().any(|seed| {
+            seed.value == "BR2_PACKAGE_OPENSSL"
+                && seed.kind == PromptSeedKind::ConfigToken
+                && seed.intent_contribution == PromptIntent::TextConfigLookup
+                && seed.source_text == "BR2_PACKAGE_OPENSSL"
+        }));
+
+        let build = extract_prompt_seed_provenance(
+            "Plan how to add a new Buildroot package .mk using generic-package",
+        );
+        assert_eq!(build.intent, PromptIntent::BuildSystemPlanning);
+        assert!(build.seeds.iter().any(|seed| {
+            seed.value == "generic-package"
+                && seed.intent_contribution == PromptIntent::BuildSystemPlanning
+        }));
+    }
+
+    #[test]
+    fn prompt_intent_classifies_trace_test_dataflow_auth_docs_and_unknown() {
+        assert_eq!(
+            classify_prompt_intent("Trace AuthService.login through token creation"),
+            PromptIntent::BehaviorTrace
+        );
+        assert_eq!(
+            classify_prompt_intent("Which callers and callees touch AuthService.login?"),
+            PromptIntent::CallerCalleeTrace
+        );
+        assert_eq!(
+            classify_prompt_intent("What tests cover test(\"normalizes email\")?"),
+            PromptIntent::TestImpact
+        );
+        assert_eq!(
+            classify_prompt_intent("Trace dataflow from request.email to users.email"),
+            PromptIntent::DataflowTrace
+        );
+        assert_eq!(
+            classify_prompt_intent("Trace auth permission checks for adminRoute"),
+            PromptIntent::SecurityAuthTrace
+        );
+        assert_eq!(
+            classify_prompt_intent("Find docs for package infrastructure"),
+            PromptIntent::BuildSystemPlanning
+        );
+        assert_eq!(
+            classify_prompt_intent("Find docs explaining the CLI output"),
+            PromptIntent::DocsText
+        );
+        assert_eq!(classify_prompt_intent("please help"), PromptIntent::Unknown);
+    }
+
+    #[test]
+    fn prompt_seed_provenance_labels_ignored_generic_task_verbs() {
+        let extraction = extract_prompt_seed_provenance("Trace Find Plan Inspect Add Where How");
+        for value in ["Trace", "Find", "Plan", "Inspect", "Add", "Where", "How"] {
+            let seed = extraction
+                .seeds
+                .iter()
+                .find(|seed| seed.value.eq_ignore_ascii_case(value))
+                .unwrap_or_else(|| panic!("missing ignored task verb {value}"));
+            assert_eq!(seed.kind, PromptSeedKind::TaskVerbIgnored);
+            assert_eq!(seed.exactness, PromptSeedExactness::Ignored);
+            assert!(!seed.exact);
+            assert!(seed
+                .ignored_reason
+                .as_deref()
+                .is_some_and(|reason| { reason.contains("not an exact symbol") }));
+            assert_no_exact_symbol_seed(&extraction.seeds, value);
+        }
+
+        let json = extraction.provenance_json();
+        assert_eq!(json["intent"].as_str(), Some("behavior_trace"));
+        assert!(json["seeds"].as_array().is_some_and(|seeds| {
+            seeds.iter().any(|seed| {
+                seed["seed"].as_str() == Some("Trace")
+                    && seed["seed_kind"].as_str() == Some("task_verb_ignored")
+                    && seed["ignored_reason"]
+                        .as_str()
+                        .is_some_and(|reason| reason.contains("not an exact symbol"))
+            })
+        }));
+    }
+
+    #[test]
+    fn prompt_seed_extraction_extracts_build_system_file_patterns() {
+        let seeds = extract_prompt_seeds("Plan how to add a package .mk using generic-package");
+
+        assert_seed(&seeds, PromptSeedKind::FilePattern, ".mk");
+        assert_seed(&seeds, PromptSeedKind::TextToken, "generic-package");
+        assert_ignored_seed(&seeds, "Plan");
+        assert_ignored_seed(&seeds, "how");
+        assert_ignored_seed(&seeds, "add");
+        assert_no_exact_symbol_seed(&seeds, "Plan");
+        assert_no_exact_symbol_seed(&seeds, "how");
+        assert_no_exact_symbol_seed(&seeds, "add");
+    }
+
+    #[test]
+    fn prompt_seed_extraction_extracts_kconfig_phrases_and_doc_terms() {
+        let config_seeds = extract_prompt_seeds("Inspect Config.in for depends on");
+
+        assert_seed(&config_seeds, PromptSeedKind::ConfigToken, "Config.in");
+        assert_seed(&config_seeds, PromptSeedKind::TextToken, "depends on");
+        assert_ignored_seed(&config_seeds, "Inspect");
+        assert_no_exact_symbol_seed(&config_seeds, "Inspect");
+
+        let docs_seeds = extract_prompt_seeds("Find docs explaining package infrastructure");
+        assert_seed(&docs_seeds, PromptSeedKind::TextToken, "docs");
+        assert_seed(
+            &docs_seeds,
+            PromptSeedKind::TextToken,
+            "package infrastructure",
+        );
+        assert_ignored_seed(&docs_seeds, "Find");
+    }
+
+    #[test]
+    fn prompt_seed_extraction_extracts_buildroot_paths_package_names_and_support_scripts() {
+        let seeds = extract_prompt_seeds(
+            "Inspect package/foo/foo.mk and support/scripts/pkg-stats plus docs/manual/adding-packages.adoc",
+        );
+
+        assert_seed(&seeds, PromptSeedKind::FilePath, "package/foo/foo.mk");
+        assert_seed(&seeds, PromptSeedKind::TextToken, "foo");
+        assert_seed(
+            &seeds,
+            PromptSeedKind::PathToken,
+            "support/scripts/pkg-stats",
+        );
+        assert_seed(&seeds, PromptSeedKind::PathToken, "pkg-stats");
+        assert_seed(
+            &seeds,
+            PromptSeedKind::FilePath,
+            "docs/manual/adding-packages.adoc",
+        );
+        assert_seed(&seeds, PromptSeedKind::FilePattern, ".mk");
+        assert_seed(&seeds, PromptSeedKind::FilePattern, ".adoc");
+    }
+
+    #[test]
+    fn prompt_seed_extraction_preserves_normal_symbol_query_seeds() {
+        let seeds = extract_prompt_seeds(
+            "Change AuthService.login after test(\"normalizes email\") failed in normalizeEmail",
+        );
+
+        assert_seed(&seeds, PromptSeedKind::Symbol, "AuthService.login");
+        assert_seed(&seeds, PromptSeedKind::Identifier, "normalizeEmail");
+        assert_seed(&seeds, PromptSeedKind::TestName, "normalizes email");
+        assert!(seeds
+            .iter()
+            .any(|seed| seed.kind.as_str() == "exact_symbol" && seed.exact));
+    }
+
+    fn assert_seed(seeds: &[PromptSeed], kind: PromptSeedKind, value: &str) {
+        assert!(
+            seeds
+                .iter()
+                .any(|seed| seed.kind == kind && seed.value == value),
+            "missing seed kind={} value={value:?} in {seeds:?}",
+            kind.as_str()
+        );
+    }
+
+    fn assert_ignored_seed(seeds: &[PromptSeed], value: &str) {
+        assert!(
+            seeds.iter().any(|seed| {
+                seed.kind == PromptSeedKind::TaskVerbIgnored
+                    && seed.value.eq_ignore_ascii_case(value)
+                    && !seed.exact
+            }),
+            "missing ignored seed {value:?} in {seeds:?}"
+        );
+    }
+
+    fn assert_no_exact_symbol_seed(seeds: &[PromptSeed], value: &str) {
+        assert!(
+            !seeds.iter().any(|seed| {
+                seed.kind.as_str() == "exact_symbol" && seed.value.eq_ignore_ascii_case(value)
+            }),
+            "unexpected exact symbol seed {value:?} in {seeds:?}"
+        );
     }
 
     #[test]

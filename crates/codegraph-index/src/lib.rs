@@ -56,6 +56,13 @@ pub const FILE_STALE_CLEANUP_KEY: &str = "stale_cleanup";
 pub const FILE_STALE_CLEANUP_DELETE_BEFORE_INSERT: &str = "delete_before_insert";
 pub const DEFAULT_STORED_PATH_EVIDENCE_MAX_ROWS: usize = 4_096;
 const DEFAULT_STORED_PATH_EVIDENCE_SCAN_MULTIPLIER: usize = 16;
+const TEXT_EVIDENCE_MAX_READ_BYTES_PER_FILE: u64 = 1024 * 1024;
+const TEXT_EVIDENCE_MAX_FTS_BYTES_PER_FILE: usize = 64 * 1024;
+const TEXT_EVIDENCE_MAX_SNIPPETS_PER_FILE: usize = 24;
+const TEXT_EVIDENCE_MAX_SNIPPET_BYTES: usize = 512;
+const TEXT_EVIDENCE_MAX_TOKENS_PER_FILE: usize = 96;
+const TEXT_EVIDENCE_KIND: &str = "text_evidence";
+const TEXT_EVIDENCE_PROOF_STATUS: &str = "not_graph_proof";
 
 #[derive(Debug)]
 pub enum IndexError {
@@ -467,6 +474,72 @@ struct HashedIndexCandidate {
     size_bytes: u64,
     modified_unix_nanos: Option<String>,
     needs_delete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextEvidenceCandidate {
+    file_path: PathBuf,
+    repo_relative_path: String,
+    kind: TextEvidenceFileKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextEvidenceFileKind {
+    MakefileFragment,
+    Kconfig,
+    Asciidoc,
+    Markdown,
+    ShellScript,
+    PythonSupportScript,
+    TextLikeSupportScript,
+    BuildrootPackageMetadata,
+}
+
+impl TextEvidenceFileKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::MakefileFragment => "makefile_fragment",
+            Self::Kconfig => "kconfig",
+            Self::Asciidoc => "asciidoc",
+            Self::Markdown => "markdown",
+            Self::ShellScript => "shell_script",
+            Self::PythonSupportScript => "python_support_script",
+            Self::TextLikeSupportScript => "text_like_support_script",
+            Self::BuildrootPackageMetadata => "buildroot_package_metadata",
+        }
+    }
+
+    const fn title(self) -> &'static str {
+        match self {
+            Self::MakefileFragment => "Makefile fragment",
+            Self::Kconfig => "Kconfig",
+            Self::Asciidoc => "AsciiDoc",
+            Self::Markdown => "Markdown",
+            Self::ShellScript => "shell script",
+            Self::PythonSupportScript => "Python support script",
+            Self::TextLikeSupportScript => "text-like support script",
+            Self::BuildrootPackageMetadata => "Buildroot package metadata",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextEvidenceSnippet {
+    id: String,
+    span: SourceSpan,
+    text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextEvidenceIndex {
+    fts_body: String,
+    snippets: Vec<TextEvidenceSnippet>,
+    tokens: Vec<String>,
+    indexed_bytes: usize,
+    total_bytes: usize,
+    omitted_bytes: usize,
+    indexed_lines: usize,
+    total_lines: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1190,21 +1263,35 @@ fn index_repo_to_existing_db_with_options(
     phase_profile.add_ms("file_walk", file_discovery_ms as f64, 1, files.len() as u64);
     let indexed_at = unix_time_ms();
     let mut source_candidates = Vec::new();
+    let mut text_evidence_candidates = Vec::new();
     let mut skipped_unchanged_files = 0usize;
     for file_path in files {
         summary.files_seen += 1;
         summary.files_walked += 1;
-        if detect_language(&file_path).is_none() {
-            summary.files_skipped += 1;
+        let repo_relative_path = repo_relative_path(&repo_root, &file_path)?;
+        if detect_language(&file_path).is_some() {
+            source_candidates.push((file_path, repo_relative_path));
             continue;
         }
-        let repo_relative_path = repo_relative_path(&repo_root, &file_path)?;
-        source_candidates.push((file_path, repo_relative_path));
+        if let Some(kind) = classify_scoped_text_evidence_path(&repo_relative_path) {
+            text_evidence_candidates.push(TextEvidenceCandidate {
+                file_path,
+                repo_relative_path,
+                kind,
+            });
+        } else {
+            summary.files_skipped += 1;
+        }
     }
 
     let current_repo_paths = source_candidates
         .iter()
         .map(|(_, repo_relative_path)| repo_relative_path.clone())
+        .chain(
+            text_evidence_candidates
+                .iter()
+                .map(|candidate| candidate.repo_relative_path.clone()),
+        )
         .collect::<BTreeSet<_>>();
     let metadata_start = Instant::now();
     let existing_files = store.list_files(UNBOUNDED_STORE_READ_LIMIT)?;
@@ -1225,6 +1312,7 @@ fn index_repo_to_existing_db_with_options(
             "db_path": summary.db_path.clone(),
             "files_seen": summary.files_seen,
             "source_candidates": source_candidates.len(),
+            "text_evidence_candidates": text_evidence_candidates.len(),
             "stale_candidates": manifest_diff.stale_cleanup_paths().len(),
             "batch_max_files": DEFAULT_INDEX_BATCH_MAX_FILES,
             "batch_max_source_bytes": DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES,
@@ -1236,6 +1324,193 @@ fn index_repo_to_existing_db_with_options(
     let mut max_worker_count = 1usize;
     let mut bulk_index_load_started = false;
     let mut hashed_candidates = Vec::<HashedIndexCandidate>::new();
+    if !text_evidence_candidates.is_empty() {
+        let text_evidence_transaction_start = Instant::now();
+        store.begin_write_transaction()?;
+        let text_evidence_result = (|| -> Result<(), IndexError> {
+            for candidate in text_evidence_candidates {
+                let metadata_start = Instant::now();
+                let file_metadata = fs::metadata(&candidate.file_path)?;
+                let size_bytes = file_metadata.len();
+                let existing_file = manifest_diff
+                    .existing_file(&candidate.repo_relative_path)
+                    .cloned();
+                let existing_is_text_evidence = existing_file.as_ref().is_some_and(|record| {
+                    file_record_is_text_evidence_kind(record, candidate.kind)
+                });
+                if existing_is_text_evidence
+                    && manifest_diff.classify_file(
+                        &candidate.repo_relative_path,
+                        size_bytes,
+                        &file_metadata,
+                    ) == ManifestFileDecision::MetadataUnchanged
+                {
+                    phase_profile.add_duration("metadata_diff", metadata_start.elapsed(), 1, 1);
+                    summary.files_skipped += 1;
+                    summary.files_metadata_unchanged += 1;
+                    skipped_unchanged_files += 1;
+                    continue;
+                }
+                phase_profile.add_duration("metadata_diff", metadata_start.elapsed(), 1, 1);
+
+                if size_bytes > TEXT_EVIDENCE_MAX_READ_BYTES_PER_FILE {
+                    summary.files_skipped += 1;
+                    if existing_file.is_some() {
+                        let delete_start = Instant::now();
+                        store.delete_facts_for_file(&candidate.repo_relative_path)?;
+                        db_write_ms += delete_start.elapsed().as_millis();
+                        summary.files_deleted += 1;
+                    }
+                    record_index_issue(
+                        &mut summary,
+                        &options,
+                        candidate.repo_relative_path,
+                        "text_evidence_too_large",
+                        format!(
+                            "scoped non-parser text candidate is {} bytes, above {} byte Stage 0 cap",
+                            size_bytes, TEXT_EVIDENCE_MAX_READ_BYTES_PER_FILE
+                        ),
+                        "skipped_text_evidence",
+                    );
+                    continue;
+                }
+
+                let read_start = Instant::now();
+                let source = match fs::read_to_string(&candidate.file_path) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        phase_profile.add_duration("file_read", read_start.elapsed(), 1, 1);
+                        summary.files_skipped += 1;
+                        summary.failed_files_deleted += 1;
+                        if existing_file.is_some() {
+                            summary.files_deleted += 1;
+                        }
+                        let delete_start = Instant::now();
+                        store.delete_facts_for_file(&candidate.repo_relative_path)?;
+                        db_write_ms += delete_start.elapsed().as_millis();
+                        record_index_issue(
+                            &mut summary,
+                            &options,
+                            candidate.repo_relative_path,
+                            "text_evidence_read_error",
+                            error.to_string(),
+                            "skipped_and_deleted_old_facts",
+                        );
+                        continue;
+                    }
+                };
+                phase_profile.add_duration(
+                    "file_read",
+                    read_start.elapsed(),
+                    1,
+                    source.len() as u64,
+                );
+                summary.files_read += 1;
+
+                if !looks_like_text_evidence_source(&source) {
+                    summary.files_skipped += 1;
+                    if existing_file.is_some() {
+                        let delete_start = Instant::now();
+                        store.delete_facts_for_file(&candidate.repo_relative_path)?;
+                        db_write_ms += delete_start.elapsed().as_millis();
+                        summary.files_deleted += 1;
+                    }
+                    record_index_issue(
+                        &mut summary,
+                        &options,
+                        candidate.repo_relative_path,
+                        "text_evidence_not_text_like",
+                        "scoped non-parser candidate was not text-like".to_string(),
+                        "skipped_text_evidence",
+                    );
+                    continue;
+                }
+
+                let hash_start = Instant::now();
+                let hash = content_hash(&source);
+                phase_profile.add_duration(
+                    "file_hash",
+                    hash_start.elapsed(),
+                    1,
+                    source.len() as u64,
+                );
+                summary.files_hashed += 1;
+
+                if let Some(record) = existing_file
+                    .as_ref()
+                    .filter(|record| record.file_hash == hash && existing_is_text_evidence)
+                {
+                    let refresh_start = Instant::now();
+                    let metadata = text_evidence_file_metadata(
+                        modified_unix_nanos(&file_metadata),
+                        candidate.kind,
+                        &build_text_evidence_index(&candidate.repo_relative_path, &source),
+                    );
+                    store.upsert_file(&FileRecord {
+                        repo_relative_path: candidate.repo_relative_path.clone(),
+                        file_hash: record.file_hash.clone(),
+                        language: None,
+                        size_bytes,
+                        indexed_at_unix_ms: Some(indexed_at),
+                        metadata,
+                    })?;
+                    db_write_ms += refresh_start.elapsed().as_millis();
+                    phase_profile.add_duration(
+                        "file_manifest_refresh",
+                        refresh_start.elapsed(),
+                        1,
+                        1,
+                    );
+                    summary.files_skipped += 1;
+                    skipped_unchanged_files += 1;
+                    continue;
+                }
+
+                if existing_file.is_none() {
+                    summary.files_renamed += manifest_diff.record_rename_matches(
+                        &repo_root,
+                        &candidate.repo_relative_path,
+                        &hash,
+                    );
+                }
+
+                let evidence_index =
+                    build_text_evidence_index(&candidate.repo_relative_path, &source);
+                let write_start = Instant::now();
+                persist_text_evidence_to_writer(
+                    &store,
+                    &candidate.repo_relative_path,
+                    &hash,
+                    candidate.kind,
+                    &evidence_index,
+                    size_bytes,
+                    indexed_at,
+                    modified_unix_nanos(&file_metadata),
+                    existing_file.is_some(),
+                )?;
+                db_write_ms += write_start.elapsed().as_millis();
+                phase_profile.add_duration("text_evidence_upsert", write_start.elapsed(), 1, 1);
+                summary.files_indexed += 1;
+            }
+            Ok(())
+        })();
+        match text_evidence_result {
+            Ok(()) => {
+                store.commit_write_transaction()?;
+                phase_profile.add_duration(
+                    "text_evidence_transaction",
+                    text_evidence_transaction_start.elapsed(),
+                    1,
+                    summary.files_indexed as u64,
+                );
+            }
+            Err(error) => {
+                let _ = store.rollback_write_transaction();
+                return Err(error);
+            }
+        }
+    }
+
     for (file_path, repo_relative_path) in source_candidates {
         let metadata_start = Instant::now();
         let file_metadata = fs::metadata(&file_path)?;
@@ -4710,7 +4985,156 @@ pub fn update_changed_files_with_cache_to_db(
             }
 
             let Some(language) = detect_language(file_path) else {
-                summary.files_skipped += 1;
+                let Some(kind) = classify_scoped_text_evidence_path(repo_relative_path) else {
+                    summary.files_skipped += 1;
+                    continue;
+                };
+
+                let metadata_start = Instant::now();
+                let file_metadata = fs::metadata(file_path)?;
+                let size_bytes = file_metadata.len();
+                let existing_file = tx.get_file(repo_relative_path)?;
+                let existing_is_text_evidence = existing_file
+                    .as_ref()
+                    .is_some_and(|record| file_record_is_text_evidence_kind(record, kind));
+                if existing_file.as_ref().is_some_and(|record| {
+                    existing_is_text_evidence
+                        && manifest_metadata_matches(record, size_bytes, &file_metadata)
+                }) {
+                    phase_profile.add_duration("metadata_diff", metadata_start.elapsed(), 1, 1);
+                    summary.files_skipped += 1;
+                    summary.files_metadata_unchanged += 1;
+                    continue;
+                }
+                phase_profile.add_duration("metadata_diff", metadata_start.elapsed(), 1, 1);
+
+                if size_bytes > TEXT_EVIDENCE_MAX_READ_BYTES_PER_FILE {
+                    if existing_facts.has_existing_facts()
+                        && cleanup_facts_for_path(
+                            tx,
+                            cache,
+                            repo_relative_path,
+                            PathCleanupReason::Replaced,
+                            &mut summary,
+                            &mut changed_fact_paths,
+                            &mut removed_cache_entity_ids,
+                            &mut changed_static_resolver_inputs,
+                            &mut phase_profile,
+                        )?
+                    {
+                        summary.files_deleted += 1;
+                    }
+                    summary.files_skipped += 1;
+                    continue;
+                }
+
+                let read_start = Instant::now();
+                let source = fs::read_to_string(file_path)?;
+                phase_profile.add_duration(
+                    "file_read",
+                    read_start.elapsed(),
+                    1,
+                    source.len() as u64,
+                );
+                summary.files_read += 1;
+
+                if !looks_like_text_evidence_source(&source) {
+                    if existing_facts.has_existing_facts()
+                        && cleanup_facts_for_path(
+                            tx,
+                            cache,
+                            repo_relative_path,
+                            PathCleanupReason::Replaced,
+                            &mut summary,
+                            &mut changed_fact_paths,
+                            &mut removed_cache_entity_ids,
+                            &mut changed_static_resolver_inputs,
+                            &mut phase_profile,
+                        )?
+                    {
+                        summary.files_deleted += 1;
+                    }
+                    summary.files_skipped += 1;
+                    continue;
+                }
+
+                let hash_start = Instant::now();
+                let hash = content_hash(&source);
+                phase_profile.add_duration(
+                    "file_hash",
+                    hash_start.elapsed(),
+                    1,
+                    source.len() as u64,
+                );
+                summary.files_hashed += 1;
+
+                if let Some(record) = existing_file
+                    .as_ref()
+                    .filter(|record| record.file_hash == hash && existing_is_text_evidence)
+                {
+                    let evidence = build_text_evidence_index(repo_relative_path, &source);
+                    tx.upsert_file(&FileRecord {
+                        repo_relative_path: repo_relative_path.clone(),
+                        file_hash: record.file_hash.clone(),
+                        language: None,
+                        size_bytes,
+                        indexed_at_unix_ms: Some(indexed_at),
+                        metadata: text_evidence_file_metadata(
+                            modified_unix_nanos(&file_metadata),
+                            kind,
+                            &evidence,
+                        ),
+                    })?;
+                    summary.files_skipped += 1;
+                    continue;
+                }
+
+                let rename_detection_start = Instant::now();
+                let renamed_stale = if existing_file.is_none() {
+                    delete_missing_files_with_hash(tx, &repo_root, repo_relative_path, &hash)?
+                } else {
+                    0
+                };
+                phase_profile.add_duration(
+                    "rename_detection",
+                    rename_detection_start.elapsed(),
+                    1,
+                    renamed_stale as u64,
+                );
+                summary.files_deleted += renamed_stale;
+                summary.files_renamed += renamed_stale;
+                summary.deleted_fact_files += renamed_stale;
+
+                if existing_facts.has_existing_facts() {
+                    cleanup_facts_for_path(
+                        tx,
+                        cache,
+                        repo_relative_path,
+                        PathCleanupReason::Replaced,
+                        &mut summary,
+                        &mut changed_fact_paths,
+                        &mut removed_cache_entity_ids,
+                        &mut changed_static_resolver_inputs,
+                        &mut phase_profile,
+                    )?;
+                }
+
+                let evidence = build_text_evidence_index(repo_relative_path, &source);
+                let write_start = Instant::now();
+                persist_text_evidence_to_writer(
+                    tx,
+                    repo_relative_path,
+                    &hash,
+                    kind,
+                    &evidence,
+                    size_bytes,
+                    indexed_at,
+                    modified_unix_nanos(&file_metadata),
+                    false,
+                )?;
+                phase_profile.add_duration("text_evidence_upsert", write_start.elapsed(), 1, 1);
+                summary.files_indexed += 1;
+                changed_fact_paths.insert(normalize_graph_path(repo_relative_path));
                 continue;
             };
             if language_supports_static_resolver(language.as_str()) {
@@ -8530,6 +8954,323 @@ fn file_manifest_metadata(modified_unix_nanos: Option<String>) -> Metadata {
     metadata
 }
 
+fn classify_scoped_text_evidence_path(repo_relative_path: &str) -> Option<TextEvidenceFileKind> {
+    let normalized = normalize_graph_path(repo_relative_path);
+    let lower = normalized.to_ascii_lowercase();
+    if is_text_evidence_hard_excluded_path(&lower) {
+        return None;
+    }
+
+    let file_name = lower.rsplit('/').next().unwrap_or(lower.as_str());
+    if lower.ends_with(".mk") {
+        return Some(TextEvidenceFileKind::MakefileFragment);
+    }
+    if file_name == "config.in"
+        || file_name == "kconfig"
+        || file_name.starts_with("kconfig.")
+        || lower.contains("/kconfig/")
+    {
+        return Some(TextEvidenceFileKind::Kconfig);
+    }
+    if lower.ends_with(".adoc") || lower.ends_with(".asciidoc") {
+        return Some(TextEvidenceFileKind::Asciidoc);
+    }
+    if lower.ends_with(".md") || lower.ends_with(".markdown") {
+        return Some(TextEvidenceFileKind::Markdown);
+    }
+    if lower.ends_with(".sh")
+        || lower.ends_with(".bash")
+        || lower.ends_with(".zsh")
+        || lower.ends_with(".fish")
+    {
+        return Some(TextEvidenceFileKind::ShellScript);
+    }
+    if (path_starts_with_normalized(&lower, "support/scripts")
+        || path_starts_with_normalized(&lower, "support/download"))
+        && lower.ends_with(".py")
+    {
+        return Some(TextEvidenceFileKind::PythonSupportScript);
+    }
+    if path_starts_with_normalized(&lower, "package")
+        && (lower.ends_with(".hash") || lower.ends_with(".mk") || file_name == "config.in")
+    {
+        return Some(TextEvidenceFileKind::BuildrootPackageMetadata);
+    }
+    if !file_name.contains('.')
+        && (path_starts_with_normalized(&lower, "support/scripts")
+            || path_starts_with_normalized(&lower, "support/download"))
+    {
+        return Some(TextEvidenceFileKind::TextLikeSupportScript);
+    }
+
+    None
+}
+
+fn is_text_evidence_hard_excluded_path(lower: &str) -> bool {
+    if lower == "reports/final" || path_starts_with_normalized(lower, "reports/final") {
+        return true;
+    }
+    if path_starts_with_normalized(lower, "reports/audit/artifacts") {
+        return true;
+    }
+    if lower.ends_with(".sqlite")
+        || lower.ends_with(".sqlite3")
+        || lower.ends_with(".db")
+        || lower.ends_with(".db-wal")
+        || lower.ends_with(".db-shm")
+        || lower.ends_with(".sqlite-wal")
+        || lower.ends_with(".sqlite-shm")
+        || lower.ends_with(".sqlite3-wal")
+        || lower.ends_with(".sqlite3-shm")
+        || lower.ends_with(".log")
+    {
+        return true;
+    }
+    lower.split('/').any(|component| {
+        matches!(
+            component,
+            ".git"
+                | "target"
+                | "node_modules"
+                | ".venv"
+                | "venv"
+                | "env"
+                | "__pycache__"
+                | ".pytest_cache"
+                | ".mypy_cache"
+                | ".ruff_cache"
+                | ".tox"
+                | ".cache"
+                | "coverage"
+                | ".codegraph"
+        )
+    })
+}
+
+fn path_starts_with_normalized(path: &str, prefix: &str) -> bool {
+    path == prefix || path.starts_with(&format!("{prefix}/"))
+}
+
+fn looks_like_text_evidence_source(source: &str) -> bool {
+    if source.contains('\0') {
+        return false;
+    }
+    let mut chars = 0usize;
+    let mut suspicious_controls = 0usize;
+    for ch in source.chars().take(8192) {
+        chars += 1;
+        if ch.is_control() && !matches!(ch, '\n' | '\r' | '\t') {
+            suspicious_controls += 1;
+        }
+    }
+    chars == 0 || suspicious_controls.saturating_mul(100) <= chars.saturating_mul(2)
+}
+
+fn build_text_evidence_index(repo_relative_path: &str, source: &str) -> TextEvidenceIndex {
+    let fts_body = bounded_text_prefix(source, TEXT_EVIDENCE_MAX_FTS_BYTES_PER_FILE).to_string();
+    let indexed_bytes = fts_body.len();
+    let total_bytes = source.len();
+    let omitted_bytes = total_bytes.saturating_sub(indexed_bytes);
+    let total_lines = source.lines().count().max(1);
+    let indexed_lines = fts_body.lines().count().max(1);
+    let tokens = extract_text_evidence_tokens(&fts_body);
+    let snippets = build_text_evidence_snippets(repo_relative_path, &fts_body);
+
+    TextEvidenceIndex {
+        fts_body,
+        snippets,
+        tokens,
+        indexed_bytes,
+        total_bytes,
+        omitted_bytes,
+        indexed_lines,
+        total_lines,
+    }
+}
+
+fn bounded_text_prefix(source: &str, max_bytes: usize) -> &str {
+    if source.len() <= max_bytes {
+        return source;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !source.is_char_boundary(end) {
+        end -= 1;
+    }
+    &source[..end]
+}
+
+fn extract_text_evidence_tokens(source: &str) -> Vec<String> {
+    let mut tokens = BTreeSet::new();
+    for raw in
+        source.split(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.')))
+    {
+        let token = raw.trim_matches(|ch: char| matches!(ch, '-' | '.'));
+        if token.len() < 2 || !token.chars().any(|ch| ch.is_ascii_alphabetic()) {
+            continue;
+        }
+        tokens.insert(token.to_string());
+        if tokens.len() >= TEXT_EVIDENCE_MAX_TOKENS_PER_FILE {
+            break;
+        }
+    }
+    tokens.into_iter().collect()
+}
+
+fn build_text_evidence_snippets(
+    repo_relative_path: &str,
+    source: &str,
+) -> Vec<TextEvidenceSnippet> {
+    let mut selected = BTreeMap::<u32, String>::new();
+    for (line_index, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if is_text_evidence_interesting_line(trimmed) {
+            selected.insert((line_index + 1) as u32, bounded_snippet_text(trimmed));
+        }
+        if selected.len() >= TEXT_EVIDENCE_MAX_SNIPPETS_PER_FILE {
+            break;
+        }
+    }
+    if selected.len() < TEXT_EVIDENCE_MAX_SNIPPETS_PER_FILE {
+        for (line_index, line) in source.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            selected
+                .entry((line_index + 1) as u32)
+                .or_insert_with(|| bounded_snippet_text(trimmed));
+            if selected.len() >= TEXT_EVIDENCE_MAX_SNIPPETS_PER_FILE {
+                break;
+            }
+        }
+    }
+
+    selected
+        .into_iter()
+        .map(|(line, text)| TextEvidenceSnippet {
+            id: format!("text_evidence:{repo_relative_path}:{line}"),
+            span: SourceSpan::new(repo_relative_path, line, line),
+            text,
+        })
+        .collect()
+}
+
+fn bounded_snippet_text(line: &str) -> String {
+    bounded_text_prefix(line, TEXT_EVIDENCE_MAX_SNIPPET_BYTES).to_string()
+}
+
+fn is_text_evidence_interesting_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    line.contains("BR2_PACKAGE_")
+        || line.contains("generic-package")
+        || line.contains("host-generic-package")
+        || line.contains("Config.in")
+        || line.contains("_VERSION")
+        || line.contains("_SITE")
+        || line.contains("_LICENSE")
+        || line.contains("_DEPENDENCIES")
+        || lower.contains("depends on")
+        || lower.contains("select ")
+        || lower.contains("package infrastructure")
+        || lower.contains("source url")
+}
+
+fn text_evidence_file_metadata(
+    modified_unix_nanos: Option<String>,
+    kind: TextEvidenceFileKind,
+    evidence: &TextEvidenceIndex,
+) -> Metadata {
+    let mut metadata = file_manifest_metadata(modified_unix_nanos);
+    metadata.insert("evidence_kind".to_string(), TEXT_EVIDENCE_KIND.into());
+    metadata.insert("evidence_role".to_string(), TEXT_EVIDENCE_KIND.into());
+    metadata.insert(
+        "proof_status".to_string(),
+        TEXT_EVIDENCE_PROOF_STATUS.into(),
+    );
+    metadata.insert("graph_proof".to_string(), false.into());
+    metadata.insert("source_file_kind".to_string(), kind.as_str().into());
+    metadata.insert("source_file_label".to_string(), kind.title().into());
+    metadata.insert(
+        "text_evidence".to_string(),
+        json!({
+            "bounded": true,
+            "max_read_bytes_per_file": TEXT_EVIDENCE_MAX_READ_BYTES_PER_FILE,
+            "max_fts_bytes_per_file": TEXT_EVIDENCE_MAX_FTS_BYTES_PER_FILE,
+            "max_snippets_per_file": TEXT_EVIDENCE_MAX_SNIPPETS_PER_FILE,
+            "max_tokens_per_file": TEXT_EVIDENCE_MAX_TOKENS_PER_FILE,
+            "indexed_bytes": evidence.indexed_bytes,
+            "total_bytes": evidence.total_bytes,
+            "omitted_bytes": evidence.omitted_bytes,
+            "indexed_lines": evidence.indexed_lines,
+            "total_lines": evidence.total_lines,
+            "omitted_lines": evidence.total_lines.saturating_sub(evidence.indexed_lines),
+            "snippet_count": evidence.snippets.len(),
+            "tokens": evidence.tokens.clone(),
+            "claimable_as": ["source_text_existence"],
+            "not_claimable_as": [
+                "typed_graph_relation",
+                "CALLS",
+                "READS",
+                "WRITES",
+                "FLOWS_TO",
+                "MUTATES",
+                "TESTS",
+                "ASSERTS"
+            ],
+            "graph_relation_claims": []
+        }),
+    );
+    metadata
+}
+
+fn file_record_is_text_evidence_kind(
+    record: &FileRecord,
+    expected_kind: TextEvidenceFileKind,
+) -> bool {
+    record.language.is_none()
+        && record.metadata.get("evidence_kind").and_then(Value::as_str) == Some(TEXT_EVIDENCE_KIND)
+        && record.metadata.get("proof_status").and_then(Value::as_str)
+            == Some(TEXT_EVIDENCE_PROOF_STATUS)
+        && record
+            .metadata
+            .get("source_file_kind")
+            .and_then(Value::as_str)
+            == Some(expected_kind.as_str())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn persist_text_evidence_to_writer(
+    writer: &SqliteGraphStore,
+    repo_relative_path: &str,
+    file_hash: &str,
+    kind: TextEvidenceFileKind,
+    evidence: &TextEvidenceIndex,
+    size_bytes: u64,
+    indexed_at: u64,
+    modified_unix_nanos: Option<String>,
+    needs_delete: bool,
+) -> Result<(), StoreError> {
+    if needs_delete {
+        writer.delete_facts_for_file(repo_relative_path)?;
+    }
+    writer.upsert_file(&FileRecord {
+        repo_relative_path: repo_relative_path.to_string(),
+        file_hash: file_hash.to_string(),
+        language: None,
+        size_bytes,
+        indexed_at_unix_ms: Some(indexed_at),
+        metadata: text_evidence_file_metadata(modified_unix_nanos, kind, evidence),
+    })?;
+    writer.insert_file_text(repo_relative_path, &evidence.fts_body)?;
+    for snippet in &evidence.snippets {
+        writer.insert_snippet_text(&snippet.id, &snippet.span, &snippet.text)?;
+    }
+    Ok(())
+}
+
 fn delete_missing_files_with_hash(
     store: &SqliteGraphStore,
     repo_root: &Path,
@@ -8943,6 +9684,7 @@ mod tests {
     use std::{process, time::Duration};
 
     use codegraph_core::{EdgeClass, EdgeContext, EntityKind, Exactness, RelationKind};
+    use codegraph_store::TextSearchKind;
 
     use super::*;
 
@@ -9935,6 +10677,46 @@ mod tests {
             leftovers.is_empty(),
             "leftover temp DB files: {leftovers:?}"
         );
+    }
+
+    fn assert_text_evidence_file(
+        store: &SqliteGraphStore,
+        repo_relative_path: &str,
+        expected_kind: TextEvidenceFileKind,
+    ) -> FileRecord {
+        let file = store
+            .get_file(repo_relative_path)
+            .expect("file lookup")
+            .unwrap_or_else(|| panic!("missing text evidence file {repo_relative_path}"));
+        assert_eq!(file.language, None, "{repo_relative_path}");
+        assert_eq!(
+            file.metadata.get("evidence_kind").and_then(Value::as_str),
+            Some(TEXT_EVIDENCE_KIND),
+            "{repo_relative_path}"
+        );
+        assert_eq!(
+            file.metadata.get("evidence_role").and_then(Value::as_str),
+            Some(TEXT_EVIDENCE_KIND),
+            "{repo_relative_path}"
+        );
+        assert_eq!(
+            file.metadata.get("proof_status").and_then(Value::as_str),
+            Some(TEXT_EVIDENCE_PROOF_STATUS),
+            "{repo_relative_path}"
+        );
+        assert_eq!(
+            file.metadata
+                .get("source_file_kind")
+                .and_then(Value::as_str),
+            Some(expected_kind.as_str()),
+            "{repo_relative_path}"
+        );
+        assert_eq!(
+            file.metadata.get("graph_proof").and_then(Value::as_bool),
+            Some(false),
+            "{repo_relative_path}"
+        );
+        file
     }
 
     fn entities_by_kind_and_name(
@@ -11807,6 +12589,237 @@ mod tests {
         store.quick_integrity_gate().expect("quick integrity");
         drop(store);
 
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn cold_index_persists_buildroot_text_evidence_without_graph_proof_pollution() {
+        let repo = temp_repo("buildroot-text-evidence");
+        write_test_file(
+            &repo,
+            "package/foo/foo.mk",
+            "################################################################################\n\
+             # foo\n\
+             ################################################################################\n\n\
+             FOO_VERSION = 1.2.3\n\
+             FOO_SITE = https://example.com/foo\n\
+             FOO_LICENSE = MIT\n\
+             FOO_DEPENDENCIES = bar host-baz\n\n\
+             $(eval $(generic-package))\n",
+        );
+        write_test_file(
+            &repo,
+            "package/foo/Config.in",
+            "config BR2_PACKAGE_FOO\n\
+             \tbool \"foo\"\n\
+             \tdepends on BR2_USE_MMU\n\
+             \tselect BR2_PACKAGE_BAR\n",
+        );
+        write_test_file(
+            &repo,
+            "docs/manual/adding-packages.adoc",
+            "= Adding packages\n\n\
+             Buildroot package infrastructure is documented here.\n\n\
+             A package using generic-package normally has a Config.in entry.\n",
+        );
+        write_test_file(
+            &repo,
+            "support/scripts/pkg-stats",
+            "#!/bin/sh\n\
+             echo \"pkg-stats package infrastructure\"\n\
+             echo \"generic-package Config.in BR2_PACKAGE_FOO\"\n",
+        );
+        write_test_file(
+            &repo,
+            "README.md",
+            "# Buildroot Text Evidence Mini Fixture\n\n\
+             Stage 0 text evidence fixture, not graph proof.\n",
+        );
+        write_test_file(
+            &repo,
+            "src/download.c",
+            "int download_archive(const char *url) {\n\
+             \treturn url != 0;\n\
+             }\n",
+        );
+
+        let db = repo.join("target").join("buildroot-text.sqlite");
+        let summary = index_repo_to_db_with_options(
+            &repo,
+            &db,
+            IndexOptions {
+                profile: true,
+                ..IndexOptions::default()
+            },
+        )
+        .expect("index buildroot mini fixture");
+        assert_eq!(summary.files_indexed, 6);
+        assert_eq!(summary.files_parsed, 1, "only the C file should be parsed");
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert_text_evidence_file(
+            &store,
+            "package/foo/foo.mk",
+            TextEvidenceFileKind::MakefileFragment,
+        );
+        assert_text_evidence_file(
+            &store,
+            "package/foo/Config.in",
+            TextEvidenceFileKind::Kconfig,
+        );
+        assert_text_evidence_file(
+            &store,
+            "docs/manual/adding-packages.adoc",
+            TextEvidenceFileKind::Asciidoc,
+        );
+        assert_text_evidence_file(
+            &store,
+            "support/scripts/pkg-stats",
+            TextEvidenceFileKind::TextLikeSupportScript,
+        );
+        assert_text_evidence_file(&store, "README.md", TextEvidenceFileKind::Markdown);
+
+        let c_file = store
+            .get_file("src/download.c")
+            .expect("c file lookup")
+            .expect("c file");
+        assert_eq!(c_file.language.as_deref(), Some("c"));
+        assert!(store
+            .list_entities_by_file("src/download.c")
+            .expect("c entities")
+            .iter()
+            .any(|entity| entity.name == "download_archive"));
+
+        let generic_hits = store
+            .search_text("generic-package", 20)
+            .expect("generic-package search");
+        assert!(generic_hits
+            .iter()
+            .any(|hit| hit.repo_relative_path == "package/foo/foo.mk"));
+        assert!(generic_hits
+            .iter()
+            .any(|hit| hit.repo_relative_path == "docs/manual/adding-packages.adoc"));
+        assert!(generic_hits.iter().any(|hit| {
+            hit.kind == TextSearchKind::Snippet && hit.repo_relative_path == "package/foo/foo.mk"
+        }));
+
+        let config_hits = store
+            .search_text("BR2_PACKAGE_FOO", 20)
+            .expect("BR2 search");
+        assert!(config_hits
+            .iter()
+            .any(|hit| hit.repo_relative_path == "package/foo/Config.in"));
+
+        let text_paths = BTreeSet::from([
+            "package/foo/foo.mk",
+            "package/foo/Config.in",
+            "docs/manual/adding-packages.adoc",
+            "support/scripts/pkg-stats",
+            "README.md",
+        ]);
+        for edge in store.list_edges(UNBOUNDED_STORE_READ_LIMIT).expect("edges") {
+            assert!(
+                !text_paths.contains(edge.source_span.repo_relative_path.as_str()),
+                "text evidence file produced graph edge: {:?}",
+                edge
+            );
+        }
+
+        assert_db_integrity(&db);
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn text_evidence_respects_hard_excludes_and_artifact_suffixes() {
+        let repo = temp_repo("text-evidence-negative-scope");
+        write_test_file(
+            &repo,
+            "package/foo/foo.mk",
+            "FOO_VERSION = 1\n$(eval $(generic-package))\n",
+        );
+        write_test_file(
+            &repo,
+            "target/generated.mk",
+            "SHOULD_NOT_INDEX = target\n$(eval $(generic-package))\n",
+        );
+        write_test_file(
+            &repo,
+            "node_modules/pkg/Config.in",
+            "config SHOULD_NOT_INDEX_NODE_MODULES\n",
+        );
+        write_test_file(
+            &repo,
+            "reports/final/generated.md",
+            "SHOULD_NOT_INDEX_REPORT_FINAL\n",
+        );
+        write_test_file(&repo, "src/cache.db", "SHOULD_NOT_INDEX_DB\n");
+        write_test_file(&repo, "logs/run.log", "SHOULD_NOT_INDEX_LOG\n");
+
+        let db = repo.join("target").join("text-negative.sqlite");
+        index_repo_to_db(&repo, &db).expect("index fixture");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert_text_evidence_file(
+            &store,
+            "package/foo/foo.mk",
+            TextEvidenceFileKind::MakefileFragment,
+        );
+        for path in [
+            "target/generated.mk",
+            "node_modules/pkg/Config.in",
+            "reports/final/generated.md",
+            "src/cache.db",
+            "logs/run.log",
+        ] {
+            assert!(
+                store.get_file(path).expect("file lookup").is_none(),
+                "{path}"
+            );
+        }
+        assert!(store
+            .search_text("SHOULD_NOT_INDEX", 20)
+            .expect("negative search")
+            .is_empty());
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn incremental_update_replaces_text_evidence_fts_rows_without_parsing() {
+        let repo = temp_repo("text-evidence-incremental");
+        write_test_file(
+            &repo,
+            "package/foo/foo.mk",
+            "FOO_VERSION = 1\n$(eval $(generic-package))\n",
+        );
+        let db = repo.join("target").join("text-incremental.sqlite");
+        index_repo_to_db(&repo, &db).expect("initial index");
+
+        write_test_file(
+            &repo,
+            "package/foo/foo.mk",
+            "FOO_VERSION = 2\nFOO_LICENSE = MIT\n$(eval $(generic-package))\n",
+        );
+        let summary =
+            update_changed_files_to_db(&repo, &[PathBuf::from("package/foo/foo.mk")], &db)
+                .expect("incremental text update");
+        assert_eq!(summary.files_indexed, 1);
+        assert_eq!(summary.files_parsed, 0);
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let license_hits = store
+            .search_text("FOO_LICENSE", 20)
+            .expect("license search");
+        assert!(license_hits
+            .iter()
+            .any(|hit| hit.repo_relative_path == "package/foo/foo.mk"));
+        assert!(store
+            .list_entities_by_file("package/foo/foo.mk")
+            .expect("text entities")
+            .is_empty());
+
+        drop(store);
         fs::remove_dir_all(repo).expect("cleanup");
     }
 

@@ -2725,7 +2725,8 @@ fn resolver_status_for_language(language_id: &str) -> Value {
 }
 
 fn text_hit_json(hit: &TextSearchHit) -> Value {
-    json!({
+    let is_text_evidence = matches!(hit.kind, TextSearchKind::File | TextSearchKind::Snippet);
+    let mut value = json!({
         "kind": hit.kind.as_str(),
         "id": hit.id,
         "repo_relative_path": hit.repo_relative_path,
@@ -2739,7 +2740,40 @@ fn text_hit_json(hit: &TextSearchHit) -> Value {
             "heuristic": false,
             "unsupported": false
         }
-    })
+    });
+    if is_text_evidence {
+        if let Some(object) = value.as_object_mut() {
+            insert_text_evidence_labels(object);
+        }
+    }
+    value
+}
+
+fn insert_text_evidence_labels(object: &mut serde_json::Map<String, Value>) {
+    object.insert("evidence_kind".to_string(), json!("text_evidence"));
+    object.insert("evidence_role".to_string(), json!("text_evidence"));
+    object.insert("proof_status".to_string(), json!("not_graph_proof"));
+    object.insert("graph_proof".to_string(), json!(false));
+    object.insert("graph_relation_claims".to_string(), json!([]));
+    object.insert(
+        "claimability".to_string(),
+        json!({
+            "claimable": true,
+            "claimable_as": ["source_text_existence"],
+            "not_claimable_as": [
+                "typed_graph_relation",
+                "CALLS",
+                "READS",
+                "WRITES",
+                "FLOWS_TO",
+                "MUTATES",
+                "TESTS",
+                "ASSERTS"
+            ],
+            "diagnostic_only": false,
+            "reason": "lifecycle-safe indexed text evidence; not graph proof"
+        }),
+    );
 }
 
 fn source_scan_text_hits(
@@ -2764,7 +2798,7 @@ fn source_scan_text_hits(
                 continue;
             }
             let repo_relative_path = file.repo_relative_path.clone();
-            hits.push(json!({
+            let mut hit = json!({
                 "kind": "file",
                 "id": repo_relative_path.clone(),
                 "repo_relative_path": repo_relative_path,
@@ -2779,7 +2813,11 @@ fn source_scan_text_hits(
                     "heuristic": false,
                     "unsupported": false
                 },
-            }));
+            });
+            if let Some(object) = hit.as_object_mut() {
+                insert_text_evidence_labels(object);
+            }
+            hits.push(hit);
             if hits.len() >= limit {
                 break;
             }

@@ -2146,6 +2146,133 @@ fn audit_storage_micro_tiny_run_writes_reports_and_uses_external_dbs() {
 }
 
 #[test]
+fn audit_index_scope_dry_run_reports_scope_without_creating_db() {
+    let repo = empty_repo();
+    fs::create_dir_all(repo.join("src")).expect("create src");
+    fs::create_dir_all(repo.join("target").join("debug")).expect("create target");
+    fs::create_dir_all(repo.join("node_modules").join("pkg")).expect("create node_modules");
+    fs::create_dir_all(repo.join("reports").join("final")).expect("create reports/final");
+    fs::create_dir_all(repo.join("package").join("demo")).expect("create package");
+    fs::create_dir_all(repo.join("docs")).expect("create docs");
+    fs::create_dir_all(repo.join("configs")).expect("create configs");
+    fs::write(
+        repo.join("src").join("app.ts"),
+        "export function app() { return 1; }\n",
+    )
+    .expect("write app");
+    fs::write(
+        repo.join("target").join("debug").join("ignored.rs"),
+        "pub fn ignored() {}\n",
+    )
+    .expect("write target");
+    fs::write(
+        repo.join("node_modules").join("pkg").join("ignored.ts"),
+        "export const ignored = 1;\n",
+    )
+    .expect("write node_modules");
+    fs::write(
+        repo.join("reports").join("final").join("ignored.ts"),
+        "export const ignored = 1;\n",
+    )
+    .expect("write reports final");
+    fs::write(repo.join("Makefile"), "all:\n\t@true\n").expect("write Makefile");
+    fs::write(
+        repo.join("Config.in"),
+        "config BR2_PACKAGE_DEMO\n\tbool \"demo\"\n",
+    )
+    .expect("write Config.in");
+    fs::write(
+        repo.join("package").join("demo").join("demo.mk"),
+        "DEMO_VERSION = 1.0\n",
+    )
+    .expect("write package makefile");
+    fs::write(repo.join("docs").join("manual.txt"), "package infra\n").expect("write docs");
+    fs::write(
+        repo.join("configs").join("demo_defconfig"),
+        "BR2_PACKAGE_DEMO=y\n",
+    )
+    .expect("write config");
+
+    let output_dir = repo.join("scope-output");
+    let out_json = output_dir.join("scope.json");
+    let out_md = output_dir.join("scope.md");
+    let value = stdout_json(&run_codegraph(&[
+        "audit",
+        "index-scope",
+        repo.to_str().expect("repo path"),
+        "--json",
+        out_json.to_str().expect("json path"),
+        "--markdown",
+        out_md.to_str().expect("markdown path"),
+        "--print-included",
+        "--print-excluded",
+    ]));
+
+    assert_eq!(value["status"].as_str(), Some("ok"));
+    assert_eq!(value["audit"].as_str(), Some("index_scope"));
+    assert_eq!(value["dry_run"].as_bool(), Some(true));
+    assert_eq!(value["db_created"].as_bool(), Some(false));
+    assert_eq!(value["normal_codegraph_db_created"].as_bool(), Some(false));
+    assert!(!repo.join(".codegraph").exists());
+    assert!(out_json.exists());
+    assert!(out_md.exists());
+
+    let report: Value = serde_json::from_str(&fs::read_to_string(&out_json).expect("scope JSON"))
+        .expect("scope JSON validates");
+    assert_eq!(report["status"].as_str(), Some("ok"));
+    assert!(
+        report["counts"]["files_considered"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 6
+    );
+    assert!(
+        report["counts"]["files_that_would_be_parsed"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 1
+    );
+    assert_eq!(
+        report["visibility"]["makefile"]["visible"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        report["visibility"]["kconfig"]["visible"].as_bool(),
+        Some(true)
+    );
+    assert!(
+        report["visibility"]["makefile"]["text_evidence_candidates"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0
+    );
+    assert!(
+        report["visibility"]["kconfig"]["text_evidence_candidates"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0
+    );
+
+    let hard_hits = report["hard_excluded_directory_hits"]
+        .as_array()
+        .expect("hard excluded hits");
+    assert!(hard_hits
+        .iter()
+        .any(|hit| hit["path"].as_str() == Some("target")));
+    assert!(hard_hits
+        .iter()
+        .any(|hit| hit["path"].as_str() == Some("node_modules")));
+    assert!(hard_hits
+        .iter()
+        .any(|hit| hit["path"].as_str() == Some("reports/final")));
+    assert!(fs::read_to_string(&out_md)
+        .expect("scope markdown")
+        .contains("Index Scope Dry Run"));
+
+    fs::remove_dir_all(repo).expect("cleanup scope fixture");
+}
+
+#[test]
 fn storage_budget_refuses_linux_stress_without_extended() {
     let repo = fixture_repo();
     for corpus in ["linux", "buildroot"] {
@@ -2373,6 +2500,47 @@ fn storage_budget_min_free_disk_refusal_is_structured() {
     assert_eq!(error["storage_budget"]["claimable"].as_bool(), Some(false));
 
     fs::remove_dir_all(workspace).expect("cleanup min free disk workspace");
+}
+
+#[test]
+fn status_json_flag_placement_is_predictable_and_read_only() {
+    let repo = empty_repo();
+    let repo_arg = repo.to_str().expect("repo path");
+    let expected_repo = canonical_path_for_assertion(&repo);
+
+    let tail_after_repo = stdout_json(&run_codegraph(&["status", repo_arg, "--json"]));
+    assert_eq!(tail_after_repo["status"].as_str(), Some("not_indexed"));
+    assert_eq!(
+        canonical_path_for_assertion(tail_after_repo["repo_root"].as_str().expect("repo root")),
+        expected_repo
+    );
+
+    let global_before_command = stdout_json(&run_codegraph(&["--json", "status", repo_arg]));
+    assert_eq!(
+        global_before_command["status"].as_str(),
+        Some("not_indexed")
+    );
+    assert_eq!(
+        canonical_path_for_assertion(
+            global_before_command["repo_root"]
+                .as_str()
+                .expect("repo root")
+        ),
+        expected_repo
+    );
+
+    let tail_without_repo = stdout_json(&run_codegraph_in(&repo, &["status", "--json"]));
+    assert_eq!(tail_without_repo["status"].as_str(), Some("not_indexed"));
+    assert_eq!(
+        canonical_path_for_assertion(tail_without_repo["repo_root"].as_str().expect("repo root")),
+        expected_repo
+    );
+
+    assert!(
+        !repo.join(".codegraph").exists(),
+        "status JSON placement checks must not create default DB state"
+    );
+    fs::remove_dir_all(repo).expect("cleanup status JSON placement fixture");
 }
 
 #[test]

@@ -1,0 +1,6 @@
+config BR2_PACKAGE_FOO
+	bool "foo"
+	depends on BR2_USE_MMU
+	select BR2_PACKAGE_BAR
+	help
+	  The foo package exercises Buildroot text evidence for Config.in.
