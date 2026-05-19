@@ -55,6 +55,49 @@ usable coding-agent context, not benchmark verdicts by themselves.
 The public agent JSON schemas live under `docs/schemas/agent-json/`, with the
 versioning policy in [agent-json.md](agent-json.md).
 
+## Graph Verification Diagnostics
+
+Candidates are retrieval inputs, not proof. Exact, text, lexical, vector,
+binary, and nuance-rescue candidates only become graph proof after graph/source
+verification returns a proof path. Text evidence can support source-text
+existence, but it does not prove typed graph relations by itself.
+
+Default `context-pack --agent-json` output stays compact. It reports
+proof/no-proof status, claimability, short evidence summaries, and omitted
+counts without dumping traversal traces. Add `--explain` when you need the
+diagnostic trace for a bounded graph walk:
+
+```powershell
+codegraph-mcp --repo <repo> --db <agent-db> context-pack `
+  --task "Trace the change impact" `
+  --seed <symbol> `
+  --mode production `
+  --agent-json `
+  --explain
+```
+
+Explain output includes traversal mode, relation allowlist, source-role filter,
+candidate sources that requested graph verification, traversal budgets, visited
+edge/node counts, cycle and structural-skip counters, budget stop reason, no
+proof fallback reason, and PathEvidence lookup/hydration timings.
+
+Traversal budgets include max depth, max paths, max edge visits,
+max-neighbors-per-node, candidate caps, structural expansion caps, and timeout
+metadata where available. Relation modes keep the walk scoped:
+`production` is the default proof path mode, `test-impact` intentionally admits
+test/mock paths and labels them, and debug/audit modes may expose more
+diagnostic detail while remaining bounded.
+
+PathEvidence lookup and hydration are bounded. Truncation and omission labels
+such as `path_evidence_truncated`, `path_evidence_omitted_count`,
+`hydration_budget_exhausted`, `source_snippet_omitted_count`, and the compact
+`omitted_count` fields mean evidence was capped or omitted, not silently
+promoted.
+
+When graph verification cannot prove a path, output must remain
+`no_proof_path_found` and may return claimable source/text fallback evidence.
+That fallback is not typed graph proof.
+
 ## CLI Flag Placement
 
 Put global flags before the command:

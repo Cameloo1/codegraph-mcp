@@ -584,6 +584,20 @@ struct PathEvidenceSampleReport {
     #[serde(default)]
     edge_load_truncated: bool,
     #[serde(default)]
+    path_evidence_truncated: bool,
+    #[serde(default)]
+    path_evidence_omitted_count: usize,
+    #[serde(default)]
+    hydration_budget_exhausted: bool,
+    #[serde(default)]
+    source_snippet_omitted_count: usize,
+    #[serde(default)]
+    partial_diagnostic: bool,
+    #[serde(default)]
+    timeout_ms_exhausted: bool,
+    #[serde(default)]
+    stop_reason: Option<String>,
+    #[serde(default)]
     fallback_allowed: bool,
     generated_path_count: usize,
     #[serde(default)]
@@ -4289,42 +4303,122 @@ fn sample_paths(options: &SamplePathsOptions) -> Result<PathEvidenceSampleReport
     let started = Instant::now();
     let connection = open_read_only(&options.db_path)?;
     timing.open_db_ms = elapsed_ms(started);
-    enforce_path_sample_deadline(total_start, deadline, options.timeout_ms, "open_db")?;
+    if let Err(error) =
+        enforce_path_sample_deadline(total_start, deadline, options.timeout_ms, "open_db")
+    {
+        return Ok(partial_path_sample_report(
+            options,
+            timing,
+            0,
+            Vec::new(),
+            Vec::new(),
+            error,
+            total_start,
+        ));
+    }
 
     let started = Instant::now();
     let repo_roots = repo_roots(&connection)?;
     timing.repo_roots_ms = elapsed_ms(started);
-    enforce_path_sample_deadline(total_start, deadline, options.timeout_ms, "repo_roots")?;
+    if let Err(error) =
+        enforce_path_sample_deadline(total_start, deadline, options.timeout_ms, "repo_roots")
+    {
+        return Ok(partial_path_sample_report(
+            options,
+            timing,
+            0,
+            Vec::new(),
+            Vec::new(),
+            error,
+            total_start,
+        ));
+    }
 
     let started = Instant::now();
     let stored_path_count = row_count(&connection, "path_evidence").unwrap_or(0);
     timing.count_ms = elapsed_ms(started);
-    enforce_path_sample_deadline(total_start, deadline, options.timeout_ms, "row_count")?;
+    if let Err(error) =
+        enforce_path_sample_deadline(total_start, deadline, options.timeout_ms, "row_count")
+    {
+        return Ok(partial_path_sample_report(
+            options,
+            timing,
+            stored_path_count,
+            Vec::new(),
+            Vec::new(),
+            error,
+            total_start,
+        ));
+    }
 
     let started = Instant::now();
     let mut explain_plans = path_sampler_query_plans(&connection, options)?;
     timing.explain_ms = elapsed_ms(started);
+    if let Err(error) =
+        enforce_path_sample_deadline(total_start, deadline, options.timeout_ms, "explain")
+    {
+        return Ok(partial_path_sample_report(
+            options,
+            timing,
+            stored_path_count,
+            explain_plans,
+            Vec::new(),
+            error,
+            total_start,
+        ));
+    }
 
     let started = Instant::now();
     let index_status = path_evidence_index_status(&connection)?;
     timing.index_check_ms = elapsed_ms(started);
+    if let Err(error) =
+        enforce_path_sample_deadline(total_start, deadline, options.timeout_ms, "index_check")
+    {
+        return Ok(partial_path_sample_report(
+            options,
+            timing,
+            stored_path_count,
+            explain_plans,
+            index_status,
+            error,
+            total_start,
+        ));
+    }
+
+    let mut partial_diagnostic = false;
+    let mut timeout_ms_exhausted = false;
+    let mut stop_reason = None;
+    let mut notes = vec![
+        "Classification fields are intentionally blank in markdown for human review.".to_string(),
+        "PathEvidence sampling is bounded: candidate path IDs are selected first, details are batch-loaded only for those IDs, and snippets are loaded only for sampled spans when requested.".to_string(),
+    ];
 
     let stored_result = if stored_path_count > 0 {
-        stored_path_samples(
+        match stored_path_samples(
             &connection,
             &repo_roots,
             options,
             total_start,
             deadline,
             &mut timing,
-        )?
+        ) {
+            Ok(result) => result,
+            Err(error) if is_path_sample_timeout_error(&error) => {
+                partial_diagnostic = true;
+                timeout_ms_exhausted = true;
+                stop_reason = Some(error.clone());
+                notes.push(error);
+                StoredPathSampleResult::default()
+            }
+            Err(error) => return Err(error),
+        }
     } else {
         StoredPathSampleResult::default()
     };
     let mut samples = stored_result.samples;
     let stored_samples = samples.len();
     let fallback_allowed = options.mode.allows_generated_fallback();
-    if fallback_allowed && samples.len() < options.limit {
+    if fallback_allowed && !timeout_ms_exhausted && samples.len() < options.limit {
         let generated = generated_path_samples(&connection, &repo_roots, options, samples.len())?;
         samples.extend(generated);
     }
@@ -4337,6 +4431,31 @@ fn sample_paths(options: &SamplePathsOptions) -> Result<PathEvidenceSampleReport
     timing.total_ms = elapsed_ms(total_start);
 
     explain_plans.sort_by(|left, right| left.name.cmp(&right.name));
+    let source_snippet_omitted_count = path_sample_source_snippet_omitted_count(&samples);
+    let stored_path_count_usize = usize::try_from(stored_path_count).unwrap_or(usize::MAX);
+    let path_evidence_omitted_count = stored_path_count_usize.saturating_sub(stored_samples);
+    let path_evidence_truncated =
+        stored_result.edge_load_truncated || path_evidence_omitted_count > 0 || partial_diagnostic;
+    notes.push(format!(
+        "Mode `{}` {} generated fallback paths.",
+        options.mode.as_str(),
+        if fallback_allowed {
+            "allows"
+        } else {
+            "disables"
+        }
+    ));
+    notes.push(format!(
+        "Path edge materialization load cap: {} rows; truncated: {}.",
+        options.max_edge_load, stored_result.edge_load_truncated
+    ));
+    notes.push(format!(
+        "Stored PathEvidence samples used before fallback: {stored_samples}."
+    ));
+    notes.push(format!(
+        "PathEvidence sampler row budget: limit={}, max_edge_load={}, timeout_ms={}.",
+        options.limit, options.max_edge_load, options.timeout_ms
+    ));
 
     Ok(PathEvidenceSampleReport {
         schema_version: AUDIT_SCHEMA_VERSION,
@@ -4351,6 +4470,13 @@ fn sample_paths(options: &SamplePathsOptions) -> Result<PathEvidenceSampleReport
         candidate_path_count: stored_result.candidate_path_count,
         loaded_path_edge_count: stored_result.loaded_path_edge_count,
         edge_load_truncated: stored_result.edge_load_truncated,
+        path_evidence_truncated,
+        path_evidence_omitted_count,
+        hydration_budget_exhausted: stored_result.edge_load_truncated,
+        source_snippet_omitted_count,
+        partial_diagnostic,
+        timeout_ms_exhausted,
+        stop_reason,
         fallback_allowed,
         generated_path_count,
         generated_fallback_used,
@@ -4362,22 +4488,61 @@ fn sample_paths(options: &SamplePathsOptions) -> Result<PathEvidenceSampleReport
             .map(|value| (*value).to_string())
             .collect(),
         samples,
-        notes: vec![
-            "Classification fields are intentionally blank in markdown for human review."
-                .to_string(),
-            "PathEvidence sampling is bounded: candidate path IDs are selected first, details are batch-loaded only for those IDs, and snippets are loaded only for sampled spans when requested.".to_string(),
-            format!(
-                "Mode `{}` {} generated fallback paths.",
-                options.mode.as_str(),
-                if fallback_allowed { "allows" } else { "disables" }
-            ),
-            format!(
-                "Path edge materialization load cap: {} rows; truncated: {}.",
-                options.max_edge_load, stored_result.edge_load_truncated
-            ),
-            format!("Stored PathEvidence samples used before fallback: {stored_samples}."),
-        ],
+        notes,
     })
+}
+
+fn partial_path_sample_report(
+    options: &SamplePathsOptions,
+    mut timing: PathSamplerTiming,
+    stored_path_count: u64,
+    mut explain_query_plan: Vec<PathSamplerQueryPlan>,
+    index_status: Vec<PathEvidenceIndexStatus>,
+    stop_reason: String,
+    total_start: Instant,
+) -> PathEvidenceSampleReport {
+    timing.total_ms = elapsed_ms(total_start);
+    explain_query_plan.sort_by(|left, right| left.name.cmp(&right.name));
+    PathEvidenceSampleReport {
+        schema_version: AUDIT_SCHEMA_VERSION,
+        db_path: path_string(&options.db_path),
+        limit: options.limit,
+        seed: options.seed,
+        include_snippets: options.include_snippets,
+        mode: options.mode,
+        max_edge_load: options.max_edge_load,
+        timeout_ms: options.timeout_ms,
+        stored_path_count,
+        candidate_path_count: 0,
+        loaded_path_edge_count: 0,
+        edge_load_truncated: false,
+        path_evidence_truncated: true,
+        path_evidence_omitted_count: usize::try_from(stored_path_count).unwrap_or(usize::MAX),
+        hydration_budget_exhausted: true,
+        source_snippet_omitted_count: 0,
+        partial_diagnostic: true,
+        timeout_ms_exhausted: true,
+        stop_reason: Some(stop_reason.clone()),
+        fallback_allowed: options.mode.allows_generated_fallback(),
+        generated_path_count: 0,
+        generated_fallback_used: false,
+        timing,
+        explain_query_plan,
+        index_status,
+        manual_classification_options: SAMPLE_CLASSIFICATIONS
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
+        samples: Vec::new(),
+        notes: vec![
+            "Partial diagnostic report emitted because the sample-paths timeout budget was exhausted.".to_string(),
+            stop_reason,
+            format!(
+                "PathEvidence sampler row budget: limit={}, max_edge_load={}, timeout_ms={}.",
+                options.limit, options.max_edge_load, options.timeout_ms
+            ),
+        ],
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -4527,6 +4692,22 @@ fn enforce_path_sample_deadline(
         ));
     }
     Ok(())
+}
+
+fn is_path_sample_timeout_error(error: &str) -> bool {
+    error.starts_with("sample-paths timed out")
+}
+
+fn path_sample_source_snippet_omitted_count(samples: &[PathEvidenceSample]) -> usize {
+    samples
+        .iter()
+        .map(|sample| {
+            sample
+                .source_spans
+                .len()
+                .saturating_sub(sample.source_snippets.len())
+        })
+        .sum()
 }
 
 fn bounded_path_evidence_ids(
@@ -5170,9 +5351,15 @@ fn path_evidence_index_status(
     ];
     let mut out = Vec::new();
     for (object, required_shape, index_name, expected_columns, notes) in checks {
-        let present = sqlite_master_exists(connection, "index", index_name).unwrap_or(false)
-            || sqlite_master_exists(connection, "table", object).unwrap_or(false);
-        let columns = if sqlite_master_exists(connection, "index", index_name).unwrap_or(false) {
+        let index_present = sqlite_master_exists(connection, "index", index_name).unwrap_or(false);
+        let table_present = sqlite_master_exists(connection, "table", object).unwrap_or(false);
+        let primary_key_satisfier = match object {
+            "path_evidence_edges" => Some("PRIMARY KEY(path_id, ordinal) WITHOUT ROWID"),
+            "path_evidence_tests" => Some("PRIMARY KEY(path_id, test_id, relation) WITHOUT ROWID"),
+            _ => None,
+        };
+        let present = index_present || (table_present && primary_key_satisfier.is_some());
+        let columns = if index_present {
             index_columns(connection, index_name).unwrap_or_default()
         } else {
             expected_columns
@@ -5184,8 +5371,10 @@ fn path_evidence_index_status(
             object: object.to_string(),
             required_shape: required_shape.to_string(),
             present,
-            satisfied_by: if present {
+            satisfied_by: if index_present {
                 Some(index_name.to_string())
+            } else if present {
+                primary_key_satisfier.map(str::to_string)
             } else {
                 None
             },
@@ -7834,7 +8023,7 @@ fn render_path_samples_markdown(report: &PathEvidenceSampleReport) -> String {
     let mut output = String::new();
     output.push_str("# PathEvidence Sample Audit\n\n");
     output.push_str(&format!(
-        "Database: `{}`\n\nMode: `{}`\n\nLimit: `{}`\n\nSeed: `{}`\n\nMax edge load: `{}`\n\nTimeout ms: `{}`\n\nStored PathEvidence rows: `{}`\n\nCandidate path IDs: `{}`\n\nLoaded materialized path edges: `{}`\n\nEdge load truncated: `{}`\n\nGenerated fallback samples: `{}`\n\n",
+        "Database: `{}`\n\nMode: `{}`\n\nLimit: `{}`\n\nSeed: `{}`\n\nMax edge load: `{}`\n\nTimeout ms: `{}`\n\nStored PathEvidence rows: `{}`\n\nCandidate path IDs: `{}`\n\nLoaded materialized path edges: `{}`\n\nEdge load truncated: `{}`\n\nPathEvidence truncated: `{}`\n\nPathEvidence omitted count: `{}`\n\nHydration budget exhausted: `{}`\n\nSource snippet omitted count: `{}`\n\nPartial diagnostic: `{}`\n\nTimeout exhausted: `{}`\n\nStop reason: `{}`\n\nGenerated fallback samples: `{}`\n\n",
         report.db_path,
         report.mode.as_str(),
         report.limit,
@@ -7845,6 +8034,13 @@ fn render_path_samples_markdown(report: &PathEvidenceSampleReport) -> String {
         report.candidate_path_count,
         report.loaded_path_edge_count,
         report.edge_load_truncated,
+        report.path_evidence_truncated,
+        report.path_evidence_omitted_count,
+        report.hydration_budget_exhausted,
+        report.source_snippet_omitted_count,
+        report.partial_diagnostic,
+        report.timeout_ms_exhausted,
+        report.stop_reason.as_deref().unwrap_or("none"),
         report.generated_path_count,
     ));
     output.push_str("## Sampler Timing\n\n");
@@ -9964,6 +10160,50 @@ mod tests {
             report.samples[0].edge_list[0].exactness.as_deref(),
             Some("parser_verified")
         );
+        assert!(!report.path_evidence_truncated);
+        assert_eq!(report.hydration_budget_exhausted, false);
+        assert_eq!(report.source_snippet_omitted_count, 1);
+        assert!(report
+            .index_status
+            .iter()
+            .any(|index| index.object == "path_evidence_edges"
+                && index.satisfied_by.as_deref()
+                    == Some("PRIMARY KEY(path_id, ordinal) WITHOUT ROWID")));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn sample_paths_limit_100_and_timeout_are_bounded_diagnostics() {
+        let root = temp_audit_dir("path-sample-timeout");
+        let db = root.join("codegraph.sqlite");
+        create_path_evidence_fixture_db(&db);
+
+        let mut options = sample_paths_test_options(db.clone());
+        options.limit = 100;
+        options.max_edge_load = 100;
+        let hundred = sample_paths(&options).expect("sample 100");
+        assert!(hundred.samples.len() <= 100);
+        assert_eq!(hundred.limit, 100);
+        assert_eq!(hundred.max_edge_load, 100);
+        assert!(!hundred.timeout_ms_exhausted);
+
+        let mut timeout_options = sample_paths_test_options(db);
+        timeout_options.timeout_ms = 1;
+        timeout_options.limit = 100;
+        timeout_options.max_edge_load = 100;
+        let timeout = sample_paths(&timeout_options).expect("partial timeout report");
+        if timeout.timeout_ms_exhausted {
+            assert!(timeout.partial_diagnostic);
+            assert!(timeout.path_evidence_truncated);
+            assert!(timeout.hydration_budget_exhausted);
+            assert!(timeout
+                .stop_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("timed out")));
+        } else {
+            assert!(timeout.samples.len() <= 100);
+        }
+
         fs::remove_dir_all(root).expect("cleanup");
     }
 

@@ -16,6 +16,7 @@ use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque},
     str::FromStr,
+    time::Instant,
 };
 
 use codegraph_core::{
@@ -449,6 +450,615 @@ impl Default for QueryLimits {
             max_edges_visited: 10_000,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraversalMode {
+    Production,
+    TestImpact,
+    Impact,
+    DebugAudit,
+}
+
+impl TraversalMode {
+    pub fn for_mode(mode: &str) -> Self {
+        let normalized = mode.to_ascii_lowercase();
+        if normalized.contains("debug") || normalized.contains("audit") {
+            Self::DebugAudit
+        } else if normalized.contains("test") {
+            Self::TestImpact
+        } else if normalized.contains("impact") || normalized.contains("blast") {
+            Self::Impact
+        } else {
+            Self::Production
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::TestImpact => "test-impact",
+            Self::Impact => "impact",
+            Self::DebugAudit => "debug-audit",
+        }
+    }
+
+    const fn allows_test_mock(self) -> bool {
+        matches!(self, Self::TestImpact | Self::DebugAudit)
+    }
+
+    const fn allows_heuristic(self) -> bool {
+        matches!(self, Self::DebugAudit)
+    }
+
+    const fn allows_unknown_source_role(self) -> bool {
+        matches!(self, Self::DebugAudit)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TraversalPolicy {
+    pub mode: TraversalMode,
+    pub max_neighbors_per_node: Option<usize>,
+    pub max_structural_expansion: Option<usize>,
+    pub timeout_ms: Option<u64>,
+    pub max_candidate_seeds: usize,
+}
+
+impl TraversalPolicy {
+    pub fn for_mode(mode: &str) -> Self {
+        match TraversalMode::for_mode(mode) {
+            TraversalMode::DebugAudit => Self {
+                mode: TraversalMode::DebugAudit,
+                max_neighbors_per_node: Some(256),
+                max_structural_expansion: Some(64),
+                timeout_ms: Some(3_000),
+                max_candidate_seeds: 64,
+            },
+            TraversalMode::TestImpact => Self {
+                mode: TraversalMode::TestImpact,
+                max_neighbors_per_node: Some(96),
+                max_structural_expansion: Some(0),
+                timeout_ms: Some(1_500),
+                max_candidate_seeds: 32,
+            },
+            TraversalMode::Impact => Self {
+                mode: TraversalMode::Impact,
+                max_neighbors_per_node: Some(96),
+                max_structural_expansion: Some(0),
+                timeout_ms: Some(1_500),
+                max_candidate_seeds: 32,
+            },
+            TraversalMode::Production => Self {
+                mode: TraversalMode::Production,
+                max_neighbors_per_node: Some(64),
+                max_structural_expansion: Some(0),
+                timeout_ms: Some(1_000),
+                max_candidate_seeds: 16,
+            },
+        }
+    }
+
+    pub const fn debug_audit() -> Self {
+        Self {
+            mode: TraversalMode::DebugAudit,
+            max_neighbors_per_node: Some(256),
+            max_structural_expansion: Some(64),
+            timeout_ms: Some(3_000),
+            max_candidate_seeds: 64,
+        }
+    }
+
+    pub const fn source_role_filter_applies(self) -> bool {
+        !matches!(self.mode, TraversalMode::DebugAudit)
+    }
+
+    fn relation_allowed(self, relation: RelationKind) -> bool {
+        if matches!(self.mode, TraversalMode::DebugAudit) {
+            return true;
+        }
+        if is_structural_relation(relation) {
+            return false;
+        }
+        production_traversal_relation_allowed(relation)
+            || (self.mode.allows_test_mock() && test_traversal_relation_allowed(relation))
+    }
+
+    fn source_role_allowed(self, edge: &Edge) -> bool {
+        match classify_edge_context(edge) {
+            PathContext::Production => true,
+            PathContext::Test | PathContext::Mock | PathContext::Mixed => {
+                self.mode.allows_test_mock()
+            }
+            PathContext::Unknown => self.mode.allows_unknown_source_role(),
+        }
+    }
+
+    fn heuristic_allowed(self) -> bool {
+        self.mode.allows_heuristic()
+    }
+
+    fn derived_without_provenance_allowed(self) -> bool {
+        matches!(self.mode, TraversalMode::DebugAudit)
+    }
+}
+
+fn context_pack_query_limits_for_policy(policy: TraversalPolicy) -> QueryLimits {
+    match policy.mode {
+        TraversalMode::DebugAudit => QueryLimits {
+            max_depth: 6,
+            max_paths: 48,
+            max_edges_visited: 4_096,
+        },
+        TraversalMode::TestImpact => QueryLimits {
+            max_depth: 4,
+            max_paths: 24,
+            max_edges_visited: 2_048,
+        },
+        TraversalMode::Impact => QueryLimits {
+            max_depth: 4,
+            max_paths: 24,
+            max_edges_visited: 2_048,
+        },
+        TraversalMode::Production => QueryLimits {
+            max_depth: 3,
+            max_paths: 12,
+            max_edges_visited: 2_048,
+        },
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphTraversalTelemetry {
+    pub operation: String,
+    pub seed_count: usize,
+    pub seed: Option<String>,
+    pub candidate_count_by_source: BTreeMap<String, usize>,
+    pub relation_modes: Vec<String>,
+    pub traversal_policy: String,
+    pub max_depth: usize,
+    pub max_paths: usize,
+    pub max_edge_visits: usize,
+    pub max_neighbors_per_node: Option<usize>,
+    pub max_structural_expansion: Option<usize>,
+    pub timeout_ms: Option<u64>,
+    pub edges_visited: usize,
+    pub nodes_visited: usize,
+    pub neighbors_expanded: usize,
+    pub neighbor_limit_hits: usize,
+    pub neighbors_omitted_by_limit: usize,
+    pub structural_edges_skipped: usize,
+    pub structural_expansion_limit_hits: usize,
+    pub relation_blocked_edges: usize,
+    pub source_role_blocked_edges: usize,
+    pub cycles_cut: usize,
+    pub depth_limit_hits: usize,
+    pub budget_stop_reason: Option<String>,
+    pub paths_found: usize,
+    pub paths_returned: usize,
+    pub time_ms: f64,
+    pub source_role_filters_applied: bool,
+    pub heuristic_edges_skipped: usize,
+    pub heuristic_edges_seen: usize,
+    pub derived_edge_provenance_checks: usize,
+    pub derived_edge_missing_provenance: usize,
+    pub derived_edge_provenance_blocked_edges: usize,
+    pub no_proof_fallback_reason: Option<String>,
+}
+
+impl GraphTraversalTelemetry {
+    fn new_with_policy(
+        operation: impl Into<String>,
+        seed: impl Into<String>,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        policy: TraversalPolicy,
+    ) -> Self {
+        Self {
+            operation: operation.into(),
+            seed_count: 1,
+            seed: Some(seed.into()),
+            candidate_count_by_source: BTreeMap::new(),
+            relation_modes: traversal_mode_labels(traversals),
+            traversal_policy: policy.mode.as_str().to_string(),
+            max_depth: limits.max_depth,
+            max_paths: limits.max_paths,
+            max_edge_visits: limits.max_edges_visited,
+            max_neighbors_per_node: policy.max_neighbors_per_node,
+            max_structural_expansion: policy.max_structural_expansion,
+            timeout_ms: policy.timeout_ms,
+            edges_visited: 0,
+            nodes_visited: 0,
+            neighbors_expanded: 0,
+            neighbor_limit_hits: 0,
+            neighbors_omitted_by_limit: 0,
+            structural_edges_skipped: 0,
+            structural_expansion_limit_hits: 0,
+            relation_blocked_edges: 0,
+            source_role_blocked_edges: 0,
+            cycles_cut: 0,
+            depth_limit_hits: 0,
+            budget_stop_reason: None,
+            paths_found: 0,
+            paths_returned: 0,
+            time_ms: 0.0,
+            source_role_filters_applied: policy.source_role_filter_applies(),
+            heuristic_edges_skipped: 0,
+            heuristic_edges_seen: 0,
+            derived_edge_provenance_checks: 0,
+            derived_edge_missing_provenance: 0,
+            derived_edge_provenance_blocked_edges: 0,
+            no_proof_fallback_reason: None,
+        }
+    }
+
+    fn note_depth_limit(&mut self) {
+        self.depth_limit_hits += 1;
+        if self.budget_stop_reason.is_none() {
+            self.budget_stop_reason = Some("max_depth".to_string());
+        }
+    }
+
+    fn note_budget_stop(&mut self, reason: &str) {
+        self.budget_stop_reason = Some(reason.to_string());
+    }
+
+    fn record_edge_visit(&mut self, edge: &Edge) {
+        self.edges_visited += 1;
+        if is_heuristic_edge(edge) {
+            self.heuristic_edges_seen += 1;
+        }
+    }
+
+    fn absorb_child_traversal(&mut self, child: &GraphTraversalTelemetry) {
+        for label in &child.relation_modes {
+            if !self.relation_modes.contains(label) {
+                self.relation_modes.push(label.clone());
+            }
+        }
+        self.edges_visited += child.edges_visited;
+        self.nodes_visited += child.nodes_visited;
+        self.neighbors_expanded += child.neighbors_expanded;
+        self.neighbor_limit_hits += child.neighbor_limit_hits;
+        self.neighbors_omitted_by_limit += child.neighbors_omitted_by_limit;
+        self.structural_edges_skipped += child.structural_edges_skipped;
+        self.structural_expansion_limit_hits += child.structural_expansion_limit_hits;
+        self.relation_blocked_edges += child.relation_blocked_edges;
+        self.source_role_blocked_edges += child.source_role_blocked_edges;
+        self.cycles_cut += child.cycles_cut;
+        self.depth_limit_hits += child.depth_limit_hits;
+        self.source_role_filters_applied =
+            self.source_role_filters_applied || child.source_role_filters_applied;
+        self.heuristic_edges_skipped += child.heuristic_edges_skipped;
+        self.heuristic_edges_seen += child.heuristic_edges_seen;
+        self.derived_edge_provenance_checks += child.derived_edge_provenance_checks;
+        self.derived_edge_missing_provenance += child.derived_edge_missing_provenance;
+        self.derived_edge_provenance_blocked_edges += child.derived_edge_provenance_blocked_edges;
+        if self.budget_stop_reason.is_none() {
+            self.budget_stop_reason = child.budget_stop_reason.clone();
+        }
+    }
+
+    fn finish(mut self, start: Instant, paths_returned: usize) -> Self {
+        self.paths_found = paths_returned;
+        self.paths_returned = paths_returned;
+        self.time_ms = start.elapsed().as_secs_f64() * 1000.0;
+        if paths_returned == 0 && self.no_proof_fallback_reason.is_none() {
+            self.no_proof_fallback_reason = Some("no matching graph path accepted".to_string());
+        }
+        self
+    }
+
+    pub fn result_label(&self) -> &'static str {
+        if self.paths_returned > 0
+            && self.heuristic_edges_seen == self.heuristic_edges_skipped
+            && self.derived_edge_provenance_blocked_edges == 0
+        {
+            return "proof_path_found";
+        }
+
+        if self.paths_returned > 0 {
+            return "traversal_unknown";
+        }
+
+        if self
+            .budget_stop_reason
+            .as_deref()
+            .is_some_and(is_traversal_budget_stop_reason)
+        {
+            return "traversal_budget_exhausted";
+        }
+
+        if self.cycles_cut > 0 {
+            "traversal_cycle_cut"
+        } else if self.source_role_blocked_edges > 0 {
+            "traversal_source_role_blocked"
+        } else if self.heuristic_edges_skipped > 0 {
+            "traversal_heuristic_blocked"
+        } else if self.relation_blocked_edges > 0 {
+            "traversal_relation_blocked"
+        } else {
+            "no_proof_path_found"
+        }
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "operation": self.operation.as_str(),
+            "seed_count": self.seed_count,
+            "seed": self.seed.as_deref(),
+            "candidate_count_by_source": &self.candidate_count_by_source,
+            "relation_modes": &self.relation_modes,
+            "traversal_policy": self.traversal_policy,
+            "max_depth": self.max_depth,
+            "max_paths": self.max_paths,
+            "max_edge_visits": self.max_edge_visits,
+            "max_neighbors_per_node": self.max_neighbors_per_node,
+            "max_structural_expansion": self.max_structural_expansion,
+            "timeout_ms": self.timeout_ms,
+            "edges_visited": self.edges_visited,
+            "nodes_visited": self.nodes_visited,
+            "neighbors_expanded": self.neighbors_expanded,
+            "neighbor_limit_hits": self.neighbor_limit_hits,
+            "neighbors_omitted_by_limit": self.neighbors_omitted_by_limit,
+            "structural_edges_skipped": self.structural_edges_skipped,
+            "structural_expansion_limit_hits": self.structural_expansion_limit_hits,
+            "relation_blocked_edges": self.relation_blocked_edges,
+            "source_role_blocked_edges": self.source_role_blocked_edges,
+            "cycles_cut": self.cycles_cut,
+            "depth_limit_hits": self.depth_limit_hits,
+            "budget_stop_reason": self.budget_stop_reason.as_deref().unwrap_or("completed"),
+            "result_label": self.result_label(),
+            "paths_found": self.paths_found,
+            "paths_returned": self.paths_returned,
+            "time_ms": self.time_ms,
+            "source_role_filters_applied": self.source_role_filters_applied,
+            "heuristic_edges_skipped": self.heuristic_edges_skipped,
+            "heuristic_edges_seen": self.heuristic_edges_seen,
+            "derived_edge_provenance_checks": self.derived_edge_provenance_checks,
+            "derived_edge_missing_provenance": self.derived_edge_missing_provenance,
+            "derived_edge_provenance_blocked_edges": self.derived_edge_provenance_blocked_edges,
+            "no_proof_fallback_reason": self.no_proof_fallback_reason.as_deref(),
+        })
+    }
+}
+
+fn traversal_mode_labels(traversals: &[Traversal]) -> Vec<String> {
+    traversals
+        .iter()
+        .map(|traversal| {
+            let direction = match traversal.direction {
+                TraversalDirection::Forward => "forward",
+                TraversalDirection::Reverse => "reverse",
+            };
+            format!("{}:{direction}", traversal.relation.as_str())
+        })
+        .collect()
+}
+
+fn is_structural_relation(relation: RelationKind) -> bool {
+    matches!(
+        relation,
+        RelationKind::Contains
+            | RelationKind::DefinedIn
+            | RelationKind::Declares
+            | RelationKind::Argument0
+            | RelationKind::Argument1
+            | RelationKind::ArgumentN
+            | RelationKind::Callee
+    )
+}
+
+fn is_heuristic_edge(edge: &Edge) -> bool {
+    matches!(
+        edge.edge_class,
+        EdgeClass::BaseHeuristic | EdgeClass::Unknown
+    ) || matches!(
+        edge.exactness,
+        Exactness::StaticHeuristic | Exactness::Inferred
+    )
+}
+
+fn production_traversal_relation_allowed(relation: RelationKind) -> bool {
+    matches!(
+        relation,
+        RelationKind::Calls
+            | RelationKind::Reads
+            | RelationKind::Writes
+            | RelationKind::FlowsTo
+            | RelationKind::AssignedFrom
+            | RelationKind::Mutates
+            | RelationKind::MayMutate
+            | RelationKind::MayRead
+            | RelationKind::ApiReaches
+            | RelationKind::AsyncReaches
+            | RelationKind::SchemaImpact
+            | RelationKind::Imports
+            | RelationKind::Exports
+            | RelationKind::Reexports
+            | RelationKind::AliasOf
+            | RelationKind::AliasedBy
+            | RelationKind::Authorizes
+            | RelationKind::ChecksRole
+            | RelationKind::ChecksPermission
+            | RelationKind::Sanitizes
+            | RelationKind::Validates
+            | RelationKind::Exposes
+            | RelationKind::Injects
+            | RelationKind::Instantiates
+            | RelationKind::Publishes
+            | RelationKind::Emits
+            | RelationKind::Consumes
+            | RelationKind::ListensTo
+            | RelationKind::SubscribesTo
+            | RelationKind::Handles
+            | RelationKind::Migrates
+            | RelationKind::AltersColumn
+            | RelationKind::DependsOnSchema
+            | RelationKind::ReadsTable
+            | RelationKind::WritesTable
+    )
+}
+
+fn test_traversal_relation_allowed(relation: RelationKind) -> bool {
+    matches!(
+        relation,
+        RelationKind::Tests
+            | RelationKind::Covers
+            | RelationKind::Asserts
+            | RelationKind::Mocks
+            | RelationKind::Stubs
+            | RelationKind::FixturesFor
+    )
+}
+
+fn is_traversal_budget_stop_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "max_depth"
+            | "max_paths"
+            | "max_edge_visits"
+            | "max_neighbors_per_node"
+            | "max_structural_expansion"
+            | "timeout_ms"
+    )
+}
+
+fn traversal_timed_out(start: Instant, policy: TraversalPolicy) -> bool {
+    policy
+        .timeout_ms
+        .is_some_and(|timeout_ms| start.elapsed().as_millis() >= u128::from(timeout_ms))
+}
+
+fn aggregate_graph_traversal_telemetry_json(runs: &[GraphTraversalTelemetry]) -> serde_json::Value {
+    let mut candidate_count_by_source = BTreeMap::<String, usize>::new();
+    let mut relation_modes = BTreeSet::<String>::new();
+    let mut traversal_policies = BTreeSet::<String>::new();
+    let mut result_labels = BTreeMap::<String, usize>::new();
+    let mut budget_stop_reasons = BTreeMap::<String, usize>::new();
+    let mut max_depth = 0usize;
+    let mut max_paths = 0usize;
+    let mut max_edge_visits = 0usize;
+    let mut max_neighbors_per_node = 0usize;
+    let mut max_structural_expansion = 0usize;
+    let mut timeout_ms = 0u64;
+    let mut edges_visited = 0usize;
+    let mut nodes_visited = 0usize;
+    let mut neighbors_expanded = 0usize;
+    let mut neighbor_limit_hits = 0usize;
+    let mut neighbors_omitted_by_limit = 0usize;
+    let mut structural_edges_skipped = 0usize;
+    let mut structural_expansion_limit_hits = 0usize;
+    let mut relation_blocked_edges = 0usize;
+    let mut source_role_blocked_edges = 0usize;
+    let mut cycles_cut = 0usize;
+    let mut depth_limit_hits = 0usize;
+    let mut paths_found = 0usize;
+    let mut paths_returned = 0usize;
+    let mut time_ms = 0.0f64;
+    let mut heuristic_edges_skipped = 0usize;
+    let mut heuristic_edges_seen = 0usize;
+    let mut derived_edge_provenance_checks = 0usize;
+    let mut derived_edge_missing_provenance = 0usize;
+    let mut derived_edge_provenance_blocked_edges = 0usize;
+
+    for run in runs {
+        for (source, count) in &run.candidate_count_by_source {
+            *candidate_count_by_source.entry(source.clone()).or_default() += count;
+        }
+        relation_modes.extend(run.relation_modes.iter().cloned());
+        traversal_policies.insert(run.traversal_policy.clone());
+        *result_labels
+            .entry(run.result_label().to_string())
+            .or_default() += 1;
+        *budget_stop_reasons
+            .entry(
+                run.budget_stop_reason
+                    .clone()
+                    .unwrap_or_else(|| "completed".to_string()),
+            )
+            .or_default() += 1;
+        max_depth = max_depth.max(run.max_depth);
+        max_paths = max_paths.max(run.max_paths);
+        max_edge_visits = max_edge_visits.max(run.max_edge_visits);
+        max_neighbors_per_node =
+            max_neighbors_per_node.max(run.max_neighbors_per_node.unwrap_or(0));
+        max_structural_expansion =
+            max_structural_expansion.max(run.max_structural_expansion.unwrap_or(0));
+        timeout_ms = timeout_ms.max(run.timeout_ms.unwrap_or(0));
+        edges_visited += run.edges_visited;
+        nodes_visited += run.nodes_visited;
+        neighbors_expanded += run.neighbors_expanded;
+        neighbor_limit_hits += run.neighbor_limit_hits;
+        neighbors_omitted_by_limit += run.neighbors_omitted_by_limit;
+        structural_edges_skipped += run.structural_edges_skipped;
+        structural_expansion_limit_hits += run.structural_expansion_limit_hits;
+        relation_blocked_edges += run.relation_blocked_edges;
+        source_role_blocked_edges += run.source_role_blocked_edges;
+        cycles_cut += run.cycles_cut;
+        depth_limit_hits += run.depth_limit_hits;
+        paths_found += run.paths_found;
+        paths_returned += run.paths_returned;
+        time_ms += run.time_ms;
+        heuristic_edges_skipped += run.heuristic_edges_skipped;
+        heuristic_edges_seen += run.heuristic_edges_seen;
+        derived_edge_provenance_checks += run.derived_edge_provenance_checks;
+        derived_edge_missing_provenance += run.derived_edge_missing_provenance;
+        derived_edge_provenance_blocked_edges += run.derived_edge_provenance_blocked_edges;
+    }
+
+    serde_json::json!({
+        "run_count": runs.len(),
+        "seed_count": runs.iter().map(|run| run.seed_count).sum::<usize>(),
+        "candidate_count_by_source": candidate_count_by_source,
+        "relation_modes": relation_modes.into_iter().collect::<Vec<_>>(),
+        "traversal_policies": traversal_policies.into_iter().collect::<Vec<_>>(),
+        "max_depth": max_depth,
+        "max_paths": max_paths,
+        "max_edge_visits": max_edge_visits,
+        "max_neighbors_per_node": if max_neighbors_per_node == 0 {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!(max_neighbors_per_node)
+        },
+        "max_structural_expansion": if max_structural_expansion == 0 {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!(max_structural_expansion)
+        },
+        "timeout_ms": if timeout_ms == 0 {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!(timeout_ms)
+        },
+        "edges_visited": edges_visited,
+        "nodes_visited": nodes_visited,
+        "neighbors_expanded": neighbors_expanded,
+        "neighbor_limit_hits": neighbor_limit_hits,
+        "neighbors_omitted_by_limit": neighbors_omitted_by_limit,
+        "structural_edges_skipped": structural_edges_skipped,
+        "structural_expansion_limit_hits": structural_expansion_limit_hits,
+        "relation_blocked_edges": relation_blocked_edges,
+        "source_role_blocked_edges": source_role_blocked_edges,
+        "cycles_cut": cycles_cut,
+        "depth_limit_hits": depth_limit_hits,
+        "budget_stop_reasons": budget_stop_reasons,
+        "result_labels": result_labels,
+        "paths_found": paths_found,
+        "paths_returned": paths_returned,
+        "time_ms": time_ms,
+        "source_role_filters_applied": runs.iter().any(|run| run.source_role_filters_applied),
+        "heuristic_edges_skipped": heuristic_edges_skipped,
+        "heuristic_edges_seen": heuristic_edges_seen,
+        "derived_edge_provenance_checks": derived_edge_provenance_checks,
+        "derived_edge_missing_provenance": derived_edge_missing_provenance,
+        "derived_edge_provenance_blocked_edges": derived_edge_provenance_blocked_edges,
+        "no_proof_fallback_reason": if paths_found == 0 {
+            Some("no matching graph path accepted")
+        } else {
+            None
+        },
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2187,21 +2797,25 @@ impl ExactGraphQueryEngine {
             .iter()
             .filter_map(PromptSeed::exact_value)
             .collect::<Vec<_>>();
+        let policy = TraversalPolicy::for_mode(&request.mode);
         let mut candidate_seeds = merge_seed_values(
             request
                 .seeds
                 .iter()
-                .chain(request.stage0_candidates.iter())
-                .chain(exact_seed_values.iter()),
+                .chain(exact_seed_values.iter())
+                .chain(request.stage0_candidates.iter()),
         );
-        let limits = QueryLimits {
-            max_depth: 6,
-            max_paths: 12,
-            max_edges_visited: 2_048,
-        };
+        let candidate_seed_count_before_cap = candidate_seeds.len();
+        candidate_seeds.truncate(policy.max_candidate_seeds);
+        let candidate_seed_count_after_cap = candidate_seeds.len();
+        let limits = context_pack_query_limits_for_policy(policy);
         let mut paths = Vec::new();
+        let mut traversal_runs = Vec::new();
         for seed in &candidate_seeds {
-            paths.extend(self.context_paths_for_seed(seed, limits));
+            let (seed_paths, seed_telemetry) =
+                self.context_paths_for_seed_with_policy_telemetry(seed, limits, policy);
+            paths.extend(seed_paths);
+            traversal_runs.extend(seed_telemetry);
         }
         let candidate_path_count_before_dedup = paths.len();
         paths = unique_paths(paths);
@@ -2210,11 +2824,17 @@ impl ExactGraphQueryEngine {
             split_mixed_paths_for_context_mode(paths, &request.mode);
         paths = split_paths;
         let path_context_counts_before = path_context_counts(&paths);
-        let rejected_test_mock_path_count = paths
+        let filtered_test_mock_path_count = paths
             .iter()
             .filter(|path| !path_allowed_for_context_mode(path, &request.mode))
             .count();
         paths.retain(|path| path_allowed_for_context_mode(path, &request.mode));
+        let source_role_blocked_edge_count = traversal_runs
+            .iter()
+            .map(|run| run.source_role_blocked_edges)
+            .sum::<usize>();
+        let rejected_test_mock_path_count =
+            filtered_test_mock_path_count + source_role_blocked_edge_count;
         let candidate_path_count_after_filter = paths.len();
         let path_context_counts_after = path_context_counts(&paths);
         paths.truncate(24);
@@ -2248,6 +2868,18 @@ impl ExactGraphQueryEngine {
         metadata.insert(
             "exact_seed_count".to_string(),
             serde_json::json!(candidate_seeds.len()),
+        );
+        metadata.insert(
+            "candidate_seed_count_before_cap".to_string(),
+            serde_json::json!(candidate_seed_count_before_cap),
+        );
+        metadata.insert(
+            "candidate_seed_count_after_cap".to_string(),
+            serde_json::json!(candidate_seed_count_after_cap),
+        );
+        metadata.insert(
+            "candidate_seed_cap".to_string(),
+            serde_json::json!(policy.max_candidate_seeds),
         );
         metadata.insert(
             "candidate_path_count_before_dedup".to_string(),
@@ -2293,8 +2925,22 @@ impl ExactGraphQueryEngine {
             "rejected_test_mock_path_count".to_string(),
             serde_json::json!(rejected_test_mock_path_count),
         );
+        metadata.insert(
+            "source_role_blocked_edge_count".to_string(),
+            serde_json::json!(source_role_blocked_edge_count),
+        );
+        metadata.insert(
+            "traversal_telemetry".to_string(),
+            serde_json::json!({
+                "schema_version": 1,
+                "diagnostic_only": true,
+                "measurement_scope": "exact_graph_query_engine_context_pack",
+                "aggregate": aggregate_graph_traversal_telemetry_json(&traversal_runs),
+                "runs_omitted_by_default": true,
+                "run_count": traversal_runs.len(),
+            }),
+        );
 
-        candidate_seeds.truncate(64);
         self.context_packet_from_paths(ContextPacketBuild {
             task: request.task,
             mode: request.mode,
@@ -2404,40 +3050,93 @@ impl ExactGraphQueryEngine {
     }
 
     pub fn find_event_flow(&self, entity_id: &str, limits: QueryLimits) -> Vec<GraphPath> {
-        let mut results = Vec::new();
-        let mut visited = 0usize;
+        self.find_event_flow_with_policy_telemetry(
+            entity_id,
+            limits,
+            TraversalPolicy::debug_audit(),
+        )
+        .0
+    }
 
-        for publish_step in self.neighbors(
+    fn find_event_flow_with_policy_telemetry(
+        &self,
+        entity_id: &str,
+        limits: QueryLimits,
+        policy: TraversalPolicy,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        let start = Instant::now();
+        let traversals = [
+            Traversal::forward(RelationKind::Publishes),
+            Traversal::forward(RelationKind::Emits),
+            Traversal::reverse(RelationKind::Consumes),
+            Traversal::reverse(RelationKind::ListensTo),
+            Traversal::reverse(RelationKind::SubscribesTo),
+            Traversal::forward(RelationKind::Calls),
+        ];
+        let mut telemetry = GraphTraversalTelemetry::new_with_policy(
+            "find_event_flow",
+            entity_id,
+            &traversals,
+            limits,
+            policy,
+        );
+        let mut results = Vec::new();
+
+        for publish_step in self.neighbors_with_policy_telemetry(
             entity_id,
             &[
                 Traversal::forward(RelationKind::Publishes),
                 Traversal::forward(RelationKind::Emits),
             ],
+            &mut telemetry,
+            policy,
         ) {
-            visited += 1;
-            if visited > limits.max_edges_visited {
-                break;
+            if traversal_timed_out(start, policy) {
+                telemetry.note_budget_stop("timeout_ms");
+                let sorted = sorted_paths(results);
+                return (sorted.clone(), telemetry.finish(start, sorted.len()));
             }
+            if telemetry.edges_visited >= limits.max_edges_visited {
+                telemetry.note_budget_stop("max_edge_visits");
+                let sorted = sorted_paths(results);
+                return (sorted.clone(), telemetry.finish(start, sorted.len()));
+            }
+            telemetry.record_edge_visit(&publish_step.edge);
 
             let event_node = publish_step.to.clone();
-            for consumer_step in self.neighbors(
+            for consumer_step in self.neighbors_with_policy_telemetry(
                 &event_node,
                 &[
                     Traversal::reverse(RelationKind::Consumes),
                     Traversal::reverse(RelationKind::ListensTo),
                     Traversal::reverse(RelationKind::SubscribesTo),
                 ],
+                &mut telemetry,
+                policy,
             ) {
-                visited += 1;
-                if visited > limits.max_edges_visited {
-                    break;
+                if traversal_timed_out(start, policy) {
+                    telemetry.note_budget_stop("timeout_ms");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
                 }
+                if telemetry.edges_visited >= limits.max_edges_visited {
+                    telemetry.note_budget_stop("max_edge_visits");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
+                }
+                telemetry.record_edge_visit(&consumer_step.edge);
 
                 let base =
                     self.path_from_steps(entity_id, vec![publish_step.clone(), consumer_step]);
+                if base.steps.len() > limits.max_depth {
+                    telemetry.note_depth_limit();
+                    continue;
+                }
                 results.push(base.clone());
                 if results.len() >= limits.max_paths {
-                    return sorted_paths(results);
+                    telemetry.note_budget_stop("max_paths");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
                 }
 
                 let remaining = limits.max_depth.saturating_sub(base.steps.len());
@@ -2448,23 +3147,38 @@ impl ExactGraphQueryEngine {
                 let mut call_limits = limits;
                 call_limits.max_depth = remaining;
                 call_limits.max_paths = limits.max_paths.saturating_sub(results.len());
-                for extension in self.k_shortest_matching(
-                    &base.target,
-                    &[Traversal::forward(RelationKind::Calls)],
-                    call_limits,
-                    &|path| !path.steps.is_empty(),
-                ) {
+                call_limits.max_edges_visited = limits
+                    .max_edges_visited
+                    .saturating_sub(telemetry.edges_visited);
+                let (extensions, extension_telemetry) = self
+                    .k_shortest_matching_with_policy_telemetry(
+                        &base.target,
+                        &[Traversal::forward(RelationKind::Calls)],
+                        call_limits,
+                        policy,
+                        &|path| !path.steps.is_empty(),
+                    );
+                telemetry.absorb_child_traversal(&extension_telemetry);
+                for extension in extensions {
                     let mut steps = base.steps.clone();
                     steps.extend(extension.steps);
                     results.push(self.path_from_steps(entity_id, steps));
                     if results.len() >= limits.max_paths {
-                        return sorted_paths(results);
+                        telemetry.note_budget_stop("max_paths");
+                        let sorted = sorted_paths(results);
+                        return (sorted.clone(), telemetry.finish(start, sorted.len()));
                     }
+                }
+                if telemetry.edges_visited >= limits.max_edges_visited {
+                    telemetry.note_budget_stop("max_edge_visits");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
                 }
             }
         }
 
-        sorted_paths(results)
+        let sorted = sorted_paths(results);
+        (sorted.clone(), telemetry.finish(start, sorted.len()))
     }
 
     pub fn find_tests(&self, entity_id: &str, limits: QueryLimits) -> Vec<GraphPath> {
@@ -2536,18 +3250,179 @@ impl ExactGraphQueryEngine {
     }
 
     fn context_paths_for_seed(&self, seed: &str, limits: QueryLimits) -> Vec<GraphPath> {
+        self.context_paths_for_seed_with_telemetry(seed, limits).0
+    }
+
+    fn context_paths_for_seed_with_telemetry(
+        &self,
+        seed: &str,
+        limits: QueryLimits,
+    ) -> (Vec<GraphPath>, Vec<GraphTraversalTelemetry>) {
+        self.context_paths_for_seed_with_policy_telemetry(
+            seed,
+            limits,
+            TraversalPolicy::debug_audit(),
+        )
+    }
+
+    fn context_paths_for_seed_with_policy_telemetry(
+        &self,
+        seed: &str,
+        limits: QueryLimits,
+        policy: TraversalPolicy,
+    ) -> (Vec<GraphPath>, Vec<GraphTraversalTelemetry>) {
         let mut paths = Vec::new();
-        paths.extend(self.find_mutations(seed, limits));
-        paths.extend(self.find_reads(seed, limits));
-        paths.extend(self.find_writes(seed, limits));
-        paths.extend(self.find_dataflow(seed, limits));
-        paths.extend(self.find_auth_paths(seed, limits));
-        paths.extend(self.find_event_flow(seed, limits));
-        paths.extend(self.find_migrations(seed, limits));
-        paths.extend(self.find_tests(seed, limits));
-        paths.extend(self.find_callers(seed, limits));
-        paths.extend(self.find_callees(seed, limits));
-        sorted_paths(paths)
+        let mut telemetry = Vec::new();
+
+        let (mut result, run) = self.k_shortest_matching_with_policy_telemetry_label(
+            "find_mutations",
+            seed,
+            &[
+                Traversal::forward(RelationKind::Calls),
+                Traversal::forward(RelationKind::Writes),
+                Traversal::forward(RelationKind::Mutates),
+            ],
+            limits,
+            policy,
+            &|path| {
+                matches!(
+                    path.last_relation(),
+                    Some(RelationKind::Writes | RelationKind::Mutates)
+                )
+            },
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.bounded_bfs_with_policy_telemetry_label(
+            "find_reads",
+            seed,
+            &[
+                Traversal::forward(RelationKind::Reads),
+                Traversal::reverse(RelationKind::Reads),
+            ],
+            limits,
+            policy,
+            &|path| path.last_relation() == Some(RelationKind::Reads),
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.bounded_bfs_with_policy_telemetry_label(
+            "find_writes",
+            seed,
+            &[
+                Traversal::forward(RelationKind::Writes),
+                Traversal::reverse(RelationKind::Writes),
+            ],
+            limits,
+            policy,
+            &|path| path.last_relation() == Some(RelationKind::Writes),
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.k_shortest_matching_with_policy_telemetry_label(
+            "find_dataflow",
+            seed,
+            &[
+                Traversal::forward(RelationKind::FlowsTo),
+                Traversal::reverse(RelationKind::AssignedFrom),
+            ],
+            limits,
+            policy,
+            &|path| !path.steps.is_empty(),
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.k_shortest_matching_with_policy_telemetry_label(
+            "find_auth_paths",
+            seed,
+            &[
+                Traversal::forward(RelationKind::Exposes),
+                Traversal::forward(RelationKind::Calls),
+                Traversal::forward(RelationKind::Authorizes),
+                Traversal::forward(RelationKind::ChecksRole),
+                Traversal::forward(RelationKind::ChecksPermission),
+            ],
+            limits,
+            policy,
+            &|path| {
+                path.contains_relation(RelationKind::Exposes)
+                    && path.steps.iter().any(|step| {
+                        matches!(
+                            step.edge.relation,
+                            RelationKind::Authorizes
+                                | RelationKind::ChecksRole
+                                | RelationKind::ChecksPermission
+                        )
+                    })
+            },
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.find_event_flow_with_policy_telemetry(seed, limits, policy);
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.k_shortest_matching_with_policy_telemetry_label(
+            "find_migrations",
+            seed,
+            &[
+                Traversal::reverse(RelationKind::Migrates),
+                Traversal::reverse(RelationKind::AltersColumn),
+                Traversal::reverse(RelationKind::DependsOnSchema),
+            ],
+            limits,
+            policy,
+            &|path| !path.steps.is_empty(),
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.bounded_bfs_with_policy_telemetry_label(
+            "find_tests",
+            seed,
+            &[
+                Traversal::reverse(RelationKind::Tests),
+                Traversal::reverse(RelationKind::Covers),
+                Traversal::reverse(RelationKind::Asserts),
+                Traversal::reverse(RelationKind::Mocks),
+                Traversal::reverse(RelationKind::Stubs),
+                Traversal::reverse(RelationKind::FixturesFor),
+            ],
+            limits,
+            policy,
+            &|path| !path.steps.is_empty(),
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.bounded_bfs_with_policy_telemetry_label(
+            "find_callers",
+            seed,
+            &[Traversal::reverse(RelationKind::Calls)],
+            limits,
+            policy,
+            &|path| path.last_relation() == Some(RelationKind::Calls),
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.bounded_bfs_with_policy_telemetry_label(
+            "find_callees",
+            seed,
+            &[Traversal::forward(RelationKind::Calls)],
+            limits,
+            policy,
+            &|path| path.last_relation() == Some(RelationKind::Calls),
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        (sorted_paths(paths), telemetry)
     }
 
     fn context_packet_from_paths(&self, build: ContextPacketBuild<'_>) -> ContextPacket {
@@ -2592,21 +3467,105 @@ impl ExactGraphQueryEngine {
         limits: QueryLimits,
         accept: &impl Fn(&GraphPath) -> bool,
     ) -> Vec<GraphPath> {
+        self.bounded_bfs_with_telemetry(source_id, traversals, limits, accept)
+            .0
+    }
+
+    pub fn bounded_bfs_with_telemetry(
+        &self,
+        source_id: &str,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        accept: &impl Fn(&GraphPath) -> bool,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        self.bounded_bfs_with_telemetry_label("bounded_bfs", source_id, traversals, limits, accept)
+    }
+
+    pub fn bounded_bfs_with_policy_telemetry(
+        &self,
+        source_id: &str,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        policy: TraversalPolicy,
+        accept: &impl Fn(&GraphPath) -> bool,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        self.bounded_bfs_with_policy_telemetry_label(
+            "bounded_bfs",
+            source_id,
+            traversals,
+            limits,
+            policy,
+            accept,
+        )
+    }
+
+    fn bounded_bfs_with_telemetry_label(
+        &self,
+        operation: &str,
+        source_id: &str,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        accept: &impl Fn(&GraphPath) -> bool,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        self.bounded_bfs_with_policy_telemetry_label(
+            operation,
+            source_id,
+            traversals,
+            limits,
+            TraversalPolicy::debug_audit(),
+            accept,
+        )
+    }
+
+    fn bounded_bfs_with_policy_telemetry_label(
+        &self,
+        operation: &str,
+        source_id: &str,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        policy: TraversalPolicy,
+        accept: &impl Fn(&GraphPath) -> bool,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        let start = Instant::now();
+        let mut telemetry = GraphTraversalTelemetry::new_with_policy(
+            operation, source_id, traversals, limits, policy,
+        );
         let mut queue = VecDeque::from([PathState::new(source_id)]);
         let mut results = Vec::new();
-        let mut visited_edges = 0usize;
+        let mut visited_nodes = BTreeSet::<String>::new();
 
         while let Some(state) = queue.pop_front() {
+            if traversal_timed_out(start, policy) {
+                telemetry.note_budget_stop("timeout_ms");
+                let sorted = sorted_paths(results);
+                return (sorted.clone(), telemetry.finish(start, sorted.len()));
+            }
+            visited_nodes.insert(state.node.clone());
+            telemetry.nodes_visited = visited_nodes.len();
             if state.steps.len() >= limits.max_depth {
+                telemetry.note_depth_limit();
                 continue;
             }
 
-            for step in self.neighbors(&state.node, traversals) {
-                visited_edges += 1;
-                if visited_edges > limits.max_edges_visited {
-                    return sorted_paths(results);
+            for step in self.neighbors_with_policy_telemetry(
+                &state.node,
+                traversals,
+                &mut telemetry,
+                policy,
+            ) {
+                if traversal_timed_out(start, policy) {
+                    telemetry.note_budget_stop("timeout_ms");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
                 }
+                if telemetry.edges_visited >= limits.max_edges_visited {
+                    telemetry.note_budget_stop("max_edge_visits");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
+                }
+                telemetry.record_edge_visit(&step.edge);
                 if state.seen_nodes.contains(&step.to) {
+                    telemetry.cycles_cut += 1;
                     continue;
                 }
 
@@ -2615,14 +3574,17 @@ impl ExactGraphQueryEngine {
                 if accept(&path) {
                     results.push(path);
                     if results.len() >= limits.max_paths {
-                        return sorted_paths(results);
+                        telemetry.note_budget_stop("max_paths");
+                        let sorted = sorted_paths(results);
+                        return (sorted.clone(), telemetry.finish(start, sorted.len()));
                     }
                 }
                 queue.push_back(next);
             }
         }
 
-        sorted_paths(results)
+        let sorted = sorted_paths(results);
+        (sorted.clone(), telemetry.finish(start, sorted.len()))
     }
 
     pub fn dijkstra(
@@ -2658,36 +3620,128 @@ impl ExactGraphQueryEngine {
         limits: QueryLimits,
         accept: &impl Fn(&GraphPath) -> bool,
     ) -> Vec<GraphPath> {
+        self.k_shortest_matching_with_telemetry(source_id, traversals, limits, accept)
+            .0
+    }
+
+    pub fn k_shortest_matching_with_telemetry(
+        &self,
+        source_id: &str,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        accept: &impl Fn(&GraphPath) -> bool,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        self.k_shortest_matching_with_telemetry_label(
+            "k_shortest_matching",
+            source_id,
+            traversals,
+            limits,
+            accept,
+        )
+    }
+
+    pub fn k_shortest_matching_with_policy_telemetry(
+        &self,
+        source_id: &str,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        policy: TraversalPolicy,
+        accept: &impl Fn(&GraphPath) -> bool,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        self.k_shortest_matching_with_policy_telemetry_label(
+            "k_shortest_matching",
+            source_id,
+            traversals,
+            limits,
+            policy,
+            accept,
+        )
+    }
+
+    fn k_shortest_matching_with_telemetry_label(
+        &self,
+        operation: &str,
+        source_id: &str,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        accept: &impl Fn(&GraphPath) -> bool,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        self.k_shortest_matching_with_policy_telemetry_label(
+            operation,
+            source_id,
+            traversals,
+            limits,
+            TraversalPolicy::debug_audit(),
+            accept,
+        )
+    }
+
+    fn k_shortest_matching_with_policy_telemetry_label(
+        &self,
+        operation: &str,
+        source_id: &str,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        policy: TraversalPolicy,
+        accept: &impl Fn(&GraphPath) -> bool,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        let start = Instant::now();
+        let mut telemetry = GraphTraversalTelemetry::new_with_policy(
+            operation, source_id, traversals, limits, policy,
+        );
         let mut heap = BinaryHeap::new();
         let mut sequence = 0usize;
         heap.push(HeapState::new(sequence, PathState::new(source_id), 0.0));
         sequence += 1;
 
         let mut results = Vec::new();
-        let mut visited_edges = 0usize;
+        let mut visited_nodes = BTreeSet::<String>::new();
 
         while let Some(heap_state) = heap.pop() {
+            if traversal_timed_out(start, policy) {
+                telemetry.note_budget_stop("timeout_ms");
+                let sorted = sorted_paths(results);
+                return (sorted.clone(), telemetry.finish(start, sorted.len()));
+            }
             let state = heap_state.path;
             let state_depth = state.steps.len();
+            visited_nodes.insert(state.node.clone());
+            telemetry.nodes_visited = visited_nodes.len();
 
             let path = self.path_from_steps(source_id, state.steps.clone());
             if !path.steps.is_empty() && accept(&path) {
                 results.push(path);
                 if results.len() >= limits.max_paths {
-                    return sorted_paths(results);
+                    telemetry.note_budget_stop("max_paths");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
                 }
             }
 
             if state_depth >= limits.max_depth {
+                telemetry.note_depth_limit();
                 continue;
             }
 
-            for step in self.neighbors(&state.node, traversals) {
-                visited_edges += 1;
-                if visited_edges > limits.max_edges_visited {
-                    return sorted_paths(results);
+            for step in self.neighbors_with_policy_telemetry(
+                &state.node,
+                traversals,
+                &mut telemetry,
+                policy,
+            ) {
+                if traversal_timed_out(start, policy) {
+                    telemetry.note_budget_stop("timeout_ms");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
                 }
+                if telemetry.edges_visited >= limits.max_edges_visited {
+                    telemetry.note_budget_stop("max_edge_visits");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
+                }
+                telemetry.record_edge_visit(&step.edge);
                 if state.seen_nodes.contains(&step.to) {
+                    telemetry.cycles_cut += 1;
                     continue;
                 }
 
@@ -2699,11 +3753,19 @@ impl ExactGraphQueryEngine {
             }
         }
 
-        sorted_paths(results)
+        let sorted = sorted_paths(results);
+        (sorted.clone(), telemetry.finish(start, sorted.len()))
     }
 
-    fn neighbors(&self, node_id: &str, traversals: &[Traversal]) -> Vec<TraversalStep> {
+    fn neighbors_with_policy_telemetry(
+        &self,
+        node_id: &str,
+        traversals: &[Traversal],
+        telemetry: &mut GraphTraversalTelemetry,
+        policy: TraversalPolicy,
+    ) -> Vec<TraversalStep> {
         let mut steps = Vec::new();
+        let mut structural_expanded = 0usize;
 
         for traversal in traversals {
             match traversal.direction {
@@ -2712,12 +3774,27 @@ impl ExactGraphQueryEngine {
                         for index in indices {
                             let edge = &self.edges[*index];
                             if edge.relation == traversal.relation {
-                                steps.push(TraversalStep {
-                                    edge: edge.clone(),
-                                    direction: TraversalDirection::Forward,
-                                    from: edge.head_id.clone(),
-                                    to: edge.tail_id.clone(),
-                                });
+                                if self.edge_allowed_for_policy(
+                                    edge,
+                                    policy,
+                                    &mut structural_expanded,
+                                    telemetry,
+                                ) {
+                                    steps.push(TraversalStep {
+                                        edge: edge.clone(),
+                                        direction: TraversalDirection::Forward,
+                                        from: edge.head_id.clone(),
+                                        to: edge.tail_id.clone(),
+                                    });
+                                }
+                            } else {
+                                telemetry.relation_blocked_edges += 1;
+                                if is_structural_relation(edge.relation) {
+                                    telemetry.structural_edges_skipped += 1;
+                                }
+                                if is_heuristic_edge(edge) {
+                                    telemetry.heuristic_edges_skipped += 1;
+                                }
                             }
                         }
                     }
@@ -2727,12 +3804,27 @@ impl ExactGraphQueryEngine {
                         for index in indices {
                             let edge = &self.edges[*index];
                             if edge.relation == traversal.relation {
-                                steps.push(TraversalStep {
-                                    edge: edge.clone(),
-                                    direction: TraversalDirection::Reverse,
-                                    from: edge.tail_id.clone(),
-                                    to: edge.head_id.clone(),
-                                });
+                                if self.edge_allowed_for_policy(
+                                    edge,
+                                    policy,
+                                    &mut structural_expanded,
+                                    telemetry,
+                                ) {
+                                    steps.push(TraversalStep {
+                                        edge: edge.clone(),
+                                        direction: TraversalDirection::Reverse,
+                                        from: edge.tail_id.clone(),
+                                        to: edge.head_id.clone(),
+                                    });
+                                }
+                            } else {
+                                telemetry.relation_blocked_edges += 1;
+                                if is_structural_relation(edge.relation) {
+                                    telemetry.structural_edges_skipped += 1;
+                                }
+                                if is_heuristic_edge(edge) {
+                                    telemetry.heuristic_edges_skipped += 1;
+                                }
                             }
                         }
                     }
@@ -2745,7 +3837,77 @@ impl ExactGraphQueryEngine {
                 .cmp(&right.to)
                 .then_with(|| left.edge.id.cmp(&right.edge.id))
         });
+        if let Some(max_neighbors) = policy.max_neighbors_per_node {
+            if steps.len() > max_neighbors {
+                telemetry.neighbor_limit_hits += 1;
+                telemetry.neighbors_omitted_by_limit += steps.len() - max_neighbors;
+                telemetry.note_budget_stop("max_neighbors_per_node");
+                steps.truncate(max_neighbors);
+            }
+        }
+        telemetry.neighbors_expanded += steps.len();
         steps
+    }
+
+    fn edge_allowed_for_policy(
+        &self,
+        edge: &Edge,
+        policy: TraversalPolicy,
+        structural_expanded: &mut usize,
+        telemetry: &mut GraphTraversalTelemetry,
+    ) -> bool {
+        if !policy.relation_allowed(edge.relation) {
+            telemetry.relation_blocked_edges += 1;
+            if test_traversal_relation_allowed(edge.relation) && !policy.mode.allows_test_mock() {
+                telemetry.source_role_blocked_edges += 1;
+                telemetry.source_role_filters_applied = true;
+            }
+            if is_structural_relation(edge.relation) {
+                telemetry.structural_edges_skipped += 1;
+            }
+            if is_heuristic_edge(edge) {
+                telemetry.heuristic_edges_seen += 1;
+                telemetry.heuristic_edges_skipped += 1;
+            }
+            return false;
+        }
+
+        if is_structural_relation(edge.relation) {
+            if let Some(max_structural) = policy.max_structural_expansion {
+                if *structural_expanded >= max_structural {
+                    telemetry.structural_edges_skipped += 1;
+                    telemetry.structural_expansion_limit_hits += 1;
+                    telemetry.note_budget_stop("max_structural_expansion");
+                    return false;
+                }
+            }
+            *structural_expanded += 1;
+        }
+
+        if is_heuristic_edge(edge) && !policy.heuristic_allowed() {
+            telemetry.heuristic_edges_seen += 1;
+            telemetry.heuristic_edges_skipped += 1;
+            return false;
+        }
+
+        if edge.derived {
+            telemetry.derived_edge_provenance_checks += 1;
+            if edge.provenance_edges.is_empty() {
+                telemetry.derived_edge_missing_provenance += 1;
+                if !policy.derived_without_provenance_allowed() {
+                    telemetry.derived_edge_provenance_blocked_edges += 1;
+                    return false;
+                }
+            }
+        }
+
+        if !policy.source_role_allowed(edge) {
+            telemetry.source_role_blocked_edges += 1;
+            telemetry.source_role_filters_applied = true;
+            return false;
+        }
+
+        true
     }
 
     fn path_from_steps(&self, source_id: &str, steps: Vec<TraversalStep>) -> GraphPath {
@@ -5820,6 +6982,9 @@ fn compact_packet(packet: &mut ContextPacket, token_budget: usize) {
             packet.snippets.pop();
             continue;
         }
+        if compact_packet_metadata(packet, token_budget) {
+            continue;
+        }
         let estimated_tokens = estimate_packet_tokens(packet);
         let last_path_overrun_limit = token_budget.saturating_mul(2).saturating_add(60);
         if packet.verified_paths.len() > 1
@@ -5836,13 +7001,13 @@ fn compact_packet(packet: &mut ContextPacket, token_budget: usize) {
             packet.recommended_tests.pop();
             continue;
         }
-        if compact_packet_metadata(packet, token_budget) {
-            continue;
-        }
         break;
     }
     while estimate_packet_tokens(packet) > token_budget {
         if packet.snippets.pop().is_some() {
+            continue;
+        }
+        if compact_packet_metadata(packet, token_budget) {
             continue;
         }
         let estimated_tokens = estimate_packet_tokens(packet);
@@ -5859,9 +7024,6 @@ fn compact_packet(packet: &mut ContextPacket, token_budget: usize) {
         if packet.recommended_tests.pop().is_some() {
             continue;
         }
-        if compact_packet_metadata(packet, token_budget) {
-            continue;
-        }
         break;
     }
     packet.metadata.insert(
@@ -5872,7 +7034,7 @@ fn compact_packet(packet: &mut ContextPacket, token_budget: usize) {
 
 fn compact_packet_metadata(packet: &mut ContextPacket, token_budget: usize) -> bool {
     const VERBOSE_METADATA_KEYS: &[&str] = &[
-        "derived_edges",
+        "traversal_telemetry",
         "prompt_seed_provenance",
         "prompt_seeds",
         "path_context_counts_before_filter",
@@ -7039,6 +8201,576 @@ mod tests {
         assert_eq!(paths[0].target, "sink");
         assert!(paths[0].steps.len() <= limited.max_depth);
         assert_provenance(&paths[0]);
+    }
+
+    #[test]
+    fn bounded_graph_latency_baseline_fixture_telemetry() {
+        let high_degree_edges = (0..64)
+            .map(|index| {
+                edge(
+                    "seed:module",
+                    RelationKind::Contains,
+                    &format!("symbol:structural_child:{index:03}"),
+                    index + 1,
+                )
+            })
+            .collect::<Vec<_>>();
+        let high_degree_engine = ExactGraphQueryEngine::new(high_degree_edges);
+        let high_degree_limits = QueryLimits {
+            max_depth: 2,
+            max_paths: 4,
+            max_edges_visited: 16,
+        };
+        let (high_degree_paths, high_degree_telemetry) = high_degree_engine
+            .bounded_bfs_with_telemetry(
+                "seed:module",
+                &[Traversal::forward(RelationKind::Calls)],
+                high_degree_limits,
+                &|path| !path.steps.is_empty(),
+            );
+        assert!(high_degree_paths.is_empty());
+        assert_eq!(high_degree_telemetry.structural_edges_skipped, 64);
+
+        let cycle_engine = ExactGraphQueryEngine::new(vec![
+            edge("symbol:A", RelationKind::Calls, "symbol:B", 1),
+            edge("symbol:B", RelationKind::Calls, "symbol:C", 2),
+            edge("symbol:C", RelationKind::Calls, "symbol:A", 3),
+            edge("symbol:C", RelationKind::Writes, "symbol:sink", 4),
+        ]);
+        let cycle_limits = QueryLimits {
+            max_depth: 6,
+            max_paths: 2,
+            max_edges_visited: 12,
+        };
+        let (cycle_paths, cycle_telemetry) = cycle_engine.bounded_bfs_with_telemetry(
+            "symbol:A",
+            &[
+                Traversal::forward(RelationKind::Calls),
+                Traversal::forward(RelationKind::Writes),
+            ],
+            cycle_limits,
+            &|path| path.target == "symbol:sink",
+        );
+        assert_eq!(cycle_paths.len(), 1);
+        assert!(cycle_telemetry.cycles_cut >= 1);
+
+        let mut broad_flow_edges = Vec::new();
+        for index in 0..12 {
+            broad_flow_edges.push(edge(
+                "symbol:input",
+                RelationKind::FlowsTo,
+                &format!("symbol:flow_branch:{index:03}"),
+                index + 10,
+            ));
+            broad_flow_edges.push(edge(
+                &format!("symbol:flow_branch:{index:03}"),
+                RelationKind::FlowsTo,
+                "symbol:sink",
+                index + 40,
+            ));
+        }
+        let broad_flow_engine = ExactGraphQueryEngine::new(broad_flow_edges);
+        let broad_flow_limits = QueryLimits {
+            max_depth: 3,
+            max_paths: 3,
+            max_edges_visited: 10,
+        };
+        let (broad_flow_paths, broad_flow_telemetry) = broad_flow_engine
+            .k_shortest_matching_with_telemetry(
+                "symbol:input",
+                &[Traversal::forward(RelationKind::FlowsTo)],
+                broad_flow_limits,
+                &|path| path.target == "symbol:sink",
+            );
+        assert!(broad_flow_paths.len() <= broad_flow_limits.max_paths);
+        assert!(broad_flow_telemetry.budget_stop_reason.is_some());
+
+        let mixed_engine = ExactGraphQueryEngine::new(vec![
+            edge("symbol:handler", RelationKind::Calls, "symbol:service", 80),
+            edge_with_evidence_role(
+                "symbol:handler_test",
+                RelationKind::Tests,
+                "symbol:handler",
+                span(81),
+                EvidenceRole::Test,
+                "fixture test path",
+            ),
+        ]);
+        let (mixed_prod_paths, mixed_prod_telemetry) = mixed_engine.bounded_bfs_with_telemetry(
+            "symbol:handler",
+            &[Traversal::forward(RelationKind::Calls)],
+            QueryLimits {
+                max_depth: 3,
+                max_paths: 4,
+                max_edges_visited: 16,
+            },
+            &|path| !path.steps.is_empty(),
+        );
+        assert_eq!(mixed_prod_paths.len(), 1);
+        assert!(!mixed_prod_telemetry.source_role_filters_applied);
+        let (mixed_test_paths, mixed_test_telemetry) = mixed_engine.bounded_bfs_with_telemetry(
+            "symbol:handler",
+            &[Traversal::reverse(RelationKind::Tests)],
+            QueryLimits {
+                max_depth: 3,
+                max_paths: 4,
+                max_edges_visited: 16,
+            },
+            &|path| !path.steps.is_empty(),
+        );
+        assert_eq!(mixed_test_paths.len(), 1);
+
+        let heuristic_engine = ExactGraphQueryEngine::new(vec![heuristic_edge(
+            "symbol:caller",
+            RelationKind::Calls,
+            "symbol:unresolved_target",
+            90,
+        )]);
+        let (heuristic_paths, heuristic_telemetry) = heuristic_engine.bounded_bfs_with_telemetry(
+            "symbol:caller",
+            &[Traversal::forward(RelationKind::Calls)],
+            QueryLimits {
+                max_depth: 2,
+                max_paths: 2,
+                max_edges_visited: 8,
+            },
+            &|path| !path.steps.is_empty(),
+        );
+        assert_eq!(heuristic_paths.len(), 1);
+        assert_eq!(heuristic_telemetry.heuristic_edges_seen, 1);
+        assert_eq!(heuristic_telemetry.heuristic_edges_skipped, 0);
+
+        let candidate_engine = ExactGraphQueryEngine::new(vec![edge(
+            "symbol:handler",
+            RelationKind::Calls,
+            "symbol:service",
+            100,
+        )]);
+        let (candidate_paths, mut candidate_telemetry) = candidate_engine
+            .bounded_bfs_with_telemetry(
+                "symbol:handler",
+                &[Traversal::forward(RelationKind::Calls)],
+                QueryLimits {
+                    max_depth: 3,
+                    max_paths: 2,
+                    max_edges_visited: 12,
+                },
+                &|path| !path.steps.is_empty(),
+            );
+        assert_eq!(candidate_paths.len(), 1);
+        candidate_telemetry
+            .candidate_count_by_source
+            .insert("exact_seed".to_string(), 1);
+        candidate_telemetry
+            .candidate_count_by_source
+            .insert("text_evidence".to_string(), 1);
+        candidate_telemetry
+            .candidate_count_by_source
+            .insert("vector_semantic".to_string(), 1);
+        candidate_telemetry
+            .candidate_count_by_source
+            .insert("vector_binary".to_string(), 1);
+        candidate_telemetry
+            .candidate_count_by_source
+            .insert("nuance_rescue".to_string(), 1);
+
+        let mut derived_with_provenance = edge(
+            "symbol:controller",
+            RelationKind::Authorizes,
+            "symbol:policy",
+            110,
+        );
+        derived_with_provenance.derived = true;
+        derived_with_provenance.edge_class = EdgeClass::Derived;
+        derived_with_provenance.exactness = Exactness::DerivedFromVerifiedEdges;
+        derived_with_provenance.provenance_edges = vec![
+            "edge:controller:CALLS:policy".to_string(),
+            "edge:policy:CHECKS_ROLE:admin".to_string(),
+        ];
+        let mut derived_missing_provenance = edge(
+            "symbol:controller",
+            RelationKind::Authorizes,
+            "symbol:unproven_policy",
+            111,
+        );
+        derived_missing_provenance.derived = true;
+        derived_missing_provenance.edge_class = EdgeClass::Derived;
+        derived_missing_provenance.exactness = Exactness::DerivedFromVerifiedEdges;
+        let derived_engine =
+            ExactGraphQueryEngine::new(vec![derived_with_provenance, derived_missing_provenance]);
+        let (derived_paths, derived_telemetry) = derived_engine.bounded_bfs_with_telemetry(
+            "symbol:controller",
+            &[Traversal::forward(RelationKind::Authorizes)],
+            QueryLimits {
+                max_depth: 2,
+                max_paths: 4,
+                max_edges_visited: 8,
+            },
+            &|path| !path.steps.is_empty(),
+        );
+        assert_eq!(derived_paths.len(), 2);
+        assert_eq!(derived_telemetry.derived_edge_provenance_checks, 2);
+        assert_eq!(derived_telemetry.derived_edge_missing_provenance, 1);
+
+        let baseline = serde_json::json!({
+            "schema_version": 1,
+            "fixture": "fixtures/bounded_graph_walking/manifest.json",
+            "cases": {
+                "high_degree_structural_budget": high_degree_telemetry.to_json(),
+                "cycle_graph_terminates": cycle_telemetry.to_json(),
+                "broad_flow_budget": broad_flow_telemetry.to_json(),
+                "mixed_production_test_roles": {
+                    "production_default": mixed_prod_telemetry.to_json(),
+                    "test_impact": mixed_test_telemetry.to_json()
+                },
+                "heuristic_unresolved_blocked": heuristic_telemetry.to_json(),
+                "candidate_overload_exact_seed_survives": candidate_telemetry.to_json(),
+                "derived_edge_provenance_required": derived_telemetry.to_json()
+            },
+            "notes": [
+                "baseline records current traversal behavior before optimization",
+                "source-role and heuristic proof filtering are not changed by this telemetry test",
+                "candidate overload counts are injected to mirror the candidate handoff contract"
+            ]
+        });
+        println!("{}", serde_json::to_string_pretty(&baseline).unwrap());
+    }
+
+    #[test]
+    fn bounded_graph_traversal_controls_enforced() {
+        let production_policy = TraversalPolicy::for_mode("production");
+        let test_policy = TraversalPolicy::for_mode("test-impact");
+        let debug_policy = TraversalPolicy::for_mode("debug/audit");
+
+        let high_degree_edges = (0..16)
+            .map(|index| {
+                edge(
+                    "seed:fanout",
+                    RelationKind::Calls,
+                    &format!("symbol:callee:{index:02}"),
+                    index + 1,
+                )
+            })
+            .collect::<Vec<_>>();
+        let high_degree_engine = ExactGraphQueryEngine::new(high_degree_edges);
+        let mut high_degree_limits = limits();
+        high_degree_limits.max_paths = 16;
+        let high_degree_policy = TraversalPolicy {
+            max_neighbors_per_node: Some(4),
+            ..production_policy
+        };
+        let (high_degree_paths, high_degree_telemetry) = high_degree_engine
+            .bounded_bfs_with_policy_telemetry(
+                "seed:fanout",
+                &[Traversal::forward(RelationKind::Calls)],
+                high_degree_limits,
+                high_degree_policy,
+                &|path| !path.steps.is_empty(),
+            );
+        assert_eq!(high_degree_paths.len(), 4);
+        assert_eq!(high_degree_telemetry.neighbor_limit_hits, 1);
+        assert_eq!(high_degree_telemetry.neighbors_omitted_by_limit, 12);
+        assert_eq!(
+            high_degree_telemetry.budget_stop_reason.as_deref(),
+            Some("max_neighbors_per_node")
+        );
+
+        let structural_edges = (0..8)
+            .map(|index| {
+                edge(
+                    "seed:module",
+                    RelationKind::Contains,
+                    &format!("symbol:item:{index:02}"),
+                    index + 20,
+                )
+            })
+            .collect::<Vec<_>>();
+        let structural_engine = ExactGraphQueryEngine::new(structural_edges);
+        let structural_policy = TraversalPolicy {
+            max_structural_expansion: Some(3),
+            ..debug_policy
+        };
+        let (structural_paths, structural_telemetry) = structural_engine
+            .bounded_bfs_with_policy_telemetry(
+                "seed:module",
+                &[Traversal::forward(RelationKind::Contains)],
+                high_degree_limits,
+                structural_policy,
+                &|path| !path.steps.is_empty(),
+            );
+        assert_eq!(structural_paths.len(), 3);
+        assert_eq!(structural_telemetry.structural_expansion_limit_hits, 5);
+        assert_eq!(
+            structural_telemetry.budget_stop_reason.as_deref(),
+            Some("max_structural_expansion")
+        );
+
+        let cycle_engine = ExactGraphQueryEngine::new(vec![
+            edge("symbol:A", RelationKind::Calls, "symbol:B", 40),
+            edge("symbol:B", RelationKind::Calls, "symbol:C", 41),
+            edge("symbol:C", RelationKind::Calls, "symbol:A", 42),
+            edge("symbol:C", RelationKind::Writes, "symbol:sink", 43),
+        ]);
+        let (cycle_paths, cycle_telemetry) = cycle_engine.bounded_bfs_with_policy_telemetry(
+            "symbol:A",
+            &[
+                Traversal::forward(RelationKind::Calls),
+                Traversal::forward(RelationKind::Writes),
+            ],
+            limits(),
+            production_policy,
+            &|path| path.last_relation() == Some(RelationKind::Writes),
+        );
+        assert_eq!(cycle_paths.len(), 1);
+        assert!(cycle_telemetry.cycles_cut >= 1);
+
+        let broad_flow_engine = ExactGraphQueryEngine::new(
+            (0..10)
+                .map(|index| {
+                    edge(
+                        "symbol:input",
+                        RelationKind::FlowsTo,
+                        &format!("symbol:sink:{index:02}"),
+                        index + 60,
+                    )
+                })
+                .collect(),
+        );
+        let mut broad_flow_limits = limits();
+        broad_flow_limits.max_paths = 3;
+        let (broad_flow_paths, broad_flow_telemetry) = broad_flow_engine
+            .k_shortest_matching_with_policy_telemetry(
+                "symbol:input",
+                &[Traversal::forward(RelationKind::FlowsTo)],
+                broad_flow_limits,
+                production_policy,
+                &|path| !path.steps.is_empty(),
+            );
+        assert_eq!(broad_flow_paths.len(), 3);
+        assert_eq!(
+            broad_flow_telemetry.budget_stop_reason.as_deref(),
+            Some("max_paths")
+        );
+
+        let depth_engine = ExactGraphQueryEngine::new(vec![
+            edge("symbol:depth", RelationKind::Calls, "symbol:middle", 80),
+            edge("symbol:middle", RelationKind::Writes, "symbol:sink", 81),
+        ]);
+        let mut depth_limits = limits();
+        depth_limits.max_depth = 1;
+        let (depth_paths, depth_telemetry) = depth_engine.bounded_bfs_with_policy_telemetry(
+            "symbol:depth",
+            &[
+                Traversal::forward(RelationKind::Calls),
+                Traversal::forward(RelationKind::Writes),
+            ],
+            depth_limits,
+            production_policy,
+            &|path| path.last_relation() == Some(RelationKind::Writes),
+        );
+        assert!(depth_paths.is_empty());
+        assert_eq!(depth_telemetry.result_label(), "traversal_budget_exhausted");
+
+        let timeout_policy = TraversalPolicy {
+            timeout_ms: Some(0),
+            ..production_policy
+        };
+        let (timeout_paths, timeout_telemetry) = depth_engine.bounded_bfs_with_policy_telemetry(
+            "symbol:depth",
+            &[Traversal::forward(RelationKind::Calls)],
+            limits(),
+            timeout_policy,
+            &|path| !path.steps.is_empty(),
+        );
+        assert!(timeout_paths.is_empty());
+        assert_eq!(
+            timeout_telemetry.budget_stop_reason.as_deref(),
+            Some("timeout_ms")
+        );
+        assert_eq!(
+            timeout_telemetry.to_json()["result_label"].as_str(),
+            Some("traversal_budget_exhausted")
+        );
+
+        let test_edge = edge_with_evidence_role(
+            "symbol:handler",
+            RelationKind::Calls,
+            "symbol:test_helper",
+            span(100),
+            EvidenceRole::Test,
+            "test fixture path",
+        );
+        let role_engine = ExactGraphQueryEngine::new(vec![test_edge.clone()]);
+        let (production_paths, production_telemetry) = role_engine
+            .bounded_bfs_with_policy_telemetry(
+                "symbol:handler",
+                &[Traversal::forward(RelationKind::Calls)],
+                limits(),
+                production_policy,
+                &|path| !path.steps.is_empty(),
+            );
+        assert!(production_paths.is_empty());
+        assert_eq!(production_telemetry.source_role_blocked_edges, 1);
+        assert_eq!(
+            production_telemetry.to_json()["result_label"].as_str(),
+            Some("traversal_source_role_blocked")
+        );
+
+        let (test_paths, test_telemetry) = role_engine.bounded_bfs_with_policy_telemetry(
+            "symbol:handler",
+            &[Traversal::forward(RelationKind::Calls)],
+            limits(),
+            test_policy,
+            &|path| !path.steps.is_empty(),
+        );
+        assert_eq!(test_paths.len(), 1);
+        assert_eq!(test_telemetry.source_role_blocked_edges, 0);
+        let test_evidence = role_engine.path_evidence(&test_paths[0]);
+        assert_eq!(
+            test_evidence
+                .metadata
+                .get("evidence_role")
+                .and_then(serde_json::Value::as_str),
+            Some("test")
+        );
+
+        let heuristic_engine = ExactGraphQueryEngine::new(vec![heuristic_edge(
+            "symbol:caller",
+            RelationKind::Calls,
+            "symbol:maybe",
+            120,
+        )]);
+        let (heuristic_production_paths, heuristic_production_telemetry) = heuristic_engine
+            .bounded_bfs_with_policy_telemetry(
+                "symbol:caller",
+                &[Traversal::forward(RelationKind::Calls)],
+                limits(),
+                production_policy,
+                &|path| !path.steps.is_empty(),
+            );
+        assert!(heuristic_production_paths.is_empty());
+        assert_eq!(heuristic_production_telemetry.heuristic_edges_skipped, 1);
+        assert_eq!(
+            heuristic_production_telemetry.result_label(),
+            "traversal_heuristic_blocked"
+        );
+
+        let (heuristic_debug_paths, heuristic_debug_telemetry) = heuristic_engine
+            .bounded_bfs_with_policy_telemetry(
+                "symbol:caller",
+                &[Traversal::forward(RelationKind::Calls)],
+                limits(),
+                debug_policy,
+                &|path| !path.steps.is_empty(),
+            );
+        assert_eq!(heuristic_debug_paths.len(), 1);
+        assert_eq!(heuristic_debug_telemetry.heuristic_edges_seen, 1);
+        assert_eq!(
+            heuristic_debug_telemetry.result_label(),
+            "traversal_unknown"
+        );
+        let heuristic_evidence = heuristic_engine.path_evidence(&heuristic_debug_paths[0]);
+        assert_eq!(
+            heuristic_evidence
+                .metadata
+                .get("production_proof_eligible")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+
+        let mut derived_with_provenance = edge(
+            "symbol:controller",
+            RelationKind::Authorizes,
+            "symbol:policy",
+            140,
+        );
+        derived_with_provenance.derived = true;
+        derived_with_provenance.edge_class = EdgeClass::Derived;
+        derived_with_provenance.exactness = Exactness::DerivedFromVerifiedEdges;
+        derived_with_provenance.provenance_edges = vec!["edge:controller:CALLS:policy".into()];
+        let mut derived_missing_provenance = edge(
+            "symbol:controller",
+            RelationKind::Authorizes,
+            "symbol:unproven_policy",
+            141,
+        );
+        derived_missing_provenance.derived = true;
+        derived_missing_provenance.edge_class = EdgeClass::Derived;
+        derived_missing_provenance.exactness = Exactness::DerivedFromVerifiedEdges;
+        let derived_engine =
+            ExactGraphQueryEngine::new(vec![derived_with_provenance, derived_missing_provenance]);
+        let (derived_paths, derived_telemetry) = derived_engine.bounded_bfs_with_policy_telemetry(
+            "symbol:controller",
+            &[Traversal::forward(RelationKind::Authorizes)],
+            limits(),
+            production_policy,
+            &|path| !path.steps.is_empty(),
+        );
+        assert_eq!(derived_paths.len(), 1);
+        assert_eq!(derived_telemetry.derived_edge_provenance_checks, 2);
+        assert_eq!(derived_telemetry.derived_edge_missing_provenance, 1);
+        assert_eq!(derived_telemetry.derived_edge_provenance_blocked_edges, 1);
+
+        let mut exhausted_limits = limits();
+        exhausted_limits.max_edges_visited = 0;
+        let (exhausted_paths, exhausted_telemetry) = high_degree_engine
+            .bounded_bfs_with_policy_telemetry(
+                "seed:fanout",
+                &[Traversal::forward(RelationKind::Calls)],
+                exhausted_limits,
+                production_policy,
+                &|path| !path.steps.is_empty(),
+            );
+        assert!(exhausted_paths.is_empty());
+        assert_eq!(
+            exhausted_telemetry.to_json()["result_label"].as_str(),
+            Some("traversal_budget_exhausted")
+        );
+        assert!(exhausted_telemetry.no_proof_fallback_reason.is_some());
+
+        let overload_stage0 = (0..100)
+            .map(|index| format!("symbol:noise:{index:03}"))
+            .collect::<Vec<_>>();
+        let overload_engine = ExactGraphQueryEngine::new(vec![edge(
+            "symbol:exact_handler",
+            RelationKind::Calls,
+            "symbol:service",
+            160,
+        )]);
+        let overload_sources = BTreeMap::from([(
+            "fixtures/query.ts".to_string(),
+            (0..200)
+                .map(|_| "fn fixture() {}")
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )]);
+        let overload_packet = overload_engine.context_pack(
+            ContextPackRequest::new(
+                "Find symbol:exact_handler path",
+                "production",
+                200_000,
+                vec!["symbol:exact_handler".to_string()],
+            )
+            .with_stage0_candidates(overload_stage0),
+            &overload_sources,
+        );
+        assert!(overload_packet
+            .symbols
+            .contains(&"symbol:exact_handler".to_string()));
+        assert!(!overload_packet.verified_paths.is_empty());
+        let candidate_seed_count_before_cap = overload_packet
+            .metadata
+            .get("candidate_seed_count_before_cap")
+            .and_then(serde_json::Value::as_u64)
+            .expect("candidate seed count before cap");
+        assert!(candidate_seed_count_before_cap >= 101);
+        assert_eq!(
+            overload_packet
+                .metadata
+                .get("candidate_seed_count_after_cap")
+                .and_then(serde_json::Value::as_u64),
+            Some(production_policy.max_candidate_seeds as u64)
+        );
     }
 
     #[test]

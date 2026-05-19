@@ -1,0 +1,676 @@
+{
+  "schema_version": 1,
+  "fixture_name": "bounded_graph_walking",
+  "fixture_root": "fixtures/bounded_graph_walking",
+  "purpose": "Deterministic synthetic graph matrix for bounded traversal, PathEvidence metadata, and candidate-to-graph-verification boundaries.",
+  "scope": {
+    "synthetic_graph_only": true,
+    "no_product_behavior_change": true,
+    "normal_in_repo_codegraph_db_allowed": false,
+    "external_provider_allowed": false,
+    "public_benchmark_claim": false,
+    "final_intended_performance_claim": false
+  },
+  "contract": {
+    "traversal_budgets": {
+      "required_fields": [
+        "max_depth",
+        "max_paths",
+        "max_edge_visits",
+        "max_neighbors_per_node",
+        "max_candidates_per_seed",
+        "max_structural_expansion",
+        "timeout_ms"
+      ],
+      "default_contract_values": {
+        "max_depth": 6,
+        "max_paths": 16,
+        "max_edge_visits": 2048,
+        "max_neighbors_per_node": 64,
+        "max_candidates_per_seed": 32,
+        "max_structural_expansion": 8,
+        "timeout_ms": 250
+      },
+      "budget_fields_are_hard_caps": true,
+      "budget_exhaustion_must_be_labeled": true
+    },
+    "traversal_result_labels": [
+      "proof_path_found",
+      "no_proof_path_found",
+      "traversal_budget_exhausted",
+      "traversal_cycle_cut",
+      "traversal_relation_blocked",
+      "traversal_source_role_blocked",
+      "traversal_heuristic_blocked",
+      "traversal_unknown"
+    ],
+    "evidence_boundaries": {
+      "exact_base_edges_can_contribute_to_proof": true,
+      "heuristic_debug_edges_require_explicit_allowance_and_label": true,
+      "derived_edges_require_provenance": true,
+      "text_evidence_can_be_source_text_evidence": true,
+      "text_evidence_can_be_graph_proof": false,
+      "vector_binary_nuance_candidates_can_be_graph_proof_without_verification": false,
+      "test_mock_evidence_excluded_from_production_default": true,
+      "candidate_recall_is_not_graph_proof": true
+    },
+    "relation_mode_allowlists": {
+      "production_default": {
+        "allowed_relations": [
+          "CALLS",
+          "READS",
+          "WRITES",
+          "FLOWS_TO",
+          "MUTATES",
+          "MAY_MUTATE",
+          "IMPORTS",
+          "EXPORTS",
+          "REEXPORTS",
+          "ALIAS_OF",
+          "ALIASED_BY",
+          "AUTHORIZES",
+          "CHECKS_ROLE",
+          "CHECKS_PERMISSION",
+          "SANITIZES",
+          "EXPOSES",
+          "PUBLISHES",
+          "EMITS",
+          "CONSUMES",
+          "LISTENS_TO",
+          "SUBSCRIBES_TO",
+          "MIGRATES",
+          "ALTERS_COLUMN",
+          "DEPENDS_ON_SCHEMA",
+          "READS_TABLE",
+          "WRITES_TABLE"
+        ],
+        "structural_relations": "blocked_by_default",
+        "test_mock_relations": "blocked",
+        "heuristic_edges": "blocked"
+      },
+      "test_impact": {
+        "allowed_relations": [
+          "CALLS",
+          "READS",
+          "WRITES",
+          "FLOWS_TO",
+          "TESTS",
+          "COVERS",
+          "ASSERTS",
+          "MOCKS",
+          "STUBS",
+          "FIXTURES_FOR"
+        ],
+        "structural_relations": "blocked_unless_needed_for_verification",
+        "test_mock_relations": "allowed_labeled",
+        "heuristic_edges": "blocked"
+      },
+      "impact_blast_radius": {
+        "allowed_relations": [
+          "CALLS",
+          "READS",
+          "WRITES",
+          "FLOWS_TO",
+          "MUTATES",
+          "MAY_MUTATE",
+          "PUBLISHES",
+          "EMITS",
+          "CONSUMES",
+          "LISTENS_TO",
+          "SUBSCRIBES_TO",
+          "MIGRATES",
+          "ALTERS_COLUMN",
+          "DEPENDS_ON_SCHEMA",
+          "READS_TABLE",
+          "WRITES_TABLE",
+          "TESTS",
+          "COVERS"
+        ],
+        "structural_relations": "blocked_unless_needed_for_verification",
+        "test_mock_relations": "allowed_labeled_when_requested",
+        "heuristic_edges": "blocked"
+      },
+      "security_auth": {
+        "allowed_relations": [
+          "CALLS",
+          "READS",
+          "WRITES",
+          "FLOWS_TO",
+          "AUTHORIZES",
+          "CHECKS_ROLE",
+          "CHECKS_PERMISSION",
+          "SANITIZES",
+          "EXPOSES"
+        ],
+        "structural_relations": "blocked_unless_needed_for_verification",
+        "test_mock_relations": "blocked_unless_test_impact",
+        "heuristic_edges": "blocked"
+      },
+      "debug_audit": {
+        "allowed_relations": [
+          "*"
+        ],
+        "structural_relations": "allowed_labeled_and_capped",
+        "test_mock_relations": "allowed_labeled",
+        "heuristic_edges": "allowed_labeled_non_proof"
+      }
+    },
+    "structural_relation_handling": {
+      "high_cardinality_structural_relations": [
+        "CONTAINS",
+        "DEFINED_IN",
+        "DECLARES",
+        "ARGUMENT_N",
+        "ARGUMENT_0",
+        "ARGUMENT_1",
+        "CALLEE"
+      ],
+      "default_policy": "exclude_from_default_traversal_unless_needed_for_verification",
+      "debug_policy": "include_only_with_max_structural_expansion_and_labels",
+      "must_not_explode_default_traversal": true
+    },
+    "path_evidence_contract": {
+      "required_fields": [
+        "ordered_edge_ids",
+        "source_spans",
+        "provenance",
+        "evidence_roles",
+        "proof_status",
+        "generation_source",
+        "budget_metadata",
+        "truncation_metadata"
+      ],
+      "ordered_edge_ids_or_equivalent_required": true,
+      "source_snippets": "lazy_or_batched_not_redundantly_stored",
+      "verbose_json_bloat_default": false,
+      "must_label_generation_source": true,
+      "must_label_budget_and_truncation": true
+    }
+  },
+  "graph_format": {
+    "node_required_fields": [
+      "id",
+      "kind",
+      "source_role"
+    ],
+    "edge_required_fields": [
+      "id",
+      "source",
+      "target",
+      "relation",
+      "fact_class",
+      "source_role",
+      "provenance"
+    ],
+    "edge_template_count_is_expanded_deterministically": true
+  },
+  "cases": [
+    {
+      "id": "high_degree_structural_budget",
+      "requirement": "one seed with many outgoing structural edges must not explode default traversal",
+      "mode": "production_default",
+      "budgets": {
+        "max_depth": 2,
+        "max_paths": 4,
+        "max_edge_visits": 16,
+        "max_neighbors_per_node": 8,
+        "max_candidates_per_seed": 8,
+        "max_structural_expansion": 4,
+        "timeout_ms": 100
+      },
+      "nodes": [
+        {
+          "id": "seed:module",
+          "kind": "module",
+          "source_role": "production"
+        }
+      ],
+      "edge_templates": [
+        {
+          "id_pattern": "edge:seed:contains:child:{000}",
+          "source": "seed:module",
+          "target_pattern": "symbol:structural_child:{000}",
+          "relation": "CONTAINS",
+          "count": 64,
+          "fact_class": "base",
+          "source_role": "production",
+          "provenance": {
+            "source_span": "src/high_degree.ts:1-80"
+          }
+        }
+      ],
+      "expected": {
+        "production_default_labels": [
+          "no_proof_path_found",
+          "traversal_relation_blocked"
+        ],
+        "debug_audit_labels": [
+          "traversal_budget_exhausted"
+        ],
+        "max_structural_edges_expanded_debug_audit": 4,
+        "graph_proof": false
+      }
+    },
+    {
+      "id": "cycle_graph_terminates",
+      "requirement": "A -> B -> C -> A traversal must terminate and label cycle cuts",
+      "mode": "production_default",
+      "budgets": {
+        "max_depth": 6,
+        "max_paths": 2,
+        "max_edge_visits": 12,
+        "max_neighbors_per_node": 4,
+        "max_candidates_per_seed": 4,
+        "max_structural_expansion": 0,
+        "timeout_ms": 100
+      },
+      "nodes": [
+        {
+          "id": "symbol:A",
+          "kind": "function",
+          "source_role": "production"
+        },
+        {
+          "id": "symbol:B",
+          "kind": "function",
+          "source_role": "production"
+        },
+        {
+          "id": "symbol:C",
+          "kind": "function",
+          "source_role": "production"
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge:A:CALLS:B",
+          "source": "symbol:A",
+          "target": "symbol:B",
+          "relation": "CALLS",
+          "fact_class": "base",
+          "source_role": "production",
+          "provenance": {
+            "source_span": "src/cycle.ts:3-3"
+          }
+        },
+        {
+          "id": "edge:B:CALLS:C",
+          "source": "symbol:B",
+          "target": "symbol:C",
+          "relation": "CALLS",
+          "fact_class": "base",
+          "source_role": "production",
+          "provenance": {
+            "source_span": "src/cycle.ts:7-7"
+          }
+        },
+        {
+          "id": "edge:C:CALLS:A",
+          "source": "symbol:C",
+          "target": "symbol:A",
+          "relation": "CALLS",
+          "fact_class": "base",
+          "source_role": "production",
+          "provenance": {
+            "source_span": "src/cycle.ts:11-11"
+          }
+        }
+      ],
+      "expected": {
+        "labels": [
+          "proof_path_found",
+          "traversal_cycle_cut"
+        ],
+        "target": "symbol:C",
+        "ordered_edge_ids": [
+          "edge:A:CALLS:B",
+          "edge:B:CALLS:C"
+        ],
+        "must_terminate": true
+      }
+    },
+    {
+      "id": "broad_flow_budget",
+      "requirement": "many FLOWS_TO paths must enforce max_paths and max_edge_visits",
+      "mode": "impact_blast_radius",
+      "budgets": {
+        "max_depth": 3,
+        "max_paths": 3,
+        "max_edge_visits": 10,
+        "max_neighbors_per_node": 6,
+        "max_candidates_per_seed": 8,
+        "max_structural_expansion": 0,
+        "timeout_ms": 100
+      },
+      "nodes": [
+        {
+          "id": "symbol:input",
+          "kind": "function",
+          "source_role": "production"
+        },
+        {
+          "id": "symbol:sink",
+          "kind": "function",
+          "source_role": "production"
+        }
+      ],
+      "edge_templates": [
+        {
+          "id_pattern": "edge:input:FLOWS_TO:branch:{000}",
+          "source": "symbol:input",
+          "target_pattern": "symbol:flow_branch:{000}",
+          "relation": "FLOWS_TO",
+          "count": 12,
+          "fact_class": "base",
+          "source_role": "production",
+          "provenance": {
+            "source_span": "src/flows.ts:1-40"
+          }
+        },
+        {
+          "id_pattern": "edge:branch:{000}:FLOWS_TO:sink",
+          "source_pattern": "symbol:flow_branch:{000}",
+          "target": "symbol:sink",
+          "relation": "FLOWS_TO",
+          "count": 12,
+          "fact_class": "base",
+          "source_role": "production",
+          "provenance": {
+            "source_span": "src/flows.ts:41-80"
+          }
+        }
+      ],
+      "expected": {
+        "labels": [
+          "proof_path_found",
+          "traversal_budget_exhausted"
+        ],
+        "max_returned_paths": 3,
+        "max_edge_visits": 10,
+        "path_evidence_must_include_truncation_metadata": true
+      }
+    },
+    {
+      "id": "mixed_production_test_roles",
+      "requirement": "production mode excludes test path while test-impact mode includes it labeled",
+      "mode_matrix": [
+        "production_default",
+        "test_impact"
+      ],
+      "budgets": {
+        "max_depth": 3,
+        "max_paths": 4,
+        "max_edge_visits": 16,
+        "max_neighbors_per_node": 8,
+        "max_candidates_per_seed": 8,
+        "max_structural_expansion": 0,
+        "timeout_ms": 100
+      },
+      "nodes": [
+        {
+          "id": "symbol:handler",
+          "kind": "function",
+          "source_role": "production"
+        },
+        {
+          "id": "symbol:service",
+          "kind": "function",
+          "source_role": "production"
+        },
+        {
+          "id": "symbol:handler_test",
+          "kind": "test",
+          "source_role": "test"
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge:handler:CALLS:service",
+          "source": "symbol:handler",
+          "target": "symbol:service",
+          "relation": "CALLS",
+          "fact_class": "base",
+          "source_role": "production",
+          "provenance": {
+            "source_span": "src/handler.ts:5-5"
+          }
+        },
+        {
+          "id": "edge:handler_test:TESTS:handler",
+          "source": "symbol:handler_test",
+          "target": "symbol:handler",
+          "relation": "TESTS",
+          "fact_class": "base",
+          "source_role": "test",
+          "provenance": {
+            "source_span": "tests/handler.test.ts:10-10"
+          }
+        }
+      ],
+      "expected": {
+        "production_default_labels": [
+          "proof_path_found",
+          "traversal_source_role_blocked"
+        ],
+        "production_default_forbidden_edges": [
+          "edge:handler_test:TESTS:handler"
+        ],
+        "test_impact_allowed_edges": [
+          "edge:handler_test:TESTS:handler"
+        ],
+        "test_impact_evidence_role": "test"
+      }
+    },
+    {
+      "id": "heuristic_unresolved_blocked",
+      "requirement": "heuristic edge is rejected for normal proof and visible only in debug/audit as labeled non-proof",
+      "mode_matrix": [
+        "production_default",
+        "debug_audit"
+      ],
+      "budgets": {
+        "max_depth": 2,
+        "max_paths": 2,
+        "max_edge_visits": 8,
+        "max_neighbors_per_node": 4,
+        "max_candidates_per_seed": 4,
+        "max_structural_expansion": 0,
+        "timeout_ms": 100
+      },
+      "nodes": [
+        {
+          "id": "symbol:caller",
+          "kind": "function",
+          "source_role": "production"
+        },
+        {
+          "id": "symbol:unresolved_target",
+          "kind": "function",
+          "source_role": "unknown"
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge:caller:CALLS:unresolved_target:heuristic",
+          "source": "symbol:caller",
+          "target": "symbol:unresolved_target",
+          "relation": "CALLS",
+          "fact_class": "heuristic",
+          "source_role": "unknown",
+          "provenance": {
+            "source_span": "src/heuristic.ts:9-9",
+            "resolution": "name_only"
+          }
+        }
+      ],
+      "expected": {
+        "production_default_labels": [
+          "no_proof_path_found",
+          "traversal_heuristic_blocked"
+        ],
+        "debug_audit_labels": [
+          "traversal_heuristic_blocked"
+        ],
+        "debug_audit_can_show_edge": true,
+        "debug_audit_graph_proof": false
+      }
+    },
+    {
+      "id": "candidate_overload_exact_seed_survives",
+      "requirement": "exact, text, vector, binary, and nuance candidates can all be present without turning candidate recall into proof",
+      "mode": "production_default",
+      "budgets": {
+        "max_depth": 3,
+        "max_paths": 2,
+        "max_edge_visits": 12,
+        "max_neighbors_per_node": 4,
+        "max_candidates_per_seed": 3,
+        "max_structural_expansion": 0,
+        "timeout_ms": 100
+      },
+      "candidates": [
+        {
+          "id": "candidate:exact:handler",
+          "source": "exact_seed",
+          "target": "symbol:handler",
+          "requires_graph_verification": true,
+          "cap_protected": true
+        },
+        {
+          "id": "candidate:text:handler_docs",
+          "source": "text_evidence",
+          "target": "text:handler_docs",
+          "requires_graph_verification": false,
+          "graph_proof": false
+        },
+        {
+          "id": "candidate:vector:handler_neighbor",
+          "source": "vector_semantic",
+          "target": "symbol:handler_neighbor",
+          "requires_graph_verification": true,
+          "graph_proof": false
+        },
+        {
+          "id": "candidate:binary:handler_shape",
+          "source": "vector_binary",
+          "target": "symbol:handler_shape",
+          "requires_graph_verification": true,
+          "graph_proof": false
+        },
+        {
+          "id": "candidate:nuance:handler_rare_token",
+          "source": "nuance_rescue",
+          "target": "symbol:handler_rare_token",
+          "requires_graph_verification": true,
+          "graph_proof": false
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge:handler:CALLS:service",
+          "source": "symbol:handler",
+          "target": "symbol:service",
+          "relation": "CALLS",
+          "fact_class": "base",
+          "source_role": "production",
+          "provenance": {
+            "source_span": "src/handler.ts:5-5"
+          }
+        }
+      ],
+      "expected": {
+        "exact_seed_survives_candidate_cap": true,
+        "candidate_sources_present": [
+          "exact_seed",
+          "text_evidence",
+          "vector_semantic",
+          "vector_binary",
+          "nuance_rescue"
+        ],
+        "candidate_only_sources": [
+          "text_evidence",
+          "vector_semantic",
+          "vector_binary",
+          "nuance_rescue"
+        ],
+        "labels": [
+          "proof_path_found"
+        ],
+        "proof_source": "exact_seed_after_graph_verification"
+      }
+    },
+    {
+      "id": "derived_edge_provenance_required",
+      "requirement": "derived edge with provenance can pass while derived edge without provenance fails",
+      "mode": "production_default",
+      "budgets": {
+        "max_depth": 2,
+        "max_paths": 2,
+        "max_edge_visits": 8,
+        "max_neighbors_per_node": 4,
+        "max_candidates_per_seed": 4,
+        "max_structural_expansion": 0,
+        "timeout_ms": 100
+      },
+      "nodes": [
+        {
+          "id": "symbol:controller",
+          "kind": "function",
+          "source_role": "production"
+        },
+        {
+          "id": "symbol:policy",
+          "kind": "function",
+          "source_role": "production"
+        },
+        {
+          "id": "symbol:unproven_policy",
+          "kind": "function",
+          "source_role": "production"
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge:controller:AUTHORIZES:policy:derived:with_provenance",
+          "source": "symbol:controller",
+          "target": "symbol:policy",
+          "relation": "AUTHORIZES",
+          "fact_class": "derived",
+          "source_role": "production",
+          "provenance": {
+            "derived_from_edge_ids": [
+              "edge:controller:CALLS:policy",
+              "edge:policy:CHECKS_ROLE:admin"
+            ],
+            "source_spans": [
+              "src/controller.ts:12-12",
+              "src/policy.ts:4-4"
+            ]
+          }
+        },
+        {
+          "id": "edge:controller:AUTHORIZES:unproven_policy:derived:missing_provenance",
+          "source": "symbol:controller",
+          "target": "symbol:unproven_policy",
+          "relation": "AUTHORIZES",
+          "fact_class": "derived",
+          "source_role": "production",
+          "provenance": null
+        }
+      ],
+      "expected": {
+        "allowed_edges": [
+          "edge:controller:AUTHORIZES:policy:derived:with_provenance"
+        ],
+        "blocked_edges": [
+          "edge:controller:AUTHORIZES:unproven_policy:derived:missing_provenance"
+        ],
+        "labels": [
+          "proof_path_found",
+          "traversal_heuristic_blocked"
+        ],
+        "path_evidence_must_include_provenance": true
+      }
+    }
+  ]
+}
