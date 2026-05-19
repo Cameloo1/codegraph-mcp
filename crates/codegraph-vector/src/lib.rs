@@ -16,10 +16,22 @@ use std::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BinaryVectorError {
     ZeroDimensions,
-    DimensionMismatch { expected: usize, actual: usize },
+    DimensionMismatch {
+        expected: usize,
+        actual: usize,
+    },
     EmptyVector,
     InvalidMatryoshkaPrefix(usize),
     BackendUnavailable(&'static str),
+    InputTooLarge {
+        max_bytes: usize,
+        actual_bytes: usize,
+    },
+    InputTooManyTokens {
+        max_tokens: usize,
+        actual_tokens: usize,
+    },
+    ExternalProviderRequiresExplicitOptIn,
 }
 
 impl fmt::Display for BinaryVectorError {
@@ -38,6 +50,23 @@ impl fmt::Display for BinaryVectorError {
             Self::BackendUnavailable(name) => {
                 write!(formatter, "{name} vector backend adapter is a placeholder")
             }
+            Self::InputTooLarge {
+                max_bytes,
+                actual_bytes,
+            } => write!(
+                formatter,
+                "embedding input exceeds provider byte limit: max {max_bytes}, got {actual_bytes}"
+            ),
+            Self::InputTooManyTokens {
+                max_tokens,
+                actual_tokens,
+            } => write!(
+                formatter,
+                "embedding input exceeds provider token limit: max {max_tokens}, got {actual_tokens}"
+            ),
+            Self::ExternalProviderRequiresExplicitOptIn => {
+                formatter.write_str("external embedding provider requires explicit opt-in")
+            }
         }
     }
 }
@@ -46,6 +75,365 @@ impl Error for BinaryVectorError {}
 
 pub type BinaryVectorResult<T> = Result<T, BinaryVectorError>;
 pub type CompressedVectorResult<T> = Result<T, BinaryVectorError>;
+pub type TestEmbeddingResult<T> = Result<T, BinaryVectorError>;
+
+pub const DETERMINISTIC_TEST_EMBEDDING_PROVIDER_ID: &str = "codegraph-deterministic-test";
+pub const DETERMINISTIC_TEST_EMBEDDING_MODEL_ID: &str =
+    "codegraph-deterministic-token-projection-v1";
+pub const DETERMINISTIC_TEST_EMBEDDING_VERSION: &str = "deterministic-test-embedding-v1";
+pub const DETERMINISTIC_TEST_EMBEDDING_NORMALIZATION: &str = "l2";
+pub const DETERMINISTIC_TEST_EMBEDDING_MAX_INPUT_BYTES: usize = 8 * 1024;
+pub const DETERMINISTIC_TEST_EMBEDDING_MAX_INPUT_TOKENS: usize = 2048;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestEmbeddingEnablement {
+    Test,
+    Dev,
+    Diagnostic,
+    Explicit,
+}
+
+impl TestEmbeddingEnablement {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Test => "test",
+            Self::Dev => "dev",
+            Self::Diagnostic => "diagnostic",
+            Self::Explicit => "explicit",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmbeddingProviderCapability {
+    Local,
+    Deterministic,
+    Batch,
+    External,
+    RequiresApiKey,
+}
+
+impl EmbeddingProviderCapability {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Deterministic => "deterministic",
+            Self::Batch => "batch",
+            Self::External => "external",
+            Self::RequiresApiKey => "requires_api_key",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingPrivacyMode {
+    LocalOnly,
+    ExternalOptIn,
+}
+
+impl EmbeddingPrivacyMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalOnly => "local_only",
+            Self::ExternalOptIn => "external_opt_in",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingProviderMetadata {
+    pub provider_id: String,
+    pub model_id: String,
+    pub dimension: usize,
+    pub max_input_bytes: usize,
+    pub max_input_tokens: usize,
+    pub normalization: String,
+    pub version: String,
+    pub capabilities: Vec<EmbeddingProviderCapability>,
+    pub privacy_mode: EmbeddingPrivacyMode,
+    pub enablement: TestEmbeddingEnablement,
+    pub source_leaves_machine: bool,
+    pub production_semantic_quality: bool,
+    pub external_network: bool,
+    pub requires_api_key: bool,
+}
+
+pub type TestEmbeddingProviderMetadata = EmbeddingProviderMetadata;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TestEmbeddingVector {
+    values: Vec<f32>,
+}
+
+impl TestEmbeddingVector {
+    pub fn dimensions(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn values(&self) -> &[f32] {
+        &self.values
+    }
+}
+
+pub trait EmbeddingProvider {
+    fn metadata(&self) -> &EmbeddingProviderMetadata;
+
+    fn embed(&self, text: &str) -> TestEmbeddingResult<TestEmbeddingVector>;
+
+    fn embed_batch(&self, texts: &[&str]) -> TestEmbeddingResult<Vec<TestEmbeddingVector>> {
+        texts.iter().map(|text| self.embed(text)).collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeterministicTestEmbeddingProvider {
+    metadata: TestEmbeddingProviderMetadata,
+}
+
+impl DeterministicTestEmbeddingProvider {
+    pub fn new(dimension: usize, enablement: TestEmbeddingEnablement) -> TestEmbeddingResult<Self> {
+        if dimension == 0 {
+            return Err(BinaryVectorError::ZeroDimensions);
+        }
+        Ok(Self {
+            metadata: TestEmbeddingProviderMetadata {
+                provider_id: DETERMINISTIC_TEST_EMBEDDING_PROVIDER_ID.to_string(),
+                model_id: DETERMINISTIC_TEST_EMBEDDING_MODEL_ID.to_string(),
+                dimension,
+                max_input_bytes: DETERMINISTIC_TEST_EMBEDDING_MAX_INPUT_BYTES,
+                max_input_tokens: DETERMINISTIC_TEST_EMBEDDING_MAX_INPUT_TOKENS,
+                normalization: DETERMINISTIC_TEST_EMBEDDING_NORMALIZATION.to_string(),
+                version: DETERMINISTIC_TEST_EMBEDDING_VERSION.to_string(),
+                capabilities: vec![
+                    EmbeddingProviderCapability::Local,
+                    EmbeddingProviderCapability::Deterministic,
+                    EmbeddingProviderCapability::Batch,
+                ],
+                privacy_mode: EmbeddingPrivacyMode::LocalOnly,
+                enablement,
+                source_leaves_machine: false,
+                production_semantic_quality: false,
+                external_network: false,
+                requires_api_key: false,
+            },
+        })
+    }
+
+    pub fn for_tests(dimension: usize) -> TestEmbeddingResult<Self> {
+        Self::new(dimension, TestEmbeddingEnablement::Test)
+    }
+
+    pub fn metadata(&self) -> &TestEmbeddingProviderMetadata {
+        &self.metadata
+    }
+
+    pub fn embed(&self, text: &str) -> TestEmbeddingResult<TestEmbeddingVector> {
+        check_embedding_input_limits(&self.metadata, text)?;
+        let dimension = self.metadata.dimension;
+        let mut values = vec![0.0f32; dimension];
+        let tokens = tokenize_for_embedding(text);
+        let token_refs = if tokens.is_empty() {
+            vec![text.trim().to_ascii_lowercase()]
+        } else {
+            tokens
+        };
+
+        for token in token_refs.iter().filter(|token| !token.is_empty()) {
+            project_embedding_token(token, &mut values);
+            for subtoken in token.split('_').filter(|part| part.len() >= 2) {
+                project_embedding_token(subtoken, &mut values);
+            }
+        }
+
+        normalize_l2(&mut values);
+        Ok(TestEmbeddingVector { values })
+    }
+
+    pub fn embed_batch(&self, texts: &[&str]) -> TestEmbeddingResult<Vec<TestEmbeddingVector>> {
+        texts.iter().map(|text| self.embed(text)).collect()
+    }
+}
+
+impl EmbeddingProvider for DeterministicTestEmbeddingProvider {
+    fn metadata(&self) -> &EmbeddingProviderMetadata {
+        &self.metadata
+    }
+
+    fn embed(&self, text: &str) -> TestEmbeddingResult<TestEmbeddingVector> {
+        DeterministicTestEmbeddingProvider::embed(self, text)
+    }
+
+    fn embed_batch(&self, texts: &[&str]) -> TestEmbeddingResult<Vec<TestEmbeddingVector>> {
+        DeterministicTestEmbeddingProvider::embed_batch(self, texts)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalEmbeddingProviderConfig {
+    pub provider_id: String,
+    pub model_id: String,
+    pub dimension: usize,
+    pub max_input_bytes: usize,
+    pub max_input_tokens: usize,
+    pub normalization: String,
+    pub api_key_env_var: Option<String>,
+    pub source_leaves_machine: bool,
+    pub explicit_opt_in: bool,
+}
+
+impl ExternalEmbeddingProviderConfig {
+    pub fn metadata(&self) -> EmbeddingProviderMetadata {
+        EmbeddingProviderMetadata {
+            provider_id: self.provider_id.clone(),
+            model_id: self.model_id.clone(),
+            dimension: self.dimension,
+            max_input_bytes: self.max_input_bytes,
+            max_input_tokens: self.max_input_tokens,
+            normalization: self.normalization.clone(),
+            version: "external-provider-plan-v1".to_string(),
+            capabilities: vec![
+                EmbeddingProviderCapability::External,
+                EmbeddingProviderCapability::Batch,
+                EmbeddingProviderCapability::RequiresApiKey,
+            ],
+            privacy_mode: EmbeddingPrivacyMode::ExternalOptIn,
+            enablement: TestEmbeddingEnablement::Explicit,
+            source_leaves_machine: self.source_leaves_machine,
+            production_semantic_quality: false,
+            external_network: true,
+            requires_api_key: self.api_key_env_var.is_some(),
+        }
+    }
+
+    pub fn safe_log_summary(&self, api_key_present: bool) -> String {
+        format!(
+            "provider_id={} model_id={} dimension={} normalization={} privacy_mode={} source_leaves_machine={} explicit_opt_in={} api_key_env_var={} api_key_present={}",
+            self.provider_id,
+            self.model_id,
+            self.dimension,
+            self.normalization,
+            EmbeddingPrivacyMode::ExternalOptIn.as_str(),
+            self.source_leaves_machine,
+            self.explicit_opt_in,
+            self.api_key_env_var.as_deref().unwrap_or("none"),
+            api_key_present
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmbeddingProviderConfig {
+    DeterministicTest {
+        dimension: usize,
+        enablement: TestEmbeddingEnablement,
+    },
+    External(ExternalEmbeddingProviderConfig),
+}
+
+impl EmbeddingProviderConfig {
+    pub const fn deterministic_for_tests(dimension: usize) -> Self {
+        Self::DeterministicTest {
+            dimension,
+            enablement: TestEmbeddingEnablement::Test,
+        }
+    }
+
+    pub fn select(self) -> TestEmbeddingResult<EmbeddingProviderSelection> {
+        match self {
+            Self::DeterministicTest {
+                dimension,
+                enablement,
+            } => DeterministicTestEmbeddingProvider::new(dimension, enablement)
+                .map(EmbeddingProviderSelection::Deterministic),
+            Self::External(config) => {
+                if !config.explicit_opt_in {
+                    return Err(BinaryVectorError::ExternalProviderRequiresExplicitOptIn);
+                }
+                Ok(EmbeddingProviderSelection::ExternalPlan(
+                    ExternalEmbeddingProviderPlan {
+                        metadata: config.metadata(),
+                    },
+                ))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmbeddingProviderSelection {
+    Deterministic(DeterministicTestEmbeddingProvider),
+    ExternalPlan(ExternalEmbeddingProviderPlan),
+}
+
+impl EmbeddingProviderSelection {
+    pub fn metadata(&self) -> &EmbeddingProviderMetadata {
+        match self {
+            Self::Deterministic(provider) => provider.metadata(),
+            Self::ExternalPlan(plan) => &plan.metadata,
+        }
+    }
+
+    pub fn deterministic_provider(&self) -> Option<&DeterministicTestEmbeddingProvider> {
+        match self {
+            Self::Deterministic(provider) => Some(provider),
+            Self::ExternalPlan(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalEmbeddingProviderPlan {
+    metadata: EmbeddingProviderMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VectorIndexProviderMetadata {
+    pub provider_id: String,
+    pub model_id: String,
+    pub dimension: usize,
+    pub normalization: String,
+    pub provider_version: String,
+    pub privacy_mode: EmbeddingPrivacyMode,
+}
+
+impl VectorIndexProviderMetadata {
+    pub fn from_provider(metadata: &EmbeddingProviderMetadata) -> Self {
+        Self {
+            provider_id: metadata.provider_id.clone(),
+            model_id: metadata.model_id.clone(),
+            dimension: metadata.dimension,
+            normalization: metadata.normalization.clone(),
+            provider_version: metadata.version.clone(),
+            privacy_mode: metadata.privacy_mode,
+        }
+    }
+
+    pub fn incompatibility_reason(&self, metadata: &EmbeddingProviderMetadata) -> Option<String> {
+        if self.provider_id != metadata.provider_id {
+            return Some("provider_id changed".to_string());
+        }
+        if self.model_id != metadata.model_id {
+            return Some("model_id changed".to_string());
+        }
+        if self.dimension != metadata.dimension {
+            return Some("dimension changed".to_string());
+        }
+        if self.normalization != metadata.normalization {
+            return Some("normalization changed".to_string());
+        }
+        if self.provider_version != metadata.version {
+            return Some("provider_version changed".to_string());
+        }
+        if self.privacy_mode != metadata.privacy_mode {
+            return Some("privacy_mode changed".to_string());
+        }
+        None
+    }
+
+    pub fn is_compatible_with(&self, metadata: &EmbeddingProviderMetadata) -> bool {
+        self.incompatibility_reason(metadata).is_none()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BinarySignature {
@@ -270,6 +658,11 @@ pub struct RerankConfig {
     pub compressed_vector_weight: f64,
     pub stage1_weight: f64,
     pub metadata_weight: f64,
+    pub rare_token_weight: f64,
+    pub identifier_signature_weight: f64,
+    pub text_evidence_weight: f64,
+    pub source_role_weight: f64,
+    pub graph_verification_weight: f64,
 }
 
 impl Default for RerankConfig {
@@ -281,6 +674,11 @@ impl Default for RerankConfig {
             compressed_vector_weight: 0.35,
             stage1_weight: 0.20,
             metadata_weight: 0.10,
+            rare_token_weight: 0.20,
+            identifier_signature_weight: 0.20,
+            text_evidence_weight: 0.08,
+            source_role_weight: 0.06,
+            graph_verification_weight: 0.06,
         }
     }
 }
@@ -526,6 +924,12 @@ impl CompressedVectorReranker for DeterministicCompressedReranker {
                 matryoshka_cosine_score(&query_vector, &candidate_vector, prefix)?;
             let stage1_score = normalize_stage1_similarity(candidate.stage1_similarity);
             let metadata_score = normalize_unit(candidate.stage0_score);
+            let rare_token_match = rare_token_feature_score(query, candidate);
+            let identifier_signature_match = identifier_signature_feature_score(query, candidate);
+            let text_evidence_match = text_evidence_feature_score(candidate);
+            let source_role_compatibility = source_role_compatibility_score(query, candidate);
+            let graph_verification_availability =
+                metadata_flag(&candidate.metadata, "graph_verification_available");
             let exact_boost = if candidate.exact_seed {
                 self.config.exact_seed_boost
             } else {
@@ -537,12 +941,31 @@ impl CompressedVectorReranker for DeterministicCompressedReranker {
             components.insert("compressed_vector".to_string(), compressed_vector_score);
             components.insert("stage1".to_string(), stage1_score);
             components.insert("metadata".to_string(), metadata_score);
+            components.insert("rare_token_match".to_string(), rare_token_match);
+            components.insert(
+                "identifier_signature_match".to_string(),
+                identifier_signature_match,
+            );
+            components.insert("text_evidence_match".to_string(), text_evidence_match);
+            components.insert(
+                "source_role_compatibility".to_string(),
+                source_role_compatibility,
+            );
+            components.insert(
+                "graph_verification_availability".to_string(),
+                graph_verification_availability,
+            );
             components.insert("exact_seed_boost".to_string(), exact_boost);
 
             let score = (self.config.text_weight * text_score)
                 + (self.config.compressed_vector_weight * compressed_vector_score)
                 + (self.config.stage1_weight * stage1_score)
                 + (self.config.metadata_weight * metadata_score)
+                + (self.config.rare_token_weight * rare_token_match)
+                + (self.config.identifier_signature_weight * identifier_signature_match)
+                + (self.config.text_evidence_weight * text_evidence_match)
+                + (self.config.source_role_weight * source_role_compatibility)
+                + (self.config.graph_verification_weight * graph_verification_availability)
                 + exact_boost;
 
             scores.push(RerankScore {
@@ -771,6 +1194,216 @@ fn normalize_unit(value: f64) -> f64 {
     }
 }
 
+fn rare_token_feature_score(query: &RerankQuery, candidate: &RerankCandidate) -> f64 {
+    if metadata_bool(&candidate.metadata, "rare_token_match") {
+        return 1.0;
+    }
+
+    let query_rare = tokenize_for_signature(&query.text)
+        .into_iter()
+        .filter(|token| is_rerank_rare_token(token))
+        .collect::<BTreeSet<_>>();
+    if query_rare.is_empty() {
+        return 0.0;
+    }
+
+    let candidate_text = candidate_feature_text(candidate);
+    let candidate_tokens = tokenize_for_signature(&candidate_text)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let overlap = query_rare.intersection(&candidate_tokens).count();
+    overlap as f64 / query_rare.len() as f64
+}
+
+fn identifier_signature_feature_score(query: &RerankQuery, candidate: &RerankCandidate) -> f64 {
+    if metadata_bool(&candidate.metadata, "identifier_signature_match") {
+        return 1.0;
+    }
+
+    let identifier_text = [
+        candidate.id.as_str(),
+        metadata_value(&candidate.metadata, "identifier"),
+        metadata_value(&candidate.metadata, "symbol"),
+        metadata_value(&candidate.metadata, "signature"),
+        metadata_value(&candidate.metadata, "path"),
+        metadata_value(&candidate.metadata, "title"),
+        metadata_value(&candidate.metadata, "config_key"),
+        metadata_value(&candidate.metadata, "route_literal"),
+        metadata_value(&candidate.metadata, "test_name"),
+        metadata_value(&candidate.metadata, "matched_tokens"),
+    ]
+    .join(" ");
+    token_overlap_score(&query.text, &identifier_text).clamp(0.0, 1.0)
+}
+
+fn text_evidence_feature_score(candidate: &RerankCandidate) -> f64 {
+    if metadata_bool(&candidate.metadata, "text_evidence_match") {
+        return 1.0;
+    }
+
+    let metadata_text = candidate_metadata_text(candidate).to_ascii_lowercase();
+    if metadata_text.contains("text_evidence")
+        || metadata_text.contains("stage0_text")
+        || metadata_text.contains("docs")
+        || metadata_text.contains("config.in")
+        || metadata_text.contains(".mk")
+        || metadata_text.contains("readme")
+    {
+        return 1.0;
+    }
+    0.0
+}
+
+fn source_role_compatibility_score(query: &RerankQuery, candidate: &RerankCandidate) -> f64 {
+    if metadata_bool(&candidate.metadata, "source_role_compatible") {
+        return 1.0;
+    }
+
+    let query_text = query.text.to_ascii_lowercase();
+    let candidate_text = candidate_feature_text(candidate).to_ascii_lowercase();
+    let mut matched = 0usize;
+    let mut expected = 0usize;
+
+    for (query_terms, candidate_terms) in [
+        (
+            ["test", "spec", "failing", "assert"].as_slice(),
+            ["test", "spec", "__tests__", ".test.", ".spec."].as_slice(),
+        ),
+        (
+            ["config", "buildroot", "package"].as_slice(),
+            ["config.in", ".mk", "br2_", "generic-package"].as_slice(),
+        ),
+        (
+            ["route", "endpoint", "api"].as_slice(),
+            ["/api", "route", "endpoint"].as_slice(),
+        ),
+        (
+            ["auth", "admin", "role", "permission"].as_slice(),
+            ["auth", "admin", "role", "permission", "security"].as_slice(),
+        ),
+    ] {
+        if query_terms.iter().any(|term| query_text.contains(term)) {
+            expected += 1;
+            if candidate_terms
+                .iter()
+                .any(|term| candidate_text.contains(term))
+            {
+                matched += 1;
+            }
+        }
+    }
+
+    if expected == 0 {
+        0.0
+    } else {
+        matched as f64 / expected as f64
+    }
+}
+
+fn candidate_feature_text(candidate: &RerankCandidate) -> String {
+    format!(
+        "{} {} {}",
+        candidate.id,
+        candidate.text,
+        candidate_metadata_text(candidate)
+    )
+}
+
+fn candidate_metadata_text(candidate: &RerankCandidate) -> String {
+    candidate
+        .metadata
+        .iter()
+        .map(|(key, value)| format!("{key} {value}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn metadata_value<'a>(metadata: &'a BTreeMap<String, String>, key: &str) -> &'a str {
+    metadata.get(key).map(String::as_str).unwrap_or("")
+}
+
+fn metadata_flag(metadata: &BTreeMap<String, String>, key: &str) -> f64 {
+    metadata_bool(metadata, key) as u8 as f64
+}
+
+fn metadata_bool(metadata: &BTreeMap<String, String>, key: &str) -> bool {
+    metadata
+        .get(key)
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            matches!(
+                value.as_str(),
+                "1" | "true" | "yes" | "match" | "matched" | "available"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn is_rerank_rare_token(token: &str) -> bool {
+    token.len() >= 6
+        || token.chars().any(|ch| ch.is_ascii_digit())
+        || token.contains('_')
+        || token.contains('-')
+        || token.contains('.')
+}
+
+fn check_embedding_input_limits(
+    metadata: &EmbeddingProviderMetadata,
+    text: &str,
+) -> TestEmbeddingResult<()> {
+    let actual_bytes = text.len();
+    if actual_bytes > metadata.max_input_bytes {
+        return Err(BinaryVectorError::InputTooLarge {
+            max_bytes: metadata.max_input_bytes,
+            actual_bytes,
+        });
+    }
+    let actual_tokens = tokenize_for_embedding(text).len();
+    if actual_tokens > metadata.max_input_tokens {
+        return Err(BinaryVectorError::InputTooManyTokens {
+            max_tokens: metadata.max_input_tokens,
+            actual_tokens,
+        });
+    }
+    Ok(())
+}
+
+fn tokenize_for_embedding(text: &str) -> Vec<String> {
+    text.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .filter(|token| !token.is_empty())
+        .map(|token| token.to_ascii_lowercase())
+        .collect()
+}
+
+fn project_embedding_token(token: &str, values: &mut [f32]) {
+    if values.is_empty() {
+        return;
+    }
+    for projection in 0..6u64 {
+        let hash = fnv1a64_with_seed(
+            token.as_bytes(),
+            0xd1b5_4a32_d192_ed03_u64.wrapping_add(projection),
+        );
+        let index = (hash as usize) % values.len();
+        let sign = if (hash >> 63) == 0 { 1.0 } else { -1.0 };
+        let magnitude = 1.0 + (((hash >> 8) & 0xff) as f32 / 1024.0);
+        values[index] += sign * magnitude;
+    }
+}
+
+fn normalize_l2(values: &mut [f32]) {
+    let norm = values
+        .iter()
+        .map(|value| *value * *value)
+        .sum::<f32>()
+        .sqrt();
+    if norm > 0.0 {
+        for value in values {
+            *value /= norm;
+        }
+    }
+}
+
 fn tokenize_for_signature(text: &str) -> Vec<String> {
     text.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '.'))
         .filter(|token| !token.is_empty())
@@ -931,6 +1564,178 @@ mod tests {
 
         assert_eq!(left, right);
         assert!(ok(hamming_distance(&left, &different)) > 0);
+    }
+
+    #[test]
+    fn deterministic_test_embedding_same_text_same_vector() {
+        let provider = ok(DeterministicTestEmbeddingProvider::for_tests(128));
+
+        let left = ok(provider.embed("config BR2_PACKAGE_FOO generic-package"));
+        let right = ok(provider.embed("config BR2_PACKAGE_FOO generic-package"));
+
+        assert_eq!(left, right);
+        assert_eq!(left.dimensions(), 128);
+        assert_eq!(provider.metadata().dimension, 128);
+    }
+
+    #[test]
+    fn deterministic_test_embedding_buildroot_tokens_are_separable() {
+        let provider = ok(DeterministicTestEmbeddingProvider::for_tests(128));
+        let openssl =
+            ok(provider.embed("config BR2_PACKAGE_OPENSSL OPENSSL_VERSION TLS crypto library"));
+        let busybox =
+            ok(provider.embed("config BR2_PACKAGE_BUSYBOX BUSYBOX_CONFIG shell applets init"));
+        let openssl_again =
+            ok(provider.embed("config BR2_PACKAGE_OPENSSL OPENSSL_VERSION TLS crypto library"));
+
+        assert!(cosine_f32(openssl.values(), openssl_again.values()) > 0.999);
+        assert!(cosine_f32(openssl.values(), busybox.values()) < 0.95);
+    }
+
+    #[test]
+    fn deterministic_test_embedding_metadata_records_local_test_boundaries() {
+        let provider = ok(DeterministicTestEmbeddingProvider::new(
+            64,
+            TestEmbeddingEnablement::Diagnostic,
+        ));
+        let metadata = provider.metadata();
+
+        assert_eq!(
+            metadata.provider_id,
+            DETERMINISTIC_TEST_EMBEDDING_PROVIDER_ID
+        );
+        assert_eq!(metadata.model_id, DETERMINISTIC_TEST_EMBEDDING_MODEL_ID);
+        assert_eq!(metadata.dimension, 64);
+        assert_eq!(
+            metadata.max_input_bytes,
+            DETERMINISTIC_TEST_EMBEDDING_MAX_INPUT_BYTES
+        );
+        assert_eq!(
+            metadata.max_input_tokens,
+            DETERMINISTIC_TEST_EMBEDDING_MAX_INPUT_TOKENS
+        );
+        assert_eq!(
+            metadata.normalization,
+            DETERMINISTIC_TEST_EMBEDDING_NORMALIZATION
+        );
+        assert_eq!(metadata.version, DETERMINISTIC_TEST_EMBEDDING_VERSION);
+        assert!(metadata
+            .capabilities
+            .contains(&EmbeddingProviderCapability::Deterministic));
+        assert!(metadata
+            .capabilities
+            .contains(&EmbeddingProviderCapability::Batch));
+        assert_eq!(metadata.privacy_mode, EmbeddingPrivacyMode::LocalOnly);
+        assert_eq!(metadata.enablement, TestEmbeddingEnablement::Diagnostic);
+        assert_eq!(metadata.enablement.as_str(), "diagnostic");
+        assert!(!metadata.source_leaves_machine);
+        assert!(!metadata.production_semantic_quality);
+        assert!(!metadata.external_network);
+        assert!(!metadata.requires_api_key);
+    }
+
+    #[test]
+    fn embedding_provider_config_selects_deterministic_provider_for_tests() {
+        let selected = ok(EmbeddingProviderConfig::deterministic_for_tests(96).select());
+        let metadata = selected.metadata();
+
+        assert_eq!(
+            metadata.provider_id,
+            DETERMINISTIC_TEST_EMBEDDING_PROVIDER_ID
+        );
+        assert_eq!(metadata.dimension, 96);
+        assert_eq!(metadata.enablement, TestEmbeddingEnablement::Test);
+        assert_eq!(metadata.privacy_mode, EmbeddingPrivacyMode::LocalOnly);
+        assert!(!metadata.external_network);
+        let provider = selected
+            .deterministic_provider()
+            .expect("deterministic provider");
+        let vectors = ok(provider.embed_batch(&["BR2_PACKAGE_FOO", "generic-package"]));
+        assert_eq!(vectors.len(), 2);
+        assert!(vectors.iter().all(|vector| vector.dimensions() == 96));
+    }
+
+    #[test]
+    fn external_provider_without_explicit_opt_in_does_not_block_normal_tests() {
+        let normal = ok(EmbeddingProviderConfig::deterministic_for_tests(32).select());
+        assert!(!normal.metadata().source_leaves_machine);
+
+        let external = ExternalEmbeddingProviderConfig {
+            provider_id: "example-external".to_string(),
+            model_id: "example-model".to_string(),
+            dimension: 1536,
+            max_input_bytes: 16 * 1024,
+            max_input_tokens: 4096,
+            normalization: "l2".to_string(),
+            api_key_env_var: Some("CODEGRAPH_EMBEDDING_API_KEY".to_string()),
+            source_leaves_machine: true,
+            explicit_opt_in: false,
+        };
+        assert!(matches!(
+            EmbeddingProviderConfig::External(external).select(),
+            Err(BinaryVectorError::ExternalProviderRequiresExplicitOptIn)
+        ));
+    }
+
+    #[test]
+    fn provider_metadata_is_included_in_vector_index_metadata() {
+        let provider = ok(DeterministicTestEmbeddingProvider::for_tests(128));
+        let index_metadata = VectorIndexProviderMetadata::from_provider(provider.metadata());
+
+        assert_eq!(
+            index_metadata.provider_id,
+            DETERMINISTIC_TEST_EMBEDDING_PROVIDER_ID
+        );
+        assert_eq!(
+            index_metadata.model_id,
+            DETERMINISTIC_TEST_EMBEDDING_MODEL_ID
+        );
+        assert_eq!(index_metadata.dimension, 128);
+        assert_eq!(index_metadata.normalization, "l2");
+        assert_eq!(
+            index_metadata.provider_version,
+            DETERMINISTIC_TEST_EMBEDDING_VERSION
+        );
+        assert!(index_metadata.is_compatible_with(provider.metadata()));
+    }
+
+    #[test]
+    fn provider_model_mismatch_invalidates_vector_index_metadata() {
+        let provider = ok(DeterministicTestEmbeddingProvider::for_tests(128));
+        let index_metadata = VectorIndexProviderMetadata::from_provider(provider.metadata());
+        let mut changed = provider.metadata().clone();
+        changed.model_id = "different-model".to_string();
+
+        assert_eq!(
+            index_metadata.incompatibility_reason(&changed).as_deref(),
+            Some("model_id changed")
+        );
+        assert!(!index_metadata.is_compatible_with(&changed));
+    }
+
+    #[test]
+    fn external_provider_log_summary_excludes_secret_values() {
+        let secret_value = "sk-test-secret-value";
+        let external = ExternalEmbeddingProviderConfig {
+            provider_id: "example-external".to_string(),
+            model_id: "example-model".to_string(),
+            dimension: 1536,
+            max_input_bytes: 16 * 1024,
+            max_input_tokens: 4096,
+            normalization: "l2".to_string(),
+            api_key_env_var: Some("CODEGRAPH_EMBEDDING_API_KEY".to_string()),
+            source_leaves_machine: true,
+            explicit_opt_in: true,
+        };
+
+        let summary = external.safe_log_summary(!secret_value.is_empty());
+
+        assert!(summary.contains("provider_id=example-external"));
+        assert!(summary.contains("model_id=example-model"));
+        assert!(summary.contains("source_leaves_machine=true"));
+        assert!(summary.contains("api_key_env_var=CODEGRAPH_EMBEDDING_API_KEY"));
+        assert!(summary.contains("api_key_present=true"));
+        assert!(!summary.contains(secret_value));
     }
 
     #[test]
@@ -1105,6 +1910,59 @@ mod tests {
     }
 
     #[test]
+    fn reranker_uses_deterministic_nuance_features() {
+        let config = RerankConfig {
+            text_weight: 0.0,
+            compressed_vector_weight: 0.0,
+            stage1_weight: 0.0,
+            metadata_weight: 0.0,
+            rare_token_weight: 1.0,
+            identifier_signature_weight: 1.0,
+            text_evidence_weight: 0.5,
+            source_role_weight: 0.5,
+            graph_verification_weight: 0.5,
+            ..RerankConfig::default()
+        };
+        let reranker = DeterministicCompressedReranker::new(config);
+        let query = RerankQuery::new("Trace ZephyrAlphaToken route auth test");
+        let mut target =
+            RerankCandidate::new("ZephyrAlphaTokenGuard", "tiny body").stage1_similarity(-128);
+        target
+            .metadata
+            .insert("matched_tokens".to_string(), "zephyralphatoken".to_string());
+        target
+            .metadata
+            .insert("path".to_string(), "tests/auth_route.test.ts".to_string());
+        target
+            .metadata
+            .insert("text_evidence_match".to_string(), "true".to_string());
+        target.metadata.insert(
+            "graph_verification_available".to_string(),
+            "true".to_string(),
+        );
+        let noise = RerankCandidate::new("generic", "trace route auth test").stage1_similarity(128);
+
+        let scores = ok(reranker.rerank(&query, &[noise, target], 1));
+
+        assert_eq!(scores[0].id, "ZephyrAlphaTokenGuard");
+        for component in [
+            "rare_token_match",
+            "identifier_signature_match",
+            "text_evidence_match",
+            "source_role_compatibility",
+            "graph_verification_availability",
+        ] {
+            assert!(
+                scores[0]
+                    .components
+                    .get(component)
+                    .is_some_and(|value| *value > 0.0),
+                "missing positive component {component}"
+            );
+        }
+    }
+
+    #[test]
     fn reranker_uses_optional_int8_vectors() {
         let config = RerankConfig {
             text_weight: 0.0,
@@ -1138,5 +1996,20 @@ mod tests {
             Some("fixture-codebook".to_string())
         )
         .is_ok());
+    }
+
+    fn cosine_f32(left: &[f32], right: &[f32]) -> f32 {
+        let mut dot = 0.0f32;
+        let mut left_norm = 0.0f32;
+        let mut right_norm = 0.0f32;
+        for (left, right) in left.iter().zip(right) {
+            dot += *left * *right;
+            left_norm += *left * *left;
+            right_norm += *right * *right;
+        }
+        if left_norm == 0.0 || right_norm == 0.0 {
+            return 0.0;
+        }
+        dot / (left_norm.sqrt() * right_norm.sqrt())
     }
 }

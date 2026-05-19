@@ -17,21 +17,24 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use codegraph_core::{Edge, Entity, FileRecord, RelationKind, SourceSpan};
+use codegraph_core::{Edge, Entity, FileRecord, RelationKind, RetrievalCandidate, SourceSpan};
 use codegraph_index::{
     default_db_path, index_repo_to_db_with_options, inspect_db_lifecycle_preflight,
-    update_changed_files_to_db, DbLifecyclePreflight, IndexOptions, IndexScopeOptions,
-    UNBOUNDED_STORE_READ_LIMIT,
+    load_vector_chunk_index_json, update_changed_files_to_db,
+    vector_chunk_search_hit_to_retrieval_candidate, DbLifecyclePreflight, IndexOptions,
+    IndexScopeOptions, VectorChunkIndexBuildOptions, UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::language_frontends;
 use codegraph_query::{
     ExactGraphQueryEngine, GraphPath, QueryLimits, RetrievalDocument, RetrievalFunnel,
     RetrievalFunnelConfig, RetrievalFunnelRequest, RetrievalTraceStage,
+    VectorCandidateBranchStatus,
 };
 use codegraph_store::{
     DbPreflightReport, GraphStore, SqliteGraphStore, TextSearchHit, TextSearchKind,
 };
 use codegraph_trace::{TraceConfig, TraceLogger};
+use codegraph_vector::{DeterministicTestEmbeddingProvider, TestEmbeddingEnablement};
 use serde_json::{json, Map, Value};
 
 #[cfg(test)]
@@ -44,6 +47,10 @@ const EXTERNAL_PROFILE_DB_NOTE: &str =
     "This profile DB is outside the workspace; grant access or choose a workspace-local DB.";
 const DEFAULT_RESULT_LIMIT: usize = 20;
 const DEFAULT_GRAPH_EDGE_LIMIT: usize = 100_000;
+const MCP_VECTOR_INDEX_FILE_NAME: &str = "codegraph-vector-chunks.json";
+const MCP_VECTOR_SOURCE_SCOPE: &str = "context-pack-release-vector-candidates";
+const MCP_VECTOR_PROVIDER_DIMENSION: usize = 64;
+const MCP_VECTOR_CANDIDATE_TOP_K: usize = 16;
 
 const MCP_RESOURCE_URIS: &[&str] = &[
     "codegraph://status",
@@ -385,7 +392,7 @@ impl McpServer {
             "codegraph.explain_path" => self.explain_path(args),
             other => Err(ToolCallError::new(
                 "unknown_tool",
-                format!("unknown CodeGraph MCP tool: {other}"),
+                format!("unknown codegraph-mcp tool: {other}"),
             )),
         }
     }
@@ -1154,37 +1161,89 @@ impl McpServer {
         let token_budget = optional_usize(args, "token_budget", 2_000, 32, 100_000)?;
         let seeds = optional_string_array(args, "seeds")?;
         let stage0_candidates = optional_string_array(args, "stage0_candidates")?;
+        let enable_vector_candidates = optional_bool_arg(args, "enable_vector_candidates")?
+            .unwrap_or(false)
+            || optional_bool_arg(args, "enableVectorCandidates")?.unwrap_or(false);
+        let vector_index_path_arg = optional_string(args, "vector_index")
+            .or_else(|| optional_string(args, "vector_index_path"))
+            .or_else(|| optional_string(args, "vectorIndex"))
+            .or_else(|| optional_string(args, "vectorIndexPath"));
         let repo_root = self.repo_root(args)?;
         let (store, preflight) = self.open_store_with_preflight(args)?;
+        let vector_branch = enable_vector_candidates.then(|| {
+            load_mcp_vector_branch(
+                &store,
+                Path::new(&preflight.exact_db_path_checked),
+                vector_index_path_arg.as_deref(),
+                &task,
+            )
+        });
         let sources = load_sources(&repo_root, &store).map_err(ToolCallError::from)?;
         let documents = retrieval_documents(&store)?;
+        let mut config = RetrievalFunnelConfig::default();
+        config.vector_candidate_top_k = MCP_VECTOR_CANDIDATE_TOP_K;
         let funnel = RetrievalFunnel::new(
             store
                 .list_edges(self.config.max_graph_edges)
                 .map_err(mcp_store_error)?,
             documents,
-            RetrievalFunnelConfig::default(),
+            config,
         )
         .map_err(|error| ToolCallError::new("retrieval_funnel_failed", error.to_string()))?;
         let stage0_docs = stage0_candidates
             .iter()
             .map(|candidate| RetrievalDocument::new(candidate, candidate).stage0_score(1.0))
             .collect::<Vec<_>>();
+        let mut request = RetrievalFunnelRequest::new(task.clone(), mode, token_budget)
+            .exact_seeds(seeds)
+            .stage0_candidates(stage0_docs)
+            .sources(sources);
+        if let Some(vector_branch) = &vector_branch {
+            request = request
+                .enable_vector_candidates(true)
+                .vector_candidate_diagnostics(true)
+                .vector_branch_status(vector_branch.status.clone())
+                .vector_candidates(vector_branch.candidates.clone());
+        }
         let result = funnel
-            .run(
-                RetrievalFunnelRequest::new(task.clone(), mode, token_budget)
-                    .exact_seeds(seeds)
-                    .stage0_candidates(stage0_docs)
-                    .sources(sources),
-            )
+            .run(request)
             .map_err(|error| ToolCallError::new("retrieval_funnel_failed", error.to_string()))?;
+        let mut packet = result.packet;
+        let vector_candidate_diagnostics = if let Some(vector_branch) = &vector_branch {
+            let mut trace = packet
+                .metadata
+                .get("vector_candidate_trace")
+                .cloned()
+                .unwrap_or_else(|| mcp_vector_trace_fallback(vector_branch));
+            if let Some(object) = trace.as_object_mut() {
+                object.insert(
+                    "vector_index_path".to_string(),
+                    json!(path_string(&vector_branch.index_path)),
+                );
+                object.insert(
+                    "warning".to_string(),
+                    vector_branch
+                        .warning
+                        .as_ref()
+                        .map(|warning| json!(warning))
+                        .unwrap_or(Value::Null),
+                );
+            }
+            packet
+                .metadata
+                .insert("vector_candidate_trace".to_string(), trace.clone());
+            trace
+        } else {
+            Value::Null
+        };
 
         Ok(json!({
             "status": "ok",
             "task": task,
             "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
-            "packet": result.packet,
+            "packet": packet,
             "funnel_trace": result.trace.iter().map(retrieval_trace_stage_json).collect::<Vec<_>>(),
+            "vector_candidate_diagnostics": vector_candidate_diagnostics,
             "proof": "Context packet is built through Stage 0 exact seeds, Stage 1 binary sieve, Stage 2 compressed rerank, Stage 3 exact graph verification, and Stage 4 packet emission.",
         }))
     }
@@ -1473,7 +1532,7 @@ impl McpServer {
             })),
             other => Err(ToolCallError::new(
                 "unknown_resource",
-                format!("unknown CodeGraph MCP resource: {other}"),
+                format!("unknown codegraph-mcp resource: {other}"),
             )),
         }
     }
@@ -1625,6 +1684,165 @@ pub fn serve_stdio() -> Result<(), McpServerError> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct McpVectorBranch {
+    index_path: PathBuf,
+    status: VectorCandidateBranchStatus,
+    candidates: Vec<RetrievalCandidate>,
+    warning: Option<String>,
+}
+
+fn load_mcp_vector_branch(
+    store: &SqliteGraphStore,
+    db_path: &Path,
+    explicit_index_path: Option<&str>,
+    task: &str,
+) -> McpVectorBranch {
+    let index_path = mcp_vector_index_path(db_path, explicit_index_path);
+    if !index_path.exists() {
+        return McpVectorBranch {
+            index_path,
+            status: VectorCandidateBranchStatus::Missing,
+            candidates: Vec::new(),
+            warning: Some("vector index missing; continuing without vector candidates".to_string()),
+        };
+    }
+
+    let provider = match mcp_vector_provider() {
+        Ok(provider) => provider,
+        Err(error) => {
+            return McpVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: format!("deterministic vector provider unavailable: {error}"),
+                },
+                candidates: Vec::new(),
+                warning: Some("deterministic vector provider unavailable".to_string()),
+            };
+        }
+    };
+    let passport = match store.get_db_passport() {
+        Ok(Some(passport)) => passport,
+        Ok(None) => {
+            return McpVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: "db passport missing".to_string(),
+                },
+                candidates: Vec::new(),
+                warning: Some(
+                    "vector index ignored because graph DB passport is missing".to_string(),
+                ),
+            };
+        }
+        Err(error) => {
+            return McpVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: format!("db passport read failed: {error}"),
+                },
+                candidates: Vec::new(),
+                warning: Some(
+                    "vector index ignored because graph DB passport could not be read".to_string(),
+                ),
+            };
+        }
+    };
+
+    let index = match load_vector_chunk_index_json(
+        &index_path,
+        &provider,
+        &passport,
+        mcp_vector_options(),
+    ) {
+        Ok(index) => index,
+        Err(error) => {
+            return McpVectorBranch {
+                    index_path,
+                    status: VectorCandidateBranchStatus::Stale {
+                        reason: error.to_string(),
+                    },
+                    candidates: Vec::new(),
+                    warning: Some(format!(
+                        "vector index stale or incompatible; continuing without vector candidates: {error}"
+                    )),
+                };
+        }
+    };
+    let hits = match index.search(&provider, task, MCP_VECTOR_CANDIDATE_TOP_K) {
+        Ok(hits) => hits,
+        Err(error) => {
+            return McpVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: error.to_string(),
+                },
+                candidates: Vec::new(),
+                warning: Some(format!(
+                    "vector index query failed; continuing without vector candidates: {error}"
+                )),
+            };
+        }
+    };
+    let candidates = hits
+        .iter()
+        .map(|hit| {
+            vector_chunk_search_hit_to_retrieval_candidate(hit, provider.metadata(), task, None)
+        })
+        .collect();
+
+    McpVectorBranch {
+        index_path,
+        status: VectorCandidateBranchStatus::Ready,
+        candidates,
+        warning: None,
+    }
+}
+
+fn mcp_vector_trace_fallback(vector_branch: &McpVectorBranch) -> Value {
+    json!({
+        "schema_version": 1,
+        "diagnostic_only": true,
+        "vector_enabled": true,
+        "vector_index_status": vector_branch.status.as_str(),
+        "vector_candidate_count": vector_branch.candidates.len(),
+        "proof_contract": "vector candidates are candidate recall only and are not graph proof unless graph/source verification succeeds",
+    })
+}
+
+fn mcp_vector_index_path(db_path: &Path, explicit_index_path: Option<&str>) -> PathBuf {
+    if let Some(path) = explicit_index_path {
+        let path = PathBuf::from(path);
+        return if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(&path))
+                .unwrap_or(path)
+        };
+    }
+    db_path
+        .parent()
+        .map(|parent| parent.join(MCP_VECTOR_INDEX_FILE_NAME))
+        .unwrap_or_else(|| PathBuf::from(MCP_VECTOR_INDEX_FILE_NAME))
+}
+
+fn mcp_vector_provider() -> Result<DeterministicTestEmbeddingProvider, String> {
+    DeterministicTestEmbeddingProvider::new(
+        MCP_VECTOR_PROVIDER_DIMENSION,
+        TestEmbeddingEnablement::Explicit,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn mcp_vector_options() -> VectorChunkIndexBuildOptions {
+    VectorChunkIndexBuildOptions {
+        max_chunks: MCP_VECTOR_CANDIDATE_TOP_K.saturating_mul(256),
+        source_scope: MCP_VECTOR_SOURCE_SCOPE.to_string(),
+        extraction_version: codegraph_index::VECTOR_EMBEDDING_CHUNK_EXTRACTION_VERSION.to_string(),
+    }
 }
 
 fn tool_definition(name: &str) -> Value {
@@ -2028,6 +2246,18 @@ fn context_pack_schema() -> Value {
         properties.insert(
             "stage0_candidates".to_string(),
             json!({"type": "array", "items": {"type": "string"}}),
+        );
+        properties.insert(
+            "enable_vector_candidates".to_string(),
+            json!({"type": "boolean", "description": "Explicitly enable deterministic vector candidate recall diagnostics. Candidates are not graph proof."}),
+        );
+        properties.insert(
+            "vector_index".to_string(),
+            json!({"type": "string", "description": "Optional persisted vector chunk index path for diagnostic candidate recall."}),
+        );
+        properties.insert(
+            "vector_index_path".to_string(),
+            json!({"type": "string", "description": "Alias for vector_index."}),
         );
     }
     schema
@@ -4028,6 +4258,53 @@ mod tests {
         assert!(plan["packet"].as_object().is_some());
         assert!(plan["packet"]["metadata"]["trace"].as_array().is_some());
         assert!(plan["workflow"].as_array().is_some());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn context_pack_mcp_vector_missing_index_is_diagnostic() {
+        let repo = fixture_repo();
+        let db_path = repo.join("external-db").join("mcp-vector.sqlite");
+        let missing_index = repo.join("external-db").join("missing-vector-index.json");
+        let server = McpServer::new(
+            McpServerConfig::for_repo(&repo)
+                .with_db_path(&db_path)
+                .without_trace(),
+        );
+        ok(server.call_tool(
+            "codegraph.index_repo",
+            &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
+        ));
+        assert!(
+            !repo.join(".codegraph").exists(),
+            "MCP vector diagnostic test must use explicit external DB"
+        );
+
+        let result = ok(server.call_tool(
+            "codegraph.context_pack",
+            &json!({
+                "repo": path_string(&repo),
+                "db_path": path_string(&db_path),
+                "task": "Change login email handling",
+                "enable_vector_candidates": true,
+                "vector_index": path_string(&missing_index)
+            }),
+        ));
+
+        assert_eq!(result["status"].as_str(), Some("ok"));
+        assert_eq!(
+            result["vector_candidate_diagnostics"]["vector_index_status"].as_str(),
+            Some("missing")
+        );
+        assert_eq!(
+            result["packet"]["metadata"]["vector_candidate_trace"]["vector_index_status"].as_str(),
+            Some("missing")
+        );
+        assert_eq!(
+            result["vector_candidate_diagnostics"]["vector_candidate_count"].as_u64(),
+            Some(0)
+        );
 
         fs::remove_dir_all(repo).expect("cleanup");
     }

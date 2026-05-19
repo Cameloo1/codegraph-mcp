@@ -41,6 +41,9 @@ Status: semantic-proof and context-packet gates are green; compact-proof storage
 is under 250 MiB; DB passport preflight blocks stale or mismatched reuse. The
 published Intended Tool Quality Gate is not a final green release verdict, and
 the CGC comparison remains diagnostic/incomplete with no superiority claim.
+Local 1-bit Nuance-Rescue gating passes 8 adversarial cases covering rare
+identifiers, short functions, near-duplicate names, Buildroot config tokens,
+auth/negation, route literals, test names, and no-extension support scripts.
 
 See: [Intended Tool Quality Gate](reports/final/intended_tool_quality_gate.md)
 and [Manual Relation Precision](reports/final/manual_relation_precision.md).
@@ -121,6 +124,13 @@ their `candidate_sources`, matched seeds, source labels, ranking features, and
 verification status are preserved, exact seeds are protected across caps, and
 mixed evidence stays role-labeled.
 
+Candidate lanes are explicit: exact symbol/file/path seeds, Stage 0
+lexical/text-evidence matches, graph-neighborhood and PathEvidence candidates,
+vector semantic candidates when explicitly enabled, binary/1-bit candidates with
+deterministic overfetch/rerank, and nuance-rescue candidates for rare
+identifiers, config keys, route literals, test names, negation terms, and
+no-extension support scripts. None is graph proof by itself.
+
 ```text
 Index-time state
 ---------------
@@ -163,7 +173,8 @@ prompt intent + seed extraction
   +--> exact symbol/file/path seeds
   +--> Stage 0 lexical/FTS/text-evidence candidates
   +--> graph-neighborhood/path-evidence candidates
-  +--> Stage 1 binary-vector candidates when available
+  +--> Stage 1 binary/1-bit candidates when available
+  +--> nuance-rescue candidates when enabled
   +--> Stage 2 compressed-rerank candidates when available
   |
   v

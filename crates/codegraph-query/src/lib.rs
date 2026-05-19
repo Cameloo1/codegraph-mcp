@@ -21,7 +21,9 @@ use std::{
 use codegraph_core::{
     classify_edge_evidence_role, combine_evidence_roles, infer_edge_class, infer_edge_context,
     ContextPacket, ContextSnippet, DerivedClosureEdge, Edge, EdgeClass, Entity, EntityKind,
-    EvidenceRole, Exactness, FileRecord, Metadata, PathEvidence, RelationKind, SourceSpan,
+    EvidenceRole, Exactness, FileRecord, Metadata, PathEvidence, RelationKind, RetrievalCandidate,
+    RetrievalCandidateLifecycleStatus, RetrievalCandidateSource, RetrievalProofStatus,
+    RetrievalVerificationStatus, SourceSpan, VectorEmbeddingSource,
 };
 use codegraph_vector::{
     BinarySignature, BinaryVectorError, BinaryVectorIndex, CompressedVectorReranker,
@@ -791,7 +793,12 @@ impl RetrievalDocument {
 pub struct RetrievalFunnelConfig {
     pub binary_dimensions: usize,
     pub stage1_top_k: usize,
+    pub binary_overfetch_k: usize,
     pub stage2_top_n: usize,
+    pub enable_vector_candidates_by_default: bool,
+    pub vector_candidate_top_k: usize,
+    pub enable_nuance_rescue_by_default: bool,
+    pub nuance_rescue_top_k: usize,
     pub query_limits: QueryLimits,
     pub rerank_config: RerankConfig,
     pub bayesian_config: BayesianRankerConfig,
@@ -802,7 +809,12 @@ impl Default for RetrievalFunnelConfig {
         Self {
             binary_dimensions: 128,
             stage1_top_k: 32,
+            binary_overfetch_k: 0,
             stage2_top_n: 16,
+            enable_vector_candidates_by_default: false,
+            vector_candidate_top_k: 16,
+            enable_nuance_rescue_by_default: false,
+            nuance_rescue_top_k: 8,
             query_limits: QueryLimits {
                 max_depth: 6,
                 max_paths: 16,
@@ -814,6 +826,45 @@ impl Default for RetrievalFunnelConfig {
     }
 }
 
+impl RetrievalFunnelConfig {
+    pub fn binary_overfetch_k(&self) -> usize {
+        if self.binary_overfetch_k == 0 {
+            self.stage1_top_k
+        } else {
+            self.binary_overfetch_k
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VectorCandidateBranchStatus {
+    Missing,
+    Ready,
+    Stale { reason: String },
+}
+
+impl VectorCandidateBranchStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Ready => "ready",
+            Self::Stale { .. } => "stale",
+        }
+    }
+
+    fn warning(&self) -> Option<String> {
+        match self {
+            Self::Missing => {
+                Some("vector index missing; continuing without vector candidates".into())
+            }
+            Self::Ready => None,
+            Self::Stale { reason } => Some(format!(
+                "vector index stale or incompatible; continuing without vector candidates: {reason}"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RetrievalFunnelRequest {
     pub task: String,
@@ -821,6 +872,11 @@ pub struct RetrievalFunnelRequest {
     pub token_budget: usize,
     pub exact_seeds: Vec<String>,
     pub stage0_candidates: Vec<RetrievalDocument>,
+    pub enable_vector_candidates: bool,
+    pub enable_nuance_rescue_candidates: bool,
+    pub vector_candidate_diagnostics: bool,
+    pub vector_branch_status: VectorCandidateBranchStatus,
+    pub vector_candidates: Vec<RetrievalCandidate>,
     pub sources: BTreeMap<String, String>,
 }
 
@@ -832,6 +888,11 @@ impl RetrievalFunnelRequest {
             token_budget,
             exact_seeds: Vec::new(),
             stage0_candidates: Vec::new(),
+            enable_vector_candidates: false,
+            enable_nuance_rescue_candidates: false,
+            vector_candidate_diagnostics: false,
+            vector_branch_status: VectorCandidateBranchStatus::Missing,
+            vector_candidates: Vec::new(),
             sources: BTreeMap::new(),
         }
     }
@@ -843,6 +904,31 @@ impl RetrievalFunnelRequest {
 
     pub fn stage0_candidates(mut self, candidates: Vec<RetrievalDocument>) -> Self {
         self.stage0_candidates = candidates;
+        self
+    }
+
+    pub fn enable_vector_candidates(mut self, enabled: bool) -> Self {
+        self.enable_vector_candidates = enabled;
+        self
+    }
+
+    pub fn enable_nuance_rescue_candidates(mut self, enabled: bool) -> Self {
+        self.enable_nuance_rescue_candidates = enabled;
+        self
+    }
+
+    pub fn vector_candidate_diagnostics(mut self, enabled: bool) -> Self {
+        self.vector_candidate_diagnostics = enabled;
+        self
+    }
+
+    pub fn vector_branch_status(mut self, status: VectorCandidateBranchStatus) -> Self {
+        self.vector_branch_status = status;
+        self
+    }
+
+    pub fn vector_candidates(mut self, candidates: Vec<RetrievalCandidate>) -> Self {
+        self.vector_candidates = candidates;
         self
     }
 
@@ -1379,6 +1465,9 @@ pub struct RetrievalFunnelResult {
     pub trace: Vec<RetrievalTraceStage>,
     pub rerank_scores: Vec<RerankScore>,
     pub bayesian_scores: Vec<BayesianScore>,
+    pub vector_candidates: Vec<RetrievalCandidate>,
+    pub nuance_rescue_candidates: Vec<RetrievalCandidate>,
+    pub vector_warnings: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -2738,6 +2827,38 @@ impl RetrievalFunnel {
                 .entry(seed.clone())
                 .or_insert_with(|| RetrievalDocument::new(seed, seed));
         }
+
+        let vector_branch_enabled =
+            self.config.enable_vector_candidates_by_default || request.enable_vector_candidates;
+        let mut vector_warnings = Vec::new();
+        if (vector_branch_enabled || request.vector_candidate_diagnostics)
+            && request.vector_branch_status != VectorCandidateBranchStatus::Ready
+        {
+            if let Some(warning) = request.vector_branch_status.warning() {
+                vector_warnings.push(warning);
+            }
+        }
+        let (vector_candidates, vector_dropped) = if vector_branch_enabled
+            && request.vector_branch_status == VectorCandidateBranchStatus::Ready
+        {
+            selected_vector_candidates(
+                &request.vector_candidates,
+                self.config.vector_candidate_top_k,
+                &request.task,
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        for candidate in &vector_candidates {
+            documents
+                .entry(vector_candidate_stage_id(candidate))
+                .or_insert_with(|| vector_candidate_document(candidate));
+        }
+        let vector_stage_ids = vector_candidates
+            .iter()
+            .map(vector_candidate_stage_id)
+            .collect::<Vec<_>>();
+
         let mut binary_index = InMemoryBinaryVectorIndex::new(self.config.binary_dimensions)?;
         for document in documents.values() {
             binary_index.upsert_text(&document.id, &document.text)?;
@@ -2747,6 +2868,7 @@ impl RetrievalFunnel {
             exact_seed_ids
                 .iter()
                 .chain(request_stage0_ids.iter())
+                .chain(vector_stage_ids.iter())
                 .chain(documents.keys()),
         );
         let mut trace = vec![RetrievalTraceStage::new(
@@ -2759,12 +2881,28 @@ impl RetrievalFunnel {
                 "exact seeds bypass vector filters".to_string(),
             ],
         )];
+        trace.push(RetrievalTraceStage::new(
+            "stage0_vector_semantic_candidates",
+            vector_stage_ids.clone(),
+            vector_dropped.clone(),
+            vec![
+                format!("enabled={vector_branch_enabled}"),
+                format!("status={}", request.vector_branch_status.as_str()),
+                format!("candidate_count={}", vector_candidates.len()),
+                "vector candidates are candidate recall only, not graph proof".to_string(),
+                "exact seeds are not subject to vector candidate caps".to_string(),
+            ]
+            .into_iter()
+            .chain(vector_warnings.iter().cloned())
+            .collect(),
+        ));
 
         let query_signature =
             BinarySignature::from_text(&request.task, self.config.binary_dimensions)?;
+        let binary_overfetch_k = self.config.binary_overfetch_k();
         let stage1_candidates = binary_index.search_with_exact_seeds(
             &query_signature,
-            self.config.stage1_top_k,
+            binary_overfetch_k,
             &exact_seed_ids,
         )?;
         let stage1_ids = stage1_candidates
@@ -2776,23 +2914,112 @@ impl RetrievalFunnel {
             "stage1_binary_sieve",
             stage1_ids.clone(),
             stage1_dropped,
-            vec!["binary candidates are suggestions only".to_string()],
+            vec![
+                "binary candidates are suggestions only".to_string(),
+                format!("binary_overfetch_k={binary_overfetch_k}"),
+                format!("stage2_final_cap={}", self.config.stage2_top_n),
+                "final cap is applied after union and deterministic rerank".to_string(),
+            ],
         ));
 
-        let rerank_candidates = stage1_candidates
+        let nuance_rescue_enabled =
+            self.config.enable_nuance_rescue_by_default || request.enable_nuance_rescue_candidates;
+        let stage1_id_set = stage1_ids.iter().cloned().collect::<BTreeSet<_>>();
+        let (nuance_rescue_candidates, nuance_rescue_dropped) = if nuance_rescue_enabled {
+            selected_nuance_rescue_candidates(
+                &request.task,
+                &documents,
+                &stage1_id_set,
+                &exact_seed_ids,
+                self.config.nuance_rescue_top_k,
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let nuance_stage_ids = nuance_rescue_candidates
             .iter()
-            .map(|candidate| {
+            .map(|candidate| candidate.candidate_id.clone())
+            .collect::<Vec<_>>();
+        trace.push(RetrievalTraceStage::new(
+            "stage1_nuance_rescue",
+            nuance_stage_ids.clone(),
+            nuance_rescue_dropped.clone(),
+            vec![
+                format!("enabled={nuance_rescue_enabled}"),
+                format!("candidate_count={}", nuance_rescue_candidates.len()),
+                "rare-token and identifier rescue is candidate recall only".to_string(),
+                "rescued candidates still require graph/source verification".to_string(),
+            ],
+        ));
+        let stage1_with_rescue_ids =
+            merge_seed_values(stage1_ids.iter().chain(nuance_stage_ids.iter()));
+        let stage1_similarity_by_id = stage1_candidates
+            .iter()
+            .map(|candidate| (candidate.id.clone(), candidate.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let nuance_by_id = nuance_rescue_candidates
+            .iter()
+            .map(|candidate| (candidate.candidate_id.clone(), candidate.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let nuance_ids = nuance_stage_ids.iter().cloned().collect::<BTreeSet<_>>();
+
+        let rerank_candidates = stage1_with_rescue_ids
+            .iter()
+            .map(|candidate_id| {
                 let document = documents
-                    .get(&candidate.id)
+                    .get(candidate_id)
                     .cloned()
-                    .unwrap_or_else(|| RetrievalDocument::new(&candidate.id, &candidate.id));
+                    .unwrap_or_else(|| RetrievalDocument::new(candidate_id, candidate_id));
                 let mut rerank = RerankCandidate::new(document.id.clone(), document.text.clone())
                     .stage0_score(document.stage0_score)
-                    .exact_seed(candidate.exact_seed || exact_seed_ids.contains(&document.id));
-                if let Some(similarity) = candidate.similarity {
+                    .exact_seed(exact_seed_ids.contains(&document.id));
+                if let Some(candidate) = stage1_similarity_by_id.get(candidate_id) {
+                    let exact_seed = candidate.exact_seed || rerank.exact_seed;
+                    rerank = rerank.exact_seed(exact_seed);
+                }
+                if let Some(similarity) = stage1_similarity_by_id
+                    .get(candidate_id)
+                    .and_then(|candidate| candidate.similarity)
+                {
                     rerank = rerank.stage1_similarity(similarity);
                 }
                 rerank.metadata = document.metadata;
+                if self.engine.by_head.contains_key(candidate_id)
+                    || self.engine.by_tail.contains_key(candidate_id)
+                {
+                    rerank.metadata.insert(
+                        "graph_verification_available".to_string(),
+                        "true".to_string(),
+                    );
+                }
+                if nuance_ids.contains(candidate_id) {
+                    rerank
+                        .metadata
+                        .insert("candidate_source".to_string(), "nuance_rescue".to_string());
+                    rerank
+                        .metadata
+                        .insert("rare_token_match".to_string(), "true".to_string());
+                    rerank
+                        .metadata
+                        .insert("identifier_signature_match".to_string(), "true".to_string());
+                    if let Some(candidate) = nuance_by_id.get(candidate_id) {
+                        if !candidate.matched_seeds.is_empty() {
+                            rerank.metadata.insert(
+                                "matched_tokens".to_string(),
+                                candidate.matched_seeds.join(" "),
+                            );
+                        }
+                        if let Some(rescue_basis) = candidate
+                            .metadata
+                            .get("rescue_basis")
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            rerank
+                                .metadata
+                                .insert("rescue_basis".to_string(), rescue_basis.to_string());
+                        }
+                    }
+                }
                 rerank
             })
             .collect::<Vec<_>>();
@@ -2810,7 +3037,7 @@ impl RetrievalFunnel {
             .iter()
             .map(|score| score.id.clone())
             .collect::<Vec<_>>();
-        let stage2_dropped = dropped_ids(&stage1_ids, &stage2_ids, &exact_seed_ids);
+        let stage2_dropped = dropped_ids(&stage1_with_rescue_ids, &stage2_ids, &exact_seed_ids);
         trace.push(RetrievalTraceStage::new(
             "stage2_compressed_rerank",
             stage2_ids.clone(),
@@ -2819,6 +3046,12 @@ impl RetrievalFunnel {
                 "deterministic local reranker returns candidates for graph verification"
                     .to_string(),
                 "exact seeds are preserved even if top-N is small".to_string(),
+                format!("rerank_input_count={}", rerank_candidates.len()),
+                format!("rerank_output_count={}", rerank_scores.len()),
+                format!(
+                    "reasons={}",
+                    rerank_reason_summary(&rerank_scores).join(",")
+                ),
             ],
         ));
 
@@ -2949,15 +3182,79 @@ impl RetrievalFunnel {
                 })
                 .collect::<Vec<_>>()),
         );
+        metadata.insert(
+            "candidate_counts_by_source".to_string(),
+            vector_candidate_counts_json(
+                exact_seed_ids.len(),
+                request_stage0_ids.len(),
+                vector_candidates.len(),
+                nuance_rescue_candidates.len(),
+            ),
+        );
+        if !vector_warnings.is_empty() {
+            metadata.insert(
+                "vector_candidate_warnings".to_string(),
+                serde_json::json!(vector_warnings),
+            );
+        }
         let mut packet = self.engine.context_packet_from_paths(ContextPacketBuild {
-            task: request.task,
+            task: request.task.clone(),
             mode: request.mode,
             token_budget: request.token_budget,
-            symbols: verified_symbols,
+            symbols: verified_symbols.clone(),
             paths: &verified_paths,
             sources: &request.sources,
             metadata,
         });
+
+        if packet.verified_paths.is_empty() {
+            let fallback_snippets = vector_candidates
+                .iter()
+                .filter_map(vector_text_fallback_snippet)
+                .take(4)
+                .collect::<Vec<_>>();
+            if !fallback_snippets.is_empty() {
+                packet.snippets.extend(fallback_snippets);
+                packet.risks.push(
+                    "vector_text_evidence_candidate_returned_without_graph_proof".to_string(),
+                );
+                packet.metadata.insert(
+                    "no_proof_fallback_reason".to_string(),
+                    serde_json::json!(
+                        "vector text-evidence candidate available after graph verification found no proof path"
+                    ),
+                );
+                packet
+                    .metadata
+                    .insert("graph_proof".to_string(), serde_json::json!(false));
+                packet.metadata.insert(
+                    "proof_status".to_string(),
+                    serde_json::json!("no_proof_path_found"),
+                );
+            }
+        }
+
+        if request.vector_candidate_diagnostics {
+            let no_proof_fallback_reason = packet
+                .metadata
+                .get("no_proof_fallback_reason")
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
+            packet.metadata.insert(
+                "vector_candidate_trace".to_string(),
+                vector_candidate_trace_json(
+                    vector_branch_enabled,
+                    &request.vector_branch_status,
+                    &request.task,
+                    &request.vector_candidates,
+                    &vector_candidates,
+                    &vector_dropped,
+                    &vector_warnings,
+                    &verified_symbols,
+                    no_proof_fallback_reason.as_deref(),
+                ),
+            );
+        }
 
         trace.push(RetrievalTraceStage::new(
             "stage4_context_packet",
@@ -3002,6 +3299,9 @@ impl RetrievalFunnel {
             trace,
             rerank_scores,
             bayesian_scores,
+            vector_candidates,
+            nuance_rescue_candidates,
+            vector_warnings,
         })
     }
 }
@@ -4109,6 +4409,591 @@ fn preserve_exact_rerank_scores(
             .then_with(|| left.id.cmp(&right.id))
     });
     scores
+}
+
+fn rerank_reason_summary(scores: &[RerankScore]) -> Vec<String> {
+    let mut reasons = BTreeSet::new();
+    for score in scores {
+        for (component, value) in &score.components {
+            if *value > 0.0 {
+                reasons.insert(component.clone());
+            }
+        }
+    }
+    reasons.into_iter().collect()
+}
+
+fn selected_vector_candidates(
+    candidates: &[RetrievalCandidate],
+    top_k: usize,
+    task: &str,
+) -> (Vec<RetrievalCandidate>, Vec<String>) {
+    if top_k == 0 {
+        return (
+            Vec::new(),
+            candidates
+                .iter()
+                .map(|candidate| candidate.candidate_id.clone())
+                .collect(),
+        );
+    }
+
+    let mut selected = candidates
+        .iter()
+        .filter(|candidate| candidate.candidate_source == RetrievalCandidateSource::VectorSemantic)
+        .cloned()
+        .map(|candidate| normalize_vector_candidate(candidate, task))
+        .collect::<Vec<_>>();
+    selected.sort_by(|left, right| {
+        right
+            .score
+            .unwrap_or(0.0)
+            .total_cmp(&left.score.unwrap_or(0.0))
+            .then_with(|| left.candidate_id.cmp(&right.candidate_id))
+    });
+    let dropped = selected
+        .iter()
+        .skip(top_k)
+        .map(|candidate| vector_candidate_stage_id(candidate))
+        .collect::<Vec<_>>();
+    selected.truncate(top_k);
+    for (index, candidate) in selected.iter_mut().enumerate() {
+        candidate.rank = Some(index + 1);
+    }
+    (selected, dropped)
+}
+
+fn selected_nuance_rescue_candidates(
+    task: &str,
+    documents: &BTreeMap<String, RetrievalDocument>,
+    binary_kept_ids: &BTreeSet<String>,
+    exact_seed_ids: &[String],
+    top_k: usize,
+) -> (Vec<RetrievalCandidate>, Vec<String>) {
+    let query_tokens = nuance_rescue_query_tokens(task);
+    if query_tokens.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let exact_seed_set = exact_seed_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let mut selected = documents
+        .values()
+        .filter(|document| !binary_kept_ids.contains(&document.id))
+        .filter(|document| !exact_seed_set.contains(&document.id))
+        .filter_map(|document| nuance_rescue_candidate_for_document(task, &query_tokens, document))
+        .collect::<Vec<_>>();
+
+    selected.sort_by(|left, right| {
+        right
+            .score
+            .unwrap_or(0.0)
+            .total_cmp(&left.score.unwrap_or(0.0))
+            .then_with(|| left.candidate_id.cmp(&right.candidate_id))
+    });
+
+    let dropped = selected
+        .iter()
+        .skip(top_k)
+        .map(|candidate| candidate.candidate_id.clone())
+        .collect::<Vec<_>>();
+    selected.truncate(top_k);
+    for (index, candidate) in selected.iter_mut().enumerate() {
+        candidate.rank = Some(index + 1);
+    }
+    (selected, dropped)
+}
+
+fn nuance_rescue_candidate_for_document(
+    task: &str,
+    query_tokens: &BTreeSet<String>,
+    document: &RetrievalDocument,
+) -> Option<RetrievalCandidate> {
+    let document_tokens = nuance_rescue_document_tokens(document);
+    let matched = query_tokens
+        .intersection(&document_tokens)
+        .cloned()
+        .collect::<Vec<_>>();
+    if matched.is_empty() {
+        return None;
+    }
+
+    let score = nuance_rescue_score(query_tokens, &matched, document);
+    if score <= 0.0 {
+        return None;
+    }
+
+    let mut candidate = RetrievalCandidate::new(
+        document.id.clone(),
+        RetrievalCandidateSource::NuanceRescue,
+        "1-bit nuance rescue recovered this candidate by rare-token or identifier overlap; not graph proof",
+    );
+    candidate.matched_query_text = Some(task.to_string());
+    candidate.matched_seeds = matched.clone();
+    candidate.proof_status = RetrievalProofStatus::CandidateOnly;
+    candidate.graph_proof = false;
+    candidate.claimable = false;
+    candidate.claimable_for_text = Some(false);
+    candidate.claimable_for_graph = Some(false);
+    candidate.score = Some(score);
+    candidate.requires_graph_verification = true;
+    candidate.verification_status = RetrievalVerificationStatus::NeedsGraphVerification;
+    if let Some(path) = document.metadata.get("path") {
+        candidate.path = Some(path.clone());
+    }
+    candidate.metadata.insert(
+        "stage".to_string(),
+        serde_json::json!("stage1_nuance_rescue"),
+    );
+    candidate.metadata.insert(
+        "rescue_basis".to_string(),
+        serde_json::json!("rare_token_identifier_overlap"),
+    );
+    candidate
+        .metadata
+        .insert("matched_tokens".to_string(), serde_json::json!(matched));
+    if let Some(source) = document.metadata.get("candidate_source") {
+        candidate.metadata.insert(
+            "upstream_candidate_source".to_string(),
+            serde_json::json!(source),
+        );
+    }
+    Some(candidate)
+}
+
+fn nuance_rescue_query_tokens(task: &str) -> BTreeSet<String> {
+    symbol_search_tokens(task)
+        .into_iter()
+        .filter(|token| nuance_rescue_token_allowed(token))
+        .collect()
+}
+
+fn nuance_rescue_document_tokens(document: &RetrievalDocument) -> BTreeSet<String> {
+    let metadata_text = document
+        .metadata
+        .iter()
+        .map(|(key, value)| format!("{key} {value}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    symbol_search_tokens(&format!(
+        "{} {} {}",
+        document.id, document.text, metadata_text
+    ))
+    .into_iter()
+    .filter(|token| nuance_rescue_token_allowed(token))
+    .collect()
+}
+
+fn nuance_rescue_token_allowed(token: &str) -> bool {
+    token.len() >= 3
+        && !is_keyword_or_common_word(token)
+        && !matches!(
+            token,
+            "and"
+                | "are"
+                | "can"
+                | "does"
+                | "for"
+                | "has"
+                | "into"
+                | "not"
+                | "the"
+                | "this"
+                | "that"
+                | "what"
+                | "when"
+                | "where"
+                | "which"
+                | "why"
+        )
+}
+
+fn nuance_rescue_score(
+    query_tokens: &BTreeSet<String>,
+    matched_tokens: &[String],
+    document: &RetrievalDocument,
+) -> f64 {
+    let coverage = matched_tokens.len() as f64 / query_tokens.len().max(1) as f64;
+    let rare_bonus = matched_tokens
+        .iter()
+        .filter(|token| {
+            token.len() >= 6
+                || token.chars().any(|ch| ch.is_ascii_digit())
+                || token.contains('_')
+                || token.contains('-')
+        })
+        .count() as f64
+        * 0.25;
+    (coverage + rare_bonus + document.stage0_score.min(1.0) * 0.05).min(1.0)
+}
+
+fn normalize_vector_candidate(mut candidate: RetrievalCandidate, task: &str) -> RetrievalCandidate {
+    candidate.candidate_source = RetrievalCandidateSource::VectorSemantic;
+    candidate.graph_proof = false;
+    candidate.claimable_for_graph = Some(false);
+    candidate
+        .matched_query_text
+        .get_or_insert_with(|| task.to_string());
+
+    if candidate.span.is_none() && candidate.source_span_missing_reason.is_none() {
+        candidate.source_span_missing_reason =
+            Some("vector candidate did not include a source span".to_string());
+    }
+
+    match candidate.embedding_source {
+        Some(VectorEmbeddingSource::TextEvidence)
+        | Some(VectorEmbeddingSource::Snippet)
+        | Some(VectorEmbeddingSource::FilePathTitle)
+            if candidate.entity_id.is_none() =>
+        {
+            candidate.proof_status = RetrievalProofStatus::NotGraphProof;
+            candidate.requires_graph_verification = false;
+            candidate.verification_status = RetrievalVerificationStatus::NotGraphProof;
+            candidate.claimable = true;
+            candidate.claimable_for_text = Some(true);
+        }
+        _ if candidate.entity_id.is_some() => {
+            candidate.proof_status = RetrievalProofStatus::CandidateOnly;
+            candidate.requires_graph_verification = true;
+            candidate.verification_status = RetrievalVerificationStatus::NeedsGraphVerification;
+            candidate.claimable = false;
+            candidate.claimable_for_text.get_or_insert(false);
+        }
+        _ => {
+            candidate.proof_status = RetrievalProofStatus::CandidateOnly;
+            candidate.requires_graph_verification = true;
+            candidate.verification_status = RetrievalVerificationStatus::NeedsGraphVerification;
+            candidate.claimable = false;
+            candidate.claimable_for_text.get_or_insert(false);
+        }
+    }
+
+    if let Some(binding) = &candidate.lifecycle_binding {
+        if binding.status != RetrievalCandidateLifecycleStatus::Fresh {
+            candidate.verification_status = RetrievalVerificationStatus::StaleOrForeignDb;
+            candidate.proof_status = RetrievalProofStatus::StaleOrForeignDb;
+            candidate.claimable = false;
+            candidate.claimable_for_text = Some(false);
+            candidate.claimable_for_graph = Some(false);
+        }
+    }
+
+    candidate
+}
+
+fn vector_candidate_stage_id(candidate: &RetrievalCandidate) -> String {
+    candidate
+        .entity_id
+        .clone()
+        .unwrap_or_else(|| candidate.candidate_id.clone())
+}
+
+fn vector_candidate_document(candidate: &RetrievalCandidate) -> RetrievalDocument {
+    let id = vector_candidate_stage_id(candidate);
+    let text = candidate
+        .metadata
+        .get("chunk_text")
+        .and_then(|value| value.as_str())
+        .or_else(|| candidate.matched_query_text.as_deref())
+        .or_else(|| candidate.path.as_deref())
+        .unwrap_or(&candidate.candidate_id)
+        .to_string();
+    let mut document =
+        RetrievalDocument::new(id, text).stage0_score(candidate.score.unwrap_or(0.0));
+    document.metadata.insert(
+        "candidate_source".to_string(),
+        "vector_semantic".to_string(),
+    );
+    if let Some(chunk_id) = &candidate.chunk_id {
+        document
+            .metadata
+            .insert("chunk_id".to_string(), chunk_id.clone());
+    }
+    if let Some(path) = &candidate.path {
+        document.metadata.insert("path".to_string(), path.clone());
+    }
+    if matches!(
+        candidate.embedding_source,
+        Some(VectorEmbeddingSource::TextEvidence)
+            | Some(VectorEmbeddingSource::Snippet)
+            | Some(VectorEmbeddingSource::FilePathTitle)
+    ) {
+        document
+            .metadata
+            .insert("text_evidence_match".to_string(), "true".to_string());
+        document
+            .metadata
+            .insert("evidence_role".to_string(), "text_evidence".to_string());
+    }
+    document
+}
+
+fn vector_candidate_counts_json(
+    exact_seed_count: usize,
+    stage0_count: usize,
+    vector_count: usize,
+    nuance_rescue_count: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "exact_seed": exact_seed_count,
+        "stage0_candidate": stage0_count,
+        "vector_semantic": vector_count,
+        "nuance_rescue": nuance_rescue_count,
+    })
+}
+
+fn vector_candidate_trace_json(
+    vector_enabled: bool,
+    index_status: &VectorCandidateBranchStatus,
+    query_text: &str,
+    supplied_candidates: &[RetrievalCandidate],
+    accepted_candidates: &[RetrievalCandidate],
+    rejected_candidate_ids: &[String],
+    warnings: &[String],
+    graph_verified_stage_ids: &[String],
+    no_proof_fallback_reason: Option<&str>,
+) -> serde_json::Value {
+    let supplied_vector_count = supplied_candidates
+        .iter()
+        .filter(|candidate| candidate.candidate_source == RetrievalCandidateSource::VectorSemantic)
+        .count();
+    let rejected_count = if vector_enabled && index_status == &VectorCandidateBranchStatus::Ready {
+        rejected_candidate_ids.len()
+    } else if vector_enabled || supplied_vector_count > 0 {
+        supplied_vector_count
+    } else {
+        0
+    };
+    let (query_text, query_text_redacted, query_text_truncated) =
+        redacted_vector_trace_text(query_text, 160);
+    let stale_or_missing_reason =
+        vector_trace_status_reason(vector_enabled, index_status, warnings);
+    let graph_verified = graph_verified_stage_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let graph_verified_candidate_ids = accepted_candidates
+        .iter()
+        .filter_map(|candidate| {
+            let stage_id = vector_candidate_stage_id(candidate);
+            graph_verified
+                .contains(&stage_id)
+                .then(|| candidate.candidate_id.clone())
+        })
+        .take(8)
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "schema_version": 1,
+        "diagnostic_only": true,
+        "vector_enabled": vector_enabled,
+        "vector_index_status": index_status.as_str(),
+        "provider": vector_candidate_provider_json(supplied_candidates, accepted_candidates),
+        "query_text_sent_to_vector_branch": query_text,
+        "query_text_redacted": query_text_redacted,
+        "query_text_truncated": query_text_truncated,
+        "chunk_count_searched": supplied_vector_count,
+        "vector_candidate_count": accepted_candidates.len(),
+        "top_vector_candidate_ids": accepted_candidates
+            .iter()
+            .take(8)
+            .map(|candidate| candidate.candidate_id.clone())
+            .collect::<Vec<_>>(),
+        "score_range": vector_candidate_score_range_json(accepted_candidates),
+        "candidates_accepted": {
+            "count": accepted_candidates.len(),
+            "candidate_ids": accepted_candidates
+                .iter()
+                .take(8)
+                .map(|candidate| candidate.candidate_id.clone())
+                .collect::<Vec<_>>()
+        },
+        "candidates_rejected": {
+            "count": rejected_count,
+            "candidate_ids": rejected_candidate_ids
+                .iter()
+                .take(8)
+                .cloned()
+                .collect::<Vec<_>>()
+        },
+        "stale_missing_vector_index_reason": stale_or_missing_reason,
+        "graph_verification_status_for_vector_candidates": vector_graph_verification_trace_json(
+            accepted_candidates,
+            &graph_verified_candidate_ids
+        ),
+        "no_proof_fallback_reason": no_proof_fallback_reason
+            .map(|reason| redacted_vector_trace_text(reason, 240).0)
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::Null),
+        "proof_contract": "vector candidates are candidate recall only and are not graph proof unless graph/source verification succeeds"
+    })
+}
+
+fn vector_candidate_provider_json(
+    supplied_candidates: &[RetrievalCandidate],
+    accepted_candidates: &[RetrievalCandidate],
+) -> serde_json::Value {
+    let candidate = accepted_candidates
+        .first()
+        .or_else(|| supplied_candidates.first());
+    serde_json::json!({
+        "provider_id": candidate
+            .and_then(|candidate| candidate.metadata.get("provider_id"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown"),
+        "model_id": candidate
+            .and_then(|candidate| candidate.embedding_model_id.as_deref())
+            .unwrap_or("unknown"),
+        "dimension": candidate.and_then(|candidate| candidate.embedding_dim),
+        "embedding_profile": candidate
+            .and_then(|candidate| candidate.embedding_profile.as_deref())
+            .unwrap_or("unknown")
+    })
+}
+
+fn vector_candidate_score_range_json(candidates: &[RetrievalCandidate]) -> serde_json::Value {
+    let mut scores = candidates
+        .iter()
+        .filter_map(|candidate| candidate.score)
+        .filter(|score| score.is_finite())
+        .collect::<Vec<_>>();
+    if scores.is_empty() {
+        return serde_json::Value::Null;
+    }
+    scores.sort_by(f64::total_cmp);
+    serde_json::json!({
+        "min": scores[0],
+        "max": scores[scores.len() - 1]
+    })
+}
+
+fn vector_graph_verification_trace_json(
+    candidates: &[RetrievalCandidate],
+    graph_verified_candidate_ids: &[String],
+) -> serde_json::Value {
+    let mut status_counts = BTreeMap::<String, usize>::new();
+    for candidate in candidates {
+        *status_counts
+            .entry(retrieval_verification_status_label(
+                candidate.verification_status,
+            ))
+            .or_default() += 1;
+    }
+    serde_json::json!({
+        "status_counts": status_counts,
+        "requires_graph_verification_count": candidates
+            .iter()
+            .filter(|candidate| candidate.requires_graph_verification)
+            .count(),
+        "graph_verified_count": graph_verified_candidate_ids.len(),
+        "graph_verified_candidate_ids": graph_verified_candidate_ids,
+        "graph_proof_count": candidates
+            .iter()
+            .filter(|candidate| candidate.graph_proof)
+            .count()
+    })
+}
+
+fn retrieval_verification_status_label(status: RetrievalVerificationStatus) -> String {
+    serde_json::to_value(status)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn vector_trace_status_reason(
+    vector_enabled: bool,
+    index_status: &VectorCandidateBranchStatus,
+    warnings: &[String],
+) -> serde_json::Value {
+    let reason = if !vector_enabled {
+        Some("vector branch disabled by request/config".to_string())
+    } else {
+        match index_status {
+            VectorCandidateBranchStatus::Missing => {
+                Some("vector index missing; continuing without vector candidates".to_string())
+            }
+            VectorCandidateBranchStatus::Ready => None,
+            VectorCandidateBranchStatus::Stale { reason } => Some(format!(
+                "vector index stale or incompatible; continuing without vector candidates: {reason}"
+            )),
+        }
+    }
+    .or_else(|| warnings.first().cloned());
+
+    reason
+        .map(|reason| redacted_vector_trace_text(&reason, 240).0)
+        .map(serde_json::Value::from)
+        .unwrap_or(serde_json::Value::Null)
+}
+
+fn redacted_vector_trace_text(text: &str, max_chars: usize) -> (String, bool, bool) {
+    let mut redacted = false;
+    let tokens = text
+        .split_whitespace()
+        .map(|token| {
+            if vector_trace_token_looks_secret(token) {
+                redacted = true;
+                "[redacted]".to_string()
+            } else {
+                token.to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+    let joined = tokens.join(" ");
+    let char_count = joined.chars().count();
+    if char_count <= max_chars {
+        return (joined, redacted, false);
+    }
+    let mut truncated = joined.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    (truncated, redacted, true)
+}
+
+fn vector_trace_token_looks_secret(token: &str) -> bool {
+    let lower = token
+        .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == ',' || ch == ';')
+        .to_ascii_lowercase();
+    lower.starts_with("sk-")
+        || lower.contains("api_key=")
+        || lower.contains("apikey=")
+        || lower.contains("token=")
+        || lower.contains("password=")
+        || lower.contains("secret=")
+        || lower.contains("authorization:")
+        || lower.starts_with("bearer ")
+}
+
+fn vector_text_fallback_snippet(candidate: &RetrievalCandidate) -> Option<ContextSnippet> {
+    if !matches!(
+        candidate.embedding_source,
+        Some(VectorEmbeddingSource::TextEvidence)
+            | Some(VectorEmbeddingSource::Snippet)
+            | Some(VectorEmbeddingSource::FilePathTitle)
+    ) || candidate.entity_id.is_some()
+    {
+        return None;
+    }
+    let file = candidate
+        .path
+        .clone()
+        .or_else(|| candidate.file_id.clone())?;
+    let lines = candidate
+        .span
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "span unavailable".to_string());
+    let text = candidate
+        .metadata
+        .get("chunk_text")
+        .and_then(|value| value.as_str())
+        .or_else(|| candidate.matched_query_text.as_deref())
+        .unwrap_or("")
+        .to_string();
+    Some(ContextSnippet {
+        file,
+        lines,
+        text,
+        reason: "vector semantic text-evidence candidate; no graph proof".to_string(),
+    })
 }
 
 fn trace_stage_json(stage: &RetrievalTraceStage) -> serde_json::Value {
@@ -6663,6 +7548,88 @@ mod tests {
         }
     }
 
+    fn vector_text_candidate(id: &str, path: &str, text: &str, score: f64) -> RetrievalCandidate {
+        let mut candidate = RetrievalCandidate::new(
+            id,
+            RetrievalCandidateSource::VectorSemantic,
+            "vector text evidence candidate",
+        );
+        candidate.embedding_source = Some(VectorEmbeddingSource::TextEvidence);
+        candidate.file_id = Some(path.to_string());
+        candidate.path = Some(path.to_string());
+        candidate.span = Some(SourceSpan::new(path, 1, 3));
+        candidate.matched_query_text = Some("natural language package configuration".to_string());
+        candidate.evidence_role = EvidenceRole::Unknown;
+        candidate.proof_status = RetrievalProofStatus::NotGraphProof;
+        candidate.graph_proof = false;
+        candidate.claimable = true;
+        candidate.claimable_for_text = Some(true);
+        candidate.claimable_for_graph = Some(false);
+        candidate.score = Some(score);
+        candidate.embedding_model_id =
+            Some("codegraph-deterministic-token-projection-v1".to_string());
+        candidate.embedding_dim = Some(64);
+        candidate.embedding_profile = Some("deterministic-test-embedding-v1".to_string());
+        candidate.chunk_id = Some(format!("{id}#chunk"));
+        candidate.chunk_kind = Some("snippet".to_string());
+        candidate.requires_graph_verification = false;
+        candidate.verification_status = RetrievalVerificationStatus::NotGraphProof;
+        candidate.metadata.insert(
+            "provider_id".to_string(),
+            serde_json::json!("codegraph-local-deterministic"),
+        );
+        candidate
+            .metadata
+            .insert("chunk_text".to_string(), serde_json::json!(text));
+        candidate.metadata.insert(
+            "evidence_role_raw".to_string(),
+            serde_json::json!("text_evidence"),
+        );
+        candidate
+    }
+
+    fn vector_graph_candidate(
+        id: &str,
+        entity_id: &str,
+        text: &str,
+        score: f64,
+    ) -> RetrievalCandidate {
+        let mut candidate = RetrievalCandidate::new(
+            id,
+            RetrievalCandidateSource::VectorSemantic,
+            "vector graph entity candidate",
+        );
+        candidate.embedding_source = Some(VectorEmbeddingSource::GraphEntity);
+        candidate.file_id = Some("src/auth.ts".to_string());
+        candidate.path = Some("src/auth.ts".to_string());
+        candidate.entity_id = Some(entity_id.to_string());
+        candidate.span = Some(SourceSpan::new("src/auth.ts", 2, 4));
+        candidate.matched_query_text = Some("where is the login function implemented".to_string());
+        candidate.evidence_role = EvidenceRole::Production;
+        candidate.proof_status = RetrievalProofStatus::CandidateOnly;
+        candidate.graph_proof = false;
+        candidate.claimable = false;
+        candidate.claimable_for_text = Some(false);
+        candidate.claimable_for_graph = Some(false);
+        candidate.score = Some(score);
+        candidate.embedding_model_id =
+            Some("codegraph-deterministic-token-projection-v1".to_string());
+        candidate.embedding_dim = Some(64);
+        candidate.embedding_profile = Some("deterministic-test-embedding-v1".to_string());
+        candidate.chunk_id = Some(format!("{id}#chunk"));
+        candidate.chunk_kind = Some("function".to_string());
+        candidate.requires_graph_verification = true;
+        candidate.verification_status = RetrievalVerificationStatus::NeedsGraphVerification;
+        candidate.metadata.insert(
+            "provider_id".to_string(),
+            serde_json::json!("codegraph-local-deterministic"),
+        );
+        candidate
+            .metadata
+            .insert("chunk_text".to_string(), serde_json::json!(text));
+        candidate
+    }
+
     #[test]
     fn retrieval_funnel_returns_expected_context_packet() {
         let funnel = ok(RetrievalFunnel::new(
@@ -6725,7 +7692,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 "stage0_exact_seed_extraction",
+                "stage0_vector_semantic_candidates",
                 "stage1_binary_sieve",
+                "stage1_nuance_rescue",
                 "stage2_compressed_rerank",
                 "stage3_exact_graph_verification",
                 "stage4_context_packet",
@@ -6769,6 +7738,415 @@ mod tests {
     }
 
     #[test]
+    fn vector_branch_text_evidence_feeds_no_proof_fallback_without_graph_proof() {
+        let mut config = funnel_config(2, 2);
+        config.vector_candidate_top_k = 4;
+        let funnel = ok(RetrievalFunnel::new(Vec::new(), Vec::new(), config));
+        let candidate = vector_text_candidate(
+            "vector://text/package/foo/Config.in",
+            "package/foo/Config.in",
+            "config BR2_PACKAGE_FOO\n\tbool \"foo\"\n\tdepends on BR2_USE_MMU",
+            0.92,
+        );
+
+        let result = ok(funnel.run(
+            RetrievalFunnelRequest::new(
+                "Which Buildroot option enables the foo package?",
+                "planning",
+                1_000,
+            )
+            .enable_vector_candidates(true)
+            .vector_branch_status(VectorCandidateBranchStatus::Ready)
+            .vector_candidates(vec![candidate]),
+        ));
+
+        assert_eq!(result.vector_candidates.len(), 1);
+        assert_eq!(
+            result.vector_candidates[0].candidate_source,
+            RetrievalCandidateSource::VectorSemantic
+        );
+        assert!(!result.vector_candidates[0].graph_proof);
+        assert_eq!(
+            result.vector_candidates[0].proof_status,
+            RetrievalProofStatus::NotGraphProof
+        );
+        assert!(result.packet.verified_paths.is_empty());
+        assert!(result
+            .packet
+            .snippets
+            .iter()
+            .any(|snippet| snippet.file == "package/foo/Config.in"
+                && snippet.text.contains("BR2_PACKAGE_FOO")));
+        assert_eq!(
+            result
+                .packet
+                .metadata
+                .get("proof_status")
+                .and_then(|value| value.as_str()),
+            Some("no_proof_path_found")
+        );
+        assert_eq!(
+            result
+                .packet
+                .metadata
+                .get("graph_proof")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn vector_branch_graph_entity_candidate_feeds_graph_verification() {
+        let mut config = funnel_config(4, 4);
+        config.vector_candidate_top_k = 4;
+        let funnel = ok(RetrievalFunnel::new(
+            vec![edge(
+                "AuthService.login",
+                RelationKind::Calls,
+                "TokenStore.create",
+                1,
+            )],
+            Vec::new(),
+            config,
+        ));
+        let candidate = vector_graph_candidate(
+            "vector://entity/AuthService.login",
+            "AuthService.login",
+            "function AuthService.login writes login token",
+            0.94,
+        );
+
+        let result = ok(funnel.run(
+            RetrievalFunnelRequest::new(
+                "Where is login token creation implemented?",
+                "impact",
+                1_000,
+            )
+            .enable_vector_candidates(true)
+            .vector_branch_status(VectorCandidateBranchStatus::Ready)
+            .vector_candidates(vec![candidate]),
+        ));
+
+        assert_eq!(result.vector_candidates.len(), 1);
+        assert!(!result.vector_candidates[0].graph_proof);
+        assert_eq!(
+            result.vector_candidates[0].verification_status,
+            RetrievalVerificationStatus::NeedsGraphVerification
+        );
+        assert!(result.packet.verified_paths.iter().any(|path| {
+            path.source == "AuthService.login" && path.target == "TokenStore.create"
+        }));
+    }
+
+    #[test]
+    fn exact_seed_survives_many_vector_candidates_and_vector_cap() {
+        let mut config = funnel_config(1, 1);
+        config.vector_candidate_top_k = 1;
+        let noisy_vectors = (0..16)
+            .map(|index| {
+                vector_text_candidate(
+                    &format!("vector://text/noisy-{index}"),
+                    &format!("docs/noisy-{index}.md"),
+                    "semantic noise auth login token package",
+                    1.0 - (index as f64 * 0.01),
+                )
+            })
+            .collect::<Vec<_>>();
+        let funnel = ok(RetrievalFunnel::new(
+            vec![edge(
+                "Exact.seed",
+                RelationKind::Calls,
+                "verified-target",
+                1,
+            )],
+            vec![RetrievalDocument::new("Exact.seed", "unrelated exact seed")],
+            config,
+        ));
+
+        let result = ok(funnel.run(
+            RetrievalFunnelRequest::new("semantic noise auth login token", "impact", 1_000)
+                .exact_seeds(vec!["Exact.seed".to_string()])
+                .enable_vector_candidates(true)
+                .vector_branch_status(VectorCandidateBranchStatus::Ready)
+                .vector_candidates(noisy_vectors),
+        ));
+        let vector_stage = result
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage0_vector_semantic_candidates")
+            .expect("vector stage");
+        let stage1 = result
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage1_binary_sieve")
+            .expect("stage1 trace");
+        let stage2 = result
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage2_compressed_rerank")
+            .expect("stage2 trace");
+
+        assert_eq!(result.vector_candidates.len(), 1);
+        assert!(!vector_stage.dropped.is_empty());
+        assert!(stage1.kept.contains(&"Exact.seed".to_string()));
+        assert!(stage2.kept.contains(&"Exact.seed".to_string()));
+    }
+
+    #[test]
+    fn nuance_rescue_is_opt_in_and_candidate_only() {
+        let mut config = funnel_config(0, 4);
+        config.nuance_rescue_top_k = 4;
+        let funnel = ok(RetrievalFunnel::new(
+            vec![edge(
+                "RareAuthGate",
+                RelationKind::Calls,
+                "AdminTokenVault",
+                1,
+            )],
+            vec![RetrievalDocument::new(
+                "RareAuthGate",
+                "requireFreshAdminToken validates the admin route literal",
+            )],
+            config,
+        ));
+
+        let disabled = ok(funnel.run(RetrievalFunnelRequest::new(
+            "Trace requireFreshAdminToken admin route handling",
+            "security",
+            1_000,
+        )));
+        assert!(disabled.nuance_rescue_candidates.is_empty());
+        assert!(disabled.packet.verified_paths.is_empty());
+
+        let rescued = ok(funnel.run(
+            RetrievalFunnelRequest::new(
+                "Trace requireFreshAdminToken admin route handling",
+                "security",
+                1_000,
+            )
+            .enable_nuance_rescue_candidates(true),
+        ));
+        let nuance_stage = rescued
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage1_nuance_rescue")
+            .expect("nuance rescue stage");
+
+        assert!(nuance_stage.kept.contains(&"RareAuthGate".to_string()));
+        assert_eq!(rescued.nuance_rescue_candidates.len(), 1);
+        assert_eq!(
+            rescued.nuance_rescue_candidates[0].candidate_source,
+            RetrievalCandidateSource::NuanceRescue
+        );
+        assert_eq!(
+            rescued.nuance_rescue_candidates[0].proof_status,
+            RetrievalProofStatus::CandidateOnly
+        );
+        assert!(!rescued.nuance_rescue_candidates[0].graph_proof);
+        assert!(!rescued.nuance_rescue_candidates[0].claimable);
+        assert_eq!(
+            rescued.nuance_rescue_candidates[0].verification_status,
+            RetrievalVerificationStatus::NeedsGraphVerification
+        );
+        assert!(rescued
+            .packet
+            .verified_paths
+            .iter()
+            .any(|path| { path.source == "RareAuthGate" && path.target == "AdminTokenVault" }));
+    }
+
+    #[test]
+    fn missing_or_stale_vector_index_does_not_break_funnel() {
+        let funnel = ok(RetrievalFunnel::new(
+            vec![edge("a", RelationKind::Calls, "b", 1)],
+            vec![RetrievalDocument::new("a", "call b")],
+            funnel_config(2, 2),
+        ));
+
+        let missing = ok(funnel.run(
+            RetrievalFunnelRequest::new("Change a", "impact", 1_000)
+                .exact_seeds(vec!["a".to_string()])
+                .enable_vector_candidates(true)
+                .vector_branch_status(VectorCandidateBranchStatus::Missing),
+        ));
+        assert!(missing.vector_candidates.is_empty());
+        assert!(missing
+            .vector_warnings
+            .iter()
+            .any(|warning| warning.contains("missing")));
+        assert!(missing
+            .packet
+            .verified_paths
+            .iter()
+            .any(|path| path.source == "a" && path.target == "b"));
+
+        let stale = ok(funnel.run(
+            RetrievalFunnelRequest::new("Change a", "impact", 1_000)
+                .exact_seeds(vec!["a".to_string()])
+                .enable_vector_candidates(true)
+                .vector_branch_status(VectorCandidateBranchStatus::Stale {
+                    reason: "provider model changed".to_string(),
+                })
+                .vector_candidates(vec![vector_graph_candidate(
+                    "vector://entity/a",
+                    "a",
+                    "call b",
+                    0.99,
+                )]),
+        ));
+        assert!(stale.vector_candidates.is_empty());
+        assert!(stale
+            .vector_warnings
+            .iter()
+            .any(|warning| warning.contains("provider model changed")));
+    }
+
+    #[test]
+    fn vector_diagnostics_trace_includes_branch_without_default_bloat() {
+        let mut config = funnel_config(2, 2);
+        config.vector_candidate_top_k = 4;
+        let funnel = ok(RetrievalFunnel::new(Vec::new(), Vec::new(), config));
+        let candidate = vector_text_candidate(
+            "vector://text/package/foo/Config.in",
+            "package/foo/Config.in",
+            "config BR2_PACKAGE_FOO\n\tbool \"foo\"\n\tdepends on BR2_USE_MMU",
+            0.92,
+        );
+
+        let compact = ok(funnel.run(
+            RetrievalFunnelRequest::new("Which Buildroot option enables foo?", "planning", 1_000)
+                .enable_vector_candidates(true)
+                .vector_branch_status(VectorCandidateBranchStatus::Ready)
+                .vector_candidates(vec![candidate.clone()]),
+        ));
+        assert!(compact
+            .packet
+            .metadata
+            .get("vector_candidate_trace")
+            .is_none());
+
+        let diagnostic = ok(funnel.run(
+            RetrievalFunnelRequest::new("Which Buildroot option enables foo?", "planning", 1_000)
+                .enable_vector_candidates(true)
+                .vector_candidate_diagnostics(true)
+                .vector_branch_status(VectorCandidateBranchStatus::Ready)
+                .vector_candidates(vec![candidate]),
+        ));
+        let trace = diagnostic
+            .packet
+            .metadata
+            .get("vector_candidate_trace")
+            .expect("vector candidate trace");
+
+        assert_eq!(trace["diagnostic_only"].as_bool(), Some(true));
+        assert_eq!(trace["vector_enabled"].as_bool(), Some(true));
+        assert_eq!(trace["vector_index_status"].as_str(), Some("ready"));
+        assert_eq!(
+            trace["provider"]["provider_id"].as_str(),
+            Some("codegraph-local-deterministic")
+        );
+        assert_eq!(
+            trace["provider"]["model_id"].as_str(),
+            Some("codegraph-deterministic-token-projection-v1")
+        );
+        assert_eq!(trace["provider"]["dimension"].as_u64(), Some(64));
+        assert_eq!(trace["chunk_count_searched"].as_u64(), Some(1));
+        assert_eq!(trace["vector_candidate_count"].as_u64(), Some(1));
+        assert_eq!(trace["candidates_accepted"]["count"].as_u64(), Some(1));
+        assert_eq!(trace["candidates_rejected"]["count"].as_u64(), Some(0));
+        assert_eq!(
+            trace["top_vector_candidate_ids"][0].as_str(),
+            Some("vector://text/package/foo/Config.in")
+        );
+        assert_eq!(trace["score_range"]["min"].as_f64(), Some(0.92));
+        assert_eq!(trace["score_range"]["max"].as_f64(), Some(0.92));
+        assert_eq!(
+            trace["graph_verification_status_for_vector_candidates"]["graph_proof_count"].as_u64(),
+            Some(0)
+        );
+        assert!(trace["no_proof_fallback_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("vector text-evidence candidate")));
+        let serialized = serde_json::to_string(trace).expect("serialize vector trace");
+        assert!(!serialized.contains("BR2_PACKAGE_FOO"));
+        assert!(!serialized.contains("chunk_text"));
+    }
+
+    #[test]
+    fn vector_diagnostics_trace_records_stale_reason() {
+        let funnel = ok(RetrievalFunnel::new(
+            vec![edge("a", RelationKind::Calls, "b", 1)],
+            vec![RetrievalDocument::new("a", "call b")],
+            funnel_config(2, 2),
+        ));
+        let result = ok(funnel.run(
+            RetrievalFunnelRequest::new("Change a", "impact", 1_000)
+                .enable_vector_candidates(true)
+                .vector_candidate_diagnostics(true)
+                .vector_branch_status(VectorCandidateBranchStatus::Stale {
+                    reason: "provider model changed".to_string(),
+                })
+                .vector_candidates(vec![vector_graph_candidate(
+                    "vector://entity/a",
+                    "a",
+                    "call b",
+                    0.99,
+                )]),
+        ));
+        let trace = result
+            .packet
+            .metadata
+            .get("vector_candidate_trace")
+            .expect("vector candidate trace");
+
+        assert_eq!(trace["vector_enabled"].as_bool(), Some(true));
+        assert_eq!(trace["vector_index_status"].as_str(), Some("stale"));
+        assert_eq!(trace["vector_candidate_count"].as_u64(), Some(0));
+        assert_eq!(trace["candidates_rejected"]["count"].as_u64(), Some(1));
+        assert!(trace["stale_missing_vector_index_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("provider model changed")));
+    }
+
+    #[test]
+    fn vector_diagnostics_trace_redacts_query_secrets() {
+        let mut config = funnel_config(2, 2);
+        config.vector_candidate_top_k = 4;
+        let funnel = ok(RetrievalFunnel::new(Vec::new(), Vec::new(), config));
+        let result = ok(funnel.run(
+            RetrievalFunnelRequest::new(
+                "Find package metadata api_key=sk-vector-secret password=super-secret token=abc123",
+                "planning",
+                1_000,
+            )
+            .enable_vector_candidates(true)
+            .vector_candidate_diagnostics(true)
+            .vector_branch_status(VectorCandidateBranchStatus::Ready)
+            .vector_candidates(vec![vector_text_candidate(
+                "vector://text/package/foo/foo.mk",
+                "package/foo/foo.mk",
+                "$(eval $(generic-package))",
+                0.91,
+            )]),
+        ));
+        let trace = result
+            .packet
+            .metadata
+            .get("vector_candidate_trace")
+            .expect("vector candidate trace");
+        let serialized = serde_json::to_string(trace).expect("serialize vector trace");
+
+        assert_eq!(trace["query_text_redacted"].as_bool(), Some(true));
+        assert!(trace["query_text_sent_to_vector_branch"]
+            .as_str()
+            .is_some_and(|query| query.contains("[redacted]")));
+        assert!(!serialized.contains("sk-vector-secret"));
+        assert!(!serialized.contains("super-secret"));
+        assert!(!serialized.contains("abc123"));
+        assert!(!serialized.contains("generic-package"));
+    }
+
+    #[test]
     fn binary_false_positive_is_removed_by_exact_graph_verification() {
         let funnel = ok(RetrievalFunnel::new(
             vec![edge(
@@ -6802,6 +8180,195 @@ mod tests {
             .packet
             .symbols
             .contains(&"binary-false-positive".to_string()));
+    }
+
+    fn binary_overfetch_rerank_test_config() -> RetrievalFunnelConfig {
+        let mut config = funnel_config(1, 1);
+        config.binary_overfetch_k = 4;
+        config.rerank_config = RerankConfig {
+            text_weight: 0.05,
+            compressed_vector_weight: 0.05,
+            stage1_weight: 0.05,
+            metadata_weight: 0.0,
+            rare_token_weight: 1.0,
+            identifier_signature_weight: 1.0,
+            text_evidence_weight: 0.3,
+            source_role_weight: 0.3,
+            graph_verification_weight: 0.2,
+            ..RerankConfig::default()
+        };
+        config
+    }
+
+    fn near_boundary_binary_documents() -> Vec<RetrievalDocument> {
+        let mut target =
+            RetrievalDocument::new("ZephyrAlphaTokenGuard", "tiny guard body").stage0_score(0.1);
+        target
+            .metadata
+            .insert("matched_tokens".to_string(), "zephyralphatoken".to_string());
+        target
+            .metadata
+            .insert("rare_token_match".to_string(), "true".to_string());
+        target
+            .metadata
+            .insert("identifier_signature_match".to_string(), "true".to_string());
+        target.metadata.insert(
+            "path".to_string(),
+            "src/auth/zephyr_alpha_token_guard.ts".to_string(),
+        );
+        target
+            .metadata
+            .insert("source_role_compatible".to_string(), "true".to_string());
+        target
+            .metadata
+            .insert("text_evidence_match".to_string(), "true".to_string());
+
+        vec![
+            RetrievalDocument::new("broad-noise-0", "trace route auth test").stage0_score(1.0),
+            RetrievalDocument::new("broad-noise-1", "trace route auth test").stage0_score(1.0),
+            RetrievalDocument::new("broad-noise-2", "trace route auth test").stage0_score(1.0),
+            target,
+        ]
+    }
+
+    #[test]
+    fn binary_overfetch_rerank_recovers_near_boundary_candidate() {
+        let prompt = "Trace route auth test";
+        let without_overfetch = ok(RetrievalFunnel::new(
+            vec![edge(
+                "ZephyrAlphaTokenGuard",
+                RelationKind::Calls,
+                "verified-target",
+                1,
+            )],
+            near_boundary_binary_documents(),
+            {
+                let mut config = binary_overfetch_rerank_test_config();
+                config.binary_overfetch_k = 0;
+                config
+            },
+        ));
+        let without_result =
+            ok(without_overfetch.run(RetrievalFunnelRequest::new(prompt, "security", 1_000)));
+        let without_stage2 = without_result
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage2_compressed_rerank")
+            .expect("stage2 without overfetch");
+        assert!(!without_stage2
+            .kept
+            .contains(&"ZephyrAlphaTokenGuard".to_string()));
+
+        let with_overfetch = ok(RetrievalFunnel::new(
+            vec![edge(
+                "ZephyrAlphaTokenGuard",
+                RelationKind::Calls,
+                "verified-target",
+                1,
+            )],
+            near_boundary_binary_documents(),
+            binary_overfetch_rerank_test_config(),
+        ));
+        let result = ok(with_overfetch.run(RetrievalFunnelRequest::new(prompt, "security", 1_000)));
+        let stage1 = result
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage1_binary_sieve")
+            .expect("stage1 trace");
+        let stage2 = result
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage2_compressed_rerank")
+            .expect("stage2 trace");
+
+        assert!(stage1.kept.contains(&"ZephyrAlphaTokenGuard".to_string()));
+        assert_eq!(stage2.kept, vec!["ZephyrAlphaTokenGuard".to_string()]);
+        assert!(!stage2.kept.contains(&"broad-noise-0".to_string()));
+        assert!(stage1
+            .notes
+            .iter()
+            .any(|note| note == "binary_overfetch_k=4"));
+        assert!(stage2
+            .notes
+            .iter()
+            .any(|note| note == "rerank_input_count=4"));
+        assert!(stage2
+            .notes
+            .iter()
+            .any(|note| note == "rerank_output_count=1"));
+        assert!(stage2.notes.iter().any(|note| {
+            note.contains("rare_token_match")
+                && note.contains("identifier_signature_match")
+                && note.contains("graph_verification_availability")
+        }));
+        assert!(result.packet.verified_paths.iter().any(|path| {
+            path.source == "ZephyrAlphaTokenGuard" && path.target == "verified-target"
+        }));
+        let compact_rerank = result
+            .packet
+            .metadata
+            .get("rerank_scores")
+            .expect("rerank scores");
+        let serialized = serde_json::to_string(compact_rerank).expect("serialize rerank scores");
+        assert!(!serialized.contains("components"));
+        assert!(serialized.len() < 512);
+    }
+
+    #[test]
+    fn binary_overfetch_rerank_preserves_exact_seed_and_no_proof_boundary() {
+        let prompt = "Trace route auth test";
+        let no_proof = ok(RetrievalFunnel::new(
+            Vec::new(),
+            near_boundary_binary_documents(),
+            binary_overfetch_rerank_test_config(),
+        ));
+        let no_proof_result =
+            ok(no_proof.run(RetrievalFunnelRequest::new(prompt, "security", 1_000)));
+        let no_proof_stage2 = no_proof_result
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage2_compressed_rerank")
+            .expect("stage2 no proof");
+        assert_eq!(
+            no_proof_stage2.kept,
+            vec!["ZephyrAlphaTokenGuard".to_string()]
+        );
+        assert!(no_proof_result.packet.verified_paths.is_empty());
+        assert_ne!(
+            no_proof_result
+                .packet
+                .metadata
+                .get("graph_proof")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+
+        let exact_seed = ok(RetrievalFunnel::new(
+            vec![edge(
+                "Exact.seed",
+                RelationKind::Calls,
+                "verified-target",
+                1,
+            )],
+            near_boundary_binary_documents(),
+            binary_overfetch_rerank_test_config(),
+        ));
+        let exact_result = ok(exact_seed.run(
+            RetrievalFunnelRequest::new(prompt, "security", 1_000)
+                .exact_seeds(vec!["Exact.seed".to_string()]),
+        ));
+        let exact_stage2 = exact_result
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage2_compressed_rerank")
+            .expect("stage2 exact");
+
+        assert!(exact_stage2.kept.contains(&"Exact.seed".to_string()));
+        assert!(exact_result
+            .packet
+            .verified_paths
+            .iter()
+            .any(|path| path.source == "Exact.seed" && path.target == "verified-target"));
     }
 
     #[test]
@@ -6859,7 +8426,9 @@ mod tests {
 
         for stage in [
             "stage0_exact_seed_extraction",
+            "stage0_vector_semantic_candidates",
             "stage1_binary_sieve",
+            "stage1_nuance_rescue",
             "stage2_compressed_rerank",
             "stage3_exact_graph_verification",
             "stage4_context_packet",

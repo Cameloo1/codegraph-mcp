@@ -28,20 +28,24 @@ use codegraph_bench::{
 use codegraph_core::{
     classify_edge_evidence_role, classify_entity_source_role, combine_evidence_roles,
     ContextPacket, ContextSnippet, Edge, Entity, EntityKind, EvidenceRole, EvidenceRoleDecision,
-    Exactness, FileRecord, Metadata, PathEvidence, RelationKind, RepoIndexState, SourceSpan,
+    Exactness, FileRecord, Metadata, PathEvidence, RelationKind, RepoIndexState,
+    RetrievalCandidate, RetrievalCandidateSource, RetrievalProofStatus,
+    RetrievalVerificationStatus, SourceSpan, VectorEmbeddingSource,
 };
 pub use codegraph_index::{
     collect_repo_files, default_db_path, graph_fact_hash, index_repo,
     index_repo_to_db_with_options, index_repo_with_options, inspect_db_lifecycle_preflight,
-    inspect_db_lifecycle_surface_preflight, inspect_repo_db_passport, parse_extract_pending_files,
-    require_reusable_db_passport, scope_policy_hash, should_ignore_path,
-    should_start_new_index_batch, update_changed_files, update_changed_files_to_db,
-    update_changed_files_with_cache, update_changed_files_with_cache_to_db,
+    inspect_db_lifecycle_surface_preflight, inspect_repo_db_passport, load_vector_chunk_index_json,
+    parse_extract_pending_files, require_reusable_db_passport, scope_policy_hash,
+    should_ignore_path, should_start_new_index_batch, update_changed_files,
+    update_changed_files_to_db, update_changed_files_with_cache,
+    update_changed_files_with_cache_to_db, vector_chunk_search_hit_to_retrieval_candidate,
     DbLifecycleOperationKind, DbLifecyclePolicy, DbLifecyclePreflight, DbLifecycleSurfacePreflight,
     DbLifecycleSurfacePreflightRequest, IncrementalIndexCache, IncrementalIndexSummary,
     IndexBuildMode, IndexError, IndexIssue, IndexOptions, IndexProfile, IndexScopeOptions,
-    IndexSummary, LocalFactBundle, PendingIndexFile, StorageMode, DEFAULT_INDEX_BATCH_MAX_FILES,
-    DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY, UNBOUNDED_STORE_READ_LIMIT,
+    IndexSummary, LocalFactBundle, PendingIndexFile, StorageMode, VectorChunkIndexBuildOptions,
+    DEFAULT_INDEX_BATCH_MAX_FILES, DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY,
+    UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::{
     detect_language, extract_entities_and_relations, language_frontends, LanguageParser,
@@ -49,8 +53,9 @@ use codegraph_parser::{
 };
 use codegraph_query::{
     extract_prompt_seed_provenance, extract_prompt_seeds, ContextPackRequest,
-    ExactGraphQueryEngine, GraphPath, QueryLimits, SymbolSearchHit, SymbolSearchIndex,
-    TraversalDirection, TraversalStep,
+    ExactGraphQueryEngine, GraphPath, QueryLimits, RetrievalDocument, RetrievalFunnel,
+    RetrievalFunnelConfig, RetrievalFunnelRequest, SymbolSearchHit, SymbolSearchIndex,
+    TraversalDirection, TraversalStep, VectorCandidateBranchStatus,
 };
 use codegraph_store::{
     DbPassport, DbPreflightReport, GraphStore, SqliteGraphStore, TextSearchKind,
@@ -60,6 +65,7 @@ use codegraph_trace::{
     append_trace_event, replay_trace_file, TraceAppendEvent, TraceConfig, TraceEventType,
     DEFAULT_TRACE_ROOT,
 };
+use codegraph_vector::{DeterministicTestEmbeddingProvider, TestEmbeddingEnablement};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -107,6 +113,12 @@ const CONTEXT_PLANNING_PACKET_SYMBOL_LIMIT: usize = 12;
 const CONTEXT_PLANNING_PACKET_EVIDENCE_LIMIT: usize = 3;
 const CONTEXT_PLANNING_PACKET_QUERY_LIMIT: usize = 6;
 const CONTEXT_PLANNING_PACKET_VERIFICATION_LIMIT: usize = 3;
+const CONTEXT_PACK_VECTOR_INDEX_FILE_NAME: &str = "codegraph-vector-chunks.json";
+const CONTEXT_PACK_VECTOR_SOURCE_SCOPE: &str = "context-pack-release-vector-candidates";
+const CONTEXT_PACK_VECTOR_PROVIDER_DIMENSION: usize = 64;
+const CONTEXT_PACK_VECTOR_CANDIDATE_TOP_K: usize = 16;
+const CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT: usize = 8;
+const CONTEXT_PACK_NUANCE_RESCUE_TOKEN_LIMIT: usize = 32;
 
 const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
@@ -136,7 +148,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "context-pack",
-        usage: "codegraph-mcp context-pack --task <task> [--budget <tokens>] [--mode <production|test-impact|debug|impact>] [--seed <symbol>] [--agent-json|--concise|--explain|--audit-json] [--limit-paths <n>] [--limit-snippets <n>] [--max-output-bytes <n>] [--profile]",
+        usage: "codegraph-mcp context-pack --task <task> [--budget <tokens>] [--mode <production|test-impact|debug|impact>] [--seed <symbol>] [--enable-vector-candidates] [--enable-nuance-rescue-candidates] [--vector-index <path>] [--agent-json|--concise|--explain|--audit-json] [--limit-paths <n>] [--limit-snippets <n>] [--max-output-bytes <n>] [--profile]",
         description: "Build a compact proof-oriented context packet.",
     },
     CommandSpec {
@@ -2355,7 +2367,7 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
             "policy": "load snippets only for evidence-role-filtered proof/source spans"
         }),
     ));
-    let packet = build_context_packet_from_stored_evidence(
+    let mut packet = build_context_packet_from_stored_evidence(
         &options,
         &raw_seed_values,
         &seed_ids,
@@ -2368,6 +2380,93 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
         stored_path_count,
         requested_span_count,
     );
+    if options.enable_vector_candidates {
+        let vector_start = Instant::now();
+        let vector_branch = load_context_pack_vector_branch(&repo_root, &db_path, &options);
+        let vector_trace =
+            context_pack_vector_diagnostic_trace(&options, &fallback_edges, &vector_branch)?;
+        profile_spans.push(profile_span_json(
+            "vector_candidate_branch",
+            vector_start.elapsed(),
+            1,
+            vector_branch.candidates.len() as u64,
+            json!({
+                "enabled": true,
+                "vector_index_path": path_string(&vector_branch.index_path),
+                "vector_index_status": vector_branch.status.as_str(),
+                "candidate_count": vector_branch.candidates.len(),
+                "warning": vector_branch.warning.clone(),
+                "policy": "explicit opt-in candidate recall only; candidates are not graph proof"
+            }),
+        ));
+        packet
+            .metadata
+            .insert("vector_candidate_trace".to_string(), vector_trace);
+        let lifecycle_claimable = db_lifecycle_read
+            .get("claimable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let vector_candidates = vector_branch
+            .candidates
+            .iter()
+            .map(|candidate| {
+                context_pack_vector_retrieval_candidate_json(candidate, lifecycle_claimable)
+            })
+            .collect::<Vec<_>>();
+        packet.metadata.insert(
+            "vector_semantic_candidates".to_string(),
+            json!(vector_candidates),
+        );
+    }
+    if options.enable_nuance_rescue_candidates {
+        let nuance_start = Instant::now();
+        let lifecycle_claimable = db_lifecycle_read
+            .get("claimable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let branch = load_context_pack_nuance_rescue_branch(
+            &connection,
+            &repo_root,
+            &options,
+            &raw_seed_values,
+            lifecycle_claimable,
+            budgets,
+        )
+        .unwrap_or_else(|error| ContextPackNuanceRescueBranch {
+            candidates: Vec::new(),
+            trace: json!({
+                "schema_version": 1,
+                "diagnostic_only": true,
+                "rescue_enabled": true,
+                "rescue_status": "error",
+                "rescue_candidate_count": 0,
+                "candidate_cap": CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT,
+                "ignored_generic_tokens": [],
+                "rescue_reasons": [],
+                "error": error,
+                "proof_contract": "nuance rescue candidates are candidate recall only; branch failure does not change graph proof"
+            }),
+        });
+        profile_spans.push(profile_span_json(
+            "nuance_rescue_candidate_branch",
+            nuance_start.elapsed(),
+            1,
+            branch.candidates.len() as u64,
+            json!({
+                "enabled": true,
+                "candidate_count": branch.candidates.len(),
+                "candidate_cap": CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT,
+                "policy": "explicit opt-in rare-token/identifier/path rescue only; candidates are not graph proof"
+            }),
+        ));
+        packet
+            .metadata
+            .insert("nuance_rescue_trace".to_string(), branch.trace);
+        packet.metadata.insert(
+            "nuance_rescue_candidates".to_string(),
+            json!(branch.candidates),
+        );
+    }
     profile_spans.push(profile_span_json(
         "context_pack_graph_and_packet",
         context_start.elapsed(),
@@ -2444,6 +2543,1409 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
         "db_lifecycle_read": db_lifecycle_read,
         "proof": "Context packet is built from local graph/source evidence.",
     }))
+}
+
+#[derive(Debug, Clone)]
+struct ContextPackVectorBranch {
+    index_path: PathBuf,
+    status: VectorCandidateBranchStatus,
+    candidates: Vec<RetrievalCandidate>,
+    warning: Option<String>,
+}
+
+fn load_context_pack_vector_branch(
+    _repo_root: &Path,
+    db_path: &Path,
+    options: &ContextPackOptions,
+) -> ContextPackVectorBranch {
+    let index_path = context_pack_vector_index_path(db_path, options);
+    if !index_path.exists() {
+        return ContextPackVectorBranch {
+            index_path,
+            status: VectorCandidateBranchStatus::Missing,
+            candidates: Vec::new(),
+            warning: Some("vector index missing; continuing without vector candidates".to_string()),
+        };
+    }
+
+    let provider = match context_pack_vector_provider() {
+        Ok(provider) => provider,
+        Err(error) => {
+            return ContextPackVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: format!("deterministic vector provider unavailable: {error}"),
+                },
+                candidates: Vec::new(),
+                warning: Some("deterministic vector provider unavailable".to_string()),
+            };
+        }
+    };
+    let store = match SqliteGraphStore::open(db_path) {
+        Ok(store) => store,
+        Err(error) => {
+            return ContextPackVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: format!("db open failed for vector index validation: {error}"),
+                },
+                candidates: Vec::new(),
+                warning: Some("vector index validation could not open graph DB".to_string()),
+            };
+        }
+    };
+    let passport = match store.get_db_passport() {
+        Ok(Some(passport)) => passport,
+        Ok(None) => {
+            return ContextPackVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: "db passport missing".to_string(),
+                },
+                candidates: Vec::new(),
+                warning: Some(
+                    "vector index ignored because graph DB passport is missing".to_string(),
+                ),
+            };
+        }
+        Err(error) => {
+            return ContextPackVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: format!("db passport read failed: {error}"),
+                },
+                candidates: Vec::new(),
+                warning: Some(
+                    "vector index ignored because graph DB passport could not be read".to_string(),
+                ),
+            };
+        }
+    };
+
+    let build_options = context_pack_vector_build_options();
+    let index = match load_vector_chunk_index_json(&index_path, &provider, &passport, build_options)
+    {
+        Ok(index) => index,
+        Err(error) => {
+            return ContextPackVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: error.to_string(),
+                },
+                candidates: Vec::new(),
+                warning: Some(format!(
+                    "vector index stale or incompatible; continuing without vector candidates: {error}"
+                )),
+            };
+        }
+    };
+    let hits = match index.search(
+        &provider,
+        &options.task,
+        CONTEXT_PACK_VECTOR_CANDIDATE_TOP_K,
+    ) {
+        Ok(hits) => hits,
+        Err(error) => {
+            return ContextPackVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: error.to_string(),
+                },
+                candidates: Vec::new(),
+                warning: Some(format!(
+                    "vector index query failed; continuing without vector candidates: {error}"
+                )),
+            };
+        }
+    };
+    let candidates = hits
+        .iter()
+        .map(|hit| {
+            vector_chunk_search_hit_to_retrieval_candidate(
+                hit,
+                provider.metadata(),
+                &options.task,
+                None,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    ContextPackVectorBranch {
+        index_path,
+        status: VectorCandidateBranchStatus::Ready,
+        candidates,
+        warning: None,
+    }
+}
+
+fn context_pack_vector_diagnostic_trace(
+    options: &ContextPackOptions,
+    fallback_edges: &[Edge],
+    vector_branch: &ContextPackVectorBranch,
+) -> Result<Value, String> {
+    let mut config = RetrievalFunnelConfig::default();
+    config.vector_candidate_top_k = CONTEXT_PACK_VECTOR_CANDIDATE_TOP_K;
+    let funnel = RetrievalFunnel::new(
+        fallback_edges.to_vec(),
+        Vec::<RetrievalDocument>::new(),
+        config,
+    )
+    .map_err(|error| format!("vector diagnostic funnel failed: {error}"))?;
+    let result = funnel
+        .run(
+            RetrievalFunnelRequest::new(
+                options.task.clone(),
+                options.mode.clone(),
+                options.token_budget,
+            )
+            .exact_seeds(options.seeds.clone())
+            .enable_vector_candidates(true)
+            .vector_candidate_diagnostics(true)
+            .vector_branch_status(vector_branch.status.clone())
+            .vector_candidates(vector_branch.candidates.clone()),
+        )
+        .map_err(|error| format!("vector diagnostic funnel failed: {error}"))?;
+    let mut trace = result
+        .packet
+        .metadata
+        .get("vector_candidate_trace")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "schema_version": 1,
+                "diagnostic_only": true,
+                "vector_enabled": true,
+                "vector_index_status": vector_branch.status.as_str(),
+                "vector_candidate_count": vector_branch.candidates.len(),
+                "proof_contract": "vector candidates are candidate recall only and are not graph proof unless graph/source verification succeeds"
+            })
+        });
+    if let Some(object) = trace.as_object_mut() {
+        object.insert(
+            "vector_index_path".to_string(),
+            json!(path_string(&vector_branch.index_path)),
+        );
+    }
+    Ok(trace)
+}
+
+fn context_pack_vector_index_path(db_path: &Path, options: &ContextPackOptions) -> PathBuf {
+    if let Some(path) = &options.vector_index_path {
+        return if path.is_absolute() {
+            path.clone()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .unwrap_or_else(|_| path.clone())
+        };
+    }
+    db_path
+        .parent()
+        .map(|parent| parent.join(CONTEXT_PACK_VECTOR_INDEX_FILE_NAME))
+        .unwrap_or_else(|| PathBuf::from(CONTEXT_PACK_VECTOR_INDEX_FILE_NAME))
+}
+
+fn context_pack_vector_provider() -> Result<DeterministicTestEmbeddingProvider, String> {
+    DeterministicTestEmbeddingProvider::new(
+        CONTEXT_PACK_VECTOR_PROVIDER_DIMENSION,
+        TestEmbeddingEnablement::Explicit,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn context_pack_vector_build_options() -> VectorChunkIndexBuildOptions {
+    VectorChunkIndexBuildOptions {
+        max_chunks: CONTEXT_PACK_VECTOR_CANDIDATE_TOP_K.saturating_mul(256),
+        source_scope: CONTEXT_PACK_VECTOR_SOURCE_SCOPE.to_string(),
+        extraction_version: codegraph_index::VECTOR_EMBEDDING_CHUNK_EXTRACTION_VERSION.to_string(),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ContextPackNuanceRescueBranch {
+    candidates: Vec<Value>,
+    trace: Value,
+}
+
+#[derive(Debug, Clone)]
+struct ContextPackNuanceToken {
+    value: String,
+    normalized: String,
+    raw_lower: String,
+    kind: &'static str,
+    rescue_reason: &'static str,
+    exact_match: bool,
+    seed_value: Option<String>,
+}
+
+fn load_context_pack_nuance_rescue_branch(
+    connection: &Connection,
+    repo_root: &Path,
+    options: &ContextPackOptions,
+    raw_seed_values: &[String],
+    lifecycle_claimable: bool,
+    budgets: ContextPackBudgets,
+) -> Result<ContextPackNuanceRescueBranch, String> {
+    let (tokens, ignored_generic_tokens) =
+        context_pack_nuance_rescue_tokens(options, raw_seed_values);
+    let mut candidates = BTreeMap::<String, Value>::new();
+    let schema_ready = sqlite_table_exists(connection, "entities")?
+        && sqlite_table_exists(connection, "files")?
+        && sqlite_table_exists(connection, "object_id_dict")?
+        && sqlite_table_exists(connection, "symbol_dict")?
+        && sqlite_table_exists(connection, "qualified_name_dict")?
+        && sqlite_table_exists(connection, "path_dict")?;
+
+    if schema_ready {
+        for token in &tokens {
+            if candidates.len() >= CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT {
+                break;
+            }
+            let token_limit = if token.kind == "route_literal" {
+                CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT
+            } else if token.kind == "rare_token" {
+                4
+            } else {
+                2
+            };
+            let per_token_limit = CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT
+                .saturating_sub(candidates.len())
+                .min(token_limit)
+                .max(1);
+            for entity in load_context_pack_nuance_entity_hits(connection, token, per_token_limit)?
+            {
+                let source_line_candidate = context_pack_nuance_source_line_candidate_json(
+                    repo_root,
+                    &entity.repo_relative_path,
+                    token,
+                    raw_seed_values,
+                    lifecycle_claimable,
+                );
+                if let Some(candidate) = context_pack_nuance_entity_candidate_json(
+                    repo_root,
+                    &entity,
+                    token,
+                    raw_seed_values,
+                    lifecycle_claimable,
+                ) {
+                    context_pack_insert_nuance_candidate(&mut candidates, candidate);
+                }
+                if let Some(candidate) = source_line_candidate {
+                    context_pack_insert_nuance_candidate(&mut candidates, candidate);
+                }
+                if candidates.len() >= CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT {
+                    break;
+                }
+            }
+        }
+
+        for token in &tokens {
+            if candidates.len() >= CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT {
+                break;
+            }
+            let remaining = CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT
+                .saturating_sub(candidates.len())
+                .max(1);
+            for path in load_context_pack_nuance_path_hits(connection, token, remaining * 4)? {
+                if let Some(candidate) = context_pack_nuance_path_candidate_json(
+                    &path,
+                    token,
+                    raw_seed_values,
+                    lifecycle_claimable,
+                ) {
+                    context_pack_insert_nuance_candidate(&mut candidates, candidate);
+                }
+                if candidates.len() >= CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT {
+                    break;
+                }
+            }
+        }
+    }
+
+    if sqlite_table_exists(connection, "stage0_fts")?
+        && sqlite_table_exists(connection, "files")?
+        && sqlite_table_exists(connection, "path_dict")?
+        && sqlite_table_has_column(connection, "files", "metadata_json")?
+    {
+        for token in &tokens {
+            if candidates.len() >= CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT {
+                break;
+            }
+            let remaining = CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT
+                .saturating_sub(candidates.len())
+                .max(1);
+            for hit in
+                load_context_pack_text_evidence_hits(connection, &token.value, remaining * 2)?
+            {
+                if !context_pack_text_evidence_allowed_for_mode(
+                    &hit.repo_relative_path,
+                    &hit.metadata,
+                    &options.mode,
+                ) {
+                    continue;
+                }
+                if let Some(candidate) = context_pack_nuance_text_candidate_json(
+                    hit,
+                    token,
+                    raw_seed_values,
+                    lifecycle_claimable,
+                ) {
+                    context_pack_insert_nuance_candidate(&mut candidates, candidate);
+                }
+                if candidates.len() >= CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT {
+                    break;
+                }
+            }
+        }
+    }
+
+    let candidates = candidates.into_values().collect::<Vec<_>>();
+    let trace = context_pack_nuance_rescue_trace(
+        true,
+        &tokens,
+        &ignored_generic_tokens,
+        &candidates,
+        if schema_ready {
+            "ready"
+        } else {
+            "missing_schema"
+        },
+    );
+    let _ = budgets;
+    Ok(ContextPackNuanceRescueBranch { candidates, trace })
+}
+
+fn context_pack_nuance_rescue_trace(
+    enabled: bool,
+    tokens: &[ContextPackNuanceToken],
+    ignored_generic_tokens: &[String],
+    candidates: &[Value],
+    status: &str,
+) -> Value {
+    let rescue_candidate_sources = context_pack_nuance_candidate_sources(candidates);
+    let rescue_reasons = candidates
+        .iter()
+        .take(CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT)
+        .map(|candidate| {
+            json!({
+                "candidate_id": candidate.get("candidate_id").cloned().unwrap_or(Value::Null),
+                "path": candidate.get("path").cloned().unwrap_or(Value::Null),
+                "entity_id": candidate.get("entity_id").cloned().unwrap_or(Value::Null),
+                "rescue_reason": candidate.get("rescue_reason").cloned().unwrap_or(Value::Null),
+                "matched_token": context_pack_trace_safe_value(candidate.get("matched_token")),
+                "evidence_role": candidate.get("evidence_role").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect::<Vec<_>>();
+    let candidates_accepted = candidates
+        .iter()
+        .take(CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT)
+        .map(context_pack_nuance_trace_candidate_item)
+        .collect::<Vec<_>>();
+    let safe_ignored_generic_tokens = ignored_generic_tokens
+        .iter()
+        .take(32)
+        .map(|token| context_pack_trace_safe_string(token))
+        .collect::<Vec<_>>();
+    json!({
+        "schema_version": 1,
+        "diagnostic_only": true,
+        "nuance_rescue_enabled": enabled,
+        "rescue_enabled": enabled,
+        "rescue_status": status,
+        "rescue_candidate_count": candidates.len(),
+        "rescue_candidate_sources": rescue_candidate_sources,
+        "candidate_cap": CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT,
+        "token_count": tokens.len(),
+        "matched_tokens": tokens.iter().map(|token| context_pack_trace_safe_string(&token.value)).collect::<Vec<_>>(),
+        "rare_tokens": context_pack_nuance_trace_tokens_by_kind(tokens, "rare_token"),
+        "identifier_tokens": context_pack_nuance_trace_tokens_by_kind(tokens, "identifier_signature"),
+        "path_title_tokens": context_pack_nuance_trace_tokens_by_kind(tokens, "path_title"),
+        "route_tokens": context_pack_nuance_trace_tokens_by_kind(tokens, "route_literal"),
+        "config_tokens": context_pack_nuance_trace_tokens_by_kind(tokens, "config_key"),
+        "test_tokens": context_pack_nuance_trace_tokens_by_kind(tokens, "test_name"),
+        "route_config_test_tokens": context_pack_nuance_trace_tokens_by_kinds(
+            tokens,
+            &["route_literal", "config_key", "test_name"],
+        ),
+        "ignored_generic_tokens": safe_ignored_generic_tokens,
+        "rescue_reasons": rescue_reasons,
+        "candidates_accepted": {
+            "count": candidates_accepted.len(),
+            "items": candidates_accepted
+        },
+        "candidates_rejected": {
+            "count": ignored_generic_tokens.len(),
+            "reason": "generic_or_negative_token_ignored",
+            "tokens": ignored_generic_tokens.iter().take(32).map(|token| context_pack_trace_safe_string(token)).collect::<Vec<_>>()
+        },
+        "graph_verification_status": context_pack_nuance_graph_status_summary(candidates),
+        "no_proof_fallback_status": "not_evaluated_before_context_pack_graph_verification",
+        "proof_contract": "nuance rescue candidates are deterministic candidate recall only; graph_proof remains false until graph/source verification"
+    })
+}
+
+fn context_pack_nuance_trace_tokens_by_kind(
+    tokens: &[ContextPackNuanceToken],
+    kind: &str,
+) -> Vec<String> {
+    context_pack_nuance_trace_tokens_by_kinds(tokens, &[kind])
+}
+
+fn context_pack_nuance_trace_tokens_by_kinds(
+    tokens: &[ContextPackNuanceToken],
+    kinds: &[&str],
+) -> Vec<String> {
+    tokens
+        .iter()
+        .filter(|token| kinds.iter().any(|kind| *kind == token.kind))
+        .map(|token| context_pack_trace_safe_string(&token.value))
+        .take(32)
+        .collect()
+}
+
+fn context_pack_nuance_candidate_sources(candidates: &[Value]) -> Vec<String> {
+    let mut sources = BTreeSet::<String>::new();
+    for candidate in candidates {
+        for source in context_agent_candidate_sources(candidate) {
+            sources.insert(source);
+        }
+    }
+    sources.into_iter().collect()
+}
+
+fn context_pack_nuance_trace_candidate_item(candidate: &Value) -> Value {
+    json!({
+        "candidate_id": candidate.get("candidate_id").cloned().unwrap_or(Value::Null),
+        "path": candidate.get("path").cloned().unwrap_or(Value::Null),
+        "entity_id": candidate.get("entity_id").cloned().unwrap_or(Value::Null),
+        "candidate_sources": candidate.get("candidate_sources").cloned().unwrap_or_else(|| json!([])),
+        "rescue_reason": candidate.get("rescue_reason").cloned().unwrap_or(Value::Null),
+        "matched_token": context_pack_trace_safe_value(candidate.get("matched_token")),
+        "evidence_role": candidate.get("evidence_role").cloned().unwrap_or(Value::Null),
+        "proof_status": candidate.get("proof_status").cloned().unwrap_or(Value::Null),
+        "graph_proof": candidate.get("graph_proof").cloned().unwrap_or(Value::Null),
+        "verification_status": candidate.get("verification_status").cloned().unwrap_or(Value::Null),
+        "graph_verification_status": candidate.get("graph_verification_status").cloned().unwrap_or(Value::Null),
+        "text_evidence_status": candidate.get("text_evidence_status").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn context_pack_nuance_graph_status_summary(candidates: &[Value]) -> Value {
+    let mut status_counts = BTreeMap::<String, usize>::new();
+    let mut graph_proof_count = 0usize;
+    let mut graph_verified_count = 0usize;
+    for candidate in candidates {
+        let status = candidate
+            .get("graph_verification_status")
+            .or_else(|| candidate.get("verification_status"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        *status_counts.entry(status.to_string()).or_default() += 1;
+        if candidate
+            .get("graph_proof")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            graph_proof_count += 1;
+        }
+        if status == "graph_verified" {
+            graph_verified_count += 1;
+        }
+    }
+    json!({
+        "status_counts": status_counts,
+        "candidate_count": candidates.len(),
+        "graph_verified_count": graph_verified_count,
+        "graph_proof_count": graph_proof_count,
+    })
+}
+
+fn context_pack_trace_safe_value(value: Option<&Value>) -> Value {
+    value
+        .and_then(Value::as_str)
+        .map(|token| json!(context_pack_trace_safe_string(token)))
+        .unwrap_or(Value::Null)
+}
+
+fn context_pack_trace_safe_string(value: &str) -> String {
+    if context_pack_trace_secret_like(value) {
+        "[redacted_secret_like_token]".to_string()
+    } else {
+        value.chars().take(96).collect()
+    }
+}
+
+fn context_pack_trace_safe_text(value: &str) -> String {
+    let lower = value.to_ascii_lowercase();
+    let contains_secret_marker = lower.contains("secret_token")
+        || lower.contains("api_key")
+        || lower.contains("apikey")
+        || lower.contains("password=")
+        || lower.contains("token=")
+        || lower.contains("secret=");
+    let contains_secret_part = value.split_whitespace().any(|part| {
+        let trimmed = part.trim_matches(|character: char| {
+            matches!(
+                character,
+                ',' | ';' | ':' | '(' | ')' | '[' | ']' | '"' | '\''
+            )
+        });
+        context_pack_trace_secret_like(trimmed)
+    });
+    if contains_secret_marker || contains_secret_part {
+        "[redacted_secret_like_text]".to_string()
+    } else {
+        value.chars().take(512).collect()
+    }
+}
+
+fn context_pack_trace_secret_like(value: &str) -> bool {
+    let trimmed = value.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("sk-")
+        || lower.starts_with("ghp_")
+        || lower.starts_with("github_pat_")
+        || lower.starts_with("xoxb-")
+        || lower.contains("secret_token")
+        || lower.contains("api_key")
+        || lower.contains("apikey")
+        || lower.contains("password=")
+        || lower.contains("token=")
+        || lower.contains("secret=")
+    {
+        return true;
+    }
+    let alnum_count = trimmed
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .count();
+    alnum_count >= 32
+        && trimmed
+            .chars()
+            .any(|character| character.is_ascii_lowercase())
+        && trimmed
+            .chars()
+            .any(|character| character.is_ascii_uppercase())
+        && trimmed.chars().any(|character| character.is_ascii_digit())
+}
+
+fn context_pack_insert_nuance_candidate(
+    candidates: &mut BTreeMap<String, Value>,
+    candidate: Value,
+) {
+    let key = context_pack_nuance_candidate_key(&candidate);
+    if let Some(existing) = candidates.get_mut(&key) {
+        merge_context_agent_candidate(existing, candidate);
+    } else {
+        candidates.insert(key, candidate);
+    }
+}
+
+fn context_pack_nuance_candidate_key(candidate: &Value) -> String {
+    if let Some(entity_id) = candidate.get("entity_id").and_then(Value::as_str) {
+        if !entity_id.trim().is_empty() {
+            return format!("entity:{entity_id}");
+        }
+    }
+    if let Some(path) = candidate.get("path").and_then(Value::as_str) {
+        return format!("path:{}", context_agent_path_key(path));
+    }
+    context_agent_candidate_id(candidate)
+}
+
+fn context_pack_nuance_rescue_tokens(
+    options: &ContextPackOptions,
+    raw_seed_values: &[String],
+) -> (Vec<ContextPackNuanceToken>, Vec<String>) {
+    let (positive_task, negative_task) = context_pack_nuance_positive_task(&options.task);
+    let mut ignored = BTreeSet::<String>::new();
+    for token in context_pack_nuance_split_terms(&negative_task) {
+        ignored.insert(token);
+    }
+
+    let mut tokens = Vec::<ContextPackNuanceToken>::new();
+    let mut seen = BTreeSet::<String>::new();
+    for seed in raw_seed_values
+        .iter()
+        .chain(options.seeds.iter())
+        .chain(options.stage0_candidates.iter())
+    {
+        context_pack_push_nuance_token(
+            &mut tokens,
+            &mut seen,
+            &mut ignored,
+            seed,
+            Some(seed.clone()),
+            true,
+        );
+    }
+    for token in context_pack_nuance_split_terms(&positive_task) {
+        context_pack_push_nuance_token(&mut tokens, &mut seen, &mut ignored, &token, None, false);
+    }
+
+    (
+        tokens
+            .into_iter()
+            .take(CONTEXT_PACK_NUANCE_RESCUE_TOKEN_LIMIT)
+            .collect(),
+        ignored.into_iter().collect(),
+    )
+}
+
+fn context_pack_push_nuance_token(
+    tokens: &mut Vec<ContextPackNuanceToken>,
+    seen: &mut BTreeSet<String>,
+    ignored: &mut BTreeSet<String>,
+    raw: &str,
+    seed_value: Option<String>,
+    seed_exact: bool,
+) {
+    let trimmed = raw
+        .trim()
+        .trim_matches(|ch: char| matches!(ch, ',' | ';' | '"' | '\''));
+    if trimmed.is_empty() {
+        return;
+    }
+    let kind = context_pack_nuance_token_kind(trimmed, seed_exact);
+    let normalized = context_pack_nuance_normalized_token(trimmed);
+    let raw_lower = trimmed.replace('\\', "/").to_ascii_lowercase();
+    if normalized.is_empty() || context_pack_nuance_generic_token(&normalized, kind) {
+        ignored.insert(normalized);
+        return;
+    }
+    let key = format!("{kind}:{normalized}");
+    if !seen.insert(key) {
+        return;
+    }
+    tokens.push(ContextPackNuanceToken {
+        value: trimmed.to_string(),
+        normalized,
+        raw_lower,
+        kind,
+        rescue_reason: context_pack_nuance_rescue_reason(kind),
+        exact_match: seed_exact || context_pack_nuance_token_requires_exact(kind),
+        seed_value,
+    });
+}
+
+fn context_pack_nuance_positive_task(task: &str) -> (String, String) {
+    let lower = task.to_ascii_lowercase();
+    let mut split_at = None;
+    for delimiter in [
+        " without ",
+        ", not ",
+        "; not ",
+        " but not ",
+        " rather than ",
+        " instead of ",
+        " except ",
+        " not ",
+    ] {
+        if let Some(index) = lower.find(delimiter) {
+            split_at = Some(split_at.map_or(index, |current: usize| current.min(index)));
+        }
+    }
+    if let Some(index) = split_at {
+        (task[..index].to_string(), task[index..].to_string())
+    } else {
+        (task.to_string(), String::new())
+    }
+}
+
+fn context_pack_nuance_split_terms(value: &str) -> Vec<String> {
+    let mut output = BTreeSet::<String>::new();
+    for raw in value.split_whitespace() {
+        let token = raw.trim_matches(|ch: char| {
+            matches!(ch, ',' | ';' | ':' | '(' | ')' | '[' | ']' | '"' | '\'')
+        });
+        if token.contains('/') || token.contains('-') || token.contains('_') {
+            let normalized = token
+                .trim_matches(|ch: char| matches!(ch, ',' | ';' | '"' | '\''))
+                .to_string();
+            if !normalized.is_empty() {
+                output.insert(normalized);
+            }
+        }
+        for part in context_pack_nuance_identifier_parts(token) {
+            output.insert(part);
+        }
+    }
+    output.into_iter().collect()
+}
+
+fn context_pack_nuance_identifier_parts(value: &str) -> Vec<String> {
+    let mut parts = Vec::<String>::new();
+    let mut current = String::new();
+    let mut previous_lowercase = false;
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            if character.is_ascii_uppercase() && previous_lowercase && !current.is_empty() {
+                parts.push(current.to_ascii_lowercase());
+                current.clear();
+            }
+            current.push(character);
+            previous_lowercase = character.is_ascii_lowercase();
+        } else {
+            if !current.is_empty() {
+                parts.push(current.to_ascii_lowercase());
+                current.clear();
+            }
+            previous_lowercase = false;
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current.to_ascii_lowercase());
+    }
+    parts
+}
+
+fn context_pack_nuance_token_kind(raw: &str, seed_exact: bool) -> &'static str {
+    let lower = raw.replace('\\', "/").to_ascii_lowercase();
+    if lower.starts_with('/') || lower.contains(":/") || lower.contains("/:") {
+        "route_literal"
+    } else if lower.starts_with("br2_") || lower.contains("config.in") {
+        "config_key"
+    } else if lower.contains('/') || lower.contains('\\') || lower.contains('-') {
+        "path_title"
+    } else if lower.contains("test") || lower.contains("spec") || lower.starts_with("failing_") {
+        "test_name"
+    } else if seed_exact
+        || raw.contains('_')
+        || raw.chars().any(|character| character.is_ascii_uppercase())
+    {
+        "identifier_signature"
+    } else {
+        "rare_token"
+    }
+}
+
+fn context_pack_nuance_rescue_reason(kind: &str) -> &'static str {
+    match kind {
+        "route_literal" => "route_literal_rescue",
+        "config_key" => "config_key_rescue",
+        "path_title" => "path_title_rescue",
+        "test_name" => "test_name_rescue",
+        "identifier_signature" => "identifier_signature_rescue",
+        _ => "rare_token_lexical_rescue",
+    }
+}
+
+fn context_pack_nuance_token_requires_exact(kind: &str) -> bool {
+    matches!(
+        kind,
+        "route_literal" | "config_key" | "path_title" | "test_name" | "identifier_signature"
+    )
+}
+
+fn context_pack_nuance_normalized_token(value: &str) -> String {
+    value
+        .replace('\\', "/")
+        .trim()
+        .trim_matches(|ch: char| matches!(ch, ',' | ';' | '"' | '\''))
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, '_' | '-' | '/' | '.' | ':' | '#')
+        })
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn context_pack_nuance_generic_token(token: &str, kind: &str) -> bool {
+    if matches!(token, "test" | "tests" | "spec" | "specs") {
+        return true;
+    }
+    if matches!(kind, "route_literal" | "config_key" | "path_title") && token.len() >= 4 {
+        return false;
+    }
+    if kind == "test_name" && token.len() >= 8 {
+        return false;
+    }
+    if token.len() < 3 || token.chars().all(|character| character.is_ascii_digit()) {
+        return true;
+    }
+    matches!(
+        token,
+        "find"
+            | "the"
+            | "that"
+            | "with"
+            | "from"
+            | "and"
+            | "for"
+            | "or"
+            | "to"
+            | "in"
+            | "whether"
+            | "decides"
+            | "tiny"
+            | "into"
+            | "under"
+            | "code"
+            | "task"
+            | "file"
+            | "files"
+            | "path"
+            | "paths"
+            | "title"
+            | "symbol"
+            | "symbols"
+            | "function"
+            | "config"
+            | "route"
+            | "literal"
+            | "test"
+            | "tests"
+            | "name"
+            | "package"
+            | "metadata"
+            | "infrastructure"
+            | "support"
+            | "script"
+            | "docs"
+            | "document"
+            | "candidate"
+            | "candidates"
+            | "branch"
+            | "rescue"
+            | "check"
+            | "checks"
+            | "token"
+            | "tokens"
+            | "user"
+            | "users"
+            | "process"
+            | "plural"
+            | "batch"
+            | "admin"
+            | "api"
+            | "id"
+    )
+}
+
+fn load_context_pack_nuance_entity_hits(
+    connection: &Connection,
+    token: &ContextPackNuanceToken,
+    limit: usize,
+) -> Result<Vec<ContextEntitySummary>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let (lookup_value, raw_lookup_value) = context_pack_nuance_sql_lookup_values(token);
+    let lookup = context_pack_sql_like_pattern(&lookup_value);
+    let raw_lookup = context_pack_sql_like_pattern(&raw_lookup_value);
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT DISTINCT e.id_key
+            FROM entities e
+            JOIN symbol_dict name ON name.id = e.name_id
+            JOIN qualified_name_lookup qname ON qname.id = e.qualified_name_id
+            JOIN path_dict path ON path.id = e.path_id
+            LEFT JOIN path_dict span_path ON span_path.id = e.span_path_id
+            LEFT JOIN entity_kind_dict kind ON kind.id = e.kind_id
+            WHERE lower(name.value) LIKE ?1 ESCAPE '\\'
+               OR lower(qname.value) LIKE ?1 ESCAPE '\\'
+               OR lower(path.value) LIKE ?1 ESCAPE '\\'
+               OR lower(span_path.value) LIKE ?1 ESCAPE '\\'
+               OR lower(name.value) LIKE ?2 ESCAPE '\\'
+               OR lower(qname.value) LIKE ?2 ESCAPE '\\'
+               OR lower(path.value) LIKE ?2 ESCAPE '\\'
+               OR lower(span_path.value) LIKE ?2 ESCAPE '\\'
+            ORDER BY
+                CASE WHEN lower(name.value) = ?3 OR lower(qname.value) = ?3 THEN 0 ELSE 1 END,
+                CASE WHEN lower(path.value) LIKE 'tests/%' OR lower(path.value) LIKE '%/tests/%' THEN 1 ELSE 0 END,
+                CASE kind.value
+                    WHEN 'Const' THEN 0
+                    WHEN 'Variable' THEN 0
+                    WHEN 'Function' THEN 1
+                    WHEN 'Method' THEN 1
+                    ELSE 2
+                END,
+                e.start_line, length(name.value), qname.value, e.id_key
+            LIMIT ?4
+            ",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(
+            params![lookup, raw_lookup, token.normalized, limit as i64],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let keys = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    load_context_entities_by_keys(connection, &keys, limit)
+}
+
+fn load_context_pack_nuance_path_hits(
+    connection: &Connection,
+    token: &ContextPackNuanceToken,
+    limit: usize,
+) -> Result<Vec<String>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let lookup = context_pack_sql_like_pattern(&token.normalized);
+    let raw_lookup = context_pack_sql_like_pattern(&token.raw_lower);
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT DISTINCT path.value
+            FROM path_dict path
+            JOIN files file ON file.path_id = path.id
+            WHERE lower(path.value) LIKE ?1 ESCAPE '\\'
+               OR lower(path.value) LIKE ?2 ESCAPE '\\'
+            ORDER BY length(path.value), path.value
+            LIMIT ?3
+            ",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![lookup, raw_lookup, limit as i64], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+fn context_pack_nuance_sql_lookup_values(token: &ContextPackNuanceToken) -> (String, String) {
+    if token.kind == "route_literal" {
+        let route_parts = context_pack_nuance_route_discriminator_parts(&token.raw_lower);
+        if let Some(part) = route_parts.first() {
+            return (part.clone(), part.clone());
+        }
+    }
+    (token.normalized.clone(), token.raw_lower.clone())
+}
+
+fn context_pack_sql_like_pattern(value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{escaped}%")
+}
+
+fn context_pack_nuance_entity_candidate_json(
+    repo_root: &Path,
+    entity: &ContextEntitySummary,
+    token: &ContextPackNuanceToken,
+    raw_seed_values: &[String],
+    lifecycle_claimable: bool,
+) -> Option<Value> {
+    let excerpt = context_pack_nuance_entity_excerpt(repo_root, entity);
+    let haystack = format!(
+        "{}\n{}\n{}\n{}",
+        entity.name, entity.qualified_name, entity.repo_relative_path, excerpt
+    );
+    if !context_pack_nuance_haystack_matches(&haystack, token) {
+        return None;
+    }
+    let matched_seeds = context_pack_nuance_matched_seeds(&haystack, token, raw_seed_values);
+    let role = context_entity_fallback_role(entity);
+    let span = entity
+        .source_span
+        .as_ref()
+        .map(agent_source_span_json)
+        .unwrap_or(Value::Null);
+    let (snippet, snippet_truncated) = bounded_retrieval_candidate_snippet_text(&excerpt);
+    Some(context_pack_nuance_candidate_json(
+        format!("nuance-rescue://entity/{}", entity.id),
+        Some(entity.repo_relative_path.clone()),
+        Some(entity.id.clone()),
+        span,
+        if snippet.is_empty() {
+            Value::Null
+        } else {
+            json!(snippet)
+        },
+        role.role.as_str(),
+        token,
+        matched_seeds,
+        lifecycle_claimable,
+        snippet_truncated,
+        true,
+        false,
+    ))
+}
+
+fn context_pack_nuance_path_candidate_json(
+    path: &str,
+    token: &ContextPackNuanceToken,
+    raw_seed_values: &[String],
+    lifecycle_claimable: bool,
+) -> Option<Value> {
+    if !context_pack_nuance_haystack_matches(path, token) {
+        return None;
+    }
+    let matched_seeds = context_pack_nuance_matched_seeds(path, token, raw_seed_values);
+    Some(context_pack_nuance_candidate_json(
+        format!(
+            "nuance-rescue://path/{}",
+            context_agent_stable_component(path)
+        ),
+        Some(path.to_string()),
+        None,
+        Value::Null,
+        Value::Null,
+        "unknown",
+        token,
+        matched_seeds,
+        lifecycle_claimable,
+        false,
+        false,
+        true,
+    ))
+}
+
+fn context_pack_nuance_text_candidate_json(
+    hit: ContextPackTextEvidenceHit,
+    token: &ContextPackNuanceToken,
+    raw_seed_values: &[String],
+    lifecycle_claimable: bool,
+) -> Option<Value> {
+    let haystack = format!("{}\n{}\n{}", hit.repo_relative_path, hit.title, hit.body);
+    if !context_pack_nuance_haystack_matches(&haystack, token) {
+        return None;
+    }
+    let line = context_pack_text_evidence_hit_line(&hit);
+    let span = SourceSpan::new(&hit.repo_relative_path, line, line);
+    let matched_seeds = context_pack_nuance_matched_seeds(&haystack, token, raw_seed_values);
+    let (snippet, snippet_truncated) = bounded_retrieval_candidate_snippet_text(&hit.body);
+    let mut candidate = context_pack_nuance_candidate_json(
+        format!(
+            "nuance-rescue://text/{}:{}",
+            hit.id,
+            context_span_key(&span)
+        ),
+        Some(hit.repo_relative_path),
+        None,
+        agent_source_span_json(&span),
+        if snippet.is_empty() {
+            Value::Null
+        } else {
+            json!(snippet)
+        },
+        "text_evidence",
+        token,
+        matched_seeds,
+        lifecycle_claimable,
+        snippet_truncated,
+        false,
+        false,
+    );
+    if let Some(object) = candidate.as_object_mut() {
+        object.insert(
+            "candidate_sources".to_string(),
+            json!(["nuance_rescue", "text_evidence", "lexical_fts"]),
+        );
+        object.insert("proof_status".to_string(), json!("not_graph_proof"));
+        object.insert("claimable".to_string(), json!(lifecycle_claimable));
+        object.insert("claimable_for_text".to_string(), json!(lifecycle_claimable));
+        object.insert("requires_graph_verification".to_string(), json!(false));
+        object.insert("verification_status".to_string(), json!("not_graph_proof"));
+        object.insert(
+            "graph_verification_status".to_string(),
+            json!("not_graph_proof"),
+        );
+        object.insert("text_evidence_status".to_string(), json!("not_graph_proof"));
+        object.insert(
+            "source_labels".to_string(),
+            json!([
+                "nuance_rescue",
+                token.rescue_reason,
+                "text_evidence",
+                "candidate_only",
+                "no_graph_proof"
+            ]),
+        );
+    }
+    Some(candidate)
+}
+
+fn context_pack_nuance_source_line_candidate_json(
+    repo_root: &Path,
+    repo_relative_path: &str,
+    token: &ContextPackNuanceToken,
+    raw_seed_values: &[String],
+    lifecycle_claimable: bool,
+) -> Option<Value> {
+    let source_path = repo_root.join(repo_relative_path);
+    let source = fs::read_to_string(source_path).ok()?;
+    let (line_index, line) = source.lines().enumerate().find(|(_, line)| {
+        let line_haystack = format!("{repo_relative_path}\n{line}");
+        context_pack_nuance_haystack_matches(&line_haystack, token)
+    })?;
+    let line_number = (line_index + 1) as u32;
+    let span = SourceSpan::new(repo_relative_path, line_number, line_number);
+    let line_haystack = format!("{repo_relative_path}\n{line}");
+    let matched_seeds = context_pack_nuance_matched_seeds(&line_haystack, token, raw_seed_values);
+    let (snippet, snippet_truncated) = bounded_retrieval_candidate_snippet_text(line);
+    let evidence_role = if context_pack_test_path(repo_relative_path) {
+        "test"
+    } else {
+        "production"
+    };
+    let mut candidate = context_pack_nuance_candidate_json(
+        format!(
+            "nuance-rescue://source/{}:{}",
+            context_agent_stable_component(repo_relative_path),
+            line_number
+        ),
+        Some(repo_relative_path.to_string()),
+        None,
+        agent_source_span_json(&span),
+        if snippet.is_empty() {
+            Value::Null
+        } else {
+            json!(snippet)
+        },
+        evidence_role,
+        token,
+        matched_seeds,
+        lifecycle_claimable,
+        snippet_truncated,
+        false,
+        false,
+    );
+    if let Some(object) = candidate.as_object_mut() {
+        object.insert(
+            "candidate_sources".to_string(),
+            json!(["nuance_rescue", "source_text_scan"]),
+        );
+        object.insert(
+            "source_labels".to_string(),
+            json!([
+                "nuance_rescue",
+                token.rescue_reason,
+                "source_text_scan",
+                "candidate_only",
+                "no_graph_proof"
+            ]),
+        );
+    }
+    Some(candidate)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn context_pack_nuance_candidate_json(
+    candidate_id: String,
+    path: Option<String>,
+    entity_id: Option<String>,
+    span: Value,
+    snippet: Value,
+    evidence_role: &str,
+    token: &ContextPackNuanceToken,
+    matched_seeds: Vec<String>,
+    lifecycle_claimable: bool,
+    snippet_truncated: bool,
+    symbol_entity_match: bool,
+    file_path_match: bool,
+) -> Value {
+    let exact_seed_match = !matched_seeds.is_empty();
+    let source_score = context_pack_nuance_source_score(token, exact_seed_match);
+    let text_evidence_status = if evidence_role == "text_evidence" {
+        "not_graph_proof"
+    } else {
+        "absent"
+    };
+    let ranking_features = json!({
+        "exact_seed_match": exact_seed_match,
+        "file_path_match": file_path_match || matches!(token.kind, "path_title" | "route_literal" | "config_key"),
+        "text_evidence_match": evidence_role == "text_evidence",
+        "symbol_entity_match": symbol_entity_match,
+        "graph_proximity": false,
+        "source_role_compatible": matches!(evidence_role, "production" | "test" | "text_evidence" | "unknown"),
+        "lifecycle_claimable": lifecycle_claimable,
+        "proof_available": false,
+        "vector_score_available": false,
+        "binary_score_available": false,
+        "rescue_match": true
+    });
+    let source_labels = json!([
+        "nuance_rescue",
+        token.rescue_reason,
+        "candidate_only",
+        "no_graph_proof"
+    ]);
+    json!({
+        "candidate_id": candidate_id,
+        "candidate_source": "nuance_rescue",
+        "candidate_sources": [
+            "nuance_rescue",
+            if symbol_entity_match { "symbol_lookup" } else { "lexical_fts" }
+        ],
+        "candidate_source_label": token.rescue_reason,
+        "file_id": path.clone().map(Value::from).unwrap_or(Value::Null),
+        "path": path.map(Value::from).unwrap_or(Value::Null),
+        "entity_id": entity_id.map(Value::from).unwrap_or(Value::Null),
+        "span": span,
+        "snippet": snippet,
+        "evidence_role": evidence_role,
+        "proof_status": "candidate_only",
+        "graph_proof": false,
+        "claimable": false,
+        "claimable_for_text": false,
+        "claimable_for_graph": false,
+        "diagnostic_only": false,
+        "score": Value::Null,
+        "source_score": source_score,
+        "rank": Value::Null,
+        "matched_seeds": matched_seeds,
+        "matched_token": token.value,
+        "matched_tokens": [token.value.clone()],
+        "rescue_reason": token.rescue_reason,
+        "rescue_kinds": [token.kind],
+        "requires_graph_verification": true,
+        "verification_status": "needs_graph_verification",
+        "graph_verification_status": "needs_graph_verification",
+        "text_evidence_status": text_evidence_status,
+        "reason": format!("{} matched {}; candidate-only until graph/source verification", token.rescue_reason, token.value),
+        "omitted": false,
+        "truncated": snippet_truncated,
+        "ranking_features": ranking_features,
+        "source_labels": source_labels
+    })
+}
+
+fn context_pack_nuance_source_score(token: &ContextPackNuanceToken, exact_seed_match: bool) -> f64 {
+    let mut score = match token.kind {
+        "route_literal" => 9.0,
+        "config_key" => 8.5,
+        "test_name" => 8.0,
+        "identifier_signature" => 7.5,
+        "path_title" => 7.0,
+        _ => 4.0,
+    };
+    if exact_seed_match {
+        score += 2.0;
+    }
+    if token.value.len() >= 16 {
+        score += 0.5;
+    }
+    score
+}
+
+fn context_pack_nuance_entity_excerpt(repo_root: &Path, entity: &ContextEntitySummary) -> String {
+    let Some(span) = entity.source_span.as_ref() else {
+        return String::new();
+    };
+    let path = repo_root.join(&span.repo_relative_path);
+    let Ok(source) = fs::read_to_string(path) else {
+        return String::new();
+    };
+    let start = span.start_line.saturating_sub(1) as usize;
+    let end = span.end_line.max(span.start_line) as usize;
+    source
+        .lines()
+        .skip(start)
+        .take(end.saturating_sub(start).max(1))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn context_pack_nuance_haystack_matches(haystack: &str, token: &ContextPackNuanceToken) -> bool {
+    let lower = haystack.replace('\\', "/").to_ascii_lowercase();
+    if token.kind == "route_literal" {
+        if lower.contains(&token.raw_lower) {
+            return true;
+        }
+        let route_parts = context_pack_nuance_route_discriminator_parts(&token.raw_lower);
+        if route_parts.is_empty() {
+            return false;
+        }
+        let full_terms = context_pack_nuance_haystack_terms(haystack);
+        let route_context = full_terms.contains("route")
+            || full_terms.contains("routes")
+            || full_terms.contains("literal")
+            || lower.contains("/routes")
+            || lower.contains("routes/");
+        return route_context
+            && route_parts
+                .iter()
+                .all(|part| full_terms.contains(part) || lower.contains(part));
+    }
+    if token.kind == "path_title" && lower.contains(&token.raw_lower) {
+        return true;
+    }
+    if matches!(token.kind, "config_key" | "test_name") && lower.contains(&token.normalized) {
+        return true;
+    }
+    let full_terms = context_pack_nuance_haystack_terms(haystack);
+    if full_terms.contains(&token.normalized) {
+        return true;
+    }
+    if token.exact_match {
+        return false;
+    }
+    full_terms.contains(&token.raw_lower) || lower.contains(&token.raw_lower)
+}
+
+fn context_pack_nuance_route_discriminator_parts(value: &str) -> Vec<String> {
+    context_pack_nuance_identifier_parts(value)
+        .into_iter()
+        .filter(|part| {
+            !matches!(
+                part.as_str(),
+                "api" | "id" | "user" | "users" | "route" | "routes"
+            )
+        })
+        .collect()
+}
+
+fn context_pack_nuance_haystack_terms(haystack: &str) -> BTreeSet<String> {
+    let mut terms = BTreeSet::<String>::new();
+    for token in haystack.split(|ch: char| {
+        !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '/' | '.' | ':' | '#'))
+    }) {
+        let normalized = context_pack_nuance_normalized_token(token);
+        if !normalized.is_empty() {
+            terms.insert(normalized.clone());
+            terms.insert(
+                normalized
+                    .chars()
+                    .filter(|character| character.is_ascii_alphanumeric() || *character == '_')
+                    .collect::<String>(),
+            );
+        }
+        for part in context_pack_nuance_identifier_parts(token) {
+            if !part.is_empty() {
+                terms.insert(part);
+            }
+        }
+    }
+    terms.retain(|term| !term.is_empty());
+    terms
+}
+
+fn context_pack_nuance_matched_seeds(
+    haystack: &str,
+    token: &ContextPackNuanceToken,
+    raw_seed_values: &[String],
+) -> Vec<String> {
+    let mut seeds = BTreeSet::<String>::new();
+    if let Some(seed) = token.seed_value.as_ref() {
+        seeds.insert(seed.clone());
+    }
+    for seed in raw_seed_values {
+        let seed_token = ContextPackNuanceToken {
+            value: seed.clone(),
+            normalized: context_pack_nuance_normalized_token(seed),
+            raw_lower: seed.replace('\\', "/").to_ascii_lowercase(),
+            kind: context_pack_nuance_token_kind(seed, true),
+            rescue_reason: "exact_seed_overlap",
+            exact_match: true,
+            seed_value: Some(seed.clone()),
+        };
+        if context_pack_nuance_haystack_matches(haystack, &seed_token) {
+            seeds.insert(seed.clone());
+        }
+    }
+    seeds.into_iter().collect()
 }
 
 fn run_impact_command(args: &[String]) -> Result<Value, String> {
@@ -14221,6 +15723,9 @@ struct ContextPackOptions {
     max_output_bytes: Option<usize>,
     allow_stale_read: bool,
     explicit_scope_policy: Option<IndexScopeOptions>,
+    enable_vector_candidates: bool,
+    enable_nuance_rescue_candidates: bool,
+    vector_index_path: Option<PathBuf>,
 }
 
 fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String> {
@@ -14238,6 +15743,9 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
     let mut limit_snippets = None;
     let mut max_output_bytes = None;
     let mut allow_stale_read = false;
+    let mut enable_vector_candidates = false;
+    let mut enable_nuance_rescue_candidates = false;
+    let mut vector_index_path = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -14336,6 +15844,19 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
             "--allow-stale-read" => {
                 allow_stale_read = true;
             }
+            "--enable-vector-candidates" | "--enable_vector_candidates" => {
+                enable_vector_candidates = true;
+            }
+            "--enable-nuance-rescue-candidates" | "--enable_nuance_rescue_candidates" => {
+                enable_nuance_rescue_candidates = true;
+            }
+            "--vector-index" | "--vector-index-path" | "--vector_index" | "--vector_index_path" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--vector-index requires a path".to_string());
+                };
+                vector_index_path = Some(PathBuf::from(value));
+            }
             other => return Err(format!("unknown context-pack option: {other}")),
         }
         index += 1;
@@ -14360,6 +15881,9 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
         max_output_bytes,
         allow_stale_read,
         explicit_scope_policy,
+        enable_vector_candidates,
+        enable_nuance_rescue_candidates,
+        vector_index_path,
     })
 }
 
@@ -14682,10 +16206,7 @@ fn open_context_pack_connection(db_path: &Path) -> Result<Connection, String> {
 }
 
 fn context_pack_seed_values(options: &ContextPackOptions, max_seeds: usize) -> Vec<String> {
-    let prompt_exact = extract_prompt_seeds(&options.task)
-        .into_iter()
-        .filter_map(|seed| seed.exact_value())
-        .collect::<Vec<_>>();
+    let prompt_exact = context_pack_prompt_exact_seed_values(&options.task);
     unique_limited_strings(
         options
             .seeds
@@ -14695,6 +16216,20 @@ fn context_pack_seed_values(options: &ContextPackOptions, max_seeds: usize) -> V
             .cloned(),
         max_seeds.max(1),
     )
+}
+
+fn context_pack_prompt_exact_seed_values(task: &str) -> Vec<String> {
+    let (positive_task, negative_task) = context_pack_nuance_positive_task(task);
+    let positive_lower = positive_task.to_ascii_lowercase();
+    let negative_lower = negative_task.to_ascii_lowercase();
+    extract_prompt_seeds(task)
+        .into_iter()
+        .filter_map(|seed| seed.exact_value())
+        .filter(|seed| {
+            let lower = seed.to_ascii_lowercase();
+            positive_lower.contains(&lower) && !negative_lower.contains(&lower)
+        })
+        .collect()
 }
 
 fn unique_limited_strings(values: impl IntoIterator<Item = String>, limit: usize) -> Vec<String> {
@@ -16724,6 +18259,8 @@ fn text_evidence_retrieval_candidate_json(
             .unwrap_or_else(|| json!([])),
         "requires_graph_verification": false,
         "verification_status": proof_status,
+        "graph_verification_status": proof_status,
+        "text_evidence_status": proof_status,
         "reason": evidence
             .get("classification_reason")
             .and_then(Value::as_str)
@@ -16738,7 +18275,10 @@ fn text_evidence_retrieval_candidate_json(
             "graph_proximity": false,
             "source_role_compatible": true,
             "lifecycle_claimable": lifecycle_claimable,
-            "proof_available": false
+            "proof_available": false,
+            "vector_score_available": false,
+            "binary_score_available": false,
+            "rescue_match": false
         },
         "source_labels": [
             "stage0_fts",
@@ -16746,6 +18286,148 @@ fn text_evidence_retrieval_candidate_json(
             "no_graph_proof"
         ]
     }))
+}
+
+fn context_pack_vector_retrieval_candidate_json(
+    candidate: &RetrievalCandidate,
+    lifecycle_claimable: bool,
+) -> Value {
+    let candidate_source =
+        context_pack_retrieval_candidate_source_label(candidate.candidate_source);
+    let mut sources = BTreeSet::from([candidate_source.to_string()]);
+    if matches!(
+        candidate.candidate_source,
+        RetrievalCandidateSource::VectorSemantic | RetrievalCandidateSource::VectorRerank
+    ) {
+        sources.insert("vector_semantic".to_string());
+    }
+    if candidate.candidate_source == RetrievalCandidateSource::VectorBinary {
+        sources.insert("binary_vector".to_string());
+    }
+    if candidate.entity_id.is_some() {
+        sources.insert("symbol_lookup".to_string());
+    }
+    let text_evidence_match = matches!(
+        candidate.embedding_source,
+        Some(VectorEmbeddingSource::TextEvidence)
+            | Some(VectorEmbeddingSource::Snippet)
+            | Some(VectorEmbeddingSource::FilePathTitle)
+    ) || candidate.evidence_role == EvidenceRole::Unknown
+        && candidate.entity_id.is_none()
+        && candidate.path.is_some();
+    if text_evidence_match {
+        sources.insert("text_evidence".to_string());
+    }
+    let proof_status = context_pack_retrieval_proof_status_label(candidate.proof_status);
+    let verification_status =
+        context_pack_retrieval_verification_status_label(candidate.verification_status);
+    let evidence_role = if text_evidence_match {
+        "text_evidence"
+    } else {
+        candidate.evidence_role.as_str()
+    };
+    let source_labels = sources
+        .iter()
+        .cloned()
+        .chain(["candidate_only".to_string(), "no_graph_proof".to_string()])
+        .collect::<BTreeSet<_>>();
+    let ranking_features = json!({
+        "exact_seed_match": false,
+        "file_path_match": matches!(candidate.embedding_source, Some(VectorEmbeddingSource::FilePathTitle)),
+        "text_evidence_match": text_evidence_match,
+        "symbol_entity_match": candidate.entity_id.is_some(),
+        "graph_proximity": false,
+        "source_role_compatible": matches!(candidate.evidence_role, EvidenceRole::Production | EvidenceRole::Test | EvidenceRole::Unknown),
+        "lifecycle_claimable": lifecycle_claimable,
+        "proof_available": false,
+        "vector_score_available": sources.contains("vector_semantic") && candidate.score.is_some(),
+        "binary_score_available": sources.contains("binary_vector") && candidate.score.is_some(),
+        "rescue_match": false
+    });
+    json!({
+        "candidate_id": candidate.candidate_id.clone(),
+        "candidate_source": candidate_source,
+        "candidate_sources": sources.iter().cloned().collect::<Vec<_>>(),
+        "candidate_source_label": candidate_source,
+        "file_id": candidate.file_id.clone(),
+        "path": candidate.path.clone(),
+        "entity_id": candidate.entity_id.clone(),
+        "span": candidate.span.as_ref().map(agent_source_span_json).unwrap_or(Value::Null),
+        "snippet": Value::Null,
+        "evidence_role": evidence_role,
+        "proof_status": proof_status,
+        "graph_proof": false,
+        "claimable": false,
+        "claimable_for_text": candidate.claimable_for_text.unwrap_or(false) && lifecycle_claimable,
+        "claimable_for_graph": false,
+        "diagnostic_only": candidate.diagnostic_only,
+        "score": Value::Null,
+        "source_score": candidate.score,
+        "vector_score": if sources.contains("vector_semantic") { candidate.score } else { None },
+        "binary_score": if sources.contains("binary_vector") { candidate.score } else { None },
+        "rank": candidate.rank,
+        "matched_seeds": candidate.matched_seeds.clone(),
+        "matched_token": candidate.matched_seeds.first().cloned(),
+        "matched_tokens": candidate.matched_seeds.clone(),
+        "requires_graph_verification": candidate.requires_graph_verification,
+        "verification_status": verification_status,
+        "graph_verification_status": verification_status,
+        "text_evidence_status": if text_evidence_match { proof_status } else { "absent" },
+        "reason": candidate.reason.clone(),
+        "omitted": candidate.omitted,
+        "truncated": candidate.truncated,
+        "ranking_features": ranking_features,
+        "source_labels": source_labels.iter().cloned().collect::<Vec<_>>()
+    })
+}
+
+fn context_pack_retrieval_candidate_source_label(source: RetrievalCandidateSource) -> &'static str {
+    match source {
+        RetrievalCandidateSource::ExactSeed => "exact_seed",
+        RetrievalCandidateSource::FilePathSeed => "file_path_seed",
+        RetrievalCandidateSource::TextEvidence => "text_evidence",
+        RetrievalCandidateSource::LexicalFts => "lexical_fts",
+        RetrievalCandidateSource::SymbolLookup => "symbol_lookup",
+        RetrievalCandidateSource::VectorBinary => "binary_vector",
+        RetrievalCandidateSource::VectorRerank => "vector_rerank",
+        RetrievalCandidateSource::VectorSemantic => "vector_semantic",
+        RetrievalCandidateSource::NuanceRescue => "nuance_rescue",
+        RetrievalCandidateSource::GraphNeighbor => "graph_neighbor",
+        RetrievalCandidateSource::PathEvidence => "path_evidence",
+        RetrievalCandidateSource::NoProofFallback => "no_proof_fallback",
+        RetrievalCandidateSource::Diagnostic => "diagnostic",
+        RetrievalCandidateSource::Unknown => "unknown",
+    }
+}
+
+fn context_pack_retrieval_proof_status_label(status: RetrievalProofStatus) -> &'static str {
+    match status {
+        RetrievalProofStatus::ProofPathFound => "proof_path_found",
+        RetrievalProofStatus::NoProofPathFound => "no_proof_path_found",
+        RetrievalProofStatus::NotGraphProof => "not_graph_proof",
+        RetrievalProofStatus::CandidateOnly => "candidate_only",
+        RetrievalProofStatus::DiagnosticOnly => "diagnostic_only",
+        RetrievalProofStatus::StaleOrForeignDb => "stale_or_foreign_db",
+        RetrievalProofStatus::Unknown => "unknown",
+    }
+}
+
+fn context_pack_retrieval_verification_status_label(
+    status: RetrievalVerificationStatus,
+) -> &'static str {
+    match status {
+        RetrievalVerificationStatus::Unverified => "unverified",
+        RetrievalVerificationStatus::NeedsGraphVerification => "needs_graph_verification",
+        RetrievalVerificationStatus::GraphVerified => "graph_verified",
+        RetrievalVerificationStatus::NoProofPathFound => "no_proof_path_found",
+        RetrievalVerificationStatus::NotGraphProof => "not_graph_proof",
+        RetrievalVerificationStatus::CandidateOnly => "candidate_only",
+        RetrievalVerificationStatus::DiagnosticOnly => "diagnostic_only",
+        RetrievalVerificationStatus::StaleOrForeignDb => "stale_or_foreign_db",
+        RetrievalVerificationStatus::Omitted => "omitted",
+        RetrievalVerificationStatus::Truncated => "truncated",
+        RetrievalVerificationStatus::Unknown => "unknown",
+    }
 }
 
 fn build_context_agent_retrieval_candidates(
@@ -16771,6 +18453,10 @@ fn build_context_agent_retrieval_candidates(
         .iter()
         .filter(|seed| context_agent_seed_is_path(seed))
         .map(|seed| context_agent_path_key(seed))
+        .collect::<BTreeSet<_>>();
+    let exact_seed_keys = exact_seeds
+        .iter()
+        .map(|seed| context_agent_seed_key(seed))
         .collect::<BTreeSet<_>>();
     let mut candidates = Vec::new();
 
@@ -16805,10 +18491,32 @@ fn build_context_agent_retrieval_candidates(
             ));
         }
     }
+    for key in ["vector_semantic_candidates", "binary_vector_candidates"] {
+        if let Some(packet_candidates) = packet.metadata.get(key).and_then(Value::as_array) {
+            for candidate in packet_candidates
+                .iter()
+                .take(CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT.saturating_mul(4))
+            {
+                candidates.push(candidate.clone());
+            }
+        }
+    }
+    if let Some(nuance_candidates) = packet
+        .metadata
+        .get("nuance_rescue_candidates")
+        .and_then(Value::as_array)
+    {
+        for candidate in nuance_candidates
+            .iter()
+            .take(CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT)
+        {
+            candidates.push(candidate.clone());
+        }
+    }
 
     let mut deduped = BTreeMap::<String, Value>::new();
     for candidate in candidates {
-        let key = context_agent_candidate_dedup_key(&candidate, &exact_path_keys);
+        let key = context_agent_candidate_dedup_key(&candidate, &exact_path_keys, &exact_seed_keys);
         if let Some(existing) = deduped.get_mut(&key) {
             merge_context_agent_candidate(existing, candidate);
         } else {
@@ -16852,11 +18560,7 @@ fn build_context_agent_retrieval_candidates(
         }
     }
     for candidate in ranked_candidates {
-        if selected.len() >= CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT
-            && selected
-                .iter()
-                .any(|candidate| context_agent_candidate_has_source(candidate, "text_evidence"))
-        {
+        if selected.len() >= CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT {
             break;
         }
         if !selected_keys.insert(context_agent_candidate_id(&candidate)) {
@@ -16878,7 +18582,9 @@ fn build_context_agent_retrieval_candidates(
             );
             object.insert(
                 "candidate_cap_policy".to_string(),
-                json!("exact_seeds_protected_then_no_proof_text_then_deterministic_rank"),
+                json!(
+                    "exact_seeds_protected_then_no_proof_text_then_nuance_and_deterministic_rank"
+                ),
             );
         }
     }
@@ -16893,10 +18599,7 @@ fn build_context_agent_retrieval_candidates(
 }
 
 fn context_agent_candidate_seed_values(options: &ContextPackOptions) -> Vec<String> {
-    let prompt_exact = extract_prompt_seeds(&options.task)
-        .into_iter()
-        .filter_map(|seed| seed.exact_value())
-        .collect::<Vec<_>>();
+    let prompt_exact = context_pack_prompt_exact_seed_values(&options.task);
     unique_limited_strings(
         options
             .seeds
@@ -16908,6 +18611,10 @@ fn context_agent_candidate_seed_values(options: &ContextPackOptions) -> Vec<Stri
             .saturating_mul(8)
             .max(16),
     )
+}
+
+fn context_agent_seed_key(seed: &str) -> String {
+    seed.trim().replace('\\', "/").to_ascii_lowercase()
 }
 
 fn exact_seed_retrieval_candidate_json(
@@ -16946,6 +18653,8 @@ fn exact_seed_retrieval_candidate_json(
         "matched_seeds": [seed],
         "requires_graph_verification": true,
         "verification_status": if graph_verification_failed { "no_proof_path_found" } else { "needs_graph_verification" },
+        "graph_verification_status": if graph_verification_failed { "no_proof_path_found" } else { "needs_graph_verification" },
+        "text_evidence_status": "absent",
         "reason": if graph_verification_failed {
             "exact seed preserved after graph verification; no proof path found, source/text fallback required before claiming"
         } else {
@@ -16961,7 +18670,10 @@ fn exact_seed_retrieval_candidate_json(
             "graph_proximity": false,
             "source_role_compatible": true,
             "lifecycle_claimable": lifecycle_claimable,
-            "proof_available": false
+            "proof_available": false,
+            "vector_score_available": false,
+            "binary_score_available": false,
+            "rescue_match": false
         },
         "source_labels": sources
     })
@@ -16997,6 +18709,10 @@ fn path_evidence_retrieval_candidate_json(
         .get("evidence_role")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
+    let graph_entity_id = path
+        .get("target")
+        .and_then(Value::as_str)
+        .or_else(|| path.get("source").and_then(Value::as_str));
     let matched_seeds = exact_seeds
         .iter()
         .filter(|seed| context_path_candidate_matches_seed(path, seed))
@@ -17012,7 +18728,7 @@ fn path_evidence_retrieval_candidate_json(
         "candidate_source_label": "graph_verified_path_evidence",
         "file_id": file.clone().map(Value::from).unwrap_or(Value::Null),
         "path": file.map(Value::from).unwrap_or(Value::Null),
-        "entity_id": Value::Null,
+        "entity_id": graph_entity_id.map(Value::from).unwrap_or(Value::Null),
         "span": first_span,
         "evidence_role": evidence_role,
         "proof_status": if proof_path_available { "proof_path_found" } else { "candidate_only" },
@@ -17027,6 +18743,8 @@ fn path_evidence_retrieval_candidate_json(
         "matched_seeds": matched_seeds,
         "requires_graph_verification": false,
         "verification_status": if proof_path_available { "graph_verified" } else { "candidate_only" },
+        "graph_verification_status": if proof_path_available { "graph_verified" } else { "candidate_only" },
+        "text_evidence_status": "absent",
         "reason": path
             .get("classification_reason")
             .and_then(Value::as_str)
@@ -17044,7 +18762,10 @@ fn path_evidence_retrieval_candidate_json(
             "graph_proximity": true,
             "source_role_compatible": evidence_role == "production" || evidence_role == "unknown",
             "lifecycle_claimable": lifecycle_claimable,
-            "proof_available": proof_path_available
+            "proof_available": proof_path_available,
+            "vector_score_available": false,
+            "binary_score_available": false,
+            "rescue_match": false
         },
         "source_labels": [
             "path_evidence",
@@ -17101,6 +18822,8 @@ fn no_proof_fallback_retrieval_candidate_json(
             .unwrap_or_else(|| json!([])),
         "requires_graph_verification": true,
         "verification_status": "no_proof_path_found",
+        "graph_verification_status": "no_proof_path_found",
+        "text_evidence_status": "absent",
         "reason": evidence
             .get("classification_reason")
             .and_then(Value::as_str)
@@ -17115,7 +18838,10 @@ fn no_proof_fallback_retrieval_candidate_json(
             "graph_proximity": false,
             "source_role_compatible": evidence_role == "production" || evidence_role == "unknown",
             "lifecycle_claimable": lifecycle_claimable,
-            "proof_available": false
+            "proof_available": false,
+            "vector_score_available": false,
+            "binary_score_available": false,
+            "rescue_match": false
         },
         "source_labels": [
             "no_proof_fallback"
@@ -17205,6 +18931,7 @@ fn context_path_candidate_matches_seed(path: &Value, seed: &str) -> bool {
 fn context_agent_candidate_dedup_key(
     candidate: &Value,
     exact_path_keys: &BTreeSet<String>,
+    exact_seed_keys: &BTreeSet<String>,
 ) -> String {
     if let Some(path) = candidate.get("path").and_then(Value::as_str) {
         let key = context_agent_path_key(path);
@@ -17217,13 +18944,25 @@ fn context_agent_candidate_dedup_key(
             return format!("text-path:{key}");
         }
     }
-    if context_agent_candidate_has_source(candidate, "path_evidence") {
-        return format!("path-evidence:{}", context_agent_candidate_id(candidate));
+    if let Some(token) = candidate.get("matched_token").and_then(Value::as_str) {
+        let key = context_agent_seed_key(token);
+        if exact_seed_keys.contains(&key) {
+            return format!("seed:{key}");
+        }
+    }
+    for seed in context_agent_string_set(candidate, "matched_seeds") {
+        let key = context_agent_seed_key(&seed);
+        if exact_seed_keys.contains(&key) {
+            return format!("seed:{key}");
+        }
     }
     if let Some(entity_id) = candidate.get("entity_id").and_then(Value::as_str) {
         if !entity_id.trim().is_empty() {
             return format!("entity:{entity_id}");
         }
+    }
+    if context_agent_candidate_has_source(candidate, "path_evidence") {
+        return format!("path-evidence:{}", context_agent_candidate_id(candidate));
     }
     if let (Some(path), Some(span)) = (
         candidate.get("path").and_then(Value::as_str),
@@ -17293,6 +19032,35 @@ fn merge_context_agent_candidate(existing: &mut Value, incoming: Value) {
         .union(&context_agent_string_set(&incoming, "matched_seeds"))
         .cloned()
         .collect::<BTreeSet<_>>();
+    let matched_tokens = context_agent_string_set(existing, "matched_tokens")
+        .union(&context_agent_string_set(&incoming, "matched_tokens"))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let rescue_kinds = context_agent_string_set(existing, "rescue_kinds")
+        .union(&context_agent_string_set(&incoming, "rescue_kinds"))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let rescue_reasons = unique_limited_strings(
+        [
+            existing
+                .get("rescue_reason")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            incoming
+                .get("rescue_reason")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        ],
+        4,
+    );
+    let matched_token = existing
+        .get("matched_token")
+        .and_then(Value::as_str)
+        .or_else(|| incoming.get("matched_token").and_then(Value::as_str))
+        .map(str::to_string)
+        .or_else(|| matched_tokens.iter().next().cloned());
     let ranking_features = merge_context_agent_ranking_features(existing, &incoming);
     let proof_status = merge_context_agent_status(
         existing.get("proof_status").and_then(Value::as_str),
@@ -17314,6 +19082,35 @@ fn merge_context_agent_candidate(existing: &mut Value, incoming: Value) {
             "not_graph_proof",
             "needs_graph_verification",
             "candidate_only",
+            "unknown",
+        ],
+    );
+    let graph_verification_status = merge_context_agent_status(
+        existing
+            .get("graph_verification_status")
+            .and_then(Value::as_str)
+            .or_else(|| existing.get("verification_status").and_then(Value::as_str)),
+        incoming
+            .get("graph_verification_status")
+            .and_then(Value::as_str)
+            .or_else(|| incoming.get("verification_status").and_then(Value::as_str)),
+        &[
+            "graph_verified",
+            "no_proof_path_found",
+            "not_graph_proof",
+            "needs_graph_verification",
+            "candidate_only",
+            "unknown",
+        ],
+    );
+    let text_evidence_status = merge_context_agent_status(
+        existing.get("text_evidence_status").and_then(Value::as_str),
+        incoming.get("text_evidence_status").and_then(Value::as_str),
+        &[
+            "not_graph_proof",
+            "no_proof_path_found",
+            "candidate_only",
+            "absent",
             "unknown",
         ],
     );
@@ -17393,6 +19190,12 @@ fn merge_context_agent_candidate(existing: &mut Value, incoming: Value) {
             .get("truncated")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+    let numeric_values = ["source_score", "vector_score", "binary_score"]
+        .iter()
+        .filter_map(|key| {
+            max_context_agent_numeric_field(existing, &incoming, key).map(|value| (*key, value))
+        })
+        .collect::<Vec<_>>();
 
     let Some(object) = existing.as_object_mut() else {
         return;
@@ -17419,6 +19222,9 @@ fn merge_context_agent_candidate(existing: &mut Value, incoming: Value) {
             }
         }
     }
+    for (key, value) in numeric_values {
+        object.insert(key.to_string(), json!(value));
+    }
     object.insert(
         "candidate_source".to_string(),
         json!(primary_context_agent_candidate_source(&sources)),
@@ -17435,6 +19241,27 @@ fn merge_context_agent_candidate(existing: &mut Value, incoming: Value) {
         "matched_seeds".to_string(),
         json!(matched_seeds.iter().cloned().collect::<Vec<_>>()),
     );
+    if !matched_tokens.is_empty() {
+        object.insert(
+            "matched_tokens".to_string(),
+            json!(matched_tokens.iter().cloned().collect::<Vec<_>>()),
+        );
+    }
+    if let Some(matched_token) = matched_token {
+        object.insert("matched_token".to_string(), json!(matched_token));
+    }
+    if !rescue_kinds.is_empty() {
+        object.insert(
+            "rescue_kinds".to_string(),
+            json!(rescue_kinds.iter().cloned().collect::<Vec<_>>()),
+        );
+    }
+    if !rescue_reasons.is_empty() {
+        object.insert(
+            "rescue_reason".to_string(),
+            json!(rescue_reasons.join("; ")),
+        );
+    }
     object.insert("evidence_role".to_string(), json!(evidence_role));
     object.insert("proof_status".to_string(), json!(proof_status));
     object.insert("graph_proof".to_string(), json!(graph_proof));
@@ -17452,9 +19279,29 @@ fn merge_context_agent_candidate(existing: &mut Value, incoming: Value) {
         "verification_status".to_string(),
         json!(verification_status),
     );
+    object.insert(
+        "graph_verification_status".to_string(),
+        json!(graph_verification_status),
+    );
+    object.insert(
+        "text_evidence_status".to_string(),
+        json!(text_evidence_status),
+    );
     object.insert("reason".to_string(), json!(reason));
     object.insert("truncated".to_string(), json!(truncated));
     object.insert("ranking_features".to_string(), ranking_features);
+}
+
+fn max_context_agent_numeric_field(left: &Value, right: &Value, key: &str) -> Option<f64> {
+    match (
+        left.get(key).and_then(Value::as_f64),
+        right.get(key).and_then(Value::as_f64),
+    ) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
 }
 
 fn merge_context_agent_ranking_features(existing: &Value, incoming: &Value) -> Value {
@@ -17468,6 +19315,9 @@ fn merge_context_agent_ranking_features(existing: &Value, incoming: &Value) -> V
         "source_role_compatible",
         "lifecycle_claimable",
         "proof_available",
+        "vector_score_available",
+        "binary_score_available",
+        "rescue_match",
     ] {
         let value = existing
             .pointer(&format!("/ranking_features/{key}"))
@@ -17503,6 +19353,10 @@ fn primary_context_agent_candidate_source(sources: &BTreeSet<String>) -> String 
         "file_path_seed",
         "path_evidence",
         "graph_neighbor",
+        "nuance_rescue",
+        "vector_semantic",
+        "binary_vector",
+        "vector_rerank",
         "symbol_lookup",
         "text_evidence",
         "lexical_fts",
@@ -17537,6 +19391,18 @@ fn context_agent_candidate_rank_score(candidate: &Value) -> i64 {
     if feature("symbol_entity_match") {
         score += 1_250;
     }
+    if context_agent_candidate_has_source(candidate, "nuance_rescue") {
+        score += 2_200;
+    }
+    if context_agent_candidate_has_source(candidate, "vector_semantic") {
+        score += 900;
+    }
+    if context_agent_candidate_has_source(candidate, "binary_vector") {
+        score += 700;
+    }
+    if feature("rescue_match") {
+        score += 300;
+    }
     if feature("graph_proximity") {
         score += 1_000;
     }
@@ -17570,6 +19436,15 @@ fn context_agent_candidate_rank_score(candidate: &Value) -> i64 {
                 score += 100;
             }
         }
+    }
+    if let Some(source_score) = candidate.get("source_score").and_then(Value::as_f64) {
+        score += (source_score * 100.0).round() as i64;
+    }
+    if let Some(vector_score) = candidate.get("vector_score").and_then(Value::as_f64) {
+        score += (vector_score * 100.0).round() as i64;
+    }
+    if let Some(binary_score) = candidate.get("binary_score").and_then(Value::as_f64) {
+        score += (binary_score * 100.0).round() as i64;
     }
     score += (context_agent_candidate_sources(candidate).len() as i64) * 50;
     score
@@ -18029,6 +19904,32 @@ fn context_pack_retrieval_architecture_json(
     } else {
         "no_follow_up_queries"
     };
+    let nuance_trace = packet.metadata.get("nuance_rescue_trace");
+    let nuance_stage_enabled = nuance_trace
+        .and_then(|trace| trace.get("rescue_enabled"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let nuance_candidate_count = nuance_trace
+        .and_then(|trace| trace.get("rescue_candidate_count"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let nuance_stage_status = if nuance_stage_enabled {
+        nuance_trace
+            .and_then(|trace| trace.get("rescue_status"))
+            .and_then(Value::as_str)
+            .unwrap_or("active_current")
+    } else {
+        "inactive_requires_explicit_flag"
+    };
+    let inactive_lanes = if nuance_stage_enabled {
+        vec!["binary_vector_candidates", "shell_ready_probe_commands"]
+    } else {
+        vec![
+            "binary_vector_candidates",
+            "nuance_rescue_candidates",
+            "shell_ready_probe_commands",
+        ]
+    };
 
     json!({
         "schema_version": 1,
@@ -18078,9 +19979,9 @@ fn context_pack_retrieval_architecture_json(
             },
             {
                 "stage": "nuance_rescue_candidates",
-                "status": "inactive_post_mvp",
-                "candidate_count": 0,
-                "proof_contract": "nuance_rescue_not_run_in_this_phase"
+                "status": nuance_stage_status,
+                "candidate_count": nuance_candidate_count,
+                "proof_contract": "nuance_rescue_candidates_are_candidate_only_until_graph_or_source_verification"
             },
             {
                 "stage": "graph_neighborhood_candidates",
@@ -18112,11 +20013,7 @@ fn context_pack_retrieval_architecture_json(
                 "proof_contract": "agent_packet_must_remain_bounded_and_label_claimability"
             }
         ],
-        "inactive_lanes": [
-            "binary_vector_candidates",
-            "nuance_rescue_candidates",
-            "shell_ready_probe_commands"
-        ]
+        "inactive_lanes": inactive_lanes
     })
 }
 
@@ -18178,59 +20075,280 @@ fn context_pack_retrieval_explain_json(
         .filter(|value| !value.is_null())
         .or_else(|| packet.metadata.get("proof_failure_reason").cloned())
         .unwrap_or(Value::Null);
+    let nuance_rescue_trace = packet
+        .metadata
+        .get("nuance_rescue_trace")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "schema_version": 1,
+                "diagnostic_only": true,
+                "nuance_rescue_enabled": false,
+                "rescue_enabled": false,
+                "rescue_candidate_count": 0,
+                "rescue_candidate_sources": [],
+                "candidate_cap": CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT,
+                "ignored_generic_tokens": [],
+                "rare_tokens": [],
+                "identifier_tokens": [],
+                "route_tokens": [],
+                "config_tokens": [],
+                "test_tokens": [],
+                "route_config_test_tokens": [],
+                "rescue_reasons": [],
+                "candidates_accepted": {"count": 0, "items": []},
+                "candidates_rejected": {"count": 0, "tokens": []}
+            })
+        });
+    let no_proof_fallback_status = context_pack_no_proof_fallback_status(
+        graph_proof,
+        fallback_evidence.len(),
+        snippets.len(),
+        &no_proof_fallback_reason,
+    );
+    let final_nuance_selection =
+        context_pack_final_nuance_selection_json(packet, &candidate_set.candidates);
 
-    json!({
-        "schema_version": 1,
-        "diagnostic_only": true,
-        "trigger": "context-pack --explain/--audit-json",
-        "compact_default": "retrieval_explain is omitted unless an explicit diagnostic flag is requested",
-        "prompt_intent": packet
+    let mut explain = serde_json::Map::new();
+    explain.insert("schema_version".to_string(), json!(1));
+    explain.insert("diagnostic_only".to_string(), json!(true));
+    explain.insert(
+        "trigger".to_string(),
+        json!("context-pack --explain/--audit-json"),
+    );
+    explain.insert(
+        "compact_default".to_string(),
+        json!("retrieval_explain is omitted unless an explicit diagnostic flag is requested"),
+    );
+    explain.insert(
+        "prompt_intent".to_string(),
+        json!(packet
             .metadata
             .get("prompt_intent")
             .and_then(Value::as_str)
-            .unwrap_or("unknown"),
-        "seeds_extracted": seeds_extracted,
-        "ignored_seeds": ignored_seeds,
-        "candidate_sources": candidate_sources,
-        "candidate_counts_by_source": candidate_counts_by_source,
-        "candidate_caps": {
+            .unwrap_or("unknown")),
+    );
+    explain.insert("seeds_extracted".to_string(), json!(seeds_extracted));
+    explain.insert("ignored_seeds".to_string(), json!(ignored_seeds));
+    explain.insert("candidate_sources".to_string(), json!(candidate_sources));
+    explain.insert(
+        "candidate_counts_by_source".to_string(),
+        candidate_counts_by_source,
+    );
+    explain.insert(
+        "candidate_caps".to_string(),
+        json!({
             "candidate_cap": CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT,
-            "candidate_cap_policy": "exact_seeds_protected_then_no_proof_text_then_deterministic_rank",
+            "candidate_cap_policy": "exact_seeds_protected_then_no_proof_text_then_nuance_and_deterministic_rank",
             "candidate_total_count": candidate_set.total_count,
             "candidate_returned_count": candidate_set.candidates.len(),
             "candidate_omitted_count": candidate_set.omitted_count,
             "exact_seed_cap_override": candidate_set.exact_seed_cap_override
-        },
-        "dedup_results": {
+        }),
+    );
+    explain.insert(
+        "dedup_results".to_string(),
+        json!({
             "candidate_path_count_before_dedup": context_pack_metadata_u64(packet, "candidate_path_count_before_dedup"),
             "candidate_path_count_after_dedup": context_pack_metadata_u64(packet, "candidate_path_count_after_dedup"),
             "candidate_path_count_after_filter": context_pack_metadata_u64(packet, "candidate_path_count_after_filter"),
             "candidate_path_count_after_truncate": context_pack_metadata_u64(packet, "candidate_path_count_after_truncate"),
             "retrieval_candidate_count_after_dedup": candidate_set.total_count,
             "retrieval_candidate_count_after_cap": candidate_set.candidates.len()
-        },
-        "ranking_reasons": ranking_reasons,
-        "graph_verification_attempts": graph_verification,
-        "proof_paths_found": paths.len(),
-        "proof_path_ids": proof_path_ids,
-        "proof_status": proof_status,
-        "graph_proof": graph_proof,
-        "evidence_status": evidence_status,
-        "no_proof_fallback_reason": no_proof_fallback_reason,
-        "fallback_evidence_count": fallback_evidence.len(),
-        "snippet_count": snippets.len(),
-        "omitted_counts": {
+        }),
+    );
+    explain.insert("ranking_reasons".to_string(), json!(ranking_reasons));
+    explain.insert(
+        "graph_verification_attempts".to_string(),
+        graph_verification.clone(),
+    );
+    explain.insert(
+        "graph_verification_status".to_string(),
+        json!(graph_verification
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")),
+    );
+    explain.insert("proof_paths_found".to_string(), json!(paths.len()));
+    explain.insert("proof_path_ids".to_string(), json!(proof_path_ids));
+    explain.insert("proof_status".to_string(), json!(proof_status));
+    explain.insert("graph_proof".to_string(), json!(graph_proof));
+    explain.insert("evidence_status".to_string(), json!(evidence_status));
+    explain.insert(
+        "vector_trace".to_string(),
+        packet
+            .metadata
+            .get("vector_candidate_trace")
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    explain.insert(
+        "nuance_rescue_enabled".to_string(),
+        json!(nuance_rescue_trace
+            .get("nuance_rescue_enabled")
+            .or_else(|| nuance_rescue_trace.get("rescue_enabled"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)),
+    );
+    for key in [
+        "ignored_generic_tokens",
+        "rare_tokens",
+        "identifier_tokens",
+        "route_tokens",
+        "config_tokens",
+        "test_tokens",
+        "route_config_test_tokens",
+        "rescue_candidate_sources",
+        "rescue_reasons",
+    ] {
+        explain.insert(
+            key.to_string(),
+            nuance_rescue_trace
+                .get(key)
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        );
+    }
+    explain.insert(
+        "rescue_candidate_count".to_string(),
+        nuance_rescue_trace
+            .get("rescue_candidate_count")
+            .cloned()
+            .unwrap_or_else(|| json!(0)),
+    );
+    explain.insert(
+        "overfetch_rerank_settings".to_string(),
+        context_pack_overfetch_rerank_settings_json(packet),
+    );
+    explain.insert(
+        "candidates_accepted".to_string(),
+        final_nuance_selection
+            .get("candidates_accepted")
+            .cloned()
+            .unwrap_or_else(|| json!({"count": 0, "items": []})),
+    );
+    explain.insert(
+        "candidates_rejected".to_string(),
+        final_nuance_selection
+            .get("candidates_rejected")
+            .cloned()
+            .unwrap_or_else(|| json!({"count": 0, "items": []})),
+    );
+    explain.insert("nuance_rescue_trace".to_string(), nuance_rescue_trace);
+    explain.insert(
+        "no_proof_fallback_reason".to_string(),
+        no_proof_fallback_reason,
+    );
+    explain.insert(
+        "no_proof_fallback_status".to_string(),
+        json!(no_proof_fallback_status),
+    );
+    explain.insert(
+        "fallback_evidence_count".to_string(),
+        json!(fallback_evidence.len()),
+    );
+    explain.insert("snippet_count".to_string(), json!(snippets.len()));
+    explain.insert(
+        "omitted_counts".to_string(),
+        json!({
             "paths": omitted_paths,
             "snippets": omitted_snippets,
             "fallback_evidence": omitted_fallback_evidence,
             "recommended_tests": omitted_recommended_tests,
             "risks": omitted_risks,
             "candidates": candidate_set.omitted_count
-        },
-        "retrieval_architecture_candidate_flow": retrieval_architecture
+        }),
+    );
+    explain.insert(
+        "retrieval_architecture_candidate_flow".to_string(),
+        retrieval_architecture
             .get("candidate_flow")
             .cloned()
-            .unwrap_or_else(|| json!([]))
+            .unwrap_or_else(|| json!([])),
+    );
+    Value::Object(explain)
+}
+
+fn context_pack_no_proof_fallback_status(
+    graph_proof: bool,
+    fallback_evidence_count: usize,
+    snippet_count: usize,
+    no_proof_fallback_reason: &Value,
+) -> &'static str {
+    if graph_proof {
+        "not_needed_graph_proof_found"
+    } else if fallback_evidence_count > 0 || snippet_count > 0 {
+        "active_no_graph_proof_text_fallback"
+    } else if !no_proof_fallback_reason.is_null() {
+        "no_graph_proof_no_fallback"
+    } else {
+        "not_evaluated"
+    }
+}
+
+fn context_pack_overfetch_rerank_settings_json(packet: &ContextPacket) -> Value {
+    let binary_overfetch_k = context_pack_metadata_u64(packet, "binary_overfetch_k");
+    let rerank_input_count = context_pack_metadata_u64(packet, "rerank_input_count");
+    let rerank_output_count = context_pack_metadata_u64(packet, "rerank_output_count");
+    let present = !binary_overfetch_k.is_null()
+        || !rerank_input_count.is_null()
+        || !rerank_output_count.is_null();
+    json!({
+        "present": present,
+        "binary_overfetch_k": binary_overfetch_k,
+        "rerank_input_count": rerank_input_count,
+        "rerank_output_count": rerank_output_count,
+        "notes": packet
+            .metadata
+            .get("overfetch_rerank_notes")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+    })
+}
+
+fn context_pack_final_nuance_selection_json(
+    packet: &ContextPacket,
+    final_candidates: &[Value],
+) -> Value {
+    let final_nuance_items = final_candidates
+        .iter()
+        .filter(|candidate| context_agent_candidate_has_source(candidate, "nuance_rescue"))
+        .map(context_pack_nuance_trace_candidate_item)
+        .collect::<Vec<_>>();
+    let final_ids = final_candidates
+        .iter()
+        .map(context_agent_candidate_id)
+        .collect::<BTreeSet<_>>();
+    let branch_candidates = packet
+        .metadata
+        .get("nuance_rescue_candidates")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let rejected_items = branch_candidates
+        .iter()
+        .filter(|candidate| !final_ids.contains(&context_agent_candidate_id(candidate)))
+        .take(CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT)
+        .map(|candidate| {
+            let mut item = context_pack_nuance_trace_candidate_item(candidate);
+            if let Some(object) = item.as_object_mut() {
+                object.insert(
+                    "rejection_reason".to_string(),
+                    json!("not_returned_after_union_cap_or_dedup"),
+                );
+            }
+            item
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "candidates_accepted": {
+            "count": final_nuance_items.len(),
+            "items": final_nuance_items
+        },
+        "candidates_rejected": {
+            "count": rejected_items.len(),
+            "items": rejected_items
+        }
     })
 }
 
@@ -18245,20 +20363,61 @@ fn context_pack_candidate_counts_by_source_json(candidates: &[Value]) -> Value {
 }
 
 fn context_pack_candidate_ranking_explain_json(candidate: &Value) -> Value {
+    let candidate = context_pack_public_candidate_json(candidate);
     json!({
         "candidate_id": candidate.get("candidate_id").cloned().unwrap_or(Value::Null),
         "rank": candidate.get("rank").cloned().unwrap_or(Value::Null),
         "score": candidate.get("score").cloned().unwrap_or(Value::Null),
+        "source_score": candidate.get("source_score").cloned().unwrap_or(Value::Null),
+        "vector_score": candidate.get("vector_score").cloned().unwrap_or(Value::Null),
+        "binary_score": candidate.get("binary_score").cloned().unwrap_or(Value::Null),
         "candidate_sources": candidate.get("candidate_sources").cloned().unwrap_or_else(|| json!([])),
         "matched_seeds": candidate.get("matched_seeds").cloned().unwrap_or_else(|| json!([])),
+        "matched_token": candidate.get("matched_token").cloned().unwrap_or(Value::Null),
+        "matched_tokens": candidate.get("matched_tokens").cloned().unwrap_or_else(|| json!([])),
+        "rescue_reason": candidate.get("rescue_reason").cloned().unwrap_or(Value::Null),
+        "rescue_kinds": candidate.get("rescue_kinds").cloned().unwrap_or_else(|| json!([])),
         "reason": candidate.get("reason").cloned().unwrap_or(Value::Null),
         "ranking_features": candidate.get("ranking_features").cloned().unwrap_or_else(|| json!({})),
         "verification_status": candidate.get("verification_status").cloned().unwrap_or(Value::Null),
+        "graph_verification_status": candidate.get("graph_verification_status").cloned().unwrap_or(Value::Null),
+        "text_evidence_status": candidate.get("text_evidence_status").cloned().unwrap_or(Value::Null),
         "proof_status": candidate.get("proof_status").cloned().unwrap_or(Value::Null),
         "graph_proof": candidate.get("graph_proof").cloned().unwrap_or(Value::Null),
         "omitted": candidate.get("omitted").cloned().unwrap_or(Value::Null),
         "truncated": candidate.get("truncated").cloned().unwrap_or(Value::Null)
     })
+}
+
+fn context_pack_public_candidate_json(candidate: &Value) -> Value {
+    let mut candidate = candidate.clone();
+    let Some(object) = candidate.as_object_mut() else {
+        return candidate;
+    };
+    if let Some(value) = object.get("matched_token").cloned() {
+        object.insert(
+            "matched_token".to_string(),
+            context_pack_trace_safe_value(Some(&value)),
+        );
+    }
+    for key in ["matched_tokens", "matched_seeds"] {
+        if let Some(values) = object.get(key).and_then(Value::as_array).cloned() {
+            object.insert(
+                key.to_string(),
+                json!(values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(context_pack_trace_safe_string)
+                    .collect::<Vec<_>>()),
+            );
+        }
+    }
+    for key in ["reason", "rescue_reason"] {
+        if let Some(value) = object.get(key).and_then(Value::as_str) {
+            object.insert(key.to_string(), json!(context_pack_trace_safe_text(value)));
+        }
+    }
+    candidate
 }
 
 fn context_pack_metadata_u64(packet: &ContextPacket, key: &str) -> Value {
@@ -18368,7 +20527,13 @@ fn context_pack_agent_json_response(
     let candidate_total_count = candidate_set.total_count;
     let candidate_omitted_count = candidate_set.omitted_count;
     let candidate_exact_seed_cap_override = candidate_set.exact_seed_cap_override;
-    let candidate_values = Value::Array(candidate_set.candidates.clone());
+    let candidate_values = Value::Array(
+        candidate_set
+            .candidates
+            .iter()
+            .map(context_pack_public_candidate_json)
+            .collect(),
+    );
     let response_limits = json!({
         "paths": path_limit,
         "snippets": snippet_limit,
@@ -18423,6 +20588,7 @@ fn context_pack_agent_json_response(
         .saturating_sub(fallback_evidence.len());
     let mut omitted_recommended_tests = packet.recommended_tests.len().saturating_sub(12);
     let mut omitted_risks = packet.risks.len().saturating_sub(12);
+    let mut omitted_planning_packet = 0;
     let lifecycle_claimable = db_lifecycle_read
         .get("claimable")
         .and_then(Value::as_bool)
@@ -18529,7 +20695,7 @@ fn context_pack_agent_json_response(
         );
         object.insert(
             "candidate_cap_policy".to_string(),
-            json!("exact_seeds_protected_then_no_proof_text_then_deterministic_rank"),
+            json!("exact_seeds_protected_then_no_proof_text_then_nuance_and_deterministic_rank"),
         );
         object.insert(
             "candidate_exact_seed_cap_override".to_string(),
@@ -18551,6 +20717,7 @@ fn context_pack_agent_json_response(
         omitted_fallback_evidence += omitted_by_size.fallback_evidence;
         omitted_recommended_tests += omitted_by_size.recommended_tests;
         omitted_risks += omitted_by_size.risks;
+        omitted_planning_packet += omitted_by_size.planning_packet;
         max_output_bytes_exceeded |= omitted_by_size.max_output_bytes_exceeded;
         update_context_agent_truncation(
             &mut response,
@@ -18561,6 +20728,7 @@ fn context_pack_agent_json_response(
             omitted_fallback_evidence,
             omitted_recommended_tests,
             omitted_risks,
+            omitted_planning_packet,
             max_output_bytes_exceeded,
         );
         if serialized_json_len(&response) <= max_output_bytes || max_output_bytes_exceeded {
@@ -18576,6 +20744,7 @@ fn context_pack_agent_json_response(
         omitted_fallback_evidence,
         omitted_recommended_tests,
         omitted_risks,
+        omitted_planning_packet,
         max_output_bytes_exceeded,
     );
     if candidate_count > 0 {
@@ -19367,6 +21536,7 @@ struct ContextAgentSizeOmissions {
     fallback_evidence: usize,
     recommended_tests: usize,
     risks: usize,
+    planning_packet: usize,
     max_output_bytes_exceeded: bool,
 }
 
@@ -19417,6 +21587,30 @@ fn enforce_context_agent_max_output_bytes(
             }
             continue;
         }
+        if pop_context_agent_planning_array_item(response, "evidence_items") {
+            omitted.planning_packet += 1;
+            continue;
+        }
+        if pop_context_agent_planning_array_item(response, "suggested_verification_commands") {
+            omitted.planning_packet += 1;
+            continue;
+        }
+        if pop_context_agent_planning_array_item(response, "follow_up_queries") {
+            omitted.planning_packet += 1;
+            continue;
+        }
+        if pop_context_agent_planning_array_item(response, "likely_files") {
+            omitted.planning_packet += 1;
+            continue;
+        }
+        if pop_context_agent_planning_array_item(response, "likely_symbols") {
+            omitted.planning_packet += 1;
+            continue;
+        }
+        if pop_context_agent_planning_array_item(response, "do_not_touch_areas") {
+            omitted.planning_packet += 1;
+            continue;
+        }
         omitted.max_output_bytes_exceeded = true;
         break;
     }
@@ -19447,6 +21641,28 @@ fn remove_context_agent_field(response: &mut Value, key: &str) -> bool {
     object.remove(key).is_some()
 }
 
+fn pop_context_agent_planning_array_item(response: &mut Value, key: &str) -> bool {
+    let Some(packet) = response
+        .get_mut("planning_packet")
+        .and_then(Value::as_object_mut)
+    else {
+        return false;
+    };
+    let popped = packet
+        .get_mut(key)
+        .and_then(Value::as_array_mut)
+        .is_some_and(|array| array.pop().is_some());
+    if popped {
+        let omitted_count = packet
+            .get("omitted_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            + 1;
+        packet.insert("omitted_count".to_string(), json!(omitted_count));
+    }
+    popped
+}
+
 fn update_context_agent_truncation(
     response: &mut Value,
     path_limit: usize,
@@ -19456,6 +21672,7 @@ fn update_context_agent_truncation(
     omitted_fallback_evidence: usize,
     omitted_recommended_tests: usize,
     omitted_risks: usize,
+    omitted_planning_packet: usize,
     max_output_bytes_exceeded: bool,
 ) {
     let returned_paths = response
@@ -19473,7 +21690,8 @@ fn update_context_agent_truncation(
         + omitted_snippets
         + omitted_fallback_evidence
         + omitted_recommended_tests
-        + omitted_risks;
+        + omitted_risks
+        + omitted_planning_packet;
     let byte_count = serde_json::to_vec(response)
         .map(|bytes| bytes.len())
         .unwrap_or_default();
@@ -19496,6 +21714,7 @@ fn update_context_agent_truncation(
                 "fallback_evidence": omitted_fallback_evidence,
                 "recommended_tests": omitted_recommended_tests,
                 "risks": omitted_risks,
+                "planning_packet": omitted_planning_packet,
             }),
         );
         object.insert(
@@ -25232,6 +27451,305 @@ mod tests {
     }
 
     #[test]
+    fn context_pack_explain_includes_vector_trace_only_when_requested() {
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+            "passport_status": "valid",
+        });
+        let mut packet = context_agent_test_packet("production", 1, 1, "production");
+        packet.metadata.insert(
+            "vector_candidate_trace".to_string(),
+            json!({
+                "schema_version": 1,
+                "diagnostic_only": true,
+                "vector_enabled": true,
+                "vector_index_status": "ready",
+                "provider": {
+                    "provider_id": "codegraph-local-deterministic",
+                    "model_id": "codegraph-deterministic-token-projection-v1",
+                    "dimension": 64,
+                    "embedding_profile": "deterministic-test-embedding-v1"
+                },
+                "query_text_sent_to_vector_branch": "Find package metadata",
+                "chunk_count_searched": 2,
+                "vector_candidate_count": 1,
+                "top_vector_candidate_ids": ["vector://text/package/foo/foo.mk"],
+                "score_range": {"min": 0.91, "max": 0.91},
+                "candidates_accepted": {
+                    "count": 1,
+                    "candidate_ids": ["vector://text/package/foo/foo.mk"]
+                },
+                "candidates_rejected": {
+                    "count": 1,
+                    "candidate_ids": ["vector://text/package/noisy"]
+                },
+                "stale_missing_vector_index_reason": null,
+                "graph_verification_status_for_vector_candidates": {
+                    "status_counts": {"not_graph_proof": 1},
+                    "requires_graph_verification_count": 0,
+                    "graph_verified_count": 0,
+                    "graph_verified_candidate_ids": [],
+                    "graph_proof_count": 0
+                },
+                "no_proof_fallback_reason": "vector text-evidence candidate available after graph verification found no proof path"
+            }),
+        );
+
+        let compact_options = context_agent_test_options("production", Some(2), Some(2), None);
+        let compact = super::context_pack_agent_json_response(
+            &compact_options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&compact_options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        assert!(compact.get("retrieval_explain").is_none());
+        assert!(!serde_json::to_string(&compact)
+            .expect("serialize compact response")
+            .contains("vector://text/package/foo/foo.mk"));
+
+        let mut explain_options =
+            context_agent_test_options("production", Some(2), Some(2), Some(512 * 1024));
+        explain_options.explain = true;
+        let explain_response = super::context_pack_agent_json_response(
+            &explain_options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&explain_options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        let vector_trace = &explain_response["retrieval_explain"]["vector_trace"];
+        assert_eq!(vector_trace["vector_enabled"].as_bool(), Some(true));
+        assert_eq!(vector_trace["vector_index_status"].as_str(), Some("ready"));
+        assert_eq!(
+            vector_trace["provider"]["model_id"].as_str(),
+            Some("codegraph-deterministic-token-projection-v1")
+        );
+        assert_eq!(vector_trace["chunk_count_searched"].as_u64(), Some(2));
+        assert_eq!(vector_trace["vector_candidate_count"].as_u64(), Some(1));
+        assert_eq!(
+            vector_trace["top_vector_candidate_ids"][0].as_str(),
+            Some("vector://text/package/foo/foo.mk")
+        );
+        assert_eq!(
+            vector_trace["graph_verification_status_for_vector_candidates"]["graph_proof_count"]
+                .as_u64(),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn context_pack_explain_includes_nuance_rescue_trace_without_default_bloat_or_secrets() {
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+            "passport_status": "valid",
+        });
+        let mut options =
+            context_agent_test_options("production", Some(2), Some(2), Some(512 * 1024));
+        options.task =
+            "Trace QUASAR_NETTLE_FUSE /api/admin/:id BR2_PACKAGE_FOO failing_admin_test auth"
+                .to_string();
+        options.explain = true;
+        let secret_like_token = "SECRET_TOKEN_DO_NOT_TRACE";
+        let tokens = vec![
+            super::ContextPackNuanceToken {
+                value: "QUASAR_NETTLE_FUSE".to_string(),
+                normalized: "quasar_nettle_fuse".to_string(),
+                raw_lower: "quasar_nettle_fuse".to_string(),
+                kind: "identifier_signature",
+                rescue_reason: "identifier_signature_rescue",
+                exact_match: true,
+                seed_value: Some("QUASAR_NETTLE_FUSE".to_string()),
+            },
+            super::ContextPackNuanceToken {
+                value: "auth".to_string(),
+                normalized: "auth".to_string(),
+                raw_lower: "auth".to_string(),
+                kind: "rare_token",
+                rescue_reason: "rare_token_lexical_rescue",
+                exact_match: false,
+                seed_value: None,
+            },
+            super::ContextPackNuanceToken {
+                value: "/api/admin/:id".to_string(),
+                normalized: "apiadminid".to_string(),
+                raw_lower: "/api/admin/:id".to_string(),
+                kind: "route_literal",
+                rescue_reason: "route_literal_rescue",
+                exact_match: true,
+                seed_value: None,
+            },
+            super::ContextPackNuanceToken {
+                value: "BR2_PACKAGE_FOO".to_string(),
+                normalized: "br2_package_foo".to_string(),
+                raw_lower: "br2_package_foo".to_string(),
+                kind: "config_key",
+                rescue_reason: "config_key_rescue",
+                exact_match: true,
+                seed_value: None,
+            },
+            super::ContextPackNuanceToken {
+                value: "failing_admin_test".to_string(),
+                normalized: "failing_admin_test".to_string(),
+                raw_lower: "failing_admin_test".to_string(),
+                kind: "test_name",
+                rescue_reason: "test_name_rescue",
+                exact_match: true,
+                seed_value: None,
+            },
+            super::ContextPackNuanceToken {
+                value: secret_like_token.to_string(),
+                normalized: "secret_token_do_not_trace".to_string(),
+                raw_lower: "secret_token_do_not_trace".to_string(),
+                kind: "identifier_signature",
+                rescue_reason: "identifier_signature_rescue",
+                exact_match: true,
+                seed_value: None,
+            },
+        ];
+        let candidate = json!({
+            "candidate_id": "nuance-rescue://source/src/rare_identifier.ts:1",
+            "candidate_source": "nuance_rescue",
+            "candidate_sources": ["nuance_rescue", "text_evidence", "lexical_fts"],
+            "path": "src/rare_identifier.ts",
+            "entity_id": null,
+            "evidence_role": "text_evidence",
+            "rescue_reason": "identifier_signature_rescue",
+            "matched_token": secret_like_token,
+            "matched_tokens": [secret_like_token],
+            "proof_status": "not_graph_proof",
+            "graph_proof": false,
+            "verification_status": "not_graph_proof",
+            "graph_verification_status": "not_graph_proof",
+            "text_evidence_status": "not_graph_proof",
+            "claimable_for_graph": false,
+            "full_source_body": "FULL_SOURCE_BODY_DO_NOT_TRACE",
+        });
+        let candidates = vec![candidate.clone()];
+        let trace = super::context_pack_nuance_rescue_trace(
+            true,
+            &tokens,
+            &["and".to_string(), "the".to_string()],
+            &candidates,
+            "ready",
+        );
+        let mut packet = ContextPacket {
+            task: options.task.clone(),
+            mode: options.mode.clone(),
+            symbols: Vec::new(),
+            verified_paths: Vec::new(),
+            risks: Vec::new(),
+            recommended_tests: Vec::new(),
+            snippets: Vec::new(),
+            metadata: Metadata::new(),
+        };
+        packet
+            .metadata
+            .insert("nuance_rescue_trace".to_string(), trace);
+        packet
+            .metadata
+            .insert("nuance_rescue_candidates".to_string(), json!(candidates));
+        packet.metadata.insert(
+            "fallback_evidence".to_string(),
+            json!([{
+                "id": "nuance-rescue://source/src/rare_identifier.ts:1",
+                "file": "src/rare_identifier.ts",
+                "evidence_role": "text_evidence",
+                "proof_status": "not_graph_proof",
+                "graph_proof": false
+            }]),
+        );
+        packet
+            .metadata
+            .insert("proof_path_available".to_string(), json!(false));
+        packet
+            .metadata
+            .insert("proof_status".to_string(), json!("no_proof_path_found"));
+        packet
+            .metadata
+            .insert("graph_proof".to_string(), json!(false));
+        packet.metadata.insert(
+            "evidence_status".to_string(),
+            json!("fallback_evidence_found"),
+        );
+        packet.metadata.insert(
+            "proof_failure_reason".to_string(),
+            json!("no graph-verifiable candidates were available; returning fallback source/text evidence"),
+        );
+
+        let compact_options = context_agent_test_options("production", Some(2), Some(2), None);
+        let compact = super::context_pack_agent_json_response(
+            &compact_options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&compact_options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        let compact_serialized = serde_json::to_string(&compact).expect("serialize compact");
+        assert!(compact.get("retrieval_explain").is_none());
+        assert!(!compact_serialized.contains("rescue_reasons"));
+        assert!(!compact_serialized.contains(secret_like_token));
+        assert!(!compact_serialized.contains("FULL_SOURCE_BODY_DO_NOT_TRACE"));
+
+        let explain_response = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        let explain = &explain_response["retrieval_explain"];
+        assert_eq!(explain["nuance_rescue_enabled"].as_bool(), Some(true));
+        assert_eq!(explain["rescue_candidate_count"].as_u64(), Some(1));
+        assert!(explain["rare_tokens"]
+            .as_array()
+            .expect("rare tokens")
+            .iter()
+            .any(|token| token.as_str() == Some("auth")));
+        assert!(explain["identifier_tokens"]
+            .as_array()
+            .expect("identifier tokens")
+            .iter()
+            .any(|token| token.as_str() == Some("QUASAR_NETTLE_FUSE")));
+        assert!(explain["route_config_test_tokens"]
+            .as_array()
+            .expect("route/config/test tokens")
+            .iter()
+            .any(|token| token.as_str() == Some("/api/admin/:id")));
+        assert!(explain["rescue_candidate_sources"]
+            .as_array()
+            .expect("rescue candidate sources")
+            .iter()
+            .any(|source| source.as_str() == Some("nuance_rescue")));
+        assert_eq!(explain["candidates_accepted"]["count"].as_u64(), Some(1));
+        assert!(explain["candidates_rejected"]["count"].as_u64().is_some());
+        assert_eq!(
+            explain["graph_verification_status"].as_str(),
+            Some("no_proof_path_found")
+        );
+        assert_eq!(
+            explain["no_proof_fallback_status"].as_str(),
+            Some("active_no_graph_proof_text_fallback")
+        );
+        let explain_serialized = serde_json::to_string(explain).expect("serialize explain");
+        assert!(explain_serialized.contains("[redacted_secret_like_token]"));
+        assert!(!explain_serialized.contains(secret_like_token));
+        assert!(!explain_serialized.contains("FULL_SOURCE_BODY_DO_NOT_TRACE"));
+    }
+
+    #[test]
     fn context_pack_candidate_union_dedup_ranking_protects_exact_seed() {
         let mut options =
             context_agent_test_options("production", Some(3), Some(8), Some(512 * 1024));
@@ -25951,7 +28469,7 @@ mod tests {
             retrieval_stage_status(
                 candidate_flow,
                 "nuance_rescue_candidates",
-                "inactive_post_mvp"
+                "inactive_requires_explicit_flag"
             ),
             "{retrieval_architecture:?}"
         );
@@ -27067,6 +29585,643 @@ mod tests {
         beta_caller_id: String,
     }
 
+    #[test]
+    fn context_pack_nuance_rescue_tokens_preserve_exact_identifiers() {
+        let mut options = context_agent_test_options("production", Some(3), Some(3), None);
+        options.task =
+            "Find processUserToken, not processUserTokens or processAdminToken".to_string();
+        options.seeds = vec!["processUserToken".to_string()];
+        let (tokens, ignored) = super::context_pack_nuance_rescue_tokens(&options, &options.seeds);
+        assert!(tokens.iter().any(|token| {
+            token.normalized == "processusertoken"
+                && token.kind == "identifier_signature"
+                && token.exact_match
+        }));
+        assert!(!tokens
+            .iter()
+            .any(|token| token.normalized == "processusertokens"));
+        assert!(ignored.iter().any(|token| token == "process"));
+        assert!(ignored.iter().any(|token| token == "tokens"));
+    }
+
+    #[test]
+    fn context_pack_nuance_rescue_distinguishes_near_duplicate_identifiers() {
+        let mut options = context_agent_test_options("production", Some(3), Some(3), None);
+        options.task = "Find processUserToken".to_string();
+        options.seeds = vec!["processUserToken".to_string()];
+        let (tokens, _) = super::context_pack_nuance_rescue_tokens(&options, &options.seeds);
+        let token = tokens
+            .iter()
+            .find(|token| token.normalized == "processusertoken")
+            .expect("identifier token");
+        assert!(super::context_pack_nuance_haystack_matches(
+            "export function processUserToken() {}",
+            token
+        ));
+        assert!(!super::context_pack_nuance_haystack_matches(
+            "export function processUserTokens() {}",
+            token
+        ));
+        assert!(!super::context_pack_nuance_haystack_matches(
+            "export function processAdminToken() {}",
+            token
+        ));
+    }
+
+    #[test]
+    fn context_pack_nuance_path_hits_ignore_deleted_path_dict_entries() {
+        let connection = Connection::open_in_memory().expect("open memory db");
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE path_dict (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE files (path_id INTEGER NOT NULL);
+                INSERT INTO path_dict (id, value) VALUES
+                    (1, 'support/scripts/nuance-audit'),
+                    (2, 'support/scripts/nuance-audit-deleted');
+                INSERT INTO files (path_id) VALUES (1);
+                ",
+            )
+            .expect("create minimal path schema");
+        let token = super::ContextPackNuanceToken {
+            value: "nuance-audit".to_string(),
+            normalized: "nuance-audit".to_string(),
+            raw_lower: "nuance-audit".to_string(),
+            kind: "path_title",
+            rescue_reason: "path_title_rescue",
+            exact_match: true,
+            seed_value: Some("nuance-audit".to_string()),
+        };
+
+        let paths = super::load_context_pack_nuance_path_hits(&connection, &token, 10)
+            .expect("load path hits");
+
+        assert_eq!(paths, vec!["support/scripts/nuance-audit".to_string()]);
+    }
+
+    #[test]
+    fn context_pack_nuance_rescue_merges_with_exact_seed_without_graph_proof() {
+        let mut options = context_agent_test_options("production", Some(3), Some(3), None);
+        options.task = "Find QUASAR_NETTLE_FUSE".to_string();
+        options.seeds = vec!["QUASAR_NETTLE_FUSE".to_string()];
+        let mut packet = ContextPacket {
+            task: options.task.clone(),
+            mode: options.mode.clone(),
+            symbols: Vec::new(),
+            verified_paths: Vec::new(),
+            risks: Vec::new(),
+            recommended_tests: Vec::new(),
+            snippets: Vec::new(),
+            metadata: Metadata::new(),
+        };
+        packet.metadata.insert(
+            "nuance_rescue_candidates".to_string(),
+            json!([{
+                "candidate_id": "nuance-rescue://entity/src/rare_identifier.ts#QUASAR_NETTLE_FUSE",
+                "candidate_source": "nuance_rescue",
+                "candidate_sources": ["nuance_rescue", "symbol_lookup"],
+                "candidate_source_label": "config_key_rescue",
+                "file_id": "src/rare_identifier.ts",
+                "path": "src/rare_identifier.ts",
+                "entity_id": "src/rare_identifier.ts#QUASAR_NETTLE_FUSE",
+                "span": {
+                    "file": "src/rare_identifier.ts",
+                    "start_line": 1,
+                    "end_line": 1
+                },
+                "evidence_role": "production",
+                "proof_status": "candidate_only",
+                "graph_proof": false,
+                "claimable": false,
+                "claimable_for_text": false,
+                "claimable_for_graph": false,
+                "diagnostic_only": false,
+                "score": Value::Null,
+                "source_score": 9.0,
+                "rank": Value::Null,
+                "matched_seeds": ["QUASAR_NETTLE_FUSE"],
+                "matched_token": "QUASAR_NETTLE_FUSE",
+                "matched_tokens": ["QUASAR_NETTLE_FUSE"],
+                "rescue_reason": "config_key_rescue",
+                "rescue_kinds": ["config_key"],
+                "requires_graph_verification": true,
+                "verification_status": "needs_graph_verification",
+                "reason": "config_key_rescue matched QUASAR_NETTLE_FUSE; candidate-only until graph/source verification",
+                "omitted": false,
+                "truncated": false,
+                "ranking_features": {
+                    "exact_seed_match": true,
+                    "file_path_match": false,
+                    "text_evidence_match": false,
+                    "symbol_entity_match": true,
+                    "graph_proximity": false,
+                    "source_role_compatible": true,
+                    "lifecycle_claimable": false,
+                    "proof_available": false
+                },
+                "source_labels": ["nuance_rescue", "config_key_rescue", "candidate_only", "no_graph_proof"]
+            }]),
+        );
+        packet.metadata.insert(
+            "nuance_rescue_trace".to_string(),
+            json!({
+                "schema_version": 1,
+                "diagnostic_only": true,
+                "rescue_enabled": true,
+                "rescue_status": "ready",
+                "rescue_candidate_count": 1,
+                "candidate_cap": super::CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT,
+                "ignored_generic_tokens": [],
+                "rescue_reasons": []
+            }),
+        );
+
+        let candidate_set = super::build_context_agent_retrieval_candidates(
+            &options,
+            &packet,
+            &[],
+            &[],
+            &[],
+            false,
+            false,
+        );
+        let candidate = candidate_set
+            .candidates
+            .iter()
+            .find(|candidate| {
+                candidate["matched_seeds"].as_array().is_some_and(|seeds| {
+                    seeds
+                        .iter()
+                        .any(|seed| seed.as_str() == Some("QUASAR_NETTLE_FUSE"))
+                })
+            })
+            .expect("merged exact seed candidate");
+        let sources = candidate["candidate_sources"]
+            .as_array()
+            .expect("candidate sources");
+        assert!(sources
+            .iter()
+            .any(|source| source.as_str() == Some("exact_seed")));
+        assert!(sources
+            .iter()
+            .any(|source| source.as_str() == Some("nuance_rescue")));
+        assert_eq!(candidate["path"].as_str(), Some("src/rare_identifier.ts"));
+        assert_eq!(candidate["graph_proof"].as_bool(), Some(false));
+        assert_eq!(candidate["claimable_for_graph"].as_bool(), Some(false));
+        assert_eq!(
+            candidate["rescue_reason"].as_str(),
+            Some("config_key_rescue")
+        );
+    }
+
+    #[test]
+    fn context_pack_union_merges_exact_vector_binary_and_rescue_sources() {
+        let mut options = context_agent_test_options("production", Some(1), Some(1), None);
+        options.task = "Find QUASAR_NETTLE_FUSE".to_string();
+        options.seeds = vec!["QUASAR_NETTLE_FUSE".to_string()];
+        let mut packet = ContextPacket {
+            task: options.task.clone(),
+            mode: options.mode.clone(),
+            symbols: Vec::new(),
+            verified_paths: Vec::new(),
+            risks: Vec::new(),
+            recommended_tests: Vec::new(),
+            snippets: Vec::new(),
+            metadata: Metadata::new(),
+        };
+        packet.metadata.insert(
+            "vector_semantic_candidates".to_string(),
+            json!([{
+                "candidate_id": "vector://entity/QUASAR_NETTLE_FUSE",
+                "candidate_source": "vector_semantic",
+                "candidate_sources": ["vector_semantic", "symbol_lookup"],
+                "path": "src/rare_identifier.ts",
+                "entity_id": "src/rare_identifier.ts#QUASAR_NETTLE_FUSE",
+                "evidence_role": "production",
+                "proof_status": "candidate_only",
+                "graph_proof": false,
+                "claimable": false,
+                "claimable_for_text": false,
+                "claimable_for_graph": false,
+                "requires_graph_verification": true,
+                "verification_status": "needs_graph_verification",
+                "graph_verification_status": "needs_graph_verification",
+                "text_evidence_status": "absent",
+                "vector_score": 0.91,
+                "source_score": 0.91,
+                "matched_seeds": ["QUASAR_NETTLE_FUSE"],
+                "matched_tokens": ["QUASAR_NETTLE_FUSE"],
+                "reason": "vector semantic candidate; not graph proof",
+                "ranking_features": {
+                    "exact_seed_match": false,
+                    "file_path_match": false,
+                    "text_evidence_match": false,
+                    "symbol_entity_match": true,
+                    "graph_proximity": false,
+                    "source_role_compatible": true,
+                    "lifecycle_claimable": true,
+                    "proof_available": false,
+                    "vector_score_available": true,
+                    "binary_score_available": false,
+                    "rescue_match": false
+                },
+                "source_labels": ["vector_semantic", "candidate_only", "no_graph_proof"]
+            }]),
+        );
+        packet.metadata.insert(
+            "binary_vector_candidates".to_string(),
+            json!([{
+                "candidate_id": "binary://entity/QUASAR_NETTLE_FUSE",
+                "candidate_source": "binary_vector",
+                "candidate_sources": ["binary_vector"],
+                "path": "src/rare_identifier.ts",
+                "entity_id": "src/rare_identifier.ts#QUASAR_NETTLE_FUSE",
+                "evidence_role": "production",
+                "proof_status": "candidate_only",
+                "graph_proof": false,
+                "claimable": false,
+                "claimable_for_text": false,
+                "claimable_for_graph": false,
+                "requires_graph_verification": true,
+                "verification_status": "needs_graph_verification",
+                "graph_verification_status": "needs_graph_verification",
+                "text_evidence_status": "absent",
+                "binary_score": 0.77,
+                "source_score": 0.77,
+                "matched_seeds": ["QUASAR_NETTLE_FUSE"],
+                "matched_tokens": ["QUASAR_NETTLE_FUSE"],
+                "reason": "binary vector candidate; not graph proof",
+                "ranking_features": {
+                    "exact_seed_match": false,
+                    "file_path_match": false,
+                    "text_evidence_match": false,
+                    "symbol_entity_match": true,
+                    "graph_proximity": false,
+                    "source_role_compatible": true,
+                    "lifecycle_claimable": true,
+                    "proof_available": false,
+                    "vector_score_available": false,
+                    "binary_score_available": true,
+                    "rescue_match": false
+                },
+                "source_labels": ["binary_vector", "candidate_only", "no_graph_proof"]
+            }]),
+        );
+        packet.metadata.insert(
+            "nuance_rescue_candidates".to_string(),
+            json!([{
+                "candidate_id": "nuance-rescue://entity/QUASAR_NETTLE_FUSE",
+                "candidate_source": "nuance_rescue",
+                "candidate_sources": ["nuance_rescue", "symbol_lookup"],
+                "path": "src/rare_identifier.ts",
+                "entity_id": "src/rare_identifier.ts#QUASAR_NETTLE_FUSE",
+                "evidence_role": "production",
+                "proof_status": "candidate_only",
+                "graph_proof": false,
+                "claimable": false,
+                "claimable_for_text": false,
+                "claimable_for_graph": false,
+                "requires_graph_verification": true,
+                "verification_status": "needs_graph_verification",
+                "graph_verification_status": "needs_graph_verification",
+                "text_evidence_status": "absent",
+                "matched_seeds": ["QUASAR_NETTLE_FUSE"],
+                "matched_token": "QUASAR_NETTLE_FUSE",
+                "matched_tokens": ["QUASAR_NETTLE_FUSE"],
+                "rescue_reason": "config_key_rescue",
+                "rescue_kinds": ["config_key"],
+                "source_score": 9.0,
+                "reason": "config_key_rescue matched QUASAR_NETTLE_FUSE; candidate-only until graph/source verification",
+                "ranking_features": {
+                    "exact_seed_match": true,
+                    "file_path_match": false,
+                    "text_evidence_match": false,
+                    "symbol_entity_match": true,
+                    "graph_proximity": false,
+                    "source_role_compatible": true,
+                    "lifecycle_claimable": true,
+                    "proof_available": false,
+                    "vector_score_available": false,
+                    "binary_score_available": false,
+                    "rescue_match": true
+                },
+                "source_labels": ["nuance_rescue", "config_key_rescue", "candidate_only", "no_graph_proof"]
+            }]),
+        );
+        for index in 0..8 {
+            packet
+                .metadata
+                .entry("vector_semantic_candidates".to_string())
+                .and_modify(|value| {
+                    value.as_array_mut().expect("vector array").push(json!({
+                        "candidate_id": format!("vector://noise/{index}"),
+                        "candidate_source": "vector_semantic",
+                        "candidate_sources": ["vector_semantic"],
+                        "path": format!("src/noise_{index}.ts"),
+                        "evidence_role": "production",
+                        "proof_status": "candidate_only",
+                        "graph_proof": false,
+                        "claimable": false,
+                        "claimable_for_text": false,
+                        "claimable_for_graph": false,
+                        "requires_graph_verification": true,
+                        "verification_status": "needs_graph_verification",
+                        "graph_verification_status": "needs_graph_verification",
+                        "text_evidence_status": "absent",
+                        "vector_score": 0.99,
+                        "matched_seeds": [],
+                        "reason": "noisy vector candidate",
+                        "ranking_features": {
+                            "exact_seed_match": false,
+                            "file_path_match": false,
+                            "text_evidence_match": false,
+                            "symbol_entity_match": false,
+                            "graph_proximity": false,
+                            "source_role_compatible": true,
+                            "lifecycle_claimable": true,
+                            "proof_available": false,
+                            "vector_score_available": true,
+                            "binary_score_available": false,
+                            "rescue_match": false
+                        },
+                        "source_labels": ["vector_semantic", "candidate_only", "no_graph_proof"]
+                    }));
+                });
+        }
+
+        let candidate_set = super::build_context_agent_retrieval_candidates(
+            &options,
+            &packet,
+            &[],
+            &[],
+            &[],
+            true,
+            false,
+        );
+        let candidate = candidate_set
+            .candidates
+            .iter()
+            .find(|candidate| {
+                candidate["matched_seeds"].as_array().is_some_and(|seeds| {
+                    seeds
+                        .iter()
+                        .any(|seed| seed.as_str() == Some("QUASAR_NETTLE_FUSE"))
+                })
+            })
+            .expect("merged exact/vector/binary/rescue candidate");
+        let sources = candidate["candidate_sources"]
+            .as_array()
+            .expect("candidate sources")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<BTreeSet<_>>();
+        for expected in [
+            "exact_seed",
+            "vector_semantic",
+            "binary_vector",
+            "nuance_rescue",
+            "symbol_lookup",
+        ] {
+            assert!(sources.contains(expected), "{sources:?}");
+        }
+        assert_eq!(candidate["rank"].as_u64(), Some(1));
+        assert_eq!(candidate["graph_proof"].as_bool(), Some(false));
+        assert_eq!(candidate["vector_score"].as_f64(), Some(0.91));
+        assert_eq!(candidate["binary_score"].as_f64(), Some(0.77));
+        assert_eq!(
+            candidate["rescue_reason"].as_str(),
+            Some("config_key_rescue")
+        );
+        assert_eq!(
+            candidate["graph_verification_status"].as_str(),
+            Some("needs_graph_verification")
+        );
+        assert!(candidate_set.candidates.len() <= super::CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT);
+    }
+
+    #[test]
+    fn context_pack_union_merges_rescue_entity_with_graph_verified_path() {
+        let mut options = context_agent_test_options("production", Some(3), Some(3), None);
+        options.task = "Trace auth guard".to_string();
+        options.seeds.clear();
+        let mut packet = ContextPacket {
+            task: options.task.clone(),
+            mode: options.mode.clone(),
+            symbols: Vec::new(),
+            verified_paths: Vec::new(),
+            risks: Vec::new(),
+            recommended_tests: Vec::new(),
+            snippets: Vec::new(),
+            metadata: Metadata::new(),
+        };
+        packet.metadata.insert(
+            "nuance_rescue_candidates".to_string(),
+            json!([{
+                "candidate_id": "nuance-rescue://entity/repo://e/auth_guard",
+                "candidate_source": "nuance_rescue",
+                "candidate_sources": ["nuance_rescue", "symbol_lookup"],
+                "path": "src/auth.ts",
+                "entity_id": "repo://e/auth_guard",
+                "evidence_role": "production",
+                "proof_status": "candidate_only",
+                "graph_proof": false,
+                "claimable": false,
+                "claimable_for_text": false,
+                "claimable_for_graph": false,
+                "requires_graph_verification": true,
+                "verification_status": "needs_graph_verification",
+                "graph_verification_status": "needs_graph_verification",
+                "text_evidence_status": "absent",
+                "matched_token": "auth",
+                "matched_tokens": ["auth"],
+                "rescue_reason": "rare_token_lexical_rescue",
+                "rescue_kinds": ["rare_token"],
+                "reason": "rare token rescue",
+                "ranking_features": {
+                    "exact_seed_match": false,
+                    "file_path_match": false,
+                    "text_evidence_match": false,
+                    "symbol_entity_match": true,
+                    "graph_proximity": false,
+                    "source_role_compatible": true,
+                    "lifecycle_claimable": true,
+                    "proof_available": false,
+                    "vector_score_available": false,
+                    "binary_score_available": false,
+                    "rescue_match": true
+                },
+                "source_labels": ["nuance_rescue", "rare_token_lexical_rescue", "candidate_only", "no_graph_proof"]
+            }]),
+        );
+        let graph_path = json!({
+            "path_id": "auth-verified-path",
+            "source": "repo://e/caller",
+            "target": "repo://e/auth_guard",
+            "source_spans": [{
+                "file": "src/auth.ts",
+                "repo_relative_path": "src/auth.ts",
+                "start_line": 10,
+                "start_column": 1,
+                "end_line": 12,
+                "end_column": 2
+            }],
+            "evidence_role": "production",
+            "confidence": 1.0,
+            "classification_reason": "parser verified path",
+            "relations": ["calls"]
+        });
+
+        let candidate_set = super::build_context_agent_retrieval_candidates(
+            &options,
+            &packet,
+            &[graph_path],
+            &[],
+            &[],
+            true,
+            true,
+        );
+        let candidate = candidate_set
+            .candidates
+            .iter()
+            .find(|candidate| candidate["entity_id"].as_str() == Some("repo://e/auth_guard"))
+            .expect("graph verified rescue entity candidate");
+        let sources = candidate["candidate_sources"]
+            .as_array()
+            .expect("candidate sources")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<BTreeSet<_>>();
+        assert!(sources.contains("nuance_rescue"), "{sources:?}");
+        assert!(sources.contains("path_evidence"), "{sources:?}");
+        assert!(sources.contains("graph_neighbor"), "{sources:?}");
+        assert_eq!(candidate["graph_proof"].as_bool(), Some(true));
+        assert_eq!(
+            candidate["verification_status"].as_str(),
+            Some("graph_verified")
+        );
+        assert_eq!(
+            candidate["graph_verification_status"].as_str(),
+            Some("graph_verified")
+        );
+        assert_eq!(candidate["proof_status"].as_str(), Some("proof_path_found"));
+        assert_eq!(candidate["claimable_for_graph"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn context_pack_nuance_text_rescue_reaches_no_proof_fallback_bounded() {
+        let mut options = context_agent_test_options("production", Some(1), Some(1), None);
+        options.task = "Find auth docs".to_string();
+        options.seeds.clear();
+        let mut packet = ContextPacket {
+            task: options.task.clone(),
+            mode: options.mode.clone(),
+            symbols: Vec::new(),
+            verified_paths: Vec::new(),
+            risks: Vec::new(),
+            recommended_tests: Vec::new(),
+            snippets: Vec::new(),
+            metadata: Metadata::new(),
+        };
+        packet.metadata.insert(
+            "nuance_rescue_candidates".to_string(),
+            json!([{
+                "candidate_id": "nuance-rescue://text/README.md:21",
+                "candidate_source": "nuance_rescue",
+                "candidate_sources": ["nuance_rescue", "text_evidence", "lexical_fts"],
+                "path": "README.md",
+                "file_id": "README.md",
+                "entity_id": Value::Null,
+                "evidence_role": "text_evidence",
+                "proof_status": "not_graph_proof",
+                "graph_proof": false,
+                "claimable": true,
+                "claimable_for_text": true,
+                "claimable_for_graph": false,
+                "requires_graph_verification": false,
+                "verification_status": "not_graph_proof",
+                "graph_verification_status": "not_graph_proof",
+                "text_evidence_status": "not_graph_proof",
+                "matched_token": "auth",
+                "matched_tokens": ["auth"],
+                "rescue_reason": "rare_token_lexical_rescue",
+                "rescue_kinds": ["rare_token"],
+                "snippet": "- auth/role/negation",
+                "reason": "rare-token text evidence rescue; not graph proof",
+                "ranking_features": {
+                    "exact_seed_match": false,
+                    "file_path_match": false,
+                    "text_evidence_match": true,
+                    "symbol_entity_match": false,
+                    "graph_proximity": false,
+                    "source_role_compatible": true,
+                    "lifecycle_claimable": true,
+                    "proof_available": false,
+                    "vector_score_available": false,
+                    "binary_score_available": false,
+                    "rescue_match": true
+                },
+                "source_labels": ["nuance_rescue", "rare_token_lexical_rescue", "text_evidence", "candidate_only", "no_graph_proof"]
+            }]),
+        );
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+            "passport_status": "valid",
+        });
+        let response = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        let candidates = response["candidates"].as_array().expect("candidates");
+        let text_candidate = candidates
+            .iter()
+            .find(|candidate| candidate["path"].as_str() == Some("README.md"))
+            .expect("nuance text candidate reaches context-pack output");
+        assert_eq!(text_candidate["graph_proof"].as_bool(), Some(false));
+        assert_eq!(
+            text_candidate["proof_status"].as_str(),
+            Some("not_graph_proof")
+        );
+        assert_eq!(
+            text_candidate["text_evidence_status"].as_str(),
+            Some("not_graph_proof")
+        );
+        assert_eq!(text_candidate["claimable_for_graph"].as_bool(), Some(false));
+        assert!(text_candidate["candidate_sources"]
+            .as_array()
+            .expect("candidate sources")
+            .iter()
+            .any(|source| source.as_str() == Some("nuance_rescue")));
+        assert!(text_candidate["candidate_sources"]
+            .as_array()
+            .expect("candidate sources")
+            .iter()
+            .any(|source| source.as_str() == Some("text_evidence")));
+        assert!(candidates.len() <= super::CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT);
+        assert!(
+            serialized_len_for_test(&response) <= super::DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES
+        );
+    }
+
+    #[test]
+    fn context_pack_nuance_rescue_keeps_generic_terms_from_flooding() {
+        let mut options = context_agent_test_options("production", Some(3), Some(3), None);
+        options.task =
+            "Find the function code route literal test token user process package metadata"
+                .to_string();
+        options.seeds.clear();
+        let (tokens, ignored) = super::context_pack_nuance_rescue_tokens(&options, &[]);
+        assert!(tokens.is_empty(), "{tokens:?}");
+        assert!(ignored.iter().any(|token| token == "function"));
+        assert!(ignored.iter().any(|token| token == "package"));
+    }
+
     fn context_agent_test_options(
         mode: &str,
         limit_paths: Option<usize>,
@@ -27087,6 +30242,9 @@ mod tests {
             max_output_bytes,
             allow_stale_read: false,
             explicit_scope_policy: None,
+            enable_vector_candidates: false,
+            enable_nuance_rescue_candidates: false,
+            vector_index_path: None,
         }
     }
 

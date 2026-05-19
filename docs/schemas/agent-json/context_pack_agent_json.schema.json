@@ -439,6 +439,14 @@
           "type": "object",
           "additionalProperties": true
         },
+        "vector_trace": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        },
+        "nuance_rescue_trace": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        },
         "proof_paths_found": {
           "type": "integer",
           "minimum": 0

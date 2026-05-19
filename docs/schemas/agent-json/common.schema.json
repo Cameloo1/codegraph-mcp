@@ -248,6 +248,8 @@
         "symbol_lookup",
         "vector_binary",
         "vector_rerank",
+        "vector_semantic",
+        "nuance_rescue",
         "graph_neighbor",
         "path_evidence",
         "no_proof_fallback",
@@ -282,6 +284,58 @@
         "truncated",
         "unknown"
       ]
+    },
+    "vector_embedding_source": {
+      "type": "string",
+      "enum": [
+        "graph_entity",
+        "text_evidence",
+        "file_path_title",
+        "snippet",
+        "doc_comment",
+        "signature",
+        "unknown"
+      ]
+    },
+    "retrieval_candidate_lifecycle_status": {
+      "type": "string",
+      "enum": ["fresh", "stale", "invalid", "unknown"]
+    },
+    "retrieval_candidate_lifecycle_binding": {
+      "type": "object",
+      "required": [
+        "status",
+        "db_passport_fingerprint",
+        "repo_head",
+        "scope_policy_hash",
+        "embedding_model_id",
+        "embedding_profile",
+        "stale_reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/retrieval_candidate_lifecycle_status"
+        },
+        "db_passport_fingerprint": {
+          "type": ["string", "null"]
+        },
+        "repo_head": {
+          "type": ["string", "null"]
+        },
+        "scope_policy_hash": {
+          "type": ["string", "null"]
+        },
+        "embedding_model_id": {
+          "type": ["string", "null"]
+        },
+        "embedding_profile": {
+          "type": ["string", "null"]
+        },
+        "stale_reason": {
+          "type": ["string", "null"]
+        }
+      }
     },
     "retrieval_candidate": {
       "type": "object",
@@ -323,6 +377,16 @@
           "minItems": 1,
           "uniqueItems": true
         },
+        "embedding_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/vector_embedding_source"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "file_id": {
           "type": ["string", "null"]
         },
@@ -342,6 +406,30 @@
             }
           ]
         },
+        "source_span_missing_reason": {
+          "type": ["string", "null"]
+        },
+        "matched_query_text": {
+          "type": ["string", "null"]
+        },
+        "matched_token": {
+          "type": ["string", "null"]
+        },
+        "matched_tokens": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rescue_reason": {
+          "type": ["string", "null"]
+        },
+        "rescue_kinds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "evidence_role": {
           "$ref": "#/$defs/evidence_role"
         },
@@ -352,6 +440,12 @@
           "type": "boolean"
         },
         "claimable": {
+          "type": "boolean"
+        },
+        "claimable_for_text": {
+          "type": "boolean"
+        },
+        "claimable_for_graph": {
           "type": "boolean"
         },
         "diagnostic_only": {
@@ -371,6 +465,29 @@
             }
           ]
         },
+        "embedding_model_id": {
+          "type": ["string", "null"]
+        },
+        "embedding_dim": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "embedding_profile": {
+          "type": ["string", "null"]
+        },
+        "chunk_id": {
+          "type": ["string", "null"]
+        },
+        "chunk_kind": {
+          "type": ["string", "null"]
+        },
         "matched_seeds": {
           "type": "array",
           "items": {
@@ -382,6 +499,16 @@
         },
         "verification_status": {
           "$ref": "#/$defs/retrieval_verification_status"
+        },
+        "lifecycle_binding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/retrieval_candidate_lifecycle_binding"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "reason": {
           "type": "string"

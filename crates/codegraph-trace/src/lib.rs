@@ -1,4 +1,4 @@
-//! Durable JSONL tracing for CodeGraph MCP and agent-quality benchmarks.
+//! Durable JSONL tracing for codegraph-mcp and agent-quality benchmarks.
 //!
 //! The trace layer is intentionally small and filesystem-backed so the CLI,
 //! MCP server, and future benchmark harnesses can all produce the same event

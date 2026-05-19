@@ -8,11 +8,16 @@ use std::{
 use codegraph_core::{
     Edge, EdgeClass, EdgeContext, Exactness, FileRecord, RelationKind, SourceSpan,
 };
-use codegraph_index::{scope_policy_hash, IndexScopeOptions, StorageMode};
+use codegraph_index::{
+    build_in_memory_vector_chunk_index, extract_file_path_title_embedding_chunk_for_path,
+    scope_policy_hash, write_vector_chunk_index_json, IndexScopeOptions, StorageMode,
+    VectorChunkIndexBuildOptions, VECTOR_EMBEDDING_CHUNK_EXTRACTION_VERSION,
+};
 use codegraph_mcp_server::{McpServer, McpServerConfig};
 use codegraph_store::{
     DbPassport, GraphStore, SqliteGraphStore, DB_PASSPORT_VERSION, SCHEMA_VERSION,
 };
+use codegraph_vector::{DeterministicTestEmbeddingProvider, TestEmbeddingEnablement};
 use serde_json::{json, Value};
 
 fn run_codegraph(args: &[&str]) -> Output {
@@ -25,6 +30,15 @@ fn run_codegraph_in(cwd: &Path, args: &[&str]) -> Output {
         .args(args)
         .output()
         .expect("failed to run codegraph-mcp")
+}
+
+fn run_codegraph_in_with_env(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_codegraph-mcp"));
+    command.current_dir(cwd).args(args);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    command.output().expect("failed to run codegraph-mcp")
 }
 
 fn stdout_json(output: &Output) -> Value {
@@ -43,6 +57,50 @@ fn stderr_json(output: &Output) -> Value {
         String::from_utf8_lossy(&output.stdout)
     );
     serde_json::from_slice(&output.stderr).expect("stderr JSON")
+}
+
+fn write_context_pack_vector_test_index(db_path: &Path, index_path: &Path) {
+    write_context_pack_vector_test_index_with_scope(
+        db_path,
+        index_path,
+        "context-pack-release-vector-candidates",
+    );
+}
+
+fn write_context_pack_vector_test_index_with_scope(
+    db_path: &Path,
+    index_path: &Path,
+    source_scope: &str,
+) {
+    let provider = DeterministicTestEmbeddingProvider::new(64, TestEmbeddingEnablement::Explicit)
+        .expect("deterministic provider");
+    let store = SqliteGraphStore::open(db_path).expect("open vector fixture DB");
+    let passport = store
+        .get_db_passport()
+        .expect("read DB passport")
+        .expect("DB passport");
+    let chunks = vec![
+        extract_file_path_title_embedding_chunk_for_path(
+            "src/login_email_handling.ts",
+            "text_evidence",
+            Some("typescript"),
+            None,
+        ),
+        extract_file_path_title_embedding_chunk_for_path(
+            "src/auth_vector_bridge.ts",
+            "text_evidence",
+            Some("typescript"),
+            None,
+        ),
+    ];
+    let options = VectorChunkIndexBuildOptions {
+        max_chunks: 16 * 256,
+        source_scope: source_scope.to_string(),
+        extraction_version: VECTOR_EMBEDDING_CHUNK_EXTRACTION_VERSION.to_string(),
+    };
+    let index = build_in_memory_vector_chunk_index(chunks, &provider, &passport, options)
+        .expect("build vector fixture index");
+    write_vector_chunk_index_json(index_path, &index).expect("write vector fixture index");
 }
 
 fn canonical_path_for_assertion(path: impl AsRef<Path>) -> String {
@@ -3456,6 +3514,147 @@ fn context_pack_and_impact_return_evidence() {
     assert!(impact["blast_radius"]["tests_assertions_mocks_stubs"].is_array());
 
     fs::remove_dir_all(repo).expect("cleanup fixture workspace");
+}
+
+#[test]
+fn context_pack_vector_candidates_are_explicit_diagnostic_and_safe() {
+    let repo = fixture_repo();
+    let external_db_dir = repo.join("external-db");
+    fs::create_dir_all(&external_db_dir).expect("create external db dir");
+    let db_path = external_db_dir.join("codegraph.sqlite");
+    let db_arg = db_path.to_str().expect("db path").to_string();
+    stdout_json(&run_codegraph_in(
+        &repo,
+        &["index", ".", "--db", &db_arg, "--json"],
+    ));
+    assert!(
+        !repo.join(".codegraph").exists(),
+        "vector operability test must not create normal .codegraph DB"
+    );
+
+    let env = [("CODEGRAPH_DB_PATH", db_arg.as_str())];
+    let disabled_output = run_codegraph_in_with_env(
+        &repo,
+        &[
+            "context-pack",
+            "--task",
+            "Change login email handling",
+            "--agent-json",
+            "--max-output-bytes",
+            "16384",
+        ],
+        &env,
+    );
+    let disabled = stdout_json(&disabled_output);
+    assert_eq!(disabled["status"].as_str(), Some("ok"));
+    assert!(disabled.get("retrieval_explain").is_none());
+    assert!(!String::from_utf8_lossy(&disabled_output.stdout).contains("vector_candidate_trace"));
+
+    let missing_index = external_db_dir.join("missing-vector-index.json");
+    let missing_index_arg = missing_index.to_str().expect("missing vector path");
+    let missing = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "context-pack",
+            "--task",
+            "Change login email handling",
+            "--enable-vector-candidates",
+            "--vector-index",
+            missing_index_arg,
+            "--explain",
+            "--max-output-bytes",
+            "65536",
+        ],
+        &env,
+    ));
+    let missing_trace = &missing["retrieval_explain"]["vector_trace"];
+    assert_eq!(
+        missing_trace["vector_index_status"].as_str(),
+        Some("missing")
+    );
+    assert_eq!(missing_trace["vector_candidate_count"].as_u64(), Some(0));
+
+    let ready_index = external_db_dir.join("codegraph-vector-chunks.json");
+    write_context_pack_vector_test_index(&db_path, &ready_index);
+    let ready_index_arg = ready_index.to_str().expect("ready vector path");
+    let ready = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "context-pack",
+            "--task",
+            "Change login email handling",
+            "--enable-vector-candidates",
+            "--vector-index",
+            ready_index_arg,
+            "--explain",
+            "--max-output-bytes",
+            "65536",
+        ],
+        &env,
+    ));
+    let ready_trace = &ready["retrieval_explain"]["vector_trace"];
+    assert_eq!(ready_trace["vector_index_status"].as_str(), Some("ready"));
+    assert!(
+        ready_trace["vector_candidate_count"].as_u64().unwrap_or(0) > 0,
+        "{ready_trace:?}"
+    );
+    assert_eq!(
+        ready_trace["graph_verification_status_for_vector_candidates"]["graph_proof_count"]
+            .as_u64(),
+        Some(0)
+    );
+
+    let compact_output = run_codegraph_in_with_env(
+        &repo,
+        &[
+            "context-pack",
+            "--task",
+            "Change login email handling",
+            "--enable-vector-candidates",
+            "--vector-index",
+            ready_index_arg,
+            "--agent-json",
+            "--max-output-bytes",
+            "16384",
+        ],
+        &env,
+    );
+    let compact = stdout_json(&compact_output);
+    assert_eq!(compact["status"].as_str(), Some("ok"));
+    assert!(compact.get("retrieval_explain").is_none());
+    assert!(
+        compact_output.stdout.len() < 16_384,
+        "agent-json should remain compact, bytes={}",
+        compact_output.stdout.len()
+    );
+    assert!(!String::from_utf8_lossy(&compact_output.stdout).contains("chunk_text"));
+
+    let stale_index = external_db_dir.join("stale-vector-index.json");
+    write_context_pack_vector_test_index_with_scope(&db_path, &stale_index, "stale-vector-scope");
+    let stale_index_arg = stale_index.to_str().expect("stale vector path");
+    let stale = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "context-pack",
+            "--task",
+            "Change login email handling",
+            "--enable-vector-candidates",
+            "--vector-index",
+            stale_index_arg,
+            "--explain",
+            "--max-output-bytes",
+            "65536",
+        ],
+        &env,
+    ));
+    let stale_trace = &stale["retrieval_explain"]["vector_trace"];
+    assert_eq!(stale_trace["vector_index_status"].as_str(), Some("stale"));
+    assert_eq!(stale_trace["vector_candidate_count"].as_u64(), Some(0));
+    assert!(stale_trace["stale_missing_vector_index_reason"]
+        .as_str()
+        .is_some_and(|reason| reason.contains("source_scope changed")));
+
+    fs::remove_dir_all(repo).expect("cleanup vector fixture workspace");
 }
 
 #[test]

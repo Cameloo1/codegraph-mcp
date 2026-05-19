@@ -1,0 +1,462 @@
+{
+  "schema_version": 1,
+  "fixture_name": "nuance_rescue_matrix",
+  "fixture_root": "fixtures/nuance_rescue_matrix",
+  "purpose": "Deterministic adversarial fixture matrix for binary/1-bit nuance-loss and future candidate-only nuance rescue.",
+  "scope": {
+    "must_not_create_db_in_fixture": true,
+    "normal_in_repo_codegraph_db_allowed": false,
+    "external_provider_allowed": false,
+    "public_benchmark_claim": false
+  },
+  "evidence_contract": {
+    "binary_and_nuance_candidates_are_candidate_only": true,
+    "candidate_recall_does_not_prove_graph_relations": true,
+    "expected_graph_proof_default": false,
+    "graph_proof_requires_graph_or_source_verification": true,
+    "text_evidence_default_proof_status": "not_graph_proof",
+    "candidate_default_proof_status": "candidate_only",
+    "fallback_no_proof_status": "no_proof_path_found"
+  },
+  "files": [
+    {
+      "path": "src/rare_identifier.ts",
+      "fixture_role": "rare_identifier_source",
+      "expected_symbols": [
+        "calibrateQuasarNettleFuse",
+        "QUASAR_NETTLE_FUSE"
+      ],
+      "expected_evidence_role": "graph_proof_candidate"
+    },
+    {
+      "path": "src/short_functions.ts",
+      "fixture_role": "short_function_source",
+      "expected_symbols": [
+        "isRootUid",
+        "deny"
+      ],
+      "expected_evidence_role": "graph_proof_candidate"
+    },
+    {
+      "path": "src/token_processors.ts",
+      "fixture_role": "near_duplicate_identifier_source",
+      "expected_symbols": [
+        "processUserToken",
+        "processUserTokens",
+        "processAdminToken"
+      ],
+      "expected_evidence_role": "graph_proof_candidate"
+    },
+    {
+      "path": "src/auth_guards.ts",
+      "fixture_role": "auth_role_negation_source",
+      "expected_symbols": [
+        "check_admin",
+        "check_user",
+        "not_authorized",
+        "no_admin_required"
+      ],
+      "expected_evidence_role": "graph_proof_candidate"
+    },
+    {
+      "path": "src/routes.ts",
+      "fixture_role": "route_literal_source",
+      "expected_symbols": [
+        "USER_ROUTE_LITERAL",
+        "ADMIN_ROUTE_LITERAL",
+        "routeTitleFor"
+      ],
+      "expected_evidence_role": "graph_proof_candidate"
+    },
+    {
+      "path": "tests/admin_route.test.ts",
+      "fixture_role": "test_name_source",
+      "expected_symbols": [
+        "failing_test_admin_route_rejects_user_token_when_not_authorized"
+      ],
+      "expected_evidence_role": "test_evidence"
+    },
+    {
+      "path": "package/foo/Config.in",
+      "fixture_role": "buildroot_kconfig",
+      "expected_tokens": [
+        "BR2_PACKAGE_FOO",
+        "select BR2_PACKAGE_HAS_NUANCE_RESCUE"
+      ],
+      "expected_evidence_role": "text_evidence",
+      "expected_proof_status": "not_graph_proof"
+    },
+    {
+      "path": "package/foo/foo.mk",
+      "fixture_role": "buildroot_package_makefile",
+      "expected_tokens": [
+        "FOO_VERSION",
+        "generic-package"
+      ],
+      "expected_evidence_role": "text_evidence",
+      "expected_proof_status": "not_graph_proof"
+    },
+    {
+      "path": "support/scripts/nuance-audit",
+      "fixture_role": "no_extension_support_script",
+      "expected_tokens": [
+        "nuance-audit",
+        "BR2_PACKAGE_FOO",
+        "generic-package"
+      ],
+      "expected_evidence_role": "text_evidence",
+      "expected_proof_status": "not_graph_proof"
+    }
+  ],
+  "cases": [
+    {
+      "id": "rare_identifier_quasar_nettle",
+      "family": "rare_identifier",
+      "task": "Find the function and config symbol for the quasar nettle fuse check.",
+      "expected_exact_seeds": [
+        "calibrateQuasarNettleFuse",
+        "QUASAR_NETTLE_FUSE"
+      ],
+      "expected_rescue_candidates": [
+        {
+          "candidate_id": "src/rare_identifier.ts#calibrateQuasarNettleFuse",
+          "path": "src/rare_identifier.ts",
+          "symbol": "calibrateQuasarNettleFuse",
+          "rescue_kinds": [
+            "rare_token_lexical",
+            "identifier_signature"
+          ]
+        },
+        {
+          "candidate_id": "src/rare_identifier.ts#QUASAR_NETTLE_FUSE",
+          "path": "src/rare_identifier.ts",
+          "symbol": "QUASAR_NETTLE_FUSE",
+          "rescue_kinds": [
+            "rare_token_lexical",
+            "config_key"
+          ]
+        }
+      ],
+      "forbidden_candidates": [
+        "src/token_processors.ts#processUserToken",
+        "src/auth_guards.ts#check_user"
+      ],
+      "expected_evidence_roles": {
+        "src/rare_identifier.ts": "graph_proof_candidate"
+      },
+      "expected_proof_status": "candidate_only",
+      "expected_graph_proof": false,
+      "branch_expectations": {
+        "A_exact_seeds": "should preserve calibrateQuasarNettleFuse and QUASAR_NETTLE_FUSE when supplied",
+        "B_binary_vector_sieve": "likely weak because the function body is intentionally sparse",
+        "C_nuance_rescue": "rare-token lexical and identifier rescue should recover the candidate",
+        "D_graph_neighborhood": "not required"
+      },
+      "notes": "Rare token quasar/nettle/fuse should remain visible even if body-level binary signature is weak."
+    },
+    {
+      "id": "short_function_is_root_uid",
+      "family": "short_function",
+      "task": "Find the tiny function that decides whether uid zero is root.",
+      "expected_exact_seeds": [
+        "isRootUid"
+      ],
+      "expected_rescue_candidates": [
+        {
+          "candidate_id": "src/short_functions.ts#isRootUid",
+          "path": "src/short_functions.ts",
+          "symbol": "isRootUid",
+          "rescue_kinds": [
+            "short_function",
+            "identifier_signature"
+          ]
+        }
+      ],
+      "forbidden_candidates": [
+        "src/short_functions.ts#deny",
+        "src/auth_guards.ts#check_user"
+      ],
+      "expected_evidence_roles": {
+        "src/short_functions.ts": "graph_proof_candidate"
+      },
+      "expected_proof_status": "candidate_only",
+      "expected_graph_proof": false,
+      "branch_expectations": {
+        "A_exact_seeds": "should preserve isRootUid",
+        "B_binary_vector_sieve": "likely weak because the function body has almost no semantic text",
+        "C_nuance_rescue": "identifier and short-function rescue should recover it",
+        "D_graph_neighborhood": "not required"
+      },
+      "notes": "The body is deliberately tiny so identifier rescue carries the useful signal."
+    },
+    {
+      "id": "near_duplicate_token_processors",
+      "family": "near_duplicate_names",
+      "task": "Find processUserToken, not the plural user token batch or admin token processor.",
+      "expected_exact_seeds": [
+        "processUserToken"
+      ],
+      "expected_rescue_candidates": [
+        {
+          "candidate_id": "src/token_processors.ts#processUserToken",
+          "path": "src/token_processors.ts",
+          "symbol": "processUserToken",
+          "rescue_kinds": [
+            "identifier_signature"
+          ]
+        }
+      ],
+      "forbidden_candidates": [
+        "src/token_processors.ts#processUserTokens",
+        "src/token_processors.ts#processAdminToken"
+      ],
+      "expected_evidence_roles": {
+        "src/token_processors.ts": "graph_proof_candidate"
+      },
+      "expected_proof_status": "candidate_only",
+      "expected_graph_proof": false,
+      "branch_expectations": {
+        "A_exact_seeds": "should preserve the singular processUserToken seed",
+        "B_binary_vector_sieve": "may conflate near-duplicate token processors",
+        "C_nuance_rescue": "identifier/signature rescue should preserve the singular/user/admin distinction",
+        "D_graph_neighborhood": "not required"
+      },
+      "notes": "Plural and admin variants are forbidden to catch lossy name conflation."
+    },
+    {
+      "id": "buildroot_config_package_foo",
+      "family": "Buildroot_config",
+      "task": "Plan the Buildroot BR2_PACKAGE_FOO Config.in and generic-package metadata path.",
+      "expected_exact_seeds": [
+        "BR2_PACKAGE_FOO",
+        "package/foo/Config.in",
+        "package/foo/foo.mk"
+      ],
+      "expected_rescue_candidates": [
+        {
+          "candidate_id": "package/foo/Config.in#BR2_PACKAGE_FOO",
+          "path": "package/foo/Config.in",
+          "symbol": "BR2_PACKAGE_FOO",
+          "rescue_kinds": [
+            "config_key",
+            "stage0_text_evidence",
+            "path_title"
+          ]
+        },
+        {
+          "candidate_id": "package/foo/foo.mk#generic-package",
+          "path": "package/foo/foo.mk",
+          "symbol": "generic-package",
+          "rescue_kinds": [
+            "stage0_text_evidence",
+            "path_title"
+          ]
+        }
+      ],
+      "forbidden_candidates": [
+        "src/auth_guards.ts#check_admin",
+        "src/routes.ts#ADMIN_ROUTE_LITERAL"
+      ],
+      "expected_evidence_roles": {
+        "package/foo/Config.in": "text_evidence",
+        "package/foo/foo.mk": "text_evidence"
+      },
+      "expected_proof_status": "not_graph_proof",
+      "expected_graph_proof": false,
+      "branch_expectations": {
+        "A_exact_seeds": "should preserve BR2_PACKAGE_FOO and both paths",
+        "B_binary_vector_sieve": "may under-rank config/build text without text-evidence chunk signals",
+        "C_nuance_rescue": "config-key, path/title, and Stage 0 text-evidence rescue should find the files",
+        "D_graph_neighborhood": "not required"
+      },
+      "notes": "Buildroot config and makefile evidence is source text, not typed graph proof."
+    },
+    {
+      "id": "auth_role_negation_terms",
+      "family": "auth_role_negation",
+      "task": "Find not_authorized and no_admin_required without conflating them with check_admin.",
+      "expected_exact_seeds": [
+        "not_authorized",
+        "no_admin_required"
+      ],
+      "expected_rescue_candidates": [
+        {
+          "candidate_id": "src/auth_guards.ts#not_authorized",
+          "path": "src/auth_guards.ts",
+          "symbol": "not_authorized",
+          "rescue_kinds": [
+            "route_auth_security",
+            "identifier_signature"
+          ]
+        },
+        {
+          "candidate_id": "src/auth_guards.ts#no_admin_required",
+          "path": "src/auth_guards.ts",
+          "symbol": "no_admin_required",
+          "rescue_kinds": [
+            "route_auth_security",
+            "identifier_signature"
+          ]
+        }
+      ],
+      "forbidden_candidates": [
+        "src/auth_guards.ts#check_admin",
+        "src/auth_guards.ts#check_user"
+      ],
+      "expected_evidence_roles": {
+        "src/auth_guards.ts": "graph_proof_candidate"
+      },
+      "expected_proof_status": "candidate_only",
+      "expected_graph_proof": false,
+      "branch_expectations": {
+        "A_exact_seeds": "should preserve negated auth seeds",
+        "B_binary_vector_sieve": "may conflate role/security words",
+        "C_nuance_rescue": "auth/security/negation rescue should keep not/no terms",
+        "D_graph_neighborhood": "not required"
+      },
+      "notes": "Negated auth terms are security-sensitive and must not be dropped as generic stop words."
+    },
+    {
+      "id": "route_literal_admin_vs_user",
+      "family": "route_literal",
+      "task": "Find the /api/admin/:id route literal, not /api/users/:id.",
+      "expected_exact_seeds": [
+        "/api/admin/:id"
+      ],
+      "expected_rescue_candidates": [
+        {
+          "candidate_id": "src/routes.ts#ADMIN_ROUTE_LITERAL",
+          "path": "src/routes.ts",
+          "symbol": "ADMIN_ROUTE_LITERAL",
+          "route_literal": "/api/admin/:id",
+          "rescue_kinds": [
+            "path_title",
+            "route_auth_security"
+          ]
+        }
+      ],
+      "forbidden_candidates": [
+        "src/routes.ts#USER_ROUTE_LITERAL"
+      ],
+      "expected_evidence_roles": {
+        "src/routes.ts": "graph_proof_candidate"
+      },
+      "expected_proof_status": "candidate_only",
+      "expected_graph_proof": false,
+      "branch_expectations": {
+        "A_exact_seeds": "should preserve the literal /api/admin/:id",
+        "B_binary_vector_sieve": "may conflate route literals with shared path structure",
+        "C_nuance_rescue": "path/title/string rescue should preserve admin versus users",
+        "D_graph_neighborhood": "not required"
+      },
+      "notes": "The user and admin route literals differ by one meaningful path component."
+    },
+    {
+      "id": "test_name_admin_route_rejects_user_token",
+      "family": "test_name",
+      "task": "Find failing_test_admin_route_rejects_user_token_when_not_authorized and the code under test.",
+      "expected_exact_seeds": [
+        "failing_test_admin_route_rejects_user_token_when_not_authorized",
+        "not_authorized",
+        "check_admin"
+      ],
+      "expected_rescue_candidates": [
+        {
+          "candidate_id": "tests/admin_route.test.ts#failing_test_admin_route_rejects_user_token_when_not_authorized",
+          "path": "tests/admin_route.test.ts",
+          "symbol": "failing_test_admin_route_rejects_user_token_when_not_authorized",
+          "rescue_kinds": [
+            "test_name",
+            "identifier_signature"
+          ]
+        },
+        {
+          "candidate_id": "src/auth_guards.ts#not_authorized",
+          "path": "src/auth_guards.ts",
+          "symbol": "not_authorized",
+          "rescue_kinds": [
+            "route_auth_security",
+            "identifier_signature"
+          ]
+        },
+        {
+          "candidate_id": "src/auth_guards.ts#check_admin",
+          "path": "src/auth_guards.ts",
+          "symbol": "check_admin",
+          "rescue_kinds": [
+            "route_auth_security",
+            "identifier_signature"
+          ]
+        }
+      ],
+      "forbidden_candidates": [
+        "src/token_processors.ts#processAdminToken",
+        "src/routes.ts#USER_ROUTE_LITERAL"
+      ],
+      "expected_evidence_roles": {
+        "tests/admin_route.test.ts": "test_evidence",
+        "src/auth_guards.ts": "graph_proof_candidate"
+      },
+      "expected_proof_status": "candidate_only",
+      "expected_graph_proof": false,
+      "branch_expectations": {
+        "A_exact_seeds": "should preserve the failing test name and code-under-test seeds",
+        "B_binary_vector_sieve": "may miss the long test name or conflate admin/user terms",
+        "C_nuance_rescue": "test-name and auth/security rescue should recover the test and code-under-test candidates",
+        "D_graph_neighborhood": "may use existing tests/calls only if available; not required for this fixture creation"
+      },
+      "notes": "The test file is expected test evidence; it must not become production graph proof by accident."
+    },
+    {
+      "id": "no_extension_support_script",
+      "family": "no_extension_support_script",
+      "task": "Find the nuance-audit support script that checks BR2_PACKAGE_FOO generic-package metadata.",
+      "expected_exact_seeds": [
+        "support/scripts/nuance-audit",
+        "nuance-audit",
+        "BR2_PACKAGE_FOO"
+      ],
+      "expected_rescue_candidates": [
+        {
+          "candidate_id": "support/scripts/nuance-audit#BR2_PACKAGE_FOO",
+          "path": "support/scripts/nuance-audit",
+          "symbol": "BR2_PACKAGE_FOO",
+          "rescue_kinds": [
+            "path_title",
+            "stage0_text_evidence",
+            "config_key"
+          ]
+        }
+      ],
+      "forbidden_candidates": [
+        "src/routes.ts#ADMIN_ROUTE_LITERAL",
+        "src/token_processors.ts#processUserTokens"
+      ],
+      "expected_evidence_roles": {
+        "support/scripts/nuance-audit": "text_evidence"
+      },
+      "expected_proof_status": "not_graph_proof",
+      "expected_graph_proof": false,
+      "branch_expectations": {
+        "A_exact_seeds": "should preserve the support script path and BR2 token",
+        "B_binary_vector_sieve": "may miss no-extension text chunks",
+        "C_nuance_rescue": "path/title, Stage 0 text-evidence, and config-key rescue should find it",
+        "D_graph_neighborhood": "not required"
+      },
+      "notes": "The file intentionally has no extension and is text evidence only."
+    }
+  ],
+  "forbidden_global_claims": [
+    "graph proof from binary candidate alone",
+    "graph proof from nuance rescue alone",
+    "auth relation proof from string proximity alone",
+    "Buildroot Kconfig semantics from text evidence alone",
+    "test evidence treated as production proof"
+  ],
+  "implementation_gate_notes": [
+    "This fixture matrix is expected to support future Branch C tests.",
+    "Current retrieval baseline may be diagnostic/no-proof/fallback until the rescue harness is implemented.",
+    "No external embeddings or network calls are required.",
+    "Use explicit temporary DB paths under reports/audit/artifacts/nuance_rescue_fixture_matrix/ for any baseline runs."
+  ]
+}
