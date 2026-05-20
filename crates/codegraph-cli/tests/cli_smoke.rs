@@ -3054,7 +3054,7 @@ fn unresolved_calls_custom_mismatched_db_fails_without_diagnostic_flag() {
             "1",
             "--json",
             "--no-snippets",
-            "--allow-stale-read",
+            "--allow-foreign-db",
         ],
     ));
     assert_eq!(diagnostic["status"].as_str(), Some("ok"));
@@ -4449,7 +4449,7 @@ fn query_refuses_db_passport_from_another_repo() {
 
     let diagnostic = stdout_json(&run_codegraph_in(
         &repo_b,
-        &["query", "symbols", "sanitize", "--allow-stale-read"],
+        &["query", "symbols", "sanitize", "--allow-foreign-db"],
     ));
     assert_eq!(diagnostic["status"].as_str(), Some("ok"));
     assert_eq!(
@@ -5019,9 +5019,22 @@ fn lifecycle_regression_suite_cli_query_diagnostic_and_unresolved_db_guards() {
         .as_str()
         .is_some_and(|message| message.contains("repo root mismatch")));
 
-    let diagnostic = stdout_json(&run_codegraph_in(
+    let stale_only = run_codegraph_in(
         &repo_b,
         &["query", "symbols", "sanitize", "--allow-stale-read"],
+    );
+    assert!(
+        !stale_only.status.success(),
+        "stale-only diagnostic must not allow a foreign DB"
+    );
+    let stale_only_error = stderr_json(&stale_only);
+    assert!(stale_only_error["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("--allow-foreign-db")));
+
+    let diagnostic = stdout_json(&run_codegraph_in(
+        &repo_b,
+        &["query", "symbols", "sanitize", "--allow-foreign-db"],
     ));
     assert_eq!(diagnostic["status"].as_str(), Some("ok"));
     assert_eq!(
@@ -5036,13 +5049,10 @@ fn lifecycle_regression_suite_cli_query_diagnostic_and_unresolved_db_guards() {
         diagnostic["db_lifecycle_read"]["contaminated"].as_bool(),
         Some(true)
     );
-    assert!(diagnostic["db_lifecycle_read"]["blockers"]
-        .as_array()
-        .expect("diagnostic blockers")
-        .iter()
-        .any(|blocker| blocker
-            .as_str()
-            .is_some_and(|message| message.contains("repo root mismatch"))));
+    assert_eq!(
+        diagnostic["db_lifecycle_read"]["allow_foreign_db"].as_bool(),
+        Some(true)
+    );
     assert_hits_present(&diagnostic, "diagnostic foreign-repo query");
 
     let custom_db = repo_a.join("suite-unresolved.sqlite");

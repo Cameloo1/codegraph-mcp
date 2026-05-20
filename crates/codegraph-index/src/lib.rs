@@ -10579,6 +10579,133 @@ pub fn load_vector_chunk_index_json<P: EmbeddingProvider>(
     build_in_memory_vector_chunk_index(persisted.chunks, provider, passport, options)
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct VectorChunkIndexBuildSummary {
+    pub status: String,
+    pub index_path: String,
+    pub chunk_count: usize,
+    pub omitted_chunks: usize,
+    pub indexed_text_bytes: usize,
+    pub estimated_vector_bytes: usize,
+    pub graph_entity_chunks: usize,
+    pub text_evidence_chunks: usize,
+    pub file_path_title_chunks: usize,
+    pub provider_id: String,
+    pub model_id: String,
+    pub dimension: usize,
+    pub source_scope: String,
+    pub extraction_version: String,
+    pub graph_proof: bool,
+    pub proof_status: String,
+}
+
+pub fn build_vector_chunk_index_json_for_repo<P: EmbeddingProvider>(
+    repo_root: &Path,
+    db_path: &Path,
+    index_path: &Path,
+    provider: &P,
+    options: VectorChunkIndexBuildOptions,
+) -> Result<VectorChunkIndexBuildSummary, IndexError> {
+    let repo_root = resolve_repo_root_for_index(repo_root)?;
+    let db_path = normalize_db_path(&repo_root, db_path);
+    let store = SqliteGraphStore::open_read_only(&db_path)?;
+    let passport = store
+        .get_db_passport()?
+        .ok_or_else(|| IndexError::Message("db passport missing".to_string()))?;
+    let lifecycle_binding = RetrievalCandidateLifecycleBinding {
+        status: RetrievalCandidateLifecycleStatus::Fresh,
+        db_passport_fingerprint: Some(db_passport_fingerprint(&passport)),
+        repo_head: passport.repo_head.clone(),
+        scope_policy_hash: Some(passport.index_scope_policy_hash.clone()),
+        embedding_model_id: Some(provider.metadata().model_id.clone()),
+        embedding_profile: Some(provider.metadata().version.clone()),
+        stale_reason: None,
+    };
+    let files = store.list_files(UNBOUNDED_STORE_READ_LIMIT)?;
+    let mut chunks = Vec::new();
+
+    for file in files {
+        let repo_relative_path = normalize_graph_path(&file.repo_relative_path);
+        let source_path = repo_root.join(&repo_relative_path);
+        let source = fs::read_to_string(&source_path).ok();
+        let is_text_evidence = file.metadata.get("evidence_kind").and_then(Value::as_str)
+            == Some(TEXT_EVIDENCE_KIND)
+            && file.metadata.get("proof_status").and_then(Value::as_str)
+                == Some(TEXT_EVIDENCE_PROOF_STATUS);
+        let file_kind = file
+            .metadata
+            .get("source_file_kind")
+            .and_then(Value::as_str)
+            .or(file.language.as_deref());
+        let evidence_role = if is_text_evidence {
+            TEXT_EVIDENCE_KIND
+        } else {
+            "production"
+        };
+
+        chunks.push(extract_file_path_title_embedding_chunk_for_path(
+            &repo_relative_path,
+            evidence_role,
+            file_kind,
+            Some(lifecycle_binding.clone()),
+        ));
+
+        if is_text_evidence {
+            if let Some(source) = source.as_deref() {
+                chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+                    &repo_relative_path,
+                    source,
+                    Some(lifecycle_binding.clone()),
+                ));
+            }
+            continue;
+        }
+
+        for entity in store.list_entities_by_file(&repo_relative_path)? {
+            chunks.extend(extract_graph_entity_embedding_chunks(
+                &entity,
+                source.as_deref(),
+                file.language.as_deref(),
+                Some(lifecycle_binding.clone()),
+            ));
+        }
+    }
+
+    let graph_entity_chunks = chunks
+        .iter()
+        .filter(|chunk| chunk.source_kind == VectorEmbeddingChunkSourceKind::GraphEntity)
+        .count();
+    let text_evidence_chunks = chunks
+        .iter()
+        .filter(|chunk| chunk.source_kind == VectorEmbeddingChunkSourceKind::TextEvidence)
+        .count();
+    let file_path_title_chunks = chunks
+        .iter()
+        .filter(|chunk| chunk.chunk_kind == VectorEmbeddingChunkKind::FilePathTitle)
+        .count();
+    let index = build_in_memory_vector_chunk_index(chunks, provider, &passport, options.clone())?;
+    write_vector_chunk_index_json(index_path, &index)?;
+
+    Ok(VectorChunkIndexBuildSummary {
+        status: "ok".to_string(),
+        index_path: index_path.to_string_lossy().to_string(),
+        chunk_count: index.metadata().chunk_count,
+        omitted_chunks: index.metadata().omitted_chunks,
+        indexed_text_bytes: index.metadata().indexed_text_bytes,
+        estimated_vector_bytes: index.metadata().estimated_vector_bytes,
+        graph_entity_chunks,
+        text_evidence_chunks,
+        file_path_title_chunks,
+        provider_id: index.metadata().provider.provider_id.clone(),
+        model_id: index.metadata().provider.model_id.clone(),
+        dimension: index.metadata().provider.dimension,
+        source_scope: options.source_scope,
+        extraction_version: options.extraction_version,
+        graph_proof: false,
+        proof_status: "candidate_only".to_string(),
+    })
+}
+
 pub fn vector_chunk_search_hit_to_retrieval_candidate(
     hit: &VectorChunkSearchHit,
     provider: &EmbeddingProviderMetadata,
@@ -12098,6 +12225,29 @@ mod tests {
             file.metadata.get("graph_proof").and_then(Value::as_bool),
             Some(false),
             "{repo_relative_path}"
+        );
+        let text_metadata = file
+            .metadata
+            .get("text_evidence")
+            .unwrap_or_else(|| panic!("missing text_evidence metadata for {repo_relative_path}"));
+        assert_eq!(
+            text_metadata.get("bounded").and_then(Value::as_bool),
+            Some(true),
+            "{repo_relative_path}"
+        );
+        assert!(
+            text_metadata
+                .get("tokens")
+                .and_then(Value::as_array)
+                .is_some_and(|tokens| tokens.len() <= TEXT_EVIDENCE_MAX_TOKENS_PER_FILE),
+            "{repo_relative_path}"
+        );
+        assert!(
+            text_metadata.get("source").is_none()
+                && text_metadata.get("body").is_none()
+                && text_metadata.get("full_text").is_none()
+                && text_metadata.get("content").is_none(),
+            "text evidence metadata must not store full file bodies for {repo_relative_path}"
         );
         file
     }
@@ -15516,7 +15666,13 @@ mod tests {
             "reports/final/generated.md",
             "SHOULD_NOT_INDEX_REPORT_FINAL\n",
         );
+        write_test_file(
+            &repo,
+            "reports/audit/artifacts/run/generated.md",
+            "SHOULD_NOT_INDEX_REPORT_ARTIFACT\n",
+        );
         write_test_file(&repo, "src/cache.db", "SHOULD_NOT_INDEX_DB\n");
+        write_test_file(&repo, "src/cache.sqlite", "SHOULD_NOT_INDEX_SQLITE\n");
         write_test_file(&repo, "logs/run.log", "SHOULD_NOT_INDEX_LOG\n");
 
         let db = repo.join("target").join("text-negative.sqlite");
@@ -15531,7 +15687,9 @@ mod tests {
             "target/generated.mk",
             "node_modules/pkg/Config.in",
             "reports/final/generated.md",
+            "reports/audit/artifacts/run/generated.md",
             "src/cache.db",
+            "src/cache.sqlite",
             "logs/run.log",
         ] {
             assert!(

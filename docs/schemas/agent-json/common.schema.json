@@ -246,6 +246,7 @@
         "text_evidence",
         "lexical_fts",
         "symbol_lookup",
+        "binary_vector",
         "vector_binary",
         "vector_rerank",
         "vector_semantic",

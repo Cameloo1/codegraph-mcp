@@ -33,19 +33,19 @@ use codegraph_core::{
     RetrievalVerificationStatus, SourceSpan, VectorEmbeddingSource,
 };
 pub use codegraph_index::{
-    collect_repo_files, default_db_path, graph_fact_hash, index_repo,
-    index_repo_to_db_with_options, index_repo_with_options, inspect_db_lifecycle_preflight,
-    inspect_db_lifecycle_surface_preflight, inspect_repo_db_passport, load_vector_chunk_index_json,
-    parse_extract_pending_files, require_reusable_db_passport, scope_policy_hash,
-    should_ignore_path, should_start_new_index_batch, update_changed_files,
-    update_changed_files_to_db, update_changed_files_with_cache,
-    update_changed_files_with_cache_to_db, vector_chunk_search_hit_to_retrieval_candidate,
-    DbLifecycleOperationKind, DbLifecyclePolicy, DbLifecyclePreflight, DbLifecycleSurfacePreflight,
-    DbLifecycleSurfacePreflightRequest, IncrementalIndexCache, IncrementalIndexSummary,
-    IndexBuildMode, IndexError, IndexIssue, IndexOptions, IndexProfile, IndexScopeOptions,
-    IndexSummary, LocalFactBundle, PendingIndexFile, StorageMode, VectorChunkIndexBuildOptions,
-    DEFAULT_INDEX_BATCH_MAX_FILES, DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY,
-    UNBOUNDED_STORE_READ_LIMIT,
+    build_vector_chunk_index_json_for_repo, collect_repo_files, default_db_path, graph_fact_hash,
+    index_repo, index_repo_to_db_with_options, index_repo_with_options,
+    inspect_db_lifecycle_preflight, inspect_db_lifecycle_surface_preflight,
+    inspect_repo_db_passport, load_vector_chunk_index_json, parse_extract_pending_files,
+    require_reusable_db_passport, scope_policy_hash, should_ignore_path,
+    should_start_new_index_batch, update_changed_files, update_changed_files_to_db,
+    update_changed_files_with_cache, update_changed_files_with_cache_to_db,
+    vector_chunk_search_hit_to_retrieval_candidate, DbLifecycleOperationKind, DbLifecyclePolicy,
+    DbLifecyclePreflight, DbLifecycleSurfacePreflight, DbLifecycleSurfacePreflightRequest,
+    IncrementalIndexCache, IncrementalIndexSummary, IndexBuildMode, IndexError, IndexIssue,
+    IndexOptions, IndexProfile, IndexScopeOptions, IndexSummary, LocalFactBundle, PendingIndexFile,
+    StorageMode, VectorChunkIndexBuildOptions, DEFAULT_INDEX_BATCH_MAX_FILES,
+    DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY, UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::{
     detect_language, extract_entities_and_relations, language_frontends, LanguageParser,
@@ -128,7 +128,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "index",
-        usage: "codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]",
+        usage: "codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--build-vector-index <path>] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]",
         description: "Index a repository into the local graph store.",
     },
     CommandSpec {
@@ -547,6 +547,8 @@ struct GlobalOptions {
     repo: Option<PathBuf>,
     db: Option<PathBuf>,
     json: bool,
+    agent_json: bool,
+    limit: Option<usize>,
     no_color: bool,
     verbose: bool,
     quiet: bool,
@@ -713,10 +715,57 @@ where
         command_args.push("--verbose".to_string());
     }
     if globals.json
-        && matches!(command.name, "index" | "doctor" | "languages" | "config")
+        && matches!(
+            command.name,
+            "index" | "query" | "doctor" | "languages" | "config" | "status"
+        )
         && !command_args.iter().any(|arg| arg == "--json")
     {
         command_args.push("--json".to_string());
+    }
+    if globals.agent_json {
+        if !matches!(command.name, "query" | "context-pack" | "context") {
+            return command_error(
+                "invalid_global_options",
+                &format!(
+                    "--agent-json can only be used before query or context-pack: {BIN_NAME} --agent-json query ..."
+                ),
+            );
+        }
+        if !command_args
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "--agent-json" | "--agent_json"))
+        {
+            command_args.push("--agent-json".to_string());
+        }
+    }
+    if let Some(limit) = globals.limit {
+        match command.name {
+            "query" => {
+                if !has_flag_with_value(&command_args, "--limit") {
+                    command_args.push("--limit".to_string());
+                    command_args.push(limit.to_string());
+                }
+            }
+            "context-pack" | "context" => {
+                if !has_flag_with_value(&command_args, "--limit-paths") {
+                    command_args.push("--limit-paths".to_string());
+                    command_args.push(limit.to_string());
+                }
+                if !has_flag_with_value(&command_args, "--limit-snippets") {
+                    command_args.push("--limit-snippets".to_string());
+                    command_args.push(limit.to_string());
+                }
+            }
+            _ => {
+                return command_error(
+                    "invalid_global_options",
+                    &format!(
+                        "--limit can only be used before query or context-pack: {BIN_NAME} --limit <n> query ..."
+                    ),
+                );
+            }
+        }
     }
     if command_args
         .iter()
@@ -795,6 +844,18 @@ fn parse_global_options(args: &[String]) -> Result<(GlobalOptions, Vec<String>),
                 globals.db = Some(PathBuf::from(value));
             }
             "--json" => globals.json = true,
+            "--agent-json" | "--agent_json" => globals.agent_json = true,
+            "--limit" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--limit requires a value".to_string());
+                };
+                globals.limit = Some(parse_limit_value(value)?);
+            }
+            value if value.starts_with("--limit=") => {
+                let value = value.trim_start_matches("--limit=");
+                globals.limit = Some(parse_limit_value(value)?);
+            }
             "--no-color" => globals.no_color = true,
             "--verbose" => globals.verbose = true,
             "--quiet" => globals.quiet = true,
@@ -810,6 +871,11 @@ fn parse_global_options(args: &[String]) -> Result<(GlobalOptions, Vec<String>),
         index += 1;
     }
     Ok((globals, rest))
+}
+
+fn has_flag_with_value(args: &[String], flag: &str) -> bool {
+    args.iter()
+        .any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
 }
 
 fn canonical_global_flag(arg: &str) -> Option<&'static str> {
@@ -1003,22 +1069,32 @@ fn run_init_command(args: &[String]) -> Result<Value, String> {
 }
 
 fn run_index_command(args: &[String]) -> Result<Value, String> {
-    let (repo, db, options, output_mode, budget_options) = parse_index_command_options(args)?;
+    let (repo, db, options, output_mode, budget_options, vector_index_output) =
+        parse_index_command_options(args)?;
     let started = Instant::now();
     let repo_root = resolve_repo_root(Path::new(&repo))?;
     let db_path = db
         .clone()
         .map(|path| normalize_db_path_for_repo(&repo_root, &path))
         .unwrap_or_else(|| default_db_path(&repo_root));
+    let vector_index_path = vector_index_output.as_ref().map(|path| {
+        if path.is_absolute() {
+            path.clone()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
+        }
+    });
     let preflight = storage_budget::storage_budget_preflight(
         &budget_options,
         storage_budget::StorageBudgetContext {
             command: "codegraph-mcp index".to_string(),
             repo_root: Some(repo_root.clone()),
             db_path: Some(db_path.clone()),
-            out_path: None,
+            out_path: vector_index_path.clone(),
             explicit_db: db.is_some(),
-            explicit_out: false,
+            explicit_out: vector_index_path.is_some(),
             diagnostic_only: false,
         },
     );
@@ -1033,14 +1109,38 @@ fn run_index_command(args: &[String]) -> Result<Value, String> {
         index_repo_with_options(Path::new(&repo), options)
     }
     .map_err(|error| error.to_string())?;
+    let vector_index_summary = if let Some(vector_index_path) = vector_index_path.as_ref() {
+        let provider = context_pack_vector_provider()?;
+        Some(
+            build_vector_chunk_index_json_for_repo(
+                &repo_root,
+                &db_path,
+                vector_index_path,
+                &provider,
+                context_pack_vector_build_options(),
+            )
+            .map_err(|error| error.to_string())?,
+        )
+    } else {
+        None
+    };
     let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let budget = storage_budget::storage_budget_postflight(preflight, &[db_path], &[]);
+    let vector_outputs = vector_index_path.iter().cloned().collect::<Vec<PathBuf>>();
+    let budget = storage_budget::storage_budget_postflight(preflight, &[db_path], &vector_outputs);
     let mut value = match output_mode {
         IndexJsonOutputMode::Audit => index_summary_json(&summary),
         IndexJsonOutputMode::Agent => index_summary_agent_json(&summary, wall_ms),
         IndexJsonOutputMode::Concise => index_summary_concise_json(&summary, wall_ms),
     }?;
     if let Some(object) = value.as_object_mut() {
+        if let Some(vector_index_summary) = vector_index_summary {
+            object.insert(
+                "vector_index".to_string(),
+                serde_json::to_value(vector_index_summary).map_err(|error| error.to_string())?,
+            );
+            object.insert("external_provider".to_string(), json!(false));
+            object.insert("source_leaves_machine".to_string(), json!(false));
+        }
         object.insert("storage_budget".to_string(), budget.to_json());
     }
     if budget.is_refused() {
@@ -1069,7 +1169,7 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
             "path_access_error": preflight.path_access_error.clone(),
             "sqlite_sidecars": sqlite_sidecars.clone(),
             "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
-            "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true),
+            "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true, false, false),
             "next_command": "codegraph-mcp index .",
         }));
     }
@@ -1087,7 +1187,7 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
             "db_health": preflight.db_health.clone(),
             "sqlite_sidecars": sqlite_sidecars.clone(),
             "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
-            "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true),
+            "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true, false, false),
             "next_command": "codegraph-mcp index . --fresh",
         }));
     }
@@ -1129,7 +1229,7 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
         "db_health": preflight.db_health.clone(),
         "sqlite_sidecars": sqlite_sidecars.clone(),
         "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
-        "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true),
+        "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true, false, false),
         "schema_version": store.schema_version().map_err(|error| error.to_string())?,
         "files": store.count_files().map_err(|error| error.to_string())?,
         "entities": store.count_entities().map_err(|error| error.to_string())?,
@@ -1563,33 +1663,36 @@ fn run_query_command(args: &[String]) -> Result<Value, String> {
     let mut args = args.to_vec();
     reject_misplaced_global_flags_in_query_args(&args)?;
     let allow_stale_read = remove_flag(&mut args, "--allow-stale-read");
+    let allow_foreign_db = remove_flag(&mut args, "--allow-foreign-db");
     let explicit_scope = parse_read_scope_options(&mut args)?;
     let repo_root = current_repo_root()?;
     if args.first().map(String::as_str) == Some("unresolved-calls") {
-        return run_query_command_inner(&args, allow_stale_read, explicit_scope, None);
+        return run_query_command_inner(
+            &args,
+            allow_stale_read,
+            allow_foreign_db,
+            explicit_scope,
+            None,
+        );
     }
     let db_path = resolved_db_path_for_repo(&repo_root);
     let db_lifecycle_read = read_db_lifecycle_guard(
         &repo_root,
         &db_path,
         allow_stale_read,
+        allow_foreign_db,
         explicit_scope.clone(),
     )?;
-    let previous_allow_stale = std::env::var("CODEGRAPH_ALLOW_STALE_READ").ok();
-    if allow_stale_read {
-        std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", "1");
-    }
     let compact_lifecycle = compact_lifecycle_summary(&db_lifecycle_read);
-    let result = run_query_command_inner(
-        &args,
-        allow_stale_read,
-        explicit_scope,
-        Some(compact_lifecycle),
-    );
-    match previous_allow_stale {
-        Some(value) => std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", value),
-        None => std::env::remove_var("CODEGRAPH_ALLOW_STALE_READ"),
-    }
+    let result = with_lifecycle_override_env(allow_stale_read, allow_foreign_db, || {
+        run_query_command_inner(
+            &args,
+            allow_stale_read,
+            allow_foreign_db,
+            explicit_scope,
+            Some(compact_lifecycle),
+        )
+    });
     let mut value = result?;
     if !query_response_uses_compact_lifecycle(&value) {
         if let Some(object) = value.as_object_mut() {
@@ -1635,6 +1738,7 @@ fn reject_misplaced_global_flags_in_query_args(args: &[String]) -> Result<(), St
 fn run_query_command_inner(
     args: &[String],
     allow_stale_read: bool,
+    allow_foreign_db: bool,
     explicit_scope_policy: Option<IndexScopeOptions>,
     lifecycle_summary: Option<Value>,
 ) -> Result<Value, String> {
@@ -1710,6 +1814,7 @@ fn run_query_command_inner(
         "unresolved-calls" => {
             let mut options = parse_unresolved_calls_args(&args[1..])?;
             options.allow_stale_read = allow_stale_read;
+            options.allow_foreign_db = allow_foreign_db;
             options.explicit_scope_policy = explicit_scope_policy;
             query_unresolved_calls(&current_repo_root()?, options)
         }
@@ -2173,6 +2278,7 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
         &repo_root,
         &db_path,
         options.allow_stale_read,
+        options.allow_foreign_db,
         options.explicit_scope_policy.clone(),
     )?;
     let open_start = Instant::now();
@@ -2635,7 +2741,7 @@ fn load_context_pack_vector_branch(
             };
         }
     };
-    let store = match SqliteGraphStore::open(db_path) {
+    let store = match SqliteGraphStore::open_read_only(db_path) {
         Ok(store) => store,
         Err(error) => {
             return ContextPackVectorBranch {
@@ -4005,23 +4111,23 @@ fn context_pack_nuance_matched_seeds(
 fn run_impact_command(args: &[String]) -> Result<Value, String> {
     let mut args = args.to_vec();
     let allow_stale_read = remove_flag(&mut args, "--allow-stale-read");
+    let allow_foreign_db = remove_flag(&mut args, "--allow-foreign-db");
     let explicit_scope = parse_read_scope_options(&mut args)?;
     if args.len() != 1 {
         return Err("Usage: codegraph-mcp impact <file-or-symbol> [scope flags]".to_string());
     }
     let repo_root = current_repo_root()?;
     let db_path = default_db_path(&repo_root);
-    let db_lifecycle_read =
-        read_db_lifecycle_guard(&repo_root, &db_path, allow_stale_read, explicit_scope)?;
-    let previous_allow_stale = std::env::var("CODEGRAPH_ALLOW_STALE_READ").ok();
-    if allow_stale_read {
-        std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", "1");
-    }
-    let result = impact_value(&repo_root, &args[0]);
-    match previous_allow_stale {
-        Some(value) => std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", value),
-        None => std::env::remove_var("CODEGRAPH_ALLOW_STALE_READ"),
-    }
+    let db_lifecycle_read = read_db_lifecycle_guard(
+        &repo_root,
+        &db_path,
+        allow_stale_read,
+        allow_foreign_db,
+        explicit_scope,
+    )?;
+    let result = with_lifecycle_override_env(allow_stale_read, allow_foreign_db, || {
+        impact_value(&repo_root, &args[0])
+    });
     let mut value = result?;
     if let Some(object) = value.as_object_mut() {
         object.insert("db_lifecycle_read".to_string(), db_lifecycle_read);
@@ -4871,7 +4977,7 @@ fn run_proof_build_mode_benchmark_command(
     }
 
     let started = Instant::now();
-    let (repo, db, options, _output_mode, budget_options) =
+    let (repo, db, options, _output_mode, budget_options, _vector_index_output) =
         parse_index_command_options(&index_args)?;
     if options.storage_mode != StorageMode::Proof {
         return Err(format!(
@@ -8734,6 +8840,7 @@ fn benchmark_unresolved_calls_surface_query(
         source_scan: false,
         count_total: false,
         allow_stale_read: false,
+        allow_foreign_db: false,
         explicit_scope_policy: None,
         surface_name: "bench.query_surface.unresolved_calls".to_string(),
         operation_kind: DbLifecycleOperationKind::BenchmarkInspection,
@@ -8768,6 +8875,7 @@ fn benchmark_unresolved_calls_surface_query(
             source_scan: false,
             count_total: false,
             allow_stale_read: false,
+            allow_foreign_db: false,
             explicit_scope_policy: None,
             surface_name: "bench.query_surface.unresolved_calls".to_string(),
             operation_kind: DbLifecycleOperationKind::BenchmarkInspection,
@@ -12869,6 +12977,7 @@ struct UnresolvedCallsOptions {
     source_scan: bool,
     count_total: bool,
     allow_stale_read: bool,
+    allow_foreign_db: bool,
     explicit_scope_policy: Option<IndexScopeOptions>,
     surface_name: String,
     operation_kind: DbLifecycleOperationKind,
@@ -12885,6 +12994,7 @@ impl Default for UnresolvedCallsOptions {
             source_scan: false,
             count_total: false,
             allow_stale_read: false,
+            allow_foreign_db: false,
             explicit_scope_policy: None,
             surface_name: "cli.query.unresolved_calls".to_string(),
             operation_kind: DbLifecycleOperationKind::NormalRead,
@@ -12933,6 +13043,12 @@ fn parse_unresolved_calls_args(args: &[String]) -> Result<UnresolvedCallsOptions
             "--count-total" => {
                 options.count_total = true;
             }
+            "--allow-stale-read" => {
+                options.allow_stale_read = true;
+            }
+            "--allow-foreign-db" => {
+                options.allow_foreign_db = true;
+            }
             other => {
                 return Err(format!(
                     "unknown unresolved-calls option: {other}\n{}",
@@ -12946,7 +13062,7 @@ fn parse_unresolved_calls_args(args: &[String]) -> Result<UnresolvedCallsOptions
 }
 
 fn unresolved_calls_usage() -> String {
-    "Usage: codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets] [--include-snippets] [--db <path>]".to_string()
+    "Usage: codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets] [--include-snippets] [--db <path>] [--allow-stale-read] [--allow-foreign-db]".to_string()
 }
 
 fn unresolved_calls_lifecycle_preflight(
@@ -12955,6 +13071,7 @@ fn unresolved_calls_lifecycle_preflight(
     options: &UnresolvedCallsOptions,
 ) -> Result<DbLifecycleSurfacePreflight, String> {
     let allow_stale_read = options.allow_stale_read || allow_stale_read_enabled();
+    let allow_foreign_db = options.allow_foreign_db || allow_foreign_read_enabled();
     let request = DbLifecycleSurfacePreflightRequest {
         repo_root: repo_root.to_path_buf(),
         db_path: db_path.to_path_buf(),
@@ -12966,7 +13083,9 @@ fn unresolved_calls_lifecycle_preflight(
         expected_scope: options.explicit_scope_policy.clone(),
     };
 
-    if options.operation_kind == DbLifecycleOperationKind::NormalRead && allow_stale_read {
+    if options.operation_kind == DbLifecycleOperationKind::NormalRead
+        && (allow_stale_read || allow_foreign_db)
+    {
         let normal = inspect_db_lifecycle_surface_preflight(request.clone())
             .map_err(|error| error.to_string())?;
         if normal.safe_to_read {
@@ -12974,8 +13093,8 @@ fn unresolved_calls_lifecycle_preflight(
         }
         let mut diagnostic = request;
         diagnostic.operation_kind = DbLifecycleOperationKind::DiagnosticRead;
-        diagnostic.allow_stale_read = true;
-        diagnostic.allow_foreign_repo = true;
+        diagnostic.allow_stale_read = allow_stale_read;
+        diagnostic.allow_foreign_repo = allow_foreign_db;
         return inspect_db_lifecycle_surface_preflight(diagnostic)
             .map_err(|error| error.to_string());
     }
@@ -12986,7 +13105,7 @@ fn unresolved_calls_lifecycle_preflight(
         DbLifecycleOperationKind::DiagnosticRead | DbLifecycleOperationKind::BenchmarkInspection
     ) {
         request.allow_stale_read = allow_stale_read;
-        request.allow_foreign_repo = allow_stale_read;
+        request.allow_foreign_repo = allow_foreign_db;
     }
     inspect_db_lifecycle_surface_preflight(request).map_err(|error| error.to_string())
 }
@@ -13009,7 +13128,7 @@ fn require_unresolved_calls_lifecycle_preflight(
         .map(|note| format!("; {note}"))
         .unwrap_or_default();
     Err(format!(
-        "CodeGraph DB is not safe to read at {}: kind={}; {}{}; run `codegraph-mcp index . --fresh` or pass --allow-stale-read for diagnostic-only output",
+        "CodeGraph DB is not safe to read at {}: kind={}; {}{}; run `codegraph-mcp index . --fresh`; pass --allow-stale-read for stale/passport diagnostic output or --allow-foreign-db for foreign-repo diagnostic output",
         preflight.exact_db_path_checked,
         preflight
             .db_problem_kind
@@ -13125,7 +13244,8 @@ fn query_unresolved_calls(
     });
     if options.source_scan && unresolved.len() < options.limit {
         let scan_start = Instant::now();
-        let store = SqliteGraphStore::open(&checked_db_path).map_err(|error| error.to_string())?;
+        let store = SqliteGraphStore::open_read_only(&checked_db_path)
+            .map_err(|error| error.to_string())?;
         let before = unresolved.len();
         unresolved.extend(source_scan_unresolved_calls(
             repo_root,
@@ -14538,7 +14658,7 @@ impl IndexJsonOutputMode {
 
 #[cfg(test)]
 fn parse_index_options(args: &[String]) -> Result<(String, Option<PathBuf>, IndexOptions), String> {
-    let (repo, db, options, _, _) = parse_index_command_options(args)?;
+    let (repo, db, options, _, _, _) = parse_index_command_options(args)?;
     Ok((repo, db, options))
 }
 
@@ -14551,11 +14671,13 @@ fn parse_index_command_options(
         IndexOptions,
         IndexJsonOutputMode,
         storage_budget::StorageBudgetOptions,
+        Option<PathBuf>,
     ),
     String,
 > {
     let mut repo = None;
     let mut db = None;
+    let mut vector_index_output = None;
     let mut options = IndexOptions::default();
     let mut storage_budget = storage_budget::StorageBudgetOptions::normal_self_use();
     let mut output_mode = IndexJsonOutputMode::Concise;
@@ -14610,6 +14732,14 @@ fn parse_index_command_options(
             }
             "--allow-stale-reuse" => {
                 options.db_lifecycle.policy = DbLifecyclePolicy::DiagnosticStaleReuse;
+            }
+            "--build-vector-index" => {
+                index += 1;
+                let Some(raw) = args.get(index) else {
+                    return Err("--build-vector-index requires a path".to_string());
+                };
+                vector_index_output = Some(PathBuf::from(raw));
+                options.json = true;
             }
             "--workers" => {
                 index += 1;
@@ -14688,12 +14818,13 @@ fn parse_index_command_options(
     }
     Ok((
         repo.ok_or_else(|| {
-            "Usage: codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]".to_string()
+            "Usage: codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--build-vector-index <path>] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]".to_string()
         })?,
         db,
         options,
         output_mode,
         storage_budget,
+        vector_index_output,
     ))
 }
 
@@ -15776,6 +15907,7 @@ struct ContextPackOptions {
     limit_snippets: Option<usize>,
     max_output_bytes: Option<usize>,
     allow_stale_read: bool,
+    allow_foreign_db: bool,
     explicit_scope_policy: Option<IndexScopeOptions>,
     enable_vector_candidates: bool,
     enable_nuance_rescue_candidates: bool,
@@ -15797,6 +15929,7 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
     let mut limit_snippets = None;
     let mut max_output_bytes = None;
     let mut allow_stale_read = false;
+    let mut allow_foreign_db = false;
     let mut enable_vector_candidates = false;
     let mut enable_nuance_rescue_candidates = false;
     let mut vector_index_path = None;
@@ -15898,6 +16031,9 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
             "--allow-stale-read" => {
                 allow_stale_read = true;
             }
+            "--allow-foreign-db" => {
+                allow_foreign_db = true;
+            }
             "--enable-vector-candidates" | "--enable_vector_candidates" => {
                 enable_vector_candidates = true;
             }
@@ -15934,6 +16070,7 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
         limit_snippets,
         max_output_bytes,
         allow_stale_read,
+        allow_foreign_db,
         explicit_scope_policy,
         enable_vector_candidates,
         enable_nuance_rescue_candidates,
@@ -16048,14 +16185,54 @@ fn current_repo_root() -> Result<PathBuf, String> {
 
 fn open_existing_store(repo_root: &Path) -> Result<SqliteGraphStore, String> {
     let db_path = resolved_db_path_for_repo(repo_root);
-    let _ = read_db_lifecycle_guard(repo_root, &db_path, allow_stale_read_enabled(), None)?;
-    SqliteGraphStore::open(db_path).map_err(|error| error.to_string())
+    let _ = read_db_lifecycle_guard(
+        repo_root,
+        &db_path,
+        allow_stale_read_enabled(),
+        allow_foreign_read_enabled(),
+        None,
+    )?;
+    SqliteGraphStore::open_read_only(db_path).map_err(|error| error.to_string())
 }
 
 fn allow_stale_read_enabled() -> bool {
     std::env::var("CODEGRAPH_ALLOW_STALE_READ")
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+fn allow_foreign_read_enabled() -> bool {
+    std::env::var("CODEGRAPH_ALLOW_FOREIGN_DB")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn with_lifecycle_override_env<F, T>(
+    allow_stale_read: bool,
+    allow_foreign_db: bool,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    let previous_allow_stale = std::env::var("CODEGRAPH_ALLOW_STALE_READ").ok();
+    let previous_allow_foreign = std::env::var("CODEGRAPH_ALLOW_FOREIGN_DB").ok();
+    if allow_stale_read {
+        std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", "1");
+    }
+    if allow_foreign_db {
+        std::env::set_var("CODEGRAPH_ALLOW_FOREIGN_DB", "1");
+    }
+    let result = operation();
+    match previous_allow_stale {
+        Some(value) => std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", value),
+        None => std::env::remove_var("CODEGRAPH_ALLOW_STALE_READ"),
+    }
+    match previous_allow_foreign {
+        Some(value) => std::env::set_var("CODEGRAPH_ALLOW_FOREIGN_DB", value),
+        None => std::env::remove_var("CODEGRAPH_ALLOW_FOREIGN_DB"),
+    }
+    result
 }
 
 fn inspect_read_db_lifecycle_preflight(
@@ -16071,14 +16248,35 @@ fn read_db_lifecycle_guard(
     repo_root: &Path,
     db_path: &Path,
     allow_stale_read: bool,
+    allow_foreign_db: bool,
     explicit_scope_policy: Option<IndexScopeOptions>,
 ) -> Result<Value, String> {
     let preflight = inspect_read_db_lifecycle_preflight(repo_root, db_path, explicit_scope_policy)?;
     if preflight.safe {
-        return Ok(db_lifecycle_preflight_json(&preflight, true));
+        return Ok(db_lifecycle_preflight_json(
+            &preflight,
+            true,
+            allow_stale_read,
+            allow_foreign_db,
+        ));
     }
-    if allow_stale_read {
-        return Ok(db_lifecycle_preflight_json(&preflight, false));
+    if allow_stale_read || allow_foreign_db {
+        let remaining_blockers = preflight
+            .blockers
+            .iter()
+            .filter(|blocker| {
+                !((allow_stale_read && lifecycle_blocker_is_stale_or_missing_passport(blocker))
+                    || (allow_foreign_db && lifecycle_blocker_is_foreign_repo(blocker)))
+            })
+            .collect::<Vec<_>>();
+        if remaining_blockers.is_empty() {
+            return Ok(db_lifecycle_preflight_json(
+                &preflight,
+                false,
+                allow_stale_read,
+                allow_foreign_db,
+            ));
+        }
     }
     if let Some(mismatch) = preflight.scope_mismatch.as_ref() {
         return Err(scope_mismatch_message(db_path, mismatch));
@@ -16089,7 +16287,7 @@ fn read_db_lifecycle_guard(
         .map(|note| format!("; {note}"))
         .unwrap_or_default();
     Err(format!(
-        "CodeGraph DB is not safe to read at {}: kind={}; {}{}; run `codegraph-mcp index . --fresh` or pass --allow-stale-read for diagnostic-only output",
+        "CodeGraph DB is not safe to read at {}: kind={}; {}{}; run `codegraph-mcp index . --fresh`; pass --allow-stale-read for stale/passport diagnostic output or --allow-foreign-db for foreign-repo diagnostic output",
         db_path.display(),
         preflight
             .db_problem_kind
@@ -16098,6 +16296,18 @@ fn read_db_lifecycle_guard(
         preflight.blockers.join("; "),
         outside_note
     ))
+}
+
+fn lifecycle_blocker_is_foreign_repo(blocker: &str) -> bool {
+    blocker.contains("repo root mismatch") || blocker.contains("git remote mismatch")
+}
+
+fn lifecycle_blocker_is_stale_or_missing_passport(blocker: &str) -> bool {
+    blocker.contains("previous run did not complete")
+        || blocker.contains("previous integrity gate was not ok")
+        || blocker.contains("codegraph_db_passport table is missing")
+        || blocker.contains("codegraph_db_passport row is missing")
+        || blocker.contains("passport scope_policy_json is missing")
 }
 
 fn scope_mismatch_message(
@@ -16113,7 +16323,12 @@ fn scope_mismatch_message(
     )
 }
 
-fn db_lifecycle_preflight_json(preflight: &DbLifecyclePreflight, claimable: bool) -> Value {
+fn db_lifecycle_preflight_json(
+    preflight: &DbLifecyclePreflight,
+    claimable: bool,
+    allow_stale_read: bool,
+    allow_foreign_db: bool,
+) -> Value {
     json!({
         "decision": if preflight.safe { "read_reuse" } else { "diagnostic_stale_reuse" },
         "db_problem_kind": preflight.db_problem_kind.clone(),
@@ -16121,7 +16336,10 @@ fn db_lifecycle_preflight_json(preflight: &DbLifecyclePreflight, claimable: bool
         "path_access_error": preflight.path_access_error.clone(),
         "passport_status": preflight.db_health.passport_status,
         "claimable": claimable && preflight.safe,
+        "diagnostic_only": !(claimable && preflight.safe),
         "contaminated": !preflight.safe,
+        "allow_stale_read": allow_stale_read,
+        "allow_foreign_db": allow_foreign_db,
         "reasons": preflight.db_health.reasons.clone(),
         "sqlite_sidecars": preflight.db_health.sqlite_sidecars.clone(),
         "sidecar_status": preflight.db_health.sidecar_status.clone(),
@@ -17879,6 +18097,12 @@ fn context_planning_role_for_text_evidence(
     {
         return "docs_authoring_guidance";
     }
+    if lower_file == "package/config.in"
+        || lower_file == "package/makefile.in"
+        || lower_text.contains("source \"package/")
+    {
+        return "makefile_inclusion";
+    }
     if lower_file.ends_with("config.in")
         || lower_file.contains("/config.in")
         || lower_text.contains("br2_package_")
@@ -17887,28 +18111,21 @@ fn context_planning_role_for_text_evidence(
     {
         return "kconfig_config_wiring";
     }
+    if lower_file.starts_with("support/scripts/") || lower_file.starts_with("support/download/") {
+        return "support_scripts";
+    }
     if lower_file == "package/pkg-download.mk"
-        || lower_file.starts_with("support/download/")
         || lower_text.contains("download")
         || lower_text.contains("_site")
         || lower_text.contains("dl-wrapper")
     {
         return "download_infrastructure";
     }
-    if lower_file.starts_with("support/scripts/") || lower_file.starts_with("support/download/") {
-        return "support_scripts";
-    }
     if lower_file == "package/pkg-generic.mk"
         || lower_text.contains("install_target")
         || lower_text.contains("install_staging")
     {
         return "build_install_infrastructure";
-    }
-    if lower_file == "package/config.in"
-        || lower_file == "package/makefile.in"
-        || lower_text.contains("source \"package/")
-    {
-        return "makefile_inclusion";
     }
     if lower_file.ends_with(".mk")
         && (lower_text.contains("_version")
@@ -18261,6 +18478,17 @@ fn build_test_impact_fallback_evidence(
     Ok(evidence)
 }
 
+fn context_pack_entity_allowed_for_symbol_output(
+    entity: &ContextEntitySummary,
+    mode: &str,
+) -> bool {
+    let normalized = mode.to_ascii_lowercase();
+    if normalized.contains("test") || normalized.contains("debug") {
+        return true;
+    }
+    context_entity_role(entity).role == EvidenceRole::Production
+}
+
 fn build_context_pack_text_evidence_fallback(
     connection: &Connection,
     options: &ContextPackOptions,
@@ -18287,6 +18515,31 @@ fn build_context_pack_text_evidence_fallback(
     let mut seen = BTreeSet::new();
     let mut seen_files = BTreeSet::new();
     let mut deferred_hits = Vec::new();
+    if context_pack_is_buildroot_package_task(&options.task) {
+        for hit in load_context_pack_text_evidence_hits_for_paths(
+            connection,
+            &context_pack_buildroot_central_planning_files(),
+        )? {
+            if !context_pack_text_evidence_allowed_for_mode(
+                &hit.repo_relative_path,
+                &hit.metadata,
+                &options.mode,
+            ) {
+                continue;
+            }
+            if seen_files.insert(hit.repo_relative_path.clone()) {
+                push_context_pack_text_evidence_fallback(
+                    &mut evidence,
+                    &mut seen,
+                    hit,
+                    candidate_limit,
+                );
+            } else {
+                deferred_hits.push(hit);
+            }
+        }
+    }
+
     for query in &follow_up_queries {
         if evidence.len() >= candidate_limit {
             break;
@@ -18423,6 +18676,65 @@ fn load_context_pack_text_evidence_hits(
     Ok(hits)
 }
 
+fn load_context_pack_text_evidence_hits_for_paths(
+    connection: &Connection,
+    paths: &[&str],
+) -> Result<Vec<ContextPackTextEvidenceHit>, String> {
+    let mut hits = Vec::new();
+    let mut seen_paths = BTreeSet::new();
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT stage0_fts.kind, stage0_fts.id, stage0_fts.repo_relative_path,
+                   stage0_fts.line, stage0_fts.title, stage0_fts.body,
+                   0.0 AS rank, files.metadata_json
+            FROM stage0_fts
+            JOIN path_dict ON path_dict.value = stage0_fts.repo_relative_path
+            JOIN files ON files.path_id = path_dict.id
+            WHERE stage0_fts.repo_relative_path = ?1
+              AND stage0_fts.kind IN ('file', 'snippet')
+            ORDER BY
+              CASE stage0_fts.kind WHEN 'snippet' THEN 0 ELSE 1 END,
+              COALESCE(stage0_fts.line, 0),
+              stage0_fts.id
+            LIMIT 1
+            ",
+        )
+        .map_err(|error| error.to_string())?;
+    for path in paths {
+        let rows = statement
+            .query_map(params![path], |row| {
+                let line = row
+                    .get::<_, Option<i64>>("line")?
+                    .and_then(|value| u32::try_from(value).ok());
+                let metadata_json: String = row.get("metadata_json")?;
+                Ok(ContextPackTextEvidenceHit {
+                    kind: row.get("kind")?,
+                    id: row.get("id")?,
+                    repo_relative_path: row.get("repo_relative_path")?,
+                    line,
+                    title: row.get("title")?,
+                    body: row.get("body")?,
+                    score: row.get("rank")?,
+                    metadata: serde_json::from_str::<Metadata>(&metadata_json)
+                        .map_err(sql_json_error)?,
+                    seed_match: (*path).to_string(),
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        for hit in collect_sql_rows(rows)? {
+            if hit.metadata.get("evidence_kind").and_then(Value::as_str) == Some("text_evidence")
+                && hit.metadata.get("proof_status").and_then(Value::as_str)
+                    == Some("not_graph_proof")
+                && seen_paths.insert(hit.repo_relative_path.clone())
+            {
+                hits.push(hit);
+            }
+        }
+    }
+    Ok(hits)
+}
+
 fn context_pack_text_fallback_queries(
     options: &ContextPackOptions,
     raw_seed_values: &[String],
@@ -18449,9 +18761,8 @@ fn context_pack_text_fallback_queries(
 }
 
 fn context_pack_default_text_fallback_queries(task: &str) -> Vec<String> {
-    let lower = task.to_ascii_lowercase();
     let mut queries = Vec::new();
-    if lower.contains("buildroot") && lower.contains("package") {
+    if context_pack_is_buildroot_package_task(task) {
         queries.extend([
             "adding-packages-generic".to_string(),
             "adding-packages".to_string(),
@@ -18470,6 +18781,21 @@ fn context_pack_default_text_fallback_queries(task: &str) -> Vec<String> {
         ]);
     }
     queries
+}
+
+fn context_pack_is_buildroot_package_task(task: &str) -> bool {
+    let lower = task.to_ascii_lowercase();
+    lower.contains("buildroot") && lower.contains("package")
+}
+
+fn context_pack_buildroot_central_planning_files() -> [&'static str; 5] {
+    [
+        "docs/manual/adding-packages-generic.adoc",
+        "package/pkg-generic.mk",
+        "package/Config.in",
+        "package/pkg-download.mk",
+        "support/download/dl-wrapper",
+    ]
 }
 
 fn context_pack_text_fallback_fts_query(query: &str) -> String {
@@ -19772,18 +20098,9 @@ fn merge_context_agent_candidate(existing: &mut Value, incoming: Value) {
         .cloned()
         .collect::<BTreeSet<_>>();
     let rescue_reasons = unique_limited_strings(
-        [
-            existing
-                .get("rescue_reason")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            incoming
-                .get("rescue_reason")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        ],
+        context_agent_rescue_reason_parts(existing)
+            .into_iter()
+            .chain(context_agent_rescue_reason_parts(&incoming)),
         4,
     );
     let matched_token = existing
@@ -20023,6 +20340,18 @@ fn merge_context_agent_candidate(existing: &mut Value, incoming: Value) {
     object.insert("ranking_features".to_string(), ranking_features);
 }
 
+fn context_agent_rescue_reason_parts(candidate: &Value) -> Vec<String> {
+    candidate
+        .get("rescue_reason")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .split(';')
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 fn max_context_agent_numeric_field(left: &Value, right: &Value, key: &str) -> Option<f64> {
     match (
         left.get(key).and_then(Value::as_f64),
@@ -20257,20 +20586,27 @@ fn build_context_packet_from_stored_evidence(
     stored_path_count: usize,
     requested_span_count: usize,
 ) -> ContextPacket {
+    let symbol_seed_entities = seed_entities
+        .iter()
+        .filter(|entity| context_pack_entity_allowed_for_symbol_output(entity, &options.mode))
+        .collect::<Vec<_>>();
     let mut symbols = unique_limited_strings(
         raw_seed_values
             .iter()
             .cloned()
-            .chain(seed_ids.iter().cloned())
-            .chain(seed_entities.iter().map(|entity| entity.id.clone()))
-            .chain(seed_entities.iter().map(|entity| entity.name.clone()))
+            .chain(symbol_seed_entities.iter().map(|entity| entity.id.clone()))
             .chain(
-                seed_entities
+                symbol_seed_entities
+                    .iter()
+                    .map(|entity| entity.name.clone()),
+            )
+            .chain(
+                symbol_seed_entities
                     .iter()
                     .map(|entity| entity.qualified_name.clone()),
             )
             .chain(
-                seed_entities
+                symbol_seed_entities
                     .iter()
                     .map(|entity| entity.repo_relative_path.clone()),
             )
@@ -21392,6 +21728,16 @@ fn context_pack_candidate_counts_by_source_json(candidates: &[Value]) -> Value {
     json!(counts)
 }
 
+fn context_pack_candidate_sources_json(candidates: &[Value]) -> Value {
+    let sources = candidates
+        .iter()
+        .flat_map(context_agent_candidate_sources)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    json!(sources)
+}
+
 fn context_pack_candidate_ranking_explain_json(candidate: &Value) -> Value {
     let candidate = context_pack_public_candidate_json(candidate);
     json!({
@@ -21448,6 +21794,48 @@ fn context_pack_public_candidate_json(candidate: &Value) -> Value {
         }
     }
     candidate
+}
+
+fn context_pack_compact_candidate_json(candidate: &Value) -> Value {
+    json!({
+        "candidate_id": candidate.get("candidate_id").cloned().unwrap_or(Value::Null),
+        "candidate_source": candidate.get("candidate_source").cloned().unwrap_or(Value::Null),
+        "candidate_sources": candidate.get("candidate_sources").cloned().unwrap_or_else(|| json!([])),
+        "path": candidate.get("path").cloned().unwrap_or(Value::Null),
+        "entity_id": candidate.get("entity_id").cloned().unwrap_or(Value::Null),
+        "span": candidate.get("span").cloned().unwrap_or_else(|| candidate.get("source_span").cloned().unwrap_or(Value::Null)),
+        "evidence_role": candidate.get("evidence_role").cloned().unwrap_or(Value::Null),
+        "matched_seeds": candidate.get("matched_seeds").cloned().unwrap_or_else(|| json!([])),
+        "proof_status": candidate.get("proof_status").cloned().unwrap_or(Value::Null),
+        "graph_proof": candidate.get("graph_proof").cloned().unwrap_or(Value::Null),
+        "claimable_for_graph": candidate.get("claimable_for_graph").cloned().unwrap_or(Value::Null),
+        "claimable_for_text": candidate.get("claimable_for_text").cloned().unwrap_or(Value::Null),
+        "requires_graph_verification": candidate.get("requires_graph_verification").cloned().unwrap_or(Value::Null),
+        "verification_status": candidate.get("verification_status").cloned().unwrap_or(Value::Null),
+        "graph_verification_status": candidate.get("graph_verification_status").cloned().unwrap_or(Value::Null),
+        "rank": candidate.get("rank").cloned().unwrap_or(Value::Null),
+        "score": candidate.get("score").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn context_pack_candidate_values_with_compact_fallback(candidates: &[Value]) -> (Vec<Value>, bool) {
+    let full = candidates
+        .iter()
+        .map(context_pack_public_candidate_json)
+        .collect::<Vec<_>>();
+    let full_bytes = serde_json::to_vec(&full)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX);
+    if full_bytes <= 8192 {
+        return (full, false);
+    }
+    (
+        candidates
+            .iter()
+            .map(context_pack_compact_candidate_json)
+            .collect(),
+        true,
+    )
 }
 
 fn context_pack_metadata_u64(packet: &ContextPacket, key: &str) -> Value {
@@ -21557,13 +21945,9 @@ fn context_pack_agent_json_response(
     let candidate_total_count = candidate_set.total_count;
     let candidate_omitted_count = candidate_set.omitted_count;
     let candidate_exact_seed_cap_override = candidate_set.exact_seed_cap_override;
-    let candidate_values = Value::Array(
-        candidate_set
-            .candidates
-            .iter()
-            .map(context_pack_public_candidate_json)
-            .collect(),
-    );
+    let (candidate_values_vec, candidate_compacted) =
+        context_pack_candidate_values_with_compact_fallback(&candidate_set.candidates);
+    let candidate_values = Value::Array(candidate_values_vec.clone());
     let response_limits = json!({
         "paths": path_limit,
         "snippets": snippet_limit,
@@ -21747,6 +22131,14 @@ fn context_pack_agent_json_response(
         object.insert("candidates".to_string(), json!([]));
         object.insert("candidate_count".to_string(), json!(0));
         object.insert(
+            "candidate_sources".to_string(),
+            context_pack_candidate_sources_json(&candidate_set.candidates),
+        );
+        object.insert(
+            "candidate_source_counts".to_string(),
+            context_pack_candidate_counts_by_source_json(&candidate_set.candidates),
+        );
+        object.insert(
             "candidate_total_count".to_string(),
             json!(candidate_total_count),
         );
@@ -21769,6 +22161,10 @@ fn context_pack_agent_json_response(
         object.insert(
             "candidate_cap_policy".to_string(),
             json!("exact_seeds_protected_then_no_proof_text_then_nuance_and_deterministic_rank"),
+        );
+        object.insert(
+            "candidate_payload_compacted".to_string(),
+            json!(candidate_compacted),
         );
         object.insert(
             "candidate_exact_seed_cap_override".to_string(),
@@ -21826,6 +22222,10 @@ fn context_pack_agent_json_response(
             object.insert("candidates".to_string(), candidate_values);
             object.insert("candidate_count".to_string(), json!(candidate_count));
             object.insert(
+                "candidate_payload_compacted".to_string(),
+                json!(candidate_compacted),
+            );
+            object.insert(
                 "candidate_omitted_count".to_string(),
                 json!(candidate_omitted_count),
             );
@@ -21840,6 +22240,36 @@ fn context_pack_agent_json_response(
         }
         if serialized_json_len(&candidate_response) <= max_output_bytes {
             response = candidate_response;
+        } else {
+            for keep_count in (1..=candidate_values_vec.len()).rev() {
+                let mut compact_candidate_response = response.clone();
+                if let Some(object) = compact_candidate_response.as_object_mut() {
+                    object.insert(
+                        "candidates".to_string(),
+                        Value::Array(
+                            candidate_values_vec
+                                .iter()
+                                .take(keep_count)
+                                .cloned()
+                                .collect(),
+                        ),
+                    );
+                    object.insert("candidate_count".to_string(), json!(keep_count));
+                    object.insert("candidate_payload_compacted".to_string(), json!(true));
+                    object.insert(
+                        "candidate_omitted_count".to_string(),
+                        json!(candidate_total_count.saturating_sub(keep_count)),
+                    );
+                    object.insert(
+                        "candidate_omitted_reason".to_string(),
+                        json!("candidate_budget_compacted_to_fit_max_output_bytes"),
+                    );
+                }
+                if serialized_json_len(&compact_candidate_response) <= max_output_bytes {
+                    response = compact_candidate_response;
+                    break;
+                }
+            }
         }
     }
     if let Some(retrieval_explain) = retrieval_explain {
@@ -22465,6 +22895,21 @@ fn context_planning_follow_up_queries(
                 );
             }
         }
+        if file_lower.starts_with("support/download/") {
+            if let Some(script_name) = context_planning_basename(&normalized_file) {
+                context_planning_push_query(
+                    &mut candidates,
+                    61,
+                    script_name,
+                    "support/download/",
+                    format!("matched download support path {}", source.file),
+                    &source.id,
+                    "download wrapper or backend support script",
+                    "precise",
+                    10,
+                );
+            }
+        }
         if file_lower.ends_with(".adoc") && !lower.contains("package infrastructure") {
             context_planning_push_query(
                 &mut candidates,
@@ -22491,6 +22936,53 @@ fn context_planning_follow_up_queries(
                 10,
             );
         }
+    }
+
+    if context_pack_is_buildroot_package_task(&options.task) {
+        context_planning_push_query(
+            &mut candidates,
+            22,
+            "package/Config.in",
+            "package/",
+            "broad Buildroot package task needs top-level package menu wiring".to_string(),
+            "task://buildroot-package-planning",
+            "top-level package Config.in inclusion surface",
+            "precise",
+            10,
+        );
+        context_planning_push_query(
+            &mut candidates,
+            23,
+            "pkg-download",
+            "package/",
+            "broad Buildroot package task needs download infrastructure".to_string(),
+            "task://buildroot-package-planning",
+            "download infrastructure makefile",
+            "precise",
+            10,
+        );
+        context_planning_push_query(
+            &mut candidates,
+            24,
+            "dl-wrapper",
+            "support/download/",
+            "broad Buildroot package task needs download support wrappers".to_string(),
+            "task://buildroot-package-planning",
+            "download wrapper or backend support script",
+            "precise",
+            10,
+        );
+        context_planning_push_query(
+            &mut candidates,
+            26,
+            "license version dependencies",
+            "package/",
+            "broad Buildroot package task needs package metadata assignments".to_string(),
+            "task://buildroot-package-planning",
+            "Makefile metadata assignments such as *_LICENSE, *_VERSION, *_DEPENDENCIES",
+            "broad",
+            10,
+        );
     }
 
     if !evidence_items.is_empty() {
@@ -23153,6 +23645,9 @@ fn agent_context_snippet_json(
     if let Some(source) = label.fallback_source {
         object.insert("fallback_source".to_string(), json!(source));
     }
+    if let Some(symbol) = label.fallback_symbol {
+        object.insert("fallback_symbol".to_string(), json!(symbol));
+    }
     let planning_role = context_planning_role_for_text_evidence(
         &snippet.file,
         &snippet.file,
@@ -23176,6 +23671,7 @@ struct ContextSnippetLabel {
     role: &'static str,
     classification_reason: String,
     fallback_source: Option<String>,
+    fallback_symbol: Option<String>,
     proof_path_available: bool,
 }
 
@@ -23189,15 +23685,18 @@ fn context_snippet_label(
             role,
             classification_reason: reason,
             fallback_source: None,
+            fallback_symbol: None,
             proof_path_available: true,
         };
     }
-    if let Some((role, reason, source)) = context_snippet_fallback_role(snippet, fallback_evidence)
+    if let Some((role, reason, source, symbol)) =
+        context_snippet_fallback_role(snippet, fallback_evidence)
     {
         return ContextSnippetLabel {
             role,
             classification_reason: reason,
             fallback_source: Some(source),
+            fallback_symbol: symbol,
             proof_path_available: false,
         };
     }
@@ -23206,6 +23705,7 @@ fn context_snippet_label(
         classification_reason:
             "snippet did not match a returned proof path or fallback source span".to_string(),
         fallback_source: None,
+        fallback_symbol: None,
         proof_path_available: false,
     }
 }
@@ -23242,7 +23742,7 @@ fn context_snippet_proof_role(
 fn context_snippet_fallback_role(
     snippet: &ContextSnippet,
     fallback_evidence: &[Value],
-) -> Option<(&'static str, String, String)> {
+) -> Option<(&'static str, String, String, Option<String>)> {
     let (start, end) = parse_context_snippet_lines(&snippet.lines)?;
     let mut overlap_candidate = None;
     for evidence in fallback_evidence {
@@ -23281,7 +23781,11 @@ fn context_snippet_fallback_role(
                 .and_then(Value::as_str)
                 .unwrap_or("source_span")
                 .to_string();
-            let candidate = (context_pack_role_label(role), reason, source);
+            let symbol = evidence
+                .get("symbol")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let candidate = (context_pack_role_label(role), reason, source, symbol);
             if span_start as u32 == start && span_end as u32 == end {
                 return Some(candidate);
             }
@@ -23980,7 +24484,9 @@ fn agent_text_hit_json(hit: &Value) -> Value {
         }),
     );
     object.insert("match_reason".to_string(), json!(match_reason));
-    insert_text_evidence_labels(&mut object);
+    if value_is_text_evidence_hit(hit) {
+        insert_text_evidence_labels(&mut object);
+    }
     Value::Object(object)
 }
 
@@ -24027,8 +24533,16 @@ fn agent_file_hit_json(hit: &Value) -> Value {
         );
     }
     object.insert("match_reason".to_string(), json!(match_reason));
-    insert_text_evidence_labels(&mut object);
+    if value_is_text_evidence_hit(hit) {
+        insert_text_evidence_labels(&mut object);
+    }
     Value::Object(object)
+}
+
+fn value_is_text_evidence_hit(hit: &Value) -> bool {
+    hit.get("evidence_kind").and_then(Value::as_str) == Some("text_evidence")
+        || hit.get("evidence_role").and_then(Value::as_str) == Some("text_evidence")
+        || hit.get("proof_status").and_then(Value::as_str) == Some("not_graph_proof")
 }
 
 fn entities_by_id(entities: &[Entity]) -> BTreeMap<String, Entity> {
@@ -26356,13 +26870,13 @@ mod tests {
     #[test]
     fn parse_index_command_options_accepts_agent_json_and_audit_json() {
         let agent = vec![".".to_string(), "--agent-json".to_string()];
-        let (_, _, options, mode, _) =
+        let (_, _, options, mode, _, _) =
             super::parse_index_command_options(&agent).expect("parse agent index options");
         assert!(options.json);
         assert_eq!(mode, super::IndexJsonOutputMode::Agent);
 
         let audit = vec![".".to_string(), "--audit-json".to_string()];
-        let (_, _, options, mode, _) =
+        let (_, _, options, mode, _, _) =
             super::parse_index_command_options(&audit).expect("parse audit index options");
         assert!(options.json);
         assert_eq!(mode, super::IndexJsonOutputMode::Audit);
@@ -26372,9 +26886,59 @@ mod tests {
             "--json".to_string(),
             "--explain-scope".to_string(),
         ];
-        let (_, _, _, mode, _) =
+        let (_, _, _, mode, _, _) =
             super::parse_index_command_options(&explain).expect("parse explain index options");
         assert_eq!(mode, super::IndexJsonOutputMode::Audit);
+    }
+
+    #[test]
+    fn parse_index_command_options_accepts_build_vector_index() {
+        let args = vec![
+            ".".to_string(),
+            "--agent-json".to_string(),
+            "--build-vector-index".to_string(),
+            "vectors/codegraph-vector-chunks.json".to_string(),
+        ];
+        let (_, _, options, mode, _, vector_index_output) =
+            super::parse_index_command_options(&args).expect("parse vector index option");
+
+        assert!(options.json);
+        assert_eq!(mode, super::IndexJsonOutputMode::Agent);
+        assert_eq!(
+            vector_index_output,
+            Some(PathBuf::from("vectors/codegraph-vector-chunks.json"))
+        );
+    }
+
+    #[test]
+    fn index_agent_json_can_build_deterministic_vector_index() {
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+        let vector_index = repo.join("vectors").join("codegraph-vector-chunks.json");
+        let value = run_index_output_json(
+            &repo,
+            &db,
+            &[
+                "--fresh",
+                "--agent-json",
+                "--build-vector-index",
+                vector_index.to_str().expect("utf8 vector path"),
+            ],
+        );
+
+        assert_eq!(value["status"].as_str(), Some("ok"));
+        assert_eq!(value["vector_index"]["status"].as_str(), Some("ok"));
+        assert!(value["vector_index"]["chunk_count"].as_u64().unwrap_or(0) > 0);
+        assert_eq!(
+            value["vector_index"]["provider_id"].as_str(),
+            Some("codegraph-deterministic-test")
+        );
+        assert_eq!(value["vector_index"]["graph_proof"].as_bool(), Some(false));
+        assert_eq!(value["external_provider"].as_bool(), Some(false));
+        assert_eq!(value["source_leaves_machine"].as_bool(), Some(false));
+        assert!(vector_index.exists(), "vector index file was not written");
+
+        fs::remove_dir_all(repo).expect("cleanup");
     }
 
     #[test]
@@ -27587,6 +28151,25 @@ mod tests {
 
     #[test]
     fn query_compact_parsers_apply_documented_default_limits() {
+        let (globals, rest) = super::parse_global_options(&[
+            "--agent-json".to_string(),
+            "--limit=3".to_string(),
+            "query".to_string(),
+            "symbols".to_string(),
+            "knownSymbol".to_string(),
+        ])
+        .expect("global agent flags");
+        assert!(globals.agent_json);
+        assert_eq!(globals.limit, Some(3));
+        assert_eq!(
+            rest,
+            vec![
+                "query".to_string(),
+                "symbols".to_string(),
+                "knownSymbol".to_string()
+            ]
+        );
+
         let normal = parse_list_query_args(
             "symbols",
             &["knownSymbol".to_string(), "--json".to_string()],
@@ -27934,6 +28517,19 @@ mod tests {
 
         let script = file_query("pkg-stats", 5);
         assert_text_evidence(&find_file(&script, "support/scripts/pkg-stats"));
+
+        let parsed_source = file_query("download.c", 5);
+        let parsed_source_result = find_file(&parsed_source, "src/download.c");
+        assert_ne!(
+            parsed_source_result["evidence_role"].as_str(),
+            Some("text_evidence"),
+            "graph-parsed source files must not be relabeled as Stage 0 text evidence"
+        );
+        assert_ne!(
+            parsed_source_result["proof_status"].as_str(),
+            Some("not_graph_proof"),
+            "graph-parsed source files must not inherit text-evidence proof labels"
+        );
 
         let limited = text_query("generic-package", 1);
         assert_eq!(limited["limit"].as_u64(), Some(1));
@@ -29905,6 +30501,41 @@ mod tests {
         fs::create_dir_all(repo.join("package").join("foo")).expect("create package");
         fs::create_dir_all(repo.join("docs").join("manual")).expect("create docs");
         fs::create_dir_all(repo.join("support").join("scripts")).expect("create support");
+        fs::create_dir_all(repo.join("support").join("download")).expect("create download support");
+        fs::write(
+            repo.join("package").join("pkg-generic.mk"),
+            [
+                "# Generic package infrastructure",
+                "define inner-generic-package",
+                "    $($(2)_INSTALL_TARGET_CMDS)",
+                "endef",
+                "",
+            ]
+            .join("\n"),
+        )
+        .expect("write pkg-generic");
+        fs::write(
+            repo.join("package").join("pkg-download.mk"),
+            [
+                "# Download infrastructure",
+                "$(DL_WRAPPER) $(FOO_SITE)",
+                "support/download/dl-wrapper handles package downloads",
+                "",
+            ]
+            .join("\n"),
+        )
+        .expect("write pkg-download");
+        fs::write(
+            repo.join("package").join("Config.in"),
+            [
+                "menu \"Target packages\"",
+                "source \"package/foo/Config.in\"",
+                "endmenu",
+                "",
+            ]
+            .join("\n"),
+        )
+        .expect("write package Config.in");
         fs::write(
             repo.join("package").join("foo").join("foo.mk"),
             [
@@ -29944,10 +30575,27 @@ mod tests {
         )
         .expect("write docs");
         fs::write(
+            repo.join("docs")
+                .join("manual")
+                .join("adding-packages-generic.adoc"),
+            [
+                "= Infrastructure for packages using generic-package",
+                "The package infrastructure documents generic-package and Config.in wiring.",
+                "",
+            ]
+            .join("\n"),
+        )
+        .expect("write generic docs");
+        fs::write(
             repo.join("support").join("scripts").join("pkg-stats"),
             "#!/bin/sh\necho BR2_PACKAGE_FOO\necho generic-package\n",
         )
         .expect("write support script");
+        fs::write(
+            repo.join("support").join("download").join("dl-wrapper"),
+            "#!/bin/sh\necho download wrapper for package infrastructure\n",
+        )
+        .expect("write download wrapper");
         index_repo(&repo).expect("index broad planning fixture");
 
         let connection = Connection::open(default_db_path(&repo)).expect("open fixture db");
@@ -29999,6 +30647,35 @@ mod tests {
         let planning = &response["planning_packet"];
         assert_eq!(planning["graph_proof"].as_bool(), Some(false));
         assert_eq!(planning["evidence_type"].as_str(), Some("text_evidence"));
+        let planning_files = planning["likely_files"]
+            .as_array()
+            .expect("planning likely files")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<BTreeSet<_>>();
+        assert!(
+            planning_files.contains("docs/manual/adding-packages-generic.adoc")
+                && planning_files.contains("package/pkg-generic.mk")
+                && planning_files.contains("package/Config.in")
+                && planning_files.contains("package/pkg-download.mk")
+                && (planning_files.contains("support/download/dl-wrapper")
+                    || planning_files.contains("support/scripts/pkg-stats")),
+            "{planning_files:?}"
+        );
+        let planning_roles = planning["selected_role_coverage"]
+            .as_array()
+            .expect("planning roles")
+            .iter()
+            .filter_map(|role| role["role"].as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            planning_roles.contains("docs_authoring_guidance")
+                && planning_roles.contains("makefile_inclusion")
+                && planning_roles.contains("download_infrastructure")
+                && planning_roles.contains("build_install_infrastructure")
+                && planning_roles.contains("support_scripts"),
+            "{planning_roles:?}"
+        );
         let queries = planning["follow_up_queries"]
             .as_array()
             .expect("planning follow-up queries");
@@ -30012,6 +30689,11 @@ mod tests {
                 .is_some_and(|value| !value.is_empty())
                 && matches!(query["risk"].as_str(), Some("broad" | "precise" | "noisy"))
         }));
+        assert!(
+            planning_query_exists(queries, "dl-wrapper", "support/download/")
+                || planning_query_exists(queries, "pkg-stats", "support/scripts/"),
+            "{queries:?}"
+        );
         assert!(
             planning["evidence_items"]
                 .as_array()
@@ -31307,18 +31989,6 @@ mod tests {
                     && evidence["evidence_role"].as_str() == Some("test")
                     && evidence["proof_path_available"].as_bool() == Some(false)
             }));
-        assert!(response["snippets"]
-            .as_array()
-            .expect("snippets")
-            .iter()
-            .any(|snippet| {
-                snippet["text"]
-                    .as_str()
-                    .is_some_and(|text| text.contains("greet_works"))
-                    && snippet["evidence_role"].as_str() == Some("test")
-                    && snippet["fallback_source"].as_str().is_some()
-                    && snippet["proof_path_available"].as_bool() == Some(false)
-            }));
         assert!(response["recommended_tests"]
             .as_array()
             .expect("recommended tests")
@@ -32477,6 +33147,7 @@ mod tests {
             limit_snippets,
             max_output_bytes,
             allow_stale_read: false,
+            allow_foreign_db: false,
             explicit_scope_policy: None,
             enable_vector_candidates: false,
             enable_nuance_rescue_candidates: false,

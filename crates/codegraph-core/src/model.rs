@@ -646,6 +646,7 @@ pub enum RetrievalCandidateSource {
     TextEvidence,
     LexicalFts,
     SymbolLookup,
+    #[serde(rename = "binary_vector", alias = "vector_binary")]
     VectorBinary,
     VectorRerank,
     VectorSemantic,

@@ -8369,7 +8369,7 @@ mod tests {
             .insert("vector_semantic".to_string(), 1);
         candidate_telemetry
             .candidate_count_by_source
-            .insert("vector_binary".to_string(), 1);
+            .insert("binary_vector".to_string(), 1);
         candidate_telemetry
             .candidate_count_by_source
             .insert("nuance_rescue".to_string(), 1);
