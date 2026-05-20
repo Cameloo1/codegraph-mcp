@@ -61,6 +61,8 @@ exactness labels, source spans, provenance, and stored path evidence, not from
 
 ## Quickstart
 
+<img src="docs/assets/readme/codegraph_terminal.svg" alt="codegraph-mcp terminal quickstart" width="100%" />
+
 Build:
 
 ```bash
