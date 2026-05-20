@@ -118,6 +118,10 @@ codegraph-competitors/
 
 # Internal planning/status docs not intended for the public repo
 /MVP.md
+/MVP_2.md
+/MVP_2-new.md
+/MVP_3.md
+/MVP_4.md
 /TODO_PHASES.md
 /docs/mvp-acceptance.md
 /reports/audit/AUDIT_STATUS*.md

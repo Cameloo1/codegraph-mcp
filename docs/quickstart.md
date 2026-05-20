@@ -38,6 +38,30 @@ codegraph-mcp context-pack --task "Trace profileRoute auth and mutation impact" 
 The CLI returns JSON with graph/source evidence, source spans, exactness, and
 confidence labels.
 
+For a coding-agent loop, use the release binary, an explicit DB path, and
+bounded agent JSON:
+
+```powershell
+cargo build --release --bin codegraph-mcp
+codegraph-mcp --repo <repo> --db <agent-db> index <repo> --json
+codegraph-mcp --repo <repo> --db <agent-db> query symbols profileRoute `
+  --limit 5 --agent-json
+codegraph-mcp --repo <repo> --db <agent-db> context-pack `
+  --task "Trace profileRoute auth and mutation impact" `
+  --seed profileRoute `
+  --mode production `
+  --limit-paths 5 `
+  --limit-snippets 5 `
+  --agent-json
+```
+
+Use `--mode test-impact --agent-json` when the task intentionally needs
+test/mock evidence. Production context excludes test/mock/mixed/unknown
+evidence by default.
+
+Optional vector and nuance-rescue lanes can improve candidate recall for hard
+tasks, but they remain candidates until graph/source verification succeeds.
+
 ## Serve MCP
 
 ```powershell

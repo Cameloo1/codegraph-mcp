@@ -85,10 +85,21 @@ When returning context or proof evidence, responses include:
 - `source_spans` when available
 - `classification_reason` when the role is inferred, fallback-derived, mixed,
   unknown, test, mock, or otherwise non-obvious
+- candidate provenance fields such as `candidate_source`, `candidate_sources`,
+  and `candidate_source_counts` where the surface returns retrieval candidates
 
 Valid evidence roles are `production`, `test`, `mock`, `mixed`, and `unknown`.
 Default production context must not silently treat `test`, `mock`, `mixed`, or
 `unknown` evidence as production proof.
+
+Candidate sources such as exact seeds, text evidence, lexical search, vector
+semantic recall, binary-vector recall, nuance rescue, graph-neighborhood
+expansion, PathEvidence, and fallback text evidence are not graph proof by
+themselves. Context-pack output should use `no_proof_path_found` when it
+returns bounded source-text fallback without a verified graph path.
+
+Planning fields such as `follow_up_queries` are bounded query hints. They are
+not shell-ready commands and do not imply internal command execution.
 
 ## Status, Warnings, Errors
 

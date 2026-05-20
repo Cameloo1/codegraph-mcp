@@ -100,6 +100,43 @@ symbol matches but no proof paths/snippets. That is not a green or red product
 claim; use direct document inspection for the content pass and report the
 missing packet evidence honestly.
 
+If `context-pack --agent-json` returns `no_proof_path_found` with fallback
+snippets, that is useful source-text evidence, not typed graph proof. Inspect
+the cited files/spans, keep the graph relation unknown, and rerun with a more
+specific seed or `--mode test-impact` when the task is test-oriented.
+
+Planning packets may include `follow_up_queries`. Treat them as bounded query
+hints for the next inspection step, not as shell-ready commands.
+
+## Vector Or Nuance Candidate Output Looks Unproven
+
+Vector, binary-vector, and nuance-rescue candidates are recall aids. They are
+expected to remain `graph_proof=false` until graph/source verification finds a
+proof path.
+
+For vector candidates, build and pass a matching local vector index:
+
+```powershell
+codegraph-mcp --repo <repo> --db <agent-db> index <repo> `
+  --json `
+  --build-vector-index <agent-vector-index>
+
+codegraph-mcp --repo <repo> --db <agent-db> context-pack `
+  --task "..." `
+  --agent-json `
+  --enable-vector-candidates `
+  --vector-index <agent-vector-index>
+```
+
+If the vector index is missing, stale, from another DB passport, or built with
+different provider metadata, rebuild it rather than treating the diagnostic as
+proof.
+
+Use `--enable-nuance-rescue-candidates` when the task depends on rare
+identifiers, short symbols, config keys, route literals, test names, or
+no-extension support scripts. Nuance rescue still cannot prove graph
+relations by itself.
+
 ## MCP Tool Input Error
 
 Call `tools/list` through the MCP client and match the tool schema. Invalid

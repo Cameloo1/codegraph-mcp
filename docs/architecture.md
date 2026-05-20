@@ -22,6 +22,23 @@ Core rule:
 vectors suggest; graph verifies; packet proves
 ```
 
+Current runtime shape:
+
+```text
+task/query
+  -> lifecycle preflight
+  -> prompt intent + exact seeds
+  -> Stage 0 text evidence and lexical candidates
+  -> optional vector / binary / nuance-rescue candidates
+  -> graph-neighborhood and PathEvidence candidates
+  -> union, dedup, rank
+  -> bounded graph/source verification
+  -> compact packet or no-proof source-text fallback
+```
+
+The candidate merge preserves source labels, matched seeds, evidence roles,
+proof status, and candidate provenance. It does not prove anything by itself.
+
 ## Current Evidence Boundary
 
 The current public evidence is in the stable report summaries, not in raw run
@@ -59,9 +76,11 @@ artifacts are evidence inputs, not public architecture claims.
 4. `codegraph-query` verifies edges and relation paths over exact graph facts,
    extracts Stage 0 prompt seeds, converts paths into PathEvidence, derives
    explainable closure edges, builds graph-only context packets, orchestrates
-   the integrated runtime funnel while preserving exact seeds, and applies a
-   deterministic Bayesian/logistic ranker with uncertainty metadata after graph
-   verification. It also owns the ranked `SymbolSearchIndex` used by the CLI.
+   the integrated runtime funnel while preserving exact seeds, handles
+   candidate provenance for exact/text/lexical/vector/binary/nuance/graph/path
+   lanes, and applies deterministic ranking with uncertainty metadata after
+   graph verification. It also owns the ranked `SymbolSearchIndex` used by the
+   CLI.
 5. `codegraph-vector` implements the Stage 1 local binary-vector sieve and the
    Stage 2 compressed rerank interface with deterministic local reranking,
    int8/PQ/Matryoshka placeholder vectors, and optional backend stubs.
@@ -109,8 +128,21 @@ verification, LSP memory-buffer overlays, or learned graph priors should remain
 evidence-gated additions. They should not weaken the runtime contract that
 vectors suggest, the graph verifies, and source spans support final context.
 
+Stage 0 text evidence is part of the current runtime for scoped non-parser
+planning files such as Makefiles, Kconfig/Config.in, docs, and support scripts.
+It is source-text evidence only, not typed graph proof.
+
+Vector, binary, and nuance-rescue lanes are opt-in or bounded candidate recall
+surfaces. They can route attention, but graph/source verification still decides
+whether a packet is proof, fallback text evidence, or unknown.
+
 ## Agent Workflow
 
 The product is designed for a single linear coding-agent workflow. Internal
 Rust code may use deterministic parallelism for indexing and query execution,
 but the exposed context contract should remain inspectable and easy to audit.
+
+Agent-facing packets should be compact by default and may include bounded
+planning data such as source roles, risks, validation hints, and
+`follow_up_queries`. Those fields are meant to guide the next inspection step;
+they are not shell commands and are not automatic tool execution.

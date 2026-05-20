@@ -18,14 +18,16 @@ error to stderr on failure.
 Global flags are accepted before the command name:
 
 ```text
---repo <path>  --db <path>  --json  --no-color  --verbose  --quiet  --profile
+--repo <path>  --db <path>  --json  --agent-json  --limit <n>
+--no-color  --verbose  --quiet  --profile
 ```
 
 `--repo` sets the working repository, `--db` overrides
 `CODEGRAPH_DB_PATH`, and global `--profile` enables index profiling for the
-`index` command. For routine agent use, prefer a release-binary agent DB
-outside the source tree instead of reusing temporary development or benchmark
-DBs.
+`index` command. Global `--agent-json` and `--limit` are forwarded only to
+agent-use query/context-pack surfaces where the command supports them. For
+routine agent use, prefer a release-binary agent DB outside the source tree
+instead of reusing temporary development or benchmark DBs.
 
 Command-local flags remain after the command. Ambiguous global flags after
 query subcommands return targeted corrections instead of becoming query text.
@@ -70,7 +72,7 @@ payloads unless one of the explicit audit/scope flags is supplied.
 Detects repo tooling, creates `.codegraph/`, and can install Codex config,
 `AGENTS.md`, skill templates, hook templates, and an initial index.
 
-`index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json|--agent-json|--concise|--audit-json] [--verbose]`
+`index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--build-vector-index <path>] [--profile] [--json|--agent-json|--concise|--audit-json] [--verbose]`
 
 Indexes supported language frontends into `.codegraph/codegraph.sqlite`.
 Unchanged files are skipped by content hash. Changed files are parsed and
@@ -79,6 +81,11 @@ single batched SQLite transaction. `--profile --json` includes discovery,
 parse, extraction, semantic resolver, DB write, FTS/search index, signature,
 total wall time, throughput, worker count, unchanged skip count, and memory
 when measurable.
+
+`--build-vector-index <path>` writes an optional deterministic local vector
+chunk index for later candidate recall. The vector index is lifecycle-bound to
+the DB passport, provider metadata, scope, and extraction version. It is a
+candidate source only; it does not make vector results graph proof.
 
 DB lifecycle flags:
 
@@ -89,6 +96,10 @@ DB lifecycle flags:
 - `--fail-on-db-problem` fails instead of safe-auto rebuilding.
 - `--allow-stale-reuse` is diagnostic only; output must be labeled
   contaminated and not claimable.
+- Query, context, impact, and unresolved-call read paths also expose explicit
+  diagnostic read flags where supported: `--allow-stale-read` for stale or
+  passport diagnostic output, and `--allow-foreign-db` for foreign-repo
+  diagnostic output. These are not normal agent-use flags.
 
 Scope flags include `--include-ignored`, `--include <pattern>`,
 `--exclude <pattern>`, `--no-default-excludes`,
@@ -158,15 +169,33 @@ Runs exact graph path tracing with source spans and PathEvidence.
 Returns blast-radius sections for calls, mutations/dataflow, DB/schema,
 API/auth/security, events, and tests.
 
-`context-pack --task <task> [--budget <tokens>] [--mode <production|test-impact|debug|impact>] [--seed <symbol>] [--stage0-candidate <id>] [--agent-json|--concise] [--limit-paths <n>] [--limit-snippets <n>] [--max-output-bytes <n>]`
+`context-pack --task <task> [--budget <tokens>] [--mode <production|test-impact|debug|impact>] [--seed <symbol>] [--stage0-candidate <id>] [--enable-vector-candidates] [--vector-index <path>] [--enable-nuance-rescue-candidates] [--agent-json|--concise|--explain|--audit-json] [--limit-paths <n>] [--limit-snippets <n>] [--max-output-bytes <n>]`
 
 Builds a compact proof-oriented context packet from verified graph paths and
 source snippets.
+
+Optional candidate lanes:
+
+- `--enable-vector-candidates --vector-index <path>` loads a matching vector
+  chunk index built by `index --build-vector-index`.
+- `--enable-nuance-rescue-candidates` enables deterministic rare-token,
+  identifier, path/title, config, test-name, and no-extension-script candidate
+  rescue.
+
+These lanes add candidates to the union/ranking step. They remain
+`graph_proof=false` until graph/source verification finds a proof path.
+`--explain` exposes bounded funnel diagnostics; default agent JSON stays
+compact.
 
 Production mode excludes test, mock, mixed, and unknown evidence by default.
 `test-impact` mode intentionally includes test/mock evidence and labels it.
 Inline Rust `#[cfg(test)] mod tests` and `#[test]` functions are classified as
 test evidence even when they live in `src/lib.rs`.
+
+When no graph proof path is found, context-pack may still return bounded
+source-text fallback evidence labeled `no_proof_path_found`. Planning packets
+may include `follow_up_queries`; these are bounded query hints, not shell-ready
+commands and not internally executed `rg` probes.
 
 Read paths run the DB passport/preflight guard. If the configured DB is from a
 different repo, stale scope, incompatible storage mode, failed run, corrupt

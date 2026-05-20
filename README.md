@@ -108,6 +108,12 @@ Use `context-pack --mode test-impact --agent-json` when the agent explicitly
 needs test/mock evidence. Production context excludes test/mock/mixed/unknown
 evidence by default.
 
+For harder recall tasks, `index --build-vector-index <path>`,
+`context-pack --enable-vector-candidates --vector-index <path>`, and
+`context-pack --enable-nuance-rescue-candidates` can add candidate lanes. These
+lanes route attention; graph/source verification still decides what becomes
+proof.
+
 For long-lived agent use, keep the agent-facing index separate from temporary
 benchmark and development databases. See
 [docs/agent-use.md](docs/agent-use.md) and

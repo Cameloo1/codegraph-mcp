@@ -2016,6 +2016,20 @@ fn index_status_and_query_commands_work_on_fixture_repo() {
     );
     assert!(status["db_size_bytes"].as_u64().unwrap_or_default() > 0);
     assert!(status["source_spans"].as_u64().unwrap_or_default() > 0);
+    assert_eq!(status["relation_facts"], status["edges"]);
+    assert_eq!(status["source_span_facts"], status["source_spans"]);
+    assert_eq!(
+        status["release_reported_relation_facts"],
+        status["relation_facts"]
+    );
+    assert_eq!(
+        status["release_reported_source_span_facts"],
+        status["source_span_facts"]
+    );
+    assert_eq!(
+        status["metric_label_notes"]["edges"].as_str(),
+        Some("Deprecated compatibility alias for relation_facts.")
+    );
     assert!(!status["storage_accounting"]
         .as_array()
         .expect("storage accounting")

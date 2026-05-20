@@ -39,6 +39,33 @@ The release binary and separate DB keep routine agent reads away from
 development, benchmark, and temporary self-test artifacts. These outputs are
 usable coding-agent context, not benchmark verdicts by themselves.
 
+Optional candidate recall for harder tasks:
+
+```powershell
+codegraph-mcp --repo <repo> --db <agent-db> index <repo> `
+  --json `
+  --build-vector-index <agent-vector-index>
+
+codegraph-mcp --repo <repo> --db <agent-db> context-pack `
+  --task "Trace the change impact" `
+  --seed <symbol> `
+  --mode production `
+  --agent-json `
+  --enable-vector-candidates `
+  --vector-index <agent-vector-index>
+
+codegraph-mcp --repo <repo> --db <agent-db> context-pack `
+  --task "Find rare config/test/name references" `
+  --mode production `
+  --agent-json `
+  --enable-nuance-rescue-candidates
+```
+
+Vector and nuance-rescue lanes are optional candidate recall. They can help
+find plausible files, symbols, rare identifiers, config keys, route literals,
+test names, and no-extension scripts, but they do not become graph proof until
+graph/source verification succeeds.
+
 ## Output Modes
 
 - `--agent-json` emits a bounded, schema-versioned JSON envelope for tight
@@ -97,6 +124,10 @@ promoted.
 When graph verification cannot prove a path, output must remain
 `no_proof_path_found` and may return claimable source/text fallback evidence.
 That fallback is not typed graph proof.
+
+Planning packets may include bounded `follow_up_queries` when the packet can
+orient the next inspection step. They are query hints, not shell-ready commands
+and not internally executed `rg` probes.
 
 ## CLI Flag Placement
 

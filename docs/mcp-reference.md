@@ -105,6 +105,19 @@ Caller/callee tools preserve exact traversal when an `entity_id` is supplied.
 For symbol queries, an unambiguous symbol resolves to exact entity results;
 ambiguous symbols return candidate ids instead of silently choosing one match.
 
+`codegraph.context_pack` accepts compact agent-loop controls:
+
+- `response_mode`: `compact`, `verbose`, or `explain`.
+- `mode`: production, test-impact, debug, or impact context where supported.
+- `limit`: bounds returned compact evidence.
+- `enable_vector_candidates` with `vector_index`: opt-in vector candidate
+  recall from a matching local vector index.
+- `enable_nuance_rescue_candidates`: opt-in rare-token/identifier/path/config
+  rescue candidates.
+
+Compact mode is the default. Verbose and explain modes are for diagnostics and
+may include bounded funnel trace detail.
+
 ## Output Contract
 
 Tool responses are compact JSON values suitable for Codex:
@@ -112,6 +125,7 @@ Tool responses are compact JSON values suitable for Codex:
 - graph/source-verified ids
 - PathEvidence and source spans
 - exactness and confidence labels
+- candidate source/provenance labels where relevant
 - compact snippets where relevant
 - pagination for large result sets
 - `resource_links` for files/source spans where available
@@ -124,6 +138,13 @@ Production context excludes test/mock/mixed/unknown evidence by default; test
 impact requests include test evidence intentionally. Inline Rust `#[cfg(test)]`
 modules and `#[test]` functions are test evidence even when they are inside a
 normal source file.
+
+Candidate lanes such as exact seeds, text evidence, lexical search, vector
+semantic recall, binary-vector recall, nuance rescue, graph neighbors, and
+fallback evidence are not graph proof by themselves. They become graph proof
+only after graph/source verification returns a proof path. If no proof path is
+available, context-pack may return source-text fallback evidence with
+`no_proof_path_found`.
 
 `explain_missing` distinguishes no symbol found, symbol found but no matching
 relation, path exceeds traversal bounds, relation unsupported for language, and

@@ -628,6 +628,16 @@ pub struct VectorEmbeddingChunk {
     pub lifecycle_binding: Option<RetrievalCandidateLifecycleBinding>,
     pub content_hash: String,
     pub extraction_version: String,
+    #[serde(default)]
+    pub selection_score: Option<f64>,
+    #[serde(default)]
+    pub selection_bucket: Option<String>,
+    #[serde(default)]
+    pub selection_reason: Option<String>,
+    #[serde(default)]
+    pub top_level_dir: Option<String>,
+    #[serde(default)]
+    pub cap_stage: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -748,9 +758,81 @@ pub struct VectorChunkIndexMetadata {
     pub max_chunks: usize,
     pub chunk_count: usize,
     pub omitted_chunks: usize,
+    #[serde(default)]
+    pub generated_total_chunks: usize,
+    #[serde(default)]
+    pub generated_text_evidence_chunks: usize,
+    #[serde(default)]
+    pub generated_graph_entity_chunks: usize,
+    #[serde(default)]
+    pub generated_file_path_title_chunks: usize,
+    #[serde(default)]
+    pub generated_metadata_chunks: usize,
+    #[serde(default)]
+    pub selected_total_chunks: usize,
+    #[serde(default)]
+    pub selected_text_evidence_chunks: usize,
+    #[serde(default)]
+    pub selected_graph_entity_chunks: usize,
+    #[serde(default)]
+    pub selected_file_path_title_chunks: usize,
+    #[serde(default)]
+    pub selected_metadata_chunks: usize,
+    #[serde(default)]
+    pub persisted_total_chunks: usize,
+    #[serde(default)]
+    pub persisted_text_evidence_chunks: usize,
+    #[serde(default)]
+    pub persisted_graph_entity_chunks: usize,
+    #[serde(default)]
+    pub persisted_file_path_title_chunks: usize,
+    #[serde(default)]
+    pub persisted_metadata_chunks: usize,
+    #[serde(default)]
+    pub chunk_cap: usize,
+    #[serde(default)]
+    pub chunk_cap_applied: bool,
+    #[serde(default)]
+    pub chunk_selection_strategy: String,
+    #[serde(default)]
+    pub input_order_cap: bool,
+    #[serde(default)]
+    pub persisted_chunks_by_top_level_dir: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub persisted_chunks_by_file_kind: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub persisted_chunks_by_source_kind: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub omitted_by_cap: usize,
+    #[serde(default)]
+    pub omitted_by_bucket_limit: usize,
+    #[serde(default)]
+    pub omitted_low_signal: usize,
+    #[serde(default)]
+    pub per_file_cap: usize,
+    #[serde(default)]
+    pub per_directory_soft_cap: usize,
     pub indexed_text_bytes: usize,
     pub estimated_vector_bytes_per_chunk: usize,
+    #[serde(default)]
+    pub estimated_f32_payload_bytes: usize,
+    #[serde(default)]
+    pub estimated_f32_payload_dim: usize,
+    #[serde(default)]
+    pub estimated_f32_payload_count: usize,
     pub estimated_vector_bytes: usize,
+    #[serde(default)]
+    pub estimated_vector_bytes_deprecated_alias_for: String,
+    #[serde(default)]
+    pub index_artifact_format: String,
+    #[serde(default)]
+    pub stores_chunk_text: bool,
+    #[serde(default)]
+    pub stores_chunk_metadata: bool,
+    #[serde(default)]
+    pub stores_full_source_body: bool,
+    #[serde(default)]
+    pub vector_payload_compression: String,
 }
 
 impl VectorChunkIndexMetadata {
@@ -816,6 +898,7 @@ pub struct VectorChunkIndexUpdateSummary {
     pub omitted_chunks: usize,
     pub chunk_count: usize,
     pub indexed_text_bytes: usize,
+    pub estimated_f32_payload_bytes: usize,
     pub estimated_vector_bytes: usize,
 }
 
@@ -866,6 +949,7 @@ impl InMemoryVectorChunkIndex {
             omitted_chunks: 0,
             chunk_count: self.metadata.chunk_count,
             indexed_text_bytes: self.metadata.indexed_text_bytes,
+            estimated_f32_payload_bytes: self.metadata.estimated_f32_payload_bytes,
             estimated_vector_bytes: self.metadata.estimated_vector_bytes,
         }
     }
@@ -929,6 +1013,7 @@ impl InMemoryVectorChunkIndex {
             omitted_chunks,
             chunk_count: self.metadata.chunk_count,
             indexed_text_bytes: self.metadata.indexed_text_bytes,
+            estimated_f32_payload_bytes: self.metadata.estimated_f32_payload_bytes,
             estimated_vector_bytes: self.metadata.estimated_vector_bytes,
         })
     }
@@ -995,15 +1080,39 @@ impl InMemoryVectorChunkIndex {
 
     fn refresh_size_metadata(&mut self) {
         self.metadata.chunk_count = self.entries.len();
+        let selected_counts =
+            VectorChunkKindCounts::from_chunks(self.entries.values().map(|entry| &entry.chunk));
+        self.metadata.selected_total_chunks = selected_counts.total;
+        self.metadata.selected_text_evidence_chunks = selected_counts.text_evidence;
+        self.metadata.selected_graph_entity_chunks = selected_counts.graph_entity;
+        self.metadata.selected_file_path_title_chunks = selected_counts.file_path_title;
+        self.metadata.selected_metadata_chunks = selected_counts.metadata;
+        self.metadata.persisted_total_chunks = selected_counts.total;
+        self.metadata.persisted_text_evidence_chunks = selected_counts.text_evidence;
+        self.metadata.persisted_graph_entity_chunks = selected_counts.graph_entity;
+        self.metadata.persisted_file_path_title_chunks = selected_counts.file_path_title;
+        self.metadata.persisted_metadata_chunks = selected_counts.metadata;
+        self.metadata.persisted_chunks_by_top_level_dir =
+            count_chunks_by_top_level_dir(self.entries.values().map(|entry| &entry.chunk));
+        self.metadata.persisted_chunks_by_file_kind =
+            count_chunks_by_file_kind(self.entries.values().map(|entry| &entry.chunk));
+        self.metadata.persisted_chunks_by_source_kind =
+            count_chunks_by_source_kind(self.entries.values().map(|entry| &entry.chunk));
+        self.metadata.chunk_cap = self.metadata.max_chunks;
+        self.metadata.chunk_cap_applied = self.metadata.omitted_chunks > 0
+            || self.metadata.generated_total_chunks > self.metadata.persisted_total_chunks;
         self.metadata.indexed_text_bytes = self
             .entries
             .values()
             .map(|entry| entry.chunk.byte_count)
             .sum();
-        self.metadata.estimated_vector_bytes = self
+        self.metadata.estimated_f32_payload_count = self.metadata.chunk_count;
+        self.metadata.estimated_f32_payload_dim = self.metadata.provider.dimension;
+        self.metadata.estimated_f32_payload_bytes = self
             .metadata
             .chunk_count
             .saturating_mul(self.metadata.estimated_vector_bytes_per_chunk);
+        self.metadata.estimated_vector_bytes = self.metadata.estimated_f32_payload_bytes;
     }
 }
 
@@ -10463,18 +10572,17 @@ where
     P: EmbeddingProvider,
     I: IntoIterator<Item = VectorEmbeddingChunk>,
 {
+    let generated_chunks = chunks.into_iter().collect::<Vec<_>>();
+    let generated_counts = VectorChunkKindCounts::from_chunks(&generated_chunks);
+    let selection = select_vector_chunks_for_persistence(generated_chunks, options.max_chunks);
+    let selected_counts = VectorChunkKindCounts::from_chunks(&selection.selected);
+    let persisted_chunks_by_top_level_dir = count_chunks_by_top_level_dir(&selection.selected);
+    let persisted_chunks_by_file_kind = count_chunks_by_file_kind(&selection.selected);
+    let persisted_chunks_by_source_kind = count_chunks_by_source_kind(&selection.selected);
     let mut entries = BTreeMap::new();
-    let mut omitted_chunks = 0usize;
     let mut indexed_text_bytes = 0usize;
 
-    for chunk in chunks {
-        if entries.contains_key(&chunk.chunk_id) {
-            continue;
-        }
-        if entries.len() >= options.max_chunks {
-            omitted_chunks += 1;
-            continue;
-        }
+    for chunk in selection.selected {
         let embedding = provider.embed(&chunk.text).map_err(|error| {
             IndexError::Message(format!(
                 "vector chunk embedding failed for {}: {error}",
@@ -10493,7 +10601,7 @@ where
         .metadata()
         .dimension
         .saturating_mul(std::mem::size_of::<f32>());
-    let estimated_vector_bytes = chunk_count.saturating_mul(estimated_vector_bytes_per_chunk);
+    let estimated_f32_payload_bytes = chunk_count.saturating_mul(estimated_vector_bytes_per_chunk);
     let metadata = VectorChunkIndexMetadata {
         metadata_version: VECTOR_CHUNK_INDEX_METADATA_VERSION.to_string(),
         provider: VectorChunkIndexProviderSnapshot::from_provider(provider.metadata()),
@@ -10503,10 +10611,48 @@ where
         created_at_unix_ms: unix_time_ms(),
         max_chunks: options.max_chunks,
         chunk_count,
-        omitted_chunks,
+        omitted_chunks: selection
+            .omitted_by_cap
+            .saturating_add(selection.omitted_low_signal),
+        generated_total_chunks: generated_counts.total,
+        generated_text_evidence_chunks: generated_counts.text_evidence,
+        generated_graph_entity_chunks: generated_counts.graph_entity,
+        generated_file_path_title_chunks: generated_counts.file_path_title,
+        generated_metadata_chunks: generated_counts.metadata,
+        selected_total_chunks: selected_counts.total,
+        selected_text_evidence_chunks: selected_counts.text_evidence,
+        selected_graph_entity_chunks: selected_counts.graph_entity,
+        selected_file_path_title_chunks: selected_counts.file_path_title,
+        selected_metadata_chunks: selected_counts.metadata,
+        persisted_total_chunks: selected_counts.total,
+        persisted_text_evidence_chunks: selected_counts.text_evidence,
+        persisted_graph_entity_chunks: selected_counts.graph_entity,
+        persisted_file_path_title_chunks: selected_counts.file_path_title,
+        persisted_metadata_chunks: selected_counts.metadata,
+        chunk_cap: options.max_chunks,
+        chunk_cap_applied: selection.omitted_by_cap > 0 || selection.omitted_low_signal > 0,
+        chunk_selection_strategy: "diversity_ranked_v1".to_string(),
+        input_order_cap: false,
+        persisted_chunks_by_top_level_dir,
+        persisted_chunks_by_file_kind,
+        persisted_chunks_by_source_kind,
+        omitted_by_cap: selection.omitted_by_cap,
+        omitted_by_bucket_limit: selection.omitted_by_bucket_limit,
+        omitted_low_signal: selection.omitted_low_signal,
+        per_file_cap: selection.per_file_cap,
+        per_directory_soft_cap: selection.per_directory_soft_cap,
         indexed_text_bytes,
         estimated_vector_bytes_per_chunk,
-        estimated_vector_bytes,
+        estimated_f32_payload_bytes,
+        estimated_f32_payload_dim: provider.metadata().dimension,
+        estimated_f32_payload_count: chunk_count,
+        estimated_vector_bytes: estimated_f32_payload_bytes,
+        estimated_vector_bytes_deprecated_alias_for: "estimated_f32_payload_bytes".to_string(),
+        index_artifact_format: "pretty_json".to_string(),
+        stores_chunk_text: true,
+        stores_chunk_metadata: true,
+        stores_full_source_body: false,
+        vector_payload_compression: "none".to_string(),
     };
 
     Ok(InMemoryVectorChunkIndex { metadata, entries })
@@ -10585,8 +10731,46 @@ pub struct VectorChunkIndexBuildSummary {
     pub index_path: String,
     pub chunk_count: usize,
     pub omitted_chunks: usize,
+    pub generated_total_chunks: usize,
+    pub generated_text_evidence_chunks: usize,
+    pub generated_graph_entity_chunks: usize,
+    pub generated_file_path_title_chunks: usize,
+    pub generated_metadata_chunks: usize,
+    pub selected_total_chunks: usize,
+    pub selected_text_evidence_chunks: usize,
+    pub selected_graph_entity_chunks: usize,
+    pub selected_file_path_title_chunks: usize,
+    pub selected_metadata_chunks: usize,
+    pub persisted_total_chunks: usize,
+    pub persisted_text_evidence_chunks: usize,
+    pub persisted_graph_entity_chunks: usize,
+    pub persisted_file_path_title_chunks: usize,
+    pub persisted_metadata_chunks: usize,
+    pub chunk_cap: usize,
+    pub chunk_cap_applied: bool,
+    pub chunk_selection_strategy: String,
+    pub input_order_cap: bool,
+    pub persisted_chunks_by_top_level_dir: BTreeMap<String, usize>,
+    pub persisted_chunks_by_file_kind: BTreeMap<String, usize>,
+    pub persisted_chunks_by_source_kind: BTreeMap<String, usize>,
+    pub omitted_by_cap: usize,
+    pub omitted_by_bucket_limit: usize,
+    pub omitted_low_signal: usize,
+    pub per_file_cap: usize,
+    pub per_directory_soft_cap: usize,
     pub indexed_text_bytes: usize,
+    pub actual_index_file_bytes: u64,
+    pub index_artifact_format: String,
+    pub estimated_f32_payload_bytes: usize,
+    pub estimated_f32_payload_dim: usize,
+    pub estimated_f32_payload_count: usize,
+    pub index_file_to_f32_payload_ratio: f64,
+    pub stores_chunk_text: bool,
+    pub stores_chunk_metadata: bool,
+    pub stores_full_source_body: bool,
+    pub vector_payload_compression: String,
     pub estimated_vector_bytes: usize,
+    pub estimated_vector_bytes_deprecated_alias_for: String,
     pub graph_entity_chunks: usize,
     pub text_evidence_chunks: usize,
     pub file_path_title_chunks: usize,
@@ -10685,14 +10869,65 @@ pub fn build_vector_chunk_index_json_for_repo<P: EmbeddingProvider>(
         .count();
     let index = build_in_memory_vector_chunk_index(chunks, provider, &passport, options.clone())?;
     write_vector_chunk_index_json(index_path, &index)?;
+    let actual_index_file_bytes = fs::metadata(index_path).map(|metadata| metadata.len())?;
+    let estimated_f32_payload_bytes = index.metadata().estimated_f32_payload_bytes;
+    let index_file_to_f32_payload_ratio = if estimated_f32_payload_bytes == 0 {
+        0.0
+    } else {
+        actual_index_file_bytes as f64 / estimated_f32_payload_bytes as f64
+    };
 
     Ok(VectorChunkIndexBuildSummary {
         status: "ok".to_string(),
         index_path: index_path.to_string_lossy().to_string(),
         chunk_count: index.metadata().chunk_count,
         omitted_chunks: index.metadata().omitted_chunks,
+        generated_total_chunks: index.metadata().generated_total_chunks,
+        generated_text_evidence_chunks: index.metadata().generated_text_evidence_chunks,
+        generated_graph_entity_chunks: index.metadata().generated_graph_entity_chunks,
+        generated_file_path_title_chunks: index.metadata().generated_file_path_title_chunks,
+        generated_metadata_chunks: index.metadata().generated_metadata_chunks,
+        selected_total_chunks: index.metadata().selected_total_chunks,
+        selected_text_evidence_chunks: index.metadata().selected_text_evidence_chunks,
+        selected_graph_entity_chunks: index.metadata().selected_graph_entity_chunks,
+        selected_file_path_title_chunks: index.metadata().selected_file_path_title_chunks,
+        selected_metadata_chunks: index.metadata().selected_metadata_chunks,
+        persisted_total_chunks: index.metadata().persisted_total_chunks,
+        persisted_text_evidence_chunks: index.metadata().persisted_text_evidence_chunks,
+        persisted_graph_entity_chunks: index.metadata().persisted_graph_entity_chunks,
+        persisted_file_path_title_chunks: index.metadata().persisted_file_path_title_chunks,
+        persisted_metadata_chunks: index.metadata().persisted_metadata_chunks,
+        chunk_cap: index.metadata().chunk_cap,
+        chunk_cap_applied: index.metadata().chunk_cap_applied,
+        chunk_selection_strategy: index.metadata().chunk_selection_strategy.clone(),
+        input_order_cap: index.metadata().input_order_cap,
+        persisted_chunks_by_top_level_dir: index
+            .metadata()
+            .persisted_chunks_by_top_level_dir
+            .clone(),
+        persisted_chunks_by_file_kind: index.metadata().persisted_chunks_by_file_kind.clone(),
+        persisted_chunks_by_source_kind: index.metadata().persisted_chunks_by_source_kind.clone(),
+        omitted_by_cap: index.metadata().omitted_by_cap,
+        omitted_by_bucket_limit: index.metadata().omitted_by_bucket_limit,
+        omitted_low_signal: index.metadata().omitted_low_signal,
+        per_file_cap: index.metadata().per_file_cap,
+        per_directory_soft_cap: index.metadata().per_directory_soft_cap,
         indexed_text_bytes: index.metadata().indexed_text_bytes,
+        actual_index_file_bytes,
+        index_artifact_format: index.metadata().index_artifact_format.clone(),
+        estimated_f32_payload_bytes,
+        estimated_f32_payload_dim: index.metadata().estimated_f32_payload_dim,
+        estimated_f32_payload_count: index.metadata().estimated_f32_payload_count,
+        index_file_to_f32_payload_ratio,
+        stores_chunk_text: index.metadata().stores_chunk_text,
+        stores_chunk_metadata: index.metadata().stores_chunk_metadata,
+        stores_full_source_body: index.metadata().stores_full_source_body,
+        vector_payload_compression: index.metadata().vector_payload_compression.clone(),
         estimated_vector_bytes: index.metadata().estimated_vector_bytes,
+        estimated_vector_bytes_deprecated_alias_for: index
+            .metadata()
+            .estimated_vector_bytes_deprecated_alias_for
+            .clone(),
         graph_entity_chunks,
         text_evidence_chunks,
         file_path_title_chunks,
@@ -10877,6 +11112,7 @@ fn build_vector_embedding_chunk(input: VectorChunkBuildInput<'_>) -> VectorEmbed
     );
     let token_count = vector_chunk_token_count(&input.text);
     let byte_count = input.text.len();
+    let top_level_dir = vector_chunk_top_level_dir(&normalized_path);
     VectorEmbeddingChunk {
         chunk_id,
         chunk_kind: input.chunk_kind,
@@ -10898,7 +11134,458 @@ fn build_vector_embedding_chunk(input: VectorChunkBuildInput<'_>) -> VectorEmbed
         lifecycle_binding: input.lifecycle_binding,
         content_hash,
         extraction_version: VECTOR_EMBEDDING_CHUNK_EXTRACTION_VERSION.to_string(),
+        selection_score: None,
+        selection_bucket: None,
+        selection_reason: None,
+        top_level_dir: Some(top_level_dir),
+        cap_stage: None,
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct VectorChunkKindCounts {
+    total: usize,
+    text_evidence: usize,
+    graph_entity: usize,
+    file_path_title: usize,
+    metadata: usize,
+}
+
+impl VectorChunkKindCounts {
+    fn from_chunks<'a>(chunks: impl IntoIterator<Item = &'a VectorEmbeddingChunk>) -> Self {
+        let mut counts = Self::default();
+        for chunk in chunks {
+            counts.total += 1;
+            match chunk.source_kind {
+                VectorEmbeddingChunkSourceKind::GraphEntity => counts.graph_entity += 1,
+                VectorEmbeddingChunkSourceKind::TextEvidence => counts.text_evidence += 1,
+                VectorEmbeddingChunkSourceKind::Metadata => counts.metadata += 1,
+            }
+            if chunk.chunk_kind == VectorEmbeddingChunkKind::FilePathTitle {
+                counts.file_path_title += 1;
+            }
+        }
+        counts
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RankedVectorChunk {
+    chunk: VectorEmbeddingChunk,
+    score: f64,
+    bucket: String,
+    reason: String,
+}
+
+#[derive(Debug, Clone)]
+struct VectorChunkSelectionResult {
+    selected: Vec<VectorEmbeddingChunk>,
+    omitted_by_cap: usize,
+    omitted_by_bucket_limit: usize,
+    omitted_low_signal: usize,
+    per_file_cap: usize,
+    per_directory_soft_cap: usize,
+}
+
+fn select_vector_chunks_for_persistence(
+    chunks: Vec<VectorEmbeddingChunk>,
+    max_chunks: usize,
+) -> VectorChunkSelectionResult {
+    if max_chunks == 0 {
+        return VectorChunkSelectionResult {
+            selected: Vec::new(),
+            omitted_by_cap: chunks.len(),
+            omitted_by_bucket_limit: 0,
+            omitted_low_signal: 0,
+            per_file_cap: 0,
+            per_directory_soft_cap: 0,
+        };
+    }
+
+    let mut deduped = BTreeMap::new();
+    for chunk in chunks {
+        deduped.entry(chunk.chunk_id.clone()).or_insert(chunk);
+    }
+
+    let mut omitted_low_signal = 0usize;
+    let mut ranked = Vec::new();
+    for chunk in deduped.into_values() {
+        if vector_chunk_is_low_signal(&chunk) {
+            omitted_low_signal += 1;
+            continue;
+        }
+        let score = vector_chunk_selection_score(&chunk);
+        ranked.push(RankedVectorChunk {
+            bucket: vector_chunk_selection_bucket(&chunk),
+            reason: vector_chunk_selection_reason(&chunk, score),
+            chunk,
+            score,
+        });
+    }
+    ranked.sort_by(vector_ranked_chunk_cmp);
+
+    let top_dirs = ranked
+        .iter()
+        .map(|ranked| vector_chunk_top_level_dir(&ranked.chunk.path))
+        .collect::<BTreeSet<_>>();
+    let per_file_cap = max_chunks.min(24).max(1);
+    let per_directory_soft_cap = if top_dirs.is_empty() {
+        max_chunks
+    } else {
+        ((max_chunks + top_dirs.len() - 1) / top_dirs.len())
+            .saturating_mul(2)
+            .min(max_chunks)
+            .max(1)
+    };
+
+    let mut selected_ids = BTreeSet::new();
+    let mut selected = Vec::new();
+    let mut dir_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut file_counts: BTreeMap<String, usize> = BTreeMap::new();
+
+    for source_kind in [
+        VectorEmbeddingChunkSourceKind::GraphEntity,
+        VectorEmbeddingChunkSourceKind::TextEvidence,
+        VectorEmbeddingChunkSourceKind::Metadata,
+    ] {
+        if selected.len() >= max_chunks {
+            break;
+        }
+        if let Some(index) = ranked.iter().position(|candidate| {
+            candidate.chunk.source_kind == source_kind
+                && !selected_ids.contains(&candidate.chunk.chunk_id)
+        }) {
+            select_ranked_vector_chunk(
+                &ranked[index],
+                "source_kind_minimum",
+                &mut selected,
+                &mut selected_ids,
+                &mut dir_counts,
+                &mut file_counts,
+            );
+        }
+    }
+
+    let mut seen_dirs = BTreeSet::new();
+    for candidate in &ranked {
+        if selected.len() >= max_chunks || seen_dirs.len() >= max_chunks {
+            break;
+        }
+        let dir = vector_chunk_top_level_dir(&candidate.chunk.path);
+        if seen_dirs.insert(dir) && !selected_ids.contains(&candidate.chunk.chunk_id) {
+            select_ranked_vector_chunk(
+                candidate,
+                "top_level_dir_diversity",
+                &mut selected,
+                &mut selected_ids,
+                &mut dir_counts,
+                &mut file_counts,
+            );
+        }
+    }
+
+    let mut seen_file_kinds = BTreeSet::new();
+    for candidate in &ranked {
+        if selected.len() >= max_chunks || seen_file_kinds.len() >= max_chunks {
+            break;
+        }
+        let file_kind = vector_chunk_file_kind_label(&candidate.chunk);
+        if seen_file_kinds.insert(file_kind) && !selected_ids.contains(&candidate.chunk.chunk_id) {
+            select_ranked_vector_chunk(
+                candidate,
+                "file_kind_diversity",
+                &mut selected,
+                &mut selected_ids,
+                &mut dir_counts,
+                &mut file_counts,
+            );
+        }
+    }
+
+    let mut omitted_by_bucket_limit = 0usize;
+    for candidate in &ranked {
+        if selected.len() >= max_chunks {
+            break;
+        }
+        if selected_ids.contains(&candidate.chunk.chunk_id) {
+            continue;
+        }
+        let dir = vector_chunk_top_level_dir(&candidate.chunk.path);
+        let file = candidate.chunk.path.clone();
+        if dir_counts.get(&dir).copied().unwrap_or(0) >= per_directory_soft_cap
+            || file_counts.get(&file).copied().unwrap_or(0) >= per_file_cap
+        {
+            omitted_by_bucket_limit += 1;
+            continue;
+        }
+        select_ranked_vector_chunk(
+            candidate,
+            "diversity_rank_fill",
+            &mut selected,
+            &mut selected_ids,
+            &mut dir_counts,
+            &mut file_counts,
+        );
+    }
+
+    for candidate in &ranked {
+        if selected.len() >= max_chunks {
+            break;
+        }
+        if selected_ids.contains(&candidate.chunk.chunk_id) {
+            continue;
+        }
+        select_ranked_vector_chunk(
+            candidate,
+            "relaxed_cap_fill",
+            &mut selected,
+            &mut selected_ids,
+            &mut dir_counts,
+            &mut file_counts,
+        );
+    }
+
+    selected.sort_by(|left, right| left.chunk_id.cmp(&right.chunk_id));
+    let omitted_by_cap = ranked.len().saturating_sub(selected.len());
+    VectorChunkSelectionResult {
+        selected,
+        omitted_by_cap,
+        omitted_by_bucket_limit,
+        omitted_low_signal,
+        per_file_cap,
+        per_directory_soft_cap,
+    }
+}
+
+fn select_ranked_vector_chunk(
+    ranked: &RankedVectorChunk,
+    cap_stage: &str,
+    selected: &mut Vec<VectorEmbeddingChunk>,
+    selected_ids: &mut BTreeSet<String>,
+    dir_counts: &mut BTreeMap<String, usize>,
+    file_counts: &mut BTreeMap<String, usize>,
+) {
+    if !selected_ids.insert(ranked.chunk.chunk_id.clone()) {
+        return;
+    }
+    let mut chunk = ranked.chunk.clone();
+    let dir = vector_chunk_top_level_dir(&chunk.path);
+    chunk.selection_score = Some(ranked.score);
+    chunk.selection_bucket = Some(ranked.bucket.clone());
+    chunk.selection_reason = Some(ranked.reason.clone());
+    chunk.top_level_dir = Some(dir.clone());
+    chunk.cap_stage = Some(cap_stage.to_string());
+    *dir_counts.entry(dir).or_default() += 1;
+    *file_counts.entry(chunk.path.clone()).or_default() += 1;
+    selected.push(chunk);
+}
+
+fn vector_ranked_chunk_cmp(
+    left: &RankedVectorChunk,
+    right: &RankedVectorChunk,
+) -> std::cmp::Ordering {
+    right
+        .score
+        .total_cmp(&left.score)
+        .then_with(|| left.chunk.chunk_id.cmp(&right.chunk.chunk_id))
+}
+
+fn vector_chunk_is_low_signal(chunk: &VectorEmbeddingChunk) -> bool {
+    let text = chunk.text.trim();
+    text.len() < 4 || !text.chars().any(|ch| ch.is_ascii_alphanumeric())
+}
+
+fn vector_chunk_selection_score(chunk: &VectorEmbeddingChunk) -> f64 {
+    let mut score = 0.0;
+    score += match chunk.source_kind {
+        VectorEmbeddingChunkSourceKind::GraphEntity => 320.0,
+        VectorEmbeddingChunkSourceKind::TextEvidence => 280.0,
+        VectorEmbeddingChunkSourceKind::Metadata => 220.0,
+    };
+    score += match chunk.chunk_kind {
+        VectorEmbeddingChunkKind::Function | VectorEmbeddingChunkKind::Method => 90.0,
+        VectorEmbeddingChunkKind::Type | VectorEmbeddingChunkKind::ModuleFile => 75.0,
+        VectorEmbeddingChunkKind::Signature => 70.0,
+        VectorEmbeddingChunkKind::FilePathTitle => 65.0,
+        VectorEmbeddingChunkKind::SourceSnippet | VectorEmbeddingChunkKind::Snippet => 55.0,
+        VectorEmbeddingChunkKind::DocComment => 45.0,
+        VectorEmbeddingChunkKind::RelationNeighborhood => 40.0,
+        VectorEmbeddingChunkKind::QName | VectorEmbeddingChunkKind::SourceRole => 30.0,
+    };
+    if chunk.source_span.is_some() {
+        score += 35.0;
+    }
+    score += vector_file_kind_priority(chunk);
+    score += vector_path_priority(&chunk.path);
+    let token_count = chunk.token_count;
+    if (2..=80).contains(&token_count) {
+        score += 20.0;
+    }
+    if chunk.byte_count <= VECTOR_EMBEDDING_CHUNK_MAX_TEXT_BYTES / 2 {
+        score += 10.0;
+    }
+    score
+}
+
+fn vector_chunk_selection_bucket(chunk: &VectorEmbeddingChunk) -> String {
+    format!(
+        "{}:{}:{}",
+        chunk.source_kind.as_str(),
+        vector_chunk_top_level_dir(&chunk.path),
+        vector_chunk_file_kind_label(chunk)
+    )
+}
+
+fn vector_chunk_selection_reason(chunk: &VectorEmbeddingChunk, score: f64) -> String {
+    let mut reasons = Vec::new();
+    reasons.push(format!("source_kind={}", chunk.source_kind.as_str()));
+    reasons.push(format!("chunk_kind={}", chunk.chunk_kind.as_str()));
+    reasons.push(format!(
+        "top_level_dir={}",
+        vector_chunk_top_level_dir(&chunk.path)
+    ));
+    reasons.push(format!("file_kind={}", vector_chunk_file_kind_label(chunk)));
+    if chunk.source_span.is_some() {
+        reasons.push("source_span".to_string());
+    }
+    if vector_path_priority(&chunk.path) > 0.0 {
+        reasons.push("path_role_hint".to_string());
+    }
+    reasons.push(format!("score={score:.3}"));
+    reasons.join("; ")
+}
+
+fn vector_file_kind_priority(chunk: &VectorEmbeddingChunk) -> f64 {
+    let path = chunk.path.to_ascii_lowercase();
+    let kind = vector_chunk_file_kind_label(chunk);
+    match kind.as_str() {
+        "source" | "rust" | "typescript" | "javascript" | "python" | "go" | "c" | "cpp" => 55.0,
+        "makefile" | "mk" | "buildroot_package_metadata" => 55.0,
+        "kconfig" | "config" => 55.0,
+        "shell" | "support_script" | "no_extension_text" => 50.0,
+        "adoc" | "markdown" | "md" => 42.0,
+        "test" => 35.0,
+        _ if path.ends_with(".mk") => 55.0,
+        _ if path.ends_with("config.in") || path.ends_with("kconfig") => 55.0,
+        _ if path.ends_with(".adoc") || path.ends_with(".md") => 42.0,
+        _ if path.contains("/support/") || path.starts_with("support/") => 50.0,
+        _ => 20.0,
+    }
+}
+
+fn vector_path_priority(path: &str) -> f64 {
+    let path = normalize_graph_path(path).to_ascii_lowercase();
+    let mut score = 0.0;
+    if path.starts_with("package/") {
+        score += 35.0;
+    }
+    if path.starts_with("support/") {
+        score += 32.0;
+    }
+    if path.starts_with("docs/") {
+        score += 24.0;
+    }
+    if path.starts_with("configs/") {
+        score += 22.0;
+    }
+    if path.starts_with("src/") || path.starts_with("crates/") {
+        score += 28.0;
+    }
+    for needle in [
+        "config.in",
+        "kconfig",
+        ".mk",
+        "pkg-generic",
+        "pkg-download",
+        "download",
+        "wrapper",
+        "package",
+    ] {
+        if path.contains(needle) {
+            score += 12.0;
+        }
+    }
+    score
+}
+
+fn vector_chunk_top_level_dir(path: &str) -> String {
+    let normalized = normalize_graph_path(path);
+    if !normalized.contains('/') {
+        return ".".to_string();
+    }
+    normalized
+        .split('/')
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or(".")
+        .to_string()
+}
+
+fn vector_chunk_file_kind_label(chunk: &VectorEmbeddingChunk) -> String {
+    if let Some(kind) = chunk.file_kind.as_deref().filter(|kind| !kind.is_empty()) {
+        return kind.to_ascii_lowercase();
+    }
+    let path = chunk.path.to_ascii_lowercase();
+    if path.ends_with(".mk") {
+        "mk".to_string()
+    } else if path.ends_with("config.in") || path.ends_with("kconfig") {
+        "kconfig".to_string()
+    } else if path.ends_with(".adoc") {
+        "adoc".to_string()
+    } else if path.ends_with(".md") {
+        "markdown".to_string()
+    } else if path.ends_with(".rs")
+        || path.ends_with(".ts")
+        || path.ends_with(".tsx")
+        || path.ends_with(".js")
+        || path.ends_with(".py")
+        || path.ends_with(".go")
+        || path.ends_with(".c")
+        || path.ends_with(".cpp")
+        || path.ends_with(".h")
+    {
+        "source".to_string()
+    } else if path.starts_with("support/") && !path.rsplit('/').next().unwrap_or("").contains('.') {
+        "no_extension_text".to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+fn count_chunks_by_top_level_dir<'a>(
+    chunks: impl IntoIterator<Item = &'a VectorEmbeddingChunk>,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for chunk in chunks {
+        *counts
+            .entry(vector_chunk_top_level_dir(&chunk.path))
+            .or_default() += 1;
+    }
+    counts
+}
+
+fn count_chunks_by_file_kind<'a>(
+    chunks: impl IntoIterator<Item = &'a VectorEmbeddingChunk>,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for chunk in chunks {
+        *counts
+            .entry(vector_chunk_file_kind_label(chunk))
+            .or_default() += 1;
+    }
+    counts
+}
+
+fn count_chunks_by_source_kind<'a>(
+    chunks: impl IntoIterator<Item = &'a VectorEmbeddingChunk>,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for chunk in chunks {
+        *counts
+            .entry(chunk.source_kind.as_str().to_string())
+            .or_default() += 1;
+    }
+    counts
 }
 
 fn vector_chunk_kind_for_entity(kind: EntityKind) -> VectorEmbeddingChunkKind {
@@ -14725,6 +15412,46 @@ mod tests {
             index.metadata().estimated_vector_bytes,
             index.len() * index.metadata().estimated_vector_bytes_per_chunk
         );
+        assert_eq!(
+            index.metadata().estimated_f32_payload_bytes,
+            index.metadata().estimated_vector_bytes
+        );
+        assert_eq!(index.metadata().estimated_f32_payload_dim, 64);
+        assert_eq!(index.metadata().estimated_f32_payload_count, index.len());
+        assert_eq!(
+            index.metadata().estimated_vector_bytes_deprecated_alias_for,
+            "estimated_f32_payload_bytes"
+        );
+        assert_eq!(index.metadata().index_artifact_format, "pretty_json");
+        assert_eq!(index.metadata().vector_payload_compression, "none");
+        assert!(index.metadata().stores_chunk_text);
+        assert!(index.metadata().stores_chunk_metadata);
+        assert!(!index.metadata().stores_full_source_body);
+        assert!(index.metadata().generated_total_chunks >= index.len());
+        assert!(index.metadata().generated_text_evidence_chunks >= 1);
+        assert_eq!(index.metadata().generated_file_path_title_chunks, 1);
+        assert_eq!(index.metadata().generated_metadata_chunks, 1);
+        assert_eq!(
+            index.metadata().generated_total_chunks,
+            index.metadata().generated_text_evidence_chunks
+                + index.metadata().generated_graph_entity_chunks
+                + index.metadata().generated_metadata_chunks
+        );
+        assert_eq!(index.metadata().selected_total_chunks, index.len());
+        assert_eq!(index.metadata().persisted_total_chunks, index.len());
+        assert_eq!(index.metadata().chunk_cap, options.max_chunks);
+        assert_eq!(
+            index.metadata().chunk_selection_strategy,
+            "diversity_ranked_v1"
+        );
+        assert!(!index.metadata().input_order_cap);
+        assert!(index
+            .entries()
+            .all(|entry| entry.chunk.selection_score.is_some()
+                && entry.chunk.selection_bucket.is_some()
+                && entry.chunk.selection_reason.is_some()
+                && entry.chunk.top_level_dir.is_some()
+                && entry.chunk.cap_stage.is_some()));
         assert!(index.metadata().estimated_vector_bytes <= index.metadata().max_chunks * 64 * 4);
 
         let hits = index
@@ -14747,6 +15474,231 @@ mod tests {
                 .expect("bounded index");
         assert_eq!(bounded_index.len(), 2);
         assert!(bounded_index.metadata().omitted_chunks > 0);
+        assert!(bounded_index.metadata().chunk_cap_applied);
+        assert!(bounded_index.metadata().generated_total_chunks > bounded_index.len());
+        assert_eq!(bounded_index.metadata().persisted_total_chunks, 2);
+    }
+
+    #[test]
+    fn vector_chunk_selection_diversity_prevents_input_order_starvation() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-selection-starvation");
+        let mut options = VectorChunkIndexBuildOptions::new("scope-selection-starvation");
+        options.max_chunks = 8;
+        let mut chunks = Vec::new();
+        for idx in 0..20 {
+            chunks.push(extract_file_path_title_embedding_chunk_for_path(
+                &format!("docs/board/boot/topic-{idx}.adoc"),
+                TEXT_EVIDENCE_KIND,
+                Some("adoc"),
+                None,
+            ));
+        }
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/foo.mk",
+            "FOO_VERSION = 1.2.3\nFOO_LICENSE = MIT\n$(eval $(generic-package))\n",
+            None,
+        ));
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "support/scripts/pkg-stats",
+            "#!/bin/sh\nprintf 'package support statistics generic-package'\n",
+            None,
+        ));
+
+        let index = build_in_memory_vector_chunk_index(chunks, &provider, &passport, options)
+            .expect("diversity selected index");
+        let selected_paths = index
+            .entries()
+            .map(|entry| entry.chunk.path.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert!(selected_paths.contains("package/foo/foo.mk"));
+        assert!(selected_paths.contains("support/scripts/pkg-stats"));
+        assert_eq!(
+            index.metadata().chunk_selection_strategy,
+            "diversity_ranked_v1"
+        );
+        assert!(!index.metadata().input_order_cap);
+        assert!(index.metadata().omitted_by_cap > 0);
+        assert!(index
+            .metadata()
+            .persisted_chunks_by_top_level_dir
+            .contains_key("package"));
+        assert!(index
+            .metadata()
+            .persisted_chunks_by_top_level_dir
+            .contains_key("support"));
+    }
+
+    #[test]
+    fn vector_chunk_selection_preserves_source_kind_diversity_under_cap() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-selection-source-kind");
+        let mut options = VectorChunkIndexBuildOptions::new("scope-selection-source-kind");
+        options.max_chunks = 3;
+        let source = "/// login token creation\nexport function loginUser() { return true; }\n";
+        let entity = Entity {
+            id: "entity://src/auth.ts/loginUser".to_string(),
+            kind: EntityKind::Function,
+            name: "loginUser".to_string(),
+            qualified_name: "auth::loginUser".to_string(),
+            repo_relative_path: "src/auth.ts".to_string(),
+            source_span: Some(SourceSpan::new("src/auth.ts", 2, 2)),
+            content_hash: Some(content_hash("auth::loginUser")),
+            file_hash: Some(content_hash(source)),
+            created_from: "parser:test".to_string(),
+            confidence: 1.0,
+            metadata: Metadata::default(),
+        };
+        let mut chunks =
+            extract_graph_entity_embedding_chunks(&entity, Some(source), Some("typescript"), None);
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/Config.in",
+            "config BR2_PACKAGE_FOO\n\tbool \"foo\"\n",
+            None,
+        ));
+        chunks.push(extract_file_path_title_embedding_chunk_for_path(
+            "docs/manual/adding-packages.adoc",
+            TEXT_EVIDENCE_KIND,
+            Some("adoc"),
+            None,
+        ));
+
+        let index = build_in_memory_vector_chunk_index(chunks, &provider, &passport, options)
+            .expect("source-kind diversity index");
+        let source_counts = &index.metadata().persisted_chunks_by_source_kind;
+
+        assert!(source_counts.get("graph_entity").copied().unwrap_or(0) >= 1);
+        assert!(source_counts.get("text_evidence").copied().unwrap_or(0) >= 1);
+        assert!(source_counts.get("metadata").copied().unwrap_or(0) >= 1);
+    }
+
+    #[test]
+    fn vector_chunk_selection_buildroot_mini_keeps_package_docs_support_and_source() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-selection-buildroot-mini");
+        let mut options = VectorChunkIndexBuildOptions::new("scope-selection-buildroot-mini");
+        options.max_chunks = 8;
+        let mut chunks = Vec::new();
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "docs/manual/adding-packages.adoc",
+            "package infrastructure documentation generic-package Config.in support scripts\n",
+            None,
+        ));
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/foo.mk",
+            "FOO_VERSION = 1.2.3\nFOO_LICENSE = MIT\n$(eval $(generic-package))\n",
+            None,
+        ));
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/Config.in",
+            "config BR2_PACKAGE_FOO\n\tbool \"foo package\"\n",
+            None,
+        ));
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "support/scripts/pkg-stats",
+            "#!/bin/sh\nprintf 'support script package statistics'\n",
+            None,
+        ));
+        let source = "int download_package(void) { return 0; }\n";
+        let entity = Entity {
+            id: "entity://src/download.c/download_package".to_string(),
+            kind: EntityKind::Function,
+            name: "download_package".to_string(),
+            qualified_name: "download_package".to_string(),
+            repo_relative_path: "src/download.c".to_string(),
+            source_span: Some(SourceSpan::new("src/download.c", 1, 1)),
+            content_hash: Some(content_hash("download_package")),
+            file_hash: Some(content_hash(source)),
+            created_from: "parser:test".to_string(),
+            confidence: 1.0,
+            metadata: Metadata::default(),
+        };
+        chunks.extend(extract_graph_entity_embedding_chunks(
+            &entity,
+            Some(source),
+            Some("c"),
+            None,
+        ));
+        for idx in 0..20 {
+            chunks.push(extract_file_path_title_embedding_chunk_for_path(
+                &format!("board/vendor/board-{idx}.adoc"),
+                TEXT_EVIDENCE_KIND,
+                Some("adoc"),
+                None,
+            ));
+        }
+
+        let index = build_in_memory_vector_chunk_index(chunks, &provider, &passport, options)
+            .expect("buildroot diversity index");
+        let selected_paths = index
+            .entries()
+            .map(|entry| entry.chunk.path.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert!(selected_paths.contains("package/foo/foo.mk"));
+        assert!(selected_paths.contains("package/foo/Config.in"));
+        assert!(selected_paths.contains("docs/manual/adding-packages.adoc"));
+        assert!(selected_paths.contains("support/scripts/pkg-stats"));
+        assert!(selected_paths.contains("src/download.c"));
+        assert!(index.entries().any(|entry| entry.chunk.entity_id.as_deref()
+            == Some("entity://src/download.c/download_package")));
+    }
+
+    #[test]
+    fn vector_chunk_selection_is_deterministic_and_cap_counts_reconcile() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-selection-deterministic");
+        let mut options = VectorChunkIndexBuildOptions::new("scope-selection-deterministic");
+        options.max_chunks = 6;
+        let mut chunks = Vec::new();
+        for idx in 0..18 {
+            let path = match idx % 3 {
+                0 => format!("docs/manual/topic-{idx}.adoc"),
+                1 => format!("package/pkg{idx}/pkg{idx}.mk"),
+                _ => format!("support/scripts/tool-{idx}"),
+            };
+            chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+                &path,
+                &format!("chunk {idx} package support docs generic-package BR2_PACKAGE_{idx}\n"),
+                None,
+            ));
+        }
+
+        let first = build_in_memory_vector_chunk_index(
+            chunks.clone(),
+            &provider,
+            &passport,
+            options.clone(),
+        )
+        .expect("first selection");
+        let second = build_in_memory_vector_chunk_index(chunks, &provider, &passport, options)
+            .expect("second selection");
+        let first_ids = first
+            .entries()
+            .map(|entry| entry.chunk.chunk_id.clone())
+            .collect::<Vec<_>>();
+        let second_ids = second
+            .entries()
+            .map(|entry| entry.chunk.chunk_id.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(first_ids, second_ids);
+        assert!(first.metadata().persisted_total_chunks <= first.metadata().chunk_cap);
+        assert_eq!(
+            first.metadata().generated_total_chunks,
+            first.metadata().persisted_total_chunks
+                + first.metadata().omitted_by_cap
+                + first.metadata().omitted_low_signal
+        );
+        for entry in first.entries() {
+            let path_count = first
+                .entries()
+                .filter(|other| other.chunk.path == entry.chunk.path)
+                .count();
+            assert!(path_count <= first.metadata().per_file_cap);
+        }
+        assert!(first.entries().all(|entry| !entry.chunk.graph_proof));
     }
 
     #[test]
@@ -15124,6 +16076,13 @@ mod tests {
             index.metadata().estimated_vector_bytes,
             index.len() * index.metadata().estimated_vector_bytes_per_chunk
         );
+        assert_eq!(
+            index.metadata().estimated_f32_payload_bytes,
+            index.metadata().estimated_vector_bytes
+        );
+        assert_eq!(index.metadata().index_artifact_format, "pretty_json");
+        assert_eq!(index.metadata().vector_payload_compression, "none");
+        assert!(!index.metadata().stores_full_source_body);
     }
 
     #[test]

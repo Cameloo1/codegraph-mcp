@@ -969,6 +969,7 @@ impl McpServer {
         }
 
         let store = SqliteGraphStore::open(&db_path).map_err(mcp_store_error)?;
+        let relation_facts = store.count_edges().map_err(mcp_store_error)?;
         Ok(json!({
             "status": "ok",
             "safe_to_query": true,
@@ -992,7 +993,13 @@ impl McpServer {
             "schema_version": store.schema_version().map_err(mcp_store_error)?,
             "files": store.count_files().map_err(mcp_store_error)?,
             "entities": store.count_entities().map_err(mcp_store_error)?,
-            "edges": store.count_edges().map_err(mcp_store_error)?,
+            "relation_facts": relation_facts,
+            "release_reported_relation_facts": relation_facts,
+            "edges": relation_facts,
+            "metric_label_notes": {
+                "relation_facts": "Aggregate reported relation facts across the active store surface; not a raw table-row label.",
+                "edges": "Deprecated compatibility alias for relation_facts."
+            },
             "read_mostly": true,
             "destructive_tools": false,
             "workflow": "single-agent-only",
@@ -4217,6 +4224,15 @@ mod tests {
         assert!(status["files"].as_u64().is_some());
         assert!(status["entities"].as_u64().is_some());
         assert!(status["edges"].as_u64().is_some());
+        assert_eq!(status["relation_facts"], status["edges"]);
+        assert_eq!(
+            status["release_reported_relation_facts"],
+            status["relation_facts"]
+        );
+        assert_eq!(
+            status["metric_label_notes"]["edges"].as_str(),
+            Some("Deprecated compatibility alias for relation_facts.")
+        );
         assert!(status["blockers"].as_array().expect("blockers").is_empty());
 
         fs::remove_dir_all(repo).expect("cleanup");

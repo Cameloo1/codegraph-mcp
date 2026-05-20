@@ -1214,6 +1214,10 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
             })
         })
         .collect::<Vec<_>>();
+    let relation_facts = store.count_edges().map_err(|error| error.to_string())?;
+    let source_span_facts = store
+        .count_source_spans()
+        .map_err(|error| error.to_string())?;
 
     Ok(json!({
         "status": "ok",
@@ -1233,8 +1237,18 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
         "schema_version": store.schema_version().map_err(|error| error.to_string())?,
         "files": store.count_files().map_err(|error| error.to_string())?,
         "entities": store.count_entities().map_err(|error| error.to_string())?,
-        "edges": store.count_edges().map_err(|error| error.to_string())?,
-        "source_spans": store.count_source_spans().map_err(|error| error.to_string())?,
+        "relation_facts": relation_facts,
+        "source_span_facts": source_span_facts,
+        "release_reported_relation_facts": relation_facts,
+        "release_reported_source_span_facts": source_span_facts,
+        "edges": relation_facts,
+        "source_spans": source_span_facts,
+        "metric_label_notes": {
+            "relation_facts": "Aggregate reported relation facts across the active store surface; not a raw table-row label unless storage_accounting says table rows.",
+            "source_span_facts": "Aggregate reported source-span facts across the active store surface; not a raw table-row label unless storage_accounting says table rows.",
+            "edges": "Deprecated compatibility alias for relation_facts.",
+            "source_spans": "Deprecated compatibility alias for source_span_facts."
+        },
         "relation_counts": store.relation_counts().map_err(|error| error.to_string())?,
         "storage_accounting": storage_accounting,
         "languages": languages,
@@ -26929,6 +26943,59 @@ mod tests {
         assert_eq!(value["status"].as_str(), Some("ok"));
         assert_eq!(value["vector_index"]["status"].as_str(), Some("ok"));
         assert!(value["vector_index"]["chunk_count"].as_u64().unwrap_or(0) > 0);
+        assert_eq!(
+            value["vector_index"]["persisted_total_chunks"],
+            value["vector_index"]["chunk_count"]
+        );
+        assert_eq!(
+            value["vector_index"]["selected_total_chunks"],
+            value["vector_index"]["persisted_total_chunks"]
+        );
+        assert!(
+            value["vector_index"]["generated_total_chunks"]
+                .as_u64()
+                .unwrap_or(0)
+                >= value["vector_index"]["persisted_total_chunks"]
+                    .as_u64()
+                    .unwrap_or(0)
+        );
+        assert!(
+            value["vector_index"]["actual_index_file_bytes"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0
+        );
+        assert!(
+            value["vector_index"]["estimated_f32_payload_bytes"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0
+        );
+        assert_eq!(
+            value["vector_index"]["estimated_vector_bytes_deprecated_alias_for"].as_str(),
+            Some("estimated_f32_payload_bytes")
+        );
+        assert_eq!(
+            value["vector_index"]["index_artifact_format"].as_str(),
+            Some("pretty_json")
+        );
+        assert_eq!(
+            value["vector_index"]["vector_payload_compression"].as_str(),
+            Some("none")
+        );
+        assert_eq!(
+            value["vector_index"]["stores_full_source_body"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            value["vector_index"]["chunk_selection_strategy"].as_str(),
+            Some("diversity_ranked_v1")
+        );
+        assert_eq!(
+            value["vector_index"]["input_order_cap"].as_bool(),
+            Some(false)
+        );
+        assert!(value["vector_index"]["persisted_chunks_by_source_kind"].is_object());
         assert_eq!(
             value["vector_index"]["provider_id"].as_str(),
             Some("codegraph-deterministic-test")

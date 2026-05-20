@@ -79,6 +79,18 @@ compressed vectors, or rankers. Final context packets should be grounded in
 typed graph facts, exactness labels, source spans, provenance, and explicit
 path evidence.
 
+Current candidate lanes include exact seeds, Stage 0 text evidence,
+lexical/FTS matches, vector semantic candidates, binary-vector candidates,
+nuance-rescue candidates, graph-neighborhood candidates, PathEvidence
+candidates, and fallback source-text evidence. These are candidate/source
+evidence until graph/source verification promotes them. If no proof path is
+found, output should say `no_proof_path_found` and label any source-text
+fallback as text evidence, not graph proof.
+
+Planning fields such as `follow_up_queries`, validation hints, and risks are
+agent-orientation metadata. They are not shell-ready commands, are not internal
+`rg` execution, and do not override evidence-role or proof-status labels.
+
 ## Failure Handling
 
 Failures should be first-class and inspectable:
