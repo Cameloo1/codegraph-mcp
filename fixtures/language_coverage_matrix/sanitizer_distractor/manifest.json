@@ -1,0 +1,64 @@
+{
+  "cases": [
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "heuristic",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "run",
+        "sanitize"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "sanitize",
+          "path": "fixtures/language_coverage_matrix/sanitizer_distractor/typescript/src/sanitizer.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/sanitizer_distractor/typescript/src/sanitizer.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "sanitize",
+          "path": "fixtures/language_coverage_matrix/sanitizer_distractor/typescript/src/sanitizer.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/sanitizer_distractor/typescript/src/sanitizer.ts"
+        }
+      ],
+      "family": "sanitizer_distractor",
+      "files": [
+        "fixtures/language_coverage_matrix/sanitizer_distractor/typescript/src/sanitizer.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "sanitizer call may produce heuristic SANITIZES"
+      ],
+      "id": "sanitizer_distractor.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "comments and string proximity must not prove security relations"
+      ]
+    }
+  ],
+  "family": "sanitizer_distractor",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}

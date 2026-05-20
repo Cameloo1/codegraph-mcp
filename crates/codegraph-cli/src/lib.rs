@@ -18777,6 +18777,7 @@ fn build_context_agent_retrieval_candidates(
         } else {
             "unknown"
         });
+    let proof_gate = ContextAgentProofGate::new(graph_verification_status, lifecycle_claimable);
     let exact_seeds = context_agent_candidate_seed_values(options);
     let exact_path_keys = exact_seeds
         .iter()
@@ -18827,11 +18828,7 @@ fn build_context_agent_retrieval_candidates(
                 .take(CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT.saturating_mul(4))
             {
                 let mut candidate = candidate.clone();
-                normalize_context_agent_candidate_for_graph_status(
-                    &mut candidate,
-                    graph_verification_status,
-                    lifecycle_claimable,
-                );
+                proof_gate.apply_to_candidate(&mut candidate);
                 candidates.push(candidate);
             }
         }
@@ -18846,11 +18843,7 @@ fn build_context_agent_retrieval_candidates(
             .take(CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT)
         {
             let mut candidate = candidate.clone();
-            normalize_context_agent_candidate_for_graph_status(
-                &mut candidate,
-                graph_verification_status,
-                lifecycle_claimable,
-            );
+            proof_gate.apply_to_candidate(&mut candidate);
             candidates.push(candidate);
         }
     }
@@ -18951,70 +18944,90 @@ fn build_context_agent_retrieval_candidates(
     }
 }
 
-fn normalize_context_agent_candidate_for_graph_status(
-    candidate: &mut Value,
-    graph_verification_status: &str,
+/// Applies the context-pack claim boundary after candidate recall branches have
+/// suggested files or symbols but before agent JSON can present them as proof.
+#[derive(Debug, Clone, Copy)]
+struct ContextAgentProofGate<'a> {
+    graph_verification_status: &'a str,
     lifecycle_claimable: bool,
-) {
-    let requires_graph_verification = candidate
-        .get("requires_graph_verification")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let graph_proof = candidate
-        .get("graph_proof")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let text_only_candidate = context_agent_candidate_has_source(candidate, "text_evidence")
-        && candidate.get("entity_id").is_none_or(Value::is_null)
-        && !context_agent_candidate_has_source(candidate, "path_evidence")
-        && !context_agent_candidate_has_source(candidate, "graph_neighbor");
-    let existing_source_labels = context_agent_string_set(candidate, "source_labels");
+}
 
-    let Some(object) = candidate.as_object_mut() else {
-        return;
-    };
-    if !lifecycle_claimable {
-        object.insert("claimable".to_string(), json!(false));
-        object.insert("claimable_for_graph".to_string(), json!(false));
-    }
-    if requires_graph_verification
-        && !graph_proof
-        && !text_only_candidate
-        && matches!(
+impl<'a> ContextAgentProofGate<'a> {
+    const fn new(graph_verification_status: &'a str, lifecycle_claimable: bool) -> Self {
+        Self {
             graph_verification_status,
-            "no_proof_path_found" | "no_graph_candidates"
-        )
-    {
-        object.insert("proof_status".to_string(), json!("no_proof_path_found"));
-        object.insert(
-            "verification_status".to_string(),
-            json!("no_proof_path_found"),
-        );
-        object.insert(
-            "graph_verification_status".to_string(),
-            json!("no_proof_path_found"),
-        );
-        object.insert("graph_proof".to_string(), json!(false));
-        object.insert("claimable".to_string(), json!(false));
-        object.insert("claimable_for_graph".to_string(), json!(false));
-        let reason = object
-            .get("reason")
-            .and_then(Value::as_str)
-            .unwrap_or("candidate requires graph verification")
-            .to_string();
-        if !reason.contains("no proof path found") {
+            lifecycle_claimable,
+        }
+    }
+
+    fn apply_to_candidate(self, candidate: &mut Value) {
+        let graph_claim_blocked = self.blocks_graph_claim(candidate);
+        let existing_source_labels = context_agent_string_set(candidate, "source_labels");
+
+        let Some(object) = candidate.as_object_mut() else {
+            return;
+        };
+        if !self.lifecycle_claimable {
+            object.insert("claimable".to_string(), json!(false));
+            object.insert("claimable_for_graph".to_string(), json!(false));
+        }
+        if graph_claim_blocked {
+            object.insert("proof_status".to_string(), json!("no_proof_path_found"));
             object.insert(
-                "reason".to_string(),
-                json!(format!("{reason}; graph verification found no proof path")),
+                "verification_status".to_string(),
+                json!("no_proof_path_found"),
+            );
+            object.insert(
+                "graph_verification_status".to_string(),
+                json!("no_proof_path_found"),
+            );
+            object.insert("graph_proof".to_string(), json!(false));
+            object.insert("claimable".to_string(), json!(false));
+            object.insert("claimable_for_graph".to_string(), json!(false));
+            let reason = object
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("candidate requires graph verification")
+                .to_string();
+            if !reason.contains("no proof path found") {
+                object.insert(
+                    "reason".to_string(),
+                    json!(format!("{reason}; graph verification found no proof path")),
+                );
+            }
+            let mut source_labels = existing_source_labels;
+            source_labels.insert("no_graph_proof".to_string());
+            object.insert(
+                "source_labels".to_string(),
+                json!(source_labels.iter().cloned().collect::<Vec<_>>()),
             );
         }
-        let mut source_labels = existing_source_labels;
-        source_labels.insert("no_graph_proof".to_string());
-        object.insert(
-            "source_labels".to_string(),
-            json!(source_labels.iter().cloned().collect::<Vec<_>>()),
-        );
     }
+
+    fn blocks_graph_claim(self, candidate: &Value) -> bool {
+        let requires_graph_verification = candidate
+            .get("requires_graph_verification")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let graph_proof = candidate
+            .get("graph_proof")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        requires_graph_verification
+            && !graph_proof
+            && !context_agent_candidate_is_text_only_source_evidence(candidate)
+            && matches!(
+                self.graph_verification_status,
+                "no_proof_path_found" | "no_graph_candidates"
+            )
+    }
+}
+
+fn context_agent_candidate_is_text_only_source_evidence(candidate: &Value) -> bool {
+    context_agent_candidate_has_source(candidate, "text_evidence")
+        && candidate.get("entity_id").is_none_or(Value::is_null)
+        && !context_agent_candidate_has_source(candidate, "path_evidence")
+        && !context_agent_candidate_has_source(candidate, "graph_neighbor")
 }
 
 fn context_agent_candidate_omission_json(candidate: &Value) -> Value {

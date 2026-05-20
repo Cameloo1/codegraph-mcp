@@ -1,0 +1,72 @@
+{
+  "cases": [
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "heuristic",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "load",
+        "loadRequire"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "load",
+          "path": "fixtures/language_coverage_matrix/dynamic_import_or_require/javascript/src/dynamic.js"
+        },
+        {
+          "kind": "Function",
+          "name": "loadRequire",
+          "path": "fixtures/language_coverage_matrix/dynamic_import_or_require/javascript/src/dynamic.js"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "load",
+          "path": "fixtures/language_coverage_matrix/dynamic_import_or_require/javascript/src/dynamic.js"
+        },
+        {
+          "kind": "Function",
+          "name": "loadRequire",
+          "path": "fixtures/language_coverage_matrix/dynamic_import_or_require/javascript/src/dynamic.js"
+        }
+      ],
+      "family": "dynamic_import_or_require",
+      "files": [
+        "fixtures/language_coverage_matrix/dynamic_import_or_require/javascript/src/dynamic.js"
+      ],
+      "forbidden_edges": [
+        {
+          "exactness": "parser_verified",
+          "head_name": "load",
+          "path": "fixtures/language_coverage_matrix/dynamic_import_or_require/javascript/src/dynamic.js",
+          "relation": "IMPORTS",
+          "tail_name": "./plugins/"
+        }
+      ],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "dynamic import syntax only"
+      ],
+      "id": "dynamic_import_or_require.javascript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "javascript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "computed module target exactness unsupported"
+      ]
+    }
+  ],
+  "family": "dynamic_import_or_require",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}

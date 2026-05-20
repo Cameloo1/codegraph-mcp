@@ -1,0 +1,303 @@
+{
+  "cases": [
+    {
+      "exact_expected": [
+        "class and method declarations have source spans"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "App",
+        "Panel",
+        "renderTitle"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Class",
+          "name": "Panel",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/tsx/src/component.tsx"
+        },
+        {
+          "kind": "Method",
+          "name": "renderTitle",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/tsx/src/component.tsx"
+        },
+        {
+          "kind": "Function",
+          "name": "App",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/tsx/src/component.tsx"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Class",
+          "name": "Panel",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/tsx/src/component.tsx"
+        },
+        {
+          "kind": "Method",
+          "name": "renderTitle",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/tsx/src/component.tsx"
+        },
+        {
+          "kind": "Function",
+          "name": "App",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/tsx/src/component.tsx"
+        }
+      ],
+      "family": "nested_modules_classes",
+      "files": [
+        "fixtures/language_coverage_matrix/nested_modules_classes/tsx/src/component.tsx"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "JSX call-like rendering is not graph proof"
+      ],
+      "id": "nested_modules_classes.tsx",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "tsx",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [
+        "nested classes parse as declarations"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "Inner",
+        "Outer"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Class",
+          "name": "Outer",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/java/src/Nested.java"
+        },
+        {
+          "kind": "Class",
+          "name": "Inner",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/java/src/Nested.java"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Class",
+          "name": "Outer",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/java/src/Nested.java"
+        },
+        {
+          "kind": "Class",
+          "name": "Inner",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/java/src/Nested.java"
+        }
+      ],
+      "family": "nested_modules_classes",
+      "files": [
+        "fixtures/language_coverage_matrix/nested_modules_classes/java/src/Nested.java"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "nested_modules_classes.java",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "java",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "Java method calls unsupported in current tier"
+      ]
+    },
+    {
+      "exact_expected": [
+        "namespace/class syntax parsed"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "Fixture",
+        "Outer"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Module",
+          "name": "Fixture",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/csharp/src/Nested.cs"
+        },
+        {
+          "kind": "Class",
+          "name": "Outer",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/csharp/src/Nested.cs"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Module",
+          "name": "Fixture",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/csharp/src/Nested.cs"
+        },
+        {
+          "kind": "Class",
+          "name": "Outer",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/csharp/src/Nested.cs"
+        }
+      ],
+      "family": "nested_modules_classes",
+      "files": [
+        "fixtures/language_coverage_matrix/nested_modules_classes/csharp/src/Nested.cs"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "nested_modules_classes.csharp",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "csharp",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "C# semantic nesting unsupported"
+      ]
+    },
+    {
+      "exact_expected": [
+        "C++ namespace/class parse"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "Service",
+        "fixture"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Module",
+          "name": "fixture",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/cpp/src/nested.cpp"
+        },
+        {
+          "kind": "Class",
+          "name": "Service",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/cpp/src/nested.cpp"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Module",
+          "name": "fixture",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/cpp/src/nested.cpp"
+        },
+        {
+          "kind": "Class",
+          "name": "Service",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/cpp/src/nested.cpp"
+        }
+      ],
+      "family": "nested_modules_classes",
+      "files": [
+        "fixtures/language_coverage_matrix/nested_modules_classes/cpp/src/nested.cpp"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "nested_modules_classes.cpp",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "cpp",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "C++ method semantic calls unsupported"
+      ]
+    },
+    {
+      "exact_expected": [
+        "Ruby module/class parse"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "Fixture",
+        "Service"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Module",
+          "name": "Fixture",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/ruby/src/nested.rb"
+        },
+        {
+          "kind": "Class",
+          "name": "Service",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/ruby/src/nested.rb"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Module",
+          "name": "Fixture",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/ruby/src/nested.rb"
+        },
+        {
+          "kind": "Class",
+          "name": "Service",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/ruby/src/nested.rb"
+        }
+      ],
+      "family": "nested_modules_classes",
+      "files": [
+        "fixtures/language_coverage_matrix/nested_modules_classes/ruby/src/nested.rb"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "nested_modules_classes.ruby",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "ruby",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "Ruby call/dataflow unsupported"
+      ]
+    }
+  ],
+  "family": "nested_modules_classes",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}

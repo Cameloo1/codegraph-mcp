@@ -1,0 +1,135 @@
+{
+  "cases": [
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": [],
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts",
+        "subject"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "TestFile",
+          "name": "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "subject",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts"
+        }
+      ],
+      "expected_evidence_roles": [
+        {
+          "name": "subject",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts",
+          "role": "test"
+        }
+      ],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "TestFile",
+          "name": "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "subject",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts"
+        }
+      ],
+      "family": "tests_mocks_assertions",
+      "files": [
+        "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "test/mock/assertion calls classified as test or mock evidence"
+      ],
+      "id": "tests_mocks_assertions.typescript",
+      "implementation_target": "heuristic",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [
+        {
+          "name": "subject",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts",
+          "role": "test"
+        }
+      ],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [
+        "Rust inline test function role metadata"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "subject",
+        "works"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "subject",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/rust/src/lib.rs"
+        },
+        {
+          "kind": "Function",
+          "name": "works",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/rust/src/lib.rs"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "subject",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/rust/src/lib.rs"
+        },
+        {
+          "kind": "Function",
+          "name": "works",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/rust/src/lib.rs"
+        }
+      ],
+      "family": "tests_mocks_assertions",
+      "files": [
+        "fixtures/language_coverage_matrix/tests_mocks_assertions/rust/src/lib.rs"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "tests_mocks_assertions.rust",
+      "implementation_target": [
+        {
+          "name": "works",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/rust/src/lib.rs",
+          "role": "test"
+        }
+      ],
+      "language": "rust",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    }
+  ],
+  "family": "tests_mocks_assertions",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}

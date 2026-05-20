@@ -5099,8 +5099,10 @@ pub fn parse_extract_pending_files(
                         let extraction_start = Instant::now();
                         let mut extraction = extract_entities_and_relations(&parsed, &file.source);
                         extraction.file.size_bytes = file.size_bytes;
-                        extraction.file.metadata =
-                            file_manifest_metadata(file.modified_unix_nanos.clone());
+                        extraction.file.metadata = file_manifest_metadata_with_parser_status(
+                            file.modified_unix_nanos.clone(),
+                            extraction.file.metadata.clone(),
+                        );
                         let extraction_ms = extraction_start.elapsed().as_millis();
                         let bundle_start = Instant::now();
                         outputs.push(LocalFactBundle::new(
@@ -5136,15 +5138,46 @@ pub fn parse_extract_pending_files(
                         });
                     }
                     Err(error) => {
+                        let language = file.language.clone().or_else(|| {
+                            detect_language(&file.repo_relative_path)
+                                .map(|language| language.as_str().to_string())
+                        });
+                        let error_message = error.to_string();
+                        let extraction = BasicExtraction {
+                            file: FileRecord {
+                                repo_relative_path: file.repo_relative_path.clone(),
+                                file_hash: file.file_hash.clone(),
+                                language: language.clone(),
+                                size_bytes: file.size_bytes,
+                                indexed_at_unix_ms: None,
+                                metadata: parser_error_file_metadata(
+                                    file.modified_unix_nanos.clone(),
+                                    language.as_deref(),
+                                    &error_message,
+                                ),
+                            },
+                            entities: Vec::new(),
+                            edges: Vec::new(),
+                        };
+                        let bundle_start = Instant::now();
+                        outputs.push(LocalFactBundle::new(
+                            file.repo_relative_path.clone(),
+                            file.source,
+                            file.needs_delete,
+                            None,
+                            file.template_required,
+                            extraction,
+                        ));
+                        let bundle_ms = bundle_start.elapsed().as_millis();
                         stats.push(ParseExtractStat {
                             repo_relative_path: file.repo_relative_path,
                             parse_ms,
                             extraction_ms: 0,
-                            bundle_ms: 0,
+                            bundle_ms,
                             parse_error: true,
                             syntax_error: false,
                             skipped: false,
-                            message: Some(error.to_string()),
+                            message: Some(error_message),
                         });
                     }
                 }
@@ -5681,8 +5714,21 @@ pub fn update_changed_files_with_cache_to_db(
                     summary.files_skipped += 1;
                     continue;
                 }
-                Err(_) => {
+                Err(error) => {
                     summary.parse_errors += 1;
+                    let error_message = error.to_string();
+                    tx.upsert_file(&FileRecord {
+                        repo_relative_path: repo_relative_path.clone(),
+                        file_hash: hash.clone(),
+                        language: Some(language.as_str().to_string()),
+                        size_bytes,
+                        indexed_at_unix_ms: Some(indexed_at),
+                        metadata: parser_error_file_metadata(
+                            modified_unix_nanos(&file_metadata),
+                            Some(language.as_str()),
+                            &error_message,
+                        ),
+                    })?;
                     continue;
                 }
             };
@@ -5701,7 +5747,10 @@ pub fn update_changed_files_with_cache_to_db(
             );
             extraction.file.size_bytes = size_bytes;
             extraction.file.indexed_at_unix_ms = Some(indexed_at);
-            extraction.file.metadata = file_manifest_metadata(modified_unix_nanos(&file_metadata));
+            extraction.file.metadata = file_manifest_metadata_with_parser_status(
+                modified_unix_nanos(&file_metadata),
+                extraction.file.metadata.clone(),
+            );
             let mut snippets = None;
             let file_start = Instant::now();
             tx.upsert_file(&extraction.file)?;
@@ -6774,6 +6823,10 @@ fn reduce_test_edges_from_workspace(
             repo_relative_path,
             source,
         )?;
+        let import_spans_by_local = parse_static_imports(repo_relative_path, source)
+            .into_iter()
+            .map(|spec| (spec.local_name, spec.span))
+            .collect::<BTreeMap<_, _>>();
 
         for mock in parse_static_mock_specs(repo_relative_path, source) {
             let Some(target_path) = resolve_local_module_path(
@@ -6838,6 +6891,55 @@ fn reduce_test_edges_from_workspace(
                 "static_test_assertion_import_target",
                 "test",
             ));
+            plan.push_edge(resolved_test_edge(
+                &test_case.id,
+                RelationKind::Tests,
+                &assertion.target.id,
+                &assertion.span,
+                file_hash,
+                "static_test_assertion_import_target",
+                "test",
+            ));
+        }
+
+        let mut direct_test_edges = BTreeSet::new();
+        for test_case in &test_cases {
+            let Some(test_span) = test_case.source_span.as_ref() else {
+                continue;
+            };
+            for (local_name, target) in &import_targets {
+                for call_span in call_spans_for_local_name(source, repo_relative_path, local_name) {
+                    let Some(import_span) = import_spans_by_local.get(local_name) else {
+                        continue;
+                    };
+                    if !span_contains(test_span, &call_span)
+                        || local_declaration_shadows_import(
+                            &workspace.entities_by_file,
+                            repo_relative_path,
+                            local_name,
+                            import_span,
+                            &call_span,
+                        )
+                    {
+                        continue;
+                    }
+                    if direct_test_edges.insert((
+                        test_case.id.clone(),
+                        target.id.clone(),
+                        call_span.to_string(),
+                    )) {
+                        plan.push_edge(resolved_test_edge(
+                            &test_case.id,
+                            RelationKind::Tests,
+                            &target.id,
+                            &call_span,
+                            file_hash,
+                            "static_test_direct_import_call",
+                            "test",
+                        ));
+                    }
+                }
+            }
         }
     }
     plan.sort();
@@ -6870,6 +6972,48 @@ fn reduce_derived_mutation_edges_from_store(
             .flatten()
         {
             plan.push_edge(derived_mutation_edge(call, write));
+        }
+    }
+    let flows =
+        store.list_stored_edges_by_relation(RelationKind::FlowsTo, UNBOUNDED_STORE_READ_LIMIT)?;
+    let base_flows = flows
+        .iter()
+        .filter(|edge| !edge.derived)
+        .collect::<Vec<_>>();
+    let mut flows_by_head = BTreeMap::<&str, Vec<&Edge>>::new();
+    for edge in &base_flows {
+        flows_by_head
+            .entry(edge.head_id.as_str())
+            .or_default()
+            .push(*edge);
+    }
+    for first in &base_flows {
+        let Some(second_hops) = flows_by_head.get(first.tail_id.as_str()) else {
+            continue;
+        };
+        for second in second_hops {
+            if !chainable_dataflow_edges(first, second)
+                || first.head_id == second.tail_id
+                || first.id == second.id
+            {
+                continue;
+            }
+            plan.push_edge(derived_dataflow_edge(&[*first, *second]));
+
+            let Some(third_hops) = flows_by_head.get(second.tail_id.as_str()) else {
+                continue;
+            };
+            for third in third_hops {
+                if !chainable_dataflow_edges(second, third)
+                    || first.id == third.id
+                    || second.id == third.id
+                    || first.head_id == third.tail_id
+                    || second.head_id == third.tail_id
+                {
+                    continue;
+                }
+                plan.push_edge(derived_dataflow_edge(&[*first, *second, *third]));
+            }
         }
     }
     plan.sort();
@@ -6916,6 +7060,61 @@ fn derived_mutation_edge(call: &Edge, write: &Edge) -> Edge {
         file_hash: call.file_hash.clone().or_else(|| write.file_hash.clone()),
         extractor: "codegraph-index-derived-closure".to_string(),
         confidence: call.confidence.min(write.confidence),
+        exactness,
+        edge_class: EdgeClass::Derived,
+        context,
+        derived: true,
+        provenance_edges,
+        metadata,
+    }
+}
+
+fn chainable_dataflow_edges(first: &Edge, second: &Edge) -> bool {
+    first.relation == RelationKind::FlowsTo
+        && second.relation == RelationKind::FlowsTo
+        && !first.derived
+        && !second.derived
+        && first.tail_id == second.head_id
+        && first.source_span.repo_relative_path == second.source_span.repo_relative_path
+}
+
+fn derived_dataflow_edge(path: &[&Edge]) -> Edge {
+    debug_assert!(path.len() >= 2);
+    let first = path[0];
+    let last = path[path.len() - 1];
+    let provenance_edges = path.iter().map(|edge| edge.id.clone()).collect::<Vec<_>>();
+    let exactness = derived_exactness_for_edges(path.iter().copied());
+    let context = derived_context_for_edges(path.iter().copied());
+    let confidence = path
+        .iter()
+        .fold(1.0_f64, |minimum, edge| minimum.min(edge.confidence));
+    let mut metadata = Metadata::new();
+    metadata.insert("resolution".to_string(), "derived_from_base_path".into());
+    metadata.insert("resolver".to_string(), "flows_to_local_closure".into());
+    metadata.insert("phase".to_string(), "language_tier3".into());
+    metadata.insert("context".to_string(), context.as_str().into());
+    metadata.insert("provenance_kind".to_string(), "FLOWS_TO+".into());
+    metadata.insert("claim_state".to_string(), "derived_with_provenance".into());
+    metadata.insert("hop_count".to_string(), path.len().into());
+
+    Edge {
+        id: stable_edge_id(
+            &first.head_id,
+            RelationKind::FlowsTo,
+            &last.tail_id,
+            &last.source_span,
+        ),
+        head_id: first.head_id.clone(),
+        relation: RelationKind::FlowsTo,
+        tail_id: last.tail_id.clone(),
+        source_span: last.source_span.clone(),
+        repo_commit: first
+            .repo_commit
+            .clone()
+            .or_else(|| last.repo_commit.clone()),
+        file_hash: first.file_hash.clone().or_else(|| last.file_hash.clone()),
+        extractor: "codegraph-index-derived-dataflow".to_string(),
+        confidence,
         exactness,
         edge_class: EdgeClass::Derived,
         context,
@@ -7753,6 +7952,13 @@ fn import_alias_entity(spec: &StaticImportSpec, file_hash: &str) -> Entity {
         .into(),
     );
     metadata.insert("resolution".to_string(), "resolved_static_import".into());
+    metadata.insert("claim_state".to_string(), "exact".into());
+    metadata.insert("syntax_claim_state".to_string(), "exact".into());
+    metadata.insert("target_resolution_claim_state".to_string(), "exact".into());
+    metadata.insert(
+        "proof_basis".to_string(),
+        "local module specifier resolved to indexed file and declaration name".into(),
+    );
     metadata.insert("phase".to_string(), "14".into());
     Entity {
         id: stable_entity_id_for_kind(
@@ -7791,6 +7997,12 @@ fn dynamic_import_entity(
     metadata.insert("specifier".to_string(), spec.specifier.clone().into());
     metadata.insert("import_kind".to_string(), "dynamic".into());
     metadata.insert("resolution".to_string(), "unresolved_dynamic_import".into());
+    metadata.insert("claim_state".to_string(), "heuristic".into());
+    metadata.insert("syntax_claim_state".to_string(), "heuristic".into());
+    metadata.insert(
+        "target_resolution_claim_state".to_string(),
+        "unresolved".into(),
+    );
     metadata.insert("context".to_string(), "unknown".into());
     metadata.insert("phase".to_string(), "14".into());
     Entity {
@@ -7824,6 +8036,13 @@ fn resolved_import_edge(
     let mut metadata = Metadata::new();
     metadata.insert("resolution".to_string(), "resolved_static_import".into());
     metadata.insert("resolver".to_string(), reason.into());
+    metadata.insert("claim_state".to_string(), "exact".into());
+    metadata.insert("syntax_claim_state".to_string(), "exact".into());
+    metadata.insert("target_resolution_claim_state".to_string(), "exact".into());
+    metadata.insert(
+        "proof_basis".to_string(),
+        "local module specifier resolved to indexed file and declaration name".into(),
+    );
     metadata.insert("phase".to_string(), "14".into());
     Edge {
         id: stable_edge_id(head_id, relation, tail_id, span),
@@ -7853,6 +8072,12 @@ fn unresolved_dynamic_import_edge(
     let mut metadata = Metadata::new();
     metadata.insert("resolution".to_string(), "unresolved_dynamic_import".into());
     metadata.insert("resolver".to_string(), "dynamic_import_unresolved".into());
+    metadata.insert("claim_state".to_string(), "heuristic".into());
+    metadata.insert("syntax_claim_state".to_string(), "heuristic".into());
+    metadata.insert(
+        "target_resolution_claim_state".to_string(),
+        "unresolved".into(),
+    );
     metadata.insert("context".to_string(), "unknown".into());
     metadata.insert("phase".to_string(), "14".into());
     Edge {
@@ -7975,6 +8200,28 @@ fn resolved_test_edge(
     metadata.insert("resolver".to_string(), reason.into());
     metadata.insert("phase".to_string(), "31".into());
     metadata.insert("context".to_string(), context.into());
+    let evidence_role = if context.eq_ignore_ascii_case("mock")
+        || context.eq_ignore_ascii_case("stub")
+        || matches!(relation, RelationKind::Mocks | RelationKind::Stubs)
+    {
+        "mock"
+    } else {
+        "test"
+    };
+    metadata.insert("source_role".to_string(), evidence_role.into());
+    metadata.insert("evidence_role".to_string(), evidence_role.into());
+    metadata.insert(
+        "classification_source".to_string(),
+        "test_relation_resolver".into(),
+    );
+    metadata.insert(
+        "classification_reason".to_string(),
+        if evidence_role == "mock" {
+            "resolved mock/stub test relation".into()
+        } else {
+            "resolved test/assertion relation".into()
+        },
+    );
     Edge {
         id: stable_edge_id(head_id, relation, tail_id, span),
         head_id: head_id.to_string(),
@@ -7986,13 +8233,12 @@ fn resolved_test_edge(
         extractor: "codegraph-index-test-resolver".to_string(),
         confidence: 1.0,
         exactness: Exactness::ParserVerified,
-        edge_class: if context.eq_ignore_ascii_case("mock") || context.eq_ignore_ascii_case("stub")
-        {
+        edge_class: if evidence_role == "mock" {
             EdgeClass::Mock
         } else {
             EdgeClass::Test
         },
-        context: if context.eq_ignore_ascii_case("mock") || context.eq_ignore_ascii_case("stub") {
+        context: if evidence_role == "mock" {
             EdgeContext::Mock
         } else {
             EdgeContext::Test
@@ -8030,6 +8276,13 @@ fn mock_entity_for(
     );
     metadata.insert("phase".to_string(), "31".into());
     metadata.insert("context".to_string(), "mock".into());
+    metadata.insert("source_role".to_string(), "mock".into());
+    metadata.insert("evidence_role".to_string(), "mock".into());
+    metadata.insert(
+        "source_role_reason".to_string(),
+        "static test mock module factory".into(),
+    );
+    metadata.insert("source_role_source".to_string(), "test_resolver".into());
     metadata.insert("mocked_export".to_string(), exported_name.into());
     Entity {
         id: stable_entity_id_for_kind(
@@ -9240,7 +9493,11 @@ fn containing_test_case(test_cases: &[Entity], span: &SourceSpan) -> Option<Enti
 
 fn is_test_file_path_for_index(path: &str) -> bool {
     let normalized = normalize_graph_path(path).to_ascii_lowercase();
-    normalized.ends_with(".test.ts")
+    let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    normalized.contains("/tests/")
+        || normalized.contains("/test/")
+        || normalized.contains("/spec/")
+        || normalized.ends_with(".test.ts")
         || normalized.ends_with(".test.tsx")
         || normalized.ends_with(".test.js")
         || normalized.ends_with(".test.jsx")
@@ -9248,11 +9505,37 @@ fn is_test_file_path_for_index(path: &str) -> bool {
         || normalized.ends_with(".spec.tsx")
         || normalized.ends_with(".spec.js")
         || normalized.ends_with(".spec.jsx")
+        || normalized.ends_with("_test.go")
+        || normalized.ends_with("_test.py")
+        || normalized.ends_with("_test.rb")
+        || normalized.ends_with("_spec.rb")
+        || normalized.ends_with("_test.php")
+        || normalized.ends_with("_spec.php")
+        || (file_name.starts_with("test_") && file_name.ends_with(".py"))
+        || (file_name.starts_with("test_") && file_name.ends_with(".rb"))
+        || (file_name.starts_with("test_") && file_name.ends_with(".php"))
+        || file_name.ends_with("test.java")
+        || file_name.ends_with("tests.java")
+        || file_name.ends_with("spec.java")
+        || file_name.ends_with("test.cs")
+        || file_name.ends_with("tests.cs")
+        || file_name.ends_with("spec.cs")
+        || file_name.ends_with("test.php")
+        || file_name.ends_with("testcase.php")
+        || file_name.ends_with("test.rb")
+        || file_name.ends_with("spec.rb")
 }
 
 fn source_may_have_test_relation(source: &str) -> bool {
     let lower = source.to_ascii_lowercase();
     lower.contains("expect(")
+        || lower.contains("describe(")
+        || lower.contains(" it(")
+        || lower.trim_start().starts_with("it(")
+        || lower.contains("\nit(")
+        || lower.contains(" test(")
+        || lower.trim_start().starts_with("test(")
+        || lower.contains("\ntest(")
         || lower.contains("assert")
         || lower.contains(".mock(")
         || lower.contains("jest.mock")
@@ -9416,6 +9699,36 @@ fn file_manifest_metadata(modified_unix_nanos: Option<String>) -> Metadata {
         FILE_STALE_CLEANUP_KEY.to_string(),
         FILE_STALE_CLEANUP_DELETE_BEFORE_INSERT.into(),
     );
+    metadata
+}
+
+fn file_manifest_metadata_with_parser_status(
+    modified_unix_nanos: Option<String>,
+    parser_metadata: Metadata,
+) -> Metadata {
+    let mut metadata = file_manifest_metadata(modified_unix_nanos);
+    metadata.extend(parser_metadata);
+    metadata
+}
+
+fn parser_error_file_metadata(
+    modified_unix_nanos: Option<String>,
+    language: Option<&str>,
+    error_message: &str,
+) -> Metadata {
+    let mut metadata = file_manifest_metadata(modified_unix_nanos);
+    metadata.insert("parser_status".to_string(), "parser_error".into());
+    metadata.insert("claim_state".to_string(), "unsupported".into());
+    metadata.insert(
+        "unsupported_behavior_label".to_string(),
+        "parser_invocation_failed".into(),
+    );
+    metadata.insert("parser_error".to_string(), true.into());
+    metadata.insert("parser_error_message".to_string(), error_message.into());
+    metadata.insert("graph_relation_claims".to_string(), json!([]));
+    if let Some(language) = language {
+        metadata.insert("parser_frontend".to_string(), language.into());
+    }
     metadata
 }
 
@@ -11968,6 +12281,84 @@ mod tests {
     }
 
     #[test]
+    fn tier0_local_fact_bundle_preserves_parser_status_for_syntax_recovery() {
+        let pending = vec![pending_test_file(
+            "src/broken.ts",
+            "function safe() { return 1; }\nfunction broken() {\n  return target(\n}\n",
+        )];
+
+        let (bundles, stats) = parse_extract_pending_files(pending, 1).expect("parse/extract");
+        let stat = stats.first().expect("stat");
+        assert!(!stat.parse_error);
+        assert!(stat.syntax_error);
+
+        let bundle = bundles.first().expect("bundle");
+        assert_eq!(
+            bundle.source,
+            "function safe() { return 1; }\nfunction broken() {\n  return target(\n}\n"
+        );
+        assert_eq!(
+            bundle
+                .extraction
+                .file
+                .metadata
+                .get("parser_status")
+                .and_then(Value::as_str),
+            Some("syntax_errors_recovered")
+        );
+        assert_eq!(
+            bundle
+                .extraction
+                .file
+                .metadata
+                .get("unsupported_behavior_label")
+                .and_then(Value::as_str),
+            Some("malformed_regions_not_trusted_for_exact_relations")
+        );
+        assert!(bundle
+            .declarations
+            .iter()
+            .any(|symbol| symbol.name == "safe"));
+        assert!(!bundle.local_callsites.iter().any(|edge| {
+            edge.relation == RelationKind::Calls
+                && edge.exactness == Exactness::ParserVerified
+                && edge.source_span.start_line >= 3
+        }));
+    }
+
+    #[test]
+    fn tier0_parser_error_metadata_is_structured_unsupported_evidence() {
+        let metadata = parser_error_file_metadata(
+            Some("123".to_string()),
+            Some("typescript"),
+            "synthetic parser failure",
+        );
+
+        assert_eq!(
+            metadata.get("parser_status").and_then(Value::as_str),
+            Some("parser_error")
+        );
+        assert_eq!(
+            metadata.get("claim_state").and_then(Value::as_str),
+            Some("unsupported")
+        );
+        assert_eq!(
+            metadata
+                .get("unsupported_behavior_label")
+                .and_then(Value::as_str),
+            Some("parser_invocation_failed")
+        );
+        assert_eq!(
+            metadata.get("parser_frontend").and_then(Value::as_str),
+            Some("typescript")
+        );
+        assert!(metadata
+            .get("graph_relation_claims")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty));
+    }
+
+    #[test]
     fn local_fact_bundle_serializes_round_trip() {
         let pending = vec![pending_test_file(
             "src/a.ts",
@@ -12277,6 +12668,165 @@ mod tests {
         assert!(derived.provenance_edges.contains(&base_call.id));
         assert!(derived.provenance_edges.contains(&base_write.id));
         assert_db_integrity(&db);
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn heuristic_mutation_method_call_is_not_promoted_to_proof_may_mutate() {
+        let repo = temp_repo("method-mutation-proof-boundary");
+        fs::write(
+            repo.join("src").join("mutation.ts"),
+            concat!(
+                "export function collect(items: string[], input: string) {\n",
+                "  items.push(input);\n",
+                "  return items;\n",
+                "}\n",
+            ),
+        )
+        .expect("write mutation");
+
+        let db = repo.join("target").join("method-mutation-boundary.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let collect = entity_by_file_kind_and_name(
+            &store,
+            "src/mutation.ts",
+            EntityKind::Function,
+            "collect",
+        );
+        let items =
+            entity_by_file_kind_and_name(&store, "src/mutation.ts", EntityKind::Parameter, "items");
+        let edges = store.list_edges(UNBOUNDED_STORE_READ_LIMIT).expect("edges");
+
+        assert!(edges.iter().all(|edge| {
+            !(edge.head_id == collect.id
+                && edge.tail_id == items.id
+                && edge.relation == RelationKind::MayMutate)
+        }));
+        assert_db_integrity(&db);
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn derived_local_dataflow_closure_is_persisted_with_base_provenance() {
+        let repo = temp_repo("derived-dataflow-provenance");
+        fs::write(
+            repo.join("src").join("flow.ts"),
+            concat!(
+                "export function sink(value: string) { return value; }\n",
+                "export function run(input: string) {\n",
+                "  const a = input;\n",
+                "  const b = a;\n",
+                "  return sink(b);\n",
+                "}\n",
+            ),
+        )
+        .expect("write flow");
+
+        let db = repo.join("target").join("derived-flow.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let input =
+            entity_by_file_kind_and_name(&store, "src/flow.ts", EntityKind::Parameter, "input");
+        let a = entity_by_file_kind_and_name(&store, "src/flow.ts", EntityKind::LocalVariable, "a");
+        let b = entity_by_file_kind_and_name(&store, "src/flow.ts", EntityKind::LocalVariable, "b");
+        let value =
+            entity_by_file_kind_and_name(&store, "src/flow.ts", EntityKind::Parameter, "value");
+        let edges = store.list_edges(UNBOUNDED_STORE_READ_LIMIT).expect("edges");
+        let input_to_a = edges
+            .iter()
+            .find(|edge| {
+                edge.relation == RelationKind::FlowsTo
+                    && edge.head_id == input.id
+                    && edge.tail_id == a.id
+                    && !edge.derived
+            })
+            .expect("base FLOWS_TO input -> a");
+        let a_to_b = edges
+            .iter()
+            .find(|edge| {
+                edge.relation == RelationKind::FlowsTo
+                    && edge.head_id == a.id
+                    && edge.tail_id == b.id
+                    && !edge.derived
+            })
+            .expect("base FLOWS_TO a -> b");
+        let b_to_value = edges
+            .iter()
+            .find(|edge| {
+                edge.relation == RelationKind::FlowsTo
+                    && edge.head_id == b.id
+                    && edge.tail_id == value.id
+                    && !edge.derived
+            })
+            .expect("base FLOWS_TO b -> sink.value");
+        let derived = edges
+            .iter()
+            .find(|edge| {
+                edge.relation == RelationKind::FlowsTo
+                    && edge.head_id == input.id
+                    && edge.tail_id == value.id
+                    && edge.derived
+            })
+            .expect("derived FLOWS_TO input -> sink.value");
+
+        assert_eq!(derived.edge_class, EdgeClass::Derived);
+        assert_eq!(derived.exactness, Exactness::DerivedFromVerifiedEdges);
+        assert_eq!(derived.context, EdgeContext::Production);
+        assert_eq!(derived.source_span.repo_relative_path, "src/flow.ts");
+        assert_eq!(derived.source_span.start_line, 5);
+        assert_eq!(derived.provenance_edges.len(), 3);
+        assert!(derived.provenance_edges.contains(&input_to_a.id));
+        assert!(derived.provenance_edges.contains(&a_to_b.id));
+        assert!(derived.provenance_edges.contains(&b_to_value.id));
+        assert!(edges.iter().all(|edge| {
+            edge.relation != RelationKind::FlowsTo
+                || !edge.derived
+                || !edge.provenance_edges.is_empty()
+        }));
+        assert_db_integrity(&db);
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn sanitizer_comments_and_strings_do_not_create_sanitizer_proof() {
+        let repo = temp_repo("sanitizer-comments-strings");
+        fs::write(
+            repo.join("src").join("flow.ts"),
+            concat!(
+                "export function sanitizeHtml(input: string) { return input; }\n",
+                "export function run(raw: string) {\n",
+                "  const note = \"sanitizeHtml(raw)\";\n",
+                "  // sanitizeHtml(raw)\n",
+                "  return raw;\n",
+                "}\n",
+            ),
+        )
+        .expect("write flow");
+
+        let db = repo.join("target").join("sanitizer-comments.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let sanitizer = entity_by_file_kind_and_name(
+            &store,
+            "src/flow.ts",
+            EntityKind::Sanitizer,
+            "sanitizeHtml",
+        );
+        let sanitizer_edges = store
+            .find_edges_by_head_relation(&sanitizer.id, RelationKind::Sanitizes)
+            .expect("sanitizer edges");
+
+        assert!(
+            sanitizer_edges.is_empty(),
+            "comments and string literals must not create SANITIZES proof edges"
+        );
 
         drop(store);
         fs::remove_dir_all(repo).expect("cleanup");
@@ -13016,6 +13566,7 @@ mod tests {
             concat!(
                 "export async function loadPlugin(name: string) {\n",
                 "  const mod = await import(\"./plugins/\" + name);\n",
+                "  const literal = await import(\"./plugins/alpha\");\n",
                 "  return mod.default();\n",
                 "}\n",
             ),
@@ -13074,6 +13625,15 @@ mod tests {
                     && entity.qualified_name == "dynamic_import:./plugins/+name"
             })
             .expect("dynamic import entity");
+        let literal_dynamic_import = store
+            .list_static_references(UNBOUNDED_STORE_READ_LIMIT)
+            .expect("sidecar entities")
+            .into_iter()
+            .find(|entity| {
+                entity.kind == EntityKind::Import
+                    && entity.qualified_name == "dynamic_import:./plugins/alpha"
+            })
+            .expect("literal dynamic import entity");
         let alpha_default = entity_by_file_kind_and_name(
             &store,
             "src/plugins/alpha.ts",
@@ -13093,6 +13653,19 @@ mod tests {
                 && edge.source_span.start_line == 2
                 && edge.source_span.start_column == Some(21)
                 && edge.source_span.end_column == Some(48)
+                && edge
+                    .metadata
+                    .get("resolution")
+                    .and_then(|value| value.as_str())
+                    == Some("unresolved_dynamic_import")
+        }));
+        assert!(imports.iter().any(|edge| {
+            edge.head_id == load_plugin.id
+                && edge.tail_id == literal_dynamic_import.id
+                && edge.exactness == Exactness::StaticHeuristic
+                && edge.confidence < 1.0
+                && edge.source_span.repo_relative_path == "src/loader.ts"
+                && edge.source_span.start_line == 3
                 && edge
                     .metadata
                     .get("resolution")
@@ -13564,6 +14137,9 @@ mod tests {
         let assert_edges = store
             .find_edges_by_head_relation(&test_case.id, RelationKind::Asserts)
             .expect("assert edges");
+        let test_edges = store
+            .find_edges_by_head_relation(&test_case.id, RelationKind::Tests)
+            .expect("test edges");
 
         assert_ne!(production.id, mock.id);
         assert!(mock_edges.iter().any(|edge| {
@@ -13577,6 +14153,12 @@ mod tests {
                 && edge.context == EdgeContext::Mock
         }));
         assert!(assert_edges.iter().any(|edge| {
+            edge.tail_id == checkout.id
+                && edge.edge_class == EdgeClass::Test
+                && edge.context == EdgeContext::Test
+                && edge.source_span.repo_relative_path == "tests/checkout.test.ts"
+        }));
+        assert!(test_edges.iter().any(|edge| {
             edge.tail_id == checkout.id
                 && edge.edge_class == EdgeClass::Test
                 && edge.context == EdgeContext::Test

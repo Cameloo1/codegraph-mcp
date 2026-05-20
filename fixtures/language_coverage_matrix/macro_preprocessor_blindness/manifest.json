@@ -1,0 +1,115 @@
+{
+  "cases": [
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "caller"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/macro_preprocessor_blindness/rust/src/macro.rs"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/macro_preprocessor_blindness/rust/src/macro.rs"
+        }
+      ],
+      "family": "macro_preprocessor_blindness",
+      "files": [
+        "fixtures/language_coverage_matrix/macro_preprocessor_blindness/rust/src/macro.rs"
+      ],
+      "forbidden_edges": [
+        {
+          "exactness": "parser_verified",
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/macro_preprocessor_blindness/rust/src/macro.rs",
+          "relation": "CALLS",
+          "tail_name": "generated"
+        }
+      ],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "macro invocation syntax visible"
+      ],
+      "id": "macro_preprocessor_blindness.rust",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "rust",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "macro expansion unsupported"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "caller"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/macro_preprocessor_blindness/c/src/macro.c"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/macro_preprocessor_blindness/c/src/macro.c"
+        }
+      ],
+      "family": "macro_preprocessor_blindness",
+      "files": [
+        "fixtures/language_coverage_matrix/macro_preprocessor_blindness/c/src/macro.c"
+      ],
+      "forbidden_edges": [
+        {
+          "exactness": "parser_verified",
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/macro_preprocessor_blindness/c/src/macro.c",
+          "relation": "CALLS",
+          "tail_name": "generated"
+        }
+      ],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "preprocessor syntax visible"
+      ],
+      "id": "macro_preprocessor_blindness.c",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "c",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "macro expansion unsupported"
+      ]
+    }
+  ],
+  "family": "macro_preprocessor_blindness",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}

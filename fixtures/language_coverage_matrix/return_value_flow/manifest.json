@@ -1,0 +1,124 @@
+{
+  "cases": [
+    {
+      "exact_expected": [
+        "return sites and RETURNS/RETURNS_TO syntax"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "return@",
+        "source"
+      ],
+      "expected_edges": [
+        {
+          "path": "fixtures/language_coverage_matrix/return_value_flow/typescript/src/return_flow.ts",
+          "relation": "RETURNS"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "source",
+          "path": "fixtures/language_coverage_matrix/return_value_flow/typescript/src/return_flow.ts"
+        },
+        {
+          "kind": "ReturnSite",
+          "name": "return@",
+          "path": "fixtures/language_coverage_matrix/return_value_flow/typescript/src/return_flow.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "source",
+          "path": "fixtures/language_coverage_matrix/return_value_flow/typescript/src/return_flow.ts"
+        },
+        {
+          "kind": "ReturnSite",
+          "name": "return@",
+          "path": "fixtures/language_coverage_matrix/return_value_flow/typescript/src/return_flow.ts"
+        }
+      ],
+      "family": "return_value_flow",
+      "files": [
+        "fixtures/language_coverage_matrix/return_value_flow/typescript/src/return_flow.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "interprocedural return value flow is not proven"
+      ],
+      "id": "return_value_flow.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "caller",
+        "source"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "source",
+          "path": "fixtures/language_coverage_matrix/return_value_flow/go/src/return_flow.go"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/return_value_flow/go/src/return_flow.go"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "source",
+          "path": "fixtures/language_coverage_matrix/return_value_flow/go/src/return_flow.go"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/return_value_flow/go/src/return_flow.go"
+        }
+      ],
+      "family": "return_value_flow",
+      "files": [
+        "fixtures/language_coverage_matrix/return_value_flow/go/src/return_flow.go"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "return_value_flow.go",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "go",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "Go return value dataflow unsupported"
+      ]
+    }
+  ],
+  "family": "return_value_flow",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}

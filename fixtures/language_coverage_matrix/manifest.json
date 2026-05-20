@@ -1,0 +1,2324 @@
+{
+  "cases": [
+    {
+      "exact_expected": [
+        "same-scope function duplicate call resolves only to same-scope declaration"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "exact",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "caller",
+        "duplicate"
+      ],
+      "expected_edges": [
+        {
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts",
+          "relation": "CALLS",
+          "tail_name": "duplicate"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts"
+        },
+        {
+          "kind": "Method",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts"
+        },
+        {
+          "kind": "Method",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts"
+        }
+      ],
+      "family": "same_name_symbols",
+      "files": [
+        "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts"
+      ],
+      "forbidden_edges": [
+        {
+          "exactness": "parser_verified",
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts",
+          "relation": "CALLS",
+          "tail_name": "Box.duplicate"
+        }
+      ],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "method receiver dispatch is parser-visible but not type-verified"
+      ],
+      "id": "same_name_symbols.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [
+        "same-scope Python direct call"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "exact",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "Box",
+        "caller",
+        "duplicate"
+      ],
+      "expected_edges": [
+        {
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/python/src/same.py",
+          "relation": "CALLS",
+          "tail_name": "duplicate"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/python/src/same.py"
+        },
+        {
+          "kind": "Class",
+          "name": "Box",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/python/src/same.py"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/python/src/same.py"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/python/src/same.py"
+        },
+        {
+          "kind": "Class",
+          "name": "Box",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/python/src/same.py"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/python/src/same.py"
+        }
+      ],
+      "family": "same_name_symbols",
+      "files": [
+        "fixtures/language_coverage_matrix/same_name_symbols/python/src/same.py"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "method binding remains parser-level"
+      ],
+      "id": "same_name_symbols.python",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "python",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [
+        "same-module Rust direct call"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "exact",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "caller",
+        "duplicate",
+        "inner"
+      ],
+      "expected_edges": [
+        {
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/rust/src/lib.rs",
+          "relation": "CALLS",
+          "tail_name": "duplicate"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/rust/src/lib.rs"
+        },
+        {
+          "kind": "Module",
+          "name": "inner",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/rust/src/lib.rs"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/rust/src/lib.rs"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/rust/src/lib.rs"
+        },
+        {
+          "kind": "Module",
+          "name": "inner",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/rust/src/lib.rs"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/rust/src/lib.rs"
+        }
+      ],
+      "family": "same_name_symbols",
+      "files": [
+        "fixtures/language_coverage_matrix/same_name_symbols/rust/src/lib.rs"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "module path resolution is parser-level only"
+      ],
+      "id": "same_name_symbols.rust",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "rust",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "macro-expanded duplicate definitions are unsupported"
+      ]
+    },
+    {
+      "exact_expected": [
+        "same-package Go direct call"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "caller",
+        "duplicate"
+      ],
+      "expected_edges": [
+        {
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/go/src/same.go",
+          "relation": "CALLS",
+          "tail_name": "duplicate"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/go/src/same.go"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/go/src/same.go"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/go/src/same.go"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/go/src/same.go"
+        }
+      ],
+      "family": "same_name_symbols",
+      "files": [
+        "fixtures/language_coverage_matrix/same_name_symbols/go/src/same.go"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "receiver method binding is not type-verified"
+      ],
+      "id": "same_name_symbols.go",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "go",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "import { target as aliasedTarget } from \"./lib\";",
+        "run",
+        "target"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "target",
+          "path": "fixtures/language_coverage_matrix/import_aliases/typescript/src/lib.ts"
+        },
+        {
+          "kind": "Import",
+          "name": "import { target as aliasedTarget } from \"./lib\";",
+          "path": "fixtures/language_coverage_matrix/import_aliases/typescript/src/use.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/import_aliases/typescript/src/use.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "target",
+          "path": "fixtures/language_coverage_matrix/import_aliases/typescript/src/lib.ts"
+        },
+        {
+          "kind": "Import",
+          "name": "import { target as aliasedTarget } from \"./lib\";",
+          "path": "fixtures/language_coverage_matrix/import_aliases/typescript/src/use.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/import_aliases/typescript/src/use.ts"
+        }
+      ],
+      "family": "import_aliases",
+      "files": [
+        "fixtures/language_coverage_matrix/import_aliases/typescript/src/lib.ts",
+        "fixtures/language_coverage_matrix/import_aliases/typescript/src/use.ts"
+      ],
+      "forbidden_edges": [
+        {
+          "exactness": "parser_verified",
+          "head_name": "run",
+          "path": "fixtures/language_coverage_matrix/import_aliases/typescript/src/use.ts",
+          "relation": "CALLS",
+          "tail_name": "target"
+        }
+      ],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "alias call may remain heuristic without compiler resolver"
+      ],
+      "id": "import_aliases.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "compiler-backed alias proof is optional and absent in parser-only baseline"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "from lib import target as aliased_target",
+        "run"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Import",
+          "name": "from lib import target as aliased_target",
+          "path": "fixtures/language_coverage_matrix/import_aliases/python/src/use.py"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/import_aliases/python/src/use.py"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Import",
+          "name": "from lib import target as aliased_target",
+          "path": "fixtures/language_coverage_matrix/import_aliases/python/src/use.py"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/import_aliases/python/src/use.py"
+        }
+      ],
+      "family": "import_aliases",
+      "files": [
+        "fixtures/language_coverage_matrix/import_aliases/python/src/lib.py",
+        "fixtures/language_coverage_matrix/import_aliases/python/src/use.py"
+      ],
+      "forbidden_edges": [
+        {
+          "exactness": "parser_verified",
+          "head_name": "run",
+          "path": "fixtures/language_coverage_matrix/import_aliases/python/src/use.py",
+          "relation": "CALLS",
+          "tail_name": "target"
+        }
+      ],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "alias call is expected to remain unresolved/heuristic"
+      ],
+      "id": "import_aliases.python",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "python",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "cross-file Python import alias resolution unsupported"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "run",
+        "use crate::target as aliased_target;"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Import",
+          "name": "use crate::target as aliased_target;",
+          "path": "fixtures/language_coverage_matrix/import_aliases/rust/src/lib.rs"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/import_aliases/rust/src/lib.rs"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Import",
+          "name": "use crate::target as aliased_target;",
+          "path": "fixtures/language_coverage_matrix/import_aliases/rust/src/lib.rs"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/import_aliases/rust/src/lib.rs"
+        }
+      ],
+      "family": "import_aliases",
+      "files": [
+        "fixtures/language_coverage_matrix/import_aliases/rust/src/lib.rs"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "alias call may be unresolved"
+      ],
+      "id": "import_aliases.rust",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "rust",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "Rust use alias resolution unsupported"
+      ]
+    },
+    {
+      "exact_expected": [
+        "class and method declarations have source spans"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "App",
+        "Panel",
+        "renderTitle"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Class",
+          "name": "Panel",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/tsx/src/component.tsx"
+        },
+        {
+          "kind": "Method",
+          "name": "renderTitle",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/tsx/src/component.tsx"
+        },
+        {
+          "kind": "Function",
+          "name": "App",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/tsx/src/component.tsx"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Class",
+          "name": "Panel",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/tsx/src/component.tsx"
+        },
+        {
+          "kind": "Method",
+          "name": "renderTitle",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/tsx/src/component.tsx"
+        },
+        {
+          "kind": "Function",
+          "name": "App",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/tsx/src/component.tsx"
+        }
+      ],
+      "family": "nested_modules_classes",
+      "files": [
+        "fixtures/language_coverage_matrix/nested_modules_classes/tsx/src/component.tsx"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "JSX call-like rendering is not graph proof"
+      ],
+      "id": "nested_modules_classes.tsx",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "tsx",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [
+        "nested classes parse as declarations"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "Inner",
+        "Outer"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Class",
+          "name": "Outer",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/java/src/Nested.java"
+        },
+        {
+          "kind": "Class",
+          "name": "Inner",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/java/src/Nested.java"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Class",
+          "name": "Outer",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/java/src/Nested.java"
+        },
+        {
+          "kind": "Class",
+          "name": "Inner",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/java/src/Nested.java"
+        }
+      ],
+      "family": "nested_modules_classes",
+      "files": [
+        "fixtures/language_coverage_matrix/nested_modules_classes/java/src/Nested.java"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "nested_modules_classes.java",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "java",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "Java method calls unsupported in current tier"
+      ]
+    },
+    {
+      "exact_expected": [
+        "namespace/class syntax parsed"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "Fixture",
+        "Outer"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Module",
+          "name": "Fixture",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/csharp/src/Nested.cs"
+        },
+        {
+          "kind": "Class",
+          "name": "Outer",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/csharp/src/Nested.cs"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Module",
+          "name": "Fixture",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/csharp/src/Nested.cs"
+        },
+        {
+          "kind": "Class",
+          "name": "Outer",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/csharp/src/Nested.cs"
+        }
+      ],
+      "family": "nested_modules_classes",
+      "files": [
+        "fixtures/language_coverage_matrix/nested_modules_classes/csharp/src/Nested.cs"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "nested_modules_classes.csharp",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "csharp",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "C# semantic nesting unsupported"
+      ]
+    },
+    {
+      "exact_expected": [
+        "same-scope JavaScript call"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "exact",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "caller",
+        "target"
+      ],
+      "expected_edges": [
+        {
+          "exactness": "parser_verified",
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/direct_calls/javascript/src/direct.js",
+          "relation": "CALLS",
+          "tail_name": "target"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "target",
+          "path": "fixtures/language_coverage_matrix/direct_calls/javascript/src/direct.js"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/direct_calls/javascript/src/direct.js"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "target",
+          "path": "fixtures/language_coverage_matrix/direct_calls/javascript/src/direct.js"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/direct_calls/javascript/src/direct.js"
+        }
+      ],
+      "family": "direct_calls",
+      "files": [
+        "fixtures/language_coverage_matrix/direct_calls/javascript/src/direct.js"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "direct_calls.javascript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "javascript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [
+        "same-file Go call"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "exact",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "caller",
+        "target"
+      ],
+      "expected_edges": [
+        {
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/direct_calls/go/src/direct.go",
+          "relation": "CALLS",
+          "tail_name": "target"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "target",
+          "path": "fixtures/language_coverage_matrix/direct_calls/go/src/direct.go"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/direct_calls/go/src/direct.go"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "target",
+          "path": "fixtures/language_coverage_matrix/direct_calls/go/src/direct.go"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/direct_calls/go/src/direct.go"
+        }
+      ],
+      "family": "direct_calls",
+      "files": [
+        "fixtures/language_coverage_matrix/direct_calls/go/src/direct.go"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "direct_calls.go",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "go",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "heuristic",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "Service",
+        "run",
+        "save"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Class",
+          "name": "Service",
+          "path": "fixtures/language_coverage_matrix/method_calls/typescript/src/method.ts"
+        },
+        {
+          "kind": "Method",
+          "name": "save",
+          "path": "fixtures/language_coverage_matrix/method_calls/typescript/src/method.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/method_calls/typescript/src/method.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Class",
+          "name": "Service",
+          "path": "fixtures/language_coverage_matrix/method_calls/typescript/src/method.ts"
+        },
+        {
+          "kind": "Method",
+          "name": "save",
+          "path": "fixtures/language_coverage_matrix/method_calls/typescript/src/method.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/method_calls/typescript/src/method.ts"
+        }
+      ],
+      "family": "method_calls",
+      "files": [
+        "fixtures/language_coverage_matrix/method_calls/typescript/src/method.ts"
+      ],
+      "forbidden_edges": [
+        {
+          "exactness": "parser_verified",
+          "head_name": "run",
+          "path": "fixtures/language_coverage_matrix/method_calls/typescript/src/method.ts",
+          "relation": "CALLS",
+          "tail_name": "save"
+        }
+      ],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "receiver method call remains heuristic without type proof"
+      ],
+      "id": "method_calls.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "exact receiver dispatch unsupported without semantic resolver"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "heuristic",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "Service",
+        "run"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Class",
+          "name": "Service",
+          "path": "fixtures/language_coverage_matrix/method_calls/python/src/method.py"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/method_calls/python/src/method.py"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Class",
+          "name": "Service",
+          "path": "fixtures/language_coverage_matrix/method_calls/python/src/method.py"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/method_calls/python/src/method.py"
+        }
+      ],
+      "family": "method_calls",
+      "files": [
+        "fixtures/language_coverage_matrix/method_calls/python/src/method.py"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "dynamic method call is heuristic/unresolved"
+      ],
+      "id": "method_calls.python",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "python",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "Python receiver type resolution unsupported"
+      ]
+    },
+    {
+      "exact_expected": [
+        "local direct reads/writes"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "exact",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "count",
+        "inc"
+      ],
+      "expected_edges": [
+        {
+          "head_name": "inc",
+          "path": "fixtures/language_coverage_matrix/reads_writes/typescript/src/reads_writes.ts",
+          "relation": "WRITES",
+          "tail_name": "count"
+        },
+        {
+          "head_name": "inc",
+          "path": "fixtures/language_coverage_matrix/reads_writes/typescript/src/reads_writes.ts",
+          "relation": "READS",
+          "tail_name": "count"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "LocalVariable",
+          "name": "count",
+          "path": "fixtures/language_coverage_matrix/reads_writes/typescript/src/reads_writes.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "inc",
+          "path": "fixtures/language_coverage_matrix/reads_writes/typescript/src/reads_writes.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "LocalVariable",
+          "name": "count",
+          "path": "fixtures/language_coverage_matrix/reads_writes/typescript/src/reads_writes.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "inc",
+          "path": "fixtures/language_coverage_matrix/reads_writes/typescript/src/reads_writes.ts"
+        }
+      ],
+      "family": "reads_writes",
+      "files": [
+        "fixtures/language_coverage_matrix/reads_writes/typescript/src/reads_writes.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "reads_writes.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "count",
+        "inc"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "inc",
+          "path": "fixtures/language_coverage_matrix/reads_writes/rust/src/reads_writes.rs"
+        },
+        {
+          "kind": "LocalVariable",
+          "name": "count",
+          "path": "fixtures/language_coverage_matrix/reads_writes/rust/src/reads_writes.rs"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "inc",
+          "path": "fixtures/language_coverage_matrix/reads_writes/rust/src/reads_writes.rs"
+        },
+        {
+          "kind": "LocalVariable",
+          "name": "count",
+          "path": "fixtures/language_coverage_matrix/reads_writes/rust/src/reads_writes.rs"
+        }
+      ],
+      "family": "reads_writes",
+      "files": [
+        "fixtures/language_coverage_matrix/reads_writes/rust/src/reads_writes.rs"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "reads_writes.rust",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "rust",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "Rust READS/WRITES extraction unsupported in generic tier"
+      ]
+    },
+    {
+      "exact_expected": [
+        "direct assignment flow"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "cleaned",
+        "copied",
+        "input"
+      ],
+      "expected_edges": [
+        {
+          "head_name": "cleaned",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/typescript/src/flow.ts",
+          "relation": "FLOWS_TO",
+          "tail_name": "copied"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "Parameter",
+          "name": "input",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/typescript/src/flow.ts"
+        },
+        {
+          "kind": "LocalVariable",
+          "name": "cleaned",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/typescript/src/flow.ts"
+        },
+        {
+          "kind": "LocalVariable",
+          "name": "copied",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/typescript/src/flow.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Parameter",
+          "name": "input",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/typescript/src/flow.ts"
+        },
+        {
+          "kind": "LocalVariable",
+          "name": "cleaned",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/typescript/src/flow.ts"
+        },
+        {
+          "kind": "LocalVariable",
+          "name": "copied",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/typescript/src/flow.ts"
+        }
+      ],
+      "family": "local_assignment_flow",
+      "files": [
+        "fixtures/language_coverage_matrix/local_assignment_flow/typescript/src/flow.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "method result source may be expression-level"
+      ],
+      "id": "local_assignment_flow.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "cleaned",
+        "run"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/python/src/flow.py"
+        },
+        {
+          "kind": "LocalVariable",
+          "name": "cleaned",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/python/src/flow.py"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/python/src/flow.py"
+        },
+        {
+          "kind": "LocalVariable",
+          "name": "cleaned",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/python/src/flow.py"
+        }
+      ],
+      "family": "local_assignment_flow",
+      "files": [
+        "fixtures/language_coverage_matrix/local_assignment_flow/python/src/flow.py"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "local_assignment_flow.python",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "python",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "Python assignment FLOWS_TO unsupported in current generic tier"
+      ]
+    },
+    {
+      "exact_expected": [
+        "return sites and RETURNS/RETURNS_TO syntax"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "return@",
+        "source"
+      ],
+      "expected_edges": [
+        {
+          "path": "fixtures/language_coverage_matrix/return_value_flow/typescript/src/return_flow.ts",
+          "relation": "RETURNS"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "source",
+          "path": "fixtures/language_coverage_matrix/return_value_flow/typescript/src/return_flow.ts"
+        },
+        {
+          "kind": "ReturnSite",
+          "name": "return@",
+          "path": "fixtures/language_coverage_matrix/return_value_flow/typescript/src/return_flow.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "source",
+          "path": "fixtures/language_coverage_matrix/return_value_flow/typescript/src/return_flow.ts"
+        },
+        {
+          "kind": "ReturnSite",
+          "name": "return@",
+          "path": "fixtures/language_coverage_matrix/return_value_flow/typescript/src/return_flow.ts"
+        }
+      ],
+      "family": "return_value_flow",
+      "files": [
+        "fixtures/language_coverage_matrix/return_value_flow/typescript/src/return_flow.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "interprocedural return value flow is not proven"
+      ],
+      "id": "return_value_flow.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "caller",
+        "source"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "source",
+          "path": "fixtures/language_coverage_matrix/return_value_flow/go/src/return_flow.go"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/return_value_flow/go/src/return_flow.go"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "source",
+          "path": "fixtures/language_coverage_matrix/return_value_flow/go/src/return_flow.go"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/return_value_flow/go/src/return_flow.go"
+        }
+      ],
+      "family": "return_value_flow",
+      "files": [
+        "fixtures/language_coverage_matrix/return_value_flow/go/src/return_flow.go"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "return_value_flow.go",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "go",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "Go return value dataflow unsupported"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "heuristic",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "run",
+        "sanitize"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "sanitize",
+          "path": "fixtures/language_coverage_matrix/sanitizer_distractor/typescript/src/sanitizer.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/sanitizer_distractor/typescript/src/sanitizer.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "sanitize",
+          "path": "fixtures/language_coverage_matrix/sanitizer_distractor/typescript/src/sanitizer.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/sanitizer_distractor/typescript/src/sanitizer.ts"
+        }
+      ],
+      "family": "sanitizer_distractor",
+      "files": [
+        "fixtures/language_coverage_matrix/sanitizer_distractor/typescript/src/sanitizer.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "sanitizer call may produce heuristic SANITIZES"
+      ],
+      "id": "sanitizer_distractor.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "comments and string proximity must not prove security relations"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "heuristic",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "load",
+        "loadRequire"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "load",
+          "path": "fixtures/language_coverage_matrix/dynamic_import_or_require/javascript/src/dynamic.js"
+        },
+        {
+          "kind": "Function",
+          "name": "loadRequire",
+          "path": "fixtures/language_coverage_matrix/dynamic_import_or_require/javascript/src/dynamic.js"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "load",
+          "path": "fixtures/language_coverage_matrix/dynamic_import_or_require/javascript/src/dynamic.js"
+        },
+        {
+          "kind": "Function",
+          "name": "loadRequire",
+          "path": "fixtures/language_coverage_matrix/dynamic_import_or_require/javascript/src/dynamic.js"
+        }
+      ],
+      "family": "dynamic_import_or_require",
+      "files": [
+        "fixtures/language_coverage_matrix/dynamic_import_or_require/javascript/src/dynamic.js"
+      ],
+      "forbidden_edges": [
+        {
+          "exactness": "parser_verified",
+          "head_name": "load",
+          "path": "fixtures/language_coverage_matrix/dynamic_import_or_require/javascript/src/dynamic.js",
+          "relation": "IMPORTS",
+          "tail_name": "./plugins/"
+        }
+      ],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "dynamic import syntax only"
+      ],
+      "id": "dynamic_import_or_require.javascript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "javascript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "computed module target exactness unsupported"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "heuristic",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "key",
+        "write"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "write",
+          "path": "fixtures/language_coverage_matrix/computed_property_or_reflection/typescript/src/computed.ts"
+        },
+        {
+          "kind": "Parameter",
+          "name": "key",
+          "path": "fixtures/language_coverage_matrix/computed_property_or_reflection/typescript/src/computed.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "write",
+          "path": "fixtures/language_coverage_matrix/computed_property_or_reflection/typescript/src/computed.ts"
+        },
+        {
+          "kind": "Parameter",
+          "name": "key",
+          "path": "fixtures/language_coverage_matrix/computed_property_or_reflection/typescript/src/computed.ts"
+        }
+      ],
+      "family": "computed_property_or_reflection",
+      "files": [
+        "fixtures/language_coverage_matrix/computed_property_or_reflection/typescript/src/computed.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "computed property read/write syntax is visible"
+      ],
+      "id": "computed_property_or_reflection.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "exact property target unsupported for dynamic key"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "real",
+        "run"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "real",
+          "path": "fixtures/language_coverage_matrix/dependency_injection_or_monkeypatch/python/src/monkeypatch.py"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/dependency_injection_or_monkeypatch/python/src/monkeypatch.py"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "real",
+          "path": "fixtures/language_coverage_matrix/dependency_injection_or_monkeypatch/python/src/monkeypatch.py"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/dependency_injection_or_monkeypatch/python/src/monkeypatch.py"
+        }
+      ],
+      "family": "dependency_injection_or_monkeypatch",
+      "files": [
+        "fixtures/language_coverage_matrix/dependency_injection_or_monkeypatch/python/src/monkeypatch.py"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "monkeypatch syntax parsed"
+      ],
+      "id": "dependency_injection_or_monkeypatch.python",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "python",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "runtime mutation target unsupported"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "run"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/dependency_injection_or_monkeypatch/typescript/src/di.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/dependency_injection_or_monkeypatch/typescript/src/di.ts"
+        }
+      ],
+      "family": "dependency_injection_or_monkeypatch",
+      "files": [
+        "fixtures/language_coverage_matrix/dependency_injection_or_monkeypatch/typescript/src/di.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "DI call is visible"
+      ],
+      "id": "dependency_injection_or_monkeypatch.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "container resolution target unsupported"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "heuristic",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "register"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "register",
+          "path": "fixtures/language_coverage_matrix/async_callback_loop/typescript/src/async_loop.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "register",
+          "path": "fixtures/language_coverage_matrix/async_callback_loop/typescript/src/async_loop.ts"
+        }
+      ],
+      "family": "async_callback_loop",
+      "files": [
+        "fixtures/language_coverage_matrix/async_callback_loop/typescript/src/async_loop.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "setTimeout callback syntax visible"
+      ],
+      "id": "async_callback_loop.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "late-bound loop runtime value unsupported"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "run",
+        "worker"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "worker",
+          "path": "fixtures/language_coverage_matrix/async_callback_loop/go/src/async_loop.go"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/async_callback_loop/go/src/async_loop.go"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "worker",
+          "path": "fixtures/language_coverage_matrix/async_callback_loop/go/src/async_loop.go"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/async_callback_loop/go/src/async_loop.go"
+        }
+      ],
+      "family": "async_callback_loop",
+      "files": [
+        "fixtures/language_coverage_matrix/async_callback_loop/go/src/async_loop.go"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "goroutine call syntax visible"
+      ],
+      "id": "async_callback_loop.go",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "go",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "async reachability unsupported"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "heuristic",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "handleOrder",
+        "wire"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "handleOrder",
+          "path": "fixtures/language_coverage_matrix/event_emitter_listener/typescript/src/events.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "wire",
+          "path": "fixtures/language_coverage_matrix/event_emitter_listener/typescript/src/events.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "handleOrder",
+          "path": "fixtures/language_coverage_matrix/event_emitter_listener/typescript/src/events.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "wire",
+          "path": "fixtures/language_coverage_matrix/event_emitter_listener/typescript/src/events.ts"
+        }
+      ],
+      "family": "event_emitter_listener",
+      "files": [
+        "fixtures/language_coverage_matrix/event_emitter_listener/typescript/src/events.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "literal event names can be recorded as heuristic event facts"
+      ],
+      "id": "event_emitter_listener.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "event execution ordering is not exact proof"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": [],
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts",
+        "subject"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "TestFile",
+          "name": "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "subject",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts"
+        }
+      ],
+      "expected_evidence_roles": [
+        {
+          "name": "subject",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts",
+          "role": "test"
+        }
+      ],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "TestFile",
+          "name": "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "subject",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts"
+        }
+      ],
+      "family": "tests_mocks_assertions",
+      "files": [
+        "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "test/mock/assertion calls classified as test or mock evidence"
+      ],
+      "id": "tests_mocks_assertions.typescript",
+      "implementation_target": "heuristic",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [
+        {
+          "name": "subject",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/typescript/tests/service.spec.ts",
+          "role": "test"
+        }
+      ],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [
+        "Rust inline test function role metadata"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "subject",
+        "works"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "subject",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/rust/src/lib.rs"
+        },
+        {
+          "kind": "Function",
+          "name": "works",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/rust/src/lib.rs"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "subject",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/rust/src/lib.rs"
+        },
+        {
+          "kind": "Function",
+          "name": "works",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/rust/src/lib.rs"
+        }
+      ],
+      "family": "tests_mocks_assertions",
+      "files": [
+        "fixtures/language_coverage_matrix/tests_mocks_assertions/rust/src/lib.rs"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "tests_mocks_assertions.rust",
+      "implementation_target": [
+        {
+          "name": "works",
+          "path": "fixtures/language_coverage_matrix/tests_mocks_assertions/rust/src/lib.rs",
+          "role": "test"
+        }
+      ],
+      "language": "rust",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "caller"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/macro_preprocessor_blindness/rust/src/macro.rs"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/macro_preprocessor_blindness/rust/src/macro.rs"
+        }
+      ],
+      "family": "macro_preprocessor_blindness",
+      "files": [
+        "fixtures/language_coverage_matrix/macro_preprocessor_blindness/rust/src/macro.rs"
+      ],
+      "forbidden_edges": [
+        {
+          "exactness": "parser_verified",
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/macro_preprocessor_blindness/rust/src/macro.rs",
+          "relation": "CALLS",
+          "tail_name": "generated"
+        }
+      ],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "macro invocation syntax visible"
+      ],
+      "id": "macro_preprocessor_blindness.rust",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "rust",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "macro expansion unsupported"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "caller"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/macro_preprocessor_blindness/c/src/macro.c"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/macro_preprocessor_blindness/c/src/macro.c"
+        }
+      ],
+      "family": "macro_preprocessor_blindness",
+      "files": [
+        "fixtures/language_coverage_matrix/macro_preprocessor_blindness/c/src/macro.c"
+      ],
+      "forbidden_edges": [
+        {
+          "exactness": "parser_verified",
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/macro_preprocessor_blindness/c/src/macro.c",
+          "relation": "CALLS",
+          "tail_name": "generated"
+        }
+      ],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "preprocessor syntax visible"
+      ],
+      "id": "macro_preprocessor_blindness.c",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "c",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "macro expansion unsupported"
+      ]
+    },
+    {
+      "exact_expected": [
+        "partial tree-sitter recovery may retain declarations"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "broken"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "broken",
+          "path": "fixtures/language_coverage_matrix/partial_broken_code/typescript/src/broken.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "broken",
+          "path": "fixtures/language_coverage_matrix/partial_broken_code/typescript/src/broken.ts"
+        }
+      ],
+      "family": "partial_broken_code",
+      "files": [
+        "fixtures/language_coverage_matrix/partial_broken_code/typescript/src/broken.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "partial_broken_code.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "syntax diagnostics are expected; exact semantic edges unsupported"
+      ]
+    },
+    {
+      "exact_expected": [
+        "partial parse should not crash"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "broken"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "broken",
+          "path": "fixtures/language_coverage_matrix/partial_broken_code/ruby/src/broken.rb"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "broken",
+          "path": "fixtures/language_coverage_matrix/partial_broken_code/ruby/src/broken.rb"
+        }
+      ],
+      "family": "partial_broken_code",
+      "files": [
+        "fixtures/language_coverage_matrix/partial_broken_code/ruby/src/broken.rb"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "partial_broken_code.ruby",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "ruby",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "exact semantics unsupported for broken code"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "generatedClient",
+        "useClient"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "generatedClient",
+          "path": "fixtures/language_coverage_matrix/generated_source_scope_boundary/typescript/generated/client.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "useClient",
+          "path": "fixtures/language_coverage_matrix/generated_source_scope_boundary/typescript/src/use_client.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "generatedClient",
+          "path": "fixtures/language_coverage_matrix/generated_source_scope_boundary/typescript/generated/client.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "useClient",
+          "path": "fixtures/language_coverage_matrix/generated_source_scope_boundary/typescript/src/use_client.ts"
+        }
+      ],
+      "family": "generated_source_scope_boundary",
+      "files": [
+        "fixtures/language_coverage_matrix/generated_source_scope_boundary/typescript/generated/client.ts",
+        "fixtures/language_coverage_matrix/generated_source_scope_boundary/typescript/src/use_client.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "generated source can be parsed when in scope"
+      ],
+      "id": "generated_source_scope_boundary.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "generated/source boundary role is not currently first-class"
+      ]
+    },
+    {
+      "exact_expected": [
+        "PHP generated source parses as syntax entity"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "generated_client"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "generated_client",
+          "path": "fixtures/language_coverage_matrix/generated_source_scope_boundary/php/generated/client.php"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "generated_client",
+          "path": "fixtures/language_coverage_matrix/generated_source_scope_boundary/php/generated/client.php"
+        }
+      ],
+      "family": "generated_source_scope_boundary",
+      "files": [
+        "fixtures/language_coverage_matrix/generated_source_scope_boundary/php/generated/client.php"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "generated_source_scope_boundary.php",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "php",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "generated boundary classification unsupported"
+      ]
+    },
+    {
+      "exact_expected": [
+        "C++ namespace/class parse"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "Service",
+        "fixture"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Module",
+          "name": "fixture",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/cpp/src/nested.cpp"
+        },
+        {
+          "kind": "Class",
+          "name": "Service",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/cpp/src/nested.cpp"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Module",
+          "name": "fixture",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/cpp/src/nested.cpp"
+        },
+        {
+          "kind": "Class",
+          "name": "Service",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/cpp/src/nested.cpp"
+        }
+      ],
+      "family": "nested_modules_classes",
+      "files": [
+        "fixtures/language_coverage_matrix/nested_modules_classes/cpp/src/nested.cpp"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "nested_modules_classes.cpp",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "cpp",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "C++ method semantic calls unsupported"
+      ]
+    },
+    {
+      "exact_expected": [
+        "Ruby module/class parse"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "Fixture",
+        "Service"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Module",
+          "name": "Fixture",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/ruby/src/nested.rb"
+        },
+        {
+          "kind": "Class",
+          "name": "Service",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/ruby/src/nested.rb"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Module",
+          "name": "Fixture",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/ruby/src/nested.rb"
+        },
+        {
+          "kind": "Class",
+          "name": "Service",
+          "path": "fixtures/language_coverage_matrix/nested_modules_classes/ruby/src/nested.rb"
+        }
+      ],
+      "family": "nested_modules_classes",
+      "files": [
+        "fixtures/language_coverage_matrix/nested_modules_classes/ruby/src/nested.rb"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "nested_modules_classes.ruby",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "ruby",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "Ruby call/dataflow unsupported"
+      ]
+    }
+  ],
+  "families": [
+    "async_callback_loop",
+    "computed_property_or_reflection",
+    "dependency_injection_or_monkeypatch",
+    "direct_calls",
+    "dynamic_import_or_require",
+    "event_emitter_listener",
+    "generated_source_scope_boundary",
+    "import_aliases",
+    "local_assignment_flow",
+    "macro_preprocessor_blindness",
+    "method_calls",
+    "nested_modules_classes",
+    "partial_broken_code",
+    "reads_writes",
+    "return_value_flow",
+    "same_name_symbols",
+    "sanitizer_distractor",
+    "tests_mocks_assertions"
+  ],
+  "fixture_root": "fixtures/language_coverage_matrix",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "phase": "language_implementation_plan_contract_baseline",
+  "schema_version": 1
+}

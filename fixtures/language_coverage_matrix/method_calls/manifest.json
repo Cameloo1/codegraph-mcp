@@ -1,0 +1,140 @@
+{
+  "cases": [
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "heuristic",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "Service",
+        "run",
+        "save"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Class",
+          "name": "Service",
+          "path": "fixtures/language_coverage_matrix/method_calls/typescript/src/method.ts"
+        },
+        {
+          "kind": "Method",
+          "name": "save",
+          "path": "fixtures/language_coverage_matrix/method_calls/typescript/src/method.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/method_calls/typescript/src/method.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Class",
+          "name": "Service",
+          "path": "fixtures/language_coverage_matrix/method_calls/typescript/src/method.ts"
+        },
+        {
+          "kind": "Method",
+          "name": "save",
+          "path": "fixtures/language_coverage_matrix/method_calls/typescript/src/method.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/method_calls/typescript/src/method.ts"
+        }
+      ],
+      "family": "method_calls",
+      "files": [
+        "fixtures/language_coverage_matrix/method_calls/typescript/src/method.ts"
+      ],
+      "forbidden_edges": [
+        {
+          "exactness": "parser_verified",
+          "head_name": "run",
+          "path": "fixtures/language_coverage_matrix/method_calls/typescript/src/method.ts",
+          "relation": "CALLS",
+          "tail_name": "save"
+        }
+      ],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "receiver method call remains heuristic without type proof"
+      ],
+      "id": "method_calls.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "exact receiver dispatch unsupported without semantic resolver"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "heuristic",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "Service",
+        "run"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Class",
+          "name": "Service",
+          "path": "fixtures/language_coverage_matrix/method_calls/python/src/method.py"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/method_calls/python/src/method.py"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Class",
+          "name": "Service",
+          "path": "fixtures/language_coverage_matrix/method_calls/python/src/method.py"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/method_calls/python/src/method.py"
+        }
+      ],
+      "family": "method_calls",
+      "files": [
+        "fixtures/language_coverage_matrix/method_calls/python/src/method.py"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "dynamic method call is heuristic/unresolved"
+      ],
+      "id": "method_calls.python",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "python",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "Python receiver type resolution unsupported"
+      ]
+    }
+  ],
+  "family": "method_calls",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}

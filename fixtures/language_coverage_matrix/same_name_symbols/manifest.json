@@ -1,0 +1,305 @@
+{
+  "cases": [
+    {
+      "exact_expected": [
+        "same-scope function duplicate call resolves only to same-scope declaration"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "exact",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "caller",
+        "duplicate"
+      ],
+      "expected_edges": [
+        {
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts",
+          "relation": "CALLS",
+          "tail_name": "duplicate"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts"
+        },
+        {
+          "kind": "Method",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts"
+        },
+        {
+          "kind": "Method",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts"
+        }
+      ],
+      "family": "same_name_symbols",
+      "files": [
+        "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts"
+      ],
+      "forbidden_edges": [
+        {
+          "exactness": "parser_verified",
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/typescript/src/same.ts",
+          "relation": "CALLS",
+          "tail_name": "Box.duplicate"
+        }
+      ],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "method receiver dispatch is parser-visible but not type-verified"
+      ],
+      "id": "same_name_symbols.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [
+        "same-scope Python direct call"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "exact",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "Box",
+        "caller",
+        "duplicate"
+      ],
+      "expected_edges": [
+        {
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/python/src/same.py",
+          "relation": "CALLS",
+          "tail_name": "duplicate"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/python/src/same.py"
+        },
+        {
+          "kind": "Class",
+          "name": "Box",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/python/src/same.py"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/python/src/same.py"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/python/src/same.py"
+        },
+        {
+          "kind": "Class",
+          "name": "Box",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/python/src/same.py"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/python/src/same.py"
+        }
+      ],
+      "family": "same_name_symbols",
+      "files": [
+        "fixtures/language_coverage_matrix/same_name_symbols/python/src/same.py"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "method binding remains parser-level"
+      ],
+      "id": "same_name_symbols.python",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "python",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [
+        "same-module Rust direct call"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "exact",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "caller",
+        "duplicate",
+        "inner"
+      ],
+      "expected_edges": [
+        {
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/rust/src/lib.rs",
+          "relation": "CALLS",
+          "tail_name": "duplicate"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/rust/src/lib.rs"
+        },
+        {
+          "kind": "Module",
+          "name": "inner",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/rust/src/lib.rs"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/rust/src/lib.rs"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/rust/src/lib.rs"
+        },
+        {
+          "kind": "Module",
+          "name": "inner",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/rust/src/lib.rs"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/rust/src/lib.rs"
+        }
+      ],
+      "family": "same_name_symbols",
+      "files": [
+        "fixtures/language_coverage_matrix/same_name_symbols/rust/src/lib.rs"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "module path resolution is parser-level only"
+      ],
+      "id": "same_name_symbols.rust",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "rust",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "macro-expanded duplicate definitions are unsupported"
+      ]
+    },
+    {
+      "exact_expected": [
+        "same-package Go direct call"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "caller",
+        "duplicate"
+      ],
+      "expected_edges": [
+        {
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/go/src/same.go",
+          "relation": "CALLS",
+          "tail_name": "duplicate"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/go/src/same.go"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/go/src/same.go"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "duplicate",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/go/src/same.go"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/same_name_symbols/go/src/same.go"
+        }
+      ],
+      "family": "same_name_symbols",
+      "files": [
+        "fixtures/language_coverage_matrix/same_name_symbols/go/src/same.go"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "receiver method binding is not type-verified"
+      ],
+      "id": "same_name_symbols.go",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "go",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    }
+  ],
+  "family": "same_name_symbols",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}

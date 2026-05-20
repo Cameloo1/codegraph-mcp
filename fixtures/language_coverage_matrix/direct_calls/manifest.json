@@ -1,0 +1,132 @@
+{
+  "cases": [
+    {
+      "exact_expected": [
+        "same-scope JavaScript call"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "exact",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "caller",
+        "target"
+      ],
+      "expected_edges": [
+        {
+          "exactness": "parser_verified",
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/direct_calls/javascript/src/direct.js",
+          "relation": "CALLS",
+          "tail_name": "target"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "target",
+          "path": "fixtures/language_coverage_matrix/direct_calls/javascript/src/direct.js"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/direct_calls/javascript/src/direct.js"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "target",
+          "path": "fixtures/language_coverage_matrix/direct_calls/javascript/src/direct.js"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/direct_calls/javascript/src/direct.js"
+        }
+      ],
+      "family": "direct_calls",
+      "files": [
+        "fixtures/language_coverage_matrix/direct_calls/javascript/src/direct.js"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "direct_calls.javascript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "javascript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [
+        "same-file Go call"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "exact",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "caller",
+        "target"
+      ],
+      "expected_edges": [
+        {
+          "head_name": "caller",
+          "path": "fixtures/language_coverage_matrix/direct_calls/go/src/direct.go",
+          "relation": "CALLS",
+          "tail_name": "target"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "target",
+          "path": "fixtures/language_coverage_matrix/direct_calls/go/src/direct.go"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/direct_calls/go/src/direct.go"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "target",
+          "path": "fixtures/language_coverage_matrix/direct_calls/go/src/direct.go"
+        },
+        {
+          "kind": "Function",
+          "name": "caller",
+          "path": "fixtures/language_coverage_matrix/direct_calls/go/src/direct.go"
+        }
+      ],
+      "family": "direct_calls",
+      "files": [
+        "fixtures/language_coverage_matrix/direct_calls/go/src/direct.go"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "direct_calls.go",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "go",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    }
+  ],
+  "family": "direct_calls",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}
