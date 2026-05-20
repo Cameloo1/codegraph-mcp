@@ -1,0 +1,130 @@
+{
+  "cases": [
+    {
+      "exact_expected": [
+        "local direct reads/writes"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "exact",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "count",
+        "inc"
+      ],
+      "expected_edges": [
+        {
+          "head_name": "inc",
+          "path": "fixtures/language_coverage_matrix/reads_writes/typescript/src/reads_writes.ts",
+          "relation": "WRITES",
+          "tail_name": "count"
+        },
+        {
+          "head_name": "inc",
+          "path": "fixtures/language_coverage_matrix/reads_writes/typescript/src/reads_writes.ts",
+          "relation": "READS",
+          "tail_name": "count"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "LocalVariable",
+          "name": "count",
+          "path": "fixtures/language_coverage_matrix/reads_writes/typescript/src/reads_writes.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "inc",
+          "path": "fixtures/language_coverage_matrix/reads_writes/typescript/src/reads_writes.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "LocalVariable",
+          "name": "count",
+          "path": "fixtures/language_coverage_matrix/reads_writes/typescript/src/reads_writes.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "inc",
+          "path": "fixtures/language_coverage_matrix/reads_writes/typescript/src/reads_writes.ts"
+        }
+      ],
+      "family": "reads_writes",
+      "files": [
+        "fixtures/language_coverage_matrix/reads_writes/typescript/src/reads_writes.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "reads_writes.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "count",
+        "inc"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "inc",
+          "path": "fixtures/language_coverage_matrix/reads_writes/rust/src/reads_writes.rs"
+        },
+        {
+          "kind": "LocalVariable",
+          "name": "count",
+          "path": "fixtures/language_coverage_matrix/reads_writes/rust/src/reads_writes.rs"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "inc",
+          "path": "fixtures/language_coverage_matrix/reads_writes/rust/src/reads_writes.rs"
+        },
+        {
+          "kind": "LocalVariable",
+          "name": "count",
+          "path": "fixtures/language_coverage_matrix/reads_writes/rust/src/reads_writes.rs"
+        }
+      ],
+      "family": "reads_writes",
+      "files": [
+        "fixtures/language_coverage_matrix/reads_writes/rust/src/reads_writes.rs"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "reads_writes.rust",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "rust",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "Rust READS/WRITES extraction unsupported in generic tier"
+      ]
+    }
+  ],
+  "family": "reads_writes",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}

@@ -1,0 +1,110 @@
+{
+  "cases": [
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "real",
+        "run"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "real",
+          "path": "fixtures/language_coverage_matrix/dependency_injection_or_monkeypatch/python/src/monkeypatch.py"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/dependency_injection_or_monkeypatch/python/src/monkeypatch.py"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "real",
+          "path": "fixtures/language_coverage_matrix/dependency_injection_or_monkeypatch/python/src/monkeypatch.py"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/dependency_injection_or_monkeypatch/python/src/monkeypatch.py"
+        }
+      ],
+      "family": "dependency_injection_or_monkeypatch",
+      "files": [
+        "fixtures/language_coverage_matrix/dependency_injection_or_monkeypatch/python/src/monkeypatch.py"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "monkeypatch syntax parsed"
+      ],
+      "id": "dependency_injection_or_monkeypatch.python",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "python",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "runtime mutation target unsupported"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "run"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/dependency_injection_or_monkeypatch/typescript/src/di.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/dependency_injection_or_monkeypatch/typescript/src/di.ts"
+        }
+      ],
+      "family": "dependency_injection_or_monkeypatch",
+      "files": [
+        "fixtures/language_coverage_matrix/dependency_injection_or_monkeypatch/typescript/src/di.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "DI call is visible"
+      ],
+      "id": "dependency_injection_or_monkeypatch.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "container resolution target unsupported"
+      ]
+    }
+  ],
+  "family": "dependency_injection_or_monkeypatch",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}

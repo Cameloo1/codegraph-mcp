@@ -1,0 +1,12 @@
+#!/bin/sh
+# no-extension text-evidence support script for nuance rescue.
+# It mentions BR2_PACKAGE_FOO, generic-package, and Config.in on purpose.
+
+case "$1" in
+  BR2_PACKAGE_FOO)
+    printf '%s\n' 'nuance-audit found BR2_PACKAGE_FOO generic-package metadata'
+    ;;
+  *)
+    printf '%s\n' 'nuance-audit expected BR2_PACKAGE_FOO'
+    ;;
+esac

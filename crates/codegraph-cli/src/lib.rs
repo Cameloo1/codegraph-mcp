@@ -28,19 +28,23 @@ use codegraph_bench::{
 use codegraph_core::{
     classify_edge_evidence_role, classify_entity_source_role, combine_evidence_roles,
     ContextPacket, ContextSnippet, Edge, Entity, EntityKind, EvidenceRole, EvidenceRoleDecision,
-    Exactness, FileRecord, Metadata, PathEvidence, RelationKind, RepoIndexState, SourceSpan,
+    Exactness, FileRecord, Metadata, PathEvidence, RelationKind, RepoIndexState,
+    RetrievalCandidate, RetrievalCandidateSource, RetrievalProofStatus,
+    RetrievalVerificationStatus, SourceSpan, VectorEmbeddingSource,
 };
 pub use codegraph_index::{
-    collect_repo_files, default_db_path, graph_fact_hash, index_repo,
-    index_repo_to_db_with_options, index_repo_with_options, inspect_db_lifecycle_preflight,
-    inspect_db_lifecycle_surface_preflight, inspect_repo_db_passport, parse_extract_pending_files,
+    build_vector_chunk_index_json_for_repo, collect_repo_files, default_db_path, graph_fact_hash,
+    index_repo, index_repo_to_db_with_options, index_repo_with_options,
+    inspect_db_lifecycle_preflight, inspect_db_lifecycle_surface_preflight,
+    inspect_repo_db_passport, load_vector_chunk_index_json, parse_extract_pending_files,
     require_reusable_db_passport, scope_policy_hash, should_ignore_path,
     should_start_new_index_batch, update_changed_files, update_changed_files_to_db,
     update_changed_files_with_cache, update_changed_files_with_cache_to_db,
-    DbLifecycleOperationKind, DbLifecyclePolicy, DbLifecyclePreflight, DbLifecycleSurfacePreflight,
-    DbLifecycleSurfacePreflightRequest, IncrementalIndexCache, IncrementalIndexSummary,
-    IndexBuildMode, IndexError, IndexIssue, IndexOptions, IndexProfile, IndexScopeOptions,
-    IndexSummary, LocalFactBundle, PendingIndexFile, StorageMode, DEFAULT_INDEX_BATCH_MAX_FILES,
+    vector_chunk_search_hit_to_retrieval_candidate, DbLifecycleOperationKind, DbLifecyclePolicy,
+    DbLifecyclePreflight, DbLifecycleSurfacePreflight, DbLifecycleSurfacePreflightRequest,
+    IncrementalIndexCache, IncrementalIndexSummary, IndexBuildMode, IndexError, IndexIssue,
+    IndexOptions, IndexProfile, IndexScopeOptions, IndexSummary, LocalFactBundle, PendingIndexFile,
+    StorageMode, VectorChunkIndexBuildOptions, DEFAULT_INDEX_BATCH_MAX_FILES,
     DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY, UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::{
@@ -49,8 +53,9 @@ use codegraph_parser::{
 };
 use codegraph_query::{
     extract_prompt_seed_provenance, extract_prompt_seeds, ContextPackRequest,
-    ExactGraphQueryEngine, GraphPath, QueryLimits, SymbolSearchHit, SymbolSearchIndex,
-    TraversalDirection, TraversalStep,
+    ExactGraphQueryEngine, GraphPath, QueryLimits, RetrievalDocument, RetrievalFunnel,
+    RetrievalFunnelConfig, RetrievalFunnelRequest, SymbolSearchHit, SymbolSearchIndex,
+    TraversalDirection, TraversalPolicy, TraversalStep, VectorCandidateBranchStatus,
 };
 use codegraph_store::{
     DbPassport, DbPreflightReport, GraphStore, SqliteGraphStore, TextSearchKind,
@@ -60,6 +65,7 @@ use codegraph_trace::{
     append_trace_event, replay_trace_file, TraceAppendEvent, TraceConfig, TraceEventType,
     DEFAULT_TRACE_ROOT,
 };
+use codegraph_vector::{DeterministicTestEmbeddingProvider, TestEmbeddingEnablement};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -107,6 +113,12 @@ const CONTEXT_PLANNING_PACKET_SYMBOL_LIMIT: usize = 12;
 const CONTEXT_PLANNING_PACKET_EVIDENCE_LIMIT: usize = 3;
 const CONTEXT_PLANNING_PACKET_QUERY_LIMIT: usize = 6;
 const CONTEXT_PLANNING_PACKET_VERIFICATION_LIMIT: usize = 3;
+const CONTEXT_PACK_VECTOR_INDEX_FILE_NAME: &str = "codegraph-vector-chunks.json";
+const CONTEXT_PACK_VECTOR_SOURCE_SCOPE: &str = "context-pack-release-vector-candidates";
+const CONTEXT_PACK_VECTOR_PROVIDER_DIMENSION: usize = 64;
+const CONTEXT_PACK_VECTOR_CANDIDATE_TOP_K: usize = 16;
+const CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT: usize = 8;
+const CONTEXT_PACK_NUANCE_RESCUE_TOKEN_LIMIT: usize = 32;
 
 const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
@@ -116,7 +128,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "index",
-        usage: "codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]",
+        usage: "codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--build-vector-index <path>] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]",
         description: "Index a repository into the local graph store.",
     },
     CommandSpec {
@@ -136,7 +148,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "context-pack",
-        usage: "codegraph-mcp context-pack --task <task> [--budget <tokens>] [--mode <production|test-impact|debug|impact>] [--seed <symbol>] [--agent-json|--concise|--explain|--audit-json] [--limit-paths <n>] [--limit-snippets <n>] [--max-output-bytes <n>] [--profile]",
+        usage: "codegraph-mcp context-pack --task <task> [--budget <tokens>] [--mode <production|test-impact|debug|impact>] [--seed <symbol>] [--enable-vector-candidates] [--enable-nuance-rescue-candidates] [--vector-index <path>] [--agent-json|--concise|--explain|--audit-json] [--limit-paths <n>] [--limit-snippets <n>] [--max-output-bytes <n>] [--profile]",
         description: "Build a compact proof-oriented context packet.",
     },
     CommandSpec {
@@ -535,6 +547,8 @@ struct GlobalOptions {
     repo: Option<PathBuf>,
     db: Option<PathBuf>,
     json: bool,
+    agent_json: bool,
+    limit: Option<usize>,
     no_color: bool,
     verbose: bool,
     quiet: bool,
@@ -701,10 +715,57 @@ where
         command_args.push("--verbose".to_string());
     }
     if globals.json
-        && matches!(command.name, "index" | "doctor" | "languages" | "config")
+        && matches!(
+            command.name,
+            "index" | "query" | "doctor" | "languages" | "config" | "status"
+        )
         && !command_args.iter().any(|arg| arg == "--json")
     {
         command_args.push("--json".to_string());
+    }
+    if globals.agent_json {
+        if !matches!(command.name, "query" | "context-pack" | "context") {
+            return command_error(
+                "invalid_global_options",
+                &format!(
+                    "--agent-json can only be used before query or context-pack: {BIN_NAME} --agent-json query ..."
+                ),
+            );
+        }
+        if !command_args
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "--agent-json" | "--agent_json"))
+        {
+            command_args.push("--agent-json".to_string());
+        }
+    }
+    if let Some(limit) = globals.limit {
+        match command.name {
+            "query" => {
+                if !has_flag_with_value(&command_args, "--limit") {
+                    command_args.push("--limit".to_string());
+                    command_args.push(limit.to_string());
+                }
+            }
+            "context-pack" | "context" => {
+                if !has_flag_with_value(&command_args, "--limit-paths") {
+                    command_args.push("--limit-paths".to_string());
+                    command_args.push(limit.to_string());
+                }
+                if !has_flag_with_value(&command_args, "--limit-snippets") {
+                    command_args.push("--limit-snippets".to_string());
+                    command_args.push(limit.to_string());
+                }
+            }
+            _ => {
+                return command_error(
+                    "invalid_global_options",
+                    &format!(
+                        "--limit can only be used before query or context-pack: {BIN_NAME} --limit <n> query ..."
+                    ),
+                );
+            }
+        }
     }
     if command_args
         .iter()
@@ -783,6 +844,18 @@ fn parse_global_options(args: &[String]) -> Result<(GlobalOptions, Vec<String>),
                 globals.db = Some(PathBuf::from(value));
             }
             "--json" => globals.json = true,
+            "--agent-json" | "--agent_json" => globals.agent_json = true,
+            "--limit" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--limit requires a value".to_string());
+                };
+                globals.limit = Some(parse_limit_value(value)?);
+            }
+            value if value.starts_with("--limit=") => {
+                let value = value.trim_start_matches("--limit=");
+                globals.limit = Some(parse_limit_value(value)?);
+            }
             "--no-color" => globals.no_color = true,
             "--verbose" => globals.verbose = true,
             "--quiet" => globals.quiet = true,
@@ -798,6 +871,11 @@ fn parse_global_options(args: &[String]) -> Result<(GlobalOptions, Vec<String>),
         index += 1;
     }
     Ok((globals, rest))
+}
+
+fn has_flag_with_value(args: &[String], flag: &str) -> bool {
+    args.iter()
+        .any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
 }
 
 fn canonical_global_flag(arg: &str) -> Option<&'static str> {
@@ -991,22 +1069,32 @@ fn run_init_command(args: &[String]) -> Result<Value, String> {
 }
 
 fn run_index_command(args: &[String]) -> Result<Value, String> {
-    let (repo, db, options, output_mode, budget_options) = parse_index_command_options(args)?;
+    let (repo, db, options, output_mode, budget_options, vector_index_output) =
+        parse_index_command_options(args)?;
     let started = Instant::now();
     let repo_root = resolve_repo_root(Path::new(&repo))?;
     let db_path = db
         .clone()
         .map(|path| normalize_db_path_for_repo(&repo_root, &path))
         .unwrap_or_else(|| default_db_path(&repo_root));
+    let vector_index_path = vector_index_output.as_ref().map(|path| {
+        if path.is_absolute() {
+            path.clone()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
+        }
+    });
     let preflight = storage_budget::storage_budget_preflight(
         &budget_options,
         storage_budget::StorageBudgetContext {
             command: "codegraph-mcp index".to_string(),
             repo_root: Some(repo_root.clone()),
             db_path: Some(db_path.clone()),
-            out_path: None,
+            out_path: vector_index_path.clone(),
             explicit_db: db.is_some(),
-            explicit_out: false,
+            explicit_out: vector_index_path.is_some(),
             diagnostic_only: false,
         },
     );
@@ -1021,14 +1109,38 @@ fn run_index_command(args: &[String]) -> Result<Value, String> {
         index_repo_with_options(Path::new(&repo), options)
     }
     .map_err(|error| error.to_string())?;
+    let vector_index_summary = if let Some(vector_index_path) = vector_index_path.as_ref() {
+        let provider = context_pack_vector_provider()?;
+        Some(
+            build_vector_chunk_index_json_for_repo(
+                &repo_root,
+                &db_path,
+                vector_index_path,
+                &provider,
+                context_pack_vector_build_options(),
+            )
+            .map_err(|error| error.to_string())?,
+        )
+    } else {
+        None
+    };
     let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let budget = storage_budget::storage_budget_postflight(preflight, &[db_path], &[]);
+    let vector_outputs = vector_index_path.iter().cloned().collect::<Vec<PathBuf>>();
+    let budget = storage_budget::storage_budget_postflight(preflight, &[db_path], &vector_outputs);
     let mut value = match output_mode {
         IndexJsonOutputMode::Audit => index_summary_json(&summary),
         IndexJsonOutputMode::Agent => index_summary_agent_json(&summary, wall_ms),
         IndexJsonOutputMode::Concise => index_summary_concise_json(&summary, wall_ms),
     }?;
     if let Some(object) = value.as_object_mut() {
+        if let Some(vector_index_summary) = vector_index_summary {
+            object.insert(
+                "vector_index".to_string(),
+                serde_json::to_value(vector_index_summary).map_err(|error| error.to_string())?,
+            );
+            object.insert("external_provider".to_string(), json!(false));
+            object.insert("source_leaves_machine".to_string(), json!(false));
+        }
         object.insert("storage_budget".to_string(), budget.to_json());
     }
     if budget.is_refused() {
@@ -1057,7 +1169,7 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
             "path_access_error": preflight.path_access_error.clone(),
             "sqlite_sidecars": sqlite_sidecars.clone(),
             "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
-            "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true),
+            "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true, false, false),
             "next_command": "codegraph-mcp index .",
         }));
     }
@@ -1075,7 +1187,7 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
             "db_health": preflight.db_health.clone(),
             "sqlite_sidecars": sqlite_sidecars.clone(),
             "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
-            "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true),
+            "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true, false, false),
             "next_command": "codegraph-mcp index . --fresh",
         }));
     }
@@ -1117,7 +1229,7 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
         "db_health": preflight.db_health.clone(),
         "sqlite_sidecars": sqlite_sidecars.clone(),
         "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
-        "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true),
+        "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true, false, false),
         "schema_version": store.schema_version().map_err(|error| error.to_string())?,
         "files": store.count_files().map_err(|error| error.to_string())?,
         "entities": store.count_entities().map_err(|error| error.to_string())?,
@@ -1551,33 +1663,36 @@ fn run_query_command(args: &[String]) -> Result<Value, String> {
     let mut args = args.to_vec();
     reject_misplaced_global_flags_in_query_args(&args)?;
     let allow_stale_read = remove_flag(&mut args, "--allow-stale-read");
+    let allow_foreign_db = remove_flag(&mut args, "--allow-foreign-db");
     let explicit_scope = parse_read_scope_options(&mut args)?;
     let repo_root = current_repo_root()?;
     if args.first().map(String::as_str) == Some("unresolved-calls") {
-        return run_query_command_inner(&args, allow_stale_read, explicit_scope, None);
+        return run_query_command_inner(
+            &args,
+            allow_stale_read,
+            allow_foreign_db,
+            explicit_scope,
+            None,
+        );
     }
     let db_path = resolved_db_path_for_repo(&repo_root);
     let db_lifecycle_read = read_db_lifecycle_guard(
         &repo_root,
         &db_path,
         allow_stale_read,
+        allow_foreign_db,
         explicit_scope.clone(),
     )?;
-    let previous_allow_stale = std::env::var("CODEGRAPH_ALLOW_STALE_READ").ok();
-    if allow_stale_read {
-        std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", "1");
-    }
     let compact_lifecycle = compact_lifecycle_summary(&db_lifecycle_read);
-    let result = run_query_command_inner(
-        &args,
-        allow_stale_read,
-        explicit_scope,
-        Some(compact_lifecycle),
-    );
-    match previous_allow_stale {
-        Some(value) => std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", value),
-        None => std::env::remove_var("CODEGRAPH_ALLOW_STALE_READ"),
-    }
+    let result = with_lifecycle_override_env(allow_stale_read, allow_foreign_db, || {
+        run_query_command_inner(
+            &args,
+            allow_stale_read,
+            allow_foreign_db,
+            explicit_scope,
+            Some(compact_lifecycle),
+        )
+    });
     let mut value = result?;
     if !query_response_uses_compact_lifecycle(&value) {
         if let Some(object) = value.as_object_mut() {
@@ -1623,6 +1738,7 @@ fn reject_misplaced_global_flags_in_query_args(args: &[String]) -> Result<(), St
 fn run_query_command_inner(
     args: &[String],
     allow_stale_read: bool,
+    allow_foreign_db: bool,
     explicit_scope_policy: Option<IndexScopeOptions>,
     lifecycle_summary: Option<Value>,
 ) -> Result<Value, String> {
@@ -1698,6 +1814,7 @@ fn run_query_command_inner(
         "unresolved-calls" => {
             let mut options = parse_unresolved_calls_args(&args[1..])?;
             options.allow_stale_read = allow_stale_read;
+            options.allow_foreign_db = allow_foreign_db;
             options.explicit_scope_policy = explicit_scope_policy;
             query_unresolved_calls(&current_repo_root()?, options)
         }
@@ -2161,6 +2278,7 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
         &repo_root,
         &db_path,
         options.allow_stale_read,
+        options.allow_foreign_db,
         options.explicit_scope_policy.clone(),
     )?;
     let open_start = Instant::now();
@@ -2192,8 +2310,10 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
     ));
 
     let stored_start = Instant::now();
-    let mut stored_paths =
+    let stored_load =
         load_stored_context_path_evidence(&connection, &seed_ids, &options.mode, budgets)?;
+    let mut stored_paths = stored_load.paths;
+    let mut path_evidence_telemetry = stored_load.telemetry;
     profile_spans.push(profile_span_json(
         "sql_query_execution",
         stored_start.elapsed(),
@@ -2269,6 +2389,17 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
             "policy": "load source files referenced by candidate proof/source spans for fallback graph verification; snippets are loaded after evidence-role filtering"
         }),
     ));
+    if let Some(object) = path_evidence_telemetry.as_object_mut() {
+        object.insert(
+            "source_span_load_time_ms".to_string(),
+            json!(source_load_start.elapsed().as_secs_f64() * 1000.0),
+        );
+        object.insert(
+            "source_span_count".to_string(),
+            json!(candidate_spans.len()),
+        );
+        object.insert("source_span_bytes_read".to_string(), json!(source_bytes));
+    }
 
     let context_start = Instant::now();
     let fallback_packet = if !fallback_edges.is_empty() {
@@ -2300,6 +2431,9 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
         ));
         None
     };
+    let fallback_traversal_telemetry = fallback_packet
+        .as_ref()
+        .and_then(|packet| packet.metadata.get("traversal_telemetry").cloned());
     if let Some(packet) = &fallback_packet {
         stored_paths.extend(packet.verified_paths.clone());
     }
@@ -2355,7 +2489,27 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
             "policy": "load snippets only for evidence-role-filtered proof/source spans"
         }),
     ));
-    let packet = build_context_packet_from_stored_evidence(
+    if let Some(object) = path_evidence_telemetry.as_object_mut() {
+        object.insert(
+            "snippet_load_time_ms".to_string(),
+            json!(snippet_load_start.elapsed().as_secs_f64() * 1000.0),
+        );
+        object.insert(
+            "snippet_source_bytes_read".to_string(),
+            json!(snippet_source_bytes),
+        );
+        object.insert(
+            "snippet_source_files_loaded".to_string(),
+            json!(snippet_source_files_loaded),
+        );
+        object.insert("snippets_returned".to_string(), json!(snippets.len()));
+        object.insert(
+            "source_snippet_omitted_count".to_string(),
+            json!(requested_span_count.saturating_sub(snippets.len())),
+        );
+    }
+    let fallback_evidence_count = fallback_evidence.len();
+    let mut packet = build_context_packet_from_stored_evidence(
         &options,
         &raw_seed_values,
         &seed_ids,
@@ -2368,6 +2522,111 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
         stored_path_count,
         requested_span_count,
     );
+    packet.metadata.insert(
+        "path_evidence_telemetry".to_string(),
+        path_evidence_telemetry,
+    );
+    packet.metadata.insert(
+        "traversal_telemetry".to_string(),
+        context_pack_traversal_telemetry_json(
+            &options,
+            &raw_seed_values,
+            &seed_ids,
+            budgets,
+            stored_path_count,
+            packet.verified_paths.len(),
+            fallback_edges.len(),
+            fallback_traversal_telemetry,
+            fallback_evidence_count,
+        ),
+    );
+    if options.enable_vector_candidates {
+        let vector_start = Instant::now();
+        let vector_branch = load_context_pack_vector_branch(&repo_root, &db_path, &options);
+        let vector_trace =
+            context_pack_vector_diagnostic_trace(&options, &fallback_edges, &vector_branch)?;
+        profile_spans.push(profile_span_json(
+            "vector_candidate_branch",
+            vector_start.elapsed(),
+            1,
+            vector_branch.candidates.len() as u64,
+            json!({
+                "enabled": true,
+                "vector_index_path": path_string(&vector_branch.index_path),
+                "vector_index_status": vector_branch.status.as_str(),
+                "candidate_count": vector_branch.candidates.len(),
+                "warning": vector_branch.warning.clone(),
+                "policy": "explicit opt-in candidate recall only; candidates are not graph proof"
+            }),
+        ));
+        packet
+            .metadata
+            .insert("vector_candidate_trace".to_string(), vector_trace);
+        let lifecycle_claimable = db_lifecycle_read
+            .get("claimable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let vector_candidates = vector_branch
+            .candidates
+            .iter()
+            .map(|candidate| {
+                context_pack_vector_retrieval_candidate_json(candidate, lifecycle_claimable)
+            })
+            .collect::<Vec<_>>();
+        packet.metadata.insert(
+            "vector_semantic_candidates".to_string(),
+            json!(vector_candidates),
+        );
+    }
+    if options.enable_nuance_rescue_candidates {
+        let nuance_start = Instant::now();
+        let lifecycle_claimable = db_lifecycle_read
+            .get("claimable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let branch = load_context_pack_nuance_rescue_branch(
+            &connection,
+            &repo_root,
+            &options,
+            &raw_seed_values,
+            lifecycle_claimable,
+            budgets,
+        )
+        .unwrap_or_else(|error| ContextPackNuanceRescueBranch {
+            candidates: Vec::new(),
+            trace: json!({
+                "schema_version": 1,
+                "diagnostic_only": true,
+                "rescue_enabled": true,
+                "rescue_status": "error",
+                "rescue_candidate_count": 0,
+                "candidate_cap": CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT,
+                "ignored_generic_tokens": [],
+                "rescue_reasons": [],
+                "error": error,
+                "proof_contract": "nuance rescue candidates are candidate recall only; branch failure does not change graph proof"
+            }),
+        });
+        profile_spans.push(profile_span_json(
+            "nuance_rescue_candidate_branch",
+            nuance_start.elapsed(),
+            1,
+            branch.candidates.len() as u64,
+            json!({
+                "enabled": true,
+                "candidate_count": branch.candidates.len(),
+                "candidate_cap": CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT,
+                "policy": "explicit opt-in rare-token/identifier/path rescue only; candidates are not graph proof"
+            }),
+        ));
+        packet
+            .metadata
+            .insert("nuance_rescue_trace".to_string(), branch.trace);
+        packet.metadata.insert(
+            "nuance_rescue_candidates".to_string(),
+            json!(branch.candidates),
+        );
+    }
     profile_spans.push(profile_span_json(
         "context_pack_graph_and_packet",
         context_start.elapsed(),
@@ -2446,26 +2705,1429 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
     }))
 }
 
+#[derive(Debug, Clone)]
+struct ContextPackVectorBranch {
+    index_path: PathBuf,
+    status: VectorCandidateBranchStatus,
+    candidates: Vec<RetrievalCandidate>,
+    warning: Option<String>,
+}
+
+fn load_context_pack_vector_branch(
+    _repo_root: &Path,
+    db_path: &Path,
+    options: &ContextPackOptions,
+) -> ContextPackVectorBranch {
+    let index_path = context_pack_vector_index_path(db_path, options);
+    if !index_path.exists() {
+        return ContextPackVectorBranch {
+            index_path,
+            status: VectorCandidateBranchStatus::Missing,
+            candidates: Vec::new(),
+            warning: Some("vector index missing; continuing without vector candidates".to_string()),
+        };
+    }
+
+    let provider = match context_pack_vector_provider() {
+        Ok(provider) => provider,
+        Err(error) => {
+            return ContextPackVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: format!("deterministic vector provider unavailable: {error}"),
+                },
+                candidates: Vec::new(),
+                warning: Some("deterministic vector provider unavailable".to_string()),
+            };
+        }
+    };
+    let store = match SqliteGraphStore::open_read_only(db_path) {
+        Ok(store) => store,
+        Err(error) => {
+            return ContextPackVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: format!("db open failed for vector index validation: {error}"),
+                },
+                candidates: Vec::new(),
+                warning: Some("vector index validation could not open graph DB".to_string()),
+            };
+        }
+    };
+    let passport = match store.get_db_passport() {
+        Ok(Some(passport)) => passport,
+        Ok(None) => {
+            return ContextPackVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: "db passport missing".to_string(),
+                },
+                candidates: Vec::new(),
+                warning: Some(
+                    "vector index ignored because graph DB passport is missing".to_string(),
+                ),
+            };
+        }
+        Err(error) => {
+            return ContextPackVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: format!("db passport read failed: {error}"),
+                },
+                candidates: Vec::new(),
+                warning: Some(
+                    "vector index ignored because graph DB passport could not be read".to_string(),
+                ),
+            };
+        }
+    };
+
+    let build_options = context_pack_vector_build_options();
+    let index = match load_vector_chunk_index_json(&index_path, &provider, &passport, build_options)
+    {
+        Ok(index) => index,
+        Err(error) => {
+            return ContextPackVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: error.to_string(),
+                },
+                candidates: Vec::new(),
+                warning: Some(format!(
+                    "vector index stale or incompatible; continuing without vector candidates: {error}"
+                )),
+            };
+        }
+    };
+    let hits = match index.search(
+        &provider,
+        &options.task,
+        CONTEXT_PACK_VECTOR_CANDIDATE_TOP_K,
+    ) {
+        Ok(hits) => hits,
+        Err(error) => {
+            return ContextPackVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: error.to_string(),
+                },
+                candidates: Vec::new(),
+                warning: Some(format!(
+                    "vector index query failed; continuing without vector candidates: {error}"
+                )),
+            };
+        }
+    };
+    let candidates = hits
+        .iter()
+        .map(|hit| {
+            vector_chunk_search_hit_to_retrieval_candidate(
+                hit,
+                provider.metadata(),
+                &options.task,
+                None,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    ContextPackVectorBranch {
+        index_path,
+        status: VectorCandidateBranchStatus::Ready,
+        candidates,
+        warning: None,
+    }
+}
+
+fn context_pack_vector_diagnostic_trace(
+    options: &ContextPackOptions,
+    fallback_edges: &[Edge],
+    vector_branch: &ContextPackVectorBranch,
+) -> Result<Value, String> {
+    let mut config = RetrievalFunnelConfig::default();
+    config.vector_candidate_top_k = CONTEXT_PACK_VECTOR_CANDIDATE_TOP_K;
+    let funnel = RetrievalFunnel::new(
+        fallback_edges.to_vec(),
+        Vec::<RetrievalDocument>::new(),
+        config,
+    )
+    .map_err(|error| format!("vector diagnostic funnel failed: {error}"))?;
+    let result = funnel
+        .run(
+            RetrievalFunnelRequest::new(
+                options.task.clone(),
+                options.mode.clone(),
+                options.token_budget,
+            )
+            .exact_seeds(options.seeds.clone())
+            .enable_vector_candidates(true)
+            .vector_candidate_diagnostics(true)
+            .vector_branch_status(vector_branch.status.clone())
+            .vector_candidates(vector_branch.candidates.clone()),
+        )
+        .map_err(|error| format!("vector diagnostic funnel failed: {error}"))?;
+    let mut trace = result
+        .packet
+        .metadata
+        .get("vector_candidate_trace")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "schema_version": 1,
+                "diagnostic_only": true,
+                "vector_enabled": true,
+                "vector_index_status": vector_branch.status.as_str(),
+                "vector_candidate_count": vector_branch.candidates.len(),
+                "proof_contract": "vector candidates are candidate recall only and are not graph proof unless graph/source verification succeeds"
+            })
+        });
+    if let Some(object) = trace.as_object_mut() {
+        object.insert(
+            "vector_index_path".to_string(),
+            json!(path_string(&vector_branch.index_path)),
+        );
+    }
+    Ok(trace)
+}
+
+fn context_pack_vector_index_path(db_path: &Path, options: &ContextPackOptions) -> PathBuf {
+    if let Some(path) = &options.vector_index_path {
+        return if path.is_absolute() {
+            path.clone()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .unwrap_or_else(|_| path.clone())
+        };
+    }
+    db_path
+        .parent()
+        .map(|parent| parent.join(CONTEXT_PACK_VECTOR_INDEX_FILE_NAME))
+        .unwrap_or_else(|| PathBuf::from(CONTEXT_PACK_VECTOR_INDEX_FILE_NAME))
+}
+
+fn context_pack_vector_provider() -> Result<DeterministicTestEmbeddingProvider, String> {
+    DeterministicTestEmbeddingProvider::new(
+        CONTEXT_PACK_VECTOR_PROVIDER_DIMENSION,
+        TestEmbeddingEnablement::Explicit,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn context_pack_vector_build_options() -> VectorChunkIndexBuildOptions {
+    VectorChunkIndexBuildOptions {
+        max_chunks: CONTEXT_PACK_VECTOR_CANDIDATE_TOP_K.saturating_mul(256),
+        source_scope: CONTEXT_PACK_VECTOR_SOURCE_SCOPE.to_string(),
+        extraction_version: codegraph_index::VECTOR_EMBEDDING_CHUNK_EXTRACTION_VERSION.to_string(),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ContextPackNuanceRescueBranch {
+    candidates: Vec<Value>,
+    trace: Value,
+}
+
+#[derive(Debug, Clone)]
+struct ContextPackNuanceToken {
+    value: String,
+    normalized: String,
+    raw_lower: String,
+    kind: &'static str,
+    rescue_reason: &'static str,
+    exact_match: bool,
+    seed_value: Option<String>,
+}
+
+fn load_context_pack_nuance_rescue_branch(
+    connection: &Connection,
+    repo_root: &Path,
+    options: &ContextPackOptions,
+    raw_seed_values: &[String],
+    lifecycle_claimable: bool,
+    budgets: ContextPackBudgets,
+) -> Result<ContextPackNuanceRescueBranch, String> {
+    let (tokens, ignored_generic_tokens) =
+        context_pack_nuance_rescue_tokens(options, raw_seed_values);
+    let mut candidates = BTreeMap::<String, Value>::new();
+    let schema_ready = sqlite_table_exists(connection, "entities")?
+        && sqlite_table_exists(connection, "files")?
+        && sqlite_table_exists(connection, "object_id_dict")?
+        && sqlite_table_exists(connection, "symbol_dict")?
+        && sqlite_table_exists(connection, "qualified_name_dict")?
+        && sqlite_table_exists(connection, "path_dict")?;
+
+    if schema_ready {
+        for token in &tokens {
+            if candidates.len() >= CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT {
+                break;
+            }
+            let token_limit = if token.kind == "route_literal" {
+                CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT
+            } else if token.kind == "rare_token" {
+                4
+            } else {
+                2
+            };
+            let per_token_limit = CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT
+                .saturating_sub(candidates.len())
+                .min(token_limit)
+                .max(1);
+            for entity in load_context_pack_nuance_entity_hits(connection, token, per_token_limit)?
+            {
+                let source_line_candidate = context_pack_nuance_source_line_candidate_json(
+                    repo_root,
+                    &entity.repo_relative_path,
+                    token,
+                    raw_seed_values,
+                    lifecycle_claimable,
+                );
+                if let Some(candidate) = context_pack_nuance_entity_candidate_json(
+                    repo_root,
+                    &entity,
+                    token,
+                    raw_seed_values,
+                    lifecycle_claimable,
+                ) {
+                    context_pack_insert_nuance_candidate(&mut candidates, candidate);
+                }
+                if let Some(candidate) = source_line_candidate {
+                    context_pack_insert_nuance_candidate(&mut candidates, candidate);
+                }
+                if candidates.len() >= CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT {
+                    break;
+                }
+            }
+        }
+
+        for token in &tokens {
+            if candidates.len() >= CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT {
+                break;
+            }
+            let remaining = CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT
+                .saturating_sub(candidates.len())
+                .max(1);
+            for path in load_context_pack_nuance_path_hits(connection, token, remaining * 4)? {
+                if let Some(candidate) = context_pack_nuance_path_candidate_json(
+                    &path,
+                    token,
+                    raw_seed_values,
+                    lifecycle_claimable,
+                ) {
+                    context_pack_insert_nuance_candidate(&mut candidates, candidate);
+                }
+                if candidates.len() >= CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT {
+                    break;
+                }
+            }
+        }
+    }
+
+    if sqlite_table_exists(connection, "stage0_fts")?
+        && sqlite_table_exists(connection, "files")?
+        && sqlite_table_exists(connection, "path_dict")?
+        && sqlite_table_has_column(connection, "files", "metadata_json")?
+    {
+        for token in &tokens {
+            if candidates.len() >= CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT {
+                break;
+            }
+            let remaining = CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT
+                .saturating_sub(candidates.len())
+                .max(1);
+            for hit in
+                load_context_pack_text_evidence_hits(connection, &token.value, remaining * 2)?
+            {
+                if !context_pack_text_evidence_allowed_for_mode(
+                    &hit.repo_relative_path,
+                    &hit.metadata,
+                    &options.mode,
+                ) {
+                    continue;
+                }
+                if let Some(candidate) = context_pack_nuance_text_candidate_json(
+                    hit,
+                    token,
+                    raw_seed_values,
+                    lifecycle_claimable,
+                ) {
+                    context_pack_insert_nuance_candidate(&mut candidates, candidate);
+                }
+                if candidates.len() >= CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT {
+                    break;
+                }
+            }
+        }
+    }
+
+    let candidates = candidates.into_values().collect::<Vec<_>>();
+    let trace = context_pack_nuance_rescue_trace(
+        true,
+        &tokens,
+        &ignored_generic_tokens,
+        &candidates,
+        if schema_ready {
+            "ready"
+        } else {
+            "missing_schema"
+        },
+    );
+    let _ = budgets;
+    Ok(ContextPackNuanceRescueBranch { candidates, trace })
+}
+
+fn context_pack_nuance_rescue_trace(
+    enabled: bool,
+    tokens: &[ContextPackNuanceToken],
+    ignored_generic_tokens: &[String],
+    candidates: &[Value],
+    status: &str,
+) -> Value {
+    let rescue_candidate_sources = context_pack_nuance_candidate_sources(candidates);
+    let rescue_reasons = candidates
+        .iter()
+        .take(CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT)
+        .map(|candidate| {
+            json!({
+                "candidate_id": candidate.get("candidate_id").cloned().unwrap_or(Value::Null),
+                "path": candidate.get("path").cloned().unwrap_or(Value::Null),
+                "entity_id": candidate.get("entity_id").cloned().unwrap_or(Value::Null),
+                "rescue_reason": candidate.get("rescue_reason").cloned().unwrap_or(Value::Null),
+                "matched_token": context_pack_trace_safe_value(candidate.get("matched_token")),
+                "evidence_role": candidate.get("evidence_role").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect::<Vec<_>>();
+    let candidates_accepted = candidates
+        .iter()
+        .take(CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT)
+        .map(context_pack_nuance_trace_candidate_item)
+        .collect::<Vec<_>>();
+    let safe_ignored_generic_tokens = ignored_generic_tokens
+        .iter()
+        .take(32)
+        .map(|token| context_pack_trace_safe_string(token))
+        .collect::<Vec<_>>();
+    json!({
+        "schema_version": 1,
+        "diagnostic_only": true,
+        "nuance_rescue_enabled": enabled,
+        "rescue_enabled": enabled,
+        "rescue_status": status,
+        "rescue_candidate_count": candidates.len(),
+        "rescue_candidate_sources": rescue_candidate_sources,
+        "candidate_cap": CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT,
+        "token_count": tokens.len(),
+        "matched_tokens": tokens.iter().map(|token| context_pack_trace_safe_string(&token.value)).collect::<Vec<_>>(),
+        "rare_tokens": context_pack_nuance_trace_tokens_by_kind(tokens, "rare_token"),
+        "identifier_tokens": context_pack_nuance_trace_tokens_by_kind(tokens, "identifier_signature"),
+        "path_title_tokens": context_pack_nuance_trace_tokens_by_kind(tokens, "path_title"),
+        "route_tokens": context_pack_nuance_trace_tokens_by_kind(tokens, "route_literal"),
+        "config_tokens": context_pack_nuance_trace_tokens_by_kind(tokens, "config_key"),
+        "test_tokens": context_pack_nuance_trace_tokens_by_kind(tokens, "test_name"),
+        "route_config_test_tokens": context_pack_nuance_trace_tokens_by_kinds(
+            tokens,
+            &["route_literal", "config_key", "test_name"],
+        ),
+        "ignored_generic_tokens": safe_ignored_generic_tokens,
+        "rescue_reasons": rescue_reasons,
+        "candidates_accepted": {
+            "count": candidates_accepted.len(),
+            "items": candidates_accepted
+        },
+        "candidates_rejected": {
+            "count": ignored_generic_tokens.len(),
+            "reason": "generic_or_negative_token_ignored",
+            "tokens": ignored_generic_tokens.iter().take(32).map(|token| context_pack_trace_safe_string(token)).collect::<Vec<_>>()
+        },
+        "graph_verification_status": context_pack_nuance_graph_status_summary(candidates),
+        "no_proof_fallback_status": "not_evaluated_before_context_pack_graph_verification",
+        "proof_contract": "nuance rescue candidates are deterministic candidate recall only; graph_proof remains false until graph/source verification"
+    })
+}
+
+fn context_pack_nuance_trace_tokens_by_kind(
+    tokens: &[ContextPackNuanceToken],
+    kind: &str,
+) -> Vec<String> {
+    context_pack_nuance_trace_tokens_by_kinds(tokens, &[kind])
+}
+
+fn context_pack_nuance_trace_tokens_by_kinds(
+    tokens: &[ContextPackNuanceToken],
+    kinds: &[&str],
+) -> Vec<String> {
+    tokens
+        .iter()
+        .filter(|token| kinds.iter().any(|kind| *kind == token.kind))
+        .map(|token| context_pack_trace_safe_string(&token.value))
+        .take(32)
+        .collect()
+}
+
+fn context_pack_nuance_candidate_sources(candidates: &[Value]) -> Vec<String> {
+    let mut sources = BTreeSet::<String>::new();
+    for candidate in candidates {
+        for source in context_agent_candidate_sources(candidate) {
+            sources.insert(source);
+        }
+    }
+    sources.into_iter().collect()
+}
+
+fn context_pack_nuance_trace_candidate_item(candidate: &Value) -> Value {
+    json!({
+        "candidate_id": candidate.get("candidate_id").cloned().unwrap_or(Value::Null),
+        "path": candidate.get("path").cloned().unwrap_or(Value::Null),
+        "entity_id": candidate.get("entity_id").cloned().unwrap_or(Value::Null),
+        "candidate_sources": candidate.get("candidate_sources").cloned().unwrap_or_else(|| json!([])),
+        "rescue_reason": candidate.get("rescue_reason").cloned().unwrap_or(Value::Null),
+        "matched_token": context_pack_trace_safe_value(candidate.get("matched_token")),
+        "evidence_role": candidate.get("evidence_role").cloned().unwrap_or(Value::Null),
+        "proof_status": candidate.get("proof_status").cloned().unwrap_or(Value::Null),
+        "graph_proof": candidate.get("graph_proof").cloned().unwrap_or(Value::Null),
+        "verification_status": candidate.get("verification_status").cloned().unwrap_or(Value::Null),
+        "graph_verification_status": candidate.get("graph_verification_status").cloned().unwrap_or(Value::Null),
+        "text_evidence_status": candidate.get("text_evidence_status").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn context_pack_nuance_graph_status_summary(candidates: &[Value]) -> Value {
+    let mut status_counts = BTreeMap::<String, usize>::new();
+    let mut graph_proof_count = 0usize;
+    let mut graph_verified_count = 0usize;
+    for candidate in candidates {
+        let status = candidate
+            .get("graph_verification_status")
+            .or_else(|| candidate.get("verification_status"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        *status_counts.entry(status.to_string()).or_default() += 1;
+        if candidate
+            .get("graph_proof")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            graph_proof_count += 1;
+        }
+        if status == "graph_verified" {
+            graph_verified_count += 1;
+        }
+    }
+    json!({
+        "status_counts": status_counts,
+        "candidate_count": candidates.len(),
+        "graph_verified_count": graph_verified_count,
+        "graph_proof_count": graph_proof_count,
+    })
+}
+
+fn context_pack_trace_safe_value(value: Option<&Value>) -> Value {
+    value
+        .and_then(Value::as_str)
+        .map(|token| json!(context_pack_trace_safe_string(token)))
+        .unwrap_or(Value::Null)
+}
+
+fn context_pack_trace_safe_string(value: &str) -> String {
+    if context_pack_trace_secret_like(value) {
+        "[redacted_secret_like_token]".to_string()
+    } else {
+        value.chars().take(96).collect()
+    }
+}
+
+fn context_pack_trace_safe_text(value: &str) -> String {
+    let lower = value.to_ascii_lowercase();
+    let contains_secret_marker = lower.contains("secret_token")
+        || lower.contains("api_key")
+        || lower.contains("apikey")
+        || lower.contains("password=")
+        || lower.contains("token=")
+        || lower.contains("secret=");
+    let contains_secret_part = value.split_whitespace().any(|part| {
+        let trimmed = part.trim_matches(|character: char| {
+            matches!(
+                character,
+                ',' | ';' | ':' | '(' | ')' | '[' | ']' | '"' | '\''
+            )
+        });
+        context_pack_trace_secret_like(trimmed)
+    });
+    if contains_secret_marker || contains_secret_part {
+        "[redacted_secret_like_text]".to_string()
+    } else {
+        value.chars().take(512).collect()
+    }
+}
+
+fn context_pack_trace_secret_like(value: &str) -> bool {
+    let trimmed = value.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("sk-")
+        || lower.starts_with("ghp_")
+        || lower.starts_with("github_pat_")
+        || lower.starts_with("xoxb-")
+        || lower.contains("secret_token")
+        || lower.contains("api_key")
+        || lower.contains("apikey")
+        || lower.contains("password=")
+        || lower.contains("token=")
+        || lower.contains("secret=")
+    {
+        return true;
+    }
+    let alnum_count = trimmed
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .count();
+    alnum_count >= 32
+        && trimmed
+            .chars()
+            .any(|character| character.is_ascii_lowercase())
+        && trimmed
+            .chars()
+            .any(|character| character.is_ascii_uppercase())
+        && trimmed.chars().any(|character| character.is_ascii_digit())
+}
+
+fn context_pack_insert_nuance_candidate(
+    candidates: &mut BTreeMap<String, Value>,
+    candidate: Value,
+) {
+    let key = context_pack_nuance_candidate_key(&candidate);
+    if let Some(existing) = candidates.get_mut(&key) {
+        merge_context_agent_candidate(existing, candidate);
+    } else {
+        candidates.insert(key, candidate);
+    }
+}
+
+fn context_pack_nuance_candidate_key(candidate: &Value) -> String {
+    if let Some(entity_id) = candidate.get("entity_id").and_then(Value::as_str) {
+        if !entity_id.trim().is_empty() {
+            return format!("entity:{entity_id}");
+        }
+    }
+    if let Some(path) = candidate.get("path").and_then(Value::as_str) {
+        return format!("path:{}", context_agent_path_key(path));
+    }
+    context_agent_candidate_id(candidate)
+}
+
+fn context_pack_nuance_rescue_tokens(
+    options: &ContextPackOptions,
+    raw_seed_values: &[String],
+) -> (Vec<ContextPackNuanceToken>, Vec<String>) {
+    let (positive_task, negative_task) = context_pack_nuance_positive_task(&options.task);
+    let mut ignored = BTreeSet::<String>::new();
+    for token in context_pack_nuance_split_terms(&negative_task) {
+        ignored.insert(token);
+    }
+
+    let mut tokens = Vec::<ContextPackNuanceToken>::new();
+    let mut seen = BTreeSet::<String>::new();
+    for seed in raw_seed_values
+        .iter()
+        .chain(options.seeds.iter())
+        .chain(options.stage0_candidates.iter())
+    {
+        context_pack_push_nuance_token(
+            &mut tokens,
+            &mut seen,
+            &mut ignored,
+            seed,
+            Some(seed.clone()),
+            true,
+        );
+    }
+    for token in context_pack_nuance_split_terms(&positive_task) {
+        context_pack_push_nuance_token(&mut tokens, &mut seen, &mut ignored, &token, None, false);
+    }
+
+    (
+        tokens
+            .into_iter()
+            .take(CONTEXT_PACK_NUANCE_RESCUE_TOKEN_LIMIT)
+            .collect(),
+        ignored.into_iter().collect(),
+    )
+}
+
+fn context_pack_push_nuance_token(
+    tokens: &mut Vec<ContextPackNuanceToken>,
+    seen: &mut BTreeSet<String>,
+    ignored: &mut BTreeSet<String>,
+    raw: &str,
+    seed_value: Option<String>,
+    seed_exact: bool,
+) {
+    let trimmed = raw
+        .trim()
+        .trim_matches(|ch: char| matches!(ch, ',' | ';' | '"' | '\''));
+    if trimmed.is_empty() {
+        return;
+    }
+    let kind = context_pack_nuance_token_kind(trimmed, seed_exact);
+    let normalized = context_pack_nuance_normalized_token(trimmed);
+    let raw_lower = trimmed.replace('\\', "/").to_ascii_lowercase();
+    if normalized.is_empty() || context_pack_nuance_generic_token(&normalized, kind) {
+        ignored.insert(normalized);
+        return;
+    }
+    let key = format!("{kind}:{normalized}");
+    if !seen.insert(key) {
+        return;
+    }
+    tokens.push(ContextPackNuanceToken {
+        value: trimmed.to_string(),
+        normalized,
+        raw_lower,
+        kind,
+        rescue_reason: context_pack_nuance_rescue_reason(kind),
+        exact_match: seed_exact || context_pack_nuance_token_requires_exact(kind),
+        seed_value,
+    });
+}
+
+fn context_pack_nuance_positive_task(task: &str) -> (String, String) {
+    let lower = task.to_ascii_lowercase();
+    let mut split_at = None;
+    for delimiter in [
+        " without ",
+        ", not ",
+        "; not ",
+        " but not ",
+        " rather than ",
+        " instead of ",
+        " except ",
+        " not ",
+    ] {
+        if let Some(index) = lower.find(delimiter) {
+            split_at = Some(split_at.map_or(index, |current: usize| current.min(index)));
+        }
+    }
+    if let Some(index) = split_at {
+        (task[..index].to_string(), task[index..].to_string())
+    } else {
+        (task.to_string(), String::new())
+    }
+}
+
+fn context_pack_nuance_split_terms(value: &str) -> Vec<String> {
+    let mut output = BTreeSet::<String>::new();
+    for raw in value.split_whitespace() {
+        let token = raw.trim_matches(|ch: char| {
+            matches!(ch, ',' | ';' | ':' | '(' | ')' | '[' | ']' | '"' | '\'')
+        });
+        if token.contains('/') || token.contains('-') || token.contains('_') {
+            let normalized = token
+                .trim_matches(|ch: char| matches!(ch, ',' | ';' | '"' | '\''))
+                .to_string();
+            if !normalized.is_empty() {
+                output.insert(normalized);
+            }
+        }
+        for part in context_pack_nuance_identifier_parts(token) {
+            output.insert(part);
+        }
+    }
+    output.into_iter().collect()
+}
+
+fn context_pack_nuance_identifier_parts(value: &str) -> Vec<String> {
+    let mut parts = Vec::<String>::new();
+    let mut current = String::new();
+    let mut previous_lowercase = false;
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            if character.is_ascii_uppercase() && previous_lowercase && !current.is_empty() {
+                parts.push(current.to_ascii_lowercase());
+                current.clear();
+            }
+            current.push(character);
+            previous_lowercase = character.is_ascii_lowercase();
+        } else {
+            if !current.is_empty() {
+                parts.push(current.to_ascii_lowercase());
+                current.clear();
+            }
+            previous_lowercase = false;
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current.to_ascii_lowercase());
+    }
+    parts
+}
+
+fn context_pack_nuance_token_kind(raw: &str, seed_exact: bool) -> &'static str {
+    let lower = raw.replace('\\', "/").to_ascii_lowercase();
+    if lower.starts_with('/') || lower.contains(":/") || lower.contains("/:") {
+        "route_literal"
+    } else if lower.starts_with("br2_") || lower.contains("config.in") {
+        "config_key"
+    } else if lower.contains('/') || lower.contains('\\') || lower.contains('-') {
+        "path_title"
+    } else if lower.contains("test") || lower.contains("spec") || lower.starts_with("failing_") {
+        "test_name"
+    } else if seed_exact
+        || raw.contains('_')
+        || raw.chars().any(|character| character.is_ascii_uppercase())
+    {
+        "identifier_signature"
+    } else {
+        "rare_token"
+    }
+}
+
+fn context_pack_nuance_rescue_reason(kind: &str) -> &'static str {
+    match kind {
+        "route_literal" => "route_literal_rescue",
+        "config_key" => "config_key_rescue",
+        "path_title" => "path_title_rescue",
+        "test_name" => "test_name_rescue",
+        "identifier_signature" => "identifier_signature_rescue",
+        _ => "rare_token_lexical_rescue",
+    }
+}
+
+fn context_pack_nuance_token_requires_exact(kind: &str) -> bool {
+    matches!(
+        kind,
+        "route_literal" | "config_key" | "path_title" | "test_name" | "identifier_signature"
+    )
+}
+
+fn context_pack_nuance_normalized_token(value: &str) -> String {
+    value
+        .replace('\\', "/")
+        .trim()
+        .trim_matches(|ch: char| matches!(ch, ',' | ';' | '"' | '\''))
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, '_' | '-' | '/' | '.' | ':' | '#')
+        })
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn context_pack_nuance_generic_token(token: &str, kind: &str) -> bool {
+    if matches!(token, "test" | "tests" | "spec" | "specs") {
+        return true;
+    }
+    if matches!(kind, "route_literal" | "config_key" | "path_title") && token.len() >= 4 {
+        return false;
+    }
+    if kind == "test_name" && token.len() >= 8 {
+        return false;
+    }
+    if token.len() < 3 || token.chars().all(|character| character.is_ascii_digit()) {
+        return true;
+    }
+    matches!(
+        token,
+        "find"
+            | "the"
+            | "that"
+            | "with"
+            | "from"
+            | "and"
+            | "for"
+            | "or"
+            | "to"
+            | "in"
+            | "whether"
+            | "decides"
+            | "tiny"
+            | "into"
+            | "under"
+            | "code"
+            | "task"
+            | "file"
+            | "files"
+            | "path"
+            | "paths"
+            | "title"
+            | "symbol"
+            | "symbols"
+            | "function"
+            | "config"
+            | "route"
+            | "literal"
+            | "test"
+            | "tests"
+            | "name"
+            | "package"
+            | "metadata"
+            | "infrastructure"
+            | "support"
+            | "script"
+            | "docs"
+            | "document"
+            | "candidate"
+            | "candidates"
+            | "branch"
+            | "rescue"
+            | "check"
+            | "checks"
+            | "token"
+            | "tokens"
+            | "user"
+            | "users"
+            | "process"
+            | "plural"
+            | "batch"
+            | "admin"
+            | "api"
+            | "id"
+    )
+}
+
+fn load_context_pack_nuance_entity_hits(
+    connection: &Connection,
+    token: &ContextPackNuanceToken,
+    limit: usize,
+) -> Result<Vec<ContextEntitySummary>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let (lookup_value, raw_lookup_value) = context_pack_nuance_sql_lookup_values(token);
+    let lookup = context_pack_sql_like_pattern(&lookup_value);
+    let raw_lookup = context_pack_sql_like_pattern(&raw_lookup_value);
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT DISTINCT e.id_key
+            FROM entities e
+            JOIN symbol_dict name ON name.id = e.name_id
+            JOIN qualified_name_lookup qname ON qname.id = e.qualified_name_id
+            JOIN path_dict path ON path.id = e.path_id
+            LEFT JOIN path_dict span_path ON span_path.id = e.span_path_id
+            LEFT JOIN entity_kind_dict kind ON kind.id = e.kind_id
+            WHERE lower(name.value) LIKE ?1 ESCAPE '\\'
+               OR lower(qname.value) LIKE ?1 ESCAPE '\\'
+               OR lower(path.value) LIKE ?1 ESCAPE '\\'
+               OR lower(span_path.value) LIKE ?1 ESCAPE '\\'
+               OR lower(name.value) LIKE ?2 ESCAPE '\\'
+               OR lower(qname.value) LIKE ?2 ESCAPE '\\'
+               OR lower(path.value) LIKE ?2 ESCAPE '\\'
+               OR lower(span_path.value) LIKE ?2 ESCAPE '\\'
+            ORDER BY
+                CASE WHEN lower(name.value) = ?3 OR lower(qname.value) = ?3 THEN 0 ELSE 1 END,
+                CASE WHEN lower(path.value) LIKE 'tests/%' OR lower(path.value) LIKE '%/tests/%' THEN 1 ELSE 0 END,
+                CASE kind.value
+                    WHEN 'Const' THEN 0
+                    WHEN 'Variable' THEN 0
+                    WHEN 'Function' THEN 1
+                    WHEN 'Method' THEN 1
+                    ELSE 2
+                END,
+                e.start_line, length(name.value), qname.value, e.id_key
+            LIMIT ?4
+            ",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(
+            params![lookup, raw_lookup, token.normalized, limit as i64],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let keys = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    load_context_entities_by_keys(connection, &keys, limit)
+}
+
+fn load_context_pack_nuance_path_hits(
+    connection: &Connection,
+    token: &ContextPackNuanceToken,
+    limit: usize,
+) -> Result<Vec<String>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let lookup = context_pack_sql_like_pattern(&token.normalized);
+    let raw_lookup = context_pack_sql_like_pattern(&token.raw_lower);
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT DISTINCT path.value
+            FROM path_dict path
+            JOIN files file ON file.path_id = path.id
+            WHERE lower(path.value) LIKE ?1 ESCAPE '\\'
+               OR lower(path.value) LIKE ?2 ESCAPE '\\'
+            ORDER BY length(path.value), path.value
+            LIMIT ?3
+            ",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![lookup, raw_lookup, limit as i64], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+fn context_pack_nuance_sql_lookup_values(token: &ContextPackNuanceToken) -> (String, String) {
+    if token.kind == "route_literal" {
+        let route_parts = context_pack_nuance_route_discriminator_parts(&token.raw_lower);
+        if let Some(part) = route_parts.first() {
+            return (part.clone(), part.clone());
+        }
+    }
+    (token.normalized.clone(), token.raw_lower.clone())
+}
+
+fn context_pack_sql_like_pattern(value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{escaped}%")
+}
+
+fn context_pack_nuance_entity_candidate_json(
+    repo_root: &Path,
+    entity: &ContextEntitySummary,
+    token: &ContextPackNuanceToken,
+    raw_seed_values: &[String],
+    lifecycle_claimable: bool,
+) -> Option<Value> {
+    let excerpt = context_pack_nuance_entity_excerpt(repo_root, entity);
+    let haystack = format!(
+        "{}\n{}\n{}\n{}",
+        entity.name, entity.qualified_name, entity.repo_relative_path, excerpt
+    );
+    if !context_pack_nuance_haystack_matches(&haystack, token) {
+        return None;
+    }
+    let matched_seeds = context_pack_nuance_matched_seeds(&haystack, token, raw_seed_values);
+    let role = context_entity_fallback_role(entity);
+    let span = entity
+        .source_span
+        .as_ref()
+        .map(agent_source_span_json)
+        .unwrap_or(Value::Null);
+    let (snippet, snippet_truncated) = bounded_retrieval_candidate_snippet_text(&excerpt);
+    Some(context_pack_nuance_candidate_json(
+        format!("nuance-rescue://entity/{}", entity.id),
+        Some(entity.repo_relative_path.clone()),
+        Some(entity.id.clone()),
+        span,
+        if snippet.is_empty() {
+            Value::Null
+        } else {
+            json!(snippet)
+        },
+        role.role.as_str(),
+        token,
+        matched_seeds,
+        lifecycle_claimable,
+        snippet_truncated,
+        true,
+        false,
+    ))
+}
+
+fn context_pack_nuance_path_candidate_json(
+    path: &str,
+    token: &ContextPackNuanceToken,
+    raw_seed_values: &[String],
+    lifecycle_claimable: bool,
+) -> Option<Value> {
+    if !context_pack_nuance_haystack_matches(path, token) {
+        return None;
+    }
+    let matched_seeds = context_pack_nuance_matched_seeds(path, token, raw_seed_values);
+    Some(context_pack_nuance_candidate_json(
+        format!(
+            "nuance-rescue://path/{}",
+            context_agent_stable_component(path)
+        ),
+        Some(path.to_string()),
+        None,
+        Value::Null,
+        Value::Null,
+        "unknown",
+        token,
+        matched_seeds,
+        lifecycle_claimable,
+        false,
+        false,
+        true,
+    ))
+}
+
+fn context_pack_nuance_text_candidate_json(
+    hit: ContextPackTextEvidenceHit,
+    token: &ContextPackNuanceToken,
+    raw_seed_values: &[String],
+    lifecycle_claimable: bool,
+) -> Option<Value> {
+    let haystack = format!("{}\n{}\n{}", hit.repo_relative_path, hit.title, hit.body);
+    if !context_pack_nuance_haystack_matches(&haystack, token) {
+        return None;
+    }
+    let line = context_pack_text_evidence_hit_line(&hit);
+    let span = SourceSpan::new(&hit.repo_relative_path, line, line);
+    let matched_seeds = context_pack_nuance_matched_seeds(&haystack, token, raw_seed_values);
+    let (snippet, snippet_truncated) = bounded_retrieval_candidate_snippet_text(&hit.body);
+    let mut candidate = context_pack_nuance_candidate_json(
+        format!(
+            "nuance-rescue://text/{}:{}",
+            hit.id,
+            context_span_key(&span)
+        ),
+        Some(hit.repo_relative_path),
+        None,
+        agent_source_span_json(&span),
+        if snippet.is_empty() {
+            Value::Null
+        } else {
+            json!(snippet)
+        },
+        "text_evidence",
+        token,
+        matched_seeds,
+        lifecycle_claimable,
+        snippet_truncated,
+        false,
+        false,
+    );
+    if let Some(object) = candidate.as_object_mut() {
+        object.insert(
+            "candidate_sources".to_string(),
+            json!(["nuance_rescue", "text_evidence", "lexical_fts"]),
+        );
+        object.insert("proof_status".to_string(), json!("not_graph_proof"));
+        object.insert("claimable".to_string(), json!(lifecycle_claimable));
+        object.insert("claimable_for_text".to_string(), json!(lifecycle_claimable));
+        object.insert("requires_graph_verification".to_string(), json!(false));
+        object.insert("verification_status".to_string(), json!("not_graph_proof"));
+        object.insert(
+            "graph_verification_status".to_string(),
+            json!("not_graph_proof"),
+        );
+        object.insert("text_evidence_status".to_string(), json!("not_graph_proof"));
+        object.insert(
+            "source_labels".to_string(),
+            json!([
+                "nuance_rescue",
+                token.rescue_reason,
+                "text_evidence",
+                "candidate_only",
+                "no_graph_proof"
+            ]),
+        );
+    }
+    Some(candidate)
+}
+
+fn context_pack_nuance_source_line_candidate_json(
+    repo_root: &Path,
+    repo_relative_path: &str,
+    token: &ContextPackNuanceToken,
+    raw_seed_values: &[String],
+    lifecycle_claimable: bool,
+) -> Option<Value> {
+    let source_path = repo_root.join(repo_relative_path);
+    let source = fs::read_to_string(source_path).ok()?;
+    let (line_index, line) = source.lines().enumerate().find(|(_, line)| {
+        let line_haystack = format!("{repo_relative_path}\n{line}");
+        context_pack_nuance_haystack_matches(&line_haystack, token)
+    })?;
+    let line_number = (line_index + 1) as u32;
+    let span = SourceSpan::new(repo_relative_path, line_number, line_number);
+    let line_haystack = format!("{repo_relative_path}\n{line}");
+    let matched_seeds = context_pack_nuance_matched_seeds(&line_haystack, token, raw_seed_values);
+    let (snippet, snippet_truncated) = bounded_retrieval_candidate_snippet_text(line);
+    let evidence_role = if context_pack_test_path(repo_relative_path) {
+        "test"
+    } else {
+        "production"
+    };
+    let mut candidate = context_pack_nuance_candidate_json(
+        format!(
+            "nuance-rescue://source/{}:{}",
+            context_agent_stable_component(repo_relative_path),
+            line_number
+        ),
+        Some(repo_relative_path.to_string()),
+        None,
+        agent_source_span_json(&span),
+        if snippet.is_empty() {
+            Value::Null
+        } else {
+            json!(snippet)
+        },
+        evidence_role,
+        token,
+        matched_seeds,
+        lifecycle_claimable,
+        snippet_truncated,
+        false,
+        false,
+    );
+    if let Some(object) = candidate.as_object_mut() {
+        object.insert(
+            "candidate_sources".to_string(),
+            json!(["nuance_rescue", "source_text_scan"]),
+        );
+        object.insert(
+            "source_labels".to_string(),
+            json!([
+                "nuance_rescue",
+                token.rescue_reason,
+                "source_text_scan",
+                "candidate_only",
+                "no_graph_proof"
+            ]),
+        );
+    }
+    Some(candidate)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn context_pack_nuance_candidate_json(
+    candidate_id: String,
+    path: Option<String>,
+    entity_id: Option<String>,
+    span: Value,
+    snippet: Value,
+    evidence_role: &str,
+    token: &ContextPackNuanceToken,
+    matched_seeds: Vec<String>,
+    lifecycle_claimable: bool,
+    snippet_truncated: bool,
+    symbol_entity_match: bool,
+    file_path_match: bool,
+) -> Value {
+    let exact_seed_match = !matched_seeds.is_empty();
+    let source_score = context_pack_nuance_source_score(token, exact_seed_match);
+    let text_evidence_status = if evidence_role == "text_evidence" {
+        "not_graph_proof"
+    } else {
+        "absent"
+    };
+    let ranking_features = json!({
+        "exact_seed_match": exact_seed_match,
+        "file_path_match": file_path_match || matches!(token.kind, "path_title" | "route_literal" | "config_key"),
+        "text_evidence_match": evidence_role == "text_evidence",
+        "symbol_entity_match": symbol_entity_match,
+        "graph_proximity": false,
+        "source_role_compatible": matches!(evidence_role, "production" | "test" | "text_evidence" | "unknown"),
+        "lifecycle_claimable": lifecycle_claimable,
+        "proof_available": false,
+        "vector_score_available": false,
+        "binary_score_available": false,
+        "rescue_match": true
+    });
+    let source_labels = json!([
+        "nuance_rescue",
+        token.rescue_reason,
+        "candidate_only",
+        "no_graph_proof"
+    ]);
+    json!({
+        "candidate_id": candidate_id,
+        "candidate_source": "nuance_rescue",
+        "candidate_sources": [
+            "nuance_rescue",
+            if symbol_entity_match { "symbol_lookup" } else { "lexical_fts" }
+        ],
+        "candidate_source_label": token.rescue_reason,
+        "file_id": path.clone().map(Value::from).unwrap_or(Value::Null),
+        "path": path.map(Value::from).unwrap_or(Value::Null),
+        "entity_id": entity_id.map(Value::from).unwrap_or(Value::Null),
+        "span": span,
+        "snippet": snippet,
+        "evidence_role": evidence_role,
+        "proof_status": "candidate_only",
+        "graph_proof": false,
+        "claimable": false,
+        "claimable_for_text": false,
+        "claimable_for_graph": false,
+        "diagnostic_only": false,
+        "score": Value::Null,
+        "source_score": source_score,
+        "rank": Value::Null,
+        "matched_seeds": matched_seeds,
+        "matched_token": token.value,
+        "matched_tokens": [token.value.clone()],
+        "rescue_reason": token.rescue_reason,
+        "rescue_kinds": [token.kind],
+        "requires_graph_verification": true,
+        "verification_status": "needs_graph_verification",
+        "graph_verification_status": "needs_graph_verification",
+        "text_evidence_status": text_evidence_status,
+        "reason": format!("{} matched {}; candidate-only until graph/source verification", token.rescue_reason, token.value),
+        "omitted": false,
+        "truncated": snippet_truncated,
+        "ranking_features": ranking_features,
+        "source_labels": source_labels
+    })
+}
+
+fn context_pack_nuance_source_score(token: &ContextPackNuanceToken, exact_seed_match: bool) -> f64 {
+    let mut score = match token.kind {
+        "route_literal" => 9.0,
+        "config_key" => 8.5,
+        "test_name" => 8.0,
+        "identifier_signature" => 7.5,
+        "path_title" => 7.0,
+        _ => 4.0,
+    };
+    if exact_seed_match {
+        score += 2.0;
+    }
+    if token.value.len() >= 16 {
+        score += 0.5;
+    }
+    score
+}
+
+fn context_pack_nuance_entity_excerpt(repo_root: &Path, entity: &ContextEntitySummary) -> String {
+    let Some(span) = entity.source_span.as_ref() else {
+        return String::new();
+    };
+    let path = repo_root.join(&span.repo_relative_path);
+    let Ok(source) = fs::read_to_string(path) else {
+        return String::new();
+    };
+    let start = span.start_line.saturating_sub(1) as usize;
+    let end = span.end_line.max(span.start_line) as usize;
+    source
+        .lines()
+        .skip(start)
+        .take(end.saturating_sub(start).max(1))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn context_pack_nuance_haystack_matches(haystack: &str, token: &ContextPackNuanceToken) -> bool {
+    let lower = haystack.replace('\\', "/").to_ascii_lowercase();
+    if token.kind == "route_literal" {
+        if lower.contains(&token.raw_lower) {
+            return true;
+        }
+        let route_parts = context_pack_nuance_route_discriminator_parts(&token.raw_lower);
+        if route_parts.is_empty() {
+            return false;
+        }
+        let full_terms = context_pack_nuance_haystack_terms(haystack);
+        let route_context = full_terms.contains("route")
+            || full_terms.contains("routes")
+            || full_terms.contains("literal")
+            || lower.contains("/routes")
+            || lower.contains("routes/");
+        return route_context
+            && route_parts
+                .iter()
+                .all(|part| full_terms.contains(part) || lower.contains(part));
+    }
+    if token.kind == "path_title" && lower.contains(&token.raw_lower) {
+        return true;
+    }
+    if matches!(token.kind, "config_key" | "test_name") && lower.contains(&token.normalized) {
+        return true;
+    }
+    let full_terms = context_pack_nuance_haystack_terms(haystack);
+    if full_terms.contains(&token.normalized) {
+        return true;
+    }
+    if token.exact_match {
+        return false;
+    }
+    full_terms.contains(&token.raw_lower) || lower.contains(&token.raw_lower)
+}
+
+fn context_pack_nuance_route_discriminator_parts(value: &str) -> Vec<String> {
+    context_pack_nuance_identifier_parts(value)
+        .into_iter()
+        .filter(|part| {
+            !matches!(
+                part.as_str(),
+                "api" | "id" | "user" | "users" | "route" | "routes"
+            )
+        })
+        .collect()
+}
+
+fn context_pack_nuance_haystack_terms(haystack: &str) -> BTreeSet<String> {
+    let mut terms = BTreeSet::<String>::new();
+    for token in haystack.split(|ch: char| {
+        !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '/' | '.' | ':' | '#'))
+    }) {
+        let normalized = context_pack_nuance_normalized_token(token);
+        if !normalized.is_empty() {
+            terms.insert(normalized.clone());
+            terms.insert(
+                normalized
+                    .chars()
+                    .filter(|character| character.is_ascii_alphanumeric() || *character == '_')
+                    .collect::<String>(),
+            );
+        }
+        for part in context_pack_nuance_identifier_parts(token) {
+            if !part.is_empty() {
+                terms.insert(part);
+            }
+        }
+    }
+    terms.retain(|term| !term.is_empty());
+    terms
+}
+
+fn context_pack_nuance_matched_seeds(
+    haystack: &str,
+    token: &ContextPackNuanceToken,
+    raw_seed_values: &[String],
+) -> Vec<String> {
+    let mut seeds = BTreeSet::<String>::new();
+    if let Some(seed) = token.seed_value.as_ref() {
+        seeds.insert(seed.clone());
+    }
+    for seed in raw_seed_values {
+        let seed_token = ContextPackNuanceToken {
+            value: seed.clone(),
+            normalized: context_pack_nuance_normalized_token(seed),
+            raw_lower: seed.replace('\\', "/").to_ascii_lowercase(),
+            kind: context_pack_nuance_token_kind(seed, true),
+            rescue_reason: "exact_seed_overlap",
+            exact_match: true,
+            seed_value: Some(seed.clone()),
+        };
+        if context_pack_nuance_haystack_matches(haystack, &seed_token) {
+            seeds.insert(seed.clone());
+        }
+    }
+    seeds.into_iter().collect()
+}
+
 fn run_impact_command(args: &[String]) -> Result<Value, String> {
     let mut args = args.to_vec();
     let allow_stale_read = remove_flag(&mut args, "--allow-stale-read");
+    let allow_foreign_db = remove_flag(&mut args, "--allow-foreign-db");
     let explicit_scope = parse_read_scope_options(&mut args)?;
     if args.len() != 1 {
         return Err("Usage: codegraph-mcp impact <file-or-symbol> [scope flags]".to_string());
     }
     let repo_root = current_repo_root()?;
     let db_path = default_db_path(&repo_root);
-    let db_lifecycle_read =
-        read_db_lifecycle_guard(&repo_root, &db_path, allow_stale_read, explicit_scope)?;
-    let previous_allow_stale = std::env::var("CODEGRAPH_ALLOW_STALE_READ").ok();
-    if allow_stale_read {
-        std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", "1");
-    }
-    let result = impact_value(&repo_root, &args[0]);
-    match previous_allow_stale {
-        Some(value) => std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", value),
-        None => std::env::remove_var("CODEGRAPH_ALLOW_STALE_READ"),
-    }
+    let db_lifecycle_read = read_db_lifecycle_guard(
+        &repo_root,
+        &db_path,
+        allow_stale_read,
+        allow_foreign_db,
+        explicit_scope,
+    )?;
+    let result = with_lifecycle_override_env(allow_stale_read, allow_foreign_db, || {
+        impact_value(&repo_root, &args[0])
+    });
     let mut value = result?;
     if let Some(object) = value.as_object_mut() {
         object.insert("db_lifecycle_read".to_string(), db_lifecycle_read);
@@ -3315,7 +4977,7 @@ fn run_proof_build_mode_benchmark_command(
     }
 
     let started = Instant::now();
-    let (repo, db, options, _output_mode, budget_options) =
+    let (repo, db, options, _output_mode, budget_options, _vector_index_output) =
         parse_index_command_options(&index_args)?;
     if options.storage_mode != StorageMode::Proof {
         return Err(format!(
@@ -7178,6 +8840,7 @@ fn benchmark_unresolved_calls_surface_query(
         source_scan: false,
         count_total: false,
         allow_stale_read: false,
+        allow_foreign_db: false,
         explicit_scope_policy: None,
         surface_name: "bench.query_surface.unresolved_calls".to_string(),
         operation_kind: DbLifecycleOperationKind::BenchmarkInspection,
@@ -7212,6 +8875,7 @@ fn benchmark_unresolved_calls_surface_query(
             source_scan: false,
             count_total: false,
             allow_stale_read: false,
+            allow_foreign_db: false,
             explicit_scope_policy: None,
             surface_name: "bench.query_surface.unresolved_calls".to_string(),
             operation_kind: DbLifecycleOperationKind::BenchmarkInspection,
@@ -11313,6 +12977,7 @@ struct UnresolvedCallsOptions {
     source_scan: bool,
     count_total: bool,
     allow_stale_read: bool,
+    allow_foreign_db: bool,
     explicit_scope_policy: Option<IndexScopeOptions>,
     surface_name: String,
     operation_kind: DbLifecycleOperationKind,
@@ -11329,6 +12994,7 @@ impl Default for UnresolvedCallsOptions {
             source_scan: false,
             count_total: false,
             allow_stale_read: false,
+            allow_foreign_db: false,
             explicit_scope_policy: None,
             surface_name: "cli.query.unresolved_calls".to_string(),
             operation_kind: DbLifecycleOperationKind::NormalRead,
@@ -11377,6 +13043,12 @@ fn parse_unresolved_calls_args(args: &[String]) -> Result<UnresolvedCallsOptions
             "--count-total" => {
                 options.count_total = true;
             }
+            "--allow-stale-read" => {
+                options.allow_stale_read = true;
+            }
+            "--allow-foreign-db" => {
+                options.allow_foreign_db = true;
+            }
             other => {
                 return Err(format!(
                     "unknown unresolved-calls option: {other}\n{}",
@@ -11390,7 +13062,7 @@ fn parse_unresolved_calls_args(args: &[String]) -> Result<UnresolvedCallsOptions
 }
 
 fn unresolved_calls_usage() -> String {
-    "Usage: codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets] [--include-snippets] [--db <path>]".to_string()
+    "Usage: codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets] [--include-snippets] [--db <path>] [--allow-stale-read] [--allow-foreign-db]".to_string()
 }
 
 fn unresolved_calls_lifecycle_preflight(
@@ -11399,6 +13071,7 @@ fn unresolved_calls_lifecycle_preflight(
     options: &UnresolvedCallsOptions,
 ) -> Result<DbLifecycleSurfacePreflight, String> {
     let allow_stale_read = options.allow_stale_read || allow_stale_read_enabled();
+    let allow_foreign_db = options.allow_foreign_db || allow_foreign_read_enabled();
     let request = DbLifecycleSurfacePreflightRequest {
         repo_root: repo_root.to_path_buf(),
         db_path: db_path.to_path_buf(),
@@ -11410,7 +13083,9 @@ fn unresolved_calls_lifecycle_preflight(
         expected_scope: options.explicit_scope_policy.clone(),
     };
 
-    if options.operation_kind == DbLifecycleOperationKind::NormalRead && allow_stale_read {
+    if options.operation_kind == DbLifecycleOperationKind::NormalRead
+        && (allow_stale_read || allow_foreign_db)
+    {
         let normal = inspect_db_lifecycle_surface_preflight(request.clone())
             .map_err(|error| error.to_string())?;
         if normal.safe_to_read {
@@ -11418,8 +13093,8 @@ fn unresolved_calls_lifecycle_preflight(
         }
         let mut diagnostic = request;
         diagnostic.operation_kind = DbLifecycleOperationKind::DiagnosticRead;
-        diagnostic.allow_stale_read = true;
-        diagnostic.allow_foreign_repo = true;
+        diagnostic.allow_stale_read = allow_stale_read;
+        diagnostic.allow_foreign_repo = allow_foreign_db;
         return inspect_db_lifecycle_surface_preflight(diagnostic)
             .map_err(|error| error.to_string());
     }
@@ -11430,7 +13105,7 @@ fn unresolved_calls_lifecycle_preflight(
         DbLifecycleOperationKind::DiagnosticRead | DbLifecycleOperationKind::BenchmarkInspection
     ) {
         request.allow_stale_read = allow_stale_read;
-        request.allow_foreign_repo = allow_stale_read;
+        request.allow_foreign_repo = allow_foreign_db;
     }
     inspect_db_lifecycle_surface_preflight(request).map_err(|error| error.to_string())
 }
@@ -11453,7 +13128,7 @@ fn require_unresolved_calls_lifecycle_preflight(
         .map(|note| format!("; {note}"))
         .unwrap_or_default();
     Err(format!(
-        "CodeGraph DB is not safe to read at {}: kind={}; {}{}; run `codegraph-mcp index . --fresh` or pass --allow-stale-read for diagnostic-only output",
+        "CodeGraph DB is not safe to read at {}: kind={}; {}{}; run `codegraph-mcp index . --fresh`; pass --allow-stale-read for stale/passport diagnostic output or --allow-foreign-db for foreign-repo diagnostic output",
         preflight.exact_db_path_checked,
         preflight
             .db_problem_kind
@@ -11569,7 +13244,8 @@ fn query_unresolved_calls(
     });
     if options.source_scan && unresolved.len() < options.limit {
         let scan_start = Instant::now();
-        let store = SqliteGraphStore::open(&checked_db_path).map_err(|error| error.to_string())?;
+        let store = SqliteGraphStore::open_read_only(&checked_db_path)
+            .map_err(|error| error.to_string())?;
         let before = unresolved.len();
         unresolved.extend(source_scan_unresolved_calls(
             repo_root,
@@ -12982,7 +14658,7 @@ impl IndexJsonOutputMode {
 
 #[cfg(test)]
 fn parse_index_options(args: &[String]) -> Result<(String, Option<PathBuf>, IndexOptions), String> {
-    let (repo, db, options, _, _) = parse_index_command_options(args)?;
+    let (repo, db, options, _, _, _) = parse_index_command_options(args)?;
     Ok((repo, db, options))
 }
 
@@ -12995,11 +14671,13 @@ fn parse_index_command_options(
         IndexOptions,
         IndexJsonOutputMode,
         storage_budget::StorageBudgetOptions,
+        Option<PathBuf>,
     ),
     String,
 > {
     let mut repo = None;
     let mut db = None;
+    let mut vector_index_output = None;
     let mut options = IndexOptions::default();
     let mut storage_budget = storage_budget::StorageBudgetOptions::normal_self_use();
     let mut output_mode = IndexJsonOutputMode::Concise;
@@ -13054,6 +14732,14 @@ fn parse_index_command_options(
             }
             "--allow-stale-reuse" => {
                 options.db_lifecycle.policy = DbLifecyclePolicy::DiagnosticStaleReuse;
+            }
+            "--build-vector-index" => {
+                index += 1;
+                let Some(raw) = args.get(index) else {
+                    return Err("--build-vector-index requires a path".to_string());
+                };
+                vector_index_output = Some(PathBuf::from(raw));
+                options.json = true;
             }
             "--workers" => {
                 index += 1;
@@ -13132,12 +14818,13 @@ fn parse_index_command_options(
     }
     Ok((
         repo.ok_or_else(|| {
-            "Usage: codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]".to_string()
+            "Usage: codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--build-vector-index <path>] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]".to_string()
         })?,
         db,
         options,
         output_mode,
         storage_budget,
+        vector_index_output,
     ))
 }
 
@@ -14220,7 +15907,11 @@ struct ContextPackOptions {
     limit_snippets: Option<usize>,
     max_output_bytes: Option<usize>,
     allow_stale_read: bool,
+    allow_foreign_db: bool,
     explicit_scope_policy: Option<IndexScopeOptions>,
+    enable_vector_candidates: bool,
+    enable_nuance_rescue_candidates: bool,
+    vector_index_path: Option<PathBuf>,
 }
 
 fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String> {
@@ -14238,6 +15929,10 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
     let mut limit_snippets = None;
     let mut max_output_bytes = None;
     let mut allow_stale_read = false;
+    let mut allow_foreign_db = false;
+    let mut enable_vector_candidates = false;
+    let mut enable_nuance_rescue_candidates = false;
+    let mut vector_index_path = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -14336,6 +16031,22 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
             "--allow-stale-read" => {
                 allow_stale_read = true;
             }
+            "--allow-foreign-db" => {
+                allow_foreign_db = true;
+            }
+            "--enable-vector-candidates" | "--enable_vector_candidates" => {
+                enable_vector_candidates = true;
+            }
+            "--enable-nuance-rescue-candidates" | "--enable_nuance_rescue_candidates" => {
+                enable_nuance_rescue_candidates = true;
+            }
+            "--vector-index" | "--vector-index-path" | "--vector_index" | "--vector_index_path" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--vector-index requires a path".to_string());
+                };
+                vector_index_path = Some(PathBuf::from(value));
+            }
             other => return Err(format!("unknown context-pack option: {other}")),
         }
         index += 1;
@@ -14359,7 +16070,11 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
         limit_snippets,
         max_output_bytes,
         allow_stale_read,
+        allow_foreign_db,
         explicit_scope_policy,
+        enable_vector_candidates,
+        enable_nuance_rescue_candidates,
+        vector_index_path,
     })
 }
 
@@ -14470,14 +16185,54 @@ fn current_repo_root() -> Result<PathBuf, String> {
 
 fn open_existing_store(repo_root: &Path) -> Result<SqliteGraphStore, String> {
     let db_path = resolved_db_path_for_repo(repo_root);
-    let _ = read_db_lifecycle_guard(repo_root, &db_path, allow_stale_read_enabled(), None)?;
-    SqliteGraphStore::open(db_path).map_err(|error| error.to_string())
+    let _ = read_db_lifecycle_guard(
+        repo_root,
+        &db_path,
+        allow_stale_read_enabled(),
+        allow_foreign_read_enabled(),
+        None,
+    )?;
+    SqliteGraphStore::open_read_only(db_path).map_err(|error| error.to_string())
 }
 
 fn allow_stale_read_enabled() -> bool {
     std::env::var("CODEGRAPH_ALLOW_STALE_READ")
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+fn allow_foreign_read_enabled() -> bool {
+    std::env::var("CODEGRAPH_ALLOW_FOREIGN_DB")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn with_lifecycle_override_env<F, T>(
+    allow_stale_read: bool,
+    allow_foreign_db: bool,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    let previous_allow_stale = std::env::var("CODEGRAPH_ALLOW_STALE_READ").ok();
+    let previous_allow_foreign = std::env::var("CODEGRAPH_ALLOW_FOREIGN_DB").ok();
+    if allow_stale_read {
+        std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", "1");
+    }
+    if allow_foreign_db {
+        std::env::set_var("CODEGRAPH_ALLOW_FOREIGN_DB", "1");
+    }
+    let result = operation();
+    match previous_allow_stale {
+        Some(value) => std::env::set_var("CODEGRAPH_ALLOW_STALE_READ", value),
+        None => std::env::remove_var("CODEGRAPH_ALLOW_STALE_READ"),
+    }
+    match previous_allow_foreign {
+        Some(value) => std::env::set_var("CODEGRAPH_ALLOW_FOREIGN_DB", value),
+        None => std::env::remove_var("CODEGRAPH_ALLOW_FOREIGN_DB"),
+    }
+    result
 }
 
 fn inspect_read_db_lifecycle_preflight(
@@ -14493,14 +16248,35 @@ fn read_db_lifecycle_guard(
     repo_root: &Path,
     db_path: &Path,
     allow_stale_read: bool,
+    allow_foreign_db: bool,
     explicit_scope_policy: Option<IndexScopeOptions>,
 ) -> Result<Value, String> {
     let preflight = inspect_read_db_lifecycle_preflight(repo_root, db_path, explicit_scope_policy)?;
     if preflight.safe {
-        return Ok(db_lifecycle_preflight_json(&preflight, true));
+        return Ok(db_lifecycle_preflight_json(
+            &preflight,
+            true,
+            allow_stale_read,
+            allow_foreign_db,
+        ));
     }
-    if allow_stale_read {
-        return Ok(db_lifecycle_preflight_json(&preflight, false));
+    if allow_stale_read || allow_foreign_db {
+        let remaining_blockers = preflight
+            .blockers
+            .iter()
+            .filter(|blocker| {
+                !((allow_stale_read && lifecycle_blocker_is_stale_or_missing_passport(blocker))
+                    || (allow_foreign_db && lifecycle_blocker_is_foreign_repo(blocker)))
+            })
+            .collect::<Vec<_>>();
+        if remaining_blockers.is_empty() {
+            return Ok(db_lifecycle_preflight_json(
+                &preflight,
+                false,
+                allow_stale_read,
+                allow_foreign_db,
+            ));
+        }
     }
     if let Some(mismatch) = preflight.scope_mismatch.as_ref() {
         return Err(scope_mismatch_message(db_path, mismatch));
@@ -14511,7 +16287,7 @@ fn read_db_lifecycle_guard(
         .map(|note| format!("; {note}"))
         .unwrap_or_default();
     Err(format!(
-        "CodeGraph DB is not safe to read at {}: kind={}; {}{}; run `codegraph-mcp index . --fresh` or pass --allow-stale-read for diagnostic-only output",
+        "CodeGraph DB is not safe to read at {}: kind={}; {}{}; run `codegraph-mcp index . --fresh`; pass --allow-stale-read for stale/passport diagnostic output or --allow-foreign-db for foreign-repo diagnostic output",
         db_path.display(),
         preflight
             .db_problem_kind
@@ -14520,6 +16296,18 @@ fn read_db_lifecycle_guard(
         preflight.blockers.join("; "),
         outside_note
     ))
+}
+
+fn lifecycle_blocker_is_foreign_repo(blocker: &str) -> bool {
+    blocker.contains("repo root mismatch") || blocker.contains("git remote mismatch")
+}
+
+fn lifecycle_blocker_is_stale_or_missing_passport(blocker: &str) -> bool {
+    blocker.contains("previous run did not complete")
+        || blocker.contains("previous integrity gate was not ok")
+        || blocker.contains("codegraph_db_passport table is missing")
+        || blocker.contains("codegraph_db_passport row is missing")
+        || blocker.contains("passport scope_policy_json is missing")
 }
 
 fn scope_mismatch_message(
@@ -14535,7 +16323,12 @@ fn scope_mismatch_message(
     )
 }
 
-fn db_lifecycle_preflight_json(preflight: &DbLifecyclePreflight, claimable: bool) -> Value {
+fn db_lifecycle_preflight_json(
+    preflight: &DbLifecyclePreflight,
+    claimable: bool,
+    allow_stale_read: bool,
+    allow_foreign_db: bool,
+) -> Value {
     json!({
         "decision": if preflight.safe { "read_reuse" } else { "diagnostic_stale_reuse" },
         "db_problem_kind": preflight.db_problem_kind.clone(),
@@ -14543,7 +16336,10 @@ fn db_lifecycle_preflight_json(preflight: &DbLifecyclePreflight, claimable: bool
         "path_access_error": preflight.path_access_error.clone(),
         "passport_status": preflight.db_health.passport_status,
         "claimable": claimable && preflight.safe,
+        "diagnostic_only": !(claimable && preflight.safe),
         "contaminated": !preflight.safe,
+        "allow_stale_read": allow_stale_read,
+        "allow_foreign_db": allow_foreign_db,
         "reasons": preflight.db_health.reasons.clone(),
         "sqlite_sidecars": preflight.db_health.sqlite_sidecars.clone(),
         "sidecar_status": preflight.db_health.sidecar_status.clone(),
@@ -14598,6 +16394,10 @@ struct ContextPackBudgets {
     max_returned_proof_paths: usize,
     max_snippets: usize,
     max_traversal_depth: usize,
+    max_path_evidence_rows: usize,
+    max_path_edges_per_path: usize,
+    max_hydration_bytes: usize,
+    path_evidence_timeout_ms: u64,
 }
 
 impl ContextPackBudgets {
@@ -14610,6 +16410,10 @@ impl ContextPackBudgets {
                 max_returned_proof_paths: 48,
                 max_snippets: 64,
                 max_traversal_depth: 6,
+                max_path_evidence_rows: 512,
+                max_path_edges_per_path: 6,
+                max_hydration_bytes: 1024 * 1024,
+                path_evidence_timeout_ms: 3000,
             };
         }
         if normalized.contains("impact") {
@@ -14619,6 +16423,10 @@ impl ContextPackBudgets {
                 max_returned_proof_paths: 24,
                 max_snippets: 24,
                 max_traversal_depth: 4,
+                max_path_evidence_rows: 256,
+                max_path_edges_per_path: 4,
+                max_hydration_bytes: 512 * 1024,
+                path_evidence_timeout_ms: 1500,
             };
         }
         Self {
@@ -14627,6 +16435,10 @@ impl ContextPackBudgets {
             max_returned_proof_paths: 12,
             max_snippets: 12,
             max_traversal_depth: 3,
+            max_path_evidence_rows: 128,
+            max_path_edges_per_path: 3,
+            max_hydration_bytes: 256 * 1024,
+            path_evidence_timeout_ms: 1000,
         }
     }
 
@@ -14654,6 +16466,12 @@ impl ContextPackBudgets {
         budgets.max_candidate_paths = budgets
             .max_candidate_paths
             .min(budgets.max_returned_proof_paths.saturating_mul(16).max(16));
+        budgets.max_path_evidence_rows = budgets
+            .max_path_evidence_rows
+            .min(budgets.max_candidate_paths);
+        budgets.max_path_edges_per_path = budgets
+            .max_path_edges_per_path
+            .min(budgets.max_traversal_depth.max(1));
         budgets
     }
 }
@@ -14682,10 +16500,7 @@ fn open_context_pack_connection(db_path: &Path) -> Result<Connection, String> {
 }
 
 fn context_pack_seed_values(options: &ContextPackOptions, max_seeds: usize) -> Vec<String> {
-    let prompt_exact = extract_prompt_seeds(&options.task)
-        .into_iter()
-        .filter_map(|seed| seed.exact_value())
-        .collect::<Vec<_>>();
+    let prompt_exact = context_pack_prompt_exact_seed_values(&options.task);
     unique_limited_strings(
         options
             .seeds
@@ -14695,6 +16510,20 @@ fn context_pack_seed_values(options: &ContextPackOptions, max_seeds: usize) -> V
             .cloned(),
         max_seeds.max(1),
     )
+}
+
+fn context_pack_prompt_exact_seed_values(task: &str) -> Vec<String> {
+    let (positive_task, negative_task) = context_pack_nuance_positive_task(task);
+    let positive_lower = positive_task.to_ascii_lowercase();
+    let negative_lower = negative_task.to_ascii_lowercase();
+    extract_prompt_seeds(task)
+        .into_iter()
+        .filter_map(|seed| seed.exact_value())
+        .filter(|seed| {
+            let lower = seed.to_ascii_lowercase();
+            positive_lower.contains(&lower) && !negative_lower.contains(&lower)
+        })
+        .collect()
 }
 
 fn unique_limited_strings(values: impl IntoIterator<Item = String>, limit: usize) -> Vec<String> {
@@ -14961,15 +16790,28 @@ fn load_context_entities_by_paths(
     )
 }
 
+#[derive(Debug, Clone)]
+struct StoredContextPathEvidenceLoad {
+    paths: Vec<PathEvidence>,
+    telemetry: Value,
+}
+
 fn load_stored_context_path_evidence(
     connection: &Connection,
     seed_ids: &[String],
     mode: &str,
     budgets: ContextPackBudgets,
-) -> Result<Vec<PathEvidence>, String> {
-    if seed_ids.is_empty() || budgets.max_candidate_paths == 0 {
-        return Ok(Vec::new());
+) -> Result<StoredContextPathEvidenceLoad, String> {
+    if seed_ids.is_empty()
+        || budgets.max_candidate_paths == 0
+        || budgets.max_path_evidence_rows == 0
+    {
+        return Ok(StoredContextPathEvidenceLoad {
+            paths: Vec::new(),
+            telemetry: context_pack_empty_path_evidence_telemetry(seed_ids.len(), budgets),
+        });
     }
+    let lookup_start = Instant::now();
     let use_symbols = sqlite_table_exists(connection, "path_evidence_symbols")?
         && sqlite_row_count(connection, "path_evidence_symbols")? > 0;
     let placeholders = sql_placeholders(seed_ids.len());
@@ -15010,8 +16852,8 @@ fn load_stored_context_path_evidence(
     if !use_symbols {
         params.extend(seed_ids.iter().cloned());
     }
-    params.push(budgets.max_traversal_depth.to_string());
-    params.push(budgets.max_candidate_paths.to_string());
+    params.push(budgets.max_path_edges_per_path.to_string());
+    params.push((budgets.max_path_evidence_rows + 1).to_string());
     let mut statement = connection
         .prepare(&sql)
         .map_err(|error| error.to_string())?;
@@ -15022,8 +16864,181 @@ fn load_stored_context_path_evidence(
         )
         .map_err(|error| error.to_string())?;
     let mut paths = collect_sql_rows(rows)?;
-    hydrate_stored_path_evidence_metadata(&connection, &mut paths)?;
-    Ok(filter_and_sort_context_path_evidence(paths, mode, budgets))
+    let lookup_truncated = paths.len() > budgets.max_path_evidence_rows;
+    let lookup_omitted_lower_bound = paths.len().saturating_sub(budgets.max_path_evidence_rows);
+    paths.truncate(budgets.max_path_evidence_rows);
+    let lookup_time_ms = lookup_start.elapsed().as_secs_f64() * 1000.0;
+    let rows_read = paths.len();
+    let bytes_read = serde_json::to_vec(&paths)
+        .map(|bytes| bytes.len())
+        .unwrap_or_default();
+    let hydration_start = Instant::now();
+    let hydration_stats = hydrate_stored_path_evidence_metadata(
+        connection,
+        &mut paths,
+        ContextPathEvidenceHydrationBudget::for_budgets(budgets, rows_read),
+    )?;
+    let hydration_time_ms = hydration_start.elapsed().as_secs_f64() * 1000.0;
+    let filtered = filter_and_sort_context_path_evidence(paths, mode, budgets);
+    let filtered_omitted = rows_read.saturating_sub(filtered.len());
+    let path_evidence_omitted_count = lookup_omitted_lower_bound.saturating_add(filtered_omitted);
+    let path_evidence_truncated = lookup_truncated || hydration_stats.truncated;
+    let storage_contributors = context_pack_path_evidence_storage_contributors(connection)
+        .unwrap_or_else(|error| json!({ "status": "unavailable", "error": error }));
+    let telemetry = json!({
+        "schema_version": 1,
+        "diagnostic_only": true,
+        "measurement_scope": "context_pack_stored_path_evidence",
+        "max_path_evidence_rows": budgets.max_path_evidence_rows,
+        "max_edges_per_path": budgets.max_path_edges_per_path,
+        "max_snippets": budgets.max_snippets,
+        "max_hydration_bytes": budgets.max_hydration_bytes,
+        "max_time_budget_ms": budgets.path_evidence_timeout_ms,
+        "lookup_query_count": if use_symbols { 3 } else { 3 },
+        "lookup_time_ms": lookup_time_ms,
+        "hydration_query_count": if rows_read == 0 { 0 } else { 1 },
+        "hydration_time_ms": hydration_time_ms,
+        "source_span_load_time_ms": Value::Null,
+        "snippet_load_time_ms": Value::Null,
+        "n_plus_one_query_count": 0,
+        "n_plus_one_detectable": true,
+        "rows_read": rows_read,
+        "bytes_read": bytes_read,
+        "hydrated_edge_rows_read": hydration_stats.loaded_edge_rows,
+        "hydration_bytes_read": hydration_stats.bytes_read,
+        "hydration_budget_exhausted": hydration_stats.budget_exhausted,
+        "hydration_stop_reason": hydration_stats.stop_reason,
+        "path_evidence_edge_rows_omitted": hydration_stats.omitted_edge_rows,
+        "path_evidence_rows_returned": filtered.len(),
+        "path_evidence_rows_omitted": path_evidence_omitted_count,
+        "path_evidence_omitted_count": path_evidence_omitted_count,
+        "path_evidence_truncated": path_evidence_truncated,
+        "source_snippet_omitted_count": Value::Null,
+        "lookup_strategy": if use_symbols { "path_evidence_symbols_join" } else { "source_target_scan" },
+        "storage_contributors": storage_contributors,
+        "notes": [
+            "rows_scanned is not available from rusqlite",
+            "bytes_read is serialized PathEvidence payload size, not SQLite page IO",
+            "hydration uses one bulk materialized edge/entity query; no N+1 query pattern was detected in this loader",
+            "path_evidence_omitted_count is a bounded lower-bound count from lookup cap plus source-role/proof filtering"
+        ]
+    });
+    Ok(StoredContextPathEvidenceLoad {
+        paths: filtered,
+        telemetry,
+    })
+}
+
+fn context_pack_empty_path_evidence_telemetry(
+    seed_count: usize,
+    budgets: ContextPackBudgets,
+) -> Value {
+    json!({
+        "schema_version": 1,
+        "diagnostic_only": true,
+        "measurement_scope": "context_pack_stored_path_evidence",
+        "max_path_evidence_rows": budgets.max_path_evidence_rows,
+        "max_edges_per_path": budgets.max_path_edges_per_path,
+        "max_snippets": budgets.max_snippets,
+        "max_hydration_bytes": budgets.max_hydration_bytes,
+        "max_time_budget_ms": budgets.path_evidence_timeout_ms,
+        "lookup_query_count": 0,
+        "lookup_time_ms": 0.0,
+        "hydration_query_count": 0,
+        "hydration_time_ms": 0.0,
+        "source_span_load_time_ms": Value::Null,
+        "snippet_load_time_ms": Value::Null,
+        "n_plus_one_query_count": 0,
+        "n_plus_one_detectable": true,
+        "rows_read": 0,
+        "bytes_read": 0,
+        "hydrated_edge_rows_read": 0,
+        "hydration_bytes_read": 0,
+        "hydration_budget_exhausted": false,
+        "hydration_stop_reason": Value::Null,
+        "path_evidence_edge_rows_omitted": 0,
+        "path_evidence_rows_returned": 0,
+        "path_evidence_rows_omitted": 0,
+        "path_evidence_omitted_count": 0,
+        "path_evidence_truncated": false,
+        "source_snippet_omitted_count": 0,
+        "lookup_strategy": "skipped_empty_seed_or_zero_budget",
+        "seed_count": seed_count,
+        "max_candidate_paths": budgets.max_candidate_paths,
+        "notes": [
+            "PathEvidence lookup skipped because no seed ids or candidate path budget were available"
+        ]
+    })
+}
+
+fn context_pack_path_evidence_storage_contributors(
+    connection: &Connection,
+) -> Result<Value, String> {
+    let tables = [
+        "path_evidence",
+        "path_evidence_lookup",
+        "path_evidence_edges",
+        "path_evidence_debug_metadata",
+        "path_evidence_symbols",
+        "path_evidence_tests",
+        "path_evidence_files",
+        "file_path_evidence",
+    ];
+    let mut contributors = Vec::new();
+    for table in tables {
+        if sqlite_table_exists(connection, table)? {
+            contributors.push(json!({
+                "table": table,
+                "row_count": sqlite_row_count(connection, table).unwrap_or_default(),
+            }));
+        }
+    }
+    Ok(json!({
+        "status": "row_counts_only",
+        "contributors": contributors,
+        "bytes_available": false,
+        "note": "table/index byte contributors require dbstat or audit storage; this lightweight path emits row counts only"
+    }))
+}
+
+#[derive(Debug)]
+struct ContextPathEvidenceHydrationBudget {
+    max_edges_per_path: usize,
+    max_total_edge_rows: usize,
+    max_hydration_bytes: usize,
+    timeout_ms: u64,
+}
+
+impl ContextPathEvidenceHydrationBudget {
+    fn for_budgets(budgets: ContextPackBudgets, path_count: usize) -> Self {
+        let max_edges_per_path = budgets.max_path_edges_per_path.max(1);
+        Self {
+            max_edges_per_path,
+            max_total_edge_rows: path_count.saturating_mul(max_edges_per_path).max(1),
+            max_hydration_bytes: budgets.max_hydration_bytes.max(1),
+            timeout_ms: budgets.path_evidence_timeout_ms.max(1),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct ContextPathEvidenceHydrationStats {
+    loaded_edge_rows: usize,
+    omitted_edge_rows: usize,
+    bytes_read: usize,
+    truncated: bool,
+    budget_exhausted: bool,
+    stop_reason: Value,
+}
+
+impl ContextPathEvidenceHydrationStats {
+    fn note_budget_stop(&mut self, reason: &'static str) {
+        self.truncated = true;
+        self.budget_exhausted = true;
+        if self.stop_reason.is_null() {
+            self.stop_reason = json!(reason);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -15310,10 +17325,48 @@ fn context_pack_role_from_label(value: &str) -> Option<EvidenceRole> {
     }
 }
 
+fn stored_context_edge_metadata_approx_bytes(row: &StoredContextPathEdgeMetadata) -> usize {
+    row.path_id.len()
+        + row.edge_id.len()
+        + row.head_id.len()
+        + row.relation.len()
+        + row.tail_id.len()
+        + row.source_span_path.as_ref().map(String::len).unwrap_or(0)
+        + row.exactness.as_ref().map(String::len).unwrap_or(0)
+        + row.edge_class.as_ref().map(String::len).unwrap_or(0)
+        + row.context.as_ref().map(String::len).unwrap_or(0)
+        + row.provenance_edges.iter().map(String::len).sum::<usize>()
+        + row
+            .head_entity
+            .as_ref()
+            .map(stored_context_entity_approx_bytes)
+            .unwrap_or(0)
+        + row
+            .tail_entity
+            .as_ref()
+            .map(stored_context_entity_approx_bytes)
+            .unwrap_or(0)
+        + 64
+}
+
+fn stored_context_entity_approx_bytes(entity: &StoredContextEntityMetadata) -> usize {
+    entity.id.len()
+        + entity.name.len()
+        + entity.qualified_name.len()
+        + entity.repo_relative_path.len()
+        + serde_json::to_vec(&entity.metadata)
+            .map(|bytes| bytes.len())
+            .unwrap_or_default()
+        + 32
+}
+
 fn hydrate_stored_path_evidence_metadata(
     connection: &Connection,
     paths: &mut [PathEvidence],
-) -> Result<(), String> {
+    budget: ContextPathEvidenceHydrationBudget,
+) -> Result<ContextPathEvidenceHydrationStats, String> {
+    let start = Instant::now();
+    let mut stats = ContextPathEvidenceHydrationStats::default();
     if paths.is_empty()
         || !sqlite_table_exists(connection, "path_evidence_edges")?
         || !sqlite_table_has_column(connection, "path_evidence_edges", "exactness")?
@@ -15325,7 +17378,7 @@ fn hydrate_stored_path_evidence_metadata(
         || !sqlite_table_has_column(connection, "path_evidence_edges", "head_id")?
         || !sqlite_table_has_column(connection, "path_evidence_edges", "tail_id")?
     {
-        return Ok(());
+        return Ok(stats);
     }
     let ids = paths.iter().map(|path| path.id.clone()).collect::<Vec<_>>();
     let placeholders = sql_placeholders(ids.len());
@@ -15362,14 +17415,23 @@ fn hydrate_stored_path_evidence_metadata(
         LEFT JOIN path_dict tail_path ON tail_path.id = tail_e.path_id
         LEFT JOIN path_dict tail_span_path ON tail_span_path.id = tail_e.span_path_id
         WHERE pe.path_id IN ({placeholders})
+          AND pe.ordinal < ?{}
         ORDER BY pe.path_id, pe.ordinal
-        "
+        LIMIT ?{}
+        ",
+        ids.len() + 1,
+        ids.len() + 2
     );
+    let mut params = ids.iter().map(String::as_str).collect::<Vec<_>>();
+    let max_edges_per_path = budget.max_edges_per_path.to_string();
+    let max_total_edge_rows = (budget.max_total_edge_rows + 1).to_string();
+    params.push(max_edges_per_path.as_str());
+    params.push(max_total_edge_rows.as_str());
     let mut statement = connection
         .prepare(&sql)
         .map_err(|error| error.to_string())?;
     let rows = statement
-        .query_map(rusqlite::params_from_iter(ids.iter()), |row| {
+        .query_map(rusqlite::params_from_iter(params), |row| {
             let provenance_json: Option<String> = row.get("provenance_edges_json")?;
             let provenance_edges = provenance_json
                 .as_deref()
@@ -15396,7 +17458,24 @@ fn hydrate_stored_path_evidence_metadata(
         .map_err(|error| error.to_string())?;
     let mut by_path = BTreeMap::<String, Vec<StoredContextPathEdgeMetadata>>::new();
     for row in rows {
+        if start.elapsed() > Duration::from_millis(budget.timeout_ms) {
+            stats.note_budget_stop("timeout_ms");
+            break;
+        }
         let row = row.map_err(|error| error.to_string())?;
+        if stats.loaded_edge_rows >= budget.max_total_edge_rows {
+            stats.omitted_edge_rows = stats.omitted_edge_rows.saturating_add(1);
+            stats.note_budget_stop("max_edge_rows");
+            break;
+        }
+        let row_bytes = stored_context_edge_metadata_approx_bytes(&row);
+        if stats.bytes_read.saturating_add(row_bytes) > budget.max_hydration_bytes {
+            stats.omitted_edge_rows = stats.omitted_edge_rows.saturating_add(1);
+            stats.note_budget_stop("max_hydration_bytes");
+            break;
+        }
+        stats.bytes_read = stats.bytes_read.saturating_add(row_bytes);
+        stats.loaded_edge_rows = stats.loaded_edge_rows.saturating_add(1);
         by_path.entry(row.path_id.clone()).or_default().push(row);
     }
     for rows in by_path.values_mut() {
@@ -15406,6 +17485,8 @@ fn hydrate_stored_path_evidence_metadata(
         let Some(rows) = by_path.get(&path.id) else {
             continue;
         };
+        path.metadata
+            .insert("hydrated_edge_row_count".to_string(), json!(rows.len()));
         path.metadata.insert(
             "ordered_edge_ids".to_string(),
             json!(rows
@@ -15491,7 +17572,7 @@ fn hydrate_stored_path_evidence_metadata(
         );
         annotate_context_path_evidence_role(path);
     }
-    Ok(())
+    Ok(stats)
 }
 
 fn load_bounded_context_edges(
@@ -15987,6 +18068,244 @@ struct ContextPackTextEvidenceHit {
     seed_match: String,
 }
 
+const CONTEXT_PLANNING_ROLES: [&str; 9] = [
+    "docs_authoring_guidance",
+    "package_metadata",
+    "kconfig_config_wiring",
+    "makefile_inclusion",
+    "download_infrastructure",
+    "build_install_infrastructure",
+    "support_scripts",
+    "examples",
+    "unknown",
+];
+
+fn context_planning_role_for_text_evidence(
+    file: &str,
+    symbol: &str,
+    kind: &str,
+    text: &str,
+) -> &'static str {
+    let normalized = context_planning_normalize_path(file);
+    let lower_file = normalized.to_ascii_lowercase();
+    let lower_text = format!("{symbol}\n{kind}\n{text}").to_ascii_lowercase();
+
+    if lower_file.contains("docs/manual/adding-packages")
+        || (lower_file.starts_with("docs/")
+            && (lower_text.contains("generic-package")
+                || lower_text.contains("package infrastructure")))
+    {
+        return "docs_authoring_guidance";
+    }
+    if lower_file == "package/config.in"
+        || lower_file == "package/makefile.in"
+        || lower_text.contains("source \"package/")
+    {
+        return "makefile_inclusion";
+    }
+    if lower_file.ends_with("config.in")
+        || lower_file.contains("/config.in")
+        || lower_text.contains("br2_package_")
+        || lower_text.contains("depends on")
+        || lower_text.contains("select ")
+    {
+        return "kconfig_config_wiring";
+    }
+    if lower_file.starts_with("support/scripts/") || lower_file.starts_with("support/download/") {
+        return "support_scripts";
+    }
+    if lower_file == "package/pkg-download.mk"
+        || lower_text.contains("download")
+        || lower_text.contains("_site")
+        || lower_text.contains("dl-wrapper")
+    {
+        return "download_infrastructure";
+    }
+    if lower_file == "package/pkg-generic.mk"
+        || lower_text.contains("install_target")
+        || lower_text.contains("install_staging")
+    {
+        return "build_install_infrastructure";
+    }
+    if lower_file.ends_with(".mk")
+        && (lower_text.contains("_version")
+            || lower_text.contains("_license")
+            || lower_text.contains("_dependencies")
+            || lower_text.contains("_site"))
+    {
+        return "package_metadata";
+    }
+    if lower_text.contains("generic-package") {
+        return "build_install_infrastructure";
+    }
+    if lower_file.starts_with("package/")
+        && (lower_file.ends_with(".mk") || lower_file.ends_with("config.in"))
+    {
+        return "examples";
+    }
+    "unknown"
+}
+
+fn context_planning_role_for_evidence(evidence: &ContextPackFallbackEvidence) -> &'static str {
+    context_planning_role_for_text_evidence(
+        &evidence.source_span.repo_relative_path,
+        &evidence.symbol,
+        &evidence.kind,
+        &format!(
+            "{}\n{}\n{}",
+            evidence.classification_reason,
+            evidence.seed_matches.join("\n"),
+            evidence.follow_up_queries.join("\n")
+        ),
+    )
+}
+
+fn context_planning_role_for_value(value: &Value) -> &'static str {
+    if let Some(role) = value.get("planning_role").and_then(Value::as_str) {
+        if CONTEXT_PLANNING_ROLES.contains(&role) {
+            return CONTEXT_PLANNING_ROLES
+                .iter()
+                .copied()
+                .find(|candidate| *candidate == role)
+                .unwrap_or("unknown");
+        }
+    }
+    let file = context_planning_value_string(value, "file").unwrap_or_else(|| {
+        value
+            .get("source_span")
+            .or_else(|| value.get("span"))
+            .and_then(|span| context_planning_value_string(span, "file"))
+            .unwrap_or_default()
+    });
+    let symbol = context_planning_value_string(value, "symbol").unwrap_or_default();
+    let kind = context_planning_value_string(value, "kind").unwrap_or_default();
+    let mut text = String::new();
+    for key in [
+        "text",
+        "text_preview",
+        "reason",
+        "classification_reason",
+        "fallback_source",
+    ] {
+        if let Some(value) = value.get(key).and_then(Value::as_str) {
+            text.push_str(value);
+            text.push('\n');
+        }
+    }
+    context_planning_role_for_text_evidence(&file, &symbol, &kind, &text)
+}
+
+fn context_planning_role_rank(role: &str) -> usize {
+    CONTEXT_PLANNING_ROLES
+        .iter()
+        .position(|candidate| *candidate == role)
+        .unwrap_or(CONTEXT_PLANNING_ROLES.len())
+}
+
+fn context_planning_central_file_score(file: &str) -> usize {
+    let lower = context_planning_normalize_path(file).to_ascii_lowercase();
+    match lower.as_str() {
+        "docs/manual/adding-packages-generic.adoc" => 0,
+        "docs/manual/adding-packages.adoc" => 1,
+        "package/pkg-generic.mk" => 2,
+        "package/config.in" => 3,
+        "package/pkg-download.mk" => 4,
+        "support/download/dl-wrapper" => 5,
+        _ if lower.starts_with("support/download/") => 6,
+        _ if lower.starts_with("support/scripts/") => 7,
+        _ if lower.starts_with("docs/manual/") => 8,
+        _ if lower.starts_with("package/") && lower.ends_with(".mk") => 20,
+        _ if lower.starts_with("package/") && lower.ends_with("config.in") => 21,
+        _ => 30,
+    }
+}
+
+fn context_pack_fallback_role_rank_reason(evidence: &ContextPackFallbackEvidence) -> String {
+    let role = context_planning_role_for_evidence(evidence);
+    let file = evidence.source_span.repo_relative_path.as_str();
+    if context_planning_central_file_score(file) < 10 {
+        format!("{role}: central Buildroot planning surface selected before package examples")
+    } else if role == "examples" {
+        "examples: package example evidence is useful but deduped after central surfaces"
+            .to_string()
+    } else {
+        format!("{role}: selected by role-diverse text evidence ranking")
+    }
+}
+
+fn context_pack_select_role_diverse_fallback_evidence(
+    candidates: Vec<ContextPackFallbackEvidence>,
+    limit: usize,
+) -> Vec<ContextPackFallbackEvidence> {
+    if candidates.len() <= limit {
+        return candidates;
+    }
+
+    let mut indexed = candidates.into_iter().enumerate().collect::<Vec<_>>();
+    indexed.sort_by(|(left_index, left), (right_index, right)| {
+        let left_role = context_planning_role_for_evidence(left);
+        let right_role = context_planning_role_for_evidence(right);
+        context_planning_role_rank(left_role)
+            .cmp(&context_planning_role_rank(right_role))
+            .then_with(|| {
+                context_planning_central_file_score(&left.source_span.repo_relative_path).cmp(
+                    &context_planning_central_file_score(&right.source_span.repo_relative_path),
+                )
+            })
+            .then_with(|| {
+                left.score
+                    .unwrap_or(f64::INFINITY)
+                    .partial_cmp(&right.score.unwrap_or(f64::INFINITY))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| left_index.cmp(right_index))
+    });
+
+    let mut selected = Vec::<(usize, ContextPackFallbackEvidence)>::new();
+    let mut selected_keys = BTreeSet::new();
+    let mut example_count = 0usize;
+
+    for role in CONTEXT_PLANNING_ROLES {
+        if selected.len() >= limit {
+            break;
+        }
+        let Some(position) = indexed.iter().position(|(_, evidence)| {
+            context_planning_role_for_evidence(evidence) == role
+                && !selected_keys.contains(&context_span_key(&evidence.source_span))
+                && (role != "examples" || example_count == 0)
+        }) else {
+            continue;
+        };
+        let (index, evidence) = indexed.remove(position);
+        if role == "examples" {
+            example_count += 1;
+        }
+        selected_keys.insert(context_span_key(&evidence.source_span));
+        selected.push((index, evidence));
+    }
+
+    for (index, evidence) in indexed {
+        if selected.len() >= limit {
+            break;
+        }
+        let key = context_span_key(&evidence.source_span);
+        if selected_keys.contains(&key) {
+            continue;
+        }
+        let role = context_planning_role_for_evidence(&evidence);
+        if role == "examples" && example_count >= 2 {
+            continue;
+        }
+        if role == "examples" {
+            example_count += 1;
+        }
+        selected_keys.insert(key);
+        selected.push((index, evidence));
+    }
+
+    selected.into_iter().map(|(_, evidence)| evidence).collect()
+}
+
 fn context_pack_mode_needs_test_impact_fallback(mode: &str) -> bool {
     mode.to_ascii_lowercase().contains("test")
 }
@@ -16159,6 +18478,17 @@ fn build_test_impact_fallback_evidence(
     Ok(evidence)
 }
 
+fn context_pack_entity_allowed_for_symbol_output(
+    entity: &ContextEntitySummary,
+    mode: &str,
+) -> bool {
+    let normalized = mode.to_ascii_lowercase();
+    if normalized.contains("test") || normalized.contains("debug") {
+        return true;
+    }
+    context_entity_role(entity).role == EvidenceRole::Production
+}
+
 fn build_context_pack_text_evidence_fallback(
     connection: &Connection,
     options: &ContextPackOptions,
@@ -16179,13 +18509,39 @@ fn build_context_pack_text_evidence_fallback(
     }
 
     let evidence_limit = budgets.max_snippets.saturating_mul(2).max(6);
-    let per_query_limit = evidence_limit.max(8);
+    let candidate_limit = evidence_limit.saturating_mul(4).max(24);
+    let per_query_limit = candidate_limit.max(8);
     let mut evidence = Vec::new();
     let mut seen = BTreeSet::new();
     let mut seen_files = BTreeSet::new();
     let mut deferred_hits = Vec::new();
+    if context_pack_is_buildroot_package_task(&options.task) {
+        for hit in load_context_pack_text_evidence_hits_for_paths(
+            connection,
+            &context_pack_buildroot_central_planning_files(),
+        )? {
+            if !context_pack_text_evidence_allowed_for_mode(
+                &hit.repo_relative_path,
+                &hit.metadata,
+                &options.mode,
+            ) {
+                continue;
+            }
+            if seen_files.insert(hit.repo_relative_path.clone()) {
+                push_context_pack_text_evidence_fallback(
+                    &mut evidence,
+                    &mut seen,
+                    hit,
+                    candidate_limit,
+                );
+            } else {
+                deferred_hits.push(hit);
+            }
+        }
+    }
+
     for query in &follow_up_queries {
-        if evidence.len() >= evidence_limit {
+        if evidence.len() >= candidate_limit {
             break;
         }
         let hits = load_context_pack_text_evidence_hits(connection, query, per_query_limit)?;
@@ -16202,7 +18558,7 @@ fn build_context_pack_text_evidence_fallback(
                     &mut evidence,
                     &mut seen,
                     hit,
-                    evidence_limit,
+                    candidate_limit,
                 );
             } else {
                 deferred_hits.push(hit);
@@ -16210,12 +18566,15 @@ fn build_context_pack_text_evidence_fallback(
         }
     }
     for hit in deferred_hits {
-        if evidence.len() >= evidence_limit {
+        if evidence.len() >= candidate_limit {
             break;
         }
-        push_context_pack_text_evidence_fallback(&mut evidence, &mut seen, hit, evidence_limit);
+        push_context_pack_text_evidence_fallback(&mut evidence, &mut seen, hit, candidate_limit);
     }
-    Ok(evidence)
+    Ok(context_pack_select_role_diverse_fallback_evidence(
+        evidence,
+        evidence_limit,
+    ))
 }
 
 fn push_context_pack_text_evidence_fallback(
@@ -16317,6 +18676,65 @@ fn load_context_pack_text_evidence_hits(
     Ok(hits)
 }
 
+fn load_context_pack_text_evidence_hits_for_paths(
+    connection: &Connection,
+    paths: &[&str],
+) -> Result<Vec<ContextPackTextEvidenceHit>, String> {
+    let mut hits = Vec::new();
+    let mut seen_paths = BTreeSet::new();
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT stage0_fts.kind, stage0_fts.id, stage0_fts.repo_relative_path,
+                   stage0_fts.line, stage0_fts.title, stage0_fts.body,
+                   0.0 AS rank, files.metadata_json
+            FROM stage0_fts
+            JOIN path_dict ON path_dict.value = stage0_fts.repo_relative_path
+            JOIN files ON files.path_id = path_dict.id
+            WHERE stage0_fts.repo_relative_path = ?1
+              AND stage0_fts.kind IN ('file', 'snippet')
+            ORDER BY
+              CASE stage0_fts.kind WHEN 'snippet' THEN 0 ELSE 1 END,
+              COALESCE(stage0_fts.line, 0),
+              stage0_fts.id
+            LIMIT 1
+            ",
+        )
+        .map_err(|error| error.to_string())?;
+    for path in paths {
+        let rows = statement
+            .query_map(params![path], |row| {
+                let line = row
+                    .get::<_, Option<i64>>("line")?
+                    .and_then(|value| u32::try_from(value).ok());
+                let metadata_json: String = row.get("metadata_json")?;
+                Ok(ContextPackTextEvidenceHit {
+                    kind: row.get("kind")?,
+                    id: row.get("id")?,
+                    repo_relative_path: row.get("repo_relative_path")?,
+                    line,
+                    title: row.get("title")?,
+                    body: row.get("body")?,
+                    score: row.get("rank")?,
+                    metadata: serde_json::from_str::<Metadata>(&metadata_json)
+                        .map_err(sql_json_error)?,
+                    seed_match: (*path).to_string(),
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        for hit in collect_sql_rows(rows)? {
+            if hit.metadata.get("evidence_kind").and_then(Value::as_str) == Some("text_evidence")
+                && hit.metadata.get("proof_status").and_then(Value::as_str)
+                    == Some("not_graph_proof")
+                && seen_paths.insert(hit.repo_relative_path.clone())
+            {
+                hits.push(hit);
+            }
+        }
+    }
+    Ok(hits)
+}
+
 fn context_pack_text_fallback_queries(
     options: &ContextPackOptions,
     raw_seed_values: &[String],
@@ -16343,10 +18761,14 @@ fn context_pack_text_fallback_queries(
 }
 
 fn context_pack_default_text_fallback_queries(task: &str) -> Vec<String> {
-    let lower = task.to_ascii_lowercase();
     let mut queries = Vec::new();
-    if lower.contains("buildroot") && lower.contains("package") {
+    if context_pack_is_buildroot_package_task(task) {
         queries.extend([
+            "adding-packages-generic".to_string(),
+            "adding-packages".to_string(),
+            "pkg-generic".to_string(),
+            "pkg-download".to_string(),
+            "dl-wrapper".to_string(),
             "generic-package".to_string(),
             "Config.in".to_string(),
             "depends on".to_string(),
@@ -16355,9 +18777,25 @@ fn context_pack_default_text_fallback_queries(task: &str) -> Vec<String> {
             ".mk".to_string(),
             ".adoc".to_string(),
             "support/scripts".to_string(),
+            "support/download".to_string(),
         ]);
     }
     queries
+}
+
+fn context_pack_is_buildroot_package_task(task: &str) -> bool {
+    let lower = task.to_ascii_lowercase();
+    lower.contains("buildroot") && lower.contains("package")
+}
+
+fn context_pack_buildroot_central_planning_files() -> [&'static str; 5] {
+    [
+        "docs/manual/adding-packages-generic.adoc",
+        "package/pkg-generic.mk",
+        "package/Config.in",
+        "package/pkg-download.mk",
+        "support/download/dl-wrapper",
+    ]
 }
 
 fn context_pack_text_fallback_fts_query(query: &str) -> String {
@@ -16626,6 +19064,7 @@ fn fallback_evidence_json(evidence: &ContextPackFallbackEvidence) -> Value {
         .proof_status
         .as_deref()
         .unwrap_or("no_proof_path_found");
+    let planning_role = context_planning_role_for_evidence(evidence);
     let mut value = json!({
         "id": evidence.id,
         "symbol": evidence.symbol,
@@ -16639,6 +19078,8 @@ fn fallback_evidence_json(evidence: &ContextPackFallbackEvidence) -> Value {
         "candidate_source": if evidence_role == "text_evidence" { "text_evidence" } else { "no_proof_fallback" },
         "classification_reason": evidence.classification_reason,
         "classification_source": evidence.classification_source,
+        "planning_role": planning_role,
+        "role_rank_reason": context_pack_fallback_role_rank_reason(evidence),
         "fallback_source": evidence.fallback_source,
         "proof_path_available": false,
         "seed_matches": evidence.seed_matches.clone(),
@@ -16662,6 +19103,7 @@ struct ContextAgentCandidateSet {
     candidates: Vec<Value>,
     total_count: usize,
     omitted_count: usize,
+    omitted_candidates: Vec<Value>,
     exact_seed_cap_override: bool,
 }
 
@@ -16724,6 +19166,8 @@ fn text_evidence_retrieval_candidate_json(
             .unwrap_or_else(|| json!([])),
         "requires_graph_verification": false,
         "verification_status": proof_status,
+        "graph_verification_status": proof_status,
+        "text_evidence_status": proof_status,
         "reason": evidence
             .get("classification_reason")
             .and_then(Value::as_str)
@@ -16738,7 +19182,10 @@ fn text_evidence_retrieval_candidate_json(
             "graph_proximity": false,
             "source_role_compatible": true,
             "lifecycle_claimable": lifecycle_claimable,
-            "proof_available": false
+            "proof_available": false,
+            "vector_score_available": false,
+            "binary_score_available": false,
+            "rescue_match": false
         },
         "source_labels": [
             "stage0_fts",
@@ -16746,6 +19193,148 @@ fn text_evidence_retrieval_candidate_json(
             "no_graph_proof"
         ]
     }))
+}
+
+fn context_pack_vector_retrieval_candidate_json(
+    candidate: &RetrievalCandidate,
+    lifecycle_claimable: bool,
+) -> Value {
+    let candidate_source =
+        context_pack_retrieval_candidate_source_label(candidate.candidate_source);
+    let mut sources = BTreeSet::from([candidate_source.to_string()]);
+    if matches!(
+        candidate.candidate_source,
+        RetrievalCandidateSource::VectorSemantic | RetrievalCandidateSource::VectorRerank
+    ) {
+        sources.insert("vector_semantic".to_string());
+    }
+    if candidate.candidate_source == RetrievalCandidateSource::VectorBinary {
+        sources.insert("binary_vector".to_string());
+    }
+    if candidate.entity_id.is_some() {
+        sources.insert("symbol_lookup".to_string());
+    }
+    let text_evidence_match = matches!(
+        candidate.embedding_source,
+        Some(VectorEmbeddingSource::TextEvidence)
+            | Some(VectorEmbeddingSource::Snippet)
+            | Some(VectorEmbeddingSource::FilePathTitle)
+    ) || candidate.evidence_role == EvidenceRole::Unknown
+        && candidate.entity_id.is_none()
+        && candidate.path.is_some();
+    if text_evidence_match {
+        sources.insert("text_evidence".to_string());
+    }
+    let proof_status = context_pack_retrieval_proof_status_label(candidate.proof_status);
+    let verification_status =
+        context_pack_retrieval_verification_status_label(candidate.verification_status);
+    let evidence_role = if text_evidence_match {
+        "text_evidence"
+    } else {
+        candidate.evidence_role.as_str()
+    };
+    let source_labels = sources
+        .iter()
+        .cloned()
+        .chain(["candidate_only".to_string(), "no_graph_proof".to_string()])
+        .collect::<BTreeSet<_>>();
+    let ranking_features = json!({
+        "exact_seed_match": false,
+        "file_path_match": matches!(candidate.embedding_source, Some(VectorEmbeddingSource::FilePathTitle)),
+        "text_evidence_match": text_evidence_match,
+        "symbol_entity_match": candidate.entity_id.is_some(),
+        "graph_proximity": false,
+        "source_role_compatible": matches!(candidate.evidence_role, EvidenceRole::Production | EvidenceRole::Test | EvidenceRole::Unknown),
+        "lifecycle_claimable": lifecycle_claimable,
+        "proof_available": false,
+        "vector_score_available": sources.contains("vector_semantic") && candidate.score.is_some(),
+        "binary_score_available": sources.contains("binary_vector") && candidate.score.is_some(),
+        "rescue_match": false
+    });
+    json!({
+        "candidate_id": candidate.candidate_id.clone(),
+        "candidate_source": candidate_source,
+        "candidate_sources": sources.iter().cloned().collect::<Vec<_>>(),
+        "candidate_source_label": candidate_source,
+        "file_id": candidate.file_id.clone(),
+        "path": candidate.path.clone(),
+        "entity_id": candidate.entity_id.clone(),
+        "span": candidate.span.as_ref().map(agent_source_span_json).unwrap_or(Value::Null),
+        "snippet": Value::Null,
+        "evidence_role": evidence_role,
+        "proof_status": proof_status,
+        "graph_proof": false,
+        "claimable": false,
+        "claimable_for_text": candidate.claimable_for_text.unwrap_or(false) && lifecycle_claimable,
+        "claimable_for_graph": false,
+        "diagnostic_only": candidate.diagnostic_only,
+        "score": Value::Null,
+        "source_score": candidate.score,
+        "vector_score": if sources.contains("vector_semantic") { candidate.score } else { None },
+        "binary_score": if sources.contains("binary_vector") { candidate.score } else { None },
+        "rank": candidate.rank,
+        "matched_seeds": candidate.matched_seeds.clone(),
+        "matched_token": candidate.matched_seeds.first().cloned(),
+        "matched_tokens": candidate.matched_seeds.clone(),
+        "requires_graph_verification": candidate.requires_graph_verification,
+        "verification_status": verification_status,
+        "graph_verification_status": verification_status,
+        "text_evidence_status": if text_evidence_match { proof_status } else { "absent" },
+        "reason": candidate.reason.clone(),
+        "omitted": candidate.omitted,
+        "truncated": candidate.truncated,
+        "ranking_features": ranking_features,
+        "source_labels": source_labels.iter().cloned().collect::<Vec<_>>()
+    })
+}
+
+fn context_pack_retrieval_candidate_source_label(source: RetrievalCandidateSource) -> &'static str {
+    match source {
+        RetrievalCandidateSource::ExactSeed => "exact_seed",
+        RetrievalCandidateSource::FilePathSeed => "file_path_seed",
+        RetrievalCandidateSource::TextEvidence => "text_evidence",
+        RetrievalCandidateSource::LexicalFts => "lexical_fts",
+        RetrievalCandidateSource::SymbolLookup => "symbol_lookup",
+        RetrievalCandidateSource::VectorBinary => "binary_vector",
+        RetrievalCandidateSource::VectorRerank => "vector_rerank",
+        RetrievalCandidateSource::VectorSemantic => "vector_semantic",
+        RetrievalCandidateSource::NuanceRescue => "nuance_rescue",
+        RetrievalCandidateSource::GraphNeighbor => "graph_neighbor",
+        RetrievalCandidateSource::PathEvidence => "path_evidence",
+        RetrievalCandidateSource::NoProofFallback => "no_proof_fallback",
+        RetrievalCandidateSource::Diagnostic => "diagnostic",
+        RetrievalCandidateSource::Unknown => "unknown",
+    }
+}
+
+fn context_pack_retrieval_proof_status_label(status: RetrievalProofStatus) -> &'static str {
+    match status {
+        RetrievalProofStatus::ProofPathFound => "proof_path_found",
+        RetrievalProofStatus::NoProofPathFound => "no_proof_path_found",
+        RetrievalProofStatus::NotGraphProof => "not_graph_proof",
+        RetrievalProofStatus::CandidateOnly => "candidate_only",
+        RetrievalProofStatus::DiagnosticOnly => "diagnostic_only",
+        RetrievalProofStatus::StaleOrForeignDb => "stale_or_foreign_db",
+        RetrievalProofStatus::Unknown => "unknown",
+    }
+}
+
+fn context_pack_retrieval_verification_status_label(
+    status: RetrievalVerificationStatus,
+) -> &'static str {
+    match status {
+        RetrievalVerificationStatus::Unverified => "unverified",
+        RetrievalVerificationStatus::NeedsGraphVerification => "needs_graph_verification",
+        RetrievalVerificationStatus::GraphVerified => "graph_verified",
+        RetrievalVerificationStatus::NoProofPathFound => "no_proof_path_found",
+        RetrievalVerificationStatus::NotGraphProof => "not_graph_proof",
+        RetrievalVerificationStatus::CandidateOnly => "candidate_only",
+        RetrievalVerificationStatus::DiagnosticOnly => "diagnostic_only",
+        RetrievalVerificationStatus::StaleOrForeignDb => "stale_or_foreign_db",
+        RetrievalVerificationStatus::Omitted => "omitted",
+        RetrievalVerificationStatus::Truncated => "truncated",
+        RetrievalVerificationStatus::Unknown => "unknown",
+    }
 }
 
 fn build_context_agent_retrieval_candidates(
@@ -16766,11 +19355,16 @@ fn build_context_agent_retrieval_candidates(
         } else {
             "unknown"
         });
+    let proof_gate = ContextAgentProofGate::new(graph_verification_status, lifecycle_claimable);
     let exact_seeds = context_agent_candidate_seed_values(options);
     let exact_path_keys = exact_seeds
         .iter()
         .filter(|seed| context_agent_seed_is_path(seed))
         .map(|seed| context_agent_path_key(seed))
+        .collect::<BTreeSet<_>>();
+    let exact_seed_keys = exact_seeds
+        .iter()
+        .map(|seed| context_agent_seed_key(seed))
         .collect::<BTreeSet<_>>();
     let mut candidates = Vec::new();
 
@@ -16805,10 +19399,36 @@ fn build_context_agent_retrieval_candidates(
             ));
         }
     }
+    for key in ["vector_semantic_candidates", "binary_vector_candidates"] {
+        if let Some(packet_candidates) = packet.metadata.get(key).and_then(Value::as_array) {
+            for candidate in packet_candidates
+                .iter()
+                .take(CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT.saturating_mul(4))
+            {
+                let mut candidate = candidate.clone();
+                proof_gate.apply_to_candidate(&mut candidate);
+                candidates.push(candidate);
+            }
+        }
+    }
+    if let Some(nuance_candidates) = packet
+        .metadata
+        .get("nuance_rescue_candidates")
+        .and_then(Value::as_array)
+    {
+        for candidate in nuance_candidates
+            .iter()
+            .take(CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT)
+        {
+            let mut candidate = candidate.clone();
+            proof_gate.apply_to_candidate(&mut candidate);
+            candidates.push(candidate);
+        }
+    }
 
     let mut deduped = BTreeMap::<String, Value>::new();
     for candidate in candidates {
-        let key = context_agent_candidate_dedup_key(&candidate, &exact_path_keys);
+        let key = context_agent_candidate_dedup_key(&candidate, &exact_path_keys, &exact_seed_keys);
         if let Some(existing) = deduped.get_mut(&key) {
             merge_context_agent_candidate(existing, candidate);
         } else {
@@ -16824,6 +19444,7 @@ fn build_context_agent_retrieval_candidates(
     });
 
     let total_count = ranked_candidates.len();
+    let ranked_candidates_for_omission = ranked_candidates.clone();
     let protected = ranked_candidates
         .iter()
         .filter(|candidate| context_agent_candidate_has_source(candidate, "exact_seed"))
@@ -16852,11 +19473,7 @@ fn build_context_agent_retrieval_candidates(
         }
     }
     for candidate in ranked_candidates {
-        if selected.len() >= CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT
-            && selected
-                .iter()
-                .any(|candidate| context_agent_candidate_has_source(candidate, "text_evidence"))
-        {
+        if selected.len() >= CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT {
             break;
         }
         if !selected_keys.insert(context_agent_candidate_id(&candidate)) {
@@ -16864,8 +19481,18 @@ fn build_context_agent_retrieval_candidates(
         }
         selected.push(candidate);
     }
-    let exact_seed_cap_override = selected.len() > CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT;
     let omitted_count = total_count.saturating_sub(selected.len());
+    let selected_ids = selected
+        .iter()
+        .map(context_agent_candidate_id)
+        .collect::<BTreeSet<_>>();
+    let omitted_candidates = ranked_candidates_for_omission
+        .iter()
+        .filter(|candidate| !selected_ids.contains(&context_agent_candidate_id(candidate)))
+        .take(12)
+        .map(context_agent_candidate_omission_json)
+        .collect::<Vec<_>>();
+    let exact_seed_cap_override = selected.len() > CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT;
     for (index, candidate) in selected.iter_mut().enumerate() {
         let rank = index.saturating_add(1);
         let score = context_agent_candidate_rank_score(candidate);
@@ -16878,7 +19505,9 @@ fn build_context_agent_retrieval_candidates(
             );
             object.insert(
                 "candidate_cap_policy".to_string(),
-                json!("exact_seeds_protected_then_no_proof_text_then_deterministic_rank"),
+                json!(
+                    "exact_seeds_protected_then_no_proof_text_then_nuance_and_deterministic_rank"
+                ),
             );
         }
     }
@@ -16888,15 +19517,112 @@ fn build_context_agent_retrieval_candidates(
         candidates: selected,
         total_count,
         omitted_count,
+        omitted_candidates,
         exact_seed_cap_override,
     }
 }
 
+/// Applies the context-pack claim boundary after candidate recall branches have
+/// suggested files or symbols but before agent JSON can present them as proof.
+#[derive(Debug, Clone, Copy)]
+struct ContextAgentProofGate<'a> {
+    graph_verification_status: &'a str,
+    lifecycle_claimable: bool,
+}
+
+impl<'a> ContextAgentProofGate<'a> {
+    const fn new(graph_verification_status: &'a str, lifecycle_claimable: bool) -> Self {
+        Self {
+            graph_verification_status,
+            lifecycle_claimable,
+        }
+    }
+
+    fn apply_to_candidate(self, candidate: &mut Value) {
+        let graph_claim_blocked = self.blocks_graph_claim(candidate);
+        let existing_source_labels = context_agent_string_set(candidate, "source_labels");
+
+        let Some(object) = candidate.as_object_mut() else {
+            return;
+        };
+        if !self.lifecycle_claimable {
+            object.insert("claimable".to_string(), json!(false));
+            object.insert("claimable_for_graph".to_string(), json!(false));
+        }
+        if graph_claim_blocked {
+            object.insert("proof_status".to_string(), json!("no_proof_path_found"));
+            object.insert(
+                "verification_status".to_string(),
+                json!("no_proof_path_found"),
+            );
+            object.insert(
+                "graph_verification_status".to_string(),
+                json!("no_proof_path_found"),
+            );
+            object.insert("graph_proof".to_string(), json!(false));
+            object.insert("claimable".to_string(), json!(false));
+            object.insert("claimable_for_graph".to_string(), json!(false));
+            let reason = object
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("candidate requires graph verification")
+                .to_string();
+            if !reason.contains("no proof path found") {
+                object.insert(
+                    "reason".to_string(),
+                    json!(format!("{reason}; graph verification found no proof path")),
+                );
+            }
+            let mut source_labels = existing_source_labels;
+            source_labels.insert("no_graph_proof".to_string());
+            object.insert(
+                "source_labels".to_string(),
+                json!(source_labels.iter().cloned().collect::<Vec<_>>()),
+            );
+        }
+    }
+
+    fn blocks_graph_claim(self, candidate: &Value) -> bool {
+        let requires_graph_verification = candidate
+            .get("requires_graph_verification")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let graph_proof = candidate
+            .get("graph_proof")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        requires_graph_verification
+            && !graph_proof
+            && !context_agent_candidate_is_text_only_source_evidence(candidate)
+            && matches!(
+                self.graph_verification_status,
+                "no_proof_path_found" | "no_graph_candidates"
+            )
+    }
+}
+
+fn context_agent_candidate_is_text_only_source_evidence(candidate: &Value) -> bool {
+    context_agent_candidate_has_source(candidate, "text_evidence")
+        && candidate.get("entity_id").is_none_or(Value::is_null)
+        && !context_agent_candidate_has_source(candidate, "path_evidence")
+        && !context_agent_candidate_has_source(candidate, "graph_neighbor")
+}
+
+fn context_agent_candidate_omission_json(candidate: &Value) -> Value {
+    let candidate = context_pack_public_candidate_json(candidate);
+    json!({
+        "candidate_id": candidate.get("candidate_id").cloned().unwrap_or(Value::Null),
+        "candidate_sources": candidate.get("candidate_sources").cloned().unwrap_or_else(|| json!([])),
+        "reason": candidate.get("reason").cloned().unwrap_or(Value::Null),
+        "verification_status": candidate.get("verification_status").cloned().unwrap_or(Value::Null),
+        "proof_status": candidate.get("proof_status").cloned().unwrap_or(Value::Null),
+        "graph_proof": candidate.get("graph_proof").cloned().unwrap_or(Value::Null),
+        "omission_reason": "candidate_cap_exceeded_after_exact_seed_text_priority"
+    })
+}
+
 fn context_agent_candidate_seed_values(options: &ContextPackOptions) -> Vec<String> {
-    let prompt_exact = extract_prompt_seeds(&options.task)
-        .into_iter()
-        .filter_map(|seed| seed.exact_value())
-        .collect::<Vec<_>>();
+    let prompt_exact = context_pack_prompt_exact_seed_values(&options.task);
     unique_limited_strings(
         options
             .seeds
@@ -16908,6 +19634,10 @@ fn context_agent_candidate_seed_values(options: &ContextPackOptions) -> Vec<Stri
             .saturating_mul(8)
             .max(16),
     )
+}
+
+fn context_agent_seed_key(seed: &str) -> String {
+    seed.trim().replace('\\', "/").to_ascii_lowercase()
 }
 
 fn exact_seed_retrieval_candidate_json(
@@ -16946,6 +19676,8 @@ fn exact_seed_retrieval_candidate_json(
         "matched_seeds": [seed],
         "requires_graph_verification": true,
         "verification_status": if graph_verification_failed { "no_proof_path_found" } else { "needs_graph_verification" },
+        "graph_verification_status": if graph_verification_failed { "no_proof_path_found" } else { "needs_graph_verification" },
+        "text_evidence_status": "absent",
         "reason": if graph_verification_failed {
             "exact seed preserved after graph verification; no proof path found, source/text fallback required before claiming"
         } else {
@@ -16961,7 +19693,10 @@ fn exact_seed_retrieval_candidate_json(
             "graph_proximity": false,
             "source_role_compatible": true,
             "lifecycle_claimable": lifecycle_claimable,
-            "proof_available": false
+            "proof_available": false,
+            "vector_score_available": false,
+            "binary_score_available": false,
+            "rescue_match": false
         },
         "source_labels": sources
     })
@@ -16997,6 +19732,10 @@ fn path_evidence_retrieval_candidate_json(
         .get("evidence_role")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
+    let graph_entity_id = path
+        .get("target")
+        .and_then(Value::as_str)
+        .or_else(|| path.get("source").and_then(Value::as_str));
     let matched_seeds = exact_seeds
         .iter()
         .filter(|seed| context_path_candidate_matches_seed(path, seed))
@@ -17012,7 +19751,7 @@ fn path_evidence_retrieval_candidate_json(
         "candidate_source_label": "graph_verified_path_evidence",
         "file_id": file.clone().map(Value::from).unwrap_or(Value::Null),
         "path": file.map(Value::from).unwrap_or(Value::Null),
-        "entity_id": Value::Null,
+        "entity_id": graph_entity_id.map(Value::from).unwrap_or(Value::Null),
         "span": first_span,
         "evidence_role": evidence_role,
         "proof_status": if proof_path_available { "proof_path_found" } else { "candidate_only" },
@@ -17027,6 +19766,8 @@ fn path_evidence_retrieval_candidate_json(
         "matched_seeds": matched_seeds,
         "requires_graph_verification": false,
         "verification_status": if proof_path_available { "graph_verified" } else { "candidate_only" },
+        "graph_verification_status": if proof_path_available { "graph_verified" } else { "candidate_only" },
+        "text_evidence_status": "absent",
         "reason": path
             .get("classification_reason")
             .and_then(Value::as_str)
@@ -17044,7 +19785,10 @@ fn path_evidence_retrieval_candidate_json(
             "graph_proximity": true,
             "source_role_compatible": evidence_role == "production" || evidence_role == "unknown",
             "lifecycle_claimable": lifecycle_claimable,
-            "proof_available": proof_path_available
+            "proof_available": proof_path_available,
+            "vector_score_available": false,
+            "binary_score_available": false,
+            "rescue_match": false
         },
         "source_labels": [
             "path_evidence",
@@ -17101,6 +19845,8 @@ fn no_proof_fallback_retrieval_candidate_json(
             .unwrap_or_else(|| json!([])),
         "requires_graph_verification": true,
         "verification_status": "no_proof_path_found",
+        "graph_verification_status": "no_proof_path_found",
+        "text_evidence_status": "absent",
         "reason": evidence
             .get("classification_reason")
             .and_then(Value::as_str)
@@ -17115,7 +19861,10 @@ fn no_proof_fallback_retrieval_candidate_json(
             "graph_proximity": false,
             "source_role_compatible": evidence_role == "production" || evidence_role == "unknown",
             "lifecycle_claimable": lifecycle_claimable,
-            "proof_available": false
+            "proof_available": false,
+            "vector_score_available": false,
+            "binary_score_available": false,
+            "rescue_match": false
         },
         "source_labels": [
             "no_proof_fallback"
@@ -17190,6 +19939,14 @@ fn context_path_candidate_matches_seed(path: &Value, seed: &str) -> bool {
             .and_then(Value::as_str)
             .is_some_and(|value| value.to_ascii_lowercase().contains(&seed_lower))
         || path
+            .get("source")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.to_ascii_lowercase().contains(&seed_lower))
+        || path
+            .get("target")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.to_ascii_lowercase().contains(&seed_lower))
+        || path
             .get("source_spans")
             .and_then(Value::as_array)
             .is_some_and(|spans| {
@@ -17205,6 +19962,7 @@ fn context_path_candidate_matches_seed(path: &Value, seed: &str) -> bool {
 fn context_agent_candidate_dedup_key(
     candidate: &Value,
     exact_path_keys: &BTreeSet<String>,
+    exact_seed_keys: &BTreeSet<String>,
 ) -> String {
     if let Some(path) = candidate.get("path").and_then(Value::as_str) {
         let key = context_agent_path_key(path);
@@ -17217,13 +19975,25 @@ fn context_agent_candidate_dedup_key(
             return format!("text-path:{key}");
         }
     }
-    if context_agent_candidate_has_source(candidate, "path_evidence") {
-        return format!("path-evidence:{}", context_agent_candidate_id(candidate));
+    if let Some(token) = candidate.get("matched_token").and_then(Value::as_str) {
+        let key = context_agent_seed_key(token);
+        if exact_seed_keys.contains(&key) {
+            return format!("seed:{key}");
+        }
+    }
+    for seed in context_agent_string_set(candidate, "matched_seeds") {
+        let key = context_agent_seed_key(&seed);
+        if exact_seed_keys.contains(&key) {
+            return format!("seed:{key}");
+        }
     }
     if let Some(entity_id) = candidate.get("entity_id").and_then(Value::as_str) {
         if !entity_id.trim().is_empty() {
             return format!("entity:{entity_id}");
         }
+    }
+    if context_agent_candidate_has_source(candidate, "path_evidence") {
+        return format!("path-evidence:{}", context_agent_candidate_id(candidate));
     }
     if let (Some(path), Some(span)) = (
         candidate.get("path").and_then(Value::as_str),
@@ -17264,6 +20034,32 @@ fn context_agent_candidate_has_source(candidate: &Value, expected: &str) -> bool
     context_agent_candidate_sources(candidate).contains(expected)
 }
 
+fn context_agent_candidate_sources_verified(candidates: &[Value]) -> Vec<String> {
+    let mut sources = BTreeSet::new();
+    for candidate in candidates {
+        let requires_graph_verification = candidate
+            .get("requires_graph_verification")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let graph_proof = candidate
+            .get("graph_proof")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let verification_status = candidate
+            .get("verification_status")
+            .or_else(|| candidate.get("graph_verification_status"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        if requires_graph_verification
+            || graph_proof
+            || matches!(verification_status, "graph_verified")
+        {
+            sources.extend(context_agent_candidate_sources(candidate));
+        }
+    }
+    sources.into_iter().collect()
+}
+
 fn context_agent_string_set(candidate: &Value, key: &str) -> BTreeSet<String> {
     candidate
         .get(key)
@@ -17293,6 +20089,26 @@ fn merge_context_agent_candidate(existing: &mut Value, incoming: Value) {
         .union(&context_agent_string_set(&incoming, "matched_seeds"))
         .cloned()
         .collect::<BTreeSet<_>>();
+    let matched_tokens = context_agent_string_set(existing, "matched_tokens")
+        .union(&context_agent_string_set(&incoming, "matched_tokens"))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let rescue_kinds = context_agent_string_set(existing, "rescue_kinds")
+        .union(&context_agent_string_set(&incoming, "rescue_kinds"))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let rescue_reasons = unique_limited_strings(
+        context_agent_rescue_reason_parts(existing)
+            .into_iter()
+            .chain(context_agent_rescue_reason_parts(&incoming)),
+        4,
+    );
+    let matched_token = existing
+        .get("matched_token")
+        .and_then(Value::as_str)
+        .or_else(|| incoming.get("matched_token").and_then(Value::as_str))
+        .map(str::to_string)
+        .or_else(|| matched_tokens.iter().next().cloned());
     let ranking_features = merge_context_agent_ranking_features(existing, &incoming);
     let proof_status = merge_context_agent_status(
         existing.get("proof_status").and_then(Value::as_str),
@@ -17314,6 +20130,35 @@ fn merge_context_agent_candidate(existing: &mut Value, incoming: Value) {
             "not_graph_proof",
             "needs_graph_verification",
             "candidate_only",
+            "unknown",
+        ],
+    );
+    let graph_verification_status = merge_context_agent_status(
+        existing
+            .get("graph_verification_status")
+            .and_then(Value::as_str)
+            .or_else(|| existing.get("verification_status").and_then(Value::as_str)),
+        incoming
+            .get("graph_verification_status")
+            .and_then(Value::as_str)
+            .or_else(|| incoming.get("verification_status").and_then(Value::as_str)),
+        &[
+            "graph_verified",
+            "no_proof_path_found",
+            "not_graph_proof",
+            "needs_graph_verification",
+            "candidate_only",
+            "unknown",
+        ],
+    );
+    let text_evidence_status = merge_context_agent_status(
+        existing.get("text_evidence_status").and_then(Value::as_str),
+        incoming.get("text_evidence_status").and_then(Value::as_str),
+        &[
+            "not_graph_proof",
+            "no_proof_path_found",
+            "candidate_only",
+            "absent",
             "unknown",
         ],
     );
@@ -17393,6 +20238,12 @@ fn merge_context_agent_candidate(existing: &mut Value, incoming: Value) {
             .get("truncated")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+    let numeric_values = ["source_score", "vector_score", "binary_score"]
+        .iter()
+        .filter_map(|key| {
+            max_context_agent_numeric_field(existing, &incoming, key).map(|value| (*key, value))
+        })
+        .collect::<Vec<_>>();
 
     let Some(object) = existing.as_object_mut() else {
         return;
@@ -17419,6 +20270,9 @@ fn merge_context_agent_candidate(existing: &mut Value, incoming: Value) {
             }
         }
     }
+    for (key, value) in numeric_values {
+        object.insert(key.to_string(), json!(value));
+    }
     object.insert(
         "candidate_source".to_string(),
         json!(primary_context_agent_candidate_source(&sources)),
@@ -17435,6 +20289,27 @@ fn merge_context_agent_candidate(existing: &mut Value, incoming: Value) {
         "matched_seeds".to_string(),
         json!(matched_seeds.iter().cloned().collect::<Vec<_>>()),
     );
+    if !matched_tokens.is_empty() {
+        object.insert(
+            "matched_tokens".to_string(),
+            json!(matched_tokens.iter().cloned().collect::<Vec<_>>()),
+        );
+    }
+    if let Some(matched_token) = matched_token {
+        object.insert("matched_token".to_string(), json!(matched_token));
+    }
+    if !rescue_kinds.is_empty() {
+        object.insert(
+            "rescue_kinds".to_string(),
+            json!(rescue_kinds.iter().cloned().collect::<Vec<_>>()),
+        );
+    }
+    if !rescue_reasons.is_empty() {
+        object.insert(
+            "rescue_reason".to_string(),
+            json!(rescue_reasons.join("; ")),
+        );
+    }
     object.insert("evidence_role".to_string(), json!(evidence_role));
     object.insert("proof_status".to_string(), json!(proof_status));
     object.insert("graph_proof".to_string(), json!(graph_proof));
@@ -17452,9 +20327,41 @@ fn merge_context_agent_candidate(existing: &mut Value, incoming: Value) {
         "verification_status".to_string(),
         json!(verification_status),
     );
+    object.insert(
+        "graph_verification_status".to_string(),
+        json!(graph_verification_status),
+    );
+    object.insert(
+        "text_evidence_status".to_string(),
+        json!(text_evidence_status),
+    );
     object.insert("reason".to_string(), json!(reason));
     object.insert("truncated".to_string(), json!(truncated));
     object.insert("ranking_features".to_string(), ranking_features);
+}
+
+fn context_agent_rescue_reason_parts(candidate: &Value) -> Vec<String> {
+    candidate
+        .get("rescue_reason")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .split(';')
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn max_context_agent_numeric_field(left: &Value, right: &Value, key: &str) -> Option<f64> {
+    match (
+        left.get(key).and_then(Value::as_f64),
+        right.get(key).and_then(Value::as_f64),
+    ) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
 }
 
 fn merge_context_agent_ranking_features(existing: &Value, incoming: &Value) -> Value {
@@ -17468,6 +20375,9 @@ fn merge_context_agent_ranking_features(existing: &Value, incoming: &Value) -> V
         "source_role_compatible",
         "lifecycle_claimable",
         "proof_available",
+        "vector_score_available",
+        "binary_score_available",
+        "rescue_match",
     ] {
         let value = existing
             .pointer(&format!("/ranking_features/{key}"))
@@ -17503,6 +20413,10 @@ fn primary_context_agent_candidate_source(sources: &BTreeSet<String>) -> String 
         "file_path_seed",
         "path_evidence",
         "graph_neighbor",
+        "nuance_rescue",
+        "vector_semantic",
+        "binary_vector",
+        "vector_rerank",
         "symbol_lookup",
         "text_evidence",
         "lexical_fts",
@@ -17537,6 +20451,18 @@ fn context_agent_candidate_rank_score(candidate: &Value) -> i64 {
     if feature("symbol_entity_match") {
         score += 1_250;
     }
+    if context_agent_candidate_has_source(candidate, "nuance_rescue") {
+        score += 2_200;
+    }
+    if context_agent_candidate_has_source(candidate, "vector_semantic") {
+        score += 900;
+    }
+    if context_agent_candidate_has_source(candidate, "binary_vector") {
+        score += 700;
+    }
+    if feature("rescue_match") {
+        score += 300;
+    }
     if feature("graph_proximity") {
         score += 1_000;
     }
@@ -17570,6 +20496,15 @@ fn context_agent_candidate_rank_score(candidate: &Value) -> i64 {
                 score += 100;
             }
         }
+    }
+    if let Some(source_score) = candidate.get("source_score").and_then(Value::as_f64) {
+        score += (source_score * 100.0).round() as i64;
+    }
+    if let Some(vector_score) = candidate.get("vector_score").and_then(Value::as_f64) {
+        score += (vector_score * 100.0).round() as i64;
+    }
+    if let Some(binary_score) = candidate.get("binary_score").and_then(Value::as_f64) {
+        score += (binary_score * 100.0).round() as i64;
     }
     score += (context_agent_candidate_sources(candidate).len() as i64) * 50;
     score
@@ -17651,20 +20586,27 @@ fn build_context_packet_from_stored_evidence(
     stored_path_count: usize,
     requested_span_count: usize,
 ) -> ContextPacket {
+    let symbol_seed_entities = seed_entities
+        .iter()
+        .filter(|entity| context_pack_entity_allowed_for_symbol_output(entity, &options.mode))
+        .collect::<Vec<_>>();
     let mut symbols = unique_limited_strings(
         raw_seed_values
             .iter()
             .cloned()
-            .chain(seed_ids.iter().cloned())
-            .chain(seed_entities.iter().map(|entity| entity.id.clone()))
-            .chain(seed_entities.iter().map(|entity| entity.name.clone()))
+            .chain(symbol_seed_entities.iter().map(|entity| entity.id.clone()))
             .chain(
-                seed_entities
+                symbol_seed_entities
+                    .iter()
+                    .map(|entity| entity.name.clone()),
+            )
+            .chain(
+                symbol_seed_entities
                     .iter()
                     .map(|entity| entity.qualified_name.clone()),
             )
             .chain(
-                seed_entities
+                symbol_seed_entities
                     .iter()
                     .map(|entity| entity.repo_relative_path.clone()),
             )
@@ -17737,6 +20679,10 @@ fn build_context_packet_from_stored_evidence(
             "max_returned_proof_paths": budgets.max_returned_proof_paths,
             "max_snippets": budgets.max_snippets,
             "max_traversal_depth": budgets.max_traversal_depth,
+            "max_path_evidence_rows": budgets.max_path_evidence_rows,
+            "max_path_edges_per_path": budgets.max_path_edges_per_path,
+            "max_path_evidence_hydration_bytes": budgets.max_hydration_bytes,
+            "path_evidence_timeout_ms": budgets.path_evidence_timeout_ms,
         }),
     );
     metadata.insert(
@@ -17746,6 +20692,19 @@ fn build_context_packet_from_stored_evidence(
     metadata.insert(
         "requested_source_span_count".to_string(),
         json!(requested_span_count),
+    );
+    metadata.insert("planning_roles".to_string(), json!(CONTEXT_PLANNING_ROLES));
+    metadata.insert(
+        "planning_packet_budgets".to_string(),
+        json!({
+            "evidence_budget": budgets.max_candidate_paths,
+            "snippet_budget": budgets.max_snippets,
+            "likely_files_budget": CONTEXT_PLANNING_PACKET_FILE_LIMIT,
+            "planning_summary_budget": 1,
+            "follow_up_queries_budget": CONTEXT_PLANNING_PACKET_QUERY_LIMIT,
+            "warning_budget": 8,
+            "explain_debug_budget": "separate_from_agent_json_evidence_budget",
+        }),
     );
     metadata.insert(
         "source_span_coverage".to_string(),
@@ -17834,6 +20793,14 @@ fn build_context_packet_from_stored_evidence(
         );
     }
     if !fallback_evidence.is_empty() {
+        let selected_role_coverage = unique_limited_strings(
+            fallback_evidence
+                .iter()
+                .map(context_planning_role_for_evidence)
+                .map(str::to_string)
+                .filter(|role| role != "unknown"),
+            CONTEXT_PLANNING_ROLES.len(),
+        );
         let likely_files = unique_limited_strings(
             fallback_evidence
                 .iter()
@@ -17848,7 +20815,12 @@ fn build_context_packet_from_stored_evidence(
         );
         metadata.insert("likely_files".to_string(), json!(likely_files));
         metadata.insert("follow_up_queries".to_string(), json!(follow_up_queries));
-        let metadata_fallback_limit = budgets.max_snippets.min(5).max(1);
+        metadata.insert(
+            "selected_role_coverage".to_string(),
+            json!(selected_role_coverage),
+        );
+        metadata.insert("omitted_by_dedup".to_string(), json!(0));
+        let metadata_fallback_limit = budgets.max_snippets.max(1);
         metadata.insert(
             "fallback_evidence".to_string(),
             json!(fallback_evidence
@@ -17871,6 +20843,138 @@ fn build_context_packet_from_stored_evidence(
     };
     compact_context_packet_for_cli(&mut packet, options.token_budget.max(32));
     packet
+}
+
+fn context_pack_traversal_telemetry_json(
+    options: &ContextPackOptions,
+    raw_seed_values: &[String],
+    seed_ids: &[String],
+    budgets: ContextPackBudgets,
+    stored_path_count: usize,
+    paths_returned: usize,
+    fallback_edge_count: usize,
+    fallback_traversal_telemetry: Option<Value>,
+    fallback_evidence_count: usize,
+) -> Value {
+    let traversal_policy = TraversalPolicy::for_mode(&options.mode);
+    let relation_modes = context_pack_allowed_relation_names(&options.mode)
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let no_proof_fallback_reason = if paths_returned == 0 && fallback_evidence_count > 0 {
+        Some("graph verification found no proof path; fallback source/text evidence returned")
+    } else if paths_returned == 0 {
+        Some("graph verification found no proof path")
+    } else {
+        None
+    };
+    json!({
+        "schema_version": 1,
+        "diagnostic_only": true,
+        "measurement_scope": "context_pack_graph_verification",
+        "seed_count": seed_ids.len(),
+        "raw_seed_count": raw_seed_values.len(),
+        "candidate_count_by_source": {
+            "path_evidence": stored_path_count,
+            "graph_neighbor": fallback_edge_count,
+            "no_proof_fallback": fallback_evidence_count
+        },
+        "traversal_mode": traversal_policy.mode.as_str(),
+        "relation_allowlist": relation_modes.clone(),
+        "relation_modes": relation_modes,
+        "traversal_policy": traversal_policy.mode.as_str(),
+        "max_depth": budgets.max_traversal_depth,
+        "max_paths": budgets.max_candidate_paths,
+        "max_edge_visits": 2048,
+        "max_neighbors_per_node": traversal_policy.max_neighbors_per_node,
+        "max_candidates_per_seed": budgets.max_seed_entities,
+        "max_structural_expansion": traversal_policy.max_structural_expansion,
+        "timeout_ms": traversal_policy.timeout_ms,
+        "edges_visited": fallback_traversal_telemetry
+            .as_ref()
+            .and_then(|value| value.pointer("/aggregate/edges_visited"))
+            .cloned()
+            .unwrap_or_else(|| json!(fallback_edge_count)),
+        "nodes_visited": fallback_traversal_telemetry
+            .as_ref()
+            .and_then(|value| value.pointer("/aggregate/nodes_visited"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "neighbors_expanded": fallback_traversal_telemetry
+            .as_ref()
+            .and_then(|value| value.pointer("/aggregate/neighbors_expanded"))
+            .cloned()
+            .unwrap_or_else(|| json!(fallback_edge_count)),
+        "structural_edges_skipped": fallback_traversal_telemetry
+            .as_ref()
+            .and_then(|value| value.pointer("/aggregate/structural_edges_skipped"))
+            .cloned()
+            .unwrap_or_else(|| json!(0)),
+        "source_role_blocked_edges": fallback_traversal_telemetry
+            .as_ref()
+            .and_then(|value| value.pointer("/aggregate/source_role_blocked_edges"))
+            .cloned()
+            .unwrap_or_else(|| json!(0)),
+        "cycles_cut": fallback_traversal_telemetry
+            .as_ref()
+            .and_then(|value| value.pointer("/aggregate/cycles_cut"))
+            .cloned()
+            .unwrap_or_else(|| json!(0)),
+        "budget_stop_reason": fallback_traversal_telemetry
+            .as_ref()
+            .and_then(|value| value.pointer("/aggregate/budget_stop_reasons"))
+            .cloned()
+            .unwrap_or_else(|| json!({"not_available_for_stored_path_lookup": 1})),
+        "paths_found": stored_path_count,
+        "paths_returned": paths_returned,
+        "time_ms": fallback_traversal_telemetry
+            .as_ref()
+            .and_then(|value| value.pointer("/aggregate/time_ms"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "source_role_filter": {
+            "applied": true,
+            "mode": options.mode,
+            "blocked_edges": fallback_traversal_telemetry
+                .as_ref()
+                .and_then(|value| value.pointer("/aggregate/source_role_blocked_edges"))
+                .cloned()
+                .unwrap_or_else(|| json!(0)),
+        },
+        "source_role_filters_applied": true,
+        "heuristic_edges_skipped": fallback_traversal_telemetry
+            .as_ref()
+            .and_then(|value| value.pointer("/aggregate/heuristic_edges_skipped"))
+            .cloned()
+            .unwrap_or_else(|| json!(0)),
+        "heuristic_edges_seen": fallback_traversal_telemetry
+            .as_ref()
+            .and_then(|value| value.pointer("/aggregate/heuristic_edges_seen"))
+            .cloned()
+            .unwrap_or_else(|| json!(0)),
+        "derived_edge_provenance_checks": fallback_traversal_telemetry
+            .as_ref()
+            .and_then(|value| value.pointer("/aggregate/derived_edge_provenance_checks"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "derived_edge_provenance_blocked_edges": fallback_traversal_telemetry
+            .as_ref()
+            .and_then(|value| value.pointer("/aggregate/derived_edge_provenance_blocked_edges"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "traversal_result_labels": fallback_traversal_telemetry
+            .as_ref()
+            .and_then(|value| value.pointer("/aggregate/result_labels"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "no_proof_fallback_reason": no_proof_fallback_reason,
+        "fallback_engine_telemetry": fallback_traversal_telemetry,
+        "notes": [
+            "stored PathEvidence lookup does not expose true edge-visit counts",
+            "fallback engine telemetry is present only when context-pack falls back to bounded seed-adjacent edges",
+            "default agent output remains compact; this object is surfaced through retrieval_explain"
+        ]
+    })
 }
 
 fn context_pack_graph_verification_json(
@@ -18029,6 +21133,32 @@ fn context_pack_retrieval_architecture_json(
     } else {
         "no_follow_up_queries"
     };
+    let nuance_trace = packet.metadata.get("nuance_rescue_trace");
+    let nuance_stage_enabled = nuance_trace
+        .and_then(|trace| trace.get("rescue_enabled"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let nuance_candidate_count = nuance_trace
+        .and_then(|trace| trace.get("rescue_candidate_count"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let nuance_stage_status = if nuance_stage_enabled {
+        nuance_trace
+            .and_then(|trace| trace.get("rescue_status"))
+            .and_then(Value::as_str)
+            .unwrap_or("active_current")
+    } else {
+        "inactive_requires_explicit_flag"
+    };
+    let inactive_lanes = if nuance_stage_enabled {
+        vec!["binary_vector_candidates", "shell_ready_probe_commands"]
+    } else {
+        vec![
+            "binary_vector_candidates",
+            "nuance_rescue_candidates",
+            "shell_ready_probe_commands",
+        ]
+    };
 
     json!({
         "schema_version": 1,
@@ -18078,9 +21208,9 @@ fn context_pack_retrieval_architecture_json(
             },
             {
                 "stage": "nuance_rescue_candidates",
-                "status": "inactive_post_mvp",
-                "candidate_count": 0,
-                "proof_contract": "nuance_rescue_not_run_in_this_phase"
+                "status": nuance_stage_status,
+                "candidate_count": nuance_candidate_count,
+                "proof_contract": "nuance_rescue_candidates_are_candidate_only_until_graph_or_source_verification"
             },
             {
                 "stage": "graph_neighborhood_candidates",
@@ -18112,11 +21242,7 @@ fn context_pack_retrieval_architecture_json(
                 "proof_contract": "agent_packet_must_remain_bounded_and_label_claimability"
             }
         ],
-        "inactive_lanes": [
-            "binary_vector_candidates",
-            "nuance_rescue_candidates",
-            "shell_ready_probe_commands"
-        ]
+        "inactive_lanes": inactive_lanes
     })
 }
 
@@ -18178,59 +21304,417 @@ fn context_pack_retrieval_explain_json(
         .filter(|value| !value.is_null())
         .or_else(|| packet.metadata.get("proof_failure_reason").cloned())
         .unwrap_or(Value::Null);
+    let nuance_rescue_trace = packet
+        .metadata
+        .get("nuance_rescue_trace")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "schema_version": 1,
+                "diagnostic_only": true,
+                "nuance_rescue_enabled": false,
+                "rescue_enabled": false,
+                "rescue_candidate_count": 0,
+                "rescue_candidate_sources": [],
+                "candidate_cap": CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT,
+                "ignored_generic_tokens": [],
+                "rare_tokens": [],
+                "identifier_tokens": [],
+                "route_tokens": [],
+                "config_tokens": [],
+                "test_tokens": [],
+                "route_config_test_tokens": [],
+                "rescue_reasons": [],
+                "candidates_accepted": {"count": 0, "items": []},
+                "candidates_rejected": {"count": 0, "tokens": []}
+            })
+        });
+    let no_proof_fallback_status = context_pack_no_proof_fallback_status(
+        graph_proof,
+        fallback_evidence.len(),
+        snippets.len(),
+        &no_proof_fallback_reason,
+    );
+    let final_nuance_selection =
+        context_pack_final_nuance_selection_json(packet, &candidate_set.candidates);
+    let traversal_telemetry = packet
+        .metadata
+        .get("traversal_telemetry")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "schema_version": 1,
+                "diagnostic_only": true,
+                "measurement_scope": "context_pack_graph_verification",
+                "status": "unavailable"
+            })
+        });
+    let path_evidence_telemetry = packet
+        .metadata
+        .get("path_evidence_telemetry")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "schema_version": 1,
+                "diagnostic_only": true,
+                "measurement_scope": "context_pack_stored_path_evidence",
+                "status": "unavailable"
+            })
+        });
+    let traversal_mode = traversal_telemetry
+        .get("traversal_mode")
+        .or_else(|| traversal_telemetry.get("traversal_policy"))
+        .cloned()
+        .unwrap_or_else(|| json!("unknown"));
+    let relation_allowlist = traversal_telemetry
+        .get("relation_allowlist")
+        .or_else(|| traversal_telemetry.get("relation_modes"))
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let source_role_filter = traversal_telemetry
+        .get("source_role_filter")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "applied": traversal_telemetry
+                    .get("source_role_filters_applied")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                "blocked_edges": traversal_telemetry
+                    .get("source_role_blocked_edges")
+                    .cloned()
+                    .unwrap_or_else(|| json!(0))
+            })
+        });
+    let candidate_sources_verified =
+        context_agent_candidate_sources_verified(&candidate_set.candidates);
+    let omitted_count = omitted_paths
+        .saturating_add(omitted_snippets)
+        .saturating_add(omitted_fallback_evidence)
+        .saturating_add(omitted_recommended_tests)
+        .saturating_add(omitted_risks)
+        .saturating_add(candidate_set.omitted_count);
 
-    json!({
-        "schema_version": 1,
-        "diagnostic_only": true,
-        "trigger": "context-pack --explain/--audit-json",
-        "compact_default": "retrieval_explain is omitted unless an explicit diagnostic flag is requested",
-        "prompt_intent": packet
+    let mut explain = serde_json::Map::new();
+    explain.insert("schema_version".to_string(), json!(1));
+    explain.insert("diagnostic_only".to_string(), json!(true));
+    explain.insert(
+        "trigger".to_string(),
+        json!("context-pack --explain/--audit-json"),
+    );
+    explain.insert(
+        "compact_default".to_string(),
+        json!("retrieval_explain is omitted unless an explicit diagnostic flag is requested"),
+    );
+    explain.insert(
+        "prompt_intent".to_string(),
+        json!(packet
             .metadata
             .get("prompt_intent")
             .and_then(Value::as_str)
-            .unwrap_or("unknown"),
-        "seeds_extracted": seeds_extracted,
-        "ignored_seeds": ignored_seeds,
-        "candidate_sources": candidate_sources,
-        "candidate_counts_by_source": candidate_counts_by_source,
-        "candidate_caps": {
+            .unwrap_or("unknown")),
+    );
+    explain.insert("seeds_extracted".to_string(), json!(seeds_extracted));
+    explain.insert("ignored_seeds".to_string(), json!(ignored_seeds));
+    explain.insert("candidate_sources".to_string(), json!(candidate_sources));
+    explain.insert("traversal_mode".to_string(), traversal_mode);
+    explain.insert("relation_allowlist".to_string(), relation_allowlist);
+    explain.insert("source_role_filter".to_string(), source_role_filter);
+    explain.insert(
+        "candidate_sources_verified".to_string(),
+        json!(candidate_sources_verified),
+    );
+    explain.insert(
+        "path_evidence_lookup_time_ms".to_string(),
+        path_evidence_telemetry
+            .get("lookup_time_ms")
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    explain.insert(
+        "path_evidence_hydration_time_ms".to_string(),
+        path_evidence_telemetry
+            .get("hydration_time_ms")
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    explain.insert("omitted_count".to_string(), json!(omitted_count));
+    explain.insert(
+        "candidate_counts_by_source".to_string(),
+        candidate_counts_by_source,
+    );
+    explain.insert(
+        "candidate_caps".to_string(),
+        json!({
             "candidate_cap": CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT,
-            "candidate_cap_policy": "exact_seeds_protected_then_no_proof_text_then_deterministic_rank",
+            "candidate_cap_policy": "exact_seeds_protected_then_no_proof_text_then_nuance_and_deterministic_rank",
             "candidate_total_count": candidate_set.total_count,
             "candidate_returned_count": candidate_set.candidates.len(),
             "candidate_omitted_count": candidate_set.omitted_count,
+            "candidate_omitted_reason": if candidate_set.omitted_count > 0 {
+                "candidate_cap_exceeded_after_exact_seed_text_priority"
+            } else {
+                "none"
+            },
             "exact_seed_cap_override": candidate_set.exact_seed_cap_override
-        },
-        "dedup_results": {
+        }),
+    );
+    explain.insert(
+        "candidates_omitted".to_string(),
+        json!({
+            "count": candidate_set.omitted_count,
+            "reason": if candidate_set.omitted_count > 0 {
+                "candidate_cap_exceeded_after_exact_seed_text_priority"
+            } else {
+                "none"
+            },
+            "items": candidate_set.omitted_candidates
+        }),
+    );
+    explain.insert(
+        "dedup_results".to_string(),
+        json!({
             "candidate_path_count_before_dedup": context_pack_metadata_u64(packet, "candidate_path_count_before_dedup"),
             "candidate_path_count_after_dedup": context_pack_metadata_u64(packet, "candidate_path_count_after_dedup"),
             "candidate_path_count_after_filter": context_pack_metadata_u64(packet, "candidate_path_count_after_filter"),
             "candidate_path_count_after_truncate": context_pack_metadata_u64(packet, "candidate_path_count_after_truncate"),
             "retrieval_candidate_count_after_dedup": candidate_set.total_count,
             "retrieval_candidate_count_after_cap": candidate_set.candidates.len()
-        },
-        "ranking_reasons": ranking_reasons,
-        "graph_verification_attempts": graph_verification,
-        "proof_paths_found": paths.len(),
-        "proof_path_ids": proof_path_ids,
-        "proof_status": proof_status,
-        "graph_proof": graph_proof,
-        "evidence_status": evidence_status,
-        "no_proof_fallback_reason": no_proof_fallback_reason,
-        "fallback_evidence_count": fallback_evidence.len(),
-        "snippet_count": snippets.len(),
-        "omitted_counts": {
+        }),
+    );
+    explain.insert("ranking_reasons".to_string(), json!(ranking_reasons));
+    explain.insert(
+        "graph_verification_attempts".to_string(),
+        graph_verification.clone(),
+    );
+    explain.insert(
+        "graph_verification_status".to_string(),
+        json!(graph_verification
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")),
+    );
+    explain.insert("traversal_telemetry".to_string(), traversal_telemetry);
+    explain.insert(
+        "path_evidence_telemetry".to_string(),
+        path_evidence_telemetry,
+    );
+    explain.insert("proof_paths_found".to_string(), json!(paths.len()));
+    explain.insert("proof_path_ids".to_string(), json!(proof_path_ids));
+    explain.insert("proof_status".to_string(), json!(proof_status));
+    explain.insert("graph_proof".to_string(), json!(graph_proof));
+    explain.insert("evidence_status".to_string(), json!(evidence_status));
+    explain.insert(
+        "vector_trace".to_string(),
+        packet
+            .metadata
+            .get("vector_candidate_trace")
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    explain.insert(
+        "nuance_rescue_enabled".to_string(),
+        json!(nuance_rescue_trace
+            .get("nuance_rescue_enabled")
+            .or_else(|| nuance_rescue_trace.get("rescue_enabled"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)),
+    );
+    for key in [
+        "ignored_generic_tokens",
+        "rare_tokens",
+        "identifier_tokens",
+        "route_tokens",
+        "config_tokens",
+        "test_tokens",
+        "route_config_test_tokens",
+        "rescue_candidate_sources",
+        "rescue_reasons",
+    ] {
+        explain.insert(
+            key.to_string(),
+            nuance_rescue_trace
+                .get(key)
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        );
+    }
+    explain.insert(
+        "rescue_candidate_count".to_string(),
+        nuance_rescue_trace
+            .get("rescue_candidate_count")
+            .cloned()
+            .unwrap_or_else(|| json!(0)),
+    );
+    explain.insert(
+        "overfetch_rerank_settings".to_string(),
+        context_pack_overfetch_rerank_settings_json(packet),
+    );
+    explain.insert(
+        "candidates_accepted".to_string(),
+        final_nuance_selection
+            .get("candidates_accepted")
+            .cloned()
+            .unwrap_or_else(|| json!({"count": 0, "items": []})),
+    );
+    explain.insert(
+        "candidates_rejected".to_string(),
+        final_nuance_selection
+            .get("candidates_rejected")
+            .cloned()
+            .unwrap_or_else(|| json!({"count": 0, "items": []})),
+    );
+    explain.insert("nuance_rescue_trace".to_string(), nuance_rescue_trace);
+    explain.insert(
+        "no_proof_fallback_reason".to_string(),
+        no_proof_fallback_reason,
+    );
+    explain.insert(
+        "no_proof_fallback_status".to_string(),
+        json!(no_proof_fallback_status),
+    );
+    explain.insert(
+        "fallback_evidence_count".to_string(),
+        json!(fallback_evidence.len()),
+    );
+    explain.insert("snippet_count".to_string(), json!(snippets.len()));
+    explain.insert(
+        "omitted_counts".to_string(),
+        json!({
             "paths": omitted_paths,
             "snippets": omitted_snippets,
             "fallback_evidence": omitted_fallback_evidence,
             "recommended_tests": omitted_recommended_tests,
             "risks": omitted_risks,
             "candidates": candidate_set.omitted_count
-        },
-        "retrieval_architecture_candidate_flow": retrieval_architecture
+        }),
+    );
+    explain.insert(
+        "retrieval_architecture_candidate_flow".to_string(),
+        retrieval_architecture
             .get("candidate_flow")
             .cloned()
-            .unwrap_or_else(|| json!([]))
+            .unwrap_or_else(|| json!([])),
+    );
+    Value::Object(explain)
+}
+
+fn context_pack_retrieval_explain_budget_summary(
+    retrieval_explain: &Value,
+    full_explain_bytes: usize,
+    max_output_bytes: usize,
+) -> Value {
+    json!({
+        "schema_version": 1,
+        "diagnostic_only": true,
+        "budget_limited": true,
+        "status": "summary_included_full_explain_omitted_by_explain_budget",
+        "reason": "retrieval_explain is separated from normal evidence budget; full diagnostic payload did not fit under --max-output-bytes",
+        "full_explain_bytes": full_explain_bytes,
+        "max_output_bytes": max_output_bytes,
+        "candidate_counts_by_source": retrieval_explain
+            .get("candidate_counts_by_source")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "proof_status": retrieval_explain
+            .get("proof_status")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "graph_proof": retrieval_explain
+            .get("graph_proof")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "ranking_reasons": {
+            "available_in_full_explain": true,
+            "omitted_by_explain_debug_budget": true
+        },
+        "budget_decisions": [
+            "normal agent-json evidence budget enforced before diagnostic explain attachment",
+            "fallback snippets and likely files are not pruned to make room for full explain payload"
+        ]
+    })
+}
+
+fn context_pack_no_proof_fallback_status(
+    graph_proof: bool,
+    fallback_evidence_count: usize,
+    snippet_count: usize,
+    no_proof_fallback_reason: &Value,
+) -> &'static str {
+    if graph_proof {
+        "not_needed_graph_proof_found"
+    } else if fallback_evidence_count > 0 || snippet_count > 0 {
+        "active_no_graph_proof_text_fallback"
+    } else if !no_proof_fallback_reason.is_null() {
+        "no_graph_proof_no_fallback"
+    } else {
+        "not_evaluated"
+    }
+}
+
+fn context_pack_overfetch_rerank_settings_json(packet: &ContextPacket) -> Value {
+    let binary_overfetch_k = context_pack_metadata_u64(packet, "binary_overfetch_k");
+    let rerank_input_count = context_pack_metadata_u64(packet, "rerank_input_count");
+    let rerank_output_count = context_pack_metadata_u64(packet, "rerank_output_count");
+    let present = !binary_overfetch_k.is_null()
+        || !rerank_input_count.is_null()
+        || !rerank_output_count.is_null();
+    json!({
+        "present": present,
+        "binary_overfetch_k": binary_overfetch_k,
+        "rerank_input_count": rerank_input_count,
+        "rerank_output_count": rerank_output_count,
+        "notes": packet
+            .metadata
+            .get("overfetch_rerank_notes")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+    })
+}
+
+fn context_pack_final_nuance_selection_json(
+    packet: &ContextPacket,
+    final_candidates: &[Value],
+) -> Value {
+    let final_nuance_items = final_candidates
+        .iter()
+        .filter(|candidate| context_agent_candidate_has_source(candidate, "nuance_rescue"))
+        .map(context_pack_nuance_trace_candidate_item)
+        .collect::<Vec<_>>();
+    let final_ids = final_candidates
+        .iter()
+        .map(context_agent_candidate_id)
+        .collect::<BTreeSet<_>>();
+    let branch_candidates = packet
+        .metadata
+        .get("nuance_rescue_candidates")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let rejected_items = branch_candidates
+        .iter()
+        .filter(|candidate| !final_ids.contains(&context_agent_candidate_id(candidate)))
+        .take(CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT)
+        .map(|candidate| {
+            let mut item = context_pack_nuance_trace_candidate_item(candidate);
+            if let Some(object) = item.as_object_mut() {
+                object.insert(
+                    "rejection_reason".to_string(),
+                    json!("not_returned_after_union_cap_or_dedup"),
+                );
+            }
+            item
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "candidates_accepted": {
+            "count": final_nuance_items.len(),
+            "items": final_nuance_items
+        },
+        "candidates_rejected": {
+            "count": rejected_items.len(),
+            "items": rejected_items
+        }
     })
 }
 
@@ -18244,21 +21728,114 @@ fn context_pack_candidate_counts_by_source_json(candidates: &[Value]) -> Value {
     json!(counts)
 }
 
+fn context_pack_candidate_sources_json(candidates: &[Value]) -> Value {
+    let sources = candidates
+        .iter()
+        .flat_map(context_agent_candidate_sources)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    json!(sources)
+}
+
 fn context_pack_candidate_ranking_explain_json(candidate: &Value) -> Value {
+    let candidate = context_pack_public_candidate_json(candidate);
     json!({
         "candidate_id": candidate.get("candidate_id").cloned().unwrap_or(Value::Null),
         "rank": candidate.get("rank").cloned().unwrap_or(Value::Null),
         "score": candidate.get("score").cloned().unwrap_or(Value::Null),
+        "source_score": candidate.get("source_score").cloned().unwrap_or(Value::Null),
+        "vector_score": candidate.get("vector_score").cloned().unwrap_or(Value::Null),
+        "binary_score": candidate.get("binary_score").cloned().unwrap_or(Value::Null),
         "candidate_sources": candidate.get("candidate_sources").cloned().unwrap_or_else(|| json!([])),
         "matched_seeds": candidate.get("matched_seeds").cloned().unwrap_or_else(|| json!([])),
+        "matched_token": candidate.get("matched_token").cloned().unwrap_or(Value::Null),
+        "matched_tokens": candidate.get("matched_tokens").cloned().unwrap_or_else(|| json!([])),
+        "rescue_reason": candidate.get("rescue_reason").cloned().unwrap_or(Value::Null),
+        "rescue_kinds": candidate.get("rescue_kinds").cloned().unwrap_or_else(|| json!([])),
         "reason": candidate.get("reason").cloned().unwrap_or(Value::Null),
         "ranking_features": candidate.get("ranking_features").cloned().unwrap_or_else(|| json!({})),
         "verification_status": candidate.get("verification_status").cloned().unwrap_or(Value::Null),
+        "graph_verification_status": candidate.get("graph_verification_status").cloned().unwrap_or(Value::Null),
+        "text_evidence_status": candidate.get("text_evidence_status").cloned().unwrap_or(Value::Null),
         "proof_status": candidate.get("proof_status").cloned().unwrap_or(Value::Null),
         "graph_proof": candidate.get("graph_proof").cloned().unwrap_or(Value::Null),
         "omitted": candidate.get("omitted").cloned().unwrap_or(Value::Null),
         "truncated": candidate.get("truncated").cloned().unwrap_or(Value::Null)
     })
+}
+
+fn context_pack_public_candidate_json(candidate: &Value) -> Value {
+    let mut candidate = candidate.clone();
+    let Some(object) = candidate.as_object_mut() else {
+        return candidate;
+    };
+    if let Some(value) = object.get("matched_token").cloned() {
+        object.insert(
+            "matched_token".to_string(),
+            context_pack_trace_safe_value(Some(&value)),
+        );
+    }
+    for key in ["matched_tokens", "matched_seeds"] {
+        if let Some(values) = object.get(key).and_then(Value::as_array).cloned() {
+            object.insert(
+                key.to_string(),
+                json!(values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(context_pack_trace_safe_string)
+                    .collect::<Vec<_>>()),
+            );
+        }
+    }
+    for key in ["reason", "rescue_reason"] {
+        if let Some(value) = object.get(key).and_then(Value::as_str) {
+            object.insert(key.to_string(), json!(context_pack_trace_safe_text(value)));
+        }
+    }
+    candidate
+}
+
+fn context_pack_compact_candidate_json(candidate: &Value) -> Value {
+    json!({
+        "candidate_id": candidate.get("candidate_id").cloned().unwrap_or(Value::Null),
+        "candidate_source": candidate.get("candidate_source").cloned().unwrap_or(Value::Null),
+        "candidate_sources": candidate.get("candidate_sources").cloned().unwrap_or_else(|| json!([])),
+        "path": candidate.get("path").cloned().unwrap_or(Value::Null),
+        "entity_id": candidate.get("entity_id").cloned().unwrap_or(Value::Null),
+        "span": candidate.get("span").cloned().unwrap_or_else(|| candidate.get("source_span").cloned().unwrap_or(Value::Null)),
+        "evidence_role": candidate.get("evidence_role").cloned().unwrap_or(Value::Null),
+        "matched_seeds": candidate.get("matched_seeds").cloned().unwrap_or_else(|| json!([])),
+        "proof_status": candidate.get("proof_status").cloned().unwrap_or(Value::Null),
+        "graph_proof": candidate.get("graph_proof").cloned().unwrap_or(Value::Null),
+        "claimable_for_graph": candidate.get("claimable_for_graph").cloned().unwrap_or(Value::Null),
+        "claimable_for_text": candidate.get("claimable_for_text").cloned().unwrap_or(Value::Null),
+        "requires_graph_verification": candidate.get("requires_graph_verification").cloned().unwrap_or(Value::Null),
+        "verification_status": candidate.get("verification_status").cloned().unwrap_or(Value::Null),
+        "graph_verification_status": candidate.get("graph_verification_status").cloned().unwrap_or(Value::Null),
+        "rank": candidate.get("rank").cloned().unwrap_or(Value::Null),
+        "score": candidate.get("score").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn context_pack_candidate_values_with_compact_fallback(candidates: &[Value]) -> (Vec<Value>, bool) {
+    let full = candidates
+        .iter()
+        .map(context_pack_public_candidate_json)
+        .collect::<Vec<_>>();
+    let full_bytes = serde_json::to_vec(&full)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX);
+    if full_bytes <= 8192 {
+        return (full, false);
+    }
+    (
+        candidates
+            .iter()
+            .map(context_pack_compact_candidate_json)
+            .collect(),
+        true,
+    )
 }
 
 fn context_pack_metadata_u64(packet: &ContextPacket, key: &str) -> Value {
@@ -18368,7 +21945,9 @@ fn context_pack_agent_json_response(
     let candidate_total_count = candidate_set.total_count;
     let candidate_omitted_count = candidate_set.omitted_count;
     let candidate_exact_seed_cap_override = candidate_set.exact_seed_cap_override;
-    let candidate_values = Value::Array(candidate_set.candidates.clone());
+    let (candidate_values_vec, candidate_compacted) =
+        context_pack_candidate_values_with_compact_fallback(&candidate_set.candidates);
+    let candidate_values = Value::Array(candidate_values_vec.clone());
     let response_limits = json!({
         "paths": path_limit,
         "snippets": snippet_limit,
@@ -18423,6 +22002,7 @@ fn context_pack_agent_json_response(
         .saturating_sub(fallback_evidence.len());
     let mut omitted_recommended_tests = packet.recommended_tests.len().saturating_sub(12);
     let mut omitted_risks = packet.risks.len().saturating_sub(12);
+    let mut omitted_planning_packet = 0;
     let lifecycle_claimable = db_lifecycle_read
         .get("claimable")
         .and_then(Value::as_bool)
@@ -18438,6 +22018,35 @@ fn context_pack_agent_json_response(
         graph_proof,
         omitted_paths + omitted_snippets + omitted_fallback_evidence,
     );
+    let fallback_snippets = snippets
+        .iter()
+        .filter(|snippet| snippet.get("fallback_source").is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    let selected_role_coverage =
+        context_planning_selected_role_coverage(&fallback_evidence, &snippets, &likely_files);
+    let omitted_by_dedup = packet
+        .metadata
+        .get("omitted_by_dedup")
+        .and_then(Value::as_u64)
+        .unwrap_or_default() as usize;
+    let omitted_by_budget = omitted_paths + omitted_snippets + omitted_fallback_evidence;
+    let evidence_budget_status = json!({
+        "status": if omitted_by_budget == 0 { "within_budget" } else { "bounded_with_omissions" },
+        "evidence_budget": budgets.max_candidate_paths,
+        "snippet_budget": snippet_limit,
+        "likely_files_budget": CONTEXT_PLANNING_PACKET_FILE_LIMIT,
+        "fallback_evidence_returned": fallback_evidence.len(),
+        "fallback_snippets_returned": fallback_snippets.len(),
+        "likely_files_returned": likely_files.as_array().map(Vec::len).unwrap_or_default(),
+        "omitted_by_budget": omitted_by_budget,
+        "omitted_by_dedup": omitted_by_dedup,
+    });
+    let explain_budget_status = json!({
+        "enabled": options.explain,
+        "status": if options.explain { "pending_separate_budget_check" } else { "disabled" },
+        "separate_from_evidence_budget": true,
+    });
     let retrieval_explain = options.explain.then(|| {
         context_pack_retrieval_explain_json(
             packet,
@@ -18510,11 +22119,25 @@ fn context_pack_agent_json_response(
         }
         object.insert("retrieval_architecture".to_string(), retrieval_architecture);
         object.insert("planning_packet".to_string(), planning_packet);
-        if let Some(retrieval_explain) = retrieval_explain {
-            object.insert("retrieval_explain".to_string(), retrieval_explain);
-        }
+        object.insert("fallback_snippets".to_string(), json!(fallback_snippets));
+        object.insert(
+            "selected_role_coverage".to_string(),
+            json!(selected_role_coverage),
+        );
+        object.insert("omitted_by_budget".to_string(), json!(omitted_by_budget));
+        object.insert("omitted_by_dedup".to_string(), json!(omitted_by_dedup));
+        object.insert("evidence_budget_status".to_string(), evidence_budget_status);
+        object.insert("explain_budget_status".to_string(), explain_budget_status);
         object.insert("candidates".to_string(), json!([]));
         object.insert("candidate_count".to_string(), json!(0));
+        object.insert(
+            "candidate_sources".to_string(),
+            context_pack_candidate_sources_json(&candidate_set.candidates),
+        );
+        object.insert(
+            "candidate_source_counts".to_string(),
+            context_pack_candidate_counts_by_source_json(&candidate_set.candidates),
+        );
         object.insert(
             "candidate_total_count".to_string(),
             json!(candidate_total_count),
@@ -18524,12 +22147,24 @@ fn context_pack_agent_json_response(
             json!(candidate_total_count),
         );
         object.insert(
+            "candidate_omitted_reason".to_string(),
+            json!(if candidate_total_count > 0 {
+                "candidates_omitted_until_compact_candidate_payload_fits"
+            } else {
+                "none"
+            }),
+        );
+        object.insert(
             "candidate_cap".to_string(),
             json!(CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT),
         );
         object.insert(
             "candidate_cap_policy".to_string(),
-            json!("exact_seeds_protected_then_no_proof_text_then_deterministic_rank"),
+            json!("exact_seeds_protected_then_no_proof_text_then_nuance_and_deterministic_rank"),
+        );
+        object.insert(
+            "candidate_payload_compacted".to_string(),
+            json!(candidate_compacted),
         );
         object.insert(
             "candidate_exact_seed_cap_override".to_string(),
@@ -18551,6 +22186,7 @@ fn context_pack_agent_json_response(
         omitted_fallback_evidence += omitted_by_size.fallback_evidence;
         omitted_recommended_tests += omitted_by_size.recommended_tests;
         omitted_risks += omitted_by_size.risks;
+        omitted_planning_packet += omitted_by_size.planning_packet;
         max_output_bytes_exceeded |= omitted_by_size.max_output_bytes_exceeded;
         update_context_agent_truncation(
             &mut response,
@@ -18561,6 +22197,7 @@ fn context_pack_agent_json_response(
             omitted_fallback_evidence,
             omitted_recommended_tests,
             omitted_risks,
+            omitted_planning_packet,
             max_output_bytes_exceeded,
         );
         if serialized_json_len(&response) <= max_output_bytes || max_output_bytes_exceeded {
@@ -18576,6 +22213,7 @@ fn context_pack_agent_json_response(
         omitted_fallback_evidence,
         omitted_recommended_tests,
         omitted_risks,
+        omitted_planning_packet,
         max_output_bytes_exceeded,
     );
     if candidate_count > 0 {
@@ -18584,13 +22222,116 @@ fn context_pack_agent_json_response(
             object.insert("candidates".to_string(), candidate_values);
             object.insert("candidate_count".to_string(), json!(candidate_count));
             object.insert(
+                "candidate_payload_compacted".to_string(),
+                json!(candidate_compacted),
+            );
+            object.insert(
                 "candidate_omitted_count".to_string(),
                 json!(candidate_omitted_count),
+            );
+            object.insert(
+                "candidate_omitted_reason".to_string(),
+                json!(if candidate_omitted_count > 0 {
+                    "candidate_cap_exceeded_after_exact_seed_text_priority"
+                } else {
+                    "none"
+                }),
             );
         }
         if serialized_json_len(&candidate_response) <= max_output_bytes {
             response = candidate_response;
+        } else {
+            for keep_count in (1..=candidate_values_vec.len()).rev() {
+                let mut compact_candidate_response = response.clone();
+                if let Some(object) = compact_candidate_response.as_object_mut() {
+                    object.insert(
+                        "candidates".to_string(),
+                        Value::Array(
+                            candidate_values_vec
+                                .iter()
+                                .take(keep_count)
+                                .cloned()
+                                .collect(),
+                        ),
+                    );
+                    object.insert("candidate_count".to_string(), json!(keep_count));
+                    object.insert("candidate_payload_compacted".to_string(), json!(true));
+                    object.insert(
+                        "candidate_omitted_count".to_string(),
+                        json!(candidate_total_count.saturating_sub(keep_count)),
+                    );
+                    object.insert(
+                        "candidate_omitted_reason".to_string(),
+                        json!("candidate_budget_compacted_to_fit_max_output_bytes"),
+                    );
+                }
+                if serialized_json_len(&compact_candidate_response) <= max_output_bytes {
+                    response = compact_candidate_response;
+                    break;
+                }
+            }
         }
+    }
+    if let Some(retrieval_explain) = retrieval_explain {
+        let mut explain_response = response.clone();
+        let full_explain_bytes = serialized_json_len(&retrieval_explain);
+        if let Some(object) = explain_response.as_object_mut() {
+            object.insert("retrieval_explain".to_string(), retrieval_explain.clone());
+            object.insert(
+                "explain_budget_status".to_string(),
+                json!({
+                    "enabled": true,
+                    "status": "full_explain_included",
+                    "separate_from_evidence_budget": true,
+                    "full_explain_bytes": full_explain_bytes,
+                }),
+            );
+        }
+        if serialized_json_len(&explain_response) <= max_output_bytes {
+            response = explain_response;
+        } else if let Some(object) = response.as_object_mut() {
+            object.insert(
+                "retrieval_explain".to_string(),
+                context_pack_retrieval_explain_budget_summary(
+                    &retrieval_explain,
+                    full_explain_bytes,
+                    max_output_bytes,
+                ),
+            );
+            object.insert(
+                "explain_budget_status".to_string(),
+                json!({
+                    "enabled": true,
+                    "status": "summary_included_full_explain_omitted_by_explain_budget",
+                    "separate_from_evidence_budget": true,
+                    "full_explain_bytes": full_explain_bytes,
+                }),
+            );
+        }
+        if serialized_json_len(&response) > max_output_bytes {
+            remove_context_agent_field(&mut response, "retrieval_architecture");
+            if let Some(object) = response.as_object_mut() {
+                object.insert(
+                    "explain_budget_status".to_string(),
+                    json!({
+                        "enabled": true,
+                        "status": "summary_included_full_explain_omitted_by_explain_budget",
+                        "separate_from_evidence_budget": true,
+                        "retrieval_architecture_omitted_for_explain_budget": true,
+                        "full_explain_bytes": full_explain_bytes,
+                    }),
+                );
+            }
+        }
+    } else if let Some(object) = response.as_object_mut() {
+        object.insert(
+            "explain_budget_status".to_string(),
+            json!({
+                "enabled": false,
+                "status": "disabled",
+                "separate_from_evidence_budget": true,
+            }),
+        );
     }
     response
 }
@@ -18663,6 +22404,14 @@ fn context_pack_planning_packet_json(
     let follow_up_queries =
         context_planning_follow_up_queries(options, &likely_symbols, &evidence_items, snippets);
     let suggested_verification_commands = context_planning_verification_hints(&follow_up_queries);
+    let likely_files_value = json!(likely_files.clone());
+    let selected_role_coverage =
+        context_planning_selected_role_coverage(fallback_evidence, snippets, &likely_files_value);
+    let fallback_snippets = snippets
+        .iter()
+        .filter(|snippet| snippet.get("fallback_source").is_some())
+        .cloned()
+        .collect::<Vec<_>>();
     let claimability =
         context_planning_claimability_json(&evidence_type, lifecycle_claimable, graph_proof);
     let claimable = claimability
@@ -18700,6 +22449,11 @@ fn context_pack_planning_packet_json(
         + likely_files
             .len()
             .saturating_sub(CONTEXT_PLANNING_PACKET_FILE_LIMIT);
+    let omitted_by_dedup = packet
+        .metadata
+        .get("omitted_by_dedup")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
 
     json!({
         "task": packet.task,
@@ -18709,6 +22463,8 @@ fn context_pack_planning_packet_json(
         "proof_status": proof_status,
         "graph_proof": graph_proof,
         "likely_files": likely_files,
+        "fallback_snippets": fallback_snippets,
+        "selected_role_coverage": selected_role_coverage,
         "likely_symbols": likely_symbols,
         "evidence_items": evidence_items,
         "evidence_type": evidence_type,
@@ -18719,6 +22475,21 @@ fn context_pack_planning_packet_json(
         "suggested_verification_commands": suggested_verification_commands,
         "do_not_touch_areas": context_planning_do_not_touch_areas(&likely_files),
         "omitted_count": planning_omitted_count,
+        "omitted_by_budget": planning_omitted_count,
+        "omitted_by_dedup": omitted_by_dedup,
+        "evidence_budget_status": {
+            "status": if planning_omitted_count == 0 { "within_budget" } else { "bounded_with_omissions" },
+            "evidence_budget": CONTEXT_PLANNING_PACKET_EVIDENCE_LIMIT,
+            "snippet_budget": snippets.len(),
+            "likely_files_budget": CONTEXT_PLANNING_PACKET_FILE_LIMIT,
+            "follow_up_queries_budget": CONTEXT_PLANNING_PACKET_QUERY_LIMIT,
+            "omitted_by_budget": planning_omitted_count,
+            "omitted_by_dedup": omitted_by_dedup,
+        },
+        "packet_budget_status": {
+            "status": if planning_omitted_count == 0 { "within_budget" } else { "bounded_with_omissions" },
+            "role_diversity_applied": true,
+        },
         "warnings": warnings,
     })
 }
@@ -18743,6 +22514,51 @@ fn context_planning_evidence_type(
         return "fallback".to_string();
     }
     "unknown".to_string()
+}
+
+fn context_planning_selected_role_coverage(
+    fallback_evidence: &[Value],
+    snippets: &[Value],
+    likely_files: &Value,
+) -> Vec<Value> {
+    let mut roles = BTreeMap::<String, usize>::new();
+    for value in fallback_evidence.iter().chain(snippets.iter()) {
+        let role = context_planning_role_for_value(value);
+        if role != "unknown" {
+            *roles.entry(role.to_string()).or_default() += 1;
+        }
+    }
+    if let Some(files) = likely_files.as_array() {
+        for file in files.iter().filter_map(Value::as_str) {
+            let role = context_planning_role_for_text_evidence(file, file, "file", "");
+            if role != "unknown" {
+                *roles.entry(role.to_string()).or_default() += 1;
+            }
+        }
+    }
+    let mut coverage = roles
+        .into_iter()
+        .map(|(role, count)| {
+            json!({
+                "role": role,
+                "selected_count": count,
+            })
+        })
+        .collect::<Vec<_>>();
+    coverage.sort_by(|left, right| {
+        context_planning_role_rank(
+            left.get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+        )
+        .cmp(&context_planning_role_rank(
+            right
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+        ))
+    });
+    coverage
 }
 
 fn context_planning_likely_files(
@@ -18811,6 +22627,11 @@ fn context_planning_evidence_items(
                 .and_then(Value::as_str)
                 .unwrap_or("unknown")),
         );
+        item.insert("planning_role".to_string(), json!("unknown"));
+        item.insert(
+            "role_rank_reason".to_string(),
+            json!("graph proof path ranked by existing graph evidence"),
+        );
         item.insert("proof_status".to_string(), json!("proof_path_found"));
         item.insert("graph_proof".to_string(), json!(true));
         item.insert("confidence".to_string(), json!(0.95));
@@ -18851,6 +22672,13 @@ fn context_planning_evidence_items(
         item.insert("rank".to_string(), json!(items.len() + 1));
         item.insert("evidence_type".to_string(), json!(evidence_type));
         item.insert("evidence_role".to_string(), json!(evidence_role));
+        item.insert(
+            "planning_role".to_string(),
+            json!(context_planning_role_for_value(evidence)),
+        );
+        if let Some(reason) = evidence.get("role_rank_reason").cloned() {
+            item.insert("role_rank_reason".to_string(), reason);
+        }
         item.insert(
             "proof_status".to_string(),
             json!(evidence
@@ -18902,11 +22730,14 @@ fn context_planning_evidence_items(
         } else {
             "fallback"
         };
+        let planning_role = context_planning_role_for_value(snippet);
         items.push(json!({
             "id": format!("snippet://{}:{}", file, snippet.get("lines").and_then(Value::as_str).unwrap_or("unknown")),
             "rank": items.len() + 1,
             "evidence_type": evidence_type,
             "evidence_role": evidence_role,
+            "planning_role": planning_role,
+            "role_rank_reason": snippet.get("role_rank_reason").and_then(Value::as_str).unwrap_or("snippet retained under snippet budget"),
             "proof_status": snippet.get("proof_status").and_then(Value::as_str).unwrap_or("not_graph_proof"),
             "graph_proof": snippet.get("graph_proof").and_then(Value::as_bool).unwrap_or(false),
             "confidence": if evidence_type == "text_evidence" { 0.68 } else { 0.45 },
@@ -19064,6 +22895,21 @@ fn context_planning_follow_up_queries(
                 );
             }
         }
+        if file_lower.starts_with("support/download/") {
+            if let Some(script_name) = context_planning_basename(&normalized_file) {
+                context_planning_push_query(
+                    &mut candidates,
+                    61,
+                    script_name,
+                    "support/download/",
+                    format!("matched download support path {}", source.file),
+                    &source.id,
+                    "download wrapper or backend support script",
+                    "precise",
+                    10,
+                );
+            }
+        }
         if file_lower.ends_with(".adoc") && !lower.contains("package infrastructure") {
             context_planning_push_query(
                 &mut candidates,
@@ -19090,6 +22936,53 @@ fn context_planning_follow_up_queries(
                 10,
             );
         }
+    }
+
+    if context_pack_is_buildroot_package_task(&options.task) {
+        context_planning_push_query(
+            &mut candidates,
+            22,
+            "package/Config.in",
+            "package/",
+            "broad Buildroot package task needs top-level package menu wiring".to_string(),
+            "task://buildroot-package-planning",
+            "top-level package Config.in inclusion surface",
+            "precise",
+            10,
+        );
+        context_planning_push_query(
+            &mut candidates,
+            23,
+            "pkg-download",
+            "package/",
+            "broad Buildroot package task needs download infrastructure".to_string(),
+            "task://buildroot-package-planning",
+            "download infrastructure makefile",
+            "precise",
+            10,
+        );
+        context_planning_push_query(
+            &mut candidates,
+            24,
+            "dl-wrapper",
+            "support/download/",
+            "broad Buildroot package task needs download support wrappers".to_string(),
+            "task://buildroot-package-planning",
+            "download wrapper or backend support script",
+            "precise",
+            10,
+        );
+        context_planning_push_query(
+            &mut candidates,
+            26,
+            "license version dependencies",
+            "package/",
+            "broad Buildroot package task needs package metadata assignments".to_string(),
+            "task://buildroot-package-planning",
+            "Makefile metadata assignments such as *_LICENSE, *_VERSION, *_DEPENDENCIES",
+            "broad",
+            10,
+        );
     }
 
     if !evidence_items.is_empty() {
@@ -19367,6 +23260,7 @@ struct ContextAgentSizeOmissions {
     fallback_evidence: usize,
     recommended_tests: usize,
     risks: usize,
+    planning_packet: usize,
     max_output_bytes_exceeded: bool,
 }
 
@@ -19385,6 +23279,10 @@ fn enforce_context_agent_max_output_bytes(
             continue;
         }
         if pop_context_agent_array_item(response, "snippets") {
+            omitted.snippets += 1;
+            continue;
+        }
+        if pop_context_agent_array_item(response, "fallback_snippets") {
             omitted.snippets += 1;
             continue;
         }
@@ -19417,6 +23315,30 @@ fn enforce_context_agent_max_output_bytes(
             }
             continue;
         }
+        if pop_context_agent_planning_array_item(response, "evidence_items") {
+            omitted.planning_packet += 1;
+            continue;
+        }
+        if pop_context_agent_planning_array_item(response, "suggested_verification_commands") {
+            omitted.planning_packet += 1;
+            continue;
+        }
+        if pop_context_agent_planning_array_item(response, "follow_up_queries") {
+            omitted.planning_packet += 1;
+            continue;
+        }
+        if pop_context_agent_planning_array_item(response, "likely_files") {
+            omitted.planning_packet += 1;
+            continue;
+        }
+        if pop_context_agent_planning_array_item(response, "likely_symbols") {
+            omitted.planning_packet += 1;
+            continue;
+        }
+        if pop_context_agent_planning_array_item(response, "do_not_touch_areas") {
+            omitted.planning_packet += 1;
+            continue;
+        }
         omitted.max_output_bytes_exceeded = true;
         break;
     }
@@ -19447,6 +23369,29 @@ fn remove_context_agent_field(response: &mut Value, key: &str) -> bool {
     object.remove(key).is_some()
 }
 
+fn pop_context_agent_planning_array_item(response: &mut Value, key: &str) -> bool {
+    let Some(packet) = response
+        .get_mut("planning_packet")
+        .and_then(Value::as_object_mut)
+    else {
+        return false;
+    };
+    let popped = packet
+        .get_mut(key)
+        .and_then(Value::as_array_mut)
+        .is_some_and(|array| array.pop().is_some());
+    if popped {
+        let omitted_count = packet
+            .get("omitted_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            + 1;
+        packet.insert("omitted_count".to_string(), json!(omitted_count));
+        packet.insert("omitted_by_budget".to_string(), json!(omitted_count));
+    }
+    popped
+}
+
 fn update_context_agent_truncation(
     response: &mut Value,
     path_limit: usize,
@@ -19456,6 +23401,7 @@ fn update_context_agent_truncation(
     omitted_fallback_evidence: usize,
     omitted_recommended_tests: usize,
     omitted_risks: usize,
+    omitted_planning_packet: usize,
     max_output_bytes_exceeded: bool,
 ) {
     let returned_paths = response
@@ -19473,12 +23419,30 @@ fn update_context_agent_truncation(
         + omitted_snippets
         + omitted_fallback_evidence
         + omitted_recommended_tests
-        + omitted_risks;
+        + omitted_risks
+        + omitted_planning_packet;
+    let omitted_by_budget =
+        omitted_paths + omitted_snippets + omitted_fallback_evidence + omitted_planning_packet;
     let byte_count = serde_json::to_vec(response)
         .map(|bytes| bytes.len())
         .unwrap_or_default();
     if let Some(object) = response.as_object_mut() {
         object.insert("omitted_count".to_string(), json!(omitted_count));
+        object.insert("omitted_by_budget".to_string(), json!(omitted_by_budget));
+        if let Some(status) = object
+            .get_mut("evidence_budget_status")
+            .and_then(Value::as_object_mut)
+        {
+            status.insert("omitted_by_budget".to_string(), json!(omitted_by_budget));
+            status.insert(
+                "status".to_string(),
+                json!(if omitted_by_budget == 0 {
+                    "within_budget"
+                } else {
+                    "bounded_with_omissions"
+                }),
+            );
+        }
         object.insert(
             "fallback_evidence_count".to_string(),
             json!(returned_fallback_evidence),
@@ -19496,6 +23460,7 @@ fn update_context_agent_truncation(
                 "fallback_evidence": omitted_fallback_evidence,
                 "recommended_tests": omitted_recommended_tests,
                 "risks": omitted_risks,
+                "planning_packet": omitted_planning_packet,
             }),
         );
         object.insert(
@@ -19680,6 +23645,24 @@ fn agent_context_snippet_json(
     if let Some(source) = label.fallback_source {
         object.insert("fallback_source".to_string(), json!(source));
     }
+    if let Some(symbol) = label.fallback_symbol {
+        object.insert("fallback_symbol".to_string(), json!(symbol));
+    }
+    let planning_role = context_planning_role_for_text_evidence(
+        &snippet.file,
+        &snippet.file,
+        "snippet",
+        &format!("{}\n{}", snippet.reason, snippet.text),
+    );
+    object.insert("planning_role".to_string(), json!(planning_role));
+    object.insert(
+        "role_rank_reason".to_string(),
+        json!(if context_planning_central_file_score(&snippet.file) < 10 {
+            format!("{planning_role}: central Buildroot planning snippet")
+        } else {
+            format!("{planning_role}: snippet retained under snippet budget")
+        }),
+    );
     Value::Object(object)
 }
 
@@ -19688,6 +23671,7 @@ struct ContextSnippetLabel {
     role: &'static str,
     classification_reason: String,
     fallback_source: Option<String>,
+    fallback_symbol: Option<String>,
     proof_path_available: bool,
 }
 
@@ -19701,15 +23685,18 @@ fn context_snippet_label(
             role,
             classification_reason: reason,
             fallback_source: None,
+            fallback_symbol: None,
             proof_path_available: true,
         };
     }
-    if let Some((role, reason, source)) = context_snippet_fallback_role(snippet, fallback_evidence)
+    if let Some((role, reason, source, symbol)) =
+        context_snippet_fallback_role(snippet, fallback_evidence)
     {
         return ContextSnippetLabel {
             role,
             classification_reason: reason,
             fallback_source: Some(source),
+            fallback_symbol: symbol,
             proof_path_available: false,
         };
     }
@@ -19718,6 +23705,7 @@ fn context_snippet_label(
         classification_reason:
             "snippet did not match a returned proof path or fallback source span".to_string(),
         fallback_source: None,
+        fallback_symbol: None,
         proof_path_available: false,
     }
 }
@@ -19754,7 +23742,7 @@ fn context_snippet_proof_role(
 fn context_snippet_fallback_role(
     snippet: &ContextSnippet,
     fallback_evidence: &[Value],
-) -> Option<(&'static str, String, String)> {
+) -> Option<(&'static str, String, String, Option<String>)> {
     let (start, end) = parse_context_snippet_lines(&snippet.lines)?;
     let mut overlap_candidate = None;
     for evidence in fallback_evidence {
@@ -19793,7 +23781,11 @@ fn context_snippet_fallback_role(
                 .and_then(Value::as_str)
                 .unwrap_or("source_span")
                 .to_string();
-            let candidate = (context_pack_role_label(role), reason, source);
+            let symbol = evidence
+                .get("symbol")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let candidate = (context_pack_role_label(role), reason, source, symbol);
             if span_start as u32 == start && span_end as u32 == end {
                 return Some(candidate);
             }
@@ -20492,7 +24484,9 @@ fn agent_text_hit_json(hit: &Value) -> Value {
         }),
     );
     object.insert("match_reason".to_string(), json!(match_reason));
-    insert_text_evidence_labels(&mut object);
+    if value_is_text_evidence_hit(hit) {
+        insert_text_evidence_labels(&mut object);
+    }
     Value::Object(object)
 }
 
@@ -20539,8 +24533,16 @@ fn agent_file_hit_json(hit: &Value) -> Value {
         );
     }
     object.insert("match_reason".to_string(), json!(match_reason));
-    insert_text_evidence_labels(&mut object);
+    if value_is_text_evidence_hit(hit) {
+        insert_text_evidence_labels(&mut object);
+    }
     Value::Object(object)
+}
+
+fn value_is_text_evidence_hit(hit: &Value) -> bool {
+    hit.get("evidence_kind").and_then(Value::as_str) == Some("text_evidence")
+        || hit.get("evidence_role").and_then(Value::as_str) == Some("text_evidence")
+        || hit.get("proof_status").and_then(Value::as_str) == Some("not_graph_proof")
 }
 
 fn entities_by_id(entities: &[Entity]) -> BTreeMap<String, Entity> {
@@ -22868,13 +26870,13 @@ mod tests {
     #[test]
     fn parse_index_command_options_accepts_agent_json_and_audit_json() {
         let agent = vec![".".to_string(), "--agent-json".to_string()];
-        let (_, _, options, mode, _) =
+        let (_, _, options, mode, _, _) =
             super::parse_index_command_options(&agent).expect("parse agent index options");
         assert!(options.json);
         assert_eq!(mode, super::IndexJsonOutputMode::Agent);
 
         let audit = vec![".".to_string(), "--audit-json".to_string()];
-        let (_, _, options, mode, _) =
+        let (_, _, options, mode, _, _) =
             super::parse_index_command_options(&audit).expect("parse audit index options");
         assert!(options.json);
         assert_eq!(mode, super::IndexJsonOutputMode::Audit);
@@ -22884,9 +26886,59 @@ mod tests {
             "--json".to_string(),
             "--explain-scope".to_string(),
         ];
-        let (_, _, _, mode, _) =
+        let (_, _, _, mode, _, _) =
             super::parse_index_command_options(&explain).expect("parse explain index options");
         assert_eq!(mode, super::IndexJsonOutputMode::Audit);
+    }
+
+    #[test]
+    fn parse_index_command_options_accepts_build_vector_index() {
+        let args = vec![
+            ".".to_string(),
+            "--agent-json".to_string(),
+            "--build-vector-index".to_string(),
+            "vectors/codegraph-vector-chunks.json".to_string(),
+        ];
+        let (_, _, options, mode, _, vector_index_output) =
+            super::parse_index_command_options(&args).expect("parse vector index option");
+
+        assert!(options.json);
+        assert_eq!(mode, super::IndexJsonOutputMode::Agent);
+        assert_eq!(
+            vector_index_output,
+            Some(PathBuf::from("vectors/codegraph-vector-chunks.json"))
+        );
+    }
+
+    #[test]
+    fn index_agent_json_can_build_deterministic_vector_index() {
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+        let vector_index = repo.join("vectors").join("codegraph-vector-chunks.json");
+        let value = run_index_output_json(
+            &repo,
+            &db,
+            &[
+                "--fresh",
+                "--agent-json",
+                "--build-vector-index",
+                vector_index.to_str().expect("utf8 vector path"),
+            ],
+        );
+
+        assert_eq!(value["status"].as_str(), Some("ok"));
+        assert_eq!(value["vector_index"]["status"].as_str(), Some("ok"));
+        assert!(value["vector_index"]["chunk_count"].as_u64().unwrap_or(0) > 0);
+        assert_eq!(
+            value["vector_index"]["provider_id"].as_str(),
+            Some("codegraph-deterministic-test")
+        );
+        assert_eq!(value["vector_index"]["graph_proof"].as_bool(), Some(false));
+        assert_eq!(value["external_provider"].as_bool(), Some(false));
+        assert_eq!(value["source_leaves_machine"].as_bool(), Some(false));
+        assert!(vector_index.exists(), "vector index file was not written");
+
+        fs::remove_dir_all(repo).expect("cleanup");
     }
 
     #[test]
@@ -24099,6 +28151,25 @@ mod tests {
 
     #[test]
     fn query_compact_parsers_apply_documented_default_limits() {
+        let (globals, rest) = super::parse_global_options(&[
+            "--agent-json".to_string(),
+            "--limit=3".to_string(),
+            "query".to_string(),
+            "symbols".to_string(),
+            "knownSymbol".to_string(),
+        ])
+        .expect("global agent flags");
+        assert!(globals.agent_json);
+        assert_eq!(globals.limit, Some(3));
+        assert_eq!(
+            rest,
+            vec![
+                "query".to_string(),
+                "symbols".to_string(),
+                "knownSymbol".to_string()
+            ]
+        );
+
         let normal = parse_list_query_args(
             "symbols",
             &["knownSymbol".to_string(), "--json".to_string()],
@@ -24446,6 +28517,19 @@ mod tests {
 
         let script = file_query("pkg-stats", 5);
         assert_text_evidence(&find_file(&script, "support/scripts/pkg-stats"));
+
+        let parsed_source = file_query("download.c", 5);
+        let parsed_source_result = find_file(&parsed_source, "src/download.c");
+        assert_ne!(
+            parsed_source_result["evidence_role"].as_str(),
+            Some("text_evidence"),
+            "graph-parsed source files must not be relabeled as Stage 0 text evidence"
+        );
+        assert_ne!(
+            parsed_source_result["proof_status"].as_str(),
+            Some("not_graph_proof"),
+            "graph-parsed source files must not inherit text-evidence proof labels"
+        );
 
         let limited = text_query("generic-package", 1);
         assert_eq!(limited["limit"].as_u64(), Some(1));
@@ -24839,7 +28923,8 @@ mod tests {
             "impact",
             budgets,
         )
-        .expect("load production paths");
+        .expect("load production paths")
+        .paths;
         assert!(
             production_paths.is_empty(),
             "endpoint qname tests module should exclude inline test evidence"
@@ -24851,7 +28936,8 @@ mod tests {
             "test-impact",
             budgets,
         )
-        .expect("load test-impact paths");
+        .expect("load test-impact paths")
+        .paths;
         let hydrated = test_paths
             .iter()
             .find(|path| path.id == "inline-test-path")
@@ -24873,6 +28959,143 @@ mod tests {
         assert!(first_label["classification_reason"]
             .as_str()
             .is_some_and(|reason| reason.contains("tests module")));
+
+        drop(connection);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn context_pack_path_evidence_lookup_hydration_is_bounded_and_preserves_provenance() {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::write(
+            repo.join("src").join("lib.rs"),
+            "pub fn prod_seed() {}\npub fn target_0() {}\npub fn target_1() {}\npub fn target_2() {}\n",
+        )
+        .expect("write source");
+        index_repo(&repo).expect("index repo");
+        let db_path = default_db_path(&repo);
+        let store = SqliteGraphStore::open(&db_path).expect("open store");
+        let seed = test_function_entity("src/lib.rs", "prod_seed", "src::lib.prod_seed", 1);
+        store.upsert_entity(&seed).expect("upsert seed");
+
+        let mut first_edge_id = String::new();
+        for index in 0..5 {
+            let target = test_function_entity(
+                "src/lib.rs",
+                &format!("target_{index}"),
+                &format!("src::lib.target_{index}"),
+                index as u32 + 2,
+            );
+            store.upsert_entity(&target).expect("upsert target");
+            let edge = test_call_edge(&seed, &target, "src/lib.rs", index as u32 + 2);
+            if index == 0 {
+                first_edge_id = edge.id.clone();
+            }
+            store.upsert_edge(&edge).expect("upsert edge");
+            let mut metadata = Metadata::new();
+            metadata.insert(
+                "edge_labels".to_string(),
+                json!([{
+                    "edge_id": edge.id.clone(),
+                    "relation": "CALLS",
+                    "source_span": edge.source_span.to_string(),
+                    "exactness": "parser_verified",
+                    "confidence": 1.0,
+                    "derived": index == 0,
+                    "edge_class": if index == 0 { "derived_with_provenance" } else { "base_exact" },
+                    "fact_class": if index == 0 { "derived_with_provenance" } else { "base_exact" },
+                    "context": "production",
+                    "provenance_edges": if index == 0 { vec![first_edge_id.clone()] } else { Vec::<String>::new() },
+                }]),
+            );
+            store
+                .upsert_path_evidence(&PathEvidence {
+                    id: format!("bounded-path-{index}"),
+                    summary: None,
+                    source: seed.id.clone(),
+                    target: target.id.clone(),
+                    metapath: vec![RelationKind::Calls],
+                    edges: vec![(seed.id.clone(), RelationKind::Calls, target.id.clone())],
+                    source_spans: vec![edge.source_span],
+                    exactness: Exactness::ParserVerified,
+                    length: 1,
+                    confidence: 1.0,
+                    metadata,
+                })
+                .expect("upsert path evidence");
+        }
+        drop(store);
+
+        let connection = rusqlite::Connection::open(&db_path).expect("open connection");
+        let normal = super::load_stored_context_path_evidence(
+            &connection,
+            &[seed.id.clone()],
+            "debug",
+            super::ContextPackBudgets::for_mode("debug"),
+        )
+        .expect("load normal path evidence");
+        assert!(normal.paths.len() >= 5, "{:?}", normal.paths);
+        assert_eq!(normal.telemetry["hydration_query_count"].as_u64(), Some(1));
+        assert_eq!(normal.telemetry["n_plus_one_query_count"].as_u64(), Some(0));
+        assert_eq!(
+            normal.telemetry["lookup_strategy"].as_str(),
+            Some("path_evidence_symbols_join")
+        );
+        let preserved = normal
+            .paths
+            .iter()
+            .find(|path| path.id == "bounded-path-0")
+            .expect("preserved path");
+        assert_eq!(preserved.source_spans.len(), 1);
+        let first_label = preserved
+            .metadata
+            .get("edge_labels")
+            .and_then(Value::as_array)
+            .and_then(|labels| labels.first())
+            .expect("hydrated edge label");
+        assert_eq!(first_label["derived"].as_bool(), Some(true));
+        assert!(first_label["provenance_edges"]
+            .as_array()
+            .is_some_and(|edges| edges
+                .iter()
+                .any(|edge| edge.as_str() == Some(&first_edge_id))));
+
+        let mut bounded = super::ContextPackBudgets::for_mode("debug");
+        bounded.max_candidate_paths = 2;
+        bounded.max_path_evidence_rows = 2;
+        bounded.max_returned_proof_paths = 2;
+        bounded.max_hydration_bytes = 32;
+        let bounded_load = super::load_stored_context_path_evidence(
+            &connection,
+            &[seed.id.clone()],
+            "debug",
+            bounded,
+        )
+        .expect("load bounded path evidence");
+        assert!(bounded_load.paths.len() <= 2);
+        assert_eq!(
+            bounded_load.telemetry["max_path_evidence_rows"].as_u64(),
+            Some(2)
+        );
+        assert_eq!(
+            bounded_load.telemetry["max_hydration_bytes"].as_u64(),
+            Some(32)
+        );
+        assert_eq!(
+            bounded_load.telemetry["path_evidence_truncated"].as_bool(),
+            Some(true)
+        );
+        assert!(
+            bounded_load.telemetry["path_evidence_omitted_count"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
+        assert_eq!(
+            bounded_load.telemetry["hydration_budget_exhausted"].as_bool(),
+            Some(true)
+        );
 
         drop(connection);
         fs::remove_dir_all(repo).expect("cleanup");
@@ -25215,6 +29438,17 @@ mod tests {
         assert_eq!(explain["proof_status"].as_str(), Some("proof_path_found"));
         assert_eq!(explain["graph_proof"].as_bool(), Some(true));
         assert_eq!(explain["proof_paths_found"].as_u64(), Some(1));
+        assert_eq!(explain["traversal_mode"].as_str(), Some("unknown"));
+        assert!(explain["relation_allowlist"].as_array().is_some());
+        assert!(explain["source_role_filter"].is_object());
+        assert!(explain["candidate_sources_verified"]
+            .as_array()
+            .expect("candidate sources verified")
+            .iter()
+            .any(|source| source.as_str() == Some("path_evidence")));
+        assert!(explain["path_evidence_lookup_time_ms"].is_null());
+        assert!(explain["path_evidence_hydration_time_ms"].is_null());
+        assert_eq!(explain["omitted_count"].as_u64(), Some(6));
         assert_eq!(
             explain["graph_verification_attempts"]["status"].as_str(),
             Some("graph_verified")
@@ -25229,6 +29463,443 @@ mod tests {
             .expect("ranking reasons")
             .iter()
             .any(|reason| reason["proof_status"].as_str() == Some("proof_path_found")));
+    }
+
+    #[test]
+    fn context_pack_explain_includes_bounded_traversal_diagnostics_without_default_bloat() {
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+            "passport_status": "valid",
+        });
+        let mut packet = context_agent_test_packet("production", 1, 1, "production");
+        packet.metadata.insert(
+            "traversal_telemetry".to_string(),
+            json!({
+                "schema_version": 1,
+                "diagnostic_only": true,
+                "measurement_scope": "context_pack_graph_verification",
+                "traversal_mode": "production",
+                "relation_allowlist": ["CALLS", "READS"],
+                "max_depth": 3,
+                "max_paths": 8,
+                "max_edge_visits": 32,
+                "edges_visited": 7,
+                "nodes_visited": 5,
+                "paths_found": 1,
+                "paths_returned": 1,
+                "budget_stop_reason": {"proof_path_found": 1},
+                "cycles_cut": 1,
+                "structural_edges_skipped": 2,
+                "heuristic_edges_skipped": 3,
+                "source_role_filter": {
+                    "applied": true,
+                    "mode": "production",
+                    "blocked_edges": 4
+                },
+                "no_proof_fallback_reason": null
+            }),
+        );
+        packet.metadata.insert(
+            "path_evidence_telemetry".to_string(),
+            json!({
+                "schema_version": 1,
+                "diagnostic_only": true,
+                "measurement_scope": "context_pack_stored_path_evidence",
+                "lookup_time_ms": 1.25,
+                "hydration_time_ms": 2.5,
+                "path_evidence_omitted_count": 0,
+                "source_snippet_omitted_count": 0
+            }),
+        );
+
+        let compact_options = context_agent_test_options("production", Some(2), Some(2), None);
+        let compact = super::context_pack_agent_json_response(
+            &compact_options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&compact_options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        assert!(compact.get("retrieval_explain").is_none());
+        let compact_serialized = serde_json::to_string(&compact).expect("serialize compact");
+        assert!(!compact_serialized.contains("traversal_telemetry"));
+        assert!(!compact_serialized.contains("relation_allowlist"));
+        assert!(!compact_serialized.contains("path_evidence_lookup_time_ms"));
+
+        let mut explain_options =
+            context_agent_test_options("production", Some(2), Some(2), Some(512 * 1024));
+        explain_options.explain = true;
+        let explain_response = super::context_pack_agent_json_response(
+            &explain_options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&explain_options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        let explain = &explain_response["retrieval_explain"];
+        assert_eq!(explain["traversal_mode"].as_str(), Some("production"));
+        assert_eq!(explain["relation_allowlist"][0].as_str(), Some("CALLS"));
+        assert_eq!(
+            explain["traversal_telemetry"]["max_depth"].as_u64(),
+            Some(3)
+        );
+        assert_eq!(
+            explain["traversal_telemetry"]["max_paths"].as_u64(),
+            Some(8)
+        );
+        assert_eq!(
+            explain["traversal_telemetry"]["max_edge_visits"].as_u64(),
+            Some(32)
+        );
+        assert_eq!(
+            explain["traversal_telemetry"]["edges_visited"].as_u64(),
+            Some(7)
+        );
+        assert_eq!(
+            explain["traversal_telemetry"]["nodes_visited"].as_u64(),
+            Some(5)
+        );
+        assert_eq!(
+            explain["traversal_telemetry"]["paths_found"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            explain["traversal_telemetry"]["paths_returned"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            explain["traversal_telemetry"]["cycles_cut"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            explain["traversal_telemetry"]["structural_edges_skipped"].as_u64(),
+            Some(2)
+        );
+        assert_eq!(
+            explain["traversal_telemetry"]["heuristic_edges_skipped"].as_u64(),
+            Some(3)
+        );
+        assert_eq!(
+            explain["source_role_filter"]["blocked_edges"].as_u64(),
+            Some(4)
+        );
+        assert!(explain["candidate_sources_verified"]
+            .as_array()
+            .expect("candidate sources verified")
+            .iter()
+            .any(|source| source.as_str() == Some("path_evidence")));
+        assert_eq!(explain["path_evidence_lookup_time_ms"].as_f64(), Some(1.25));
+        assert_eq!(
+            explain["path_evidence_hydration_time_ms"].as_f64(),
+            Some(2.5)
+        );
+        assert_eq!(explain["omitted_count"].as_u64(), Some(6));
+        assert!(explain["no_proof_fallback_reason"].is_null());
+    }
+
+    #[test]
+    fn context_pack_explain_includes_vector_trace_only_when_requested() {
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+            "passport_status": "valid",
+        });
+        let mut packet = context_agent_test_packet("production", 1, 1, "production");
+        packet.metadata.insert(
+            "vector_candidate_trace".to_string(),
+            json!({
+                "schema_version": 1,
+                "diagnostic_only": true,
+                "vector_enabled": true,
+                "vector_index_status": "ready",
+                "provider": {
+                    "provider_id": "codegraph-local-deterministic",
+                    "model_id": "codegraph-deterministic-token-projection-v1",
+                    "dimension": 64,
+                    "embedding_profile": "deterministic-test-embedding-v1"
+                },
+                "query_text_sent_to_vector_branch": "Find package metadata",
+                "chunk_count_searched": 2,
+                "vector_candidate_count": 1,
+                "top_vector_candidate_ids": ["vector://text/package/foo/foo.mk"],
+                "score_range": {"min": 0.91, "max": 0.91},
+                "candidates_accepted": {
+                    "count": 1,
+                    "candidate_ids": ["vector://text/package/foo/foo.mk"]
+                },
+                "candidates_rejected": {
+                    "count": 1,
+                    "candidate_ids": ["vector://text/package/noisy"]
+                },
+                "stale_missing_vector_index_reason": null,
+                "graph_verification_status_for_vector_candidates": {
+                    "status_counts": {"not_graph_proof": 1},
+                    "requires_graph_verification_count": 0,
+                    "graph_verified_count": 0,
+                    "graph_verified_candidate_ids": [],
+                    "graph_proof_count": 0
+                },
+                "no_proof_fallback_reason": "vector text-evidence candidate available after graph verification found no proof path"
+            }),
+        );
+
+        let compact_options = context_agent_test_options("production", Some(2), Some(2), None);
+        let compact = super::context_pack_agent_json_response(
+            &compact_options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&compact_options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        assert!(compact.get("retrieval_explain").is_none());
+        assert!(!serde_json::to_string(&compact)
+            .expect("serialize compact response")
+            .contains("vector://text/package/foo/foo.mk"));
+
+        let mut explain_options =
+            context_agent_test_options("production", Some(2), Some(2), Some(512 * 1024));
+        explain_options.explain = true;
+        let explain_response = super::context_pack_agent_json_response(
+            &explain_options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&explain_options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        let vector_trace = &explain_response["retrieval_explain"]["vector_trace"];
+        assert_eq!(vector_trace["vector_enabled"].as_bool(), Some(true));
+        assert_eq!(vector_trace["vector_index_status"].as_str(), Some("ready"));
+        assert_eq!(
+            vector_trace["provider"]["model_id"].as_str(),
+            Some("codegraph-deterministic-token-projection-v1")
+        );
+        assert_eq!(vector_trace["chunk_count_searched"].as_u64(), Some(2));
+        assert_eq!(vector_trace["vector_candidate_count"].as_u64(), Some(1));
+        assert_eq!(
+            vector_trace["top_vector_candidate_ids"][0].as_str(),
+            Some("vector://text/package/foo/foo.mk")
+        );
+        assert_eq!(
+            vector_trace["graph_verification_status_for_vector_candidates"]["graph_proof_count"]
+                .as_u64(),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn context_pack_explain_includes_nuance_rescue_trace_without_default_bloat_or_secrets() {
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+            "passport_status": "valid",
+        });
+        let mut options =
+            context_agent_test_options("production", Some(2), Some(2), Some(512 * 1024));
+        options.task =
+            "Trace QUASAR_NETTLE_FUSE /api/admin/:id BR2_PACKAGE_FOO failing_admin_test auth"
+                .to_string();
+        options.explain = true;
+        let secret_like_token = "SECRET_TOKEN_DO_NOT_TRACE";
+        let tokens = vec![
+            super::ContextPackNuanceToken {
+                value: "QUASAR_NETTLE_FUSE".to_string(),
+                normalized: "quasar_nettle_fuse".to_string(),
+                raw_lower: "quasar_nettle_fuse".to_string(),
+                kind: "identifier_signature",
+                rescue_reason: "identifier_signature_rescue",
+                exact_match: true,
+                seed_value: Some("QUASAR_NETTLE_FUSE".to_string()),
+            },
+            super::ContextPackNuanceToken {
+                value: "auth".to_string(),
+                normalized: "auth".to_string(),
+                raw_lower: "auth".to_string(),
+                kind: "rare_token",
+                rescue_reason: "rare_token_lexical_rescue",
+                exact_match: false,
+                seed_value: None,
+            },
+            super::ContextPackNuanceToken {
+                value: "/api/admin/:id".to_string(),
+                normalized: "apiadminid".to_string(),
+                raw_lower: "/api/admin/:id".to_string(),
+                kind: "route_literal",
+                rescue_reason: "route_literal_rescue",
+                exact_match: true,
+                seed_value: None,
+            },
+            super::ContextPackNuanceToken {
+                value: "BR2_PACKAGE_FOO".to_string(),
+                normalized: "br2_package_foo".to_string(),
+                raw_lower: "br2_package_foo".to_string(),
+                kind: "config_key",
+                rescue_reason: "config_key_rescue",
+                exact_match: true,
+                seed_value: None,
+            },
+            super::ContextPackNuanceToken {
+                value: "failing_admin_test".to_string(),
+                normalized: "failing_admin_test".to_string(),
+                raw_lower: "failing_admin_test".to_string(),
+                kind: "test_name",
+                rescue_reason: "test_name_rescue",
+                exact_match: true,
+                seed_value: None,
+            },
+            super::ContextPackNuanceToken {
+                value: secret_like_token.to_string(),
+                normalized: "secret_token_do_not_trace".to_string(),
+                raw_lower: "secret_token_do_not_trace".to_string(),
+                kind: "identifier_signature",
+                rescue_reason: "identifier_signature_rescue",
+                exact_match: true,
+                seed_value: None,
+            },
+        ];
+        let candidate = json!({
+            "candidate_id": "nuance-rescue://source/src/rare_identifier.ts:1",
+            "candidate_source": "nuance_rescue",
+            "candidate_sources": ["nuance_rescue", "text_evidence", "lexical_fts"],
+            "path": "src/rare_identifier.ts",
+            "entity_id": null,
+            "evidence_role": "text_evidence",
+            "rescue_reason": "identifier_signature_rescue",
+            "matched_token": secret_like_token,
+            "matched_tokens": [secret_like_token],
+            "proof_status": "not_graph_proof",
+            "graph_proof": false,
+            "verification_status": "not_graph_proof",
+            "graph_verification_status": "not_graph_proof",
+            "text_evidence_status": "not_graph_proof",
+            "claimable_for_graph": false,
+            "full_source_body": "FULL_SOURCE_BODY_DO_NOT_TRACE",
+        });
+        let candidates = vec![candidate.clone()];
+        let trace = super::context_pack_nuance_rescue_trace(
+            true,
+            &tokens,
+            &["and".to_string(), "the".to_string()],
+            &candidates,
+            "ready",
+        );
+        let mut packet = ContextPacket {
+            task: options.task.clone(),
+            mode: options.mode.clone(),
+            symbols: Vec::new(),
+            verified_paths: Vec::new(),
+            risks: Vec::new(),
+            recommended_tests: Vec::new(),
+            snippets: Vec::new(),
+            metadata: Metadata::new(),
+        };
+        packet
+            .metadata
+            .insert("nuance_rescue_trace".to_string(), trace);
+        packet
+            .metadata
+            .insert("nuance_rescue_candidates".to_string(), json!(candidates));
+        packet.metadata.insert(
+            "fallback_evidence".to_string(),
+            json!([{
+                "id": "nuance-rescue://source/src/rare_identifier.ts:1",
+                "file": "src/rare_identifier.ts",
+                "evidence_role": "text_evidence",
+                "proof_status": "not_graph_proof",
+                "graph_proof": false
+            }]),
+        );
+        packet
+            .metadata
+            .insert("proof_path_available".to_string(), json!(false));
+        packet
+            .metadata
+            .insert("proof_status".to_string(), json!("no_proof_path_found"));
+        packet
+            .metadata
+            .insert("graph_proof".to_string(), json!(false));
+        packet.metadata.insert(
+            "evidence_status".to_string(),
+            json!("fallback_evidence_found"),
+        );
+        packet.metadata.insert(
+            "proof_failure_reason".to_string(),
+            json!("no graph-verifiable candidates were available; returning fallback source/text evidence"),
+        );
+
+        let compact_options = context_agent_test_options("production", Some(2), Some(2), None);
+        let compact = super::context_pack_agent_json_response(
+            &compact_options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&compact_options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        let compact_serialized = serde_json::to_string(&compact).expect("serialize compact");
+        assert!(compact.get("retrieval_explain").is_none());
+        assert!(!compact_serialized.contains("rescue_reasons"));
+        assert!(!compact_serialized.contains(secret_like_token));
+        assert!(!compact_serialized.contains("FULL_SOURCE_BODY_DO_NOT_TRACE"));
+
+        let explain_response = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        let explain = &explain_response["retrieval_explain"];
+        assert_eq!(explain["nuance_rescue_enabled"].as_bool(), Some(true));
+        assert_eq!(explain["rescue_candidate_count"].as_u64(), Some(1));
+        assert!(explain["rare_tokens"]
+            .as_array()
+            .expect("rare tokens")
+            .iter()
+            .any(|token| token.as_str() == Some("auth")));
+        assert!(explain["identifier_tokens"]
+            .as_array()
+            .expect("identifier tokens")
+            .iter()
+            .any(|token| token.as_str() == Some("QUASAR_NETTLE_FUSE")));
+        assert!(explain["route_config_test_tokens"]
+            .as_array()
+            .expect("route/config/test tokens")
+            .iter()
+            .any(|token| token.as_str() == Some("/api/admin/:id")));
+        assert!(explain["rescue_candidate_sources"]
+            .as_array()
+            .expect("rescue candidate sources")
+            .iter()
+            .any(|source| source.as_str() == Some("nuance_rescue")));
+        assert_eq!(explain["candidates_accepted"]["count"].as_u64(), Some(1));
+        assert!(explain["candidates_rejected"]["count"].as_u64().is_some());
+        assert_eq!(
+            explain["graph_verification_status"].as_str(),
+            Some("no_proof_path_found")
+        );
+        assert_eq!(
+            explain["no_proof_fallback_status"].as_str(),
+            Some("active_no_graph_proof_text_fallback")
+        );
+        let explain_serialized = serde_json::to_string(explain).expect("serialize explain");
+        assert!(explain_serialized.contains("[redacted_secret_like_token]"));
+        assert!(!explain_serialized.contains(secret_like_token));
+        assert!(!explain_serialized.contains("FULL_SOURCE_BODY_DO_NOT_TRACE"));
     }
 
     #[test]
@@ -25693,6 +30364,35 @@ mod tests {
                 .all(|evidence| evidence.get("edges").is_none()
                     && evidence.get("relations").is_none())
         );
+        let response_fallback_snippets = response["fallback_snippets"]
+            .as_array()
+            .expect("fallback snippets");
+        assert!(!response_fallback_snippets.is_empty(), "{response:?}");
+        assert!(response_fallback_snippets
+            .iter()
+            .all(|snippet| snippet["graph_proof"].as_bool() == Some(false)));
+        let selected_roles = response["selected_role_coverage"]
+            .as_array()
+            .expect("selected role coverage")
+            .iter()
+            .filter_map(|role| role["role"].as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            selected_roles.contains("docs_authoring_guidance")
+                && selected_roles.contains("package_metadata")
+                && selected_roles.contains("kconfig_config_wiring"),
+            "{selected_roles:?}"
+        );
+        assert_eq!(
+            response["explain_budget_status"]["separate_from_evidence_budget"].as_bool(),
+            Some(true)
+        );
+        assert!(
+            serde_json::to_vec(&response)
+                .expect("serialize response")
+                .len()
+                <= 512 * 1024
+        );
         let planning = &response["planning_packet"];
         assert_eq!(planning["task"].as_str(), Some(options.task.as_str()));
         assert_eq!(planning["mode"].as_str(), Some("production"));
@@ -25728,6 +30428,18 @@ mod tests {
         assert!(
             planning_files.contains("docs/manual/adding-packages.adoc"),
             "{planning_files:?}"
+        );
+        let planning_roles = planning["selected_role_coverage"]
+            .as_array()
+            .expect("planning role coverage")
+            .iter()
+            .filter_map(|role| role["role"].as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            planning_roles.contains("docs_authoring_guidance")
+                && planning_roles.contains("package_metadata")
+                && planning_roles.contains("kconfig_config_wiring"),
+            "{planning_roles:?}"
         );
         assert!(planning["evidence_items"]
             .as_array()
@@ -25789,6 +30501,41 @@ mod tests {
         fs::create_dir_all(repo.join("package").join("foo")).expect("create package");
         fs::create_dir_all(repo.join("docs").join("manual")).expect("create docs");
         fs::create_dir_all(repo.join("support").join("scripts")).expect("create support");
+        fs::create_dir_all(repo.join("support").join("download")).expect("create download support");
+        fs::write(
+            repo.join("package").join("pkg-generic.mk"),
+            [
+                "# Generic package infrastructure",
+                "define inner-generic-package",
+                "    $($(2)_INSTALL_TARGET_CMDS)",
+                "endef",
+                "",
+            ]
+            .join("\n"),
+        )
+        .expect("write pkg-generic");
+        fs::write(
+            repo.join("package").join("pkg-download.mk"),
+            [
+                "# Download infrastructure",
+                "$(DL_WRAPPER) $(FOO_SITE)",
+                "support/download/dl-wrapper handles package downloads",
+                "",
+            ]
+            .join("\n"),
+        )
+        .expect("write pkg-download");
+        fs::write(
+            repo.join("package").join("Config.in"),
+            [
+                "menu \"Target packages\"",
+                "source \"package/foo/Config.in\"",
+                "endmenu",
+                "",
+            ]
+            .join("\n"),
+        )
+        .expect("write package Config.in");
         fs::write(
             repo.join("package").join("foo").join("foo.mk"),
             [
@@ -25828,10 +30575,27 @@ mod tests {
         )
         .expect("write docs");
         fs::write(
+            repo.join("docs")
+                .join("manual")
+                .join("adding-packages-generic.adoc"),
+            [
+                "= Infrastructure for packages using generic-package",
+                "The package infrastructure documents generic-package and Config.in wiring.",
+                "",
+            ]
+            .join("\n"),
+        )
+        .expect("write generic docs");
+        fs::write(
             repo.join("support").join("scripts").join("pkg-stats"),
             "#!/bin/sh\necho BR2_PACKAGE_FOO\necho generic-package\n",
         )
         .expect("write support script");
+        fs::write(
+            repo.join("support").join("download").join("dl-wrapper"),
+            "#!/bin/sh\necho download wrapper for package infrastructure\n",
+        )
+        .expect("write download wrapper");
         index_repo(&repo).expect("index broad planning fixture");
 
         let connection = Connection::open(default_db_path(&repo)).expect("open fixture db");
@@ -25883,6 +30647,35 @@ mod tests {
         let planning = &response["planning_packet"];
         assert_eq!(planning["graph_proof"].as_bool(), Some(false));
         assert_eq!(planning["evidence_type"].as_str(), Some("text_evidence"));
+        let planning_files = planning["likely_files"]
+            .as_array()
+            .expect("planning likely files")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<BTreeSet<_>>();
+        assert!(
+            planning_files.contains("docs/manual/adding-packages-generic.adoc")
+                && planning_files.contains("package/pkg-generic.mk")
+                && planning_files.contains("package/Config.in")
+                && planning_files.contains("package/pkg-download.mk")
+                && (planning_files.contains("support/download/dl-wrapper")
+                    || planning_files.contains("support/scripts/pkg-stats")),
+            "{planning_files:?}"
+        );
+        let planning_roles = planning["selected_role_coverage"]
+            .as_array()
+            .expect("planning roles")
+            .iter()
+            .filter_map(|role| role["role"].as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            planning_roles.contains("docs_authoring_guidance")
+                && planning_roles.contains("makefile_inclusion")
+                && planning_roles.contains("download_infrastructure")
+                && planning_roles.contains("build_install_infrastructure")
+                && planning_roles.contains("support_scripts"),
+            "{planning_roles:?}"
+        );
         let queries = planning["follow_up_queries"]
             .as_array()
             .expect("planning follow-up queries");
@@ -25896,6 +30689,11 @@ mod tests {
                 .is_some_and(|value| !value.is_empty())
                 && matches!(query["risk"].as_str(), Some("broad" | "precise" | "noisy"))
         }));
+        assert!(
+            planning_query_exists(queries, "dl-wrapper", "support/download/")
+                || planning_query_exists(queries, "pkg-stats", "support/scripts/"),
+            "{queries:?}"
+        );
         assert!(
             planning["evidence_items"]
                 .as_array()
@@ -25951,7 +30749,7 @@ mod tests {
             retrieval_stage_status(
                 candidate_flow,
                 "nuance_rescue_candidates",
-                "inactive_post_mvp"
+                "inactive_requires_explicit_flag"
             ),
             "{retrieval_architecture:?}"
         );
@@ -25971,6 +30769,236 @@ mod tests {
 
         drop(connection);
         fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn context_pack_planning_packet_keeps_role_diverse_evidence_under_package_example_pressure() {
+        let make_evidence =
+            |file: &str, symbol: &str, text: &str, score: f64| super::ContextPackFallbackEvidence {
+                id: format!("text-evidence://{file}:1"),
+                symbol: symbol.to_string(),
+                kind: "file".to_string(),
+                source_span: SourceSpan::new(file, 1, 1),
+                score: Some(score),
+                evidence_role: EvidenceRole::Unknown,
+                evidence_role_label: Some("text_evidence".to_string()),
+                proof_status: Some("no_proof_path_found".to_string()),
+                graph_proof: false,
+                claimability: Some(super::text_evidence_claimability_json()),
+                seed_matches: vec![text.to_string()],
+                follow_up_queries: vec![text.to_string()],
+                classification_reason:
+                    "matched bounded text evidence via stage0_fts; budget pressure fixture"
+                        .to_string(),
+                classification_source: "unit-test/stage0_fts".to_string(),
+                fallback_source: "text_evidence/no_proof_path_found".to_string(),
+            };
+        let mut candidates = vec![
+            make_evidence(
+                "docs/manual/adding-packages-generic.adoc",
+                "adding packages generic",
+                "generic-package package infrastructure Config.in",
+                0.1,
+            ),
+            make_evidence(
+                "package/pkg-generic.mk",
+                "pkg-generic",
+                "generic-package install_target install_staging",
+                0.2,
+            ),
+            make_evidence(
+                "package/Config.in",
+                "Config.in",
+                "source \"package/foo/Config.in\" BR2_PACKAGE_FOO",
+                0.3,
+            ),
+            make_evidence(
+                "package/pkg-download.mk",
+                "pkg-download",
+                "download dl-wrapper _SITE",
+                0.4,
+            ),
+            make_evidence(
+                "support/download/dl-wrapper",
+                "dl-wrapper",
+                "download wrapper support script",
+                0.5,
+            ),
+        ];
+        for index in 0..20 {
+            candidates.push(make_evidence(
+                &format!("package/example{index}/example{index}.mk"),
+                &format!("EXAMPLE{index}_VERSION"),
+                "EXAMPLE_VERSION EXAMPLE_LICENSE $(eval $(generic-package))",
+                index as f64 + 10.0,
+            ));
+        }
+
+        let selected = super::context_pack_select_role_diverse_fallback_evidence(candidates, 6);
+        let selected_files = selected
+            .iter()
+            .map(|evidence| evidence.source_span.repo_relative_path.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            selected_files.contains("docs/manual/adding-packages-generic.adoc"),
+            "{selected_files:?}"
+        );
+        assert!(
+            selected_files.contains("package/pkg-generic.mk"),
+            "{selected_files:?}"
+        );
+        assert!(
+            selected_files.contains("package/Config.in"),
+            "{selected_files:?}"
+        );
+        assert!(
+            selected_files.contains("package/pkg-download.mk")
+                || selected_files.contains("support/download/dl-wrapper"),
+            "{selected_files:?}"
+        );
+        let example_count = selected_files
+            .iter()
+            .filter(|file| file.starts_with("package/example"))
+            .count();
+        assert!(example_count <= 2, "{selected_files:?}");
+
+        let options = context_agent_test_options("production", Some(3), Some(6), Some(128 * 1024));
+        let budgets = super::ContextPackBudgets::for_options(&options);
+        let packet = super::build_context_packet_from_stored_evidence(
+            &options,
+            &[],
+            &[],
+            &[],
+            Vec::new(),
+            Vec::new(),
+            selected,
+            None,
+            budgets,
+            0,
+            25,
+        );
+        let response = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &json!({"claimable": true, "diagnostic_only": false, "decision": "read_reuse"}),
+            budgets,
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        let likely_files = response["likely_files"]
+            .as_array()
+            .expect("likely files")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<BTreeSet<_>>();
+        assert!(
+            likely_files.contains("docs/manual/adding-packages-generic.adoc")
+                && likely_files.contains("package/pkg-generic.mk")
+                && likely_files.contains("package/Config.in"),
+            "{likely_files:?}"
+        );
+        assert!(
+            response["omitted_by_budget"].as_u64().unwrap_or_default() > 0
+                || response["omitted_by_dedup"].as_u64().unwrap_or_default() > 0,
+            "{response:?}"
+        );
+        assert!(serde_json::to_vec(&response).expect("serialize").len() <= 128 * 1024);
+    }
+
+    #[test]
+    fn context_pack_explain_budget_summary_does_not_starve_fallback_snippets() {
+        let mut options = context_agent_test_options("production", Some(3), Some(3), Some(12_000));
+        options.explain = true;
+        options.task = "Trace Buildroot generic package flow".to_string();
+        let budgets = super::ContextPackBudgets::for_options(&options);
+        let fallback_evidence = vec![super::ContextPackFallbackEvidence {
+            id: "text-evidence://docs/manual/adding-packages-generic.adoc:1".to_string(),
+            symbol: "adding packages generic".to_string(),
+            kind: "documentation".to_string(),
+            source_span: SourceSpan::new("docs/manual/adding-packages-generic.adoc", 1, 1),
+            score: Some(1.0),
+            evidence_role: EvidenceRole::Unknown,
+            evidence_role_label: Some("text_evidence".to_string()),
+            proof_status: Some("no_proof_path_found".to_string()),
+            graph_proof: false,
+            claimability: Some(super::text_evidence_claimability_json()),
+            seed_matches: vec!["generic-package".to_string()],
+            follow_up_queries: vec!["generic-package".to_string()],
+            classification_reason: "matched bounded text evidence via stage0_fts".to_string(),
+            classification_source: "unit-test/stage0_fts".to_string(),
+            fallback_source: "text_evidence/no_proof_path_found".to_string(),
+        }];
+        let snippets = vec![ContextSnippet {
+            file: "docs/manual/adding-packages-generic.adoc".to_string(),
+            lines: "1".to_string(),
+            text: "The generic-package infrastructure defines Buildroot package flow.".to_string(),
+            reason: "text evidence fallback".to_string(),
+        }];
+        let mut packet = super::build_context_packet_from_stored_evidence(
+            &options,
+            &["Buildroot".to_string()],
+            &[],
+            &[],
+            Vec::new(),
+            snippets,
+            fallback_evidence,
+            None,
+            budgets,
+            0,
+            1,
+        );
+        packet.metadata.insert(
+            "vector_semantic_candidates".to_string(),
+            json!((0..64)
+                .map(|index| json!({
+                    "candidate_id": format!("vector://noise/{index}"),
+                    "candidate_source": "vector_semantic",
+                    "candidate_sources": ["vector_semantic"],
+                    "path": format!("package/noise{index}/noise{index}.mk"),
+                    "evidence_role": "production",
+                    "proof_status": "candidate_only",
+                    "graph_proof": false,
+                    "claimable": false,
+                    "claimable_for_text": false,
+                    "claimable_for_graph": false,
+                    "requires_graph_verification": true,
+                    "verification_status": "needs_graph_verification",
+                    "graph_verification_status": "needs_graph_verification",
+                    "matched_seeds": [],
+                    "reason": "noisy vector candidate",
+                    "ranking_features": {}
+                }))
+                .collect::<Vec<_>>()),
+        );
+        let response = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &json!({"claimable": true, "diagnostic_only": false, "decision": "read_reuse"}),
+            budgets,
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        assert!(!response["fallback_snippets"]
+            .as_array()
+            .expect("fallback snippets")
+            .is_empty());
+        assert_eq!(
+            response["retrieval_explain"]["budget_limited"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            response["explain_budget_status"]["status"].as_str(),
+            Some("summary_included_full_explain_omitted_by_explain_budget")
+        );
+        assert!(response["retrieval_explain"]["budget_decisions"]
+            .as_array()
+            .expect("budget decisions")
+            .iter()
+            .any(|item| item
+                .as_str()
+                .is_some_and(|text| text.contains("evidence budget"))));
     }
 
     #[test]
@@ -26961,18 +31989,6 @@ mod tests {
                     && evidence["evidence_role"].as_str() == Some("test")
                     && evidence["proof_path_available"].as_bool() == Some(false)
             }));
-        assert!(response["snippets"]
-            .as_array()
-            .expect("snippets")
-            .iter()
-            .any(|snippet| {
-                snippet["text"]
-                    .as_str()
-                    .is_some_and(|text| text.contains("greet_works"))
-                    && snippet["evidence_role"].as_str() == Some("test")
-                    && snippet["fallback_source"].as_str().is_some()
-                    && snippet["proof_path_available"].as_bool() == Some(false)
-            }));
         assert!(response["recommended_tests"]
             .as_array()
             .expect("recommended tests")
@@ -27067,6 +32083,1051 @@ mod tests {
         beta_caller_id: String,
     }
 
+    #[test]
+    fn context_pack_nuance_rescue_tokens_preserve_exact_identifiers() {
+        let mut options = context_agent_test_options("production", Some(3), Some(3), None);
+        options.task =
+            "Find processUserToken, not processUserTokens or processAdminToken".to_string();
+        options.seeds = vec!["processUserToken".to_string()];
+        let (tokens, ignored) = super::context_pack_nuance_rescue_tokens(&options, &options.seeds);
+        assert!(tokens.iter().any(|token| {
+            token.normalized == "processusertoken"
+                && token.kind == "identifier_signature"
+                && token.exact_match
+        }));
+        assert!(!tokens
+            .iter()
+            .any(|token| token.normalized == "processusertokens"));
+        assert!(ignored.iter().any(|token| token == "process"));
+        assert!(ignored.iter().any(|token| token == "tokens"));
+    }
+
+    #[test]
+    fn context_pack_nuance_rescue_distinguishes_near_duplicate_identifiers() {
+        let mut options = context_agent_test_options("production", Some(3), Some(3), None);
+        options.task = "Find processUserToken".to_string();
+        options.seeds = vec!["processUserToken".to_string()];
+        let (tokens, _) = super::context_pack_nuance_rescue_tokens(&options, &options.seeds);
+        let token = tokens
+            .iter()
+            .find(|token| token.normalized == "processusertoken")
+            .expect("identifier token");
+        assert!(super::context_pack_nuance_haystack_matches(
+            "export function processUserToken() {}",
+            token
+        ));
+        assert!(!super::context_pack_nuance_haystack_matches(
+            "export function processUserTokens() {}",
+            token
+        ));
+        assert!(!super::context_pack_nuance_haystack_matches(
+            "export function processAdminToken() {}",
+            token
+        ));
+    }
+
+    #[test]
+    fn context_pack_nuance_path_hits_ignore_deleted_path_dict_entries() {
+        let connection = Connection::open_in_memory().expect("open memory db");
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE path_dict (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE files (path_id INTEGER NOT NULL);
+                INSERT INTO path_dict (id, value) VALUES
+                    (1, 'support/scripts/nuance-audit'),
+                    (2, 'support/scripts/nuance-audit-deleted');
+                INSERT INTO files (path_id) VALUES (1);
+                ",
+            )
+            .expect("create minimal path schema");
+        let token = super::ContextPackNuanceToken {
+            value: "nuance-audit".to_string(),
+            normalized: "nuance-audit".to_string(),
+            raw_lower: "nuance-audit".to_string(),
+            kind: "path_title",
+            rescue_reason: "path_title_rescue",
+            exact_match: true,
+            seed_value: Some("nuance-audit".to_string()),
+        };
+
+        let paths = super::load_context_pack_nuance_path_hits(&connection, &token, 10)
+            .expect("load path hits");
+
+        assert_eq!(paths, vec!["support/scripts/nuance-audit".to_string()]);
+    }
+
+    #[test]
+    fn context_pack_nuance_rescue_merges_with_exact_seed_without_graph_proof() {
+        let mut options = context_agent_test_options("production", Some(3), Some(3), None);
+        options.task = "Find QUASAR_NETTLE_FUSE".to_string();
+        options.seeds = vec!["QUASAR_NETTLE_FUSE".to_string()];
+        let mut packet = ContextPacket {
+            task: options.task.clone(),
+            mode: options.mode.clone(),
+            symbols: Vec::new(),
+            verified_paths: Vec::new(),
+            risks: Vec::new(),
+            recommended_tests: Vec::new(),
+            snippets: Vec::new(),
+            metadata: Metadata::new(),
+        };
+        packet.metadata.insert(
+            "nuance_rescue_candidates".to_string(),
+            json!([{
+                "candidate_id": "nuance-rescue://entity/src/rare_identifier.ts#QUASAR_NETTLE_FUSE",
+                "candidate_source": "nuance_rescue",
+                "candidate_sources": ["nuance_rescue", "symbol_lookup"],
+                "candidate_source_label": "config_key_rescue",
+                "file_id": "src/rare_identifier.ts",
+                "path": "src/rare_identifier.ts",
+                "entity_id": "src/rare_identifier.ts#QUASAR_NETTLE_FUSE",
+                "span": {
+                    "file": "src/rare_identifier.ts",
+                    "start_line": 1,
+                    "end_line": 1
+                },
+                "evidence_role": "production",
+                "proof_status": "candidate_only",
+                "graph_proof": false,
+                "claimable": false,
+                "claimable_for_text": false,
+                "claimable_for_graph": false,
+                "diagnostic_only": false,
+                "score": Value::Null,
+                "source_score": 9.0,
+                "rank": Value::Null,
+                "matched_seeds": ["QUASAR_NETTLE_FUSE"],
+                "matched_token": "QUASAR_NETTLE_FUSE",
+                "matched_tokens": ["QUASAR_NETTLE_FUSE"],
+                "rescue_reason": "config_key_rescue",
+                "rescue_kinds": ["config_key"],
+                "requires_graph_verification": true,
+                "verification_status": "needs_graph_verification",
+                "reason": "config_key_rescue matched QUASAR_NETTLE_FUSE; candidate-only until graph/source verification",
+                "omitted": false,
+                "truncated": false,
+                "ranking_features": {
+                    "exact_seed_match": true,
+                    "file_path_match": false,
+                    "text_evidence_match": false,
+                    "symbol_entity_match": true,
+                    "graph_proximity": false,
+                    "source_role_compatible": true,
+                    "lifecycle_claimable": false,
+                    "proof_available": false
+                },
+                "source_labels": ["nuance_rescue", "config_key_rescue", "candidate_only", "no_graph_proof"]
+            }]),
+        );
+        packet.metadata.insert(
+            "nuance_rescue_trace".to_string(),
+            json!({
+                "schema_version": 1,
+                "diagnostic_only": true,
+                "rescue_enabled": true,
+                "rescue_status": "ready",
+                "rescue_candidate_count": 1,
+                "candidate_cap": super::CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT,
+                "ignored_generic_tokens": [],
+                "rescue_reasons": []
+            }),
+        );
+
+        let candidate_set = super::build_context_agent_retrieval_candidates(
+            &options,
+            &packet,
+            &[],
+            &[],
+            &[],
+            false,
+            false,
+        );
+        let candidate = candidate_set
+            .candidates
+            .iter()
+            .find(|candidate| {
+                candidate["matched_seeds"].as_array().is_some_and(|seeds| {
+                    seeds
+                        .iter()
+                        .any(|seed| seed.as_str() == Some("QUASAR_NETTLE_FUSE"))
+                })
+            })
+            .expect("merged exact seed candidate");
+        let sources = candidate["candidate_sources"]
+            .as_array()
+            .expect("candidate sources");
+        assert!(sources
+            .iter()
+            .any(|source| source.as_str() == Some("exact_seed")));
+        assert!(sources
+            .iter()
+            .any(|source| source.as_str() == Some("nuance_rescue")));
+        assert_eq!(candidate["path"].as_str(), Some("src/rare_identifier.ts"));
+        assert_eq!(candidate["graph_proof"].as_bool(), Some(false));
+        assert_eq!(candidate["claimable_for_graph"].as_bool(), Some(false));
+        assert_eq!(
+            candidate["rescue_reason"].as_str(),
+            Some("config_key_rescue")
+        );
+    }
+
+    #[test]
+    fn context_pack_union_merges_exact_vector_binary_and_rescue_sources() {
+        let mut options = context_agent_test_options("production", Some(1), Some(1), None);
+        options.task = "Find QUASAR_NETTLE_FUSE".to_string();
+        options.seeds = vec!["QUASAR_NETTLE_FUSE".to_string()];
+        let mut packet = ContextPacket {
+            task: options.task.clone(),
+            mode: options.mode.clone(),
+            symbols: Vec::new(),
+            verified_paths: Vec::new(),
+            risks: Vec::new(),
+            recommended_tests: Vec::new(),
+            snippets: Vec::new(),
+            metadata: Metadata::new(),
+        };
+        packet.metadata.insert(
+            "vector_semantic_candidates".to_string(),
+            json!([{
+                "candidate_id": "vector://entity/QUASAR_NETTLE_FUSE",
+                "candidate_source": "vector_semantic",
+                "candidate_sources": ["vector_semantic", "symbol_lookup"],
+                "path": "src/rare_identifier.ts",
+                "entity_id": "src/rare_identifier.ts#QUASAR_NETTLE_FUSE",
+                "evidence_role": "production",
+                "proof_status": "candidate_only",
+                "graph_proof": false,
+                "claimable": false,
+                "claimable_for_text": false,
+                "claimable_for_graph": false,
+                "requires_graph_verification": true,
+                "verification_status": "needs_graph_verification",
+                "graph_verification_status": "needs_graph_verification",
+                "text_evidence_status": "absent",
+                "vector_score": 0.91,
+                "source_score": 0.91,
+                "matched_seeds": ["QUASAR_NETTLE_FUSE"],
+                "matched_tokens": ["QUASAR_NETTLE_FUSE"],
+                "reason": "vector semantic candidate; not graph proof",
+                "ranking_features": {
+                    "exact_seed_match": false,
+                    "file_path_match": false,
+                    "text_evidence_match": false,
+                    "symbol_entity_match": true,
+                    "graph_proximity": false,
+                    "source_role_compatible": true,
+                    "lifecycle_claimable": true,
+                    "proof_available": false,
+                    "vector_score_available": true,
+                    "binary_score_available": false,
+                    "rescue_match": false
+                },
+                "source_labels": ["vector_semantic", "candidate_only", "no_graph_proof"]
+            }]),
+        );
+        packet.metadata.insert(
+            "binary_vector_candidates".to_string(),
+            json!([{
+                "candidate_id": "binary://entity/QUASAR_NETTLE_FUSE",
+                "candidate_source": "binary_vector",
+                "candidate_sources": ["binary_vector"],
+                "path": "src/rare_identifier.ts",
+                "entity_id": "src/rare_identifier.ts#QUASAR_NETTLE_FUSE",
+                "evidence_role": "production",
+                "proof_status": "candidate_only",
+                "graph_proof": false,
+                "claimable": false,
+                "claimable_for_text": false,
+                "claimable_for_graph": false,
+                "requires_graph_verification": true,
+                "verification_status": "needs_graph_verification",
+                "graph_verification_status": "needs_graph_verification",
+                "text_evidence_status": "absent",
+                "binary_score": 0.77,
+                "source_score": 0.77,
+                "matched_seeds": ["QUASAR_NETTLE_FUSE"],
+                "matched_tokens": ["QUASAR_NETTLE_FUSE"],
+                "reason": "binary vector candidate; not graph proof",
+                "ranking_features": {
+                    "exact_seed_match": false,
+                    "file_path_match": false,
+                    "text_evidence_match": false,
+                    "symbol_entity_match": true,
+                    "graph_proximity": false,
+                    "source_role_compatible": true,
+                    "lifecycle_claimable": true,
+                    "proof_available": false,
+                    "vector_score_available": false,
+                    "binary_score_available": true,
+                    "rescue_match": false
+                },
+                "source_labels": ["binary_vector", "candidate_only", "no_graph_proof"]
+            }]),
+        );
+        packet.metadata.insert(
+            "nuance_rescue_candidates".to_string(),
+            json!([{
+                "candidate_id": "nuance-rescue://entity/QUASAR_NETTLE_FUSE",
+                "candidate_source": "nuance_rescue",
+                "candidate_sources": ["nuance_rescue", "symbol_lookup"],
+                "path": "src/rare_identifier.ts",
+                "entity_id": "src/rare_identifier.ts#QUASAR_NETTLE_FUSE",
+                "evidence_role": "production",
+                "proof_status": "candidate_only",
+                "graph_proof": false,
+                "claimable": false,
+                "claimable_for_text": false,
+                "claimable_for_graph": false,
+                "requires_graph_verification": true,
+                "verification_status": "needs_graph_verification",
+                "graph_verification_status": "needs_graph_verification",
+                "text_evidence_status": "absent",
+                "matched_seeds": ["QUASAR_NETTLE_FUSE"],
+                "matched_token": "QUASAR_NETTLE_FUSE",
+                "matched_tokens": ["QUASAR_NETTLE_FUSE"],
+                "rescue_reason": "config_key_rescue",
+                "rescue_kinds": ["config_key"],
+                "source_score": 9.0,
+                "reason": "config_key_rescue matched QUASAR_NETTLE_FUSE; candidate-only until graph/source verification",
+                "ranking_features": {
+                    "exact_seed_match": true,
+                    "file_path_match": false,
+                    "text_evidence_match": false,
+                    "symbol_entity_match": true,
+                    "graph_proximity": false,
+                    "source_role_compatible": true,
+                    "lifecycle_claimable": true,
+                    "proof_available": false,
+                    "vector_score_available": false,
+                    "binary_score_available": false,
+                    "rescue_match": true
+                },
+                "source_labels": ["nuance_rescue", "config_key_rescue", "candidate_only", "no_graph_proof"]
+            }]),
+        );
+        for index in 0..8 {
+            packet
+                .metadata
+                .entry("vector_semantic_candidates".to_string())
+                .and_modify(|value| {
+                    value.as_array_mut().expect("vector array").push(json!({
+                        "candidate_id": format!("vector://noise/{index}"),
+                        "candidate_source": "vector_semantic",
+                        "candidate_sources": ["vector_semantic"],
+                        "path": format!("src/noise_{index}.ts"),
+                        "evidence_role": "production",
+                        "proof_status": "candidate_only",
+                        "graph_proof": false,
+                        "claimable": false,
+                        "claimable_for_text": false,
+                        "claimable_for_graph": false,
+                        "requires_graph_verification": true,
+                        "verification_status": "needs_graph_verification",
+                        "graph_verification_status": "needs_graph_verification",
+                        "text_evidence_status": "absent",
+                        "vector_score": 0.99,
+                        "matched_seeds": [],
+                        "reason": "noisy vector candidate",
+                        "ranking_features": {
+                            "exact_seed_match": false,
+                            "file_path_match": false,
+                            "text_evidence_match": false,
+                            "symbol_entity_match": false,
+                            "graph_proximity": false,
+                            "source_role_compatible": true,
+                            "lifecycle_claimable": true,
+                            "proof_available": false,
+                            "vector_score_available": true,
+                            "binary_score_available": false,
+                            "rescue_match": false
+                        },
+                        "source_labels": ["vector_semantic", "candidate_only", "no_graph_proof"]
+                    }));
+                });
+        }
+
+        let candidate_set = super::build_context_agent_retrieval_candidates(
+            &options,
+            &packet,
+            &[],
+            &[],
+            &[],
+            true,
+            false,
+        );
+        let candidate = candidate_set
+            .candidates
+            .iter()
+            .find(|candidate| {
+                candidate["matched_seeds"].as_array().is_some_and(|seeds| {
+                    seeds
+                        .iter()
+                        .any(|seed| seed.as_str() == Some("QUASAR_NETTLE_FUSE"))
+                })
+            })
+            .expect("merged exact/vector/binary/rescue candidate");
+        let sources = candidate["candidate_sources"]
+            .as_array()
+            .expect("candidate sources")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<BTreeSet<_>>();
+        for expected in [
+            "exact_seed",
+            "vector_semantic",
+            "binary_vector",
+            "nuance_rescue",
+            "symbol_lookup",
+        ] {
+            assert!(sources.contains(expected), "{sources:?}");
+        }
+        assert_eq!(candidate["rank"].as_u64(), Some(1));
+        assert_eq!(candidate["graph_proof"].as_bool(), Some(false));
+        assert_eq!(candidate["vector_score"].as_f64(), Some(0.91));
+        assert_eq!(candidate["binary_score"].as_f64(), Some(0.77));
+        assert_eq!(
+            candidate["rescue_reason"].as_str(),
+            Some("config_key_rescue")
+        );
+        assert_eq!(
+            candidate["graph_verification_status"].as_str(),
+            Some("needs_graph_verification")
+        );
+        assert!(candidate_set.candidates.len() <= super::CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT);
+    }
+
+    #[test]
+    fn context_pack_union_merges_rescue_entity_with_graph_verified_path() {
+        let mut options = context_agent_test_options("production", Some(3), Some(3), None);
+        options.task = "Trace auth guard".to_string();
+        options.seeds.clear();
+        let mut packet = ContextPacket {
+            task: options.task.clone(),
+            mode: options.mode.clone(),
+            symbols: Vec::new(),
+            verified_paths: Vec::new(),
+            risks: Vec::new(),
+            recommended_tests: Vec::new(),
+            snippets: Vec::new(),
+            metadata: Metadata::new(),
+        };
+        packet.metadata.insert(
+            "nuance_rescue_candidates".to_string(),
+            json!([{
+                "candidate_id": "nuance-rescue://entity/repo://e/auth_guard",
+                "candidate_source": "nuance_rescue",
+                "candidate_sources": ["nuance_rescue", "symbol_lookup"],
+                "path": "src/auth.ts",
+                "entity_id": "repo://e/auth_guard",
+                "evidence_role": "production",
+                "proof_status": "candidate_only",
+                "graph_proof": false,
+                "claimable": false,
+                "claimable_for_text": false,
+                "claimable_for_graph": false,
+                "requires_graph_verification": true,
+                "verification_status": "needs_graph_verification",
+                "graph_verification_status": "needs_graph_verification",
+                "text_evidence_status": "absent",
+                "matched_token": "auth",
+                "matched_tokens": ["auth"],
+                "rescue_reason": "rare_token_lexical_rescue",
+                "rescue_kinds": ["rare_token"],
+                "reason": "rare token rescue",
+                "ranking_features": {
+                    "exact_seed_match": false,
+                    "file_path_match": false,
+                    "text_evidence_match": false,
+                    "symbol_entity_match": true,
+                    "graph_proximity": false,
+                    "source_role_compatible": true,
+                    "lifecycle_claimable": true,
+                    "proof_available": false,
+                    "vector_score_available": false,
+                    "binary_score_available": false,
+                    "rescue_match": true
+                },
+                "source_labels": ["nuance_rescue", "rare_token_lexical_rescue", "candidate_only", "no_graph_proof"]
+            }]),
+        );
+        let graph_path = json!({
+            "path_id": "auth-verified-path",
+            "source": "repo://e/caller",
+            "target": "repo://e/auth_guard",
+            "source_spans": [{
+                "file": "src/auth.ts",
+                "repo_relative_path": "src/auth.ts",
+                "start_line": 10,
+                "start_column": 1,
+                "end_line": 12,
+                "end_column": 2
+            }],
+            "evidence_role": "production",
+            "confidence": 1.0,
+            "classification_reason": "parser verified path",
+            "relations": ["calls"]
+        });
+
+        let candidate_set = super::build_context_agent_retrieval_candidates(
+            &options,
+            &packet,
+            &[graph_path],
+            &[],
+            &[],
+            true,
+            true,
+        );
+        let candidate = candidate_set
+            .candidates
+            .iter()
+            .find(|candidate| candidate["entity_id"].as_str() == Some("repo://e/auth_guard"))
+            .expect("graph verified rescue entity candidate");
+        let sources = candidate["candidate_sources"]
+            .as_array()
+            .expect("candidate sources")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<BTreeSet<_>>();
+        assert!(sources.contains("nuance_rescue"), "{sources:?}");
+        assert!(sources.contains("path_evidence"), "{sources:?}");
+        assert!(sources.contains("graph_neighbor"), "{sources:?}");
+        assert_eq!(candidate["graph_proof"].as_bool(), Some(true));
+        assert_eq!(
+            candidate["verification_status"].as_str(),
+            Some("graph_verified")
+        );
+        assert_eq!(
+            candidate["graph_verification_status"].as_str(),
+            Some("graph_verified")
+        );
+        assert_eq!(candidate["proof_status"].as_str(), Some("proof_path_found"));
+        assert_eq!(candidate["claimable_for_graph"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn context_pack_exact_seed_candidate_merges_with_verified_path() {
+        let mut options = context_agent_test_options("production", Some(3), Some(3), None);
+        options.task = "Trace auth_guard".to_string();
+        options.seeds = vec!["auth_guard".to_string()];
+        let packet = ContextPacket {
+            task: options.task.clone(),
+            mode: options.mode.clone(),
+            symbols: Vec::new(),
+            verified_paths: Vec::new(),
+            risks: Vec::new(),
+            recommended_tests: Vec::new(),
+            snippets: Vec::new(),
+            metadata: Metadata::new(),
+        };
+        let graph_path = json!({
+            "path_id": "auth-guard-path",
+            "source": "repo://e/caller",
+            "target": "repo://e/auth_guard",
+            "source_spans": [{
+                "file": "src/auth.ts",
+                "repo_relative_path": "src/auth.ts",
+                "start_line": 10,
+                "start_column": 1,
+                "end_line": 12,
+                "end_column": 2
+            }],
+            "evidence_role": "production",
+            "confidence": 1.0,
+            "classification_reason": "parser verified path",
+            "relations": ["calls"]
+        });
+
+        let candidate_set = super::build_context_agent_retrieval_candidates(
+            &options,
+            &packet,
+            &[graph_path],
+            &[],
+            &[],
+            true,
+            true,
+        );
+        let candidate = candidate_set
+            .candidates
+            .iter()
+            .find(|candidate| {
+                candidate["candidate_sources"]
+                    .as_array()
+                    .is_some_and(|sources| {
+                        sources
+                            .iter()
+                            .any(|source| source.as_str() == Some("exact_seed"))
+                            && sources
+                                .iter()
+                                .any(|source| source.as_str() == Some("path_evidence"))
+                    })
+            })
+            .expect("exact seed merged with verified path");
+        let sources = candidate["candidate_sources"]
+            .as_array()
+            .expect("candidate sources")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<BTreeSet<_>>();
+        assert!(sources.contains("exact_seed"), "{sources:?}");
+        assert!(sources.contains("path_evidence"), "{sources:?}");
+        assert!(sources.contains("graph_neighbor"), "{sources:?}");
+        assert_eq!(candidate["graph_proof"].as_bool(), Some(true));
+        assert_eq!(candidate["proof_status"].as_str(), Some("proof_path_found"));
+        assert_eq!(
+            candidate["graph_verification_status"].as_str(),
+            Some("graph_verified")
+        );
+        assert_eq!(candidate["claimable_for_graph"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn context_pack_vector_candidate_verifies_only_when_graph_path_exists() {
+        let mut options = context_agent_test_options("production", Some(3), Some(3), None);
+        options.task = "Trace auth guard".to_string();
+        options.seeds.clear();
+        let mut packet = ContextPacket {
+            task: options.task.clone(),
+            mode: options.mode.clone(),
+            symbols: Vec::new(),
+            verified_paths: Vec::new(),
+            risks: Vec::new(),
+            recommended_tests: Vec::new(),
+            snippets: Vec::new(),
+            metadata: Metadata::new(),
+        };
+        packet.metadata.insert(
+            "vector_semantic_candidates".to_string(),
+            json!([{
+                "candidate_id": "vector://entity/repo://e/auth_guard",
+                "candidate_source": "vector_semantic",
+                "candidate_sources": ["vector_semantic", "symbol_lookup"],
+                "path": "src/auth.ts",
+                "entity_id": "repo://e/auth_guard",
+                "evidence_role": "production",
+                "proof_status": "candidate_only",
+                "graph_proof": false,
+                "claimable": false,
+                "claimable_for_text": false,
+                "claimable_for_graph": false,
+                "requires_graph_verification": true,
+                "verification_status": "needs_graph_verification",
+                "graph_verification_status": "needs_graph_verification",
+                "text_evidence_status": "absent",
+                "vector_score": 0.88,
+                "source_score": 0.88,
+                "matched_seeds": ["auth_guard"],
+                "reason": "vector semantic candidate; not graph proof",
+                "ranking_features": {
+                    "exact_seed_match": false,
+                    "file_path_match": false,
+                    "text_evidence_match": false,
+                    "symbol_entity_match": true,
+                    "graph_proximity": false,
+                    "source_role_compatible": true,
+                    "lifecycle_claimable": true,
+                    "proof_available": false,
+                    "vector_score_available": true,
+                    "binary_score_available": false,
+                    "rescue_match": false
+                },
+                "source_labels": ["vector_semantic", "candidate_only", "no_graph_proof"]
+            }]),
+        );
+        let graph_path = json!({
+            "path_id": "auth-vector-path",
+            "source": "repo://e/caller",
+            "target": "repo://e/auth_guard",
+            "source_spans": [{
+                "file": "src/auth.ts",
+                "repo_relative_path": "src/auth.ts",
+                "start_line": 10,
+                "start_column": 1,
+                "end_line": 12,
+                "end_column": 2
+            }],
+            "evidence_role": "production",
+            "confidence": 1.0,
+            "classification_reason": "parser verified path",
+            "relations": ["calls"]
+        });
+
+        let candidate_set = super::build_context_agent_retrieval_candidates(
+            &options,
+            &packet,
+            &[graph_path],
+            &[],
+            &[],
+            true,
+            true,
+        );
+        let candidate = candidate_set
+            .candidates
+            .iter()
+            .find(|candidate| candidate["entity_id"].as_str() == Some("repo://e/auth_guard"))
+            .expect("vector candidate merged with verified graph path");
+        let sources = candidate["candidate_sources"]
+            .as_array()
+            .expect("candidate sources")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<BTreeSet<_>>();
+        assert!(sources.contains("vector_semantic"), "{sources:?}");
+        assert!(sources.contains("path_evidence"), "{sources:?}");
+        assert!(sources.contains("graph_neighbor"), "{sources:?}");
+        assert_eq!(candidate["graph_proof"].as_bool(), Some(true));
+        assert_eq!(
+            candidate["graph_verification_status"].as_str(),
+            Some("graph_verified")
+        );
+        assert_eq!(candidate["claimable_for_graph"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn context_pack_binary_candidate_missing_graph_path_returns_no_proof() {
+        let mut options = context_agent_test_options("production", Some(3), Some(3), None);
+        options.task = "Trace missing binary candidate".to_string();
+        options.seeds.clear();
+        let mut packet = ContextPacket {
+            task: options.task.clone(),
+            mode: options.mode.clone(),
+            symbols: Vec::new(),
+            verified_paths: Vec::new(),
+            risks: Vec::new(),
+            recommended_tests: Vec::new(),
+            snippets: Vec::new(),
+            metadata: Metadata::new(),
+        };
+        packet.metadata.insert(
+            "graph_verification_status".to_string(),
+            json!("no_proof_path_found"),
+        );
+        packet.metadata.insert(
+            "binary_vector_candidates".to_string(),
+            json!([{
+                "candidate_id": "binary://entity/repo://e/missing",
+                "candidate_source": "binary_vector",
+                "candidate_sources": ["binary_vector", "symbol_lookup"],
+                "path": "src/missing.ts",
+                "entity_id": "repo://e/missing",
+                "evidence_role": "production",
+                "proof_status": "candidate_only",
+                "graph_proof": false,
+                "claimable": false,
+                "claimable_for_text": false,
+                "claimable_for_graph": false,
+                "requires_graph_verification": true,
+                "verification_status": "needs_graph_verification",
+                "graph_verification_status": "needs_graph_verification",
+                "text_evidence_status": "absent",
+                "binary_score": 0.77,
+                "source_score": 0.77,
+                "matched_seeds": ["missing"],
+                "reason": "binary vector candidate; not graph proof",
+                "ranking_features": {
+                    "exact_seed_match": false,
+                    "file_path_match": false,
+                    "text_evidence_match": false,
+                    "symbol_entity_match": true,
+                    "graph_proximity": false,
+                    "source_role_compatible": true,
+                    "lifecycle_claimable": true,
+                    "proof_available": false,
+                    "vector_score_available": false,
+                    "binary_score_available": true,
+                    "rescue_match": false
+                },
+                "source_labels": ["binary_vector", "candidate_only", "no_graph_proof"]
+            }]),
+        );
+
+        let candidate_set = super::build_context_agent_retrieval_candidates(
+            &options,
+            &packet,
+            &[],
+            &[],
+            &[],
+            true,
+            false,
+        );
+        let candidate = candidate_set
+            .candidates
+            .iter()
+            .find(|candidate| {
+                candidate["candidate_sources"]
+                    .as_array()
+                    .is_some_and(|sources| {
+                        sources
+                            .iter()
+                            .any(|source| source.as_str() == Some("binary_vector"))
+                    })
+            })
+            .expect("binary candidate");
+        assert_eq!(candidate["graph_proof"].as_bool(), Some(false));
+        assert_eq!(
+            candidate["proof_status"].as_str(),
+            Some("no_proof_path_found")
+        );
+        assert_eq!(
+            candidate["graph_verification_status"].as_str(),
+            Some("no_proof_path_found")
+        );
+        assert_eq!(candidate["claimable_for_graph"].as_bool(), Some(false));
+        assert!(candidate["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("no proof path")));
+    }
+
+    #[test]
+    fn context_pack_candidate_overload_reports_omitted_reason() {
+        let mut options =
+            context_agent_test_options("production", Some(3), Some(3), Some(512 * 1024));
+        options.explain = true;
+        options.task = "Find EXACT_SEED with noisy candidates".to_string();
+        options.seeds = vec!["EXACT_SEED".to_string()];
+        let mut packet = ContextPacket {
+            task: options.task.clone(),
+            mode: options.mode.clone(),
+            symbols: Vec::new(),
+            verified_paths: Vec::new(),
+            risks: Vec::new(),
+            recommended_tests: Vec::new(),
+            snippets: Vec::new(),
+            metadata: Metadata::new(),
+        };
+        packet.metadata.insert(
+            "graph_verification_status".to_string(),
+            json!("no_proof_path_found"),
+        );
+        let noisy_candidates = (0..8)
+            .map(|index| {
+                json!({
+                    "candidate_id": format!("vector://noise/{index}"),
+                    "candidate_source": "vector_semantic",
+                    "candidate_sources": ["vector_semantic"],
+                    "path": format!("src/noise_{index}.ts"),
+                    "evidence_role": "production",
+                    "proof_status": "candidate_only",
+                    "graph_proof": false,
+                    "claimable": false,
+                    "claimable_for_text": false,
+                    "claimable_for_graph": false,
+                    "requires_graph_verification": true,
+                    "verification_status": "needs_graph_verification",
+                    "graph_verification_status": "needs_graph_verification",
+                    "text_evidence_status": "absent",
+                    "vector_score": 0.99,
+                    "source_score": 0.99,
+                    "matched_seeds": [],
+                    "reason": "noisy vector candidate",
+                    "ranking_features": {
+                        "exact_seed_match": false,
+                        "file_path_match": false,
+                        "text_evidence_match": false,
+                        "symbol_entity_match": false,
+                        "graph_proximity": false,
+                        "source_role_compatible": true,
+                        "lifecycle_claimable": true,
+                        "proof_available": false,
+                        "vector_score_available": true,
+                        "binary_score_available": false,
+                        "rescue_match": false
+                    },
+                    "source_labels": ["vector_semantic", "candidate_only", "no_graph_proof"]
+                })
+            })
+            .collect::<Vec<_>>();
+        packet.metadata.insert(
+            "vector_semantic_candidates".to_string(),
+            json!(noisy_candidates),
+        );
+        let response = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &json!({"claimable": true, "diagnostic_only": false, "decision": "read_reuse"}),
+            super::ContextPackBudgets::for_options(&options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        let candidates = response["candidates"].as_array().expect("candidates");
+        assert!(candidates.iter().any(|candidate| {
+            candidate["candidate_sources"]
+                .as_array()
+                .is_some_and(|sources| {
+                    sources
+                        .iter()
+                        .any(|source| source.as_str() == Some("exact_seed"))
+                })
+        }));
+        assert!(
+            response["candidate_omitted_count"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0,
+            "{response:?}"
+        );
+        assert_eq!(
+            response["candidate_omitted_reason"].as_str(),
+            Some("candidate_cap_exceeded_after_exact_seed_text_priority")
+        );
+        let omitted = &response["retrieval_explain"]["candidates_omitted"];
+        assert!(omitted["count"].as_u64().unwrap_or_default() > 0);
+        assert_eq!(
+            omitted["reason"].as_str(),
+            Some("candidate_cap_exceeded_after_exact_seed_text_priority")
+        );
+        assert!(omitted["items"]
+            .as_array()
+            .expect("omitted items")
+            .iter()
+            .all(|item| item["omission_reason"].as_str()
+                == Some("candidate_cap_exceeded_after_exact_seed_text_priority")));
+    }
+
+    #[test]
+    fn context_pack_stale_diagnostic_graph_output_is_non_claimable() {
+        let options = context_agent_test_options("production", Some(2), Some(2), None);
+        let packet = context_agent_test_packet("production", 1, 1, "production");
+        let lifecycle = json!({
+            "claimable": false,
+            "diagnostic_only": true,
+            "decision": "diagnostic_allowed",
+            "passport_status": "stale",
+        });
+        let response = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        assert_eq!(response["claimable"].as_bool(), Some(false));
+        assert_eq!(response["diagnostic_only"].as_bool(), Some(true));
+        let candidates = response["candidates"].as_array().expect("candidates");
+        assert!(candidates.iter().all(|candidate| {
+            candidate["claimable"].as_bool() == Some(false)
+                && candidate["claimable_for_graph"].as_bool() == Some(false)
+        }));
+    }
+
+    #[test]
+    fn context_pack_nuance_text_rescue_reaches_no_proof_fallback_bounded() {
+        let mut options = context_agent_test_options("production", Some(1), Some(1), None);
+        options.task = "Find auth docs".to_string();
+        options.seeds.clear();
+        let mut packet = ContextPacket {
+            task: options.task.clone(),
+            mode: options.mode.clone(),
+            symbols: Vec::new(),
+            verified_paths: Vec::new(),
+            risks: Vec::new(),
+            recommended_tests: Vec::new(),
+            snippets: Vec::new(),
+            metadata: Metadata::new(),
+        };
+        packet.metadata.insert(
+            "nuance_rescue_candidates".to_string(),
+            json!([{
+                "candidate_id": "nuance-rescue://text/README.md:21",
+                "candidate_source": "nuance_rescue",
+                "candidate_sources": ["nuance_rescue", "text_evidence", "lexical_fts"],
+                "path": "README.md",
+                "file_id": "README.md",
+                "entity_id": Value::Null,
+                "evidence_role": "text_evidence",
+                "proof_status": "not_graph_proof",
+                "graph_proof": false,
+                "claimable": true,
+                "claimable_for_text": true,
+                "claimable_for_graph": false,
+                "requires_graph_verification": false,
+                "verification_status": "not_graph_proof",
+                "graph_verification_status": "not_graph_proof",
+                "text_evidence_status": "not_graph_proof",
+                "matched_token": "auth",
+                "matched_tokens": ["auth"],
+                "rescue_reason": "rare_token_lexical_rescue",
+                "rescue_kinds": ["rare_token"],
+                "snippet": "- auth/role/negation",
+                "reason": "rare-token text evidence rescue; not graph proof",
+                "ranking_features": {
+                    "exact_seed_match": false,
+                    "file_path_match": false,
+                    "text_evidence_match": true,
+                    "symbol_entity_match": false,
+                    "graph_proximity": false,
+                    "source_role_compatible": true,
+                    "lifecycle_claimable": true,
+                    "proof_available": false,
+                    "vector_score_available": false,
+                    "binary_score_available": false,
+                    "rescue_match": true
+                },
+                "source_labels": ["nuance_rescue", "rare_token_lexical_rescue", "text_evidence", "candidate_only", "no_graph_proof"]
+            }]),
+        );
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+            "passport_status": "valid",
+        });
+        let response = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &lifecycle,
+            super::ContextPackBudgets::for_options(&options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        let candidates = response["candidates"].as_array().expect("candidates");
+        let text_candidate = candidates
+            .iter()
+            .find(|candidate| candidate["path"].as_str() == Some("README.md"))
+            .expect("nuance text candidate reaches context-pack output");
+        assert_eq!(text_candidate["graph_proof"].as_bool(), Some(false));
+        assert_eq!(
+            text_candidate["proof_status"].as_str(),
+            Some("not_graph_proof")
+        );
+        assert_eq!(
+            text_candidate["text_evidence_status"].as_str(),
+            Some("not_graph_proof")
+        );
+        assert_eq!(text_candidate["claimable_for_graph"].as_bool(), Some(false));
+        assert!(text_candidate["candidate_sources"]
+            .as_array()
+            .expect("candidate sources")
+            .iter()
+            .any(|source| source.as_str() == Some("nuance_rescue")));
+        assert!(text_candidate["candidate_sources"]
+            .as_array()
+            .expect("candidate sources")
+            .iter()
+            .any(|source| source.as_str() == Some("text_evidence")));
+        assert!(candidates.len() <= super::CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT);
+        assert!(
+            serialized_len_for_test(&response) <= super::DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES
+        );
+    }
+
+    #[test]
+    fn context_pack_nuance_rescue_keeps_generic_terms_from_flooding() {
+        let mut options = context_agent_test_options("production", Some(3), Some(3), None);
+        options.task =
+            "Find the function code route literal test token user process package metadata"
+                .to_string();
+        options.seeds.clear();
+        let (tokens, ignored) = super::context_pack_nuance_rescue_tokens(&options, &[]);
+        assert!(tokens.is_empty(), "{tokens:?}");
+        assert!(ignored.iter().any(|token| token == "function"));
+        assert!(ignored.iter().any(|token| token == "package"));
+    }
+
     fn context_agent_test_options(
         mode: &str,
         limit_paths: Option<usize>,
@@ -27086,7 +33147,11 @@ mod tests {
             limit_snippets,
             max_output_bytes,
             allow_stale_read: false,
+            allow_foreign_db: false,
             explicit_scope_policy: None,
+            enable_vector_candidates: false,
+            enable_nuance_rescue_candidates: false,
+            vector_index_path: None,
         }
     }
 

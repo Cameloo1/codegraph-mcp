@@ -1,0 +1,137 @@
+{
+  "cases": [
+    {
+      "exact_expected": [
+        "direct assignment flow"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "cleaned",
+        "copied",
+        "input"
+      ],
+      "expected_edges": [
+        {
+          "head_name": "cleaned",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/typescript/src/flow.ts",
+          "relation": "FLOWS_TO",
+          "tail_name": "copied"
+        }
+      ],
+      "expected_entities": [
+        {
+          "kind": "Parameter",
+          "name": "input",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/typescript/src/flow.ts"
+        },
+        {
+          "kind": "LocalVariable",
+          "name": "cleaned",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/typescript/src/flow.ts"
+        },
+        {
+          "kind": "LocalVariable",
+          "name": "copied",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/typescript/src/flow.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Parameter",
+          "name": "input",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/typescript/src/flow.ts"
+        },
+        {
+          "kind": "LocalVariable",
+          "name": "cleaned",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/typescript/src/flow.ts"
+        },
+        {
+          "kind": "LocalVariable",
+          "name": "copied",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/typescript/src/flow.ts"
+        }
+      ],
+      "family": "local_assignment_flow",
+      "files": [
+        "fixtures/language_coverage_matrix/local_assignment_flow/typescript/src/flow.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "method result source may be expression-level"
+      ],
+      "id": "local_assignment_flow.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": []
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "cleaned",
+        "run"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/python/src/flow.py"
+        },
+        {
+          "kind": "LocalVariable",
+          "name": "cleaned",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/python/src/flow.py"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/python/src/flow.py"
+        },
+        {
+          "kind": "LocalVariable",
+          "name": "cleaned",
+          "path": "fixtures/language_coverage_matrix/local_assignment_flow/python/src/flow.py"
+        }
+      ],
+      "family": "local_assignment_flow",
+      "files": [
+        "fixtures/language_coverage_matrix/local_assignment_flow/python/src/flow.py"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "local_assignment_flow.python",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "python",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "Python assignment FLOWS_TO unsupported in current generic tier"
+      ]
+    }
+  ],
+  "family": "local_assignment_flow",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}

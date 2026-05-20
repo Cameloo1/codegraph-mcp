@@ -289,6 +289,9 @@
       "type": "integer",
       "minimum": 0
     },
+    "candidate_omitted_reason": {
+      "type": "string"
+    },
     "candidate_cap": {
       "type": "integer",
       "minimum": 1
@@ -377,8 +380,17 @@
         "dedup_results",
         "ranking_reasons",
         "graph_verification_attempts",
+        "traversal_mode",
+        "relation_allowlist",
+        "source_role_filter",
+        "candidate_sources_verified",
+        "path_evidence_lookup_time_ms",
+        "path_evidence_hydration_time_ms",
+        "traversal_telemetry",
+        "path_evidence_telemetry",
         "proof_paths_found",
         "no_proof_fallback_reason",
+        "omitted_count",
         "omitted_counts"
       ],
       "additionalProperties": true,
@@ -439,12 +451,57 @@
           "type": "object",
           "additionalProperties": true
         },
+        "traversal_mode": {
+          "type": "string"
+        },
+        "relation_allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_role_filter": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "candidate_sources_verified": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "path_evidence_lookup_time_ms": {
+          "type": ["number", "null"]
+        },
+        "path_evidence_hydration_time_ms": {
+          "type": ["number", "null"]
+        },
+        "traversal_telemetry": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "path_evidence_telemetry": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "vector_trace": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        },
+        "nuance_rescue_trace": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        },
         "proof_paths_found": {
           "type": "integer",
           "minimum": 0
         },
         "no_proof_fallback_reason": {
           "type": ["string", "null"]
+        },
+        "omitted_count": {
+          "type": "integer",
+          "minimum": 0
         },
         "omitted_counts": {
           "type": "object",

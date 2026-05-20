@@ -1,0 +1,110 @@
+{
+  "cases": [
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "heuristic",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "register"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "register",
+          "path": "fixtures/language_coverage_matrix/async_callback_loop/typescript/src/async_loop.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "register",
+          "path": "fixtures/language_coverage_matrix/async_callback_loop/typescript/src/async_loop.ts"
+        }
+      ],
+      "family": "async_callback_loop",
+      "files": [
+        "fixtures/language_coverage_matrix/async_callback_loop/typescript/src/async_loop.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "setTimeout callback syntax visible"
+      ],
+      "id": "async_callback_loop.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "late-bound loop runtime value unsupported"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "run",
+        "worker"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "worker",
+          "path": "fixtures/language_coverage_matrix/async_callback_loop/go/src/async_loop.go"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/async_callback_loop/go/src/async_loop.go"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "worker",
+          "path": "fixtures/language_coverage_matrix/async_callback_loop/go/src/async_loop.go"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/async_callback_loop/go/src/async_loop.go"
+        }
+      ],
+      "family": "async_callback_loop",
+      "files": [
+        "fixtures/language_coverage_matrix/async_callback_loop/go/src/async_loop.go"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "goroutine call syntax visible"
+      ],
+      "id": "async_callback_loop.go",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "go",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "async reachability unsupported"
+      ]
+    }
+  ],
+  "family": "async_callback_loop",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}

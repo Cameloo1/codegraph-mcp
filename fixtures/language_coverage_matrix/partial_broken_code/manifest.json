@@ -1,0 +1,99 @@
+{
+  "cases": [
+    {
+      "exact_expected": [
+        "partial tree-sitter recovery may retain declarations"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "broken"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "broken",
+          "path": "fixtures/language_coverage_matrix/partial_broken_code/typescript/src/broken.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "broken",
+          "path": "fixtures/language_coverage_matrix/partial_broken_code/typescript/src/broken.ts"
+        }
+      ],
+      "family": "partial_broken_code",
+      "files": [
+        "fixtures/language_coverage_matrix/partial_broken_code/typescript/src/broken.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "partial_broken_code.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "syntax diagnostics are expected; exact semantic edges unsupported"
+      ]
+    },
+    {
+      "exact_expected": [
+        "partial parse should not crash"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "broken"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "broken",
+          "path": "fixtures/language_coverage_matrix/partial_broken_code/ruby/src/broken.rb"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "broken",
+          "path": "fixtures/language_coverage_matrix/partial_broken_code/ruby/src/broken.rb"
+        }
+      ],
+      "family": "partial_broken_code",
+      "files": [
+        "fixtures/language_coverage_matrix/partial_broken_code/ruby/src/broken.rb"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "partial_broken_code.ruby",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "ruby",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "exact semantics unsupported for broken code"
+      ]
+    }
+  ],
+  "family": "partial_broken_code",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}

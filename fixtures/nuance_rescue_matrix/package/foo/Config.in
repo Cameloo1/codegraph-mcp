@@ -1,0 +1,7 @@
+config BR2_PACKAGE_FOO
+	bool "foo nuance rescue fixture"
+	select BR2_PACKAGE_HAS_NUANCE_RESCUE
+	help
+	  The foo package is a deterministic Buildroot config fixture for
+	  BR2_PACKAGE_FOO and 1-bit nuance-rescue candidate recall.
+

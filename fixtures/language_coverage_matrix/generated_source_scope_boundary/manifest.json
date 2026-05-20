@@ -1,0 +1,111 @@
+{
+  "cases": [
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "generatedClient",
+        "useClient"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "generatedClient",
+          "path": "fixtures/language_coverage_matrix/generated_source_scope_boundary/typescript/generated/client.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "useClient",
+          "path": "fixtures/language_coverage_matrix/generated_source_scope_boundary/typescript/src/use_client.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "generatedClient",
+          "path": "fixtures/language_coverage_matrix/generated_source_scope_boundary/typescript/generated/client.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "useClient",
+          "path": "fixtures/language_coverage_matrix/generated_source_scope_boundary/typescript/src/use_client.ts"
+        }
+      ],
+      "family": "generated_source_scope_boundary",
+      "files": [
+        "fixtures/language_coverage_matrix/generated_source_scope_boundary/typescript/generated/client.ts",
+        "fixtures/language_coverage_matrix/generated_source_scope_boundary/typescript/src/use_client.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "generated source can be parsed when in scope"
+      ],
+      "id": "generated_source_scope_boundary.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "generated/source boundary role is not currently first-class"
+      ]
+    },
+    {
+      "exact_expected": [
+        "PHP generated source parses as syntax entity"
+      ],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "generated_client"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "generated_client",
+          "path": "fixtures/language_coverage_matrix/generated_source_scope_boundary/php/generated/client.php"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "generated_client",
+          "path": "fixtures/language_coverage_matrix/generated_source_scope_boundary/php/generated/client.php"
+        }
+      ],
+      "family": "generated_source_scope_boundary",
+      "files": [
+        "fixtures/language_coverage_matrix/generated_source_scope_boundary/php/generated/client.php"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [],
+      "id": "generated_source_scope_boundary.php",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "php",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "generated boundary classification unsupported"
+      ]
+    }
+  ],
+  "family": "generated_source_scope_boundary",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}

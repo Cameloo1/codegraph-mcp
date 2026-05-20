@@ -16,12 +16,15 @@ use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque},
     str::FromStr,
+    time::Instant,
 };
 
 use codegraph_core::{
     classify_edge_evidence_role, combine_evidence_roles, infer_edge_class, infer_edge_context,
     ContextPacket, ContextSnippet, DerivedClosureEdge, Edge, EdgeClass, Entity, EntityKind,
-    EvidenceRole, Exactness, FileRecord, Metadata, PathEvidence, RelationKind, SourceSpan,
+    EvidenceRole, Exactness, FileRecord, Metadata, PathEvidence, RelationKind, RetrievalCandidate,
+    RetrievalCandidateLifecycleStatus, RetrievalCandidateSource, RetrievalProofStatus,
+    RetrievalVerificationStatus, SourceSpan, VectorEmbeddingSource,
 };
 use codegraph_vector::{
     BinarySignature, BinaryVectorError, BinaryVectorIndex, CompressedVectorReranker,
@@ -449,6 +452,615 @@ impl Default for QueryLimits {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraversalMode {
+    Production,
+    TestImpact,
+    Impact,
+    DebugAudit,
+}
+
+impl TraversalMode {
+    pub fn for_mode(mode: &str) -> Self {
+        let normalized = mode.to_ascii_lowercase();
+        if normalized.contains("debug") || normalized.contains("audit") {
+            Self::DebugAudit
+        } else if normalized.contains("test") {
+            Self::TestImpact
+        } else if normalized.contains("impact") || normalized.contains("blast") {
+            Self::Impact
+        } else {
+            Self::Production
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::TestImpact => "test-impact",
+            Self::Impact => "impact",
+            Self::DebugAudit => "debug-audit",
+        }
+    }
+
+    const fn allows_test_mock(self) -> bool {
+        matches!(self, Self::TestImpact | Self::DebugAudit)
+    }
+
+    const fn allows_heuristic(self) -> bool {
+        matches!(self, Self::DebugAudit)
+    }
+
+    const fn allows_unknown_source_role(self) -> bool {
+        matches!(self, Self::DebugAudit)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TraversalPolicy {
+    pub mode: TraversalMode,
+    pub max_neighbors_per_node: Option<usize>,
+    pub max_structural_expansion: Option<usize>,
+    pub timeout_ms: Option<u64>,
+    pub max_candidate_seeds: usize,
+}
+
+impl TraversalPolicy {
+    pub fn for_mode(mode: &str) -> Self {
+        match TraversalMode::for_mode(mode) {
+            TraversalMode::DebugAudit => Self {
+                mode: TraversalMode::DebugAudit,
+                max_neighbors_per_node: Some(256),
+                max_structural_expansion: Some(64),
+                timeout_ms: Some(3_000),
+                max_candidate_seeds: 64,
+            },
+            TraversalMode::TestImpact => Self {
+                mode: TraversalMode::TestImpact,
+                max_neighbors_per_node: Some(96),
+                max_structural_expansion: Some(0),
+                timeout_ms: Some(1_500),
+                max_candidate_seeds: 32,
+            },
+            TraversalMode::Impact => Self {
+                mode: TraversalMode::Impact,
+                max_neighbors_per_node: Some(96),
+                max_structural_expansion: Some(0),
+                timeout_ms: Some(1_500),
+                max_candidate_seeds: 32,
+            },
+            TraversalMode::Production => Self {
+                mode: TraversalMode::Production,
+                max_neighbors_per_node: Some(64),
+                max_structural_expansion: Some(0),
+                timeout_ms: Some(1_000),
+                max_candidate_seeds: 16,
+            },
+        }
+    }
+
+    pub const fn debug_audit() -> Self {
+        Self {
+            mode: TraversalMode::DebugAudit,
+            max_neighbors_per_node: Some(256),
+            max_structural_expansion: Some(64),
+            timeout_ms: Some(3_000),
+            max_candidate_seeds: 64,
+        }
+    }
+
+    pub const fn source_role_filter_applies(self) -> bool {
+        !matches!(self.mode, TraversalMode::DebugAudit)
+    }
+
+    fn relation_allowed(self, relation: RelationKind) -> bool {
+        if matches!(self.mode, TraversalMode::DebugAudit) {
+            return true;
+        }
+        if is_structural_relation(relation) {
+            return false;
+        }
+        production_traversal_relation_allowed(relation)
+            || (self.mode.allows_test_mock() && test_traversal_relation_allowed(relation))
+    }
+
+    fn source_role_allowed(self, edge: &Edge) -> bool {
+        match classify_edge_context(edge) {
+            PathContext::Production => true,
+            PathContext::Test | PathContext::Mock | PathContext::Mixed => {
+                self.mode.allows_test_mock()
+            }
+            PathContext::Unknown => self.mode.allows_unknown_source_role(),
+        }
+    }
+
+    fn heuristic_allowed(self) -> bool {
+        self.mode.allows_heuristic()
+    }
+
+    fn derived_without_provenance_allowed(self) -> bool {
+        matches!(self.mode, TraversalMode::DebugAudit)
+    }
+}
+
+fn context_pack_query_limits_for_policy(policy: TraversalPolicy) -> QueryLimits {
+    match policy.mode {
+        TraversalMode::DebugAudit => QueryLimits {
+            max_depth: 6,
+            max_paths: 48,
+            max_edges_visited: 4_096,
+        },
+        TraversalMode::TestImpact => QueryLimits {
+            max_depth: 4,
+            max_paths: 24,
+            max_edges_visited: 2_048,
+        },
+        TraversalMode::Impact => QueryLimits {
+            max_depth: 4,
+            max_paths: 24,
+            max_edges_visited: 2_048,
+        },
+        TraversalMode::Production => QueryLimits {
+            max_depth: 3,
+            max_paths: 12,
+            max_edges_visited: 2_048,
+        },
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphTraversalTelemetry {
+    pub operation: String,
+    pub seed_count: usize,
+    pub seed: Option<String>,
+    pub candidate_count_by_source: BTreeMap<String, usize>,
+    pub relation_modes: Vec<String>,
+    pub traversal_policy: String,
+    pub max_depth: usize,
+    pub max_paths: usize,
+    pub max_edge_visits: usize,
+    pub max_neighbors_per_node: Option<usize>,
+    pub max_structural_expansion: Option<usize>,
+    pub timeout_ms: Option<u64>,
+    pub edges_visited: usize,
+    pub nodes_visited: usize,
+    pub neighbors_expanded: usize,
+    pub neighbor_limit_hits: usize,
+    pub neighbors_omitted_by_limit: usize,
+    pub structural_edges_skipped: usize,
+    pub structural_expansion_limit_hits: usize,
+    pub relation_blocked_edges: usize,
+    pub source_role_blocked_edges: usize,
+    pub cycles_cut: usize,
+    pub depth_limit_hits: usize,
+    pub budget_stop_reason: Option<String>,
+    pub paths_found: usize,
+    pub paths_returned: usize,
+    pub time_ms: f64,
+    pub source_role_filters_applied: bool,
+    pub heuristic_edges_skipped: usize,
+    pub heuristic_edges_seen: usize,
+    pub derived_edge_provenance_checks: usize,
+    pub derived_edge_missing_provenance: usize,
+    pub derived_edge_provenance_blocked_edges: usize,
+    pub no_proof_fallback_reason: Option<String>,
+}
+
+impl GraphTraversalTelemetry {
+    fn new_with_policy(
+        operation: impl Into<String>,
+        seed: impl Into<String>,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        policy: TraversalPolicy,
+    ) -> Self {
+        Self {
+            operation: operation.into(),
+            seed_count: 1,
+            seed: Some(seed.into()),
+            candidate_count_by_source: BTreeMap::new(),
+            relation_modes: traversal_mode_labels(traversals),
+            traversal_policy: policy.mode.as_str().to_string(),
+            max_depth: limits.max_depth,
+            max_paths: limits.max_paths,
+            max_edge_visits: limits.max_edges_visited,
+            max_neighbors_per_node: policy.max_neighbors_per_node,
+            max_structural_expansion: policy.max_structural_expansion,
+            timeout_ms: policy.timeout_ms,
+            edges_visited: 0,
+            nodes_visited: 0,
+            neighbors_expanded: 0,
+            neighbor_limit_hits: 0,
+            neighbors_omitted_by_limit: 0,
+            structural_edges_skipped: 0,
+            structural_expansion_limit_hits: 0,
+            relation_blocked_edges: 0,
+            source_role_blocked_edges: 0,
+            cycles_cut: 0,
+            depth_limit_hits: 0,
+            budget_stop_reason: None,
+            paths_found: 0,
+            paths_returned: 0,
+            time_ms: 0.0,
+            source_role_filters_applied: policy.source_role_filter_applies(),
+            heuristic_edges_skipped: 0,
+            heuristic_edges_seen: 0,
+            derived_edge_provenance_checks: 0,
+            derived_edge_missing_provenance: 0,
+            derived_edge_provenance_blocked_edges: 0,
+            no_proof_fallback_reason: None,
+        }
+    }
+
+    fn note_depth_limit(&mut self) {
+        self.depth_limit_hits += 1;
+        if self.budget_stop_reason.is_none() {
+            self.budget_stop_reason = Some("max_depth".to_string());
+        }
+    }
+
+    fn note_budget_stop(&mut self, reason: &str) {
+        self.budget_stop_reason = Some(reason.to_string());
+    }
+
+    fn record_edge_visit(&mut self, edge: &Edge) {
+        self.edges_visited += 1;
+        if is_heuristic_edge(edge) {
+            self.heuristic_edges_seen += 1;
+        }
+    }
+
+    fn absorb_child_traversal(&mut self, child: &GraphTraversalTelemetry) {
+        for label in &child.relation_modes {
+            if !self.relation_modes.contains(label) {
+                self.relation_modes.push(label.clone());
+            }
+        }
+        self.edges_visited += child.edges_visited;
+        self.nodes_visited += child.nodes_visited;
+        self.neighbors_expanded += child.neighbors_expanded;
+        self.neighbor_limit_hits += child.neighbor_limit_hits;
+        self.neighbors_omitted_by_limit += child.neighbors_omitted_by_limit;
+        self.structural_edges_skipped += child.structural_edges_skipped;
+        self.structural_expansion_limit_hits += child.structural_expansion_limit_hits;
+        self.relation_blocked_edges += child.relation_blocked_edges;
+        self.source_role_blocked_edges += child.source_role_blocked_edges;
+        self.cycles_cut += child.cycles_cut;
+        self.depth_limit_hits += child.depth_limit_hits;
+        self.source_role_filters_applied =
+            self.source_role_filters_applied || child.source_role_filters_applied;
+        self.heuristic_edges_skipped += child.heuristic_edges_skipped;
+        self.heuristic_edges_seen += child.heuristic_edges_seen;
+        self.derived_edge_provenance_checks += child.derived_edge_provenance_checks;
+        self.derived_edge_missing_provenance += child.derived_edge_missing_provenance;
+        self.derived_edge_provenance_blocked_edges += child.derived_edge_provenance_blocked_edges;
+        if self.budget_stop_reason.is_none() {
+            self.budget_stop_reason = child.budget_stop_reason.clone();
+        }
+    }
+
+    fn finish(mut self, start: Instant, paths_returned: usize) -> Self {
+        self.paths_found = paths_returned;
+        self.paths_returned = paths_returned;
+        self.time_ms = start.elapsed().as_secs_f64() * 1000.0;
+        if paths_returned == 0 && self.no_proof_fallback_reason.is_none() {
+            self.no_proof_fallback_reason = Some("no matching graph path accepted".to_string());
+        }
+        self
+    }
+
+    pub fn result_label(&self) -> &'static str {
+        if self.paths_returned > 0
+            && self.heuristic_edges_seen == self.heuristic_edges_skipped
+            && self.derived_edge_provenance_blocked_edges == 0
+        {
+            return "proof_path_found";
+        }
+
+        if self.paths_returned > 0 {
+            return "traversal_unknown";
+        }
+
+        if self
+            .budget_stop_reason
+            .as_deref()
+            .is_some_and(is_traversal_budget_stop_reason)
+        {
+            return "traversal_budget_exhausted";
+        }
+
+        if self.cycles_cut > 0 {
+            "traversal_cycle_cut"
+        } else if self.source_role_blocked_edges > 0 {
+            "traversal_source_role_blocked"
+        } else if self.heuristic_edges_skipped > 0 {
+            "traversal_heuristic_blocked"
+        } else if self.relation_blocked_edges > 0 {
+            "traversal_relation_blocked"
+        } else {
+            "no_proof_path_found"
+        }
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "operation": self.operation.as_str(),
+            "seed_count": self.seed_count,
+            "seed": self.seed.as_deref(),
+            "candidate_count_by_source": &self.candidate_count_by_source,
+            "relation_modes": &self.relation_modes,
+            "traversal_policy": self.traversal_policy,
+            "max_depth": self.max_depth,
+            "max_paths": self.max_paths,
+            "max_edge_visits": self.max_edge_visits,
+            "max_neighbors_per_node": self.max_neighbors_per_node,
+            "max_structural_expansion": self.max_structural_expansion,
+            "timeout_ms": self.timeout_ms,
+            "edges_visited": self.edges_visited,
+            "nodes_visited": self.nodes_visited,
+            "neighbors_expanded": self.neighbors_expanded,
+            "neighbor_limit_hits": self.neighbor_limit_hits,
+            "neighbors_omitted_by_limit": self.neighbors_omitted_by_limit,
+            "structural_edges_skipped": self.structural_edges_skipped,
+            "structural_expansion_limit_hits": self.structural_expansion_limit_hits,
+            "relation_blocked_edges": self.relation_blocked_edges,
+            "source_role_blocked_edges": self.source_role_blocked_edges,
+            "cycles_cut": self.cycles_cut,
+            "depth_limit_hits": self.depth_limit_hits,
+            "budget_stop_reason": self.budget_stop_reason.as_deref().unwrap_or("completed"),
+            "result_label": self.result_label(),
+            "paths_found": self.paths_found,
+            "paths_returned": self.paths_returned,
+            "time_ms": self.time_ms,
+            "source_role_filters_applied": self.source_role_filters_applied,
+            "heuristic_edges_skipped": self.heuristic_edges_skipped,
+            "heuristic_edges_seen": self.heuristic_edges_seen,
+            "derived_edge_provenance_checks": self.derived_edge_provenance_checks,
+            "derived_edge_missing_provenance": self.derived_edge_missing_provenance,
+            "derived_edge_provenance_blocked_edges": self.derived_edge_provenance_blocked_edges,
+            "no_proof_fallback_reason": self.no_proof_fallback_reason.as_deref(),
+        })
+    }
+}
+
+fn traversal_mode_labels(traversals: &[Traversal]) -> Vec<String> {
+    traversals
+        .iter()
+        .map(|traversal| {
+            let direction = match traversal.direction {
+                TraversalDirection::Forward => "forward",
+                TraversalDirection::Reverse => "reverse",
+            };
+            format!("{}:{direction}", traversal.relation.as_str())
+        })
+        .collect()
+}
+
+fn is_structural_relation(relation: RelationKind) -> bool {
+    matches!(
+        relation,
+        RelationKind::Contains
+            | RelationKind::DefinedIn
+            | RelationKind::Declares
+            | RelationKind::Argument0
+            | RelationKind::Argument1
+            | RelationKind::ArgumentN
+            | RelationKind::Callee
+    )
+}
+
+fn is_heuristic_edge(edge: &Edge) -> bool {
+    matches!(
+        edge.edge_class,
+        EdgeClass::BaseHeuristic | EdgeClass::Unknown
+    ) || matches!(
+        edge.exactness,
+        Exactness::StaticHeuristic | Exactness::Inferred
+    )
+}
+
+fn production_traversal_relation_allowed(relation: RelationKind) -> bool {
+    matches!(
+        relation,
+        RelationKind::Calls
+            | RelationKind::Reads
+            | RelationKind::Writes
+            | RelationKind::FlowsTo
+            | RelationKind::AssignedFrom
+            | RelationKind::Mutates
+            | RelationKind::MayMutate
+            | RelationKind::MayRead
+            | RelationKind::ApiReaches
+            | RelationKind::AsyncReaches
+            | RelationKind::SchemaImpact
+            | RelationKind::Imports
+            | RelationKind::Exports
+            | RelationKind::Reexports
+            | RelationKind::AliasOf
+            | RelationKind::AliasedBy
+            | RelationKind::Authorizes
+            | RelationKind::ChecksRole
+            | RelationKind::ChecksPermission
+            | RelationKind::Sanitizes
+            | RelationKind::Validates
+            | RelationKind::Exposes
+            | RelationKind::Injects
+            | RelationKind::Instantiates
+            | RelationKind::Publishes
+            | RelationKind::Emits
+            | RelationKind::Consumes
+            | RelationKind::ListensTo
+            | RelationKind::SubscribesTo
+            | RelationKind::Handles
+            | RelationKind::Migrates
+            | RelationKind::AltersColumn
+            | RelationKind::DependsOnSchema
+            | RelationKind::ReadsTable
+            | RelationKind::WritesTable
+    )
+}
+
+fn test_traversal_relation_allowed(relation: RelationKind) -> bool {
+    matches!(
+        relation,
+        RelationKind::Tests
+            | RelationKind::Covers
+            | RelationKind::Asserts
+            | RelationKind::Mocks
+            | RelationKind::Stubs
+            | RelationKind::FixturesFor
+    )
+}
+
+fn is_traversal_budget_stop_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "max_depth"
+            | "max_paths"
+            | "max_edge_visits"
+            | "max_neighbors_per_node"
+            | "max_structural_expansion"
+            | "timeout_ms"
+    )
+}
+
+fn traversal_timed_out(start: Instant, policy: TraversalPolicy) -> bool {
+    policy
+        .timeout_ms
+        .is_some_and(|timeout_ms| start.elapsed().as_millis() >= u128::from(timeout_ms))
+}
+
+fn aggregate_graph_traversal_telemetry_json(runs: &[GraphTraversalTelemetry]) -> serde_json::Value {
+    let mut candidate_count_by_source = BTreeMap::<String, usize>::new();
+    let mut relation_modes = BTreeSet::<String>::new();
+    let mut traversal_policies = BTreeSet::<String>::new();
+    let mut result_labels = BTreeMap::<String, usize>::new();
+    let mut budget_stop_reasons = BTreeMap::<String, usize>::new();
+    let mut max_depth = 0usize;
+    let mut max_paths = 0usize;
+    let mut max_edge_visits = 0usize;
+    let mut max_neighbors_per_node = 0usize;
+    let mut max_structural_expansion = 0usize;
+    let mut timeout_ms = 0u64;
+    let mut edges_visited = 0usize;
+    let mut nodes_visited = 0usize;
+    let mut neighbors_expanded = 0usize;
+    let mut neighbor_limit_hits = 0usize;
+    let mut neighbors_omitted_by_limit = 0usize;
+    let mut structural_edges_skipped = 0usize;
+    let mut structural_expansion_limit_hits = 0usize;
+    let mut relation_blocked_edges = 0usize;
+    let mut source_role_blocked_edges = 0usize;
+    let mut cycles_cut = 0usize;
+    let mut depth_limit_hits = 0usize;
+    let mut paths_found = 0usize;
+    let mut paths_returned = 0usize;
+    let mut time_ms = 0.0f64;
+    let mut heuristic_edges_skipped = 0usize;
+    let mut heuristic_edges_seen = 0usize;
+    let mut derived_edge_provenance_checks = 0usize;
+    let mut derived_edge_missing_provenance = 0usize;
+    let mut derived_edge_provenance_blocked_edges = 0usize;
+
+    for run in runs {
+        for (source, count) in &run.candidate_count_by_source {
+            *candidate_count_by_source.entry(source.clone()).or_default() += count;
+        }
+        relation_modes.extend(run.relation_modes.iter().cloned());
+        traversal_policies.insert(run.traversal_policy.clone());
+        *result_labels
+            .entry(run.result_label().to_string())
+            .or_default() += 1;
+        *budget_stop_reasons
+            .entry(
+                run.budget_stop_reason
+                    .clone()
+                    .unwrap_or_else(|| "completed".to_string()),
+            )
+            .or_default() += 1;
+        max_depth = max_depth.max(run.max_depth);
+        max_paths = max_paths.max(run.max_paths);
+        max_edge_visits = max_edge_visits.max(run.max_edge_visits);
+        max_neighbors_per_node =
+            max_neighbors_per_node.max(run.max_neighbors_per_node.unwrap_or(0));
+        max_structural_expansion =
+            max_structural_expansion.max(run.max_structural_expansion.unwrap_or(0));
+        timeout_ms = timeout_ms.max(run.timeout_ms.unwrap_or(0));
+        edges_visited += run.edges_visited;
+        nodes_visited += run.nodes_visited;
+        neighbors_expanded += run.neighbors_expanded;
+        neighbor_limit_hits += run.neighbor_limit_hits;
+        neighbors_omitted_by_limit += run.neighbors_omitted_by_limit;
+        structural_edges_skipped += run.structural_edges_skipped;
+        structural_expansion_limit_hits += run.structural_expansion_limit_hits;
+        relation_blocked_edges += run.relation_blocked_edges;
+        source_role_blocked_edges += run.source_role_blocked_edges;
+        cycles_cut += run.cycles_cut;
+        depth_limit_hits += run.depth_limit_hits;
+        paths_found += run.paths_found;
+        paths_returned += run.paths_returned;
+        time_ms += run.time_ms;
+        heuristic_edges_skipped += run.heuristic_edges_skipped;
+        heuristic_edges_seen += run.heuristic_edges_seen;
+        derived_edge_provenance_checks += run.derived_edge_provenance_checks;
+        derived_edge_missing_provenance += run.derived_edge_missing_provenance;
+        derived_edge_provenance_blocked_edges += run.derived_edge_provenance_blocked_edges;
+    }
+
+    serde_json::json!({
+        "run_count": runs.len(),
+        "seed_count": runs.iter().map(|run| run.seed_count).sum::<usize>(),
+        "candidate_count_by_source": candidate_count_by_source,
+        "relation_modes": relation_modes.into_iter().collect::<Vec<_>>(),
+        "traversal_policies": traversal_policies.into_iter().collect::<Vec<_>>(),
+        "max_depth": max_depth,
+        "max_paths": max_paths,
+        "max_edge_visits": max_edge_visits,
+        "max_neighbors_per_node": if max_neighbors_per_node == 0 {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!(max_neighbors_per_node)
+        },
+        "max_structural_expansion": if max_structural_expansion == 0 {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!(max_structural_expansion)
+        },
+        "timeout_ms": if timeout_ms == 0 {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!(timeout_ms)
+        },
+        "edges_visited": edges_visited,
+        "nodes_visited": nodes_visited,
+        "neighbors_expanded": neighbors_expanded,
+        "neighbor_limit_hits": neighbor_limit_hits,
+        "neighbors_omitted_by_limit": neighbors_omitted_by_limit,
+        "structural_edges_skipped": structural_edges_skipped,
+        "structural_expansion_limit_hits": structural_expansion_limit_hits,
+        "relation_blocked_edges": relation_blocked_edges,
+        "source_role_blocked_edges": source_role_blocked_edges,
+        "cycles_cut": cycles_cut,
+        "depth_limit_hits": depth_limit_hits,
+        "budget_stop_reasons": budget_stop_reasons,
+        "result_labels": result_labels,
+        "paths_found": paths_found,
+        "paths_returned": paths_returned,
+        "time_ms": time_ms,
+        "source_role_filters_applied": runs.iter().any(|run| run.source_role_filters_applied),
+        "heuristic_edges_skipped": heuristic_edges_skipped,
+        "heuristic_edges_seen": heuristic_edges_seen,
+        "derived_edge_provenance_checks": derived_edge_provenance_checks,
+        "derived_edge_missing_provenance": derived_edge_missing_provenance,
+        "derived_edge_provenance_blocked_edges": derived_edge_provenance_blocked_edges,
+        "no_proof_fallback_reason": if paths_found == 0 {
+            Some("no matching graph path accepted")
+        } else {
+            None
+        },
+    })
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImpactAnalysis {
     pub source: String,
@@ -791,7 +1403,12 @@ impl RetrievalDocument {
 pub struct RetrievalFunnelConfig {
     pub binary_dimensions: usize,
     pub stage1_top_k: usize,
+    pub binary_overfetch_k: usize,
     pub stage2_top_n: usize,
+    pub enable_vector_candidates_by_default: bool,
+    pub vector_candidate_top_k: usize,
+    pub enable_nuance_rescue_by_default: bool,
+    pub nuance_rescue_top_k: usize,
     pub query_limits: QueryLimits,
     pub rerank_config: RerankConfig,
     pub bayesian_config: BayesianRankerConfig,
@@ -802,7 +1419,12 @@ impl Default for RetrievalFunnelConfig {
         Self {
             binary_dimensions: 128,
             stage1_top_k: 32,
+            binary_overfetch_k: 0,
             stage2_top_n: 16,
+            enable_vector_candidates_by_default: false,
+            vector_candidate_top_k: 16,
+            enable_nuance_rescue_by_default: false,
+            nuance_rescue_top_k: 8,
             query_limits: QueryLimits {
                 max_depth: 6,
                 max_paths: 16,
@@ -814,6 +1436,45 @@ impl Default for RetrievalFunnelConfig {
     }
 }
 
+impl RetrievalFunnelConfig {
+    pub fn binary_overfetch_k(&self) -> usize {
+        if self.binary_overfetch_k == 0 {
+            self.stage1_top_k
+        } else {
+            self.binary_overfetch_k
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VectorCandidateBranchStatus {
+    Missing,
+    Ready,
+    Stale { reason: String },
+}
+
+impl VectorCandidateBranchStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Ready => "ready",
+            Self::Stale { .. } => "stale",
+        }
+    }
+
+    fn warning(&self) -> Option<String> {
+        match self {
+            Self::Missing => {
+                Some("vector index missing; continuing without vector candidates".into())
+            }
+            Self::Ready => None,
+            Self::Stale { reason } => Some(format!(
+                "vector index stale or incompatible; continuing without vector candidates: {reason}"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RetrievalFunnelRequest {
     pub task: String,
@@ -821,6 +1482,11 @@ pub struct RetrievalFunnelRequest {
     pub token_budget: usize,
     pub exact_seeds: Vec<String>,
     pub stage0_candidates: Vec<RetrievalDocument>,
+    pub enable_vector_candidates: bool,
+    pub enable_nuance_rescue_candidates: bool,
+    pub vector_candidate_diagnostics: bool,
+    pub vector_branch_status: VectorCandidateBranchStatus,
+    pub vector_candidates: Vec<RetrievalCandidate>,
     pub sources: BTreeMap<String, String>,
 }
 
@@ -832,6 +1498,11 @@ impl RetrievalFunnelRequest {
             token_budget,
             exact_seeds: Vec::new(),
             stage0_candidates: Vec::new(),
+            enable_vector_candidates: false,
+            enable_nuance_rescue_candidates: false,
+            vector_candidate_diagnostics: false,
+            vector_branch_status: VectorCandidateBranchStatus::Missing,
+            vector_candidates: Vec::new(),
             sources: BTreeMap::new(),
         }
     }
@@ -843,6 +1514,31 @@ impl RetrievalFunnelRequest {
 
     pub fn stage0_candidates(mut self, candidates: Vec<RetrievalDocument>) -> Self {
         self.stage0_candidates = candidates;
+        self
+    }
+
+    pub fn enable_vector_candidates(mut self, enabled: bool) -> Self {
+        self.enable_vector_candidates = enabled;
+        self
+    }
+
+    pub fn enable_nuance_rescue_candidates(mut self, enabled: bool) -> Self {
+        self.enable_nuance_rescue_candidates = enabled;
+        self
+    }
+
+    pub fn vector_candidate_diagnostics(mut self, enabled: bool) -> Self {
+        self.vector_candidate_diagnostics = enabled;
+        self
+    }
+
+    pub fn vector_branch_status(mut self, status: VectorCandidateBranchStatus) -> Self {
+        self.vector_branch_status = status;
+        self
+    }
+
+    pub fn vector_candidates(mut self, candidates: Vec<RetrievalCandidate>) -> Self {
+        self.vector_candidates = candidates;
         self
     }
 
@@ -1379,6 +2075,9 @@ pub struct RetrievalFunnelResult {
     pub trace: Vec<RetrievalTraceStage>,
     pub rerank_scores: Vec<RerankScore>,
     pub bayesian_scores: Vec<BayesianScore>,
+    pub vector_candidates: Vec<RetrievalCandidate>,
+    pub nuance_rescue_candidates: Vec<RetrievalCandidate>,
+    pub vector_warnings: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -2098,21 +2797,25 @@ impl ExactGraphQueryEngine {
             .iter()
             .filter_map(PromptSeed::exact_value)
             .collect::<Vec<_>>();
+        let policy = TraversalPolicy::for_mode(&request.mode);
         let mut candidate_seeds = merge_seed_values(
             request
                 .seeds
                 .iter()
-                .chain(request.stage0_candidates.iter())
-                .chain(exact_seed_values.iter()),
+                .chain(exact_seed_values.iter())
+                .chain(request.stage0_candidates.iter()),
         );
-        let limits = QueryLimits {
-            max_depth: 6,
-            max_paths: 12,
-            max_edges_visited: 2_048,
-        };
+        let candidate_seed_count_before_cap = candidate_seeds.len();
+        candidate_seeds.truncate(policy.max_candidate_seeds);
+        let candidate_seed_count_after_cap = candidate_seeds.len();
+        let limits = context_pack_query_limits_for_policy(policy);
         let mut paths = Vec::new();
+        let mut traversal_runs = Vec::new();
         for seed in &candidate_seeds {
-            paths.extend(self.context_paths_for_seed(seed, limits));
+            let (seed_paths, seed_telemetry) =
+                self.context_paths_for_seed_with_policy_telemetry(seed, limits, policy);
+            paths.extend(seed_paths);
+            traversal_runs.extend(seed_telemetry);
         }
         let candidate_path_count_before_dedup = paths.len();
         paths = unique_paths(paths);
@@ -2121,11 +2824,17 @@ impl ExactGraphQueryEngine {
             split_mixed_paths_for_context_mode(paths, &request.mode);
         paths = split_paths;
         let path_context_counts_before = path_context_counts(&paths);
-        let rejected_test_mock_path_count = paths
+        let filtered_test_mock_path_count = paths
             .iter()
             .filter(|path| !path_allowed_for_context_mode(path, &request.mode))
             .count();
         paths.retain(|path| path_allowed_for_context_mode(path, &request.mode));
+        let source_role_blocked_edge_count = traversal_runs
+            .iter()
+            .map(|run| run.source_role_blocked_edges)
+            .sum::<usize>();
+        let rejected_test_mock_path_count =
+            filtered_test_mock_path_count + source_role_blocked_edge_count;
         let candidate_path_count_after_filter = paths.len();
         let path_context_counts_after = path_context_counts(&paths);
         paths.truncate(24);
@@ -2159,6 +2868,18 @@ impl ExactGraphQueryEngine {
         metadata.insert(
             "exact_seed_count".to_string(),
             serde_json::json!(candidate_seeds.len()),
+        );
+        metadata.insert(
+            "candidate_seed_count_before_cap".to_string(),
+            serde_json::json!(candidate_seed_count_before_cap),
+        );
+        metadata.insert(
+            "candidate_seed_count_after_cap".to_string(),
+            serde_json::json!(candidate_seed_count_after_cap),
+        );
+        metadata.insert(
+            "candidate_seed_cap".to_string(),
+            serde_json::json!(policy.max_candidate_seeds),
         );
         metadata.insert(
             "candidate_path_count_before_dedup".to_string(),
@@ -2204,8 +2925,22 @@ impl ExactGraphQueryEngine {
             "rejected_test_mock_path_count".to_string(),
             serde_json::json!(rejected_test_mock_path_count),
         );
+        metadata.insert(
+            "source_role_blocked_edge_count".to_string(),
+            serde_json::json!(source_role_blocked_edge_count),
+        );
+        metadata.insert(
+            "traversal_telemetry".to_string(),
+            serde_json::json!({
+                "schema_version": 1,
+                "diagnostic_only": true,
+                "measurement_scope": "exact_graph_query_engine_context_pack",
+                "aggregate": aggregate_graph_traversal_telemetry_json(&traversal_runs),
+                "runs_omitted_by_default": true,
+                "run_count": traversal_runs.len(),
+            }),
+        );
 
-        candidate_seeds.truncate(64);
         self.context_packet_from_paths(ContextPacketBuild {
             task: request.task,
             mode: request.mode,
@@ -2315,40 +3050,93 @@ impl ExactGraphQueryEngine {
     }
 
     pub fn find_event_flow(&self, entity_id: &str, limits: QueryLimits) -> Vec<GraphPath> {
-        let mut results = Vec::new();
-        let mut visited = 0usize;
+        self.find_event_flow_with_policy_telemetry(
+            entity_id,
+            limits,
+            TraversalPolicy::debug_audit(),
+        )
+        .0
+    }
 
-        for publish_step in self.neighbors(
+    fn find_event_flow_with_policy_telemetry(
+        &self,
+        entity_id: &str,
+        limits: QueryLimits,
+        policy: TraversalPolicy,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        let start = Instant::now();
+        let traversals = [
+            Traversal::forward(RelationKind::Publishes),
+            Traversal::forward(RelationKind::Emits),
+            Traversal::reverse(RelationKind::Consumes),
+            Traversal::reverse(RelationKind::ListensTo),
+            Traversal::reverse(RelationKind::SubscribesTo),
+            Traversal::forward(RelationKind::Calls),
+        ];
+        let mut telemetry = GraphTraversalTelemetry::new_with_policy(
+            "find_event_flow",
+            entity_id,
+            &traversals,
+            limits,
+            policy,
+        );
+        let mut results = Vec::new();
+
+        for publish_step in self.neighbors_with_policy_telemetry(
             entity_id,
             &[
                 Traversal::forward(RelationKind::Publishes),
                 Traversal::forward(RelationKind::Emits),
             ],
+            &mut telemetry,
+            policy,
         ) {
-            visited += 1;
-            if visited > limits.max_edges_visited {
-                break;
+            if traversal_timed_out(start, policy) {
+                telemetry.note_budget_stop("timeout_ms");
+                let sorted = sorted_paths(results);
+                return (sorted.clone(), telemetry.finish(start, sorted.len()));
             }
+            if telemetry.edges_visited >= limits.max_edges_visited {
+                telemetry.note_budget_stop("max_edge_visits");
+                let sorted = sorted_paths(results);
+                return (sorted.clone(), telemetry.finish(start, sorted.len()));
+            }
+            telemetry.record_edge_visit(&publish_step.edge);
 
             let event_node = publish_step.to.clone();
-            for consumer_step in self.neighbors(
+            for consumer_step in self.neighbors_with_policy_telemetry(
                 &event_node,
                 &[
                     Traversal::reverse(RelationKind::Consumes),
                     Traversal::reverse(RelationKind::ListensTo),
                     Traversal::reverse(RelationKind::SubscribesTo),
                 ],
+                &mut telemetry,
+                policy,
             ) {
-                visited += 1;
-                if visited > limits.max_edges_visited {
-                    break;
+                if traversal_timed_out(start, policy) {
+                    telemetry.note_budget_stop("timeout_ms");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
                 }
+                if telemetry.edges_visited >= limits.max_edges_visited {
+                    telemetry.note_budget_stop("max_edge_visits");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
+                }
+                telemetry.record_edge_visit(&consumer_step.edge);
 
                 let base =
                     self.path_from_steps(entity_id, vec![publish_step.clone(), consumer_step]);
+                if base.steps.len() > limits.max_depth {
+                    telemetry.note_depth_limit();
+                    continue;
+                }
                 results.push(base.clone());
                 if results.len() >= limits.max_paths {
-                    return sorted_paths(results);
+                    telemetry.note_budget_stop("max_paths");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
                 }
 
                 let remaining = limits.max_depth.saturating_sub(base.steps.len());
@@ -2359,23 +3147,38 @@ impl ExactGraphQueryEngine {
                 let mut call_limits = limits;
                 call_limits.max_depth = remaining;
                 call_limits.max_paths = limits.max_paths.saturating_sub(results.len());
-                for extension in self.k_shortest_matching(
-                    &base.target,
-                    &[Traversal::forward(RelationKind::Calls)],
-                    call_limits,
-                    &|path| !path.steps.is_empty(),
-                ) {
+                call_limits.max_edges_visited = limits
+                    .max_edges_visited
+                    .saturating_sub(telemetry.edges_visited);
+                let (extensions, extension_telemetry) = self
+                    .k_shortest_matching_with_policy_telemetry(
+                        &base.target,
+                        &[Traversal::forward(RelationKind::Calls)],
+                        call_limits,
+                        policy,
+                        &|path| !path.steps.is_empty(),
+                    );
+                telemetry.absorb_child_traversal(&extension_telemetry);
+                for extension in extensions {
                     let mut steps = base.steps.clone();
                     steps.extend(extension.steps);
                     results.push(self.path_from_steps(entity_id, steps));
                     if results.len() >= limits.max_paths {
-                        return sorted_paths(results);
+                        telemetry.note_budget_stop("max_paths");
+                        let sorted = sorted_paths(results);
+                        return (sorted.clone(), telemetry.finish(start, sorted.len()));
                     }
+                }
+                if telemetry.edges_visited >= limits.max_edges_visited {
+                    telemetry.note_budget_stop("max_edge_visits");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
                 }
             }
         }
 
-        sorted_paths(results)
+        let sorted = sorted_paths(results);
+        (sorted.clone(), telemetry.finish(start, sorted.len()))
     }
 
     pub fn find_tests(&self, entity_id: &str, limits: QueryLimits) -> Vec<GraphPath> {
@@ -2447,18 +3250,179 @@ impl ExactGraphQueryEngine {
     }
 
     fn context_paths_for_seed(&self, seed: &str, limits: QueryLimits) -> Vec<GraphPath> {
+        self.context_paths_for_seed_with_telemetry(seed, limits).0
+    }
+
+    fn context_paths_for_seed_with_telemetry(
+        &self,
+        seed: &str,
+        limits: QueryLimits,
+    ) -> (Vec<GraphPath>, Vec<GraphTraversalTelemetry>) {
+        self.context_paths_for_seed_with_policy_telemetry(
+            seed,
+            limits,
+            TraversalPolicy::debug_audit(),
+        )
+    }
+
+    fn context_paths_for_seed_with_policy_telemetry(
+        &self,
+        seed: &str,
+        limits: QueryLimits,
+        policy: TraversalPolicy,
+    ) -> (Vec<GraphPath>, Vec<GraphTraversalTelemetry>) {
         let mut paths = Vec::new();
-        paths.extend(self.find_mutations(seed, limits));
-        paths.extend(self.find_reads(seed, limits));
-        paths.extend(self.find_writes(seed, limits));
-        paths.extend(self.find_dataflow(seed, limits));
-        paths.extend(self.find_auth_paths(seed, limits));
-        paths.extend(self.find_event_flow(seed, limits));
-        paths.extend(self.find_migrations(seed, limits));
-        paths.extend(self.find_tests(seed, limits));
-        paths.extend(self.find_callers(seed, limits));
-        paths.extend(self.find_callees(seed, limits));
-        sorted_paths(paths)
+        let mut telemetry = Vec::new();
+
+        let (mut result, run) = self.k_shortest_matching_with_policy_telemetry_label(
+            "find_mutations",
+            seed,
+            &[
+                Traversal::forward(RelationKind::Calls),
+                Traversal::forward(RelationKind::Writes),
+                Traversal::forward(RelationKind::Mutates),
+            ],
+            limits,
+            policy,
+            &|path| {
+                matches!(
+                    path.last_relation(),
+                    Some(RelationKind::Writes | RelationKind::Mutates)
+                )
+            },
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.bounded_bfs_with_policy_telemetry_label(
+            "find_reads",
+            seed,
+            &[
+                Traversal::forward(RelationKind::Reads),
+                Traversal::reverse(RelationKind::Reads),
+            ],
+            limits,
+            policy,
+            &|path| path.last_relation() == Some(RelationKind::Reads),
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.bounded_bfs_with_policy_telemetry_label(
+            "find_writes",
+            seed,
+            &[
+                Traversal::forward(RelationKind::Writes),
+                Traversal::reverse(RelationKind::Writes),
+            ],
+            limits,
+            policy,
+            &|path| path.last_relation() == Some(RelationKind::Writes),
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.k_shortest_matching_with_policy_telemetry_label(
+            "find_dataflow",
+            seed,
+            &[
+                Traversal::forward(RelationKind::FlowsTo),
+                Traversal::reverse(RelationKind::AssignedFrom),
+            ],
+            limits,
+            policy,
+            &|path| !path.steps.is_empty(),
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.k_shortest_matching_with_policy_telemetry_label(
+            "find_auth_paths",
+            seed,
+            &[
+                Traversal::forward(RelationKind::Exposes),
+                Traversal::forward(RelationKind::Calls),
+                Traversal::forward(RelationKind::Authorizes),
+                Traversal::forward(RelationKind::ChecksRole),
+                Traversal::forward(RelationKind::ChecksPermission),
+            ],
+            limits,
+            policy,
+            &|path| {
+                path.contains_relation(RelationKind::Exposes)
+                    && path.steps.iter().any(|step| {
+                        matches!(
+                            step.edge.relation,
+                            RelationKind::Authorizes
+                                | RelationKind::ChecksRole
+                                | RelationKind::ChecksPermission
+                        )
+                    })
+            },
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.find_event_flow_with_policy_telemetry(seed, limits, policy);
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.k_shortest_matching_with_policy_telemetry_label(
+            "find_migrations",
+            seed,
+            &[
+                Traversal::reverse(RelationKind::Migrates),
+                Traversal::reverse(RelationKind::AltersColumn),
+                Traversal::reverse(RelationKind::DependsOnSchema),
+            ],
+            limits,
+            policy,
+            &|path| !path.steps.is_empty(),
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.bounded_bfs_with_policy_telemetry_label(
+            "find_tests",
+            seed,
+            &[
+                Traversal::reverse(RelationKind::Tests),
+                Traversal::reverse(RelationKind::Covers),
+                Traversal::reverse(RelationKind::Asserts),
+                Traversal::reverse(RelationKind::Mocks),
+                Traversal::reverse(RelationKind::Stubs),
+                Traversal::reverse(RelationKind::FixturesFor),
+            ],
+            limits,
+            policy,
+            &|path| !path.steps.is_empty(),
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.bounded_bfs_with_policy_telemetry_label(
+            "find_callers",
+            seed,
+            &[Traversal::reverse(RelationKind::Calls)],
+            limits,
+            policy,
+            &|path| path.last_relation() == Some(RelationKind::Calls),
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        let (mut result, run) = self.bounded_bfs_with_policy_telemetry_label(
+            "find_callees",
+            seed,
+            &[Traversal::forward(RelationKind::Calls)],
+            limits,
+            policy,
+            &|path| path.last_relation() == Some(RelationKind::Calls),
+        );
+        paths.append(&mut result);
+        telemetry.push(run);
+
+        (sorted_paths(paths), telemetry)
     }
 
     fn context_packet_from_paths(&self, build: ContextPacketBuild<'_>) -> ContextPacket {
@@ -2503,21 +3467,105 @@ impl ExactGraphQueryEngine {
         limits: QueryLimits,
         accept: &impl Fn(&GraphPath) -> bool,
     ) -> Vec<GraphPath> {
+        self.bounded_bfs_with_telemetry(source_id, traversals, limits, accept)
+            .0
+    }
+
+    pub fn bounded_bfs_with_telemetry(
+        &self,
+        source_id: &str,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        accept: &impl Fn(&GraphPath) -> bool,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        self.bounded_bfs_with_telemetry_label("bounded_bfs", source_id, traversals, limits, accept)
+    }
+
+    pub fn bounded_bfs_with_policy_telemetry(
+        &self,
+        source_id: &str,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        policy: TraversalPolicy,
+        accept: &impl Fn(&GraphPath) -> bool,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        self.bounded_bfs_with_policy_telemetry_label(
+            "bounded_bfs",
+            source_id,
+            traversals,
+            limits,
+            policy,
+            accept,
+        )
+    }
+
+    fn bounded_bfs_with_telemetry_label(
+        &self,
+        operation: &str,
+        source_id: &str,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        accept: &impl Fn(&GraphPath) -> bool,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        self.bounded_bfs_with_policy_telemetry_label(
+            operation,
+            source_id,
+            traversals,
+            limits,
+            TraversalPolicy::debug_audit(),
+            accept,
+        )
+    }
+
+    fn bounded_bfs_with_policy_telemetry_label(
+        &self,
+        operation: &str,
+        source_id: &str,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        policy: TraversalPolicy,
+        accept: &impl Fn(&GraphPath) -> bool,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        let start = Instant::now();
+        let mut telemetry = GraphTraversalTelemetry::new_with_policy(
+            operation, source_id, traversals, limits, policy,
+        );
         let mut queue = VecDeque::from([PathState::new(source_id)]);
         let mut results = Vec::new();
-        let mut visited_edges = 0usize;
+        let mut visited_nodes = BTreeSet::<String>::new();
 
         while let Some(state) = queue.pop_front() {
+            if traversal_timed_out(start, policy) {
+                telemetry.note_budget_stop("timeout_ms");
+                let sorted = sorted_paths(results);
+                return (sorted.clone(), telemetry.finish(start, sorted.len()));
+            }
+            visited_nodes.insert(state.node.clone());
+            telemetry.nodes_visited = visited_nodes.len();
             if state.steps.len() >= limits.max_depth {
+                telemetry.note_depth_limit();
                 continue;
             }
 
-            for step in self.neighbors(&state.node, traversals) {
-                visited_edges += 1;
-                if visited_edges > limits.max_edges_visited {
-                    return sorted_paths(results);
+            for step in self.neighbors_with_policy_telemetry(
+                &state.node,
+                traversals,
+                &mut telemetry,
+                policy,
+            ) {
+                if traversal_timed_out(start, policy) {
+                    telemetry.note_budget_stop("timeout_ms");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
                 }
+                if telemetry.edges_visited >= limits.max_edges_visited {
+                    telemetry.note_budget_stop("max_edge_visits");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
+                }
+                telemetry.record_edge_visit(&step.edge);
                 if state.seen_nodes.contains(&step.to) {
+                    telemetry.cycles_cut += 1;
                     continue;
                 }
 
@@ -2526,14 +3574,17 @@ impl ExactGraphQueryEngine {
                 if accept(&path) {
                     results.push(path);
                     if results.len() >= limits.max_paths {
-                        return sorted_paths(results);
+                        telemetry.note_budget_stop("max_paths");
+                        let sorted = sorted_paths(results);
+                        return (sorted.clone(), telemetry.finish(start, sorted.len()));
                     }
                 }
                 queue.push_back(next);
             }
         }
 
-        sorted_paths(results)
+        let sorted = sorted_paths(results);
+        (sorted.clone(), telemetry.finish(start, sorted.len()))
     }
 
     pub fn dijkstra(
@@ -2569,36 +3620,128 @@ impl ExactGraphQueryEngine {
         limits: QueryLimits,
         accept: &impl Fn(&GraphPath) -> bool,
     ) -> Vec<GraphPath> {
+        self.k_shortest_matching_with_telemetry(source_id, traversals, limits, accept)
+            .0
+    }
+
+    pub fn k_shortest_matching_with_telemetry(
+        &self,
+        source_id: &str,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        accept: &impl Fn(&GraphPath) -> bool,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        self.k_shortest_matching_with_telemetry_label(
+            "k_shortest_matching",
+            source_id,
+            traversals,
+            limits,
+            accept,
+        )
+    }
+
+    pub fn k_shortest_matching_with_policy_telemetry(
+        &self,
+        source_id: &str,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        policy: TraversalPolicy,
+        accept: &impl Fn(&GraphPath) -> bool,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        self.k_shortest_matching_with_policy_telemetry_label(
+            "k_shortest_matching",
+            source_id,
+            traversals,
+            limits,
+            policy,
+            accept,
+        )
+    }
+
+    fn k_shortest_matching_with_telemetry_label(
+        &self,
+        operation: &str,
+        source_id: &str,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        accept: &impl Fn(&GraphPath) -> bool,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        self.k_shortest_matching_with_policy_telemetry_label(
+            operation,
+            source_id,
+            traversals,
+            limits,
+            TraversalPolicy::debug_audit(),
+            accept,
+        )
+    }
+
+    fn k_shortest_matching_with_policy_telemetry_label(
+        &self,
+        operation: &str,
+        source_id: &str,
+        traversals: &[Traversal],
+        limits: QueryLimits,
+        policy: TraversalPolicy,
+        accept: &impl Fn(&GraphPath) -> bool,
+    ) -> (Vec<GraphPath>, GraphTraversalTelemetry) {
+        let start = Instant::now();
+        let mut telemetry = GraphTraversalTelemetry::new_with_policy(
+            operation, source_id, traversals, limits, policy,
+        );
         let mut heap = BinaryHeap::new();
         let mut sequence = 0usize;
         heap.push(HeapState::new(sequence, PathState::new(source_id), 0.0));
         sequence += 1;
 
         let mut results = Vec::new();
-        let mut visited_edges = 0usize;
+        let mut visited_nodes = BTreeSet::<String>::new();
 
         while let Some(heap_state) = heap.pop() {
+            if traversal_timed_out(start, policy) {
+                telemetry.note_budget_stop("timeout_ms");
+                let sorted = sorted_paths(results);
+                return (sorted.clone(), telemetry.finish(start, sorted.len()));
+            }
             let state = heap_state.path;
             let state_depth = state.steps.len();
+            visited_nodes.insert(state.node.clone());
+            telemetry.nodes_visited = visited_nodes.len();
 
             let path = self.path_from_steps(source_id, state.steps.clone());
             if !path.steps.is_empty() && accept(&path) {
                 results.push(path);
                 if results.len() >= limits.max_paths {
-                    return sorted_paths(results);
+                    telemetry.note_budget_stop("max_paths");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
                 }
             }
 
             if state_depth >= limits.max_depth {
+                telemetry.note_depth_limit();
                 continue;
             }
 
-            for step in self.neighbors(&state.node, traversals) {
-                visited_edges += 1;
-                if visited_edges > limits.max_edges_visited {
-                    return sorted_paths(results);
+            for step in self.neighbors_with_policy_telemetry(
+                &state.node,
+                traversals,
+                &mut telemetry,
+                policy,
+            ) {
+                if traversal_timed_out(start, policy) {
+                    telemetry.note_budget_stop("timeout_ms");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
                 }
+                if telemetry.edges_visited >= limits.max_edges_visited {
+                    telemetry.note_budget_stop("max_edge_visits");
+                    let sorted = sorted_paths(results);
+                    return (sorted.clone(), telemetry.finish(start, sorted.len()));
+                }
+                telemetry.record_edge_visit(&step.edge);
                 if state.seen_nodes.contains(&step.to) {
+                    telemetry.cycles_cut += 1;
                     continue;
                 }
 
@@ -2610,11 +3753,19 @@ impl ExactGraphQueryEngine {
             }
         }
 
-        sorted_paths(results)
+        let sorted = sorted_paths(results);
+        (sorted.clone(), telemetry.finish(start, sorted.len()))
     }
 
-    fn neighbors(&self, node_id: &str, traversals: &[Traversal]) -> Vec<TraversalStep> {
+    fn neighbors_with_policy_telemetry(
+        &self,
+        node_id: &str,
+        traversals: &[Traversal],
+        telemetry: &mut GraphTraversalTelemetry,
+        policy: TraversalPolicy,
+    ) -> Vec<TraversalStep> {
         let mut steps = Vec::new();
+        let mut structural_expanded = 0usize;
 
         for traversal in traversals {
             match traversal.direction {
@@ -2623,12 +3774,27 @@ impl ExactGraphQueryEngine {
                         for index in indices {
                             let edge = &self.edges[*index];
                             if edge.relation == traversal.relation {
-                                steps.push(TraversalStep {
-                                    edge: edge.clone(),
-                                    direction: TraversalDirection::Forward,
-                                    from: edge.head_id.clone(),
-                                    to: edge.tail_id.clone(),
-                                });
+                                if self.edge_allowed_for_policy(
+                                    edge,
+                                    policy,
+                                    &mut structural_expanded,
+                                    telemetry,
+                                ) {
+                                    steps.push(TraversalStep {
+                                        edge: edge.clone(),
+                                        direction: TraversalDirection::Forward,
+                                        from: edge.head_id.clone(),
+                                        to: edge.tail_id.clone(),
+                                    });
+                                }
+                            } else {
+                                telemetry.relation_blocked_edges += 1;
+                                if is_structural_relation(edge.relation) {
+                                    telemetry.structural_edges_skipped += 1;
+                                }
+                                if is_heuristic_edge(edge) {
+                                    telemetry.heuristic_edges_skipped += 1;
+                                }
                             }
                         }
                     }
@@ -2638,12 +3804,27 @@ impl ExactGraphQueryEngine {
                         for index in indices {
                             let edge = &self.edges[*index];
                             if edge.relation == traversal.relation {
-                                steps.push(TraversalStep {
-                                    edge: edge.clone(),
-                                    direction: TraversalDirection::Reverse,
-                                    from: edge.tail_id.clone(),
-                                    to: edge.head_id.clone(),
-                                });
+                                if self.edge_allowed_for_policy(
+                                    edge,
+                                    policy,
+                                    &mut structural_expanded,
+                                    telemetry,
+                                ) {
+                                    steps.push(TraversalStep {
+                                        edge: edge.clone(),
+                                        direction: TraversalDirection::Reverse,
+                                        from: edge.tail_id.clone(),
+                                        to: edge.head_id.clone(),
+                                    });
+                                }
+                            } else {
+                                telemetry.relation_blocked_edges += 1;
+                                if is_structural_relation(edge.relation) {
+                                    telemetry.structural_edges_skipped += 1;
+                                }
+                                if is_heuristic_edge(edge) {
+                                    telemetry.heuristic_edges_skipped += 1;
+                                }
                             }
                         }
                     }
@@ -2656,7 +3837,77 @@ impl ExactGraphQueryEngine {
                 .cmp(&right.to)
                 .then_with(|| left.edge.id.cmp(&right.edge.id))
         });
+        if let Some(max_neighbors) = policy.max_neighbors_per_node {
+            if steps.len() > max_neighbors {
+                telemetry.neighbor_limit_hits += 1;
+                telemetry.neighbors_omitted_by_limit += steps.len() - max_neighbors;
+                telemetry.note_budget_stop("max_neighbors_per_node");
+                steps.truncate(max_neighbors);
+            }
+        }
+        telemetry.neighbors_expanded += steps.len();
         steps
+    }
+
+    fn edge_allowed_for_policy(
+        &self,
+        edge: &Edge,
+        policy: TraversalPolicy,
+        structural_expanded: &mut usize,
+        telemetry: &mut GraphTraversalTelemetry,
+    ) -> bool {
+        if !policy.relation_allowed(edge.relation) {
+            telemetry.relation_blocked_edges += 1;
+            if test_traversal_relation_allowed(edge.relation) && !policy.mode.allows_test_mock() {
+                telemetry.source_role_blocked_edges += 1;
+                telemetry.source_role_filters_applied = true;
+            }
+            if is_structural_relation(edge.relation) {
+                telemetry.structural_edges_skipped += 1;
+            }
+            if is_heuristic_edge(edge) {
+                telemetry.heuristic_edges_seen += 1;
+                telemetry.heuristic_edges_skipped += 1;
+            }
+            return false;
+        }
+
+        if is_structural_relation(edge.relation) {
+            if let Some(max_structural) = policy.max_structural_expansion {
+                if *structural_expanded >= max_structural {
+                    telemetry.structural_edges_skipped += 1;
+                    telemetry.structural_expansion_limit_hits += 1;
+                    telemetry.note_budget_stop("max_structural_expansion");
+                    return false;
+                }
+            }
+            *structural_expanded += 1;
+        }
+
+        if is_heuristic_edge(edge) && !policy.heuristic_allowed() {
+            telemetry.heuristic_edges_seen += 1;
+            telemetry.heuristic_edges_skipped += 1;
+            return false;
+        }
+
+        if edge.derived {
+            telemetry.derived_edge_provenance_checks += 1;
+            if edge.provenance_edges.is_empty() {
+                telemetry.derived_edge_missing_provenance += 1;
+                if !policy.derived_without_provenance_allowed() {
+                    telemetry.derived_edge_provenance_blocked_edges += 1;
+                    return false;
+                }
+            }
+        }
+
+        if !policy.source_role_allowed(edge) {
+            telemetry.source_role_blocked_edges += 1;
+            telemetry.source_role_filters_applied = true;
+            return false;
+        }
+
+        true
     }
 
     fn path_from_steps(&self, source_id: &str, steps: Vec<TraversalStep>) -> GraphPath {
@@ -2738,6 +3989,38 @@ impl RetrievalFunnel {
                 .entry(seed.clone())
                 .or_insert_with(|| RetrievalDocument::new(seed, seed));
         }
+
+        let vector_branch_enabled =
+            self.config.enable_vector_candidates_by_default || request.enable_vector_candidates;
+        let mut vector_warnings = Vec::new();
+        if (vector_branch_enabled || request.vector_candidate_diagnostics)
+            && request.vector_branch_status != VectorCandidateBranchStatus::Ready
+        {
+            if let Some(warning) = request.vector_branch_status.warning() {
+                vector_warnings.push(warning);
+            }
+        }
+        let (vector_candidates, vector_dropped) = if vector_branch_enabled
+            && request.vector_branch_status == VectorCandidateBranchStatus::Ready
+        {
+            selected_vector_candidates(
+                &request.vector_candidates,
+                self.config.vector_candidate_top_k,
+                &request.task,
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        for candidate in &vector_candidates {
+            documents
+                .entry(vector_candidate_stage_id(candidate))
+                .or_insert_with(|| vector_candidate_document(candidate));
+        }
+        let vector_stage_ids = vector_candidates
+            .iter()
+            .map(vector_candidate_stage_id)
+            .collect::<Vec<_>>();
+
         let mut binary_index = InMemoryBinaryVectorIndex::new(self.config.binary_dimensions)?;
         for document in documents.values() {
             binary_index.upsert_text(&document.id, &document.text)?;
@@ -2747,6 +4030,7 @@ impl RetrievalFunnel {
             exact_seed_ids
                 .iter()
                 .chain(request_stage0_ids.iter())
+                .chain(vector_stage_ids.iter())
                 .chain(documents.keys()),
         );
         let mut trace = vec![RetrievalTraceStage::new(
@@ -2759,12 +4043,28 @@ impl RetrievalFunnel {
                 "exact seeds bypass vector filters".to_string(),
             ],
         )];
+        trace.push(RetrievalTraceStage::new(
+            "stage0_vector_semantic_candidates",
+            vector_stage_ids.clone(),
+            vector_dropped.clone(),
+            vec![
+                format!("enabled={vector_branch_enabled}"),
+                format!("status={}", request.vector_branch_status.as_str()),
+                format!("candidate_count={}", vector_candidates.len()),
+                "vector candidates are candidate recall only, not graph proof".to_string(),
+                "exact seeds are not subject to vector candidate caps".to_string(),
+            ]
+            .into_iter()
+            .chain(vector_warnings.iter().cloned())
+            .collect(),
+        ));
 
         let query_signature =
             BinarySignature::from_text(&request.task, self.config.binary_dimensions)?;
+        let binary_overfetch_k = self.config.binary_overfetch_k();
         let stage1_candidates = binary_index.search_with_exact_seeds(
             &query_signature,
-            self.config.stage1_top_k,
+            binary_overfetch_k,
             &exact_seed_ids,
         )?;
         let stage1_ids = stage1_candidates
@@ -2776,23 +4076,112 @@ impl RetrievalFunnel {
             "stage1_binary_sieve",
             stage1_ids.clone(),
             stage1_dropped,
-            vec!["binary candidates are suggestions only".to_string()],
+            vec![
+                "binary candidates are suggestions only".to_string(),
+                format!("binary_overfetch_k={binary_overfetch_k}"),
+                format!("stage2_final_cap={}", self.config.stage2_top_n),
+                "final cap is applied after union and deterministic rerank".to_string(),
+            ],
         ));
 
-        let rerank_candidates = stage1_candidates
+        let nuance_rescue_enabled =
+            self.config.enable_nuance_rescue_by_default || request.enable_nuance_rescue_candidates;
+        let stage1_id_set = stage1_ids.iter().cloned().collect::<BTreeSet<_>>();
+        let (nuance_rescue_candidates, nuance_rescue_dropped) = if nuance_rescue_enabled {
+            selected_nuance_rescue_candidates(
+                &request.task,
+                &documents,
+                &stage1_id_set,
+                &exact_seed_ids,
+                self.config.nuance_rescue_top_k,
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let nuance_stage_ids = nuance_rescue_candidates
             .iter()
-            .map(|candidate| {
+            .map(|candidate| candidate.candidate_id.clone())
+            .collect::<Vec<_>>();
+        trace.push(RetrievalTraceStage::new(
+            "stage1_nuance_rescue",
+            nuance_stage_ids.clone(),
+            nuance_rescue_dropped.clone(),
+            vec![
+                format!("enabled={nuance_rescue_enabled}"),
+                format!("candidate_count={}", nuance_rescue_candidates.len()),
+                "rare-token and identifier rescue is candidate recall only".to_string(),
+                "rescued candidates still require graph/source verification".to_string(),
+            ],
+        ));
+        let stage1_with_rescue_ids =
+            merge_seed_values(stage1_ids.iter().chain(nuance_stage_ids.iter()));
+        let stage1_similarity_by_id = stage1_candidates
+            .iter()
+            .map(|candidate| (candidate.id.clone(), candidate.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let nuance_by_id = nuance_rescue_candidates
+            .iter()
+            .map(|candidate| (candidate.candidate_id.clone(), candidate.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let nuance_ids = nuance_stage_ids.iter().cloned().collect::<BTreeSet<_>>();
+
+        let rerank_candidates = stage1_with_rescue_ids
+            .iter()
+            .map(|candidate_id| {
                 let document = documents
-                    .get(&candidate.id)
+                    .get(candidate_id)
                     .cloned()
-                    .unwrap_or_else(|| RetrievalDocument::new(&candidate.id, &candidate.id));
+                    .unwrap_or_else(|| RetrievalDocument::new(candidate_id, candidate_id));
                 let mut rerank = RerankCandidate::new(document.id.clone(), document.text.clone())
                     .stage0_score(document.stage0_score)
-                    .exact_seed(candidate.exact_seed || exact_seed_ids.contains(&document.id));
-                if let Some(similarity) = candidate.similarity {
+                    .exact_seed(exact_seed_ids.contains(&document.id));
+                if let Some(candidate) = stage1_similarity_by_id.get(candidate_id) {
+                    let exact_seed = candidate.exact_seed || rerank.exact_seed;
+                    rerank = rerank.exact_seed(exact_seed);
+                }
+                if let Some(similarity) = stage1_similarity_by_id
+                    .get(candidate_id)
+                    .and_then(|candidate| candidate.similarity)
+                {
                     rerank = rerank.stage1_similarity(similarity);
                 }
                 rerank.metadata = document.metadata;
+                if self.engine.by_head.contains_key(candidate_id)
+                    || self.engine.by_tail.contains_key(candidate_id)
+                {
+                    rerank.metadata.insert(
+                        "graph_verification_available".to_string(),
+                        "true".to_string(),
+                    );
+                }
+                if nuance_ids.contains(candidate_id) {
+                    rerank
+                        .metadata
+                        .insert("candidate_source".to_string(), "nuance_rescue".to_string());
+                    rerank
+                        .metadata
+                        .insert("rare_token_match".to_string(), "true".to_string());
+                    rerank
+                        .metadata
+                        .insert("identifier_signature_match".to_string(), "true".to_string());
+                    if let Some(candidate) = nuance_by_id.get(candidate_id) {
+                        if !candidate.matched_seeds.is_empty() {
+                            rerank.metadata.insert(
+                                "matched_tokens".to_string(),
+                                candidate.matched_seeds.join(" "),
+                            );
+                        }
+                        if let Some(rescue_basis) = candidate
+                            .metadata
+                            .get("rescue_basis")
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            rerank
+                                .metadata
+                                .insert("rescue_basis".to_string(), rescue_basis.to_string());
+                        }
+                    }
+                }
                 rerank
             })
             .collect::<Vec<_>>();
@@ -2810,7 +4199,7 @@ impl RetrievalFunnel {
             .iter()
             .map(|score| score.id.clone())
             .collect::<Vec<_>>();
-        let stage2_dropped = dropped_ids(&stage1_ids, &stage2_ids, &exact_seed_ids);
+        let stage2_dropped = dropped_ids(&stage1_with_rescue_ids, &stage2_ids, &exact_seed_ids);
         trace.push(RetrievalTraceStage::new(
             "stage2_compressed_rerank",
             stage2_ids.clone(),
@@ -2819,6 +4208,12 @@ impl RetrievalFunnel {
                 "deterministic local reranker returns candidates for graph verification"
                     .to_string(),
                 "exact seeds are preserved even if top-N is small".to_string(),
+                format!("rerank_input_count={}", rerank_candidates.len()),
+                format!("rerank_output_count={}", rerank_scores.len()),
+                format!(
+                    "reasons={}",
+                    rerank_reason_summary(&rerank_scores).join(",")
+                ),
             ],
         ));
 
@@ -2949,15 +4344,79 @@ impl RetrievalFunnel {
                 })
                 .collect::<Vec<_>>()),
         );
+        metadata.insert(
+            "candidate_counts_by_source".to_string(),
+            vector_candidate_counts_json(
+                exact_seed_ids.len(),
+                request_stage0_ids.len(),
+                vector_candidates.len(),
+                nuance_rescue_candidates.len(),
+            ),
+        );
+        if !vector_warnings.is_empty() {
+            metadata.insert(
+                "vector_candidate_warnings".to_string(),
+                serde_json::json!(vector_warnings),
+            );
+        }
         let mut packet = self.engine.context_packet_from_paths(ContextPacketBuild {
-            task: request.task,
+            task: request.task.clone(),
             mode: request.mode,
             token_budget: request.token_budget,
-            symbols: verified_symbols,
+            symbols: verified_symbols.clone(),
             paths: &verified_paths,
             sources: &request.sources,
             metadata,
         });
+
+        if packet.verified_paths.is_empty() {
+            let fallback_snippets = vector_candidates
+                .iter()
+                .filter_map(vector_text_fallback_snippet)
+                .take(4)
+                .collect::<Vec<_>>();
+            if !fallback_snippets.is_empty() {
+                packet.snippets.extend(fallback_snippets);
+                packet.risks.push(
+                    "vector_text_evidence_candidate_returned_without_graph_proof".to_string(),
+                );
+                packet.metadata.insert(
+                    "no_proof_fallback_reason".to_string(),
+                    serde_json::json!(
+                        "vector text-evidence candidate available after graph verification found no proof path"
+                    ),
+                );
+                packet
+                    .metadata
+                    .insert("graph_proof".to_string(), serde_json::json!(false));
+                packet.metadata.insert(
+                    "proof_status".to_string(),
+                    serde_json::json!("no_proof_path_found"),
+                );
+            }
+        }
+
+        if request.vector_candidate_diagnostics {
+            let no_proof_fallback_reason = packet
+                .metadata
+                .get("no_proof_fallback_reason")
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
+            packet.metadata.insert(
+                "vector_candidate_trace".to_string(),
+                vector_candidate_trace_json(
+                    vector_branch_enabled,
+                    &request.vector_branch_status,
+                    &request.task,
+                    &request.vector_candidates,
+                    &vector_candidates,
+                    &vector_dropped,
+                    &vector_warnings,
+                    &verified_symbols,
+                    no_proof_fallback_reason.as_deref(),
+                ),
+            );
+        }
 
         trace.push(RetrievalTraceStage::new(
             "stage4_context_packet",
@@ -3002,6 +4461,9 @@ impl RetrievalFunnel {
             trace,
             rerank_scores,
             bayesian_scores,
+            vector_candidates,
+            nuance_rescue_candidates,
+            vector_warnings,
         })
     }
 }
@@ -4111,6 +5573,591 @@ fn preserve_exact_rerank_scores(
     scores
 }
 
+fn rerank_reason_summary(scores: &[RerankScore]) -> Vec<String> {
+    let mut reasons = BTreeSet::new();
+    for score in scores {
+        for (component, value) in &score.components {
+            if *value > 0.0 {
+                reasons.insert(component.clone());
+            }
+        }
+    }
+    reasons.into_iter().collect()
+}
+
+fn selected_vector_candidates(
+    candidates: &[RetrievalCandidate],
+    top_k: usize,
+    task: &str,
+) -> (Vec<RetrievalCandidate>, Vec<String>) {
+    if top_k == 0 {
+        return (
+            Vec::new(),
+            candidates
+                .iter()
+                .map(|candidate| candidate.candidate_id.clone())
+                .collect(),
+        );
+    }
+
+    let mut selected = candidates
+        .iter()
+        .filter(|candidate| candidate.candidate_source == RetrievalCandidateSource::VectorSemantic)
+        .cloned()
+        .map(|candidate| normalize_vector_candidate(candidate, task))
+        .collect::<Vec<_>>();
+    selected.sort_by(|left, right| {
+        right
+            .score
+            .unwrap_or(0.0)
+            .total_cmp(&left.score.unwrap_or(0.0))
+            .then_with(|| left.candidate_id.cmp(&right.candidate_id))
+    });
+    let dropped = selected
+        .iter()
+        .skip(top_k)
+        .map(|candidate| vector_candidate_stage_id(candidate))
+        .collect::<Vec<_>>();
+    selected.truncate(top_k);
+    for (index, candidate) in selected.iter_mut().enumerate() {
+        candidate.rank = Some(index + 1);
+    }
+    (selected, dropped)
+}
+
+fn selected_nuance_rescue_candidates(
+    task: &str,
+    documents: &BTreeMap<String, RetrievalDocument>,
+    binary_kept_ids: &BTreeSet<String>,
+    exact_seed_ids: &[String],
+    top_k: usize,
+) -> (Vec<RetrievalCandidate>, Vec<String>) {
+    let query_tokens = nuance_rescue_query_tokens(task);
+    if query_tokens.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let exact_seed_set = exact_seed_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let mut selected = documents
+        .values()
+        .filter(|document| !binary_kept_ids.contains(&document.id))
+        .filter(|document| !exact_seed_set.contains(&document.id))
+        .filter_map(|document| nuance_rescue_candidate_for_document(task, &query_tokens, document))
+        .collect::<Vec<_>>();
+
+    selected.sort_by(|left, right| {
+        right
+            .score
+            .unwrap_or(0.0)
+            .total_cmp(&left.score.unwrap_or(0.0))
+            .then_with(|| left.candidate_id.cmp(&right.candidate_id))
+    });
+
+    let dropped = selected
+        .iter()
+        .skip(top_k)
+        .map(|candidate| candidate.candidate_id.clone())
+        .collect::<Vec<_>>();
+    selected.truncate(top_k);
+    for (index, candidate) in selected.iter_mut().enumerate() {
+        candidate.rank = Some(index + 1);
+    }
+    (selected, dropped)
+}
+
+fn nuance_rescue_candidate_for_document(
+    task: &str,
+    query_tokens: &BTreeSet<String>,
+    document: &RetrievalDocument,
+) -> Option<RetrievalCandidate> {
+    let document_tokens = nuance_rescue_document_tokens(document);
+    let matched = query_tokens
+        .intersection(&document_tokens)
+        .cloned()
+        .collect::<Vec<_>>();
+    if matched.is_empty() {
+        return None;
+    }
+
+    let score = nuance_rescue_score(query_tokens, &matched, document);
+    if score <= 0.0 {
+        return None;
+    }
+
+    let mut candidate = RetrievalCandidate::new(
+        document.id.clone(),
+        RetrievalCandidateSource::NuanceRescue,
+        "1-bit nuance rescue recovered this candidate by rare-token or identifier overlap; not graph proof",
+    );
+    candidate.matched_query_text = Some(task.to_string());
+    candidate.matched_seeds = matched.clone();
+    candidate.proof_status = RetrievalProofStatus::CandidateOnly;
+    candidate.graph_proof = false;
+    candidate.claimable = false;
+    candidate.claimable_for_text = Some(false);
+    candidate.claimable_for_graph = Some(false);
+    candidate.score = Some(score);
+    candidate.requires_graph_verification = true;
+    candidate.verification_status = RetrievalVerificationStatus::NeedsGraphVerification;
+    if let Some(path) = document.metadata.get("path") {
+        candidate.path = Some(path.clone());
+    }
+    candidate.metadata.insert(
+        "stage".to_string(),
+        serde_json::json!("stage1_nuance_rescue"),
+    );
+    candidate.metadata.insert(
+        "rescue_basis".to_string(),
+        serde_json::json!("rare_token_identifier_overlap"),
+    );
+    candidate
+        .metadata
+        .insert("matched_tokens".to_string(), serde_json::json!(matched));
+    if let Some(source) = document.metadata.get("candidate_source") {
+        candidate.metadata.insert(
+            "upstream_candidate_source".to_string(),
+            serde_json::json!(source),
+        );
+    }
+    Some(candidate)
+}
+
+fn nuance_rescue_query_tokens(task: &str) -> BTreeSet<String> {
+    symbol_search_tokens(task)
+        .into_iter()
+        .filter(|token| nuance_rescue_token_allowed(token))
+        .collect()
+}
+
+fn nuance_rescue_document_tokens(document: &RetrievalDocument) -> BTreeSet<String> {
+    let metadata_text = document
+        .metadata
+        .iter()
+        .map(|(key, value)| format!("{key} {value}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    symbol_search_tokens(&format!(
+        "{} {} {}",
+        document.id, document.text, metadata_text
+    ))
+    .into_iter()
+    .filter(|token| nuance_rescue_token_allowed(token))
+    .collect()
+}
+
+fn nuance_rescue_token_allowed(token: &str) -> bool {
+    token.len() >= 3
+        && !is_keyword_or_common_word(token)
+        && !matches!(
+            token,
+            "and"
+                | "are"
+                | "can"
+                | "does"
+                | "for"
+                | "has"
+                | "into"
+                | "not"
+                | "the"
+                | "this"
+                | "that"
+                | "what"
+                | "when"
+                | "where"
+                | "which"
+                | "why"
+        )
+}
+
+fn nuance_rescue_score(
+    query_tokens: &BTreeSet<String>,
+    matched_tokens: &[String],
+    document: &RetrievalDocument,
+) -> f64 {
+    let coverage = matched_tokens.len() as f64 / query_tokens.len().max(1) as f64;
+    let rare_bonus = matched_tokens
+        .iter()
+        .filter(|token| {
+            token.len() >= 6
+                || token.chars().any(|ch| ch.is_ascii_digit())
+                || token.contains('_')
+                || token.contains('-')
+        })
+        .count() as f64
+        * 0.25;
+    (coverage + rare_bonus + document.stage0_score.min(1.0) * 0.05).min(1.0)
+}
+
+fn normalize_vector_candidate(mut candidate: RetrievalCandidate, task: &str) -> RetrievalCandidate {
+    candidate.candidate_source = RetrievalCandidateSource::VectorSemantic;
+    candidate.graph_proof = false;
+    candidate.claimable_for_graph = Some(false);
+    candidate
+        .matched_query_text
+        .get_or_insert_with(|| task.to_string());
+
+    if candidate.span.is_none() && candidate.source_span_missing_reason.is_none() {
+        candidate.source_span_missing_reason =
+            Some("vector candidate did not include a source span".to_string());
+    }
+
+    match candidate.embedding_source {
+        Some(VectorEmbeddingSource::TextEvidence)
+        | Some(VectorEmbeddingSource::Snippet)
+        | Some(VectorEmbeddingSource::FilePathTitle)
+            if candidate.entity_id.is_none() =>
+        {
+            candidate.proof_status = RetrievalProofStatus::NotGraphProof;
+            candidate.requires_graph_verification = false;
+            candidate.verification_status = RetrievalVerificationStatus::NotGraphProof;
+            candidate.claimable = true;
+            candidate.claimable_for_text = Some(true);
+        }
+        _ if candidate.entity_id.is_some() => {
+            candidate.proof_status = RetrievalProofStatus::CandidateOnly;
+            candidate.requires_graph_verification = true;
+            candidate.verification_status = RetrievalVerificationStatus::NeedsGraphVerification;
+            candidate.claimable = false;
+            candidate.claimable_for_text.get_or_insert(false);
+        }
+        _ => {
+            candidate.proof_status = RetrievalProofStatus::CandidateOnly;
+            candidate.requires_graph_verification = true;
+            candidate.verification_status = RetrievalVerificationStatus::NeedsGraphVerification;
+            candidate.claimable = false;
+            candidate.claimable_for_text.get_or_insert(false);
+        }
+    }
+
+    if let Some(binding) = &candidate.lifecycle_binding {
+        if binding.status != RetrievalCandidateLifecycleStatus::Fresh {
+            candidate.verification_status = RetrievalVerificationStatus::StaleOrForeignDb;
+            candidate.proof_status = RetrievalProofStatus::StaleOrForeignDb;
+            candidate.claimable = false;
+            candidate.claimable_for_text = Some(false);
+            candidate.claimable_for_graph = Some(false);
+        }
+    }
+
+    candidate
+}
+
+fn vector_candidate_stage_id(candidate: &RetrievalCandidate) -> String {
+    candidate
+        .entity_id
+        .clone()
+        .unwrap_or_else(|| candidate.candidate_id.clone())
+}
+
+fn vector_candidate_document(candidate: &RetrievalCandidate) -> RetrievalDocument {
+    let id = vector_candidate_stage_id(candidate);
+    let text = candidate
+        .metadata
+        .get("chunk_text")
+        .and_then(|value| value.as_str())
+        .or_else(|| candidate.matched_query_text.as_deref())
+        .or_else(|| candidate.path.as_deref())
+        .unwrap_or(&candidate.candidate_id)
+        .to_string();
+    let mut document =
+        RetrievalDocument::new(id, text).stage0_score(candidate.score.unwrap_or(0.0));
+    document.metadata.insert(
+        "candidate_source".to_string(),
+        "vector_semantic".to_string(),
+    );
+    if let Some(chunk_id) = &candidate.chunk_id {
+        document
+            .metadata
+            .insert("chunk_id".to_string(), chunk_id.clone());
+    }
+    if let Some(path) = &candidate.path {
+        document.metadata.insert("path".to_string(), path.clone());
+    }
+    if matches!(
+        candidate.embedding_source,
+        Some(VectorEmbeddingSource::TextEvidence)
+            | Some(VectorEmbeddingSource::Snippet)
+            | Some(VectorEmbeddingSource::FilePathTitle)
+    ) {
+        document
+            .metadata
+            .insert("text_evidence_match".to_string(), "true".to_string());
+        document
+            .metadata
+            .insert("evidence_role".to_string(), "text_evidence".to_string());
+    }
+    document
+}
+
+fn vector_candidate_counts_json(
+    exact_seed_count: usize,
+    stage0_count: usize,
+    vector_count: usize,
+    nuance_rescue_count: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "exact_seed": exact_seed_count,
+        "stage0_candidate": stage0_count,
+        "vector_semantic": vector_count,
+        "nuance_rescue": nuance_rescue_count,
+    })
+}
+
+fn vector_candidate_trace_json(
+    vector_enabled: bool,
+    index_status: &VectorCandidateBranchStatus,
+    query_text: &str,
+    supplied_candidates: &[RetrievalCandidate],
+    accepted_candidates: &[RetrievalCandidate],
+    rejected_candidate_ids: &[String],
+    warnings: &[String],
+    graph_verified_stage_ids: &[String],
+    no_proof_fallback_reason: Option<&str>,
+) -> serde_json::Value {
+    let supplied_vector_count = supplied_candidates
+        .iter()
+        .filter(|candidate| candidate.candidate_source == RetrievalCandidateSource::VectorSemantic)
+        .count();
+    let rejected_count = if vector_enabled && index_status == &VectorCandidateBranchStatus::Ready {
+        rejected_candidate_ids.len()
+    } else if vector_enabled || supplied_vector_count > 0 {
+        supplied_vector_count
+    } else {
+        0
+    };
+    let (query_text, query_text_redacted, query_text_truncated) =
+        redacted_vector_trace_text(query_text, 160);
+    let stale_or_missing_reason =
+        vector_trace_status_reason(vector_enabled, index_status, warnings);
+    let graph_verified = graph_verified_stage_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let graph_verified_candidate_ids = accepted_candidates
+        .iter()
+        .filter_map(|candidate| {
+            let stage_id = vector_candidate_stage_id(candidate);
+            graph_verified
+                .contains(&stage_id)
+                .then(|| candidate.candidate_id.clone())
+        })
+        .take(8)
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "schema_version": 1,
+        "diagnostic_only": true,
+        "vector_enabled": vector_enabled,
+        "vector_index_status": index_status.as_str(),
+        "provider": vector_candidate_provider_json(supplied_candidates, accepted_candidates),
+        "query_text_sent_to_vector_branch": query_text,
+        "query_text_redacted": query_text_redacted,
+        "query_text_truncated": query_text_truncated,
+        "chunk_count_searched": supplied_vector_count,
+        "vector_candidate_count": accepted_candidates.len(),
+        "top_vector_candidate_ids": accepted_candidates
+            .iter()
+            .take(8)
+            .map(|candidate| candidate.candidate_id.clone())
+            .collect::<Vec<_>>(),
+        "score_range": vector_candidate_score_range_json(accepted_candidates),
+        "candidates_accepted": {
+            "count": accepted_candidates.len(),
+            "candidate_ids": accepted_candidates
+                .iter()
+                .take(8)
+                .map(|candidate| candidate.candidate_id.clone())
+                .collect::<Vec<_>>()
+        },
+        "candidates_rejected": {
+            "count": rejected_count,
+            "candidate_ids": rejected_candidate_ids
+                .iter()
+                .take(8)
+                .cloned()
+                .collect::<Vec<_>>()
+        },
+        "stale_missing_vector_index_reason": stale_or_missing_reason,
+        "graph_verification_status_for_vector_candidates": vector_graph_verification_trace_json(
+            accepted_candidates,
+            &graph_verified_candidate_ids
+        ),
+        "no_proof_fallback_reason": no_proof_fallback_reason
+            .map(|reason| redacted_vector_trace_text(reason, 240).0)
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::Null),
+        "proof_contract": "vector candidates are candidate recall only and are not graph proof unless graph/source verification succeeds"
+    })
+}
+
+fn vector_candidate_provider_json(
+    supplied_candidates: &[RetrievalCandidate],
+    accepted_candidates: &[RetrievalCandidate],
+) -> serde_json::Value {
+    let candidate = accepted_candidates
+        .first()
+        .or_else(|| supplied_candidates.first());
+    serde_json::json!({
+        "provider_id": candidate
+            .and_then(|candidate| candidate.metadata.get("provider_id"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown"),
+        "model_id": candidate
+            .and_then(|candidate| candidate.embedding_model_id.as_deref())
+            .unwrap_or("unknown"),
+        "dimension": candidate.and_then(|candidate| candidate.embedding_dim),
+        "embedding_profile": candidate
+            .and_then(|candidate| candidate.embedding_profile.as_deref())
+            .unwrap_or("unknown")
+    })
+}
+
+fn vector_candidate_score_range_json(candidates: &[RetrievalCandidate]) -> serde_json::Value {
+    let mut scores = candidates
+        .iter()
+        .filter_map(|candidate| candidate.score)
+        .filter(|score| score.is_finite())
+        .collect::<Vec<_>>();
+    if scores.is_empty() {
+        return serde_json::Value::Null;
+    }
+    scores.sort_by(f64::total_cmp);
+    serde_json::json!({
+        "min": scores[0],
+        "max": scores[scores.len() - 1]
+    })
+}
+
+fn vector_graph_verification_trace_json(
+    candidates: &[RetrievalCandidate],
+    graph_verified_candidate_ids: &[String],
+) -> serde_json::Value {
+    let mut status_counts = BTreeMap::<String, usize>::new();
+    for candidate in candidates {
+        *status_counts
+            .entry(retrieval_verification_status_label(
+                candidate.verification_status,
+            ))
+            .or_default() += 1;
+    }
+    serde_json::json!({
+        "status_counts": status_counts,
+        "requires_graph_verification_count": candidates
+            .iter()
+            .filter(|candidate| candidate.requires_graph_verification)
+            .count(),
+        "graph_verified_count": graph_verified_candidate_ids.len(),
+        "graph_verified_candidate_ids": graph_verified_candidate_ids,
+        "graph_proof_count": candidates
+            .iter()
+            .filter(|candidate| candidate.graph_proof)
+            .count()
+    })
+}
+
+fn retrieval_verification_status_label(status: RetrievalVerificationStatus) -> String {
+    serde_json::to_value(status)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn vector_trace_status_reason(
+    vector_enabled: bool,
+    index_status: &VectorCandidateBranchStatus,
+    warnings: &[String],
+) -> serde_json::Value {
+    let reason = if !vector_enabled {
+        Some("vector branch disabled by request/config".to_string())
+    } else {
+        match index_status {
+            VectorCandidateBranchStatus::Missing => {
+                Some("vector index missing; continuing without vector candidates".to_string())
+            }
+            VectorCandidateBranchStatus::Ready => None,
+            VectorCandidateBranchStatus::Stale { reason } => Some(format!(
+                "vector index stale or incompatible; continuing without vector candidates: {reason}"
+            )),
+        }
+    }
+    .or_else(|| warnings.first().cloned());
+
+    reason
+        .map(|reason| redacted_vector_trace_text(&reason, 240).0)
+        .map(serde_json::Value::from)
+        .unwrap_or(serde_json::Value::Null)
+}
+
+fn redacted_vector_trace_text(text: &str, max_chars: usize) -> (String, bool, bool) {
+    let mut redacted = false;
+    let tokens = text
+        .split_whitespace()
+        .map(|token| {
+            if vector_trace_token_looks_secret(token) {
+                redacted = true;
+                "[redacted]".to_string()
+            } else {
+                token.to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+    let joined = tokens.join(" ");
+    let char_count = joined.chars().count();
+    if char_count <= max_chars {
+        return (joined, redacted, false);
+    }
+    let mut truncated = joined.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    (truncated, redacted, true)
+}
+
+fn vector_trace_token_looks_secret(token: &str) -> bool {
+    let lower = token
+        .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == ',' || ch == ';')
+        .to_ascii_lowercase();
+    lower.starts_with("sk-")
+        || lower.contains("api_key=")
+        || lower.contains("apikey=")
+        || lower.contains("token=")
+        || lower.contains("password=")
+        || lower.contains("secret=")
+        || lower.contains("authorization:")
+        || lower.starts_with("bearer ")
+}
+
+fn vector_text_fallback_snippet(candidate: &RetrievalCandidate) -> Option<ContextSnippet> {
+    if !matches!(
+        candidate.embedding_source,
+        Some(VectorEmbeddingSource::TextEvidence)
+            | Some(VectorEmbeddingSource::Snippet)
+            | Some(VectorEmbeddingSource::FilePathTitle)
+    ) || candidate.entity_id.is_some()
+    {
+        return None;
+    }
+    let file = candidate
+        .path
+        .clone()
+        .or_else(|| candidate.file_id.clone())?;
+    let lines = candidate
+        .span
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "span unavailable".to_string());
+    let text = candidate
+        .metadata
+        .get("chunk_text")
+        .and_then(|value| value.as_str())
+        .or_else(|| candidate.matched_query_text.as_deref())
+        .unwrap_or("")
+        .to_string();
+    Some(ContextSnippet {
+        file,
+        lines,
+        text,
+        reason: "vector semantic text-evidence candidate; no graph proof".to_string(),
+    })
+}
+
 fn trace_stage_json(stage: &RetrievalTraceStage) -> serde_json::Value {
     serde_json::json!({
         "stage": &stage.stage,
@@ -4935,6 +6982,9 @@ fn compact_packet(packet: &mut ContextPacket, token_budget: usize) {
             packet.snippets.pop();
             continue;
         }
+        if compact_packet_metadata(packet, token_budget) {
+            continue;
+        }
         let estimated_tokens = estimate_packet_tokens(packet);
         let last_path_overrun_limit = token_budget.saturating_mul(2).saturating_add(60);
         if packet.verified_paths.len() > 1
@@ -4951,13 +7001,13 @@ fn compact_packet(packet: &mut ContextPacket, token_budget: usize) {
             packet.recommended_tests.pop();
             continue;
         }
-        if compact_packet_metadata(packet, token_budget) {
-            continue;
-        }
         break;
     }
     while estimate_packet_tokens(packet) > token_budget {
         if packet.snippets.pop().is_some() {
+            continue;
+        }
+        if compact_packet_metadata(packet, token_budget) {
             continue;
         }
         let estimated_tokens = estimate_packet_tokens(packet);
@@ -4974,9 +7024,6 @@ fn compact_packet(packet: &mut ContextPacket, token_budget: usize) {
         if packet.recommended_tests.pop().is_some() {
             continue;
         }
-        if compact_packet_metadata(packet, token_budget) {
-            continue;
-        }
         break;
     }
     packet.metadata.insert(
@@ -4987,7 +7034,7 @@ fn compact_packet(packet: &mut ContextPacket, token_budget: usize) {
 
 fn compact_packet_metadata(packet: &mut ContextPacket, token_budget: usize) -> bool {
     const VERBOSE_METADATA_KEYS: &[&str] = &[
-        "derived_edges",
+        "traversal_telemetry",
         "prompt_seed_provenance",
         "prompt_seeds",
         "path_context_counts_before_filter",
@@ -6157,6 +8204,576 @@ mod tests {
     }
 
     #[test]
+    fn bounded_graph_latency_baseline_fixture_telemetry() {
+        let high_degree_edges = (0..64)
+            .map(|index| {
+                edge(
+                    "seed:module",
+                    RelationKind::Contains,
+                    &format!("symbol:structural_child:{index:03}"),
+                    index + 1,
+                )
+            })
+            .collect::<Vec<_>>();
+        let high_degree_engine = ExactGraphQueryEngine::new(high_degree_edges);
+        let high_degree_limits = QueryLimits {
+            max_depth: 2,
+            max_paths: 4,
+            max_edges_visited: 16,
+        };
+        let (high_degree_paths, high_degree_telemetry) = high_degree_engine
+            .bounded_bfs_with_telemetry(
+                "seed:module",
+                &[Traversal::forward(RelationKind::Calls)],
+                high_degree_limits,
+                &|path| !path.steps.is_empty(),
+            );
+        assert!(high_degree_paths.is_empty());
+        assert_eq!(high_degree_telemetry.structural_edges_skipped, 64);
+
+        let cycle_engine = ExactGraphQueryEngine::new(vec![
+            edge("symbol:A", RelationKind::Calls, "symbol:B", 1),
+            edge("symbol:B", RelationKind::Calls, "symbol:C", 2),
+            edge("symbol:C", RelationKind::Calls, "symbol:A", 3),
+            edge("symbol:C", RelationKind::Writes, "symbol:sink", 4),
+        ]);
+        let cycle_limits = QueryLimits {
+            max_depth: 6,
+            max_paths: 2,
+            max_edges_visited: 12,
+        };
+        let (cycle_paths, cycle_telemetry) = cycle_engine.bounded_bfs_with_telemetry(
+            "symbol:A",
+            &[
+                Traversal::forward(RelationKind::Calls),
+                Traversal::forward(RelationKind::Writes),
+            ],
+            cycle_limits,
+            &|path| path.target == "symbol:sink",
+        );
+        assert_eq!(cycle_paths.len(), 1);
+        assert!(cycle_telemetry.cycles_cut >= 1);
+
+        let mut broad_flow_edges = Vec::new();
+        for index in 0..12 {
+            broad_flow_edges.push(edge(
+                "symbol:input",
+                RelationKind::FlowsTo,
+                &format!("symbol:flow_branch:{index:03}"),
+                index + 10,
+            ));
+            broad_flow_edges.push(edge(
+                &format!("symbol:flow_branch:{index:03}"),
+                RelationKind::FlowsTo,
+                "symbol:sink",
+                index + 40,
+            ));
+        }
+        let broad_flow_engine = ExactGraphQueryEngine::new(broad_flow_edges);
+        let broad_flow_limits = QueryLimits {
+            max_depth: 3,
+            max_paths: 3,
+            max_edges_visited: 10,
+        };
+        let (broad_flow_paths, broad_flow_telemetry) = broad_flow_engine
+            .k_shortest_matching_with_telemetry(
+                "symbol:input",
+                &[Traversal::forward(RelationKind::FlowsTo)],
+                broad_flow_limits,
+                &|path| path.target == "symbol:sink",
+            );
+        assert!(broad_flow_paths.len() <= broad_flow_limits.max_paths);
+        assert!(broad_flow_telemetry.budget_stop_reason.is_some());
+
+        let mixed_engine = ExactGraphQueryEngine::new(vec![
+            edge("symbol:handler", RelationKind::Calls, "symbol:service", 80),
+            edge_with_evidence_role(
+                "symbol:handler_test",
+                RelationKind::Tests,
+                "symbol:handler",
+                span(81),
+                EvidenceRole::Test,
+                "fixture test path",
+            ),
+        ]);
+        let (mixed_prod_paths, mixed_prod_telemetry) = mixed_engine.bounded_bfs_with_telemetry(
+            "symbol:handler",
+            &[Traversal::forward(RelationKind::Calls)],
+            QueryLimits {
+                max_depth: 3,
+                max_paths: 4,
+                max_edges_visited: 16,
+            },
+            &|path| !path.steps.is_empty(),
+        );
+        assert_eq!(mixed_prod_paths.len(), 1);
+        assert!(!mixed_prod_telemetry.source_role_filters_applied);
+        let (mixed_test_paths, mixed_test_telemetry) = mixed_engine.bounded_bfs_with_telemetry(
+            "symbol:handler",
+            &[Traversal::reverse(RelationKind::Tests)],
+            QueryLimits {
+                max_depth: 3,
+                max_paths: 4,
+                max_edges_visited: 16,
+            },
+            &|path| !path.steps.is_empty(),
+        );
+        assert_eq!(mixed_test_paths.len(), 1);
+
+        let heuristic_engine = ExactGraphQueryEngine::new(vec![heuristic_edge(
+            "symbol:caller",
+            RelationKind::Calls,
+            "symbol:unresolved_target",
+            90,
+        )]);
+        let (heuristic_paths, heuristic_telemetry) = heuristic_engine.bounded_bfs_with_telemetry(
+            "symbol:caller",
+            &[Traversal::forward(RelationKind::Calls)],
+            QueryLimits {
+                max_depth: 2,
+                max_paths: 2,
+                max_edges_visited: 8,
+            },
+            &|path| !path.steps.is_empty(),
+        );
+        assert_eq!(heuristic_paths.len(), 1);
+        assert_eq!(heuristic_telemetry.heuristic_edges_seen, 1);
+        assert_eq!(heuristic_telemetry.heuristic_edges_skipped, 0);
+
+        let candidate_engine = ExactGraphQueryEngine::new(vec![edge(
+            "symbol:handler",
+            RelationKind::Calls,
+            "symbol:service",
+            100,
+        )]);
+        let (candidate_paths, mut candidate_telemetry) = candidate_engine
+            .bounded_bfs_with_telemetry(
+                "symbol:handler",
+                &[Traversal::forward(RelationKind::Calls)],
+                QueryLimits {
+                    max_depth: 3,
+                    max_paths: 2,
+                    max_edges_visited: 12,
+                },
+                &|path| !path.steps.is_empty(),
+            );
+        assert_eq!(candidate_paths.len(), 1);
+        candidate_telemetry
+            .candidate_count_by_source
+            .insert("exact_seed".to_string(), 1);
+        candidate_telemetry
+            .candidate_count_by_source
+            .insert("text_evidence".to_string(), 1);
+        candidate_telemetry
+            .candidate_count_by_source
+            .insert("vector_semantic".to_string(), 1);
+        candidate_telemetry
+            .candidate_count_by_source
+            .insert("binary_vector".to_string(), 1);
+        candidate_telemetry
+            .candidate_count_by_source
+            .insert("nuance_rescue".to_string(), 1);
+
+        let mut derived_with_provenance = edge(
+            "symbol:controller",
+            RelationKind::Authorizes,
+            "symbol:policy",
+            110,
+        );
+        derived_with_provenance.derived = true;
+        derived_with_provenance.edge_class = EdgeClass::Derived;
+        derived_with_provenance.exactness = Exactness::DerivedFromVerifiedEdges;
+        derived_with_provenance.provenance_edges = vec![
+            "edge:controller:CALLS:policy".to_string(),
+            "edge:policy:CHECKS_ROLE:admin".to_string(),
+        ];
+        let mut derived_missing_provenance = edge(
+            "symbol:controller",
+            RelationKind::Authorizes,
+            "symbol:unproven_policy",
+            111,
+        );
+        derived_missing_provenance.derived = true;
+        derived_missing_provenance.edge_class = EdgeClass::Derived;
+        derived_missing_provenance.exactness = Exactness::DerivedFromVerifiedEdges;
+        let derived_engine =
+            ExactGraphQueryEngine::new(vec![derived_with_provenance, derived_missing_provenance]);
+        let (derived_paths, derived_telemetry) = derived_engine.bounded_bfs_with_telemetry(
+            "symbol:controller",
+            &[Traversal::forward(RelationKind::Authorizes)],
+            QueryLimits {
+                max_depth: 2,
+                max_paths: 4,
+                max_edges_visited: 8,
+            },
+            &|path| !path.steps.is_empty(),
+        );
+        assert_eq!(derived_paths.len(), 2);
+        assert_eq!(derived_telemetry.derived_edge_provenance_checks, 2);
+        assert_eq!(derived_telemetry.derived_edge_missing_provenance, 1);
+
+        let baseline = serde_json::json!({
+            "schema_version": 1,
+            "fixture": "fixtures/bounded_graph_walking/manifest.json",
+            "cases": {
+                "high_degree_structural_budget": high_degree_telemetry.to_json(),
+                "cycle_graph_terminates": cycle_telemetry.to_json(),
+                "broad_flow_budget": broad_flow_telemetry.to_json(),
+                "mixed_production_test_roles": {
+                    "production_default": mixed_prod_telemetry.to_json(),
+                    "test_impact": mixed_test_telemetry.to_json()
+                },
+                "heuristic_unresolved_blocked": heuristic_telemetry.to_json(),
+                "candidate_overload_exact_seed_survives": candidate_telemetry.to_json(),
+                "derived_edge_provenance_required": derived_telemetry.to_json()
+            },
+            "notes": [
+                "baseline records current traversal behavior before optimization",
+                "source-role and heuristic proof filtering are not changed by this telemetry test",
+                "candidate overload counts are injected to mirror the candidate handoff contract"
+            ]
+        });
+        println!("{}", serde_json::to_string_pretty(&baseline).unwrap());
+    }
+
+    #[test]
+    fn bounded_graph_traversal_controls_enforced() {
+        let production_policy = TraversalPolicy::for_mode("production");
+        let test_policy = TraversalPolicy::for_mode("test-impact");
+        let debug_policy = TraversalPolicy::for_mode("debug/audit");
+
+        let high_degree_edges = (0..16)
+            .map(|index| {
+                edge(
+                    "seed:fanout",
+                    RelationKind::Calls,
+                    &format!("symbol:callee:{index:02}"),
+                    index + 1,
+                )
+            })
+            .collect::<Vec<_>>();
+        let high_degree_engine = ExactGraphQueryEngine::new(high_degree_edges);
+        let mut high_degree_limits = limits();
+        high_degree_limits.max_paths = 16;
+        let high_degree_policy = TraversalPolicy {
+            max_neighbors_per_node: Some(4),
+            ..production_policy
+        };
+        let (high_degree_paths, high_degree_telemetry) = high_degree_engine
+            .bounded_bfs_with_policy_telemetry(
+                "seed:fanout",
+                &[Traversal::forward(RelationKind::Calls)],
+                high_degree_limits,
+                high_degree_policy,
+                &|path| !path.steps.is_empty(),
+            );
+        assert_eq!(high_degree_paths.len(), 4);
+        assert_eq!(high_degree_telemetry.neighbor_limit_hits, 1);
+        assert_eq!(high_degree_telemetry.neighbors_omitted_by_limit, 12);
+        assert_eq!(
+            high_degree_telemetry.budget_stop_reason.as_deref(),
+            Some("max_neighbors_per_node")
+        );
+
+        let structural_edges = (0..8)
+            .map(|index| {
+                edge(
+                    "seed:module",
+                    RelationKind::Contains,
+                    &format!("symbol:item:{index:02}"),
+                    index + 20,
+                )
+            })
+            .collect::<Vec<_>>();
+        let structural_engine = ExactGraphQueryEngine::new(structural_edges);
+        let structural_policy = TraversalPolicy {
+            max_structural_expansion: Some(3),
+            ..debug_policy
+        };
+        let (structural_paths, structural_telemetry) = structural_engine
+            .bounded_bfs_with_policy_telemetry(
+                "seed:module",
+                &[Traversal::forward(RelationKind::Contains)],
+                high_degree_limits,
+                structural_policy,
+                &|path| !path.steps.is_empty(),
+            );
+        assert_eq!(structural_paths.len(), 3);
+        assert_eq!(structural_telemetry.structural_expansion_limit_hits, 5);
+        assert_eq!(
+            structural_telemetry.budget_stop_reason.as_deref(),
+            Some("max_structural_expansion")
+        );
+
+        let cycle_engine = ExactGraphQueryEngine::new(vec![
+            edge("symbol:A", RelationKind::Calls, "symbol:B", 40),
+            edge("symbol:B", RelationKind::Calls, "symbol:C", 41),
+            edge("symbol:C", RelationKind::Calls, "symbol:A", 42),
+            edge("symbol:C", RelationKind::Writes, "symbol:sink", 43),
+        ]);
+        let (cycle_paths, cycle_telemetry) = cycle_engine.bounded_bfs_with_policy_telemetry(
+            "symbol:A",
+            &[
+                Traversal::forward(RelationKind::Calls),
+                Traversal::forward(RelationKind::Writes),
+            ],
+            limits(),
+            production_policy,
+            &|path| path.last_relation() == Some(RelationKind::Writes),
+        );
+        assert_eq!(cycle_paths.len(), 1);
+        assert!(cycle_telemetry.cycles_cut >= 1);
+
+        let broad_flow_engine = ExactGraphQueryEngine::new(
+            (0..10)
+                .map(|index| {
+                    edge(
+                        "symbol:input",
+                        RelationKind::FlowsTo,
+                        &format!("symbol:sink:{index:02}"),
+                        index + 60,
+                    )
+                })
+                .collect(),
+        );
+        let mut broad_flow_limits = limits();
+        broad_flow_limits.max_paths = 3;
+        let (broad_flow_paths, broad_flow_telemetry) = broad_flow_engine
+            .k_shortest_matching_with_policy_telemetry(
+                "symbol:input",
+                &[Traversal::forward(RelationKind::FlowsTo)],
+                broad_flow_limits,
+                production_policy,
+                &|path| !path.steps.is_empty(),
+            );
+        assert_eq!(broad_flow_paths.len(), 3);
+        assert_eq!(
+            broad_flow_telemetry.budget_stop_reason.as_deref(),
+            Some("max_paths")
+        );
+
+        let depth_engine = ExactGraphQueryEngine::new(vec![
+            edge("symbol:depth", RelationKind::Calls, "symbol:middle", 80),
+            edge("symbol:middle", RelationKind::Writes, "symbol:sink", 81),
+        ]);
+        let mut depth_limits = limits();
+        depth_limits.max_depth = 1;
+        let (depth_paths, depth_telemetry) = depth_engine.bounded_bfs_with_policy_telemetry(
+            "symbol:depth",
+            &[
+                Traversal::forward(RelationKind::Calls),
+                Traversal::forward(RelationKind::Writes),
+            ],
+            depth_limits,
+            production_policy,
+            &|path| path.last_relation() == Some(RelationKind::Writes),
+        );
+        assert!(depth_paths.is_empty());
+        assert_eq!(depth_telemetry.result_label(), "traversal_budget_exhausted");
+
+        let timeout_policy = TraversalPolicy {
+            timeout_ms: Some(0),
+            ..production_policy
+        };
+        let (timeout_paths, timeout_telemetry) = depth_engine.bounded_bfs_with_policy_telemetry(
+            "symbol:depth",
+            &[Traversal::forward(RelationKind::Calls)],
+            limits(),
+            timeout_policy,
+            &|path| !path.steps.is_empty(),
+        );
+        assert!(timeout_paths.is_empty());
+        assert_eq!(
+            timeout_telemetry.budget_stop_reason.as_deref(),
+            Some("timeout_ms")
+        );
+        assert_eq!(
+            timeout_telemetry.to_json()["result_label"].as_str(),
+            Some("traversal_budget_exhausted")
+        );
+
+        let test_edge = edge_with_evidence_role(
+            "symbol:handler",
+            RelationKind::Calls,
+            "symbol:test_helper",
+            span(100),
+            EvidenceRole::Test,
+            "test fixture path",
+        );
+        let role_engine = ExactGraphQueryEngine::new(vec![test_edge.clone()]);
+        let (production_paths, production_telemetry) = role_engine
+            .bounded_bfs_with_policy_telemetry(
+                "symbol:handler",
+                &[Traversal::forward(RelationKind::Calls)],
+                limits(),
+                production_policy,
+                &|path| !path.steps.is_empty(),
+            );
+        assert!(production_paths.is_empty());
+        assert_eq!(production_telemetry.source_role_blocked_edges, 1);
+        assert_eq!(
+            production_telemetry.to_json()["result_label"].as_str(),
+            Some("traversal_source_role_blocked")
+        );
+
+        let (test_paths, test_telemetry) = role_engine.bounded_bfs_with_policy_telemetry(
+            "symbol:handler",
+            &[Traversal::forward(RelationKind::Calls)],
+            limits(),
+            test_policy,
+            &|path| !path.steps.is_empty(),
+        );
+        assert_eq!(test_paths.len(), 1);
+        assert_eq!(test_telemetry.source_role_blocked_edges, 0);
+        let test_evidence = role_engine.path_evidence(&test_paths[0]);
+        assert_eq!(
+            test_evidence
+                .metadata
+                .get("evidence_role")
+                .and_then(serde_json::Value::as_str),
+            Some("test")
+        );
+
+        let heuristic_engine = ExactGraphQueryEngine::new(vec![heuristic_edge(
+            "symbol:caller",
+            RelationKind::Calls,
+            "symbol:maybe",
+            120,
+        )]);
+        let (heuristic_production_paths, heuristic_production_telemetry) = heuristic_engine
+            .bounded_bfs_with_policy_telemetry(
+                "symbol:caller",
+                &[Traversal::forward(RelationKind::Calls)],
+                limits(),
+                production_policy,
+                &|path| !path.steps.is_empty(),
+            );
+        assert!(heuristic_production_paths.is_empty());
+        assert_eq!(heuristic_production_telemetry.heuristic_edges_skipped, 1);
+        assert_eq!(
+            heuristic_production_telemetry.result_label(),
+            "traversal_heuristic_blocked"
+        );
+
+        let (heuristic_debug_paths, heuristic_debug_telemetry) = heuristic_engine
+            .bounded_bfs_with_policy_telemetry(
+                "symbol:caller",
+                &[Traversal::forward(RelationKind::Calls)],
+                limits(),
+                debug_policy,
+                &|path| !path.steps.is_empty(),
+            );
+        assert_eq!(heuristic_debug_paths.len(), 1);
+        assert_eq!(heuristic_debug_telemetry.heuristic_edges_seen, 1);
+        assert_eq!(
+            heuristic_debug_telemetry.result_label(),
+            "traversal_unknown"
+        );
+        let heuristic_evidence = heuristic_engine.path_evidence(&heuristic_debug_paths[0]);
+        assert_eq!(
+            heuristic_evidence
+                .metadata
+                .get("production_proof_eligible")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+
+        let mut derived_with_provenance = edge(
+            "symbol:controller",
+            RelationKind::Authorizes,
+            "symbol:policy",
+            140,
+        );
+        derived_with_provenance.derived = true;
+        derived_with_provenance.edge_class = EdgeClass::Derived;
+        derived_with_provenance.exactness = Exactness::DerivedFromVerifiedEdges;
+        derived_with_provenance.provenance_edges = vec!["edge:controller:CALLS:policy".into()];
+        let mut derived_missing_provenance = edge(
+            "symbol:controller",
+            RelationKind::Authorizes,
+            "symbol:unproven_policy",
+            141,
+        );
+        derived_missing_provenance.derived = true;
+        derived_missing_provenance.edge_class = EdgeClass::Derived;
+        derived_missing_provenance.exactness = Exactness::DerivedFromVerifiedEdges;
+        let derived_engine =
+            ExactGraphQueryEngine::new(vec![derived_with_provenance, derived_missing_provenance]);
+        let (derived_paths, derived_telemetry) = derived_engine.bounded_bfs_with_policy_telemetry(
+            "symbol:controller",
+            &[Traversal::forward(RelationKind::Authorizes)],
+            limits(),
+            production_policy,
+            &|path| !path.steps.is_empty(),
+        );
+        assert_eq!(derived_paths.len(), 1);
+        assert_eq!(derived_telemetry.derived_edge_provenance_checks, 2);
+        assert_eq!(derived_telemetry.derived_edge_missing_provenance, 1);
+        assert_eq!(derived_telemetry.derived_edge_provenance_blocked_edges, 1);
+
+        let mut exhausted_limits = limits();
+        exhausted_limits.max_edges_visited = 0;
+        let (exhausted_paths, exhausted_telemetry) = high_degree_engine
+            .bounded_bfs_with_policy_telemetry(
+                "seed:fanout",
+                &[Traversal::forward(RelationKind::Calls)],
+                exhausted_limits,
+                production_policy,
+                &|path| !path.steps.is_empty(),
+            );
+        assert!(exhausted_paths.is_empty());
+        assert_eq!(
+            exhausted_telemetry.to_json()["result_label"].as_str(),
+            Some("traversal_budget_exhausted")
+        );
+        assert!(exhausted_telemetry.no_proof_fallback_reason.is_some());
+
+        let overload_stage0 = (0..100)
+            .map(|index| format!("symbol:noise:{index:03}"))
+            .collect::<Vec<_>>();
+        let overload_engine = ExactGraphQueryEngine::new(vec![edge(
+            "symbol:exact_handler",
+            RelationKind::Calls,
+            "symbol:service",
+            160,
+        )]);
+        let overload_sources = BTreeMap::from([(
+            "fixtures/query.ts".to_string(),
+            (0..200)
+                .map(|_| "fn fixture() {}")
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )]);
+        let overload_packet = overload_engine.context_pack(
+            ContextPackRequest::new(
+                "Find symbol:exact_handler path",
+                "production",
+                200_000,
+                vec!["symbol:exact_handler".to_string()],
+            )
+            .with_stage0_candidates(overload_stage0),
+            &overload_sources,
+        );
+        assert!(overload_packet
+            .symbols
+            .contains(&"symbol:exact_handler".to_string()));
+        assert!(!overload_packet.verified_paths.is_empty());
+        let candidate_seed_count_before_cap = overload_packet
+            .metadata
+            .get("candidate_seed_count_before_cap")
+            .and_then(serde_json::Value::as_u64)
+            .expect("candidate seed count before cap");
+        assert!(candidate_seed_count_before_cap >= 101);
+        assert_eq!(
+            overload_packet
+                .metadata
+                .get("candidate_seed_count_after_cap")
+                .and_then(serde_json::Value::as_u64),
+            Some(production_policy.max_candidate_seeds as u64)
+        );
+    }
+
+    #[test]
     fn impact_analysis_core_groups_exact_query_results() {
         let engine = ExactGraphQueryEngine::new(vec![
             edge("api", RelationKind::Calls, "service", 1),
@@ -6663,6 +9280,88 @@ mod tests {
         }
     }
 
+    fn vector_text_candidate(id: &str, path: &str, text: &str, score: f64) -> RetrievalCandidate {
+        let mut candidate = RetrievalCandidate::new(
+            id,
+            RetrievalCandidateSource::VectorSemantic,
+            "vector text evidence candidate",
+        );
+        candidate.embedding_source = Some(VectorEmbeddingSource::TextEvidence);
+        candidate.file_id = Some(path.to_string());
+        candidate.path = Some(path.to_string());
+        candidate.span = Some(SourceSpan::new(path, 1, 3));
+        candidate.matched_query_text = Some("natural language package configuration".to_string());
+        candidate.evidence_role = EvidenceRole::Unknown;
+        candidate.proof_status = RetrievalProofStatus::NotGraphProof;
+        candidate.graph_proof = false;
+        candidate.claimable = true;
+        candidate.claimable_for_text = Some(true);
+        candidate.claimable_for_graph = Some(false);
+        candidate.score = Some(score);
+        candidate.embedding_model_id =
+            Some("codegraph-deterministic-token-projection-v1".to_string());
+        candidate.embedding_dim = Some(64);
+        candidate.embedding_profile = Some("deterministic-test-embedding-v1".to_string());
+        candidate.chunk_id = Some(format!("{id}#chunk"));
+        candidate.chunk_kind = Some("snippet".to_string());
+        candidate.requires_graph_verification = false;
+        candidate.verification_status = RetrievalVerificationStatus::NotGraphProof;
+        candidate.metadata.insert(
+            "provider_id".to_string(),
+            serde_json::json!("codegraph-local-deterministic"),
+        );
+        candidate
+            .metadata
+            .insert("chunk_text".to_string(), serde_json::json!(text));
+        candidate.metadata.insert(
+            "evidence_role_raw".to_string(),
+            serde_json::json!("text_evidence"),
+        );
+        candidate
+    }
+
+    fn vector_graph_candidate(
+        id: &str,
+        entity_id: &str,
+        text: &str,
+        score: f64,
+    ) -> RetrievalCandidate {
+        let mut candidate = RetrievalCandidate::new(
+            id,
+            RetrievalCandidateSource::VectorSemantic,
+            "vector graph entity candidate",
+        );
+        candidate.embedding_source = Some(VectorEmbeddingSource::GraphEntity);
+        candidate.file_id = Some("src/auth.ts".to_string());
+        candidate.path = Some("src/auth.ts".to_string());
+        candidate.entity_id = Some(entity_id.to_string());
+        candidate.span = Some(SourceSpan::new("src/auth.ts", 2, 4));
+        candidate.matched_query_text = Some("where is the login function implemented".to_string());
+        candidate.evidence_role = EvidenceRole::Production;
+        candidate.proof_status = RetrievalProofStatus::CandidateOnly;
+        candidate.graph_proof = false;
+        candidate.claimable = false;
+        candidate.claimable_for_text = Some(false);
+        candidate.claimable_for_graph = Some(false);
+        candidate.score = Some(score);
+        candidate.embedding_model_id =
+            Some("codegraph-deterministic-token-projection-v1".to_string());
+        candidate.embedding_dim = Some(64);
+        candidate.embedding_profile = Some("deterministic-test-embedding-v1".to_string());
+        candidate.chunk_id = Some(format!("{id}#chunk"));
+        candidate.chunk_kind = Some("function".to_string());
+        candidate.requires_graph_verification = true;
+        candidate.verification_status = RetrievalVerificationStatus::NeedsGraphVerification;
+        candidate.metadata.insert(
+            "provider_id".to_string(),
+            serde_json::json!("codegraph-local-deterministic"),
+        );
+        candidate
+            .metadata
+            .insert("chunk_text".to_string(), serde_json::json!(text));
+        candidate
+    }
+
     #[test]
     fn retrieval_funnel_returns_expected_context_packet() {
         let funnel = ok(RetrievalFunnel::new(
@@ -6725,7 +9424,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 "stage0_exact_seed_extraction",
+                "stage0_vector_semantic_candidates",
                 "stage1_binary_sieve",
+                "stage1_nuance_rescue",
                 "stage2_compressed_rerank",
                 "stage3_exact_graph_verification",
                 "stage4_context_packet",
@@ -6769,6 +9470,415 @@ mod tests {
     }
 
     #[test]
+    fn vector_branch_text_evidence_feeds_no_proof_fallback_without_graph_proof() {
+        let mut config = funnel_config(2, 2);
+        config.vector_candidate_top_k = 4;
+        let funnel = ok(RetrievalFunnel::new(Vec::new(), Vec::new(), config));
+        let candidate = vector_text_candidate(
+            "vector://text/package/foo/Config.in",
+            "package/foo/Config.in",
+            "config BR2_PACKAGE_FOO\n\tbool \"foo\"\n\tdepends on BR2_USE_MMU",
+            0.92,
+        );
+
+        let result = ok(funnel.run(
+            RetrievalFunnelRequest::new(
+                "Which Buildroot option enables the foo package?",
+                "planning",
+                1_000,
+            )
+            .enable_vector_candidates(true)
+            .vector_branch_status(VectorCandidateBranchStatus::Ready)
+            .vector_candidates(vec![candidate]),
+        ));
+
+        assert_eq!(result.vector_candidates.len(), 1);
+        assert_eq!(
+            result.vector_candidates[0].candidate_source,
+            RetrievalCandidateSource::VectorSemantic
+        );
+        assert!(!result.vector_candidates[0].graph_proof);
+        assert_eq!(
+            result.vector_candidates[0].proof_status,
+            RetrievalProofStatus::NotGraphProof
+        );
+        assert!(result.packet.verified_paths.is_empty());
+        assert!(result
+            .packet
+            .snippets
+            .iter()
+            .any(|snippet| snippet.file == "package/foo/Config.in"
+                && snippet.text.contains("BR2_PACKAGE_FOO")));
+        assert_eq!(
+            result
+                .packet
+                .metadata
+                .get("proof_status")
+                .and_then(|value| value.as_str()),
+            Some("no_proof_path_found")
+        );
+        assert_eq!(
+            result
+                .packet
+                .metadata
+                .get("graph_proof")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn vector_branch_graph_entity_candidate_feeds_graph_verification() {
+        let mut config = funnel_config(4, 4);
+        config.vector_candidate_top_k = 4;
+        let funnel = ok(RetrievalFunnel::new(
+            vec![edge(
+                "AuthService.login",
+                RelationKind::Calls,
+                "TokenStore.create",
+                1,
+            )],
+            Vec::new(),
+            config,
+        ));
+        let candidate = vector_graph_candidate(
+            "vector://entity/AuthService.login",
+            "AuthService.login",
+            "function AuthService.login writes login token",
+            0.94,
+        );
+
+        let result = ok(funnel.run(
+            RetrievalFunnelRequest::new(
+                "Where is login token creation implemented?",
+                "impact",
+                1_000,
+            )
+            .enable_vector_candidates(true)
+            .vector_branch_status(VectorCandidateBranchStatus::Ready)
+            .vector_candidates(vec![candidate]),
+        ));
+
+        assert_eq!(result.vector_candidates.len(), 1);
+        assert!(!result.vector_candidates[0].graph_proof);
+        assert_eq!(
+            result.vector_candidates[0].verification_status,
+            RetrievalVerificationStatus::NeedsGraphVerification
+        );
+        assert!(result.packet.verified_paths.iter().any(|path| {
+            path.source == "AuthService.login" && path.target == "TokenStore.create"
+        }));
+    }
+
+    #[test]
+    fn exact_seed_survives_many_vector_candidates_and_vector_cap() {
+        let mut config = funnel_config(1, 1);
+        config.vector_candidate_top_k = 1;
+        let noisy_vectors = (0..16)
+            .map(|index| {
+                vector_text_candidate(
+                    &format!("vector://text/noisy-{index}"),
+                    &format!("docs/noisy-{index}.md"),
+                    "semantic noise auth login token package",
+                    1.0 - (index as f64 * 0.01),
+                )
+            })
+            .collect::<Vec<_>>();
+        let funnel = ok(RetrievalFunnel::new(
+            vec![edge(
+                "Exact.seed",
+                RelationKind::Calls,
+                "verified-target",
+                1,
+            )],
+            vec![RetrievalDocument::new("Exact.seed", "unrelated exact seed")],
+            config,
+        ));
+
+        let result = ok(funnel.run(
+            RetrievalFunnelRequest::new("semantic noise auth login token", "impact", 1_000)
+                .exact_seeds(vec!["Exact.seed".to_string()])
+                .enable_vector_candidates(true)
+                .vector_branch_status(VectorCandidateBranchStatus::Ready)
+                .vector_candidates(noisy_vectors),
+        ));
+        let vector_stage = result
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage0_vector_semantic_candidates")
+            .expect("vector stage");
+        let stage1 = result
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage1_binary_sieve")
+            .expect("stage1 trace");
+        let stage2 = result
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage2_compressed_rerank")
+            .expect("stage2 trace");
+
+        assert_eq!(result.vector_candidates.len(), 1);
+        assert!(!vector_stage.dropped.is_empty());
+        assert!(stage1.kept.contains(&"Exact.seed".to_string()));
+        assert!(stage2.kept.contains(&"Exact.seed".to_string()));
+    }
+
+    #[test]
+    fn nuance_rescue_is_opt_in_and_candidate_only() {
+        let mut config = funnel_config(0, 4);
+        config.nuance_rescue_top_k = 4;
+        let funnel = ok(RetrievalFunnel::new(
+            vec![edge(
+                "RareAuthGate",
+                RelationKind::Calls,
+                "AdminTokenVault",
+                1,
+            )],
+            vec![RetrievalDocument::new(
+                "RareAuthGate",
+                "requireFreshAdminToken validates the admin route literal",
+            )],
+            config,
+        ));
+
+        let disabled = ok(funnel.run(RetrievalFunnelRequest::new(
+            "Trace requireFreshAdminToken admin route handling",
+            "security",
+            1_000,
+        )));
+        assert!(disabled.nuance_rescue_candidates.is_empty());
+        assert!(disabled.packet.verified_paths.is_empty());
+
+        let rescued = ok(funnel.run(
+            RetrievalFunnelRequest::new(
+                "Trace requireFreshAdminToken admin route handling",
+                "security",
+                1_000,
+            )
+            .enable_nuance_rescue_candidates(true),
+        ));
+        let nuance_stage = rescued
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage1_nuance_rescue")
+            .expect("nuance rescue stage");
+
+        assert!(nuance_stage.kept.contains(&"RareAuthGate".to_string()));
+        assert_eq!(rescued.nuance_rescue_candidates.len(), 1);
+        assert_eq!(
+            rescued.nuance_rescue_candidates[0].candidate_source,
+            RetrievalCandidateSource::NuanceRescue
+        );
+        assert_eq!(
+            rescued.nuance_rescue_candidates[0].proof_status,
+            RetrievalProofStatus::CandidateOnly
+        );
+        assert!(!rescued.nuance_rescue_candidates[0].graph_proof);
+        assert!(!rescued.nuance_rescue_candidates[0].claimable);
+        assert_eq!(
+            rescued.nuance_rescue_candidates[0].verification_status,
+            RetrievalVerificationStatus::NeedsGraphVerification
+        );
+        assert!(rescued
+            .packet
+            .verified_paths
+            .iter()
+            .any(|path| { path.source == "RareAuthGate" && path.target == "AdminTokenVault" }));
+    }
+
+    #[test]
+    fn missing_or_stale_vector_index_does_not_break_funnel() {
+        let funnel = ok(RetrievalFunnel::new(
+            vec![edge("a", RelationKind::Calls, "b", 1)],
+            vec![RetrievalDocument::new("a", "call b")],
+            funnel_config(2, 2),
+        ));
+
+        let missing = ok(funnel.run(
+            RetrievalFunnelRequest::new("Change a", "impact", 1_000)
+                .exact_seeds(vec!["a".to_string()])
+                .enable_vector_candidates(true)
+                .vector_branch_status(VectorCandidateBranchStatus::Missing),
+        ));
+        assert!(missing.vector_candidates.is_empty());
+        assert!(missing
+            .vector_warnings
+            .iter()
+            .any(|warning| warning.contains("missing")));
+        assert!(missing
+            .packet
+            .verified_paths
+            .iter()
+            .any(|path| path.source == "a" && path.target == "b"));
+
+        let stale = ok(funnel.run(
+            RetrievalFunnelRequest::new("Change a", "impact", 1_000)
+                .exact_seeds(vec!["a".to_string()])
+                .enable_vector_candidates(true)
+                .vector_branch_status(VectorCandidateBranchStatus::Stale {
+                    reason: "provider model changed".to_string(),
+                })
+                .vector_candidates(vec![vector_graph_candidate(
+                    "vector://entity/a",
+                    "a",
+                    "call b",
+                    0.99,
+                )]),
+        ));
+        assert!(stale.vector_candidates.is_empty());
+        assert!(stale
+            .vector_warnings
+            .iter()
+            .any(|warning| warning.contains("provider model changed")));
+    }
+
+    #[test]
+    fn vector_diagnostics_trace_includes_branch_without_default_bloat() {
+        let mut config = funnel_config(2, 2);
+        config.vector_candidate_top_k = 4;
+        let funnel = ok(RetrievalFunnel::new(Vec::new(), Vec::new(), config));
+        let candidate = vector_text_candidate(
+            "vector://text/package/foo/Config.in",
+            "package/foo/Config.in",
+            "config BR2_PACKAGE_FOO\n\tbool \"foo\"\n\tdepends on BR2_USE_MMU",
+            0.92,
+        );
+
+        let compact = ok(funnel.run(
+            RetrievalFunnelRequest::new("Which Buildroot option enables foo?", "planning", 1_000)
+                .enable_vector_candidates(true)
+                .vector_branch_status(VectorCandidateBranchStatus::Ready)
+                .vector_candidates(vec![candidate.clone()]),
+        ));
+        assert!(compact
+            .packet
+            .metadata
+            .get("vector_candidate_trace")
+            .is_none());
+
+        let diagnostic = ok(funnel.run(
+            RetrievalFunnelRequest::new("Which Buildroot option enables foo?", "planning", 1_000)
+                .enable_vector_candidates(true)
+                .vector_candidate_diagnostics(true)
+                .vector_branch_status(VectorCandidateBranchStatus::Ready)
+                .vector_candidates(vec![candidate]),
+        ));
+        let trace = diagnostic
+            .packet
+            .metadata
+            .get("vector_candidate_trace")
+            .expect("vector candidate trace");
+
+        assert_eq!(trace["diagnostic_only"].as_bool(), Some(true));
+        assert_eq!(trace["vector_enabled"].as_bool(), Some(true));
+        assert_eq!(trace["vector_index_status"].as_str(), Some("ready"));
+        assert_eq!(
+            trace["provider"]["provider_id"].as_str(),
+            Some("codegraph-local-deterministic")
+        );
+        assert_eq!(
+            trace["provider"]["model_id"].as_str(),
+            Some("codegraph-deterministic-token-projection-v1")
+        );
+        assert_eq!(trace["provider"]["dimension"].as_u64(), Some(64));
+        assert_eq!(trace["chunk_count_searched"].as_u64(), Some(1));
+        assert_eq!(trace["vector_candidate_count"].as_u64(), Some(1));
+        assert_eq!(trace["candidates_accepted"]["count"].as_u64(), Some(1));
+        assert_eq!(trace["candidates_rejected"]["count"].as_u64(), Some(0));
+        assert_eq!(
+            trace["top_vector_candidate_ids"][0].as_str(),
+            Some("vector://text/package/foo/Config.in")
+        );
+        assert_eq!(trace["score_range"]["min"].as_f64(), Some(0.92));
+        assert_eq!(trace["score_range"]["max"].as_f64(), Some(0.92));
+        assert_eq!(
+            trace["graph_verification_status_for_vector_candidates"]["graph_proof_count"].as_u64(),
+            Some(0)
+        );
+        assert!(trace["no_proof_fallback_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("vector text-evidence candidate")));
+        let serialized = serde_json::to_string(trace).expect("serialize vector trace");
+        assert!(!serialized.contains("BR2_PACKAGE_FOO"));
+        assert!(!serialized.contains("chunk_text"));
+    }
+
+    #[test]
+    fn vector_diagnostics_trace_records_stale_reason() {
+        let funnel = ok(RetrievalFunnel::new(
+            vec![edge("a", RelationKind::Calls, "b", 1)],
+            vec![RetrievalDocument::new("a", "call b")],
+            funnel_config(2, 2),
+        ));
+        let result = ok(funnel.run(
+            RetrievalFunnelRequest::new("Change a", "impact", 1_000)
+                .enable_vector_candidates(true)
+                .vector_candidate_diagnostics(true)
+                .vector_branch_status(VectorCandidateBranchStatus::Stale {
+                    reason: "provider model changed".to_string(),
+                })
+                .vector_candidates(vec![vector_graph_candidate(
+                    "vector://entity/a",
+                    "a",
+                    "call b",
+                    0.99,
+                )]),
+        ));
+        let trace = result
+            .packet
+            .metadata
+            .get("vector_candidate_trace")
+            .expect("vector candidate trace");
+
+        assert_eq!(trace["vector_enabled"].as_bool(), Some(true));
+        assert_eq!(trace["vector_index_status"].as_str(), Some("stale"));
+        assert_eq!(trace["vector_candidate_count"].as_u64(), Some(0));
+        assert_eq!(trace["candidates_rejected"]["count"].as_u64(), Some(1));
+        assert!(trace["stale_missing_vector_index_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("provider model changed")));
+    }
+
+    #[test]
+    fn vector_diagnostics_trace_redacts_query_secrets() {
+        let mut config = funnel_config(2, 2);
+        config.vector_candidate_top_k = 4;
+        let funnel = ok(RetrievalFunnel::new(Vec::new(), Vec::new(), config));
+        let result = ok(funnel.run(
+            RetrievalFunnelRequest::new(
+                "Find package metadata api_key=sk-vector-secret password=super-secret token=abc123",
+                "planning",
+                1_000,
+            )
+            .enable_vector_candidates(true)
+            .vector_candidate_diagnostics(true)
+            .vector_branch_status(VectorCandidateBranchStatus::Ready)
+            .vector_candidates(vec![vector_text_candidate(
+                "vector://text/package/foo/foo.mk",
+                "package/foo/foo.mk",
+                "$(eval $(generic-package))",
+                0.91,
+            )]),
+        ));
+        let trace = result
+            .packet
+            .metadata
+            .get("vector_candidate_trace")
+            .expect("vector candidate trace");
+        let serialized = serde_json::to_string(trace).expect("serialize vector trace");
+
+        assert_eq!(trace["query_text_redacted"].as_bool(), Some(true));
+        assert!(trace["query_text_sent_to_vector_branch"]
+            .as_str()
+            .is_some_and(|query| query.contains("[redacted]")));
+        assert!(!serialized.contains("sk-vector-secret"));
+        assert!(!serialized.contains("super-secret"));
+        assert!(!serialized.contains("abc123"));
+        assert!(!serialized.contains("generic-package"));
+    }
+
+    #[test]
     fn binary_false_positive_is_removed_by_exact_graph_verification() {
         let funnel = ok(RetrievalFunnel::new(
             vec![edge(
@@ -6802,6 +9912,195 @@ mod tests {
             .packet
             .symbols
             .contains(&"binary-false-positive".to_string()));
+    }
+
+    fn binary_overfetch_rerank_test_config() -> RetrievalFunnelConfig {
+        let mut config = funnel_config(1, 1);
+        config.binary_overfetch_k = 4;
+        config.rerank_config = RerankConfig {
+            text_weight: 0.05,
+            compressed_vector_weight: 0.05,
+            stage1_weight: 0.05,
+            metadata_weight: 0.0,
+            rare_token_weight: 1.0,
+            identifier_signature_weight: 1.0,
+            text_evidence_weight: 0.3,
+            source_role_weight: 0.3,
+            graph_verification_weight: 0.2,
+            ..RerankConfig::default()
+        };
+        config
+    }
+
+    fn near_boundary_binary_documents() -> Vec<RetrievalDocument> {
+        let mut target =
+            RetrievalDocument::new("ZephyrAlphaTokenGuard", "tiny guard body").stage0_score(0.1);
+        target
+            .metadata
+            .insert("matched_tokens".to_string(), "zephyralphatoken".to_string());
+        target
+            .metadata
+            .insert("rare_token_match".to_string(), "true".to_string());
+        target
+            .metadata
+            .insert("identifier_signature_match".to_string(), "true".to_string());
+        target.metadata.insert(
+            "path".to_string(),
+            "src/auth/zephyr_alpha_token_guard.ts".to_string(),
+        );
+        target
+            .metadata
+            .insert("source_role_compatible".to_string(), "true".to_string());
+        target
+            .metadata
+            .insert("text_evidence_match".to_string(), "true".to_string());
+
+        vec![
+            RetrievalDocument::new("broad-noise-0", "trace route auth test").stage0_score(1.0),
+            RetrievalDocument::new("broad-noise-1", "trace route auth test").stage0_score(1.0),
+            RetrievalDocument::new("broad-noise-2", "trace route auth test").stage0_score(1.0),
+            target,
+        ]
+    }
+
+    #[test]
+    fn binary_overfetch_rerank_recovers_near_boundary_candidate() {
+        let prompt = "Trace route auth test";
+        let without_overfetch = ok(RetrievalFunnel::new(
+            vec![edge(
+                "ZephyrAlphaTokenGuard",
+                RelationKind::Calls,
+                "verified-target",
+                1,
+            )],
+            near_boundary_binary_documents(),
+            {
+                let mut config = binary_overfetch_rerank_test_config();
+                config.binary_overfetch_k = 0;
+                config
+            },
+        ));
+        let without_result =
+            ok(without_overfetch.run(RetrievalFunnelRequest::new(prompt, "security", 1_000)));
+        let without_stage2 = without_result
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage2_compressed_rerank")
+            .expect("stage2 without overfetch");
+        assert!(!without_stage2
+            .kept
+            .contains(&"ZephyrAlphaTokenGuard".to_string()));
+
+        let with_overfetch = ok(RetrievalFunnel::new(
+            vec![edge(
+                "ZephyrAlphaTokenGuard",
+                RelationKind::Calls,
+                "verified-target",
+                1,
+            )],
+            near_boundary_binary_documents(),
+            binary_overfetch_rerank_test_config(),
+        ));
+        let result = ok(with_overfetch.run(RetrievalFunnelRequest::new(prompt, "security", 1_000)));
+        let stage1 = result
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage1_binary_sieve")
+            .expect("stage1 trace");
+        let stage2 = result
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage2_compressed_rerank")
+            .expect("stage2 trace");
+
+        assert!(stage1.kept.contains(&"ZephyrAlphaTokenGuard".to_string()));
+        assert_eq!(stage2.kept, vec!["ZephyrAlphaTokenGuard".to_string()]);
+        assert!(!stage2.kept.contains(&"broad-noise-0".to_string()));
+        assert!(stage1
+            .notes
+            .iter()
+            .any(|note| note == "binary_overfetch_k=4"));
+        assert!(stage2
+            .notes
+            .iter()
+            .any(|note| note == "rerank_input_count=4"));
+        assert!(stage2
+            .notes
+            .iter()
+            .any(|note| note == "rerank_output_count=1"));
+        assert!(stage2.notes.iter().any(|note| {
+            note.contains("rare_token_match")
+                && note.contains("identifier_signature_match")
+                && note.contains("graph_verification_availability")
+        }));
+        assert!(result.packet.verified_paths.iter().any(|path| {
+            path.source == "ZephyrAlphaTokenGuard" && path.target == "verified-target"
+        }));
+        let compact_rerank = result
+            .packet
+            .metadata
+            .get("rerank_scores")
+            .expect("rerank scores");
+        let serialized = serde_json::to_string(compact_rerank).expect("serialize rerank scores");
+        assert!(!serialized.contains("components"));
+        assert!(serialized.len() < 512);
+    }
+
+    #[test]
+    fn binary_overfetch_rerank_preserves_exact_seed_and_no_proof_boundary() {
+        let prompt = "Trace route auth test";
+        let no_proof = ok(RetrievalFunnel::new(
+            Vec::new(),
+            near_boundary_binary_documents(),
+            binary_overfetch_rerank_test_config(),
+        ));
+        let no_proof_result =
+            ok(no_proof.run(RetrievalFunnelRequest::new(prompt, "security", 1_000)));
+        let no_proof_stage2 = no_proof_result
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage2_compressed_rerank")
+            .expect("stage2 no proof");
+        assert_eq!(
+            no_proof_stage2.kept,
+            vec!["ZephyrAlphaTokenGuard".to_string()]
+        );
+        assert!(no_proof_result.packet.verified_paths.is_empty());
+        assert_ne!(
+            no_proof_result
+                .packet
+                .metadata
+                .get("graph_proof")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+
+        let exact_seed = ok(RetrievalFunnel::new(
+            vec![edge(
+                "Exact.seed",
+                RelationKind::Calls,
+                "verified-target",
+                1,
+            )],
+            near_boundary_binary_documents(),
+            binary_overfetch_rerank_test_config(),
+        ));
+        let exact_result = ok(exact_seed.run(
+            RetrievalFunnelRequest::new(prompt, "security", 1_000)
+                .exact_seeds(vec!["Exact.seed".to_string()]),
+        ));
+        let exact_stage2 = exact_result
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage2_compressed_rerank")
+            .expect("stage2 exact");
+
+        assert!(exact_stage2.kept.contains(&"Exact.seed".to_string()));
+        assert!(exact_result
+            .packet
+            .verified_paths
+            .iter()
+            .any(|path| path.source == "Exact.seed" && path.target == "verified-target"));
     }
 
     #[test]
@@ -6859,7 +10158,9 @@ mod tests {
 
         for stage in [
             "stage0_exact_seed_extraction",
+            "stage0_vector_semantic_candidates",
             "stage1_binary_sieve",
+            "stage1_nuance_rescue",
             "stage2_compressed_rerank",
             "stage3_exact_graph_verification",
             "stage4_context_packet",

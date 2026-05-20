@@ -1,0 +1,64 @@
+{
+  "cases": [
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "heuristic",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "handleOrder",
+        "wire"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "handleOrder",
+          "path": "fixtures/language_coverage_matrix/event_emitter_listener/typescript/src/events.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "wire",
+          "path": "fixtures/language_coverage_matrix/event_emitter_listener/typescript/src/events.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "handleOrder",
+          "path": "fixtures/language_coverage_matrix/event_emitter_listener/typescript/src/events.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "wire",
+          "path": "fixtures/language_coverage_matrix/event_emitter_listener/typescript/src/events.ts"
+        }
+      ],
+      "family": "event_emitter_listener",
+      "files": [
+        "fixtures/language_coverage_matrix/event_emitter_listener/typescript/src/events.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "literal event names can be recorded as heuristic event facts"
+      ],
+      "id": "event_emitter_listener.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "event execution ordering is not exact proof"
+      ]
+    }
+  ],
+  "family": "event_emitter_listener",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}

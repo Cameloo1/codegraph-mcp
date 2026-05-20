@@ -1,0 +1,207 @@
+{
+  "cases": [
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "partial",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "import { target as aliasedTarget } from \"./lib\";",
+        "run",
+        "target"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "target",
+          "path": "fixtures/language_coverage_matrix/import_aliases/typescript/src/lib.ts"
+        },
+        {
+          "kind": "Import",
+          "name": "import { target as aliasedTarget } from \"./lib\";",
+          "path": "fixtures/language_coverage_matrix/import_aliases/typescript/src/use.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/import_aliases/typescript/src/use.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "target",
+          "path": "fixtures/language_coverage_matrix/import_aliases/typescript/src/lib.ts"
+        },
+        {
+          "kind": "Import",
+          "name": "import { target as aliasedTarget } from \"./lib\";",
+          "path": "fixtures/language_coverage_matrix/import_aliases/typescript/src/use.ts"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/import_aliases/typescript/src/use.ts"
+        }
+      ],
+      "family": "import_aliases",
+      "files": [
+        "fixtures/language_coverage_matrix/import_aliases/typescript/src/lib.ts",
+        "fixtures/language_coverage_matrix/import_aliases/typescript/src/use.ts"
+      ],
+      "forbidden_edges": [
+        {
+          "exactness": "parser_verified",
+          "head_name": "run",
+          "path": "fixtures/language_coverage_matrix/import_aliases/typescript/src/use.ts",
+          "relation": "CALLS",
+          "tail_name": "target"
+        }
+      ],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "alias call may remain heuristic without compiler resolver"
+      ],
+      "id": "import_aliases.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "compiler-backed alias proof is optional and absent in parser-only baseline"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "from lib import target as aliased_target",
+        "run"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Import",
+          "name": "from lib import target as aliased_target",
+          "path": "fixtures/language_coverage_matrix/import_aliases/python/src/use.py"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/import_aliases/python/src/use.py"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Import",
+          "name": "from lib import target as aliased_target",
+          "path": "fixtures/language_coverage_matrix/import_aliases/python/src/use.py"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/import_aliases/python/src/use.py"
+        }
+      ],
+      "family": "import_aliases",
+      "files": [
+        "fixtures/language_coverage_matrix/import_aliases/python/src/lib.py",
+        "fixtures/language_coverage_matrix/import_aliases/python/src/use.py"
+      ],
+      "forbidden_edges": [
+        {
+          "exactness": "parser_verified",
+          "head_name": "run",
+          "path": "fixtures/language_coverage_matrix/import_aliases/python/src/use.py",
+          "relation": "CALLS",
+          "tail_name": "target"
+        }
+      ],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "alias call is expected to remain unresolved/heuristic"
+      ],
+      "id": "import_aliases.python",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "python",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "cross-file Python import alias resolution unsupported"
+      ]
+    },
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "unsupported",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "run",
+        "use crate::target as aliased_target;"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Import",
+          "name": "use crate::target as aliased_target;",
+          "path": "fixtures/language_coverage_matrix/import_aliases/rust/src/lib.rs"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/import_aliases/rust/src/lib.rs"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Import",
+          "name": "use crate::target as aliased_target;",
+          "path": "fixtures/language_coverage_matrix/import_aliases/rust/src/lib.rs"
+        },
+        {
+          "kind": "Function",
+          "name": "run",
+          "path": "fixtures/language_coverage_matrix/import_aliases/rust/src/lib.rs"
+        }
+      ],
+      "family": "import_aliases",
+      "files": [
+        "fixtures/language_coverage_matrix/import_aliases/rust/src/lib.rs"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "alias call may be unresolved"
+      ],
+      "id": "import_aliases.rust",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "rust",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "Rust use alias resolution unsupported"
+      ]
+    }
+  ],
+  "family": "import_aliases",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}

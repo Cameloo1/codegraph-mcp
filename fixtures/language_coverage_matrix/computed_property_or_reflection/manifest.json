@@ -1,0 +1,64 @@
+{
+  "cases": [
+    {
+      "exact_expected": [],
+      "expected_claim_states": [
+        {
+          "state": "heuristic",
+          "tier": "fixture"
+        }
+      ],
+      "expected_context_symbols": [
+        "key",
+        "write"
+      ],
+      "expected_edges": [],
+      "expected_entities": [
+        {
+          "kind": "Function",
+          "name": "write",
+          "path": "fixtures/language_coverage_matrix/computed_property_or_reflection/typescript/src/computed.ts"
+        },
+        {
+          "kind": "Parameter",
+          "name": "key",
+          "path": "fixtures/language_coverage_matrix/computed_property_or_reflection/typescript/src/computed.ts"
+        }
+      ],
+      "expected_evidence_roles": [],
+      "expected_paths": [],
+      "expected_source_spans": [
+        {
+          "kind": "Function",
+          "name": "write",
+          "path": "fixtures/language_coverage_matrix/computed_property_or_reflection/typescript/src/computed.ts"
+        },
+        {
+          "kind": "Parameter",
+          "name": "key",
+          "path": "fixtures/language_coverage_matrix/computed_property_or_reflection/typescript/src/computed.ts"
+        }
+      ],
+      "family": "computed_property_or_reflection",
+      "files": [
+        "fixtures/language_coverage_matrix/computed_property_or_reflection/typescript/src/computed.ts"
+      ],
+      "forbidden_edges": [],
+      "forbidden_paths": [],
+      "heuristic_expected": [
+        "computed property read/write syntax is visible"
+      ],
+      "id": "computed_property_or_reflection.typescript",
+      "implementation_target": "attempt best feasible exact parser-backed support",
+      "language": "typescript",
+      "mutation_steps": [],
+      "source_role_expectations": [],
+      "unsupported_expected": [
+        "exact property target unsupported for dynamic key"
+      ]
+    }
+  ],
+  "family": "computed_property_or_reflection",
+  "generated_at": "2026-05-19T20:33:38+00:00",
+  "schema_version": 1
+}

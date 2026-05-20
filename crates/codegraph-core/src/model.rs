@@ -646,13 +646,48 @@ pub enum RetrievalCandidateSource {
     TextEvidence,
     LexicalFts,
     SymbolLookup,
+    #[serde(rename = "binary_vector", alias = "vector_binary")]
     VectorBinary,
     VectorRerank,
+    VectorSemantic,
+    NuanceRescue,
     GraphNeighbor,
     PathEvidence,
     NoProofFallback,
     Diagnostic,
     Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorEmbeddingSource {
+    GraphEntity,
+    TextEvidence,
+    FilePathTitle,
+    Snippet,
+    DocComment,
+    Signature,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalCandidateLifecycleStatus {
+    Fresh,
+    Stale,
+    Invalid,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RetrievalCandidateLifecycleBinding {
+    pub status: RetrievalCandidateLifecycleStatus,
+    pub db_passport_fingerprint: Option<String>,
+    pub repo_head: Option<String>,
+    pub scope_policy_hash: Option<String>,
+    pub embedding_model_id: Option<String>,
+    pub embedding_profile: Option<String>,
+    pub stale_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -687,21 +722,43 @@ pub enum RetrievalVerificationStatus {
 pub struct RetrievalCandidate {
     pub candidate_id: String,
     pub candidate_source: RetrievalCandidateSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_source: Option<VectorEmbeddingSource>,
     pub file_id: Option<String>,
     pub path: Option<String>,
     pub entity_id: Option<String>,
     pub span: Option<SourceSpan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_span_missing_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_query_text: Option<String>,
     pub evidence_role: EvidenceRole,
     pub proof_status: RetrievalProofStatus,
     pub graph_proof: bool,
     pub claimable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimable_for_text: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimable_for_graph: Option<bool>,
     pub diagnostic_only: bool,
     pub score: Option<f64>,
     pub rank: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_dim: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_kind: Option<String>,
     #[serde(default)]
     pub matched_seeds: Vec<String>,
     pub requires_graph_verification: bool,
     pub verification_status: RetrievalVerificationStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_binding: Option<RetrievalCandidateLifecycleBinding>,
     pub reason: String,
     #[serde(default)]
     pub omitted: bool,
@@ -720,20 +777,31 @@ impl RetrievalCandidate {
         Self {
             candidate_id: candidate_id.into(),
             candidate_source,
+            embedding_source: None,
             file_id: None,
             path: None,
             entity_id: None,
             span: None,
+            source_span_missing_reason: None,
+            matched_query_text: None,
             evidence_role: EvidenceRole::Unknown,
             proof_status: RetrievalProofStatus::Unknown,
             graph_proof: false,
             claimable: false,
+            claimable_for_text: None,
+            claimable_for_graph: None,
             diagnostic_only: false,
             score: None,
             rank: None,
+            embedding_model_id: None,
+            embedding_dim: None,
+            embedding_profile: None,
+            chunk_id: None,
+            chunk_kind: None,
             matched_seeds: Vec::new(),
             requires_graph_verification: true,
             verification_status: RetrievalVerificationStatus::Unknown,
+            lifecycle_binding: None,
             reason: reason.into(),
             omitted: false,
             truncated: false,

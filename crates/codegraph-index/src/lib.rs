@@ -18,9 +18,12 @@ use std::{
 };
 
 use codegraph_core::{
-    normalize_repo_relative_path as normalize_graph_path, stable_edge_id,
-    stable_entity_id_for_kind, Edge, EdgeClass, EdgeContext, Entity, EntityKind, Exactness,
-    FileRecord, Metadata, PathEvidence, RelationKind, RepoIndexState, SourceSpan,
+    classify_entity_source_role, normalize_repo_relative_path as normalize_graph_path,
+    stable_edge_id, stable_entity_id_for_kind, Edge, EdgeClass, EdgeContext, Entity, EntityKind,
+    EvidenceRole, Exactness, FileRecord, Metadata, PathEvidence, RelationKind, RepoIndexState,
+    RetrievalCandidate, RetrievalCandidateLifecycleBinding, RetrievalCandidateLifecycleStatus,
+    RetrievalCandidateSource, RetrievalProofStatus, RetrievalVerificationStatus, SourceSpan,
+    VectorEmbeddingSource,
 };
 use codegraph_parser::{
     content_hash, detect_language, extract_entities_and_relations, BasicExtraction, LanguageParser,
@@ -34,7 +37,10 @@ use codegraph_store::{
     SqliteGraphStore, StoreError, DB_PASSPORT_VERSION, SCHEMA_VERSION,
 };
 use codegraph_store::{reset_sqlite_profile, take_sqlite_profile};
-use codegraph_vector::{BinarySignature, BinaryVectorIndex, InMemoryBinaryVectorIndex};
+use codegraph_vector::{
+    BinarySignature, BinaryVectorIndex, EmbeddingProvider, EmbeddingProviderMetadata,
+    InMemoryBinaryVectorIndex, TestEmbeddingVector,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -63,6 +69,10 @@ const TEXT_EVIDENCE_MAX_SNIPPET_BYTES: usize = 512;
 const TEXT_EVIDENCE_MAX_TOKENS_PER_FILE: usize = 96;
 const TEXT_EVIDENCE_KIND: &str = "text_evidence";
 const TEXT_EVIDENCE_PROOF_STATUS: &str = "not_graph_proof";
+pub const VECTOR_EMBEDDING_CHUNK_EXTRACTION_VERSION: &str = "vector_embedding_chunk_v1";
+pub const VECTOR_EMBEDDING_CHUNK_MAX_TEXT_BYTES: usize = 1024;
+pub const VECTOR_CHUNK_INDEX_METADATA_VERSION: &str = "vector_chunk_index_metadata_v1";
+pub const VECTOR_CHUNK_INDEX_DEFAULT_MAX_CHUNKS: usize = 4_096;
 
 #[derive(Debug)]
 pub enum IndexError {
@@ -540,6 +550,461 @@ struct TextEvidenceIndex {
     omitted_bytes: usize,
     indexed_lines: usize,
     total_lines: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorEmbeddingChunkSourceKind {
+    GraphEntity,
+    TextEvidence,
+    Metadata,
+}
+
+impl VectorEmbeddingChunkSourceKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::GraphEntity => "graph_entity",
+            Self::TextEvidence => "text_evidence",
+            Self::Metadata => "metadata",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorEmbeddingChunkKind {
+    Function,
+    Method,
+    Type,
+    ModuleFile,
+    Signature,
+    DocComment,
+    SourceSnippet,
+    Snippet,
+    FilePathTitle,
+    QName,
+    RelationNeighborhood,
+    SourceRole,
+}
+
+impl VectorEmbeddingChunkKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Function => "function",
+            Self::Method => "method",
+            Self::Type => "type",
+            Self::ModuleFile => "module_file",
+            Self::Signature => "signature",
+            Self::DocComment => "doc_comment",
+            Self::SourceSnippet => "source_snippet",
+            Self::Snippet => "snippet",
+            Self::FilePathTitle => "file_path_title",
+            Self::QName => "qname",
+            Self::RelationNeighborhood => "relation_neighborhood",
+            Self::SourceRole => "source_role",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VectorEmbeddingChunk {
+    pub chunk_id: String,
+    pub chunk_kind: VectorEmbeddingChunkKind,
+    pub source_kind: VectorEmbeddingChunkSourceKind,
+    pub file_id: String,
+    pub path: String,
+    pub entity_id: Option<String>,
+    pub source_span: Option<SourceSpan>,
+    pub source_role: String,
+    pub evidence_role: String,
+    pub proof_status: String,
+    pub graph_proof: bool,
+    pub claimable_for_graph: bool,
+    pub text: String,
+    pub token_count: usize,
+    pub byte_count: usize,
+    pub language: Option<String>,
+    pub file_kind: Option<String>,
+    pub lifecycle_binding: Option<RetrievalCandidateLifecycleBinding>,
+    pub content_hash: String,
+    pub extraction_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VectorChunkIndexProviderSnapshot {
+    pub provider_id: String,
+    pub model_id: String,
+    pub dimension: usize,
+    pub normalization: String,
+    pub provider_version: String,
+    pub privacy_mode: String,
+}
+
+impl VectorChunkIndexProviderSnapshot {
+    pub fn from_provider(metadata: &EmbeddingProviderMetadata) -> Self {
+        Self {
+            provider_id: metadata.provider_id.clone(),
+            model_id: metadata.model_id.clone(),
+            dimension: metadata.dimension,
+            normalization: metadata.normalization.clone(),
+            provider_version: metadata.version.clone(),
+            privacy_mode: metadata.privacy_mode.as_str().to_string(),
+        }
+    }
+
+    pub fn incompatibility_reason(&self, metadata: &EmbeddingProviderMetadata) -> Option<String> {
+        if self.provider_id != metadata.provider_id {
+            return Some("provider_id changed".to_string());
+        }
+        if self.model_id != metadata.model_id {
+            return Some("model_id changed".to_string());
+        }
+        if self.dimension != metadata.dimension {
+            return Some("dimension changed".to_string());
+        }
+        if self.normalization != metadata.normalization {
+            return Some("normalization changed".to_string());
+        }
+        if self.provider_version != metadata.version {
+            return Some("provider_version changed".to_string());
+        }
+        if self.privacy_mode != metadata.privacy_mode.as_str() {
+            return Some("privacy_mode changed".to_string());
+        }
+        None
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VectorChunkIndexPassportSnapshot {
+    pub passport_fingerprint: String,
+    pub passport_version: u32,
+    pub codegraph_schema_version: u32,
+    pub storage_mode: String,
+    pub index_scope_policy_hash: String,
+    pub canonical_repo_root: String,
+}
+
+impl VectorChunkIndexPassportSnapshot {
+    pub fn from_passport(passport: &DbPassport) -> Self {
+        Self {
+            passport_fingerprint: db_passport_fingerprint(passport),
+            passport_version: passport.passport_version,
+            codegraph_schema_version: passport.codegraph_schema_version,
+            storage_mode: passport.storage_mode.clone(),
+            index_scope_policy_hash: passport.index_scope_policy_hash.clone(),
+            canonical_repo_root: passport.canonical_repo_root.clone(),
+        }
+    }
+
+    pub fn incompatibility_reason(&self, passport: &DbPassport) -> Option<String> {
+        if self.passport_version != passport.passport_version {
+            return Some("db_passport_version changed".to_string());
+        }
+        if self.codegraph_schema_version != passport.codegraph_schema_version {
+            return Some("codegraph_schema_version changed".to_string());
+        }
+        if self.storage_mode != passport.storage_mode {
+            return Some("storage_mode changed".to_string());
+        }
+        if self.index_scope_policy_hash != passport.index_scope_policy_hash {
+            return Some("index_scope_policy_hash changed".to_string());
+        }
+        if self.canonical_repo_root != passport.canonical_repo_root {
+            return Some("canonical_repo_root changed".to_string());
+        }
+        if self.passport_fingerprint != db_passport_fingerprint(passport) {
+            return Some("db_passport changed".to_string());
+        }
+        None
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VectorChunkIndexBuildOptions {
+    pub max_chunks: usize,
+    pub source_scope: String,
+    pub extraction_version: String,
+}
+
+impl VectorChunkIndexBuildOptions {
+    pub fn new(source_scope: impl Into<String>) -> Self {
+        Self {
+            max_chunks: VECTOR_CHUNK_INDEX_DEFAULT_MAX_CHUNKS,
+            source_scope: source_scope.into(),
+            extraction_version: VECTOR_EMBEDDING_CHUNK_EXTRACTION_VERSION.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VectorChunkIndexMetadata {
+    pub metadata_version: String,
+    pub provider: VectorChunkIndexProviderSnapshot,
+    pub passport: VectorChunkIndexPassportSnapshot,
+    pub source_scope: String,
+    pub extraction_version: String,
+    pub created_at_unix_ms: u64,
+    pub max_chunks: usize,
+    pub chunk_count: usize,
+    pub omitted_chunks: usize,
+    pub indexed_text_bytes: usize,
+    pub estimated_vector_bytes_per_chunk: usize,
+    pub estimated_vector_bytes: usize,
+}
+
+impl VectorChunkIndexMetadata {
+    pub fn incompatibility_reason(
+        &self,
+        provider: &EmbeddingProviderMetadata,
+        passport: &DbPassport,
+        options: &VectorChunkIndexBuildOptions,
+    ) -> Option<String> {
+        if let Some(reason) = self.provider.incompatibility_reason(provider) {
+            return Some(reason);
+        }
+        if let Some(reason) = self.passport.incompatibility_reason(passport) {
+            return Some(reason);
+        }
+        if self.source_scope != options.source_scope {
+            return Some("source_scope changed".to_string());
+        }
+        if self.extraction_version != options.extraction_version {
+            return Some("extraction_version changed".to_string());
+        }
+        None
+    }
+
+    pub fn is_compatible_with(
+        &self,
+        provider: &EmbeddingProviderMetadata,
+        passport: &DbPassport,
+        options: &VectorChunkIndexBuildOptions,
+    ) -> bool {
+        self.incompatibility_reason(provider, passport, options)
+            .is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorChunkIndexEntry {
+    pub chunk: VectorEmbeddingChunk,
+    embedding: TestEmbeddingVector,
+}
+
+impl VectorChunkIndexEntry {
+    pub fn embedding(&self) -> &TestEmbeddingVector {
+        &self.embedding
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VectorChunkSearchHit {
+    pub chunk: VectorEmbeddingChunk,
+    pub score: f32,
+    pub rank: usize,
+    pub graph_proof: bool,
+    pub proof_status: String,
+    pub evidence_role: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VectorChunkIndexUpdateSummary {
+    pub path: String,
+    pub removed_chunks: usize,
+    pub inserted_chunks: usize,
+    pub omitted_chunks: usize,
+    pub chunk_count: usize,
+    pub indexed_text_bytes: usize,
+    pub estimated_vector_bytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InMemoryVectorChunkIndex {
+    metadata: VectorChunkIndexMetadata,
+    entries: BTreeMap<String, VectorChunkIndexEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PersistedVectorChunkIndex {
+    pub metadata: VectorChunkIndexMetadata,
+    pub chunks: Vec<VectorEmbeddingChunk>,
+}
+
+impl InMemoryVectorChunkIndex {
+    pub fn metadata(&self) -> &VectorChunkIndexMetadata {
+        &self.metadata
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn entries(&self) -> impl Iterator<Item = &VectorChunkIndexEntry> {
+        self.entries.values()
+    }
+
+    pub fn remove_chunks_for_path(
+        &mut self,
+        repo_relative_path: &str,
+    ) -> VectorChunkIndexUpdateSummary {
+        let normalized_path = normalize_graph_path(repo_relative_path);
+        let before = self.entries.len();
+        self.entries.retain(|_, entry| {
+            entry.chunk.path != normalized_path && entry.chunk.file_id != normalized_path
+        });
+        let removed_chunks = before.saturating_sub(self.entries.len());
+        self.refresh_size_metadata();
+        VectorChunkIndexUpdateSummary {
+            path: normalized_path,
+            removed_chunks,
+            inserted_chunks: 0,
+            omitted_chunks: 0,
+            chunk_count: self.metadata.chunk_count,
+            indexed_text_bytes: self.metadata.indexed_text_bytes,
+            estimated_vector_bytes: self.metadata.estimated_vector_bytes,
+        }
+    }
+
+    pub fn replace_chunks_for_path<P, I>(
+        &mut self,
+        repo_relative_path: &str,
+        chunks: I,
+        provider: &P,
+    ) -> Result<VectorChunkIndexUpdateSummary, IndexError>
+    where
+        P: EmbeddingProvider,
+        I: IntoIterator<Item = VectorEmbeddingChunk>,
+    {
+        if let Some(reason) = self
+            .metadata
+            .provider
+            .incompatibility_reason(provider.metadata())
+        {
+            return Err(IndexError::Message(format!(
+                "vector chunk index provider metadata is incompatible with update provider: {reason}"
+            )));
+        }
+
+        let normalized_path = normalize_graph_path(repo_relative_path);
+        let removed_chunks = self.remove_chunks_for_path(&normalized_path).removed_chunks;
+        let mut inserted_chunks = 0usize;
+        let mut omitted_chunks = 0usize;
+
+        for chunk in chunks {
+            if chunk.path != normalized_path && chunk.file_id != normalized_path {
+                omitted_chunks += 1;
+                continue;
+            }
+            if self.entries.contains_key(&chunk.chunk_id) {
+                continue;
+            }
+            if self.entries.len() >= self.metadata.max_chunks {
+                omitted_chunks += 1;
+                continue;
+            }
+            let embedding = provider.embed(&chunk.text).map_err(|error| {
+                IndexError::Message(format!(
+                    "vector chunk update embedding failed for {}: {error}",
+                    chunk.chunk_id
+                ))
+            })?;
+            self.entries.insert(
+                chunk.chunk_id.clone(),
+                VectorChunkIndexEntry { chunk, embedding },
+            );
+            inserted_chunks += 1;
+        }
+
+        self.metadata.omitted_chunks = self.metadata.omitted_chunks.saturating_add(omitted_chunks);
+        self.refresh_size_metadata();
+        Ok(VectorChunkIndexUpdateSummary {
+            path: normalized_path,
+            removed_chunks,
+            inserted_chunks,
+            omitted_chunks,
+            chunk_count: self.metadata.chunk_count,
+            indexed_text_bytes: self.metadata.indexed_text_bytes,
+            estimated_vector_bytes: self.metadata.estimated_vector_bytes,
+        })
+    }
+
+    pub fn incompatibility_reason<P: EmbeddingProvider>(
+        &self,
+        provider: &P,
+        passport: &DbPassport,
+        options: &VectorChunkIndexBuildOptions,
+    ) -> Option<String> {
+        self.metadata
+            .incompatibility_reason(provider.metadata(), passport, options)
+    }
+
+    pub fn search<P: EmbeddingProvider>(
+        &self,
+        provider: &P,
+        query_text: &str,
+        top_k: usize,
+    ) -> Result<Vec<VectorChunkSearchHit>, IndexError> {
+        if top_k == 0 {
+            return Ok(Vec::new());
+        }
+        if let Some(reason) = self
+            .metadata
+            .provider
+            .incompatibility_reason(provider.metadata())
+        {
+            return Err(IndexError::Message(format!(
+                "vector chunk index provider metadata is incompatible with query provider: {reason}"
+            )));
+        }
+        let query = provider.embed(query_text).map_err(|error| {
+            IndexError::Message(format!("vector chunk query embedding failed: {error}"))
+        })?;
+        let mut hits = self
+            .entries
+            .values()
+            .map(|entry| {
+                vector_embedding_dot_product(&query, entry.embedding()).map(|score| {
+                    VectorChunkSearchHit {
+                        chunk: entry.chunk.clone(),
+                        score,
+                        rank: 0,
+                        graph_proof: entry.chunk.graph_proof,
+                        proof_status: entry.chunk.proof_status.clone(),
+                        evidence_role: entry.chunk.evidence_role.clone(),
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, IndexError>>()?;
+        hits.sort_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| left.chunk.chunk_id.cmp(&right.chunk.chunk_id))
+        });
+        hits.truncate(top_k);
+        for (index, hit) in hits.iter_mut().enumerate() {
+            hit.rank = index + 1;
+        }
+        Ok(hits)
+    }
+
+    fn refresh_size_metadata(&mut self) {
+        self.metadata.chunk_count = self.entries.len();
+        self.metadata.indexed_text_bytes = self
+            .entries
+            .values()
+            .map(|entry| entry.chunk.byte_count)
+            .sum();
+        self.metadata.estimated_vector_bytes = self
+            .metadata
+            .chunk_count
+            .saturating_mul(self.metadata.estimated_vector_bytes_per_chunk);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -4634,8 +5099,10 @@ pub fn parse_extract_pending_files(
                         let extraction_start = Instant::now();
                         let mut extraction = extract_entities_and_relations(&parsed, &file.source);
                         extraction.file.size_bytes = file.size_bytes;
-                        extraction.file.metadata =
-                            file_manifest_metadata(file.modified_unix_nanos.clone());
+                        extraction.file.metadata = file_manifest_metadata_with_parser_status(
+                            file.modified_unix_nanos.clone(),
+                            extraction.file.metadata.clone(),
+                        );
                         let extraction_ms = extraction_start.elapsed().as_millis();
                         let bundle_start = Instant::now();
                         outputs.push(LocalFactBundle::new(
@@ -4671,15 +5138,46 @@ pub fn parse_extract_pending_files(
                         });
                     }
                     Err(error) => {
+                        let language = file.language.clone().or_else(|| {
+                            detect_language(&file.repo_relative_path)
+                                .map(|language| language.as_str().to_string())
+                        });
+                        let error_message = error.to_string();
+                        let extraction = BasicExtraction {
+                            file: FileRecord {
+                                repo_relative_path: file.repo_relative_path.clone(),
+                                file_hash: file.file_hash.clone(),
+                                language: language.clone(),
+                                size_bytes: file.size_bytes,
+                                indexed_at_unix_ms: None,
+                                metadata: parser_error_file_metadata(
+                                    file.modified_unix_nanos.clone(),
+                                    language.as_deref(),
+                                    &error_message,
+                                ),
+                            },
+                            entities: Vec::new(),
+                            edges: Vec::new(),
+                        };
+                        let bundle_start = Instant::now();
+                        outputs.push(LocalFactBundle::new(
+                            file.repo_relative_path.clone(),
+                            file.source,
+                            file.needs_delete,
+                            None,
+                            file.template_required,
+                            extraction,
+                        ));
+                        let bundle_ms = bundle_start.elapsed().as_millis();
                         stats.push(ParseExtractStat {
                             repo_relative_path: file.repo_relative_path,
                             parse_ms,
                             extraction_ms: 0,
-                            bundle_ms: 0,
+                            bundle_ms,
                             parse_error: true,
                             syntax_error: false,
                             skipped: false,
-                            message: Some(error.to_string()),
+                            message: Some(error_message),
                         });
                     }
                 }
@@ -5216,8 +5714,21 @@ pub fn update_changed_files_with_cache_to_db(
                     summary.files_skipped += 1;
                     continue;
                 }
-                Err(_) => {
+                Err(error) => {
                     summary.parse_errors += 1;
+                    let error_message = error.to_string();
+                    tx.upsert_file(&FileRecord {
+                        repo_relative_path: repo_relative_path.clone(),
+                        file_hash: hash.clone(),
+                        language: Some(language.as_str().to_string()),
+                        size_bytes,
+                        indexed_at_unix_ms: Some(indexed_at),
+                        metadata: parser_error_file_metadata(
+                            modified_unix_nanos(&file_metadata),
+                            Some(language.as_str()),
+                            &error_message,
+                        ),
+                    })?;
                     continue;
                 }
             };
@@ -5236,7 +5747,10 @@ pub fn update_changed_files_with_cache_to_db(
             );
             extraction.file.size_bytes = size_bytes;
             extraction.file.indexed_at_unix_ms = Some(indexed_at);
-            extraction.file.metadata = file_manifest_metadata(modified_unix_nanos(&file_metadata));
+            extraction.file.metadata = file_manifest_metadata_with_parser_status(
+                modified_unix_nanos(&file_metadata),
+                extraction.file.metadata.clone(),
+            );
             let mut snippets = None;
             let file_start = Instant::now();
             tx.upsert_file(&extraction.file)?;
@@ -6309,6 +6823,10 @@ fn reduce_test_edges_from_workspace(
             repo_relative_path,
             source,
         )?;
+        let import_spans_by_local = parse_static_imports(repo_relative_path, source)
+            .into_iter()
+            .map(|spec| (spec.local_name, spec.span))
+            .collect::<BTreeMap<_, _>>();
 
         for mock in parse_static_mock_specs(repo_relative_path, source) {
             let Some(target_path) = resolve_local_module_path(
@@ -6373,6 +6891,55 @@ fn reduce_test_edges_from_workspace(
                 "static_test_assertion_import_target",
                 "test",
             ));
+            plan.push_edge(resolved_test_edge(
+                &test_case.id,
+                RelationKind::Tests,
+                &assertion.target.id,
+                &assertion.span,
+                file_hash,
+                "static_test_assertion_import_target",
+                "test",
+            ));
+        }
+
+        let mut direct_test_edges = BTreeSet::new();
+        for test_case in &test_cases {
+            let Some(test_span) = test_case.source_span.as_ref() else {
+                continue;
+            };
+            for (local_name, target) in &import_targets {
+                for call_span in call_spans_for_local_name(source, repo_relative_path, local_name) {
+                    let Some(import_span) = import_spans_by_local.get(local_name) else {
+                        continue;
+                    };
+                    if !span_contains(test_span, &call_span)
+                        || local_declaration_shadows_import(
+                            &workspace.entities_by_file,
+                            repo_relative_path,
+                            local_name,
+                            import_span,
+                            &call_span,
+                        )
+                    {
+                        continue;
+                    }
+                    if direct_test_edges.insert((
+                        test_case.id.clone(),
+                        target.id.clone(),
+                        call_span.to_string(),
+                    )) {
+                        plan.push_edge(resolved_test_edge(
+                            &test_case.id,
+                            RelationKind::Tests,
+                            &target.id,
+                            &call_span,
+                            file_hash,
+                            "static_test_direct_import_call",
+                            "test",
+                        ));
+                    }
+                }
+            }
         }
     }
     plan.sort();
@@ -6405,6 +6972,48 @@ fn reduce_derived_mutation_edges_from_store(
             .flatten()
         {
             plan.push_edge(derived_mutation_edge(call, write));
+        }
+    }
+    let flows =
+        store.list_stored_edges_by_relation(RelationKind::FlowsTo, UNBOUNDED_STORE_READ_LIMIT)?;
+    let base_flows = flows
+        .iter()
+        .filter(|edge| !edge.derived)
+        .collect::<Vec<_>>();
+    let mut flows_by_head = BTreeMap::<&str, Vec<&Edge>>::new();
+    for edge in &base_flows {
+        flows_by_head
+            .entry(edge.head_id.as_str())
+            .or_default()
+            .push(*edge);
+    }
+    for first in &base_flows {
+        let Some(second_hops) = flows_by_head.get(first.tail_id.as_str()) else {
+            continue;
+        };
+        for second in second_hops {
+            if !chainable_dataflow_edges(first, second)
+                || first.head_id == second.tail_id
+                || first.id == second.id
+            {
+                continue;
+            }
+            plan.push_edge(derived_dataflow_edge(&[*first, *second]));
+
+            let Some(third_hops) = flows_by_head.get(second.tail_id.as_str()) else {
+                continue;
+            };
+            for third in third_hops {
+                if !chainable_dataflow_edges(second, third)
+                    || first.id == third.id
+                    || second.id == third.id
+                    || first.head_id == third.tail_id
+                    || second.head_id == third.tail_id
+                {
+                    continue;
+                }
+                plan.push_edge(derived_dataflow_edge(&[*first, *second, *third]));
+            }
         }
     }
     plan.sort();
@@ -6451,6 +7060,61 @@ fn derived_mutation_edge(call: &Edge, write: &Edge) -> Edge {
         file_hash: call.file_hash.clone().or_else(|| write.file_hash.clone()),
         extractor: "codegraph-index-derived-closure".to_string(),
         confidence: call.confidence.min(write.confidence),
+        exactness,
+        edge_class: EdgeClass::Derived,
+        context,
+        derived: true,
+        provenance_edges,
+        metadata,
+    }
+}
+
+fn chainable_dataflow_edges(first: &Edge, second: &Edge) -> bool {
+    first.relation == RelationKind::FlowsTo
+        && second.relation == RelationKind::FlowsTo
+        && !first.derived
+        && !second.derived
+        && first.tail_id == second.head_id
+        && first.source_span.repo_relative_path == second.source_span.repo_relative_path
+}
+
+fn derived_dataflow_edge(path: &[&Edge]) -> Edge {
+    debug_assert!(path.len() >= 2);
+    let first = path[0];
+    let last = path[path.len() - 1];
+    let provenance_edges = path.iter().map(|edge| edge.id.clone()).collect::<Vec<_>>();
+    let exactness = derived_exactness_for_edges(path.iter().copied());
+    let context = derived_context_for_edges(path.iter().copied());
+    let confidence = path
+        .iter()
+        .fold(1.0_f64, |minimum, edge| minimum.min(edge.confidence));
+    let mut metadata = Metadata::new();
+    metadata.insert("resolution".to_string(), "derived_from_base_path".into());
+    metadata.insert("resolver".to_string(), "flows_to_local_closure".into());
+    metadata.insert("phase".to_string(), "language_tier3".into());
+    metadata.insert("context".to_string(), context.as_str().into());
+    metadata.insert("provenance_kind".to_string(), "FLOWS_TO+".into());
+    metadata.insert("claim_state".to_string(), "derived_with_provenance".into());
+    metadata.insert("hop_count".to_string(), path.len().into());
+
+    Edge {
+        id: stable_edge_id(
+            &first.head_id,
+            RelationKind::FlowsTo,
+            &last.tail_id,
+            &last.source_span,
+        ),
+        head_id: first.head_id.clone(),
+        relation: RelationKind::FlowsTo,
+        tail_id: last.tail_id.clone(),
+        source_span: last.source_span.clone(),
+        repo_commit: first
+            .repo_commit
+            .clone()
+            .or_else(|| last.repo_commit.clone()),
+        file_hash: first.file_hash.clone().or_else(|| last.file_hash.clone()),
+        extractor: "codegraph-index-derived-dataflow".to_string(),
+        confidence,
         exactness,
         edge_class: EdgeClass::Derived,
         context,
@@ -7288,6 +7952,13 @@ fn import_alias_entity(spec: &StaticImportSpec, file_hash: &str) -> Entity {
         .into(),
     );
     metadata.insert("resolution".to_string(), "resolved_static_import".into());
+    metadata.insert("claim_state".to_string(), "exact".into());
+    metadata.insert("syntax_claim_state".to_string(), "exact".into());
+    metadata.insert("target_resolution_claim_state".to_string(), "exact".into());
+    metadata.insert(
+        "proof_basis".to_string(),
+        "local module specifier resolved to indexed file and declaration name".into(),
+    );
     metadata.insert("phase".to_string(), "14".into());
     Entity {
         id: stable_entity_id_for_kind(
@@ -7326,6 +7997,12 @@ fn dynamic_import_entity(
     metadata.insert("specifier".to_string(), spec.specifier.clone().into());
     metadata.insert("import_kind".to_string(), "dynamic".into());
     metadata.insert("resolution".to_string(), "unresolved_dynamic_import".into());
+    metadata.insert("claim_state".to_string(), "heuristic".into());
+    metadata.insert("syntax_claim_state".to_string(), "heuristic".into());
+    metadata.insert(
+        "target_resolution_claim_state".to_string(),
+        "unresolved".into(),
+    );
     metadata.insert("context".to_string(), "unknown".into());
     metadata.insert("phase".to_string(), "14".into());
     Entity {
@@ -7359,6 +8036,13 @@ fn resolved_import_edge(
     let mut metadata = Metadata::new();
     metadata.insert("resolution".to_string(), "resolved_static_import".into());
     metadata.insert("resolver".to_string(), reason.into());
+    metadata.insert("claim_state".to_string(), "exact".into());
+    metadata.insert("syntax_claim_state".to_string(), "exact".into());
+    metadata.insert("target_resolution_claim_state".to_string(), "exact".into());
+    metadata.insert(
+        "proof_basis".to_string(),
+        "local module specifier resolved to indexed file and declaration name".into(),
+    );
     metadata.insert("phase".to_string(), "14".into());
     Edge {
         id: stable_edge_id(head_id, relation, tail_id, span),
@@ -7388,6 +8072,12 @@ fn unresolved_dynamic_import_edge(
     let mut metadata = Metadata::new();
     metadata.insert("resolution".to_string(), "unresolved_dynamic_import".into());
     metadata.insert("resolver".to_string(), "dynamic_import_unresolved".into());
+    metadata.insert("claim_state".to_string(), "heuristic".into());
+    metadata.insert("syntax_claim_state".to_string(), "heuristic".into());
+    metadata.insert(
+        "target_resolution_claim_state".to_string(),
+        "unresolved".into(),
+    );
     metadata.insert("context".to_string(), "unknown".into());
     metadata.insert("phase".to_string(), "14".into());
     Edge {
@@ -7510,6 +8200,28 @@ fn resolved_test_edge(
     metadata.insert("resolver".to_string(), reason.into());
     metadata.insert("phase".to_string(), "31".into());
     metadata.insert("context".to_string(), context.into());
+    let evidence_role = if context.eq_ignore_ascii_case("mock")
+        || context.eq_ignore_ascii_case("stub")
+        || matches!(relation, RelationKind::Mocks | RelationKind::Stubs)
+    {
+        "mock"
+    } else {
+        "test"
+    };
+    metadata.insert("source_role".to_string(), evidence_role.into());
+    metadata.insert("evidence_role".to_string(), evidence_role.into());
+    metadata.insert(
+        "classification_source".to_string(),
+        "test_relation_resolver".into(),
+    );
+    metadata.insert(
+        "classification_reason".to_string(),
+        if evidence_role == "mock" {
+            "resolved mock/stub test relation".into()
+        } else {
+            "resolved test/assertion relation".into()
+        },
+    );
     Edge {
         id: stable_edge_id(head_id, relation, tail_id, span),
         head_id: head_id.to_string(),
@@ -7521,13 +8233,12 @@ fn resolved_test_edge(
         extractor: "codegraph-index-test-resolver".to_string(),
         confidence: 1.0,
         exactness: Exactness::ParserVerified,
-        edge_class: if context.eq_ignore_ascii_case("mock") || context.eq_ignore_ascii_case("stub")
-        {
+        edge_class: if evidence_role == "mock" {
             EdgeClass::Mock
         } else {
             EdgeClass::Test
         },
-        context: if context.eq_ignore_ascii_case("mock") || context.eq_ignore_ascii_case("stub") {
+        context: if evidence_role == "mock" {
             EdgeContext::Mock
         } else {
             EdgeContext::Test
@@ -7565,6 +8276,13 @@ fn mock_entity_for(
     );
     metadata.insert("phase".to_string(), "31".into());
     metadata.insert("context".to_string(), "mock".into());
+    metadata.insert("source_role".to_string(), "mock".into());
+    metadata.insert("evidence_role".to_string(), "mock".into());
+    metadata.insert(
+        "source_role_reason".to_string(),
+        "static test mock module factory".into(),
+    );
+    metadata.insert("source_role_source".to_string(), "test_resolver".into());
     metadata.insert("mocked_export".to_string(), exported_name.into());
     Entity {
         id: stable_entity_id_for_kind(
@@ -8775,7 +9493,11 @@ fn containing_test_case(test_cases: &[Entity], span: &SourceSpan) -> Option<Enti
 
 fn is_test_file_path_for_index(path: &str) -> bool {
     let normalized = normalize_graph_path(path).to_ascii_lowercase();
-    normalized.ends_with(".test.ts")
+    let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    normalized.contains("/tests/")
+        || normalized.contains("/test/")
+        || normalized.contains("/spec/")
+        || normalized.ends_with(".test.ts")
         || normalized.ends_with(".test.tsx")
         || normalized.ends_with(".test.js")
         || normalized.ends_with(".test.jsx")
@@ -8783,11 +9505,37 @@ fn is_test_file_path_for_index(path: &str) -> bool {
         || normalized.ends_with(".spec.tsx")
         || normalized.ends_with(".spec.js")
         || normalized.ends_with(".spec.jsx")
+        || normalized.ends_with("_test.go")
+        || normalized.ends_with("_test.py")
+        || normalized.ends_with("_test.rb")
+        || normalized.ends_with("_spec.rb")
+        || normalized.ends_with("_test.php")
+        || normalized.ends_with("_spec.php")
+        || (file_name.starts_with("test_") && file_name.ends_with(".py"))
+        || (file_name.starts_with("test_") && file_name.ends_with(".rb"))
+        || (file_name.starts_with("test_") && file_name.ends_with(".php"))
+        || file_name.ends_with("test.java")
+        || file_name.ends_with("tests.java")
+        || file_name.ends_with("spec.java")
+        || file_name.ends_with("test.cs")
+        || file_name.ends_with("tests.cs")
+        || file_name.ends_with("spec.cs")
+        || file_name.ends_with("test.php")
+        || file_name.ends_with("testcase.php")
+        || file_name.ends_with("test.rb")
+        || file_name.ends_with("spec.rb")
 }
 
 fn source_may_have_test_relation(source: &str) -> bool {
     let lower = source.to_ascii_lowercase();
     lower.contains("expect(")
+        || lower.contains("describe(")
+        || lower.contains(" it(")
+        || lower.trim_start().starts_with("it(")
+        || lower.contains("\nit(")
+        || lower.contains(" test(")
+        || lower.trim_start().starts_with("test(")
+        || lower.contains("\ntest(")
         || lower.contains("assert")
         || lower.contains(".mock(")
         || lower.contains("jest.mock")
@@ -8951,6 +9699,36 @@ fn file_manifest_metadata(modified_unix_nanos: Option<String>) -> Metadata {
         FILE_STALE_CLEANUP_KEY.to_string(),
         FILE_STALE_CLEANUP_DELETE_BEFORE_INSERT.into(),
     );
+    metadata
+}
+
+fn file_manifest_metadata_with_parser_status(
+    modified_unix_nanos: Option<String>,
+    parser_metadata: Metadata,
+) -> Metadata {
+    let mut metadata = file_manifest_metadata(modified_unix_nanos);
+    metadata.extend(parser_metadata);
+    metadata
+}
+
+fn parser_error_file_metadata(
+    modified_unix_nanos: Option<String>,
+    language: Option<&str>,
+    error_message: &str,
+) -> Metadata {
+    let mut metadata = file_manifest_metadata(modified_unix_nanos);
+    metadata.insert("parser_status".to_string(), "parser_error".into());
+    metadata.insert("claim_state".to_string(), "unsupported".into());
+    metadata.insert(
+        "unsupported_behavior_label".to_string(),
+        "parser_invocation_failed".into(),
+    );
+    metadata.insert("parser_error".to_string(), true.into());
+    metadata.insert("parser_error_message".to_string(), error_message.into());
+    metadata.insert("graph_relation_claims".to_string(), json!([]));
+    if let Some(language) = language {
+        metadata.insert("parser_frontend".to_string(), language.into());
+    }
     metadata
 }
 
@@ -9525,6 +10303,710 @@ fn entity_binary_signature(
     })
 }
 
+pub fn extract_graph_entity_embedding_chunks(
+    entity: &Entity,
+    source: Option<&str>,
+    language: Option<&str>,
+    lifecycle_binding: Option<RetrievalCandidateLifecycleBinding>,
+) -> Vec<VectorEmbeddingChunk> {
+    let source_role = classify_entity_source_role(entity)
+        .role
+        .as_str()
+        .to_string();
+    let chunk_kind = vector_chunk_kind_for_entity(entity.kind);
+    let signature_text = bounded_vector_chunk_text(&format!(
+        "{} {} {} file {}",
+        entity.kind, entity.qualified_name, entity.name, entity.repo_relative_path
+    ));
+    let mut chunks = vec![build_vector_embedding_chunk(VectorChunkBuildInput {
+        source_kind: VectorEmbeddingChunkSourceKind::GraphEntity,
+        chunk_kind,
+        path: &entity.repo_relative_path,
+        entity_id: Some(&entity.id),
+        source_span: entity.source_span.clone(),
+        source_role: &source_role,
+        evidence_role: &source_role,
+        proof_status: "candidate_only",
+        graph_proof: false,
+        claimable_for_graph: false,
+        text: signature_text,
+        language: language.map(str::to_string),
+        file_kind: None,
+        lifecycle_binding: lifecycle_binding.clone(),
+    })];
+
+    if let (Some(source), Some(span)) = (source, entity.source_span.as_ref()) {
+        if let Some(text) = source_span_text(source, span) {
+            chunks.push(build_vector_embedding_chunk(VectorChunkBuildInput {
+                source_kind: VectorEmbeddingChunkSourceKind::GraphEntity,
+                chunk_kind: VectorEmbeddingChunkKind::SourceSnippet,
+                path: &entity.repo_relative_path,
+                entity_id: Some(&entity.id),
+                source_span: Some(span.clone()),
+                source_role: &source_role,
+                evidence_role: &source_role,
+                proof_status: "candidate_only",
+                graph_proof: false,
+                claimable_for_graph: false,
+                text,
+                language: language.map(str::to_string),
+                file_kind: None,
+                lifecycle_binding: lifecycle_binding.clone(),
+            }));
+        }
+        if let Some((comment_span, comment)) = leading_doc_comment(source, span) {
+            chunks.push(build_vector_embedding_chunk(VectorChunkBuildInput {
+                source_kind: VectorEmbeddingChunkSourceKind::GraphEntity,
+                chunk_kind: VectorEmbeddingChunkKind::DocComment,
+                path: &entity.repo_relative_path,
+                entity_id: Some(&entity.id),
+                source_span: Some(comment_span),
+                source_role: &source_role,
+                evidence_role: &source_role,
+                proof_status: "candidate_only",
+                graph_proof: false,
+                claimable_for_graph: false,
+                text: comment,
+                language: language.map(str::to_string),
+                file_kind: None,
+                lifecycle_binding,
+            }));
+        }
+    }
+
+    chunks
+}
+
+pub fn extract_text_evidence_embedding_chunks_for_path(
+    repo_relative_path: &str,
+    source: &str,
+    lifecycle_binding: Option<RetrievalCandidateLifecycleBinding>,
+) -> Vec<VectorEmbeddingChunk> {
+    let Some(kind) = classify_scoped_text_evidence_path(repo_relative_path) else {
+        return Vec::new();
+    };
+    if !looks_like_text_evidence_source(source) {
+        return Vec::new();
+    }
+
+    let evidence = build_text_evidence_index(repo_relative_path, source);
+    evidence
+        .snippets
+        .iter()
+        .map(|snippet| {
+            build_vector_embedding_chunk(VectorChunkBuildInput {
+                source_kind: VectorEmbeddingChunkSourceKind::TextEvidence,
+                chunk_kind: VectorEmbeddingChunkKind::Snippet,
+                path: repo_relative_path,
+                entity_id: None,
+                source_span: Some(snippet.span.clone()),
+                source_role: TEXT_EVIDENCE_KIND,
+                evidence_role: TEXT_EVIDENCE_KIND,
+                proof_status: TEXT_EVIDENCE_PROOF_STATUS,
+                graph_proof: false,
+                claimable_for_graph: false,
+                text: bounded_vector_chunk_text(&snippet.text),
+                language: None,
+                file_kind: Some(kind.as_str().to_string()),
+                lifecycle_binding: lifecycle_binding.clone(),
+            })
+        })
+        .collect()
+}
+
+pub fn extract_file_path_title_embedding_chunk_for_path(
+    repo_relative_path: &str,
+    evidence_role: &str,
+    file_kind: Option<&str>,
+    lifecycle_binding: Option<RetrievalCandidateLifecycleBinding>,
+) -> VectorEmbeddingChunk {
+    let normalized_path = normalize_graph_path(repo_relative_path);
+    let file_name = normalized_path
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(normalized_path.as_str());
+    let title = file_name.split('.').next().unwrap_or(file_name);
+    let proof_status = if evidence_role == TEXT_EVIDENCE_KIND {
+        TEXT_EVIDENCE_PROOF_STATUS
+    } else {
+        "candidate_only"
+    };
+    build_vector_embedding_chunk(VectorChunkBuildInput {
+        source_kind: VectorEmbeddingChunkSourceKind::Metadata,
+        chunk_kind: VectorEmbeddingChunkKind::FilePathTitle,
+        path: &normalized_path,
+        entity_id: None,
+        source_span: None,
+        source_role: "file_path_title",
+        evidence_role,
+        proof_status,
+        graph_proof: false,
+        claimable_for_graph: false,
+        text: bounded_vector_chunk_text(&format!(
+            "file path {normalized_path} title {title} kind {}",
+            file_kind.unwrap_or("unknown")
+        )),
+        language: None,
+        file_kind: file_kind.map(str::to_string),
+        lifecycle_binding,
+    })
+}
+
+pub fn build_in_memory_vector_chunk_index<P, I>(
+    chunks: I,
+    provider: &P,
+    passport: &DbPassport,
+    options: VectorChunkIndexBuildOptions,
+) -> Result<InMemoryVectorChunkIndex, IndexError>
+where
+    P: EmbeddingProvider,
+    I: IntoIterator<Item = VectorEmbeddingChunk>,
+{
+    let mut entries = BTreeMap::new();
+    let mut omitted_chunks = 0usize;
+    let mut indexed_text_bytes = 0usize;
+
+    for chunk in chunks {
+        if entries.contains_key(&chunk.chunk_id) {
+            continue;
+        }
+        if entries.len() >= options.max_chunks {
+            omitted_chunks += 1;
+            continue;
+        }
+        let embedding = provider.embed(&chunk.text).map_err(|error| {
+            IndexError::Message(format!(
+                "vector chunk embedding failed for {}: {error}",
+                chunk.chunk_id
+            ))
+        })?;
+        indexed_text_bytes = indexed_text_bytes.saturating_add(chunk.byte_count);
+        entries.insert(
+            chunk.chunk_id.clone(),
+            VectorChunkIndexEntry { chunk, embedding },
+        );
+    }
+
+    let chunk_count = entries.len();
+    let estimated_vector_bytes_per_chunk = provider
+        .metadata()
+        .dimension
+        .saturating_mul(std::mem::size_of::<f32>());
+    let estimated_vector_bytes = chunk_count.saturating_mul(estimated_vector_bytes_per_chunk);
+    let metadata = VectorChunkIndexMetadata {
+        metadata_version: VECTOR_CHUNK_INDEX_METADATA_VERSION.to_string(),
+        provider: VectorChunkIndexProviderSnapshot::from_provider(provider.metadata()),
+        passport: VectorChunkIndexPassportSnapshot::from_passport(passport),
+        source_scope: options.source_scope,
+        extraction_version: options.extraction_version,
+        created_at_unix_ms: unix_time_ms(),
+        max_chunks: options.max_chunks,
+        chunk_count,
+        omitted_chunks,
+        indexed_text_bytes,
+        estimated_vector_bytes_per_chunk,
+        estimated_vector_bytes,
+    };
+
+    Ok(InMemoryVectorChunkIndex { metadata, entries })
+}
+
+pub fn persisted_vector_chunk_index_from_index(
+    index: &InMemoryVectorChunkIndex,
+) -> PersistedVectorChunkIndex {
+    PersistedVectorChunkIndex {
+        metadata: index.metadata().clone(),
+        chunks: index
+            .entries()
+            .map(|entry| entry.chunk.clone())
+            .collect::<Vec<_>>(),
+    }
+}
+
+pub fn write_vector_chunk_index_json(
+    path: &Path,
+    index: &InMemoryVectorChunkIndex,
+) -> Result<(), IndexError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let persisted = persisted_vector_chunk_index_from_index(index);
+    let bytes = serde_json::to_vec_pretty(&persisted).map_err(|error| {
+        IndexError::Message(format!("failed to serialize vector chunk index: {error}"))
+    })?;
+    fs::write(path, bytes)?;
+    Ok(())
+}
+
+pub fn read_vector_chunk_index_json(path: &Path) -> Result<PersistedVectorChunkIndex, IndexError> {
+    let bytes = fs::read(path)?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        IndexError::Message(format!(
+            "failed to parse vector chunk index {}: {error}",
+            path.display()
+        ))
+    })
+}
+
+pub fn load_vector_chunk_index_json<P: EmbeddingProvider>(
+    path: &Path,
+    provider: &P,
+    passport: &DbPassport,
+    options: VectorChunkIndexBuildOptions,
+) -> Result<InMemoryVectorChunkIndex, IndexError> {
+    let persisted = read_vector_chunk_index_json(path)?;
+    if persisted.metadata.metadata_version != VECTOR_CHUNK_INDEX_METADATA_VERSION {
+        return Err(IndexError::Message(format!(
+            "metadata_version changed: expected {}, got {}",
+            VECTOR_CHUNK_INDEX_METADATA_VERSION, persisted.metadata.metadata_version
+        )));
+    }
+    if let Some(reason) =
+        persisted
+            .metadata
+            .incompatibility_reason(provider.metadata(), passport, &options)
+    {
+        return Err(IndexError::Message(reason));
+    }
+    if persisted.metadata.chunk_count != persisted.chunks.len() {
+        return Err(IndexError::Message(format!(
+            "chunk_count mismatch: metadata says {}, file has {} chunks",
+            persisted.metadata.chunk_count,
+            persisted.chunks.len()
+        )));
+    }
+    build_in_memory_vector_chunk_index(persisted.chunks, provider, passport, options)
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct VectorChunkIndexBuildSummary {
+    pub status: String,
+    pub index_path: String,
+    pub chunk_count: usize,
+    pub omitted_chunks: usize,
+    pub indexed_text_bytes: usize,
+    pub estimated_vector_bytes: usize,
+    pub graph_entity_chunks: usize,
+    pub text_evidence_chunks: usize,
+    pub file_path_title_chunks: usize,
+    pub provider_id: String,
+    pub model_id: String,
+    pub dimension: usize,
+    pub source_scope: String,
+    pub extraction_version: String,
+    pub graph_proof: bool,
+    pub proof_status: String,
+}
+
+pub fn build_vector_chunk_index_json_for_repo<P: EmbeddingProvider>(
+    repo_root: &Path,
+    db_path: &Path,
+    index_path: &Path,
+    provider: &P,
+    options: VectorChunkIndexBuildOptions,
+) -> Result<VectorChunkIndexBuildSummary, IndexError> {
+    let repo_root = resolve_repo_root_for_index(repo_root)?;
+    let db_path = normalize_db_path(&repo_root, db_path);
+    let store = SqliteGraphStore::open_read_only(&db_path)?;
+    let passport = store
+        .get_db_passport()?
+        .ok_or_else(|| IndexError::Message("db passport missing".to_string()))?;
+    let lifecycle_binding = RetrievalCandidateLifecycleBinding {
+        status: RetrievalCandidateLifecycleStatus::Fresh,
+        db_passport_fingerprint: Some(db_passport_fingerprint(&passport)),
+        repo_head: passport.repo_head.clone(),
+        scope_policy_hash: Some(passport.index_scope_policy_hash.clone()),
+        embedding_model_id: Some(provider.metadata().model_id.clone()),
+        embedding_profile: Some(provider.metadata().version.clone()),
+        stale_reason: None,
+    };
+    let files = store.list_files(UNBOUNDED_STORE_READ_LIMIT)?;
+    let mut chunks = Vec::new();
+
+    for file in files {
+        let repo_relative_path = normalize_graph_path(&file.repo_relative_path);
+        let source_path = repo_root.join(&repo_relative_path);
+        let source = fs::read_to_string(&source_path).ok();
+        let is_text_evidence = file.metadata.get("evidence_kind").and_then(Value::as_str)
+            == Some(TEXT_EVIDENCE_KIND)
+            && file.metadata.get("proof_status").and_then(Value::as_str)
+                == Some(TEXT_EVIDENCE_PROOF_STATUS);
+        let file_kind = file
+            .metadata
+            .get("source_file_kind")
+            .and_then(Value::as_str)
+            .or(file.language.as_deref());
+        let evidence_role = if is_text_evidence {
+            TEXT_EVIDENCE_KIND
+        } else {
+            "production"
+        };
+
+        chunks.push(extract_file_path_title_embedding_chunk_for_path(
+            &repo_relative_path,
+            evidence_role,
+            file_kind,
+            Some(lifecycle_binding.clone()),
+        ));
+
+        if is_text_evidence {
+            if let Some(source) = source.as_deref() {
+                chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+                    &repo_relative_path,
+                    source,
+                    Some(lifecycle_binding.clone()),
+                ));
+            }
+            continue;
+        }
+
+        for entity in store.list_entities_by_file(&repo_relative_path)? {
+            chunks.extend(extract_graph_entity_embedding_chunks(
+                &entity,
+                source.as_deref(),
+                file.language.as_deref(),
+                Some(lifecycle_binding.clone()),
+            ));
+        }
+    }
+
+    let graph_entity_chunks = chunks
+        .iter()
+        .filter(|chunk| chunk.source_kind == VectorEmbeddingChunkSourceKind::GraphEntity)
+        .count();
+    let text_evidence_chunks = chunks
+        .iter()
+        .filter(|chunk| chunk.source_kind == VectorEmbeddingChunkSourceKind::TextEvidence)
+        .count();
+    let file_path_title_chunks = chunks
+        .iter()
+        .filter(|chunk| chunk.chunk_kind == VectorEmbeddingChunkKind::FilePathTitle)
+        .count();
+    let index = build_in_memory_vector_chunk_index(chunks, provider, &passport, options.clone())?;
+    write_vector_chunk_index_json(index_path, &index)?;
+
+    Ok(VectorChunkIndexBuildSummary {
+        status: "ok".to_string(),
+        index_path: index_path.to_string_lossy().to_string(),
+        chunk_count: index.metadata().chunk_count,
+        omitted_chunks: index.metadata().omitted_chunks,
+        indexed_text_bytes: index.metadata().indexed_text_bytes,
+        estimated_vector_bytes: index.metadata().estimated_vector_bytes,
+        graph_entity_chunks,
+        text_evidence_chunks,
+        file_path_title_chunks,
+        provider_id: index.metadata().provider.provider_id.clone(),
+        model_id: index.metadata().provider.model_id.clone(),
+        dimension: index.metadata().provider.dimension,
+        source_scope: options.source_scope,
+        extraction_version: options.extraction_version,
+        graph_proof: false,
+        proof_status: "candidate_only".to_string(),
+    })
+}
+
+pub fn vector_chunk_search_hit_to_retrieval_candidate(
+    hit: &VectorChunkSearchHit,
+    provider: &EmbeddingProviderMetadata,
+    matched_query_text: &str,
+    lifecycle_binding: Option<RetrievalCandidateLifecycleBinding>,
+) -> RetrievalCandidate {
+    let chunk = &hit.chunk;
+    let mut candidate = RetrievalCandidate::new(
+        format!("vector://{}", chunk.chunk_id),
+        RetrievalCandidateSource::VectorSemantic,
+        "vector semantic chunk candidate; not graph proof",
+    );
+    candidate.embedding_source = Some(vector_embedding_source_for_chunk(chunk));
+    candidate.file_id = Some(chunk.file_id.clone());
+    candidate.path = Some(chunk.path.clone());
+    candidate.entity_id = chunk.entity_id.clone();
+    candidate.span = chunk.source_span.clone();
+    if candidate.span.is_none() {
+        candidate.source_span_missing_reason =
+            Some("vector chunk did not carry a source span".to_string());
+    }
+    candidate.matched_query_text = Some(matched_query_text.to_string());
+    candidate.evidence_role = evidence_role_for_vector_chunk(chunk);
+    candidate.proof_status = if chunk.source_kind == VectorEmbeddingChunkSourceKind::TextEvidence {
+        RetrievalProofStatus::NotGraphProof
+    } else {
+        RetrievalProofStatus::CandidateOnly
+    };
+    candidate.graph_proof = false;
+    candidate.claimable = chunk.source_kind == VectorEmbeddingChunkSourceKind::TextEvidence;
+    candidate.claimable_for_text =
+        Some(chunk.source_kind == VectorEmbeddingChunkSourceKind::TextEvidence);
+    candidate.claimable_for_graph = Some(false);
+    candidate.score = Some(f64::from(hit.score));
+    candidate.rank = Some(hit.rank);
+    candidate.embedding_model_id = Some(provider.model_id.clone());
+    candidate.embedding_dim = Some(provider.dimension);
+    candidate.embedding_profile = Some(provider.version.clone());
+    candidate.chunk_id = Some(chunk.chunk_id.clone());
+    candidate.chunk_kind = Some(chunk.chunk_kind.as_str().to_string());
+    candidate.requires_graph_verification = chunk.entity_id.is_some();
+    candidate.verification_status = if chunk.entity_id.is_some() {
+        RetrievalVerificationStatus::NeedsGraphVerification
+    } else {
+        RetrievalVerificationStatus::NotGraphProof
+    };
+    candidate.lifecycle_binding = lifecycle_binding.or_else(|| {
+        Some(RetrievalCandidateLifecycleBinding {
+            status: RetrievalCandidateLifecycleStatus::Fresh,
+            db_passport_fingerprint: chunk
+                .lifecycle_binding
+                .as_ref()
+                .and_then(|binding| binding.db_passport_fingerprint.clone()),
+            repo_head: chunk
+                .lifecycle_binding
+                .as_ref()
+                .and_then(|binding| binding.repo_head.clone()),
+            scope_policy_hash: chunk
+                .lifecycle_binding
+                .as_ref()
+                .and_then(|binding| binding.scope_policy_hash.clone()),
+            embedding_model_id: Some(provider.model_id.clone()),
+            embedding_profile: Some(provider.version.clone()),
+            stale_reason: None,
+        })
+    });
+    candidate.metadata.insert(
+        "provider_id".to_string(),
+        json!(provider.provider_id.clone()),
+    );
+    candidate
+        .metadata
+        .insert("chunk_text".to_string(), json!(chunk.text));
+    candidate.metadata.insert(
+        "evidence_role_raw".to_string(),
+        json!(chunk.evidence_role.clone()),
+    );
+    candidate.metadata.insert(
+        "proof_status_raw".to_string(),
+        json!(chunk.proof_status.clone()),
+    );
+    candidate
+}
+
+fn vector_embedding_source_for_chunk(chunk: &VectorEmbeddingChunk) -> VectorEmbeddingSource {
+    match (chunk.source_kind, chunk.chunk_kind) {
+        (VectorEmbeddingChunkSourceKind::TextEvidence, _) => VectorEmbeddingSource::TextEvidence,
+        (_, VectorEmbeddingChunkKind::FilePathTitle) => VectorEmbeddingSource::FilePathTitle,
+        (_, VectorEmbeddingChunkKind::DocComment) => VectorEmbeddingSource::DocComment,
+        (_, VectorEmbeddingChunkKind::SourceSnippet | VectorEmbeddingChunkKind::Snippet) => {
+            VectorEmbeddingSource::Snippet
+        }
+        (_, VectorEmbeddingChunkKind::Signature) => VectorEmbeddingSource::Signature,
+        (VectorEmbeddingChunkSourceKind::GraphEntity, _) => VectorEmbeddingSource::GraphEntity,
+        _ => VectorEmbeddingSource::Unknown,
+    }
+}
+
+fn evidence_role_for_vector_chunk(chunk: &VectorEmbeddingChunk) -> EvidenceRole {
+    match chunk.evidence_role.as_str() {
+        "production" => EvidenceRole::Production,
+        "test" => EvidenceRole::Test,
+        "mock" => EvidenceRole::Mock,
+        "mixed" => EvidenceRole::Mixed,
+        _ => EvidenceRole::Unknown,
+    }
+}
+
+fn db_passport_fingerprint(passport: &DbPassport) -> String {
+    let payload = serde_json::to_string(passport).unwrap_or_else(|_| {
+        format!(
+            "{}:{}:{}:{}:{}",
+            passport.passport_version,
+            passport.codegraph_schema_version,
+            passport.storage_mode,
+            passport.index_scope_policy_hash,
+            passport.canonical_repo_root
+        )
+    });
+    content_hash(&payload)
+}
+
+fn vector_embedding_dot_product(
+    left: &TestEmbeddingVector,
+    right: &TestEmbeddingVector,
+) -> Result<f32, IndexError> {
+    if left.dimensions() != right.dimensions() {
+        return Err(IndexError::Message(format!(
+            "vector chunk embedding dimension mismatch: expected {}, got {}",
+            left.dimensions(),
+            right.dimensions()
+        )));
+    }
+    Ok(left
+        .values()
+        .iter()
+        .zip(right.values())
+        .map(|(left, right)| left * right)
+        .sum())
+}
+
+struct VectorChunkBuildInput<'a> {
+    source_kind: VectorEmbeddingChunkSourceKind,
+    chunk_kind: VectorEmbeddingChunkKind,
+    path: &'a str,
+    entity_id: Option<&'a str>,
+    source_span: Option<SourceSpan>,
+    source_role: &'a str,
+    evidence_role: &'a str,
+    proof_status: &'a str,
+    graph_proof: bool,
+    claimable_for_graph: bool,
+    text: String,
+    language: Option<String>,
+    file_kind: Option<String>,
+    lifecycle_binding: Option<RetrievalCandidateLifecycleBinding>,
+}
+
+fn build_vector_embedding_chunk(input: VectorChunkBuildInput<'_>) -> VectorEmbeddingChunk {
+    let normalized_path = normalize_graph_path(input.path);
+    let content_hash = content_hash(&input.text);
+    let chunk_id = stable_vector_chunk_id(
+        input.source_kind,
+        input.chunk_kind,
+        &normalized_path,
+        input.entity_id,
+        input.source_span.as_ref(),
+        &content_hash,
+    );
+    let token_count = vector_chunk_token_count(&input.text);
+    let byte_count = input.text.len();
+    VectorEmbeddingChunk {
+        chunk_id,
+        chunk_kind: input.chunk_kind,
+        source_kind: input.source_kind,
+        file_id: normalized_path.clone(),
+        path: normalized_path,
+        entity_id: input.entity_id.map(str::to_string),
+        source_span: input.source_span,
+        source_role: input.source_role.to_string(),
+        evidence_role: input.evidence_role.to_string(),
+        proof_status: input.proof_status.to_string(),
+        graph_proof: input.graph_proof,
+        claimable_for_graph: input.claimable_for_graph,
+        text: input.text,
+        token_count,
+        byte_count,
+        language: input.language,
+        file_kind: input.file_kind,
+        lifecycle_binding: input.lifecycle_binding,
+        content_hash,
+        extraction_version: VECTOR_EMBEDDING_CHUNK_EXTRACTION_VERSION.to_string(),
+    }
+}
+
+fn vector_chunk_kind_for_entity(kind: EntityKind) -> VectorEmbeddingChunkKind {
+    match kind {
+        EntityKind::Function => VectorEmbeddingChunkKind::Function,
+        EntityKind::Method | EntityKind::Constructor => VectorEmbeddingChunkKind::Method,
+        EntityKind::Class
+        | EntityKind::Interface
+        | EntityKind::Trait
+        | EntityKind::Enum
+        | EntityKind::Type
+        | EntityKind::GenericType => VectorEmbeddingChunkKind::Type,
+        EntityKind::Module | EntityKind::File => VectorEmbeddingChunkKind::ModuleFile,
+        _ => VectorEmbeddingChunkKind::Signature,
+    }
+}
+
+fn stable_vector_chunk_id(
+    source_kind: VectorEmbeddingChunkSourceKind,
+    chunk_kind: VectorEmbeddingChunkKind,
+    path: &str,
+    entity_id: Option<&str>,
+    source_span: Option<&SourceSpan>,
+    content_hash: &str,
+) -> String {
+    let entity = entity_id.unwrap_or("-");
+    let span = source_span
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "no-span".to_string());
+    format!(
+        "vector-chunk:{}:{}:{}:{}:{}:{}",
+        source_kind.as_str(),
+        chunk_kind.as_str(),
+        path,
+        entity,
+        span,
+        content_hash
+    )
+}
+
+fn bounded_vector_chunk_text(text: &str) -> String {
+    bounded_text_prefix(text.trim(), VECTOR_EMBEDDING_CHUNK_MAX_TEXT_BYTES).to_string()
+}
+
+fn source_span_text(source: &str, span: &SourceSpan) -> Option<String> {
+    let start = span.start_line.max(1);
+    let end = span.end_line.max(start);
+    let selected = source
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let line_number = (index + 1) as u32;
+            (line_number >= start && line_number <= end).then_some(line)
+        })
+        .collect::<Vec<_>>();
+    let text = selected.join("\n");
+    (!text.trim().is_empty()).then(|| bounded_vector_chunk_text(&text))
+}
+
+fn leading_doc_comment(source: &str, span: &SourceSpan) -> Option<(SourceSpan, String)> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let start_index = span.start_line.saturating_sub(1) as usize;
+    if start_index == 0 || start_index > lines.len() {
+        return None;
+    }
+
+    let mut selected = Vec::<(u32, String)>::new();
+    for index in (0..start_index).rev() {
+        let trimmed = lines[index].trim();
+        if trimmed.is_empty() {
+            if selected.is_empty() {
+                continue;
+            }
+            break;
+        }
+        if !is_doc_comment_line(trimmed) {
+            break;
+        }
+        selected.push(((index + 1) as u32, trimmed.to_string()));
+    }
+    selected.reverse();
+    let first_line = selected.first().map(|(line, _)| *line)?;
+    let last_line = selected.last().map(|(line, _)| *line)?;
+    let text = selected
+        .into_iter()
+        .map(|(_, line)| line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some((
+        SourceSpan::new(&span.repo_relative_path, first_line, last_line),
+        bounded_vector_chunk_text(&text),
+    ))
+}
+
+fn is_doc_comment_line(trimmed: &str) -> bool {
+    trimmed.starts_with("///")
+        || trimmed.starts_with("//!")
+        || trimmed.starts_with("/**")
+        || trimmed.starts_with('*')
+        || trimmed.starts_with('#')
+}
+
+fn vector_chunk_token_count(text: &str) -> usize {
+    text.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .filter(|token| !token.is_empty())
+        .count()
+}
+
 pub fn default_db_path(repo_root: &Path) -> PathBuf {
     std::env::var_os("CODEGRAPH_DB_PATH")
         .map(PathBuf::from)
@@ -9684,7 +11166,11 @@ mod tests {
     use std::{process, time::Duration};
 
     use codegraph_core::{EdgeClass, EdgeContext, EntityKind, Exactness, RelationKind};
+    use codegraph_query::{
+        RetrievalFunnel, RetrievalFunnelConfig, RetrievalFunnelRequest, VectorCandidateBranchStatus,
+    };
     use codegraph_store::TextSearchKind;
+    use codegraph_vector::DeterministicTestEmbeddingProvider;
 
     use super::*;
 
@@ -9707,6 +11193,30 @@ mod tests {
             fs::create_dir_all(parent).expect("create parent");
         }
         fs::write(path, source).expect("write test file");
+    }
+
+    fn vector_test_passport(scope_hash: &str) -> DbPassport {
+        DbPassport {
+            passport_version: DB_PASSPORT_VERSION,
+            codegraph_schema_version: SCHEMA_VERSION,
+            storage_mode: DEFAULT_STORAGE_POLICY.to_string(),
+            index_scope_policy_hash: scope_hash.to_string(),
+            scope_policy_json: format!("{{\"scope\":\"{scope_hash}\"}}"),
+            canonical_repo_root: "C:/tmp/codegraph-vector-index-test".to_string(),
+            git_remote: None,
+            worktree_root: None,
+            repo_head: Some("test-head".to_string()),
+            source_discovery_policy_version: "test-policy-v1".to_string(),
+            codegraph_build_version: Some("test-build".to_string()),
+            last_successful_index_timestamp: Some(1),
+            last_completed_run_id: Some("test-run".to_string()),
+            last_run_status: "completed".to_string(),
+            integrity_gate_result: "passed".to_string(),
+            files_seen: 3,
+            files_indexed: 3,
+            created_at_unix_ms: 1,
+            updated_at_unix_ms: 1,
+        }
     }
 
     fn collected_rel_paths(root: &Path, options: &IndexScopeOptions) -> BTreeSet<String> {
@@ -10716,6 +12226,29 @@ mod tests {
             Some(false),
             "{repo_relative_path}"
         );
+        let text_metadata = file
+            .metadata
+            .get("text_evidence")
+            .unwrap_or_else(|| panic!("missing text_evidence metadata for {repo_relative_path}"));
+        assert_eq!(
+            text_metadata.get("bounded").and_then(Value::as_bool),
+            Some(true),
+            "{repo_relative_path}"
+        );
+        assert!(
+            text_metadata
+                .get("tokens")
+                .and_then(Value::as_array)
+                .is_some_and(|tokens| tokens.len() <= TEXT_EVIDENCE_MAX_TOKENS_PER_FILE),
+            "{repo_relative_path}"
+        );
+        assert!(
+            text_metadata.get("source").is_none()
+                && text_metadata.get("body").is_none()
+                && text_metadata.get("full_text").is_none()
+                && text_metadata.get("content").is_none(),
+            "text evidence metadata must not store full file bodies for {repo_relative_path}"
+        );
         file
     }
 
@@ -10895,6 +12428,84 @@ mod tests {
             .any(|edge| edge.relation == RelationKind::Calls));
         assert!(!bundle.source_spans.is_empty());
         assert!(bundle.extraction_warnings.is_empty());
+    }
+
+    #[test]
+    fn tier0_local_fact_bundle_preserves_parser_status_for_syntax_recovery() {
+        let pending = vec![pending_test_file(
+            "src/broken.ts",
+            "function safe() { return 1; }\nfunction broken() {\n  return target(\n}\n",
+        )];
+
+        let (bundles, stats) = parse_extract_pending_files(pending, 1).expect("parse/extract");
+        let stat = stats.first().expect("stat");
+        assert!(!stat.parse_error);
+        assert!(stat.syntax_error);
+
+        let bundle = bundles.first().expect("bundle");
+        assert_eq!(
+            bundle.source,
+            "function safe() { return 1; }\nfunction broken() {\n  return target(\n}\n"
+        );
+        assert_eq!(
+            bundle
+                .extraction
+                .file
+                .metadata
+                .get("parser_status")
+                .and_then(Value::as_str),
+            Some("syntax_errors_recovered")
+        );
+        assert_eq!(
+            bundle
+                .extraction
+                .file
+                .metadata
+                .get("unsupported_behavior_label")
+                .and_then(Value::as_str),
+            Some("malformed_regions_not_trusted_for_exact_relations")
+        );
+        assert!(bundle
+            .declarations
+            .iter()
+            .any(|symbol| symbol.name == "safe"));
+        assert!(!bundle.local_callsites.iter().any(|edge| {
+            edge.relation == RelationKind::Calls
+                && edge.exactness == Exactness::ParserVerified
+                && edge.source_span.start_line >= 3
+        }));
+    }
+
+    #[test]
+    fn tier0_parser_error_metadata_is_structured_unsupported_evidence() {
+        let metadata = parser_error_file_metadata(
+            Some("123".to_string()),
+            Some("typescript"),
+            "synthetic parser failure",
+        );
+
+        assert_eq!(
+            metadata.get("parser_status").and_then(Value::as_str),
+            Some("parser_error")
+        );
+        assert_eq!(
+            metadata.get("claim_state").and_then(Value::as_str),
+            Some("unsupported")
+        );
+        assert_eq!(
+            metadata
+                .get("unsupported_behavior_label")
+                .and_then(Value::as_str),
+            Some("parser_invocation_failed")
+        );
+        assert_eq!(
+            metadata.get("parser_frontend").and_then(Value::as_str),
+            Some("typescript")
+        );
+        assert!(metadata
+            .get("graph_relation_claims")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty));
     }
 
     #[test]
@@ -11207,6 +12818,165 @@ mod tests {
         assert!(derived.provenance_edges.contains(&base_call.id));
         assert!(derived.provenance_edges.contains(&base_write.id));
         assert_db_integrity(&db);
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn heuristic_mutation_method_call_is_not_promoted_to_proof_may_mutate() {
+        let repo = temp_repo("method-mutation-proof-boundary");
+        fs::write(
+            repo.join("src").join("mutation.ts"),
+            concat!(
+                "export function collect(items: string[], input: string) {\n",
+                "  items.push(input);\n",
+                "  return items;\n",
+                "}\n",
+            ),
+        )
+        .expect("write mutation");
+
+        let db = repo.join("target").join("method-mutation-boundary.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let collect = entity_by_file_kind_and_name(
+            &store,
+            "src/mutation.ts",
+            EntityKind::Function,
+            "collect",
+        );
+        let items =
+            entity_by_file_kind_and_name(&store, "src/mutation.ts", EntityKind::Parameter, "items");
+        let edges = store.list_edges(UNBOUNDED_STORE_READ_LIMIT).expect("edges");
+
+        assert!(edges.iter().all(|edge| {
+            !(edge.head_id == collect.id
+                && edge.tail_id == items.id
+                && edge.relation == RelationKind::MayMutate)
+        }));
+        assert_db_integrity(&db);
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn derived_local_dataflow_closure_is_persisted_with_base_provenance() {
+        let repo = temp_repo("derived-dataflow-provenance");
+        fs::write(
+            repo.join("src").join("flow.ts"),
+            concat!(
+                "export function sink(value: string) { return value; }\n",
+                "export function run(input: string) {\n",
+                "  const a = input;\n",
+                "  const b = a;\n",
+                "  return sink(b);\n",
+                "}\n",
+            ),
+        )
+        .expect("write flow");
+
+        let db = repo.join("target").join("derived-flow.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let input =
+            entity_by_file_kind_and_name(&store, "src/flow.ts", EntityKind::Parameter, "input");
+        let a = entity_by_file_kind_and_name(&store, "src/flow.ts", EntityKind::LocalVariable, "a");
+        let b = entity_by_file_kind_and_name(&store, "src/flow.ts", EntityKind::LocalVariable, "b");
+        let value =
+            entity_by_file_kind_and_name(&store, "src/flow.ts", EntityKind::Parameter, "value");
+        let edges = store.list_edges(UNBOUNDED_STORE_READ_LIMIT).expect("edges");
+        let input_to_a = edges
+            .iter()
+            .find(|edge| {
+                edge.relation == RelationKind::FlowsTo
+                    && edge.head_id == input.id
+                    && edge.tail_id == a.id
+                    && !edge.derived
+            })
+            .expect("base FLOWS_TO input -> a");
+        let a_to_b = edges
+            .iter()
+            .find(|edge| {
+                edge.relation == RelationKind::FlowsTo
+                    && edge.head_id == a.id
+                    && edge.tail_id == b.id
+                    && !edge.derived
+            })
+            .expect("base FLOWS_TO a -> b");
+        let b_to_value = edges
+            .iter()
+            .find(|edge| {
+                edge.relation == RelationKind::FlowsTo
+                    && edge.head_id == b.id
+                    && edge.tail_id == value.id
+                    && !edge.derived
+            })
+            .expect("base FLOWS_TO b -> sink.value");
+        let derived = edges
+            .iter()
+            .find(|edge| {
+                edge.relation == RelationKind::FlowsTo
+                    && edge.head_id == input.id
+                    && edge.tail_id == value.id
+                    && edge.derived
+            })
+            .expect("derived FLOWS_TO input -> sink.value");
+
+        assert_eq!(derived.edge_class, EdgeClass::Derived);
+        assert_eq!(derived.exactness, Exactness::DerivedFromVerifiedEdges);
+        assert_eq!(derived.context, EdgeContext::Production);
+        assert_eq!(derived.source_span.repo_relative_path, "src/flow.ts");
+        assert_eq!(derived.source_span.start_line, 5);
+        assert_eq!(derived.provenance_edges.len(), 3);
+        assert!(derived.provenance_edges.contains(&input_to_a.id));
+        assert!(derived.provenance_edges.contains(&a_to_b.id));
+        assert!(derived.provenance_edges.contains(&b_to_value.id));
+        assert!(edges.iter().all(|edge| {
+            edge.relation != RelationKind::FlowsTo
+                || !edge.derived
+                || !edge.provenance_edges.is_empty()
+        }));
+        assert_db_integrity(&db);
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn sanitizer_comments_and_strings_do_not_create_sanitizer_proof() {
+        let repo = temp_repo("sanitizer-comments-strings");
+        fs::write(
+            repo.join("src").join("flow.ts"),
+            concat!(
+                "export function sanitizeHtml(input: string) { return input; }\n",
+                "export function run(raw: string) {\n",
+                "  const note = \"sanitizeHtml(raw)\";\n",
+                "  // sanitizeHtml(raw)\n",
+                "  return raw;\n",
+                "}\n",
+            ),
+        )
+        .expect("write flow");
+
+        let db = repo.join("target").join("sanitizer-comments.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let sanitizer = entity_by_file_kind_and_name(
+            &store,
+            "src/flow.ts",
+            EntityKind::Sanitizer,
+            "sanitizeHtml",
+        );
+        let sanitizer_edges = store
+            .find_edges_by_head_relation(&sanitizer.id, RelationKind::Sanitizes)
+            .expect("sanitizer edges");
+
+        assert!(
+            sanitizer_edges.is_empty(),
+            "comments and string literals must not create SANITIZES proof edges"
+        );
 
         drop(store);
         fs::remove_dir_all(repo).expect("cleanup");
@@ -11946,6 +13716,7 @@ mod tests {
             concat!(
                 "export async function loadPlugin(name: string) {\n",
                 "  const mod = await import(\"./plugins/\" + name);\n",
+                "  const literal = await import(\"./plugins/alpha\");\n",
                 "  return mod.default();\n",
                 "}\n",
             ),
@@ -12004,6 +13775,15 @@ mod tests {
                     && entity.qualified_name == "dynamic_import:./plugins/+name"
             })
             .expect("dynamic import entity");
+        let literal_dynamic_import = store
+            .list_static_references(UNBOUNDED_STORE_READ_LIMIT)
+            .expect("sidecar entities")
+            .into_iter()
+            .find(|entity| {
+                entity.kind == EntityKind::Import
+                    && entity.qualified_name == "dynamic_import:./plugins/alpha"
+            })
+            .expect("literal dynamic import entity");
         let alpha_default = entity_by_file_kind_and_name(
             &store,
             "src/plugins/alpha.ts",
@@ -12023,6 +13803,19 @@ mod tests {
                 && edge.source_span.start_line == 2
                 && edge.source_span.start_column == Some(21)
                 && edge.source_span.end_column == Some(48)
+                && edge
+                    .metadata
+                    .get("resolution")
+                    .and_then(|value| value.as_str())
+                    == Some("unresolved_dynamic_import")
+        }));
+        assert!(imports.iter().any(|edge| {
+            edge.head_id == load_plugin.id
+                && edge.tail_id == literal_dynamic_import.id
+                && edge.exactness == Exactness::StaticHeuristic
+                && edge.confidence < 1.0
+                && edge.source_span.repo_relative_path == "src/loader.ts"
+                && edge.source_span.start_line == 3
                 && edge
                     .metadata
                     .get("resolution")
@@ -12494,6 +14287,9 @@ mod tests {
         let assert_edges = store
             .find_edges_by_head_relation(&test_case.id, RelationKind::Asserts)
             .expect("assert edges");
+        let test_edges = store
+            .find_edges_by_head_relation(&test_case.id, RelationKind::Tests)
+            .expect("test edges");
 
         assert_ne!(production.id, mock.id);
         assert!(mock_edges.iter().any(|edge| {
@@ -12507,6 +14303,12 @@ mod tests {
                 && edge.context == EdgeContext::Mock
         }));
         assert!(assert_edges.iter().any(|edge| {
+            edge.tail_id == checkout.id
+                && edge.edge_class == EdgeClass::Test
+                && edge.context == EdgeContext::Test
+                && edge.source_span.repo_relative_path == "tests/checkout.test.ts"
+        }));
+        assert!(test_edges.iter().any(|edge| {
             edge.tail_id == checkout.id
                 && edge.edge_class == EdgeClass::Test
                 && edge.context == EdgeContext::Test
@@ -12731,6 +14533,1117 @@ mod tests {
     }
 
     #[test]
+    fn vector_embedding_function_chunk_has_span_entity_and_no_graph_proof() {
+        let source = "/// Auth login entry point\nexport function login() {\n  return true;\n}\n";
+        let mut metadata = Metadata::default();
+        metadata.insert("evidence_role".to_string(), serde_json::json!("production"));
+        let entity = Entity {
+            id: "entity://src/auth.ts/login".to_string(),
+            kind: EntityKind::Function,
+            name: "login".to_string(),
+            qualified_name: "auth::login".to_string(),
+            repo_relative_path: "src/auth.ts".to_string(),
+            source_span: Some(SourceSpan::new("src/auth.ts", 2, 4)),
+            content_hash: Some(content_hash("auth::login")),
+            file_hash: Some(content_hash(source)),
+            created_from: "parser:test".to_string(),
+            confidence: 1.0,
+            metadata,
+        };
+
+        let chunks =
+            extract_graph_entity_embedding_chunks(&entity, Some(source), Some("typescript"), None);
+        let function_chunk = chunks
+            .iter()
+            .find(|chunk| chunk.chunk_kind == VectorEmbeddingChunkKind::Function)
+            .expect("function chunk");
+        assert_eq!(
+            function_chunk.source_kind,
+            VectorEmbeddingChunkSourceKind::GraphEntity
+        );
+        assert_eq!(
+            function_chunk.entity_id.as_deref(),
+            Some("entity://src/auth.ts/login")
+        );
+        assert_eq!(
+            function_chunk
+                .source_span
+                .as_ref()
+                .map(|span| span.repo_relative_path.as_str()),
+            Some("src/auth.ts")
+        );
+        assert_eq!(function_chunk.evidence_role, "production");
+        assert_eq!(function_chunk.proof_status, "candidate_only");
+        assert!(!function_chunk.graph_proof);
+        assert!(!function_chunk.claimable_for_graph);
+        assert!(function_chunk.byte_count <= VECTOR_EMBEDDING_CHUNK_MAX_TEXT_BYTES);
+        assert!(chunks
+            .iter()
+            .any(|chunk| chunk.chunk_kind == VectorEmbeddingChunkKind::DocComment));
+    }
+
+    #[test]
+    fn vector_embedding_text_evidence_chunks_preserve_spans_and_labels() {
+        let chunks = extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/Config.in",
+            "config BR2_PACKAGE_FOO\n\tbool \"foo\"\n\tdepends on BR2_USE_MMU\n",
+            None,
+        );
+        let config_chunk = chunks
+            .iter()
+            .find(|chunk| chunk.text.contains("BR2_PACKAGE_FOO"))
+            .expect("BR2_PACKAGE_FOO chunk");
+        assert_eq!(
+            config_chunk.source_kind,
+            VectorEmbeddingChunkSourceKind::TextEvidence
+        );
+        assert_eq!(config_chunk.chunk_kind, VectorEmbeddingChunkKind::Snippet);
+        assert_eq!(config_chunk.evidence_role, "text_evidence");
+        assert_eq!(config_chunk.source_role, "text_evidence");
+        assert_eq!(config_chunk.proof_status, "not_graph_proof");
+        assert!(!config_chunk.graph_proof);
+        assert!(!config_chunk.claimable_for_graph);
+        assert_eq!(config_chunk.file_kind.as_deref(), Some("kconfig"));
+        assert!(config_chunk.source_span.is_some());
+    }
+
+    #[test]
+    fn vector_embedding_makefile_chunk_includes_generic_package_token() {
+        let chunks = extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/foo.mk",
+            "FOO_VERSION = 1.2.3\nFOO_LICENSE = MIT\n$(eval $(generic-package))\n",
+            None,
+        );
+        assert!(chunks
+            .iter()
+            .any(|chunk| chunk.text.contains("generic-package")));
+        assert!(chunks.iter().all(|chunk| {
+            chunk.evidence_role == "text_evidence"
+                && chunk.proof_status == "not_graph_proof"
+                && !chunk.graph_proof
+        }));
+    }
+
+    #[test]
+    fn vector_embedding_no_extension_support_script_chunks_when_scoped_and_text_like() {
+        let chunks = extract_text_evidence_embedding_chunks_for_path(
+            "support/scripts/pkg-stats",
+            "#!/bin/sh\necho \"generic-package Config.in BR2_PACKAGE_FOO\"\n",
+            None,
+        );
+        let script_chunk = chunks
+            .iter()
+            .find(|chunk| chunk.text.contains("generic-package"))
+            .expect("no-extension support script chunk");
+        assert_eq!(
+            script_chunk.file_kind.as_deref(),
+            Some("text_like_support_script")
+        );
+        assert!(script_chunk.source_span.is_some());
+    }
+
+    #[test]
+    fn vector_embedding_chunk_ids_are_stable_and_chunk_text_is_bounded() {
+        let long_line = format!("{} {}", "BR2_PACKAGE_FOO", "x".repeat(4096));
+        let source = format!("{long_line}\n$(eval $(generic-package))\n");
+        let first =
+            extract_text_evidence_embedding_chunks_for_path("package/foo/Config.in", &source, None);
+        let second =
+            extract_text_evidence_embedding_chunks_for_path("package/foo/Config.in", &source, None);
+        let first_ids = first
+            .iter()
+            .map(|chunk| chunk.chunk_id.clone())
+            .collect::<Vec<_>>();
+        let second_ids = second
+            .iter()
+            .map(|chunk| chunk.chunk_id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(first_ids, second_ids);
+        assert!(first
+            .iter()
+            .all(|chunk| chunk.byte_count <= VECTOR_EMBEDDING_CHUNK_MAX_TEXT_BYTES));
+    }
+
+    #[test]
+    fn vector_chunk_index_buildroot_mini_text_evidence_is_indexed_and_searchable() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-buildroot-mini");
+        let options = VectorChunkIndexBuildOptions {
+            max_chunks: 16,
+            source_scope: "scope-buildroot-mini".to_string(),
+            extraction_version: VECTOR_EMBEDDING_CHUNK_EXTRACTION_VERSION.to_string(),
+        };
+        let mut chunks = Vec::new();
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/Config.in",
+            "config BR2_PACKAGE_FOO\n\tbool \"foo\"\n\tdepends on BR2_USE_MMU\n",
+            None,
+        ));
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/foo.mk",
+            "FOO_VERSION = 1.2.3\nFOO_LICENSE = MIT\n$(eval $(generic-package))\n",
+            None,
+        ));
+        chunks.push(extract_file_path_title_embedding_chunk_for_path(
+            "package/foo/Config.in",
+            TEXT_EVIDENCE_KIND,
+            Some("kconfig"),
+            None,
+        ));
+
+        let index = build_in_memory_vector_chunk_index(
+            chunks.clone(),
+            &provider,
+            &passport,
+            options.clone(),
+        )
+        .expect("build vector chunk index");
+
+        assert!(index.len() >= 3, "indexed chunks: {}", index.len());
+        assert!(index
+            .entries()
+            .any(|entry| entry.chunk.source_kind == VectorEmbeddingChunkSourceKind::TextEvidence));
+        assert!(index
+            .entries()
+            .any(|entry| entry.chunk.chunk_kind == VectorEmbeddingChunkKind::FilePathTitle));
+        assert_eq!(
+            index.metadata().provider.model_id,
+            provider.metadata().model_id
+        );
+        assert_eq!(index.metadata().provider.dimension, 64);
+        assert_eq!(
+            index.metadata().passport.index_scope_policy_hash,
+            "scope-buildroot-mini"
+        );
+        assert_eq!(
+            index.metadata().extraction_version,
+            VECTOR_EMBEDDING_CHUNK_EXTRACTION_VERSION
+        );
+        assert!(index.metadata().created_at_unix_ms > 0);
+        assert_eq!(index.metadata().estimated_vector_bytes_per_chunk, 64 * 4);
+        assert_eq!(
+            index.metadata().estimated_vector_bytes,
+            index.len() * index.metadata().estimated_vector_bytes_per_chunk
+        );
+        assert!(index.metadata().estimated_vector_bytes <= index.metadata().max_chunks * 64 * 4);
+
+        let hits = index
+            .search(
+                &provider,
+                "BR2_PACKAGE_FOO generic-package package config",
+                5,
+            )
+            .expect("search top-k");
+        assert!(!hits.is_empty());
+        assert!(hits.iter().all(|hit| !hit.graph_proof));
+        assert!(hits
+            .iter()
+            .any(|hit| hit.evidence_role == TEXT_EVIDENCE_KIND));
+
+        let mut bounded_options = options;
+        bounded_options.max_chunks = 2;
+        let bounded_index =
+            build_in_memory_vector_chunk_index(chunks, &provider, &passport, bounded_options)
+                .expect("bounded index");
+        assert_eq!(bounded_index.len(), 2);
+        assert!(bounded_index.metadata().omitted_chunks > 0);
+    }
+
+    #[test]
+    fn vector_chunk_index_function_chunks_are_indexed_without_graph_proof() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-functions");
+        let options = VectorChunkIndexBuildOptions::new("scope-functions");
+        let source =
+            "/// Auth login entry point\nexport function loginUser() {\n  return true;\n}\n";
+        let entity = Entity {
+            id: "entity://src/auth.ts/loginUser".to_string(),
+            kind: EntityKind::Function,
+            name: "loginUser".to_string(),
+            qualified_name: "auth::loginUser".to_string(),
+            repo_relative_path: "src/auth.ts".to_string(),
+            source_span: Some(SourceSpan::new("src/auth.ts", 2, 4)),
+            content_hash: Some(content_hash("auth::loginUser")),
+            file_hash: Some(content_hash(source)),
+            created_from: "parser:test".to_string(),
+            confidence: 1.0,
+            metadata: Metadata::default(),
+        };
+        let chunks =
+            extract_graph_entity_embedding_chunks(&entity, Some(source), Some("typescript"), None);
+        let index = build_in_memory_vector_chunk_index(chunks, &provider, &passport, options)
+            .expect("build function vector index");
+        assert!(index.entries().any(
+            |entry| entry.chunk.entity_id.as_deref() == Some("entity://src/auth.ts/loginUser")
+        ));
+        assert!(index
+            .entries()
+            .all(|entry| !entry.chunk.graph_proof && !entry.chunk.claimable_for_graph));
+
+        let hits = index
+            .search(&provider, "auth login entry point function", 3)
+            .expect("function top-k");
+        assert!(!hits.is_empty());
+        assert!(hits.iter().any(|hit| {
+            hit.chunk.entity_id.as_deref() == Some("entity://src/auth.ts/loginUser")
+        }));
+        assert!(hits.iter().all(|hit| {
+            !hit.graph_proof
+                && hit.proof_status == "candidate_only"
+                && !hit.chunk.claimable_for_graph
+        }));
+    }
+
+    #[test]
+    fn vector_chunk_index_metadata_invalidates_provider_passport_scope_and_extraction_changes() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-a");
+        let options = VectorChunkIndexBuildOptions::new("scope-a");
+        let chunks = extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/Config.in",
+            "config BR2_PACKAGE_FOO\n\tbool \"foo\"\n",
+            None,
+        );
+        let index =
+            build_in_memory_vector_chunk_index(chunks, &provider, &passport, options.clone())
+                .expect("index");
+        assert!(index
+            .metadata()
+            .is_compatible_with(provider.metadata(), &passport, &options));
+
+        let mut changed_provider = provider.metadata().clone();
+        changed_provider.provider_id = "codegraph-deterministic-test-other".to_string();
+        assert_eq!(
+            index
+                .metadata()
+                .incompatibility_reason(&changed_provider, &passport, &options),
+            Some("provider_id changed".to_string())
+        );
+
+        let mut changed_model = provider.metadata().clone();
+        changed_model.model_id = "codegraph-deterministic-token-projection-v2".to_string();
+        assert_eq!(
+            index
+                .metadata()
+                .incompatibility_reason(&changed_model, &passport, &options),
+            Some("model_id changed".to_string())
+        );
+
+        let different_provider =
+            DeterministicTestEmbeddingProvider::for_tests(32).expect("other provider");
+        assert_eq!(
+            index.metadata().incompatibility_reason(
+                different_provider.metadata(),
+                &passport,
+                &options
+            ),
+            Some("dimension changed".to_string())
+        );
+
+        let mut changed_passport = passport.clone();
+        changed_passport.repo_head = Some("new-head".to_string());
+        assert_eq!(
+            index.metadata().incompatibility_reason(
+                provider.metadata(),
+                &changed_passport,
+                &options
+            ),
+            Some("db_passport changed".to_string())
+        );
+
+        let mut changed_scope_passport = passport.clone();
+        changed_scope_passport.index_scope_policy_hash = "scope-b".to_string();
+        assert_eq!(
+            index.metadata().incompatibility_reason(
+                provider.metadata(),
+                &changed_scope_passport,
+                &options
+            ),
+            Some("index_scope_policy_hash changed".to_string())
+        );
+
+        let changed_scope_options = VectorChunkIndexBuildOptions::new("scope-b");
+        assert_eq!(
+            index.metadata().incompatibility_reason(
+                provider.metadata(),
+                &passport,
+                &changed_scope_options
+            ),
+            Some("source_scope changed".to_string())
+        );
+
+        let mut changed_extraction = options;
+        changed_extraction.extraction_version = "vector_embedding_chunk_v2".to_string();
+        assert_eq!(
+            index.metadata().incompatibility_reason(
+                provider.metadata(),
+                &passport,
+                &changed_extraction
+            ),
+            Some("extraction_version changed".to_string())
+        );
+    }
+
+    #[test]
+    fn vector_chunk_index_json_round_trip_loads_and_rejects_stale_passport() {
+        let repo = temp_repo("vector-json-round-trip");
+        let index_path = repo.join("artifacts").join("codegraph-vector-chunks.json");
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-json");
+        let options = VectorChunkIndexBuildOptions::new("scope-json");
+        let chunks = vec![extract_file_path_title_embedding_chunk_for_path(
+            "package/foo/foo.mk",
+            TEXT_EVIDENCE_KIND,
+            Some("buildroot_package_metadata"),
+            None,
+        )];
+        let index =
+            build_in_memory_vector_chunk_index(chunks, &provider, &passport, options.clone())
+                .expect("build vector chunk index");
+
+        write_vector_chunk_index_json(&index_path, &index).expect("write vector index json");
+        let loaded = load_vector_chunk_index_json(&index_path, &provider, &passport, options)
+            .expect("load vector index json");
+        let hits = loaded
+            .search(&provider, "foo package metadata", 3)
+            .expect("search loaded vector index");
+        assert!(!hits.is_empty());
+        assert!(hits.iter().all(|hit| !hit.graph_proof));
+
+        let stale_passport = vector_test_passport("scope-json-stale");
+        let stale = load_vector_chunk_index_json(
+            &index_path,
+            &provider,
+            &stale_passport,
+            VectorChunkIndexBuildOptions::new("scope-json"),
+        )
+        .expect_err("stale passport must be rejected");
+        assert!(stale
+            .to_string()
+            .contains("index_scope_policy_hash changed"));
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn vector_chunk_index_update_replaces_changed_text_evidence_chunks() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-update-text");
+        let options = VectorChunkIndexBuildOptions::new("scope-update-text");
+        let old_chunks = extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/foo.mk",
+            "FOO_VERSION = 1.0\n$(eval $(generic-package))\n",
+            None,
+        );
+        let old_ids = old_chunks
+            .iter()
+            .map(|chunk| chunk.chunk_id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut index =
+            build_in_memory_vector_chunk_index(old_chunks, &provider, &passport, options)
+                .expect("build old text evidence index");
+
+        let new_chunks = extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/foo.mk",
+            "FOO_VERSION = 2.0\nFOO_LICENSE = MIT\n$(eval $(host-generic-package))\n",
+            None,
+        );
+        let new_ids = new_chunks
+            .iter()
+            .map(|chunk| chunk.chunk_id.clone())
+            .collect::<BTreeSet<_>>();
+        let summary = index
+            .replace_chunks_for_path("package/foo/foo.mk", new_chunks, &provider)
+            .expect("replace changed text evidence chunks");
+
+        assert!(summary.removed_chunks > 0);
+        assert!(summary.inserted_chunks > 0);
+        assert!(old_ids
+            .iter()
+            .all(|old_id| { !index.entries().any(|entry| entry.chunk.chunk_id == *old_id) }));
+        assert!(new_ids
+            .iter()
+            .all(|new_id| { index.entries().any(|entry| entry.chunk.chunk_id == *new_id) }));
+        assert!(index
+            .entries()
+            .all(|entry| entry.chunk.evidence_role == TEXT_EVIDENCE_KIND));
+        assert_eq!(
+            summary.estimated_vector_bytes,
+            index.metadata().estimated_vector_bytes
+        );
+    }
+
+    #[test]
+    fn vector_chunk_index_update_replaces_changed_graph_entity_chunks() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-update-graph");
+        let options = VectorChunkIndexBuildOptions::new("scope-update-graph");
+        let old_source = "/// Login user\nexport function loginUser() {\n  return true;\n}\n";
+        let old_entity = Entity {
+            id: "entity://src/auth.ts/loginUser".to_string(),
+            kind: EntityKind::Function,
+            name: "loginUser".to_string(),
+            qualified_name: "auth::loginUser".to_string(),
+            repo_relative_path: "src/auth.ts".to_string(),
+            source_span: Some(SourceSpan::new("src/auth.ts", 2, 4)),
+            content_hash: Some(content_hash("auth::loginUser")),
+            file_hash: Some(content_hash(old_source)),
+            created_from: "parser:test".to_string(),
+            confidence: 1.0,
+            metadata: Metadata::default(),
+        };
+        let old_chunks = extract_graph_entity_embedding_chunks(
+            &old_entity,
+            Some(old_source),
+            Some("typescript"),
+            None,
+        );
+        let old_ids = old_chunks
+            .iter()
+            .map(|chunk| chunk.chunk_id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut index =
+            build_in_memory_vector_chunk_index(old_chunks, &provider, &passport, options)
+                .expect("build old graph entity index");
+
+        let new_source =
+            "/// Login user with token refresh\nexport function loginUserToken() {\n  return true;\n}\n";
+        let new_entity = Entity {
+            id: "entity://src/auth.ts/loginUserToken".to_string(),
+            kind: EntityKind::Function,
+            name: "loginUserToken".to_string(),
+            qualified_name: "auth::loginUserToken".to_string(),
+            repo_relative_path: "src/auth.ts".to_string(),
+            source_span: Some(SourceSpan::new("src/auth.ts", 2, 4)),
+            content_hash: Some(content_hash("auth::loginUserToken")),
+            file_hash: Some(content_hash(new_source)),
+            created_from: "parser:test".to_string(),
+            confidence: 1.0,
+            metadata: Metadata::default(),
+        };
+        let new_chunks = extract_graph_entity_embedding_chunks(
+            &new_entity,
+            Some(new_source),
+            Some("typescript"),
+            None,
+        );
+        let new_ids = new_chunks
+            .iter()
+            .map(|chunk| chunk.chunk_id.clone())
+            .collect::<BTreeSet<_>>();
+        let summary = index
+            .replace_chunks_for_path("src/auth.ts", new_chunks, &provider)
+            .expect("replace changed graph entity chunks");
+
+        assert_eq!(summary.removed_chunks, old_ids.len());
+        assert_eq!(summary.inserted_chunks, new_ids.len());
+        assert!(old_ids
+            .iter()
+            .all(|old_id| { !index.entries().any(|entry| entry.chunk.chunk_id == *old_id) }));
+        assert!(new_ids
+            .iter()
+            .all(|new_id| { index.entries().any(|entry| entry.chunk.chunk_id == *new_id) }));
+        assert!(index.entries().all(|entry| {
+            entry.chunk.proof_status == "candidate_only" && !entry.chunk.graph_proof
+        }));
+    }
+
+    #[test]
+    fn vector_chunk_index_update_removes_deleted_file_chunks() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-delete");
+        let options = VectorChunkIndexBuildOptions::new("scope-delete");
+        let mut chunks = Vec::new();
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/foo.mk",
+            "FOO_VERSION = 1.0\n$(eval $(generic-package))\n",
+            None,
+        ));
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "package/bar/bar.mk",
+            "BAR_VERSION = 1.0\n$(eval $(generic-package))\n",
+            None,
+        ));
+        let mut index = build_in_memory_vector_chunk_index(chunks, &provider, &passport, options)
+            .expect("build two-file index");
+        let before = index.len();
+
+        let summary = index.remove_chunks_for_path("package/foo/foo.mk");
+
+        assert!(summary.removed_chunks > 0);
+        assert!(index.len() < before);
+        assert!(index
+            .entries()
+            .all(|entry| entry.chunk.path != "package/foo/foo.mk"));
+        assert!(index
+            .entries()
+            .any(|entry| entry.chunk.path == "package/bar/bar.mk"));
+    }
+
+    #[test]
+    fn vector_chunk_index_metadata_does_not_store_full_source_bodies() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-no-full-source");
+        let options = VectorChunkIndexBuildOptions::new("scope-no-full-source");
+        let tail_marker = "FULL_SOURCE_TAIL_MARKER_SHOULD_NOT_APPEAR_IN_VECTOR_METADATA";
+        let source = format!(
+            "/// Auth login\nexport function login() {{\n  return true;\n}}\n{}\n{}\n",
+            "x".repeat(VECTOR_EMBEDDING_CHUNK_MAX_TEXT_BYTES * 4),
+            tail_marker
+        );
+        let entity = Entity {
+            id: "entity://src/auth.ts/login".to_string(),
+            kind: EntityKind::Function,
+            name: "login".to_string(),
+            qualified_name: "auth::login".to_string(),
+            repo_relative_path: "src/auth.ts".to_string(),
+            source_span: Some(SourceSpan::new("src/auth.ts", 2, 4)),
+            content_hash: Some(content_hash("auth::login")),
+            file_hash: Some(content_hash(&source)),
+            created_from: "parser:test".to_string(),
+            confidence: 1.0,
+            metadata: Metadata::default(),
+        };
+        let chunks =
+            extract_graph_entity_embedding_chunks(&entity, Some(&source), Some("typescript"), None);
+        let index = build_in_memory_vector_chunk_index(chunks, &provider, &passport, options)
+            .expect("build vector index");
+        let metadata_json =
+            serde_json::to_string(index.metadata()).expect("serialize vector metadata");
+
+        assert!(!metadata_json.contains(tail_marker));
+        assert!(!metadata_json.contains("return true"));
+        assert!(index
+            .entries()
+            .all(|entry| entry.chunk.byte_count <= VECTOR_EMBEDDING_CHUNK_MAX_TEXT_BYTES));
+        assert!(index
+            .entries()
+            .all(|entry| !entry.chunk.text.contains(tail_marker)));
+        assert_eq!(index.metadata().estimated_vector_bytes_per_chunk, 64 * 4);
+        assert_eq!(
+            index.metadata().estimated_vector_bytes,
+            index.len() * index.metadata().estimated_vector_bytes_per_chunk
+        );
+    }
+
+    #[test]
+    fn vector_chunk_index_candidates_feed_retrieval_text_evidence_fallback() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-buildroot-retrieval");
+        let chunks = extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/Config.in",
+            "config BR2_PACKAGE_FOO\n\tbool \"foo\"\n\tdepends on BR2_USE_MMU\n",
+            None,
+        );
+        let index = build_in_memory_vector_chunk_index(
+            chunks,
+            &provider,
+            &passport,
+            VectorChunkIndexBuildOptions::new("scope-buildroot-retrieval"),
+        )
+        .expect("vector index");
+        let hits = index
+            .search(
+                &provider,
+                "Which Buildroot option enables the foo package?",
+                8,
+            )
+            .expect("vector search");
+        let candidates = hits
+            .iter()
+            .map(|hit| {
+                vector_chunk_search_hit_to_retrieval_candidate(
+                    hit,
+                    provider.metadata(),
+                    "Which Buildroot option enables the foo package?",
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(candidates.iter().any(|candidate| {
+            candidate.candidate_source == RetrievalCandidateSource::VectorSemantic
+                && !candidate.graph_proof
+                && candidate
+                    .metadata
+                    .get("evidence_role_raw")
+                    .and_then(Value::as_str)
+                    == Some("text_evidence")
+        }));
+
+        let funnel = RetrievalFunnel::new(
+            Vec::new(),
+            Vec::new(),
+            RetrievalFunnelConfig {
+                vector_candidate_top_k: 8,
+                ..RetrievalFunnelConfig::default()
+            },
+        )
+        .expect("funnel");
+        let result = funnel
+            .run(
+                RetrievalFunnelRequest::new(
+                    "Which Buildroot option enables the foo package?",
+                    "planning",
+                    1_000,
+                )
+                .enable_vector_candidates(true)
+                .vector_branch_status(VectorCandidateBranchStatus::Ready)
+                .vector_candidates(candidates),
+            )
+            .expect("retrieval");
+
+        assert!(result.packet.verified_paths.is_empty());
+        assert!(result
+            .packet
+            .snippets
+            .iter()
+            .any(|snippet| snippet.file == "package/foo/Config.in"
+                && snippet.text.contains("BR2_PACKAGE_FOO")));
+        assert_eq!(
+            result
+                .packet
+                .metadata
+                .get("proof_status")
+                .and_then(Value::as_str),
+            Some("no_proof_path_found")
+        );
+    }
+
+    #[test]
+    fn vector_chunk_index_candidates_feed_retrieval_graph_verification() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-graph-retrieval");
+        let source = "/// login token creation\nexport function loginUser() {\n  return true;\n}\n";
+        let entity = Entity {
+            id: "AuthService.login".to_string(),
+            kind: EntityKind::Function,
+            name: "loginUser".to_string(),
+            qualified_name: "AuthService.login".to_string(),
+            repo_relative_path: "src/auth.ts".to_string(),
+            source_span: Some(SourceSpan::new("src/auth.ts", 2, 4)),
+            content_hash: Some(content_hash("AuthService.login")),
+            file_hash: Some(content_hash(source)),
+            created_from: "parser:test".to_string(),
+            confidence: 1.0,
+            metadata: Metadata::default(),
+        };
+        let chunks =
+            extract_graph_entity_embedding_chunks(&entity, Some(source), Some("typescript"), None);
+        let index = build_in_memory_vector_chunk_index(
+            chunks,
+            &provider,
+            &passport,
+            VectorChunkIndexBuildOptions::new("scope-graph-retrieval"),
+        )
+        .expect("vector index");
+        let hits = index
+            .search(&provider, "where is login token creation implemented", 8)
+            .expect("vector search");
+        let candidates = hits
+            .iter()
+            .map(|hit| {
+                vector_chunk_search_hit_to_retrieval_candidate(
+                    hit,
+                    provider.metadata(),
+                    "where is login token creation implemented",
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(candidates.iter().any(|candidate| {
+            candidate.entity_id.as_deref() == Some("AuthService.login")
+                && candidate.requires_graph_verification
+                && !candidate.graph_proof
+        }));
+
+        let span = SourceSpan::new("src/auth.ts", 3, 3);
+        let edge = resolved_import_edge(
+            "AuthService.login",
+            RelationKind::Calls,
+            "TokenStore.create",
+            &span,
+            &content_hash(source),
+            "test_vector_retrieval",
+        );
+        let funnel = RetrievalFunnel::new(
+            vec![edge],
+            Vec::new(),
+            RetrievalFunnelConfig {
+                vector_candidate_top_k: 8,
+                ..RetrievalFunnelConfig::default()
+            },
+        )
+        .expect("funnel");
+        let result = funnel
+            .run(
+                RetrievalFunnelRequest::new(
+                    "where is login token creation implemented",
+                    "impact",
+                    1_000,
+                )
+                .enable_vector_candidates(true)
+                .vector_branch_status(VectorCandidateBranchStatus::Ready)
+                .vector_candidates(candidates),
+            )
+            .expect("retrieval");
+
+        assert!(result.packet.verified_paths.iter().any(|path| {
+            path.source == "AuthService.login" && path.target == "TokenStore.create"
+        }));
+        assert!(result
+            .vector_candidates
+            .iter()
+            .all(|candidate| !candidate.graph_proof));
+    }
+
+    #[test]
+    fn vector_recall_fixture_gate_passes_with_deterministic_provider() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-vector-recall-fixture-gate");
+        let mut text_chunks = Vec::new();
+        text_chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/foo.mk",
+            "FOO_VERSION = 1.2.3\nFOO_LICENSE = MIT\n$(eval $(generic-package))\n",
+            None,
+        ));
+        text_chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/Config.in",
+            "config BR2_PACKAGE_FOO\n\tbool \"foo package\"\n\tdepends on BR2_USE_MMU\n",
+            None,
+        ));
+        text_chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "docs/manual/adding-packages.adoc",
+            "The package infrastructure uses generic-package helpers and Config.in entries.\n",
+            None,
+        ));
+        text_chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "docs/manual/unrelated.adoc",
+            "This chapter describes release notes and unrelated board setup.\n",
+            None,
+        ));
+
+        let config_prompt =
+            "How is package metadata declaring license and generic package build rules?";
+        let config_candidates = vector_candidates_from_chunks_for_gate(
+            text_chunks.clone(),
+            &provider,
+            &passport,
+            "scope-vector-recall-fixture-gate",
+            config_prompt,
+            5,
+        );
+        let config_recall_at_5 = recall_file_at_k(&config_candidates, "package/foo/foo.mk", 5);
+        assert_eq!(config_recall_at_5, 1.0, "{config_candidates:?}");
+
+        let docs_prompt =
+            "Where does package infrastructure explain generic package helpers and Config.in?";
+        let docs_candidates = vector_candidates_from_chunks_for_gate(
+            text_chunks.clone(),
+            &provider,
+            &passport,
+            "scope-vector-recall-fixture-gate",
+            docs_prompt,
+            5,
+        );
+        let docs_recall_at_5 =
+            recall_file_at_k(&docs_candidates, "docs/manual/adding-packages.adoc", 5);
+        assert_eq!(docs_recall_at_5, 1.0, "{docs_candidates:?}");
+
+        let function_source = "/// Persists the login token for an authenticated user\nexport function loginUserToken() {\n  return tokenStore.save();\n}\n";
+        let entity = Entity {
+            id: "AuthService.loginUserToken".to_string(),
+            kind: EntityKind::Function,
+            name: "loginUserToken".to_string(),
+            qualified_name: "AuthService.loginUserToken".to_string(),
+            repo_relative_path: "src/auth.ts".to_string(),
+            source_span: Some(SourceSpan::new("src/auth.ts", 2, 4)),
+            content_hash: Some(content_hash("AuthService.loginUserToken")),
+            file_hash: Some(content_hash(function_source)),
+            created_from: "parser:test".to_string(),
+            confidence: 1.0,
+            metadata: Metadata::default(),
+        };
+        let graph_candidates = vector_candidates_from_chunks_for_gate(
+            extract_graph_entity_embedding_chunks(
+                &entity,
+                Some(function_source),
+                Some("typescript"),
+                None,
+            ),
+            &provider,
+            &passport,
+            "scope-vector-recall-fixture-gate",
+            "Where is the authenticated user login token persisted?",
+            5,
+        );
+        let entity_recall_at_5 =
+            recall_entity_at_k(&graph_candidates, "AuthService.loginUserToken", 5);
+        assert_eq!(entity_recall_at_5, 1.0, "{graph_candidates:?}");
+        assert!(graph_candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.entity_id.as_deref() == Some("AuthService.loginUserToken")
+            })
+            .all(|candidate| candidate.requires_graph_verification && !candidate.graph_proof));
+
+        let no_proof_funnel = RetrievalFunnel::new(
+            Vec::new(),
+            Vec::new(),
+            RetrievalFunnelConfig {
+                vector_candidate_top_k: 5,
+                ..RetrievalFunnelConfig::default()
+            },
+        )
+        .expect("no-proof funnel");
+        let no_proof_result = no_proof_funnel
+            .run(
+                RetrievalFunnelRequest::new(config_prompt, "planning", 1_000)
+                    .enable_vector_candidates(true)
+                    .vector_branch_status(VectorCandidateBranchStatus::Ready)
+                    .vector_candidates(config_candidates.clone()),
+            )
+            .expect("no-proof vector retrieval");
+        assert!(no_proof_result.packet.verified_paths.is_empty());
+        assert_eq!(
+            no_proof_result
+                .packet
+                .metadata
+                .get("proof_status")
+                .and_then(Value::as_str),
+            Some("no_proof_path_found")
+        );
+        assert_eq!(
+            no_proof_result
+                .packet
+                .metadata
+                .get("graph_proof")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert!(no_proof_result
+            .packet
+            .snippets
+            .iter()
+            .any(|snippet| snippet.file == "package/foo/foo.mk"));
+
+        let mut noisy_candidates = Vec::new();
+        for index in 0..24 {
+            noisy_candidates.push(vector_noise_candidate_for_gate(index));
+        }
+        let exact_funnel = RetrievalFunnel::new(
+            vec![resolved_import_edge(
+                "Exact.seed",
+                RelationKind::Calls,
+                "verified-target",
+                &SourceSpan::new("src/exact.ts", 1, 1),
+                "hash",
+                "vector_recall_fixture_gate",
+            )],
+            Vec::new(),
+            RetrievalFunnelConfig {
+                stage1_top_k: 1,
+                stage2_top_n: 1,
+                vector_candidate_top_k: 1,
+                ..RetrievalFunnelConfig::default()
+            },
+        )
+        .expect("exact seed funnel");
+        let exact_result = exact_funnel
+            .run(
+                RetrievalFunnelRequest::new(
+                    "semantic package metadata generic package noise",
+                    "impact",
+                    1_000,
+                )
+                .exact_seeds(vec!["Exact.seed".to_string()])
+                .enable_vector_candidates(true)
+                .vector_branch_status(VectorCandidateBranchStatus::Ready)
+                .vector_candidates(noisy_candidates),
+            )
+            .expect("exact seed protected retrieval");
+        let exact_seed_preserved = exact_result
+            .rerank_scores
+            .first()
+            .is_some_and(|score| score.id == "Exact.seed" && score.exact_seed)
+            && exact_result
+                .packet
+                .verified_paths
+                .iter()
+                .any(|path| path.source == "Exact.seed");
+        assert!(exact_seed_preserved);
+
+        let all_vector_candidates = config_candidates
+            .iter()
+            .chain(docs_candidates.iter())
+            .chain(graph_candidates.iter())
+            .chain(no_proof_result.vector_candidates.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(all_vector_candidates
+            .iter()
+            .all(|candidate| !candidate.graph_proof));
+
+        let config_output_size = serde_json::to_vec(&no_proof_result.packet)
+            .expect("serialize no-proof packet")
+            .len();
+        let exact_output_size = serde_json::to_vec(&exact_result.packet)
+            .expect("serialize exact packet")
+            .len();
+        let metrics = serde_json::json!({
+            "gate": "vector_recall_fixture_gate",
+            "status": "passed",
+            "provider": {
+                "provider_id": provider.metadata().provider_id,
+                "model_id": provider.metadata().model_id,
+                "dimension": provider.metadata().dimension,
+                "production_semantic_quality": provider.metadata().production_semantic_quality,
+                "source_leaves_machine": provider.metadata().source_leaves_machine
+            },
+            "recall_at_k": {
+                "expected_files": {
+                    "package/foo/foo.mk": config_recall_at_5,
+                    "docs/manual/adding-packages.adoc": docs_recall_at_5
+                },
+                "expected_entities": {
+                    "AuthService.loginUserToken": entity_recall_at_5
+                },
+                "k": 5
+            },
+            "candidate_source_counts": candidate_source_counts(&all_vector_candidates),
+            "proof_status_counts": proof_status_counts(&all_vector_candidates),
+            "graph_proof_false_until_verified": all_vector_candidates.iter().all(|candidate| !candidate.graph_proof),
+            "no_proof_fallback": {
+                "proof_status": no_proof_result.packet.metadata.get("proof_status").and_then(Value::as_str),
+                "graph_proof": no_proof_result.packet.metadata.get("graph_proof").and_then(Value::as_bool),
+                "fallback_file_found": no_proof_result.packet.snippets.iter().any(|snippet| snippet.file == "package/foo/foo.mk")
+            },
+            "exact_seed": {
+                "preserved": exact_seed_preserved,
+                "rerank_top_id": exact_result.rerank_scores.first().map(|score| score.id.as_str()),
+                "vector_cap": 1
+            },
+            "output_size_bytes": {
+                "no_proof_packet": config_output_size,
+                "exact_seed_packet": exact_output_size
+            }
+        });
+        println!(
+            "VECTOR_RECALL_FIXTURE_GATE_JSON={}",
+            serde_json::to_string(&metrics).expect("metrics json")
+        );
+    }
+
+    fn vector_candidates_from_chunks_for_gate(
+        chunks: Vec<VectorEmbeddingChunk>,
+        provider: &DeterministicTestEmbeddingProvider,
+        passport: &DbPassport,
+        source_scope: &str,
+        prompt: &str,
+        top_k: usize,
+    ) -> Vec<RetrievalCandidate> {
+        let index = build_in_memory_vector_chunk_index(
+            chunks,
+            provider,
+            passport,
+            VectorChunkIndexBuildOptions {
+                max_chunks: 64,
+                source_scope: source_scope.to_string(),
+                extraction_version: VECTOR_EMBEDDING_CHUNK_EXTRACTION_VERSION.to_string(),
+            },
+        )
+        .expect("fixture vector index");
+        index
+            .search(provider, prompt, top_k)
+            .expect("fixture vector search")
+            .iter()
+            .map(|hit| {
+                vector_chunk_search_hit_to_retrieval_candidate(
+                    hit,
+                    provider.metadata(),
+                    prompt,
+                    None,
+                )
+            })
+            .collect()
+    }
+
+    fn recall_file_at_k(candidates: &[RetrievalCandidate], expected_path: &str, k: usize) -> f64 {
+        if candidates
+            .iter()
+            .take(k)
+            .any(|candidate| candidate.path.as_deref() == Some(expected_path))
+        {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    fn recall_entity_at_k(candidates: &[RetrievalCandidate], expected_id: &str, k: usize) -> f64 {
+        if candidates
+            .iter()
+            .take(k)
+            .any(|candidate| candidate.entity_id.as_deref() == Some(expected_id))
+        {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    fn vector_noise_candidate_for_gate(index: usize) -> RetrievalCandidate {
+        let mut candidate = RetrievalCandidate::new(
+            format!("vector://noise/{index}"),
+            RetrievalCandidateSource::VectorSemantic,
+            "noisy vector candidate for exact seed protection fixture",
+        );
+        candidate.embedding_source = Some(VectorEmbeddingSource::TextEvidence);
+        candidate.path = Some(format!("docs/noise-{index}.adoc"));
+        candidate.span = Some(SourceSpan::new(format!("docs/noise-{index}.adoc"), 1, 1));
+        candidate.proof_status = RetrievalProofStatus::NotGraphProof;
+        candidate.graph_proof = false;
+        candidate.claimable = true;
+        candidate.claimable_for_text = Some(true);
+        candidate.claimable_for_graph = Some(false);
+        candidate.score = Some(1.0 - (index as f64 * 0.001));
+        candidate.chunk_id = Some(format!("vector-noise-chunk-{index}"));
+        candidate.chunk_kind = Some("snippet".to_string());
+        candidate.requires_graph_verification = false;
+        candidate.verification_status = RetrievalVerificationStatus::NotGraphProof;
+        candidate.metadata.insert(
+            "chunk_text".to_string(),
+            serde_json::json!("semantic package metadata generic package noise"),
+        );
+        candidate
+    }
+
+    fn candidate_source_counts(candidates: &[RetrievalCandidate]) -> BTreeMap<String, usize> {
+        let mut counts = BTreeMap::new();
+        for candidate in candidates {
+            let source = serde_json::to_value(candidate.candidate_source)
+                .expect("source json")
+                .as_str()
+                .expect("source string")
+                .to_string();
+            *counts.entry(source).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    fn proof_status_counts(candidates: &[RetrievalCandidate]) -> BTreeMap<String, usize> {
+        let mut counts = BTreeMap::new();
+        for candidate in candidates {
+            let status = serde_json::to_value(candidate.proof_status)
+                .expect("proof json")
+                .as_str()
+                .expect("proof string")
+                .to_string();
+            *counts.entry(status).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    #[test]
     fn text_evidence_respects_hard_excludes_and_artifact_suffixes() {
         let repo = temp_repo("text-evidence-negative-scope");
         write_test_file(
@@ -12753,7 +15666,13 @@ mod tests {
             "reports/final/generated.md",
             "SHOULD_NOT_INDEX_REPORT_FINAL\n",
         );
+        write_test_file(
+            &repo,
+            "reports/audit/artifacts/run/generated.md",
+            "SHOULD_NOT_INDEX_REPORT_ARTIFACT\n",
+        );
         write_test_file(&repo, "src/cache.db", "SHOULD_NOT_INDEX_DB\n");
+        write_test_file(&repo, "src/cache.sqlite", "SHOULD_NOT_INDEX_SQLITE\n");
         write_test_file(&repo, "logs/run.log", "SHOULD_NOT_INDEX_LOG\n");
 
         let db = repo.join("target").join("text-negative.sqlite");
@@ -12768,7 +15687,9 @@ mod tests {
             "target/generated.mk",
             "node_modules/pkg/Config.in",
             "reports/final/generated.md",
+            "reports/audit/artifacts/run/generated.md",
             "src/cache.db",
+            "src/cache.sqlite",
             "logs/run.log",
         ] {
             assert!(

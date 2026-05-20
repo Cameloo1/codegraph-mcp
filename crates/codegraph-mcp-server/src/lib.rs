@@ -17,21 +17,28 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use codegraph_core::{Edge, Entity, FileRecord, RelationKind, SourceSpan};
+use codegraph_core::{
+    ContextPacket, ContextSnippet, Edge, Entity, FileRecord, PathEvidence, RelationKind,
+    RetrievalCandidate, SourceSpan,
+};
 use codegraph_index::{
     default_db_path, index_repo_to_db_with_options, inspect_db_lifecycle_preflight,
-    update_changed_files_to_db, DbLifecyclePreflight, IndexOptions, IndexScopeOptions,
-    UNBOUNDED_STORE_READ_LIMIT,
+    load_vector_chunk_index_json, update_changed_files_to_db,
+    vector_chunk_search_hit_to_retrieval_candidate, DbLifecyclePreflight, IndexOptions,
+    IndexScopeOptions, VectorChunkIndexBuildOptions, UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::language_frontends;
 use codegraph_query::{
     ExactGraphQueryEngine, GraphPath, QueryLimits, RetrievalDocument, RetrievalFunnel,
     RetrievalFunnelConfig, RetrievalFunnelRequest, RetrievalTraceStage,
+    VectorCandidateBranchStatus,
 };
 use codegraph_store::{
     DbPreflightReport, GraphStore, SqliteGraphStore, TextSearchHit, TextSearchKind,
 };
 use codegraph_trace::{TraceConfig, TraceLogger};
+use codegraph_vector::{DeterministicTestEmbeddingProvider, TestEmbeddingEnablement};
+use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 #[cfg(test)]
@@ -44,6 +51,11 @@ const EXTERNAL_PROFILE_DB_NOTE: &str =
     "This profile DB is outside the workspace; grant access or choose a workspace-local DB.";
 const DEFAULT_RESULT_LIMIT: usize = 20;
 const DEFAULT_GRAPH_EDGE_LIMIT: usize = 100_000;
+const MCP_VECTOR_INDEX_FILE_NAME: &str = "codegraph-vector-chunks.json";
+const MCP_VECTOR_SOURCE_SCOPE: &str = "context-pack-release-vector-candidates";
+const MCP_VECTOR_PROVIDER_DIMENSION: usize = 64;
+const MCP_VECTOR_CANDIDATE_TOP_K: usize = 16;
+const MCP_CONTEXT_PACK_DEFAULT_LIMIT: usize = 12;
 
 const MCP_RESOURCE_URIS: &[&str] = &[
     "codegraph://status",
@@ -385,7 +397,7 @@ impl McpServer {
             "codegraph.explain_path" => self.explain_path(args),
             other => Err(ToolCallError::new(
                 "unknown_tool",
-                format!("unknown CodeGraph MCP tool: {other}"),
+                format!("unknown codegraph-mcp tool: {other}"),
             )),
         }
     }
@@ -782,6 +794,9 @@ impl McpServer {
                 request.insert("task".to_string(), Value::String(query));
             }
         }
+        request
+            .entry("response_mode".to_string())
+            .or_insert_with(|| Value::String("verbose".to_string()));
         let pack = self.context_pack(&request)?;
         Ok(json!({
             "status": "ok",
@@ -1151,42 +1166,122 @@ impl McpServer {
     fn context_pack(&self, args: &Map<String, Value>) -> Result<Value, ToolCallError> {
         let task = required_string(args, "task")?;
         let mode = optional_string(args, "mode").unwrap_or_else(|| "impact".to_string());
+        let response_mode = mcp_context_pack_response_mode(args)?;
+        let response_limit = optional_limit(args)?.min(MCP_CONTEXT_PACK_DEFAULT_LIMIT);
         let token_budget = optional_usize(args, "token_budget", 2_000, 32, 100_000)?;
         let seeds = optional_string_array(args, "seeds")?;
         let stage0_candidates = optional_string_array(args, "stage0_candidates")?;
+        let enable_vector_candidates = optional_bool_arg(args, "enable_vector_candidates")?
+            .unwrap_or(false)
+            || optional_bool_arg(args, "enableVectorCandidates")?.unwrap_or(false);
+        let enable_nuance_rescue_candidates =
+            optional_bool_arg(args, "enable_nuance_rescue_candidates")?.unwrap_or(false)
+                || optional_bool_arg(args, "enableNuanceRescueCandidates")?.unwrap_or(false);
+        let vector_index_path_arg = optional_string(args, "vector_index")
+            .or_else(|| optional_string(args, "vector_index_path"))
+            .or_else(|| optional_string(args, "vectorIndex"))
+            .or_else(|| optional_string(args, "vectorIndexPath"));
         let repo_root = self.repo_root(args)?;
         let (store, preflight) = self.open_store_with_preflight(args)?;
+        let vector_branch = enable_vector_candidates.then(|| {
+            load_mcp_vector_branch(
+                &store,
+                Path::new(&preflight.exact_db_path_checked),
+                vector_index_path_arg.as_deref(),
+                &task,
+            )
+        });
         let sources = load_sources(&repo_root, &store).map_err(ToolCallError::from)?;
         let documents = retrieval_documents(&store)?;
+        let mut config = RetrievalFunnelConfig::default();
+        config.vector_candidate_top_k = MCP_VECTOR_CANDIDATE_TOP_K;
         let funnel = RetrievalFunnel::new(
             store
                 .list_edges(self.config.max_graph_edges)
                 .map_err(mcp_store_error)?,
             documents,
-            RetrievalFunnelConfig::default(),
+            config,
         )
         .map_err(|error| ToolCallError::new("retrieval_funnel_failed", error.to_string()))?;
         let stage0_docs = stage0_candidates
             .iter()
             .map(|candidate| RetrievalDocument::new(candidate, candidate).stage0_score(1.0))
             .collect::<Vec<_>>();
+        let mut request = RetrievalFunnelRequest::new(task.clone(), mode, token_budget)
+            .exact_seeds(seeds)
+            .stage0_candidates(stage0_docs)
+            .sources(sources);
+        if let Some(vector_branch) = &vector_branch {
+            request = request
+                .enable_vector_candidates(true)
+                .vector_candidate_diagnostics(true)
+                .vector_branch_status(vector_branch.status.clone())
+                .vector_candidates(vector_branch.candidates.clone());
+        }
+        if enable_nuance_rescue_candidates {
+            request = request.enable_nuance_rescue_candidates(true);
+        }
         let result = funnel
-            .run(
-                RetrievalFunnelRequest::new(task.clone(), mode, token_budget)
-                    .exact_seeds(seeds)
-                    .stage0_candidates(stage0_docs)
-                    .sources(sources),
-            )
+            .run(request)
             .map_err(|error| ToolCallError::new("retrieval_funnel_failed", error.to_string()))?;
+        let mut packet = result.packet;
+        let nuance_rescue_diagnostics = mcp_nuance_rescue_diagnostics(
+            enable_nuance_rescue_candidates,
+            &result.nuance_rescue_candidates,
+            &result.trace,
+        );
+        let vector_candidate_diagnostics = if let Some(vector_branch) = &vector_branch {
+            let mut trace = packet
+                .metadata
+                .get("vector_candidate_trace")
+                .cloned()
+                .unwrap_or_else(|| mcp_vector_trace_fallback(vector_branch));
+            if let Some(object) = trace.as_object_mut() {
+                object.insert(
+                    "vector_index_path".to_string(),
+                    json!(path_string(&vector_branch.index_path)),
+                );
+                object.insert(
+                    "warning".to_string(),
+                    vector_branch
+                        .warning
+                        .as_ref()
+                        .map(|warning| json!(warning))
+                        .unwrap_or(Value::Null),
+                );
+            }
+            packet
+                .metadata
+                .insert("vector_candidate_trace".to_string(), trace.clone());
+            trace
+        } else {
+            Value::Null
+        };
 
-        Ok(json!({
-            "status": "ok",
-            "task": task,
-            "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
-            "packet": result.packet,
-            "funnel_trace": result.trace.iter().map(retrieval_trace_stage_json).collect::<Vec<_>>(),
-            "proof": "Context packet is built through Stage 0 exact seeds, Stage 1 binary sieve, Stage 2 compressed rerank, Stage 3 exact graph verification, and Stage 4 packet emission.",
-        }))
+        if response_mode == "verbose" || response_mode == "explain" {
+            return Ok(json!({
+                "status": "ok",
+                "schema_version": 1,
+                "command": "codegraph.context_pack",
+                "response_mode": response_mode,
+                "task": task,
+                "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
+                "packet": packet,
+                "funnel_trace": result.trace.iter().map(retrieval_trace_stage_json).collect::<Vec<_>>(),
+                "vector_candidate_diagnostics": vector_candidate_diagnostics,
+                "nuance_rescue_diagnostics": nuance_rescue_diagnostics,
+                "proof": "Context packet is built through Stage 0 exact seeds, Stage 1 binary sieve, Stage 2 compressed rerank, Stage 3 exact graph verification, and Stage 4 packet emission.",
+            }));
+        }
+
+        Ok(mcp_context_pack_compact_json(
+            &task,
+            &packet,
+            &preflight,
+            response_limit,
+            vector_candidate_diagnostics,
+            nuance_rescue_diagnostics,
+        ))
     }
 
     fn trace_path(&self, args: &Map<String, Value>) -> Result<Value, ToolCallError> {
@@ -1473,7 +1568,7 @@ impl McpServer {
             })),
             other => Err(ToolCallError::new(
                 "unknown_resource",
-                format!("unknown CodeGraph MCP resource: {other}"),
+                format!("unknown codegraph-mcp resource: {other}"),
             )),
         }
     }
@@ -1625,6 +1720,165 @@ pub fn serve_stdio() -> Result<(), McpServerError> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct McpVectorBranch {
+    index_path: PathBuf,
+    status: VectorCandidateBranchStatus,
+    candidates: Vec<RetrievalCandidate>,
+    warning: Option<String>,
+}
+
+fn load_mcp_vector_branch(
+    store: &SqliteGraphStore,
+    db_path: &Path,
+    explicit_index_path: Option<&str>,
+    task: &str,
+) -> McpVectorBranch {
+    let index_path = mcp_vector_index_path(db_path, explicit_index_path);
+    if !index_path.exists() {
+        return McpVectorBranch {
+            index_path,
+            status: VectorCandidateBranchStatus::Missing,
+            candidates: Vec::new(),
+            warning: Some("vector index missing; continuing without vector candidates".to_string()),
+        };
+    }
+
+    let provider = match mcp_vector_provider() {
+        Ok(provider) => provider,
+        Err(error) => {
+            return McpVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: format!("deterministic vector provider unavailable: {error}"),
+                },
+                candidates: Vec::new(),
+                warning: Some("deterministic vector provider unavailable".to_string()),
+            };
+        }
+    };
+    let passport = match store.get_db_passport() {
+        Ok(Some(passport)) => passport,
+        Ok(None) => {
+            return McpVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: "db passport missing".to_string(),
+                },
+                candidates: Vec::new(),
+                warning: Some(
+                    "vector index ignored because graph DB passport is missing".to_string(),
+                ),
+            };
+        }
+        Err(error) => {
+            return McpVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: format!("db passport read failed: {error}"),
+                },
+                candidates: Vec::new(),
+                warning: Some(
+                    "vector index ignored because graph DB passport could not be read".to_string(),
+                ),
+            };
+        }
+    };
+
+    let index = match load_vector_chunk_index_json(
+        &index_path,
+        &provider,
+        &passport,
+        mcp_vector_options(),
+    ) {
+        Ok(index) => index,
+        Err(error) => {
+            return McpVectorBranch {
+                    index_path,
+                    status: VectorCandidateBranchStatus::Stale {
+                        reason: error.to_string(),
+                    },
+                    candidates: Vec::new(),
+                    warning: Some(format!(
+                        "vector index stale or incompatible; continuing without vector candidates: {error}"
+                    )),
+                };
+        }
+    };
+    let hits = match index.search(&provider, task, MCP_VECTOR_CANDIDATE_TOP_K) {
+        Ok(hits) => hits,
+        Err(error) => {
+            return McpVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: error.to_string(),
+                },
+                candidates: Vec::new(),
+                warning: Some(format!(
+                    "vector index query failed; continuing without vector candidates: {error}"
+                )),
+            };
+        }
+    };
+    let candidates = hits
+        .iter()
+        .map(|hit| {
+            vector_chunk_search_hit_to_retrieval_candidate(hit, provider.metadata(), task, None)
+        })
+        .collect();
+
+    McpVectorBranch {
+        index_path,
+        status: VectorCandidateBranchStatus::Ready,
+        candidates,
+        warning: None,
+    }
+}
+
+fn mcp_vector_trace_fallback(vector_branch: &McpVectorBranch) -> Value {
+    json!({
+        "schema_version": 1,
+        "diagnostic_only": true,
+        "vector_enabled": true,
+        "vector_index_status": vector_branch.status.as_str(),
+        "vector_candidate_count": vector_branch.candidates.len(),
+        "proof_contract": "vector candidates are candidate recall only and are not graph proof unless graph/source verification succeeds",
+    })
+}
+
+fn mcp_vector_index_path(db_path: &Path, explicit_index_path: Option<&str>) -> PathBuf {
+    if let Some(path) = explicit_index_path {
+        let path = PathBuf::from(path);
+        return if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(&path))
+                .unwrap_or(path)
+        };
+    }
+    db_path
+        .parent()
+        .map(|parent| parent.join(MCP_VECTOR_INDEX_FILE_NAME))
+        .unwrap_or_else(|| PathBuf::from(MCP_VECTOR_INDEX_FILE_NAME))
+}
+
+fn mcp_vector_provider() -> Result<DeterministicTestEmbeddingProvider, String> {
+    DeterministicTestEmbeddingProvider::new(
+        MCP_VECTOR_PROVIDER_DIMENSION,
+        TestEmbeddingEnablement::Explicit,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn mcp_vector_options() -> VectorChunkIndexBuildOptions {
+    VectorChunkIndexBuildOptions {
+        max_chunks: MCP_VECTOR_CANDIDATE_TOP_K.saturating_mul(256),
+        source_scope: MCP_VECTOR_SOURCE_SCOPE.to_string(),
+        extraction_version: codegraph_index::VECTOR_EMBEDDING_CHUNK_EXTRACTION_VERSION.to_string(),
+    }
 }
 
 fn tool_definition(name: &str) -> Value {
@@ -2016,7 +2270,22 @@ fn context_pack_schema() -> Value {
     let mut schema = repo_schema(vec![("task", "string", "User task to build context for.")]);
     add_read_scope_schema_properties(&mut schema);
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
-        properties.insert("mode".to_string(), json!({"type": "string"}));
+        properties.insert(
+            "mode".to_string(),
+            json!({"type": "string", "description": "Context task mode, for example impact, production, test-impact, or debug."}),
+        );
+        properties.insert(
+            "response_mode".to_string(),
+            json!({"type": "string", "enum": ["compact", "verbose", "explain"], "description": "Controls response verbosity. compact is bounded and omits the full packet and funnel trace; verbose/explain include audit detail."}),
+        );
+        properties.insert(
+            "output_mode".to_string(),
+            json!({"type": "string", "enum": ["compact", "verbose", "explain"], "description": "Alias for response_mode."}),
+        );
+        properties.insert(
+            "limit".to_string(),
+            json!({"type": "integer", "minimum": 1, "maximum": 100, "description": "Compact response item limit."}),
+        );
         properties.insert(
             "token_budget".to_string(),
             json!({"type": "integer", "minimum": 32}),
@@ -2028,6 +2297,22 @@ fn context_pack_schema() -> Value {
         properties.insert(
             "stage0_candidates".to_string(),
             json!({"type": "array", "items": {"type": "string"}}),
+        );
+        properties.insert(
+            "enable_vector_candidates".to_string(),
+            json!({"type": "boolean", "description": "Explicitly enable deterministic vector candidate recall diagnostics. Candidates are not graph proof."}),
+        );
+        properties.insert(
+            "enable_nuance_rescue_candidates".to_string(),
+            json!({"type": "boolean", "description": "Explicitly enable deterministic 1-bit nuance rescue candidate recall. Candidates are not graph proof."}),
+        );
+        properties.insert(
+            "vector_index".to_string(),
+            json!({"type": "string", "description": "Optional persisted vector chunk index path for diagnostic candidate recall."}),
+        );
+        properties.insert(
+            "vector_index_path".to_string(),
+            json!({"type": "string", "description": "Alias for vector_index."}),
         );
     }
     schema
@@ -2274,6 +2559,306 @@ fn response_mode(args: &Map<String, Value>) -> Result<String, ToolCallError> {
             format!("mode must be compact, verbose, or explain; got {other}"),
         )),
     }
+}
+
+fn mcp_context_pack_response_mode(args: &Map<String, Value>) -> Result<String, ToolCallError> {
+    match optional_string(args, "response_mode")
+        .or_else(|| optional_string(args, "output_mode"))
+        .unwrap_or_else(|| "compact".to_string())
+        .replace('-', "_")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "compact" => Ok("compact".to_string()),
+        "verbose" => Ok("verbose".to_string()),
+        "explain" => Ok("explain".to_string()),
+        other => Err(ToolCallError::new(
+            "invalid_input",
+            format!("response_mode must be compact, verbose, or explain; got {other}"),
+        )),
+    }
+}
+
+fn mcp_context_pack_compact_json(
+    task: &str,
+    packet: &ContextPacket,
+    preflight: &DbLifecyclePreflight,
+    limit: usize,
+    vector_candidate_diagnostics: Value,
+    nuance_rescue_diagnostics: Value,
+) -> Value {
+    let lifecycle = mcp_compact_lifecycle_summary(preflight);
+    let claimable = lifecycle
+        .get("claimable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let diagnostic_only = lifecycle
+        .get("diagnostic_only")
+        .and_then(Value::as_bool)
+        .unwrap_or(!claimable);
+    let proof_path_count = packet.verified_paths.len();
+    let snippet_count = packet.snippets.len();
+    let fallback_evidence = packet
+        .metadata
+        .get("fallback_evidence")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let returned_paths = packet
+        .verified_paths
+        .iter()
+        .take(limit)
+        .map(mcp_compact_path_evidence_json)
+        .collect::<Vec<_>>();
+    let returned_snippets = packet
+        .snippets
+        .iter()
+        .take(limit)
+        .map(mcp_compact_context_snippet_json)
+        .collect::<Vec<_>>();
+    let returned_fallback = fallback_evidence
+        .iter()
+        .take(limit)
+        .cloned()
+        .collect::<Vec<_>>();
+    let result_count = proof_path_count + fallback_evidence.len();
+    let returned_count = returned_paths.len() + returned_fallback.len();
+    let omitted_count = result_count.saturating_sub(returned_count)
+        + snippet_count.saturating_sub(returned_snippets.len());
+    let graph_proof = packet
+        .metadata
+        .get("graph_proof")
+        .and_then(Value::as_bool)
+        .unwrap_or(proof_path_count > 0);
+    let proof_status = packet
+        .metadata
+        .get("proof_status")
+        .and_then(Value::as_str)
+        .unwrap_or(if graph_proof {
+            "proof_path_found"
+        } else {
+            "unknown"
+        });
+
+    json!({
+        "status": "ok",
+        "schema_version": 1,
+        "command": "codegraph.context_pack",
+        "response_mode": "compact",
+        "task": task,
+        "mode": packet.mode.clone(),
+        "lifecycle": lifecycle,
+        "claimable": claimable,
+        "diagnostic_only": diagnostic_only,
+        "result_count": result_count,
+        "limit": limit,
+        "omitted_count": omitted_count,
+        "warnings": [],
+        "errors": [],
+        "symbols": packet.symbols.clone(),
+        "paths": returned_paths,
+        "snippets": returned_snippets,
+        "fallback_evidence": returned_fallback,
+        "fallback_evidence_count": fallback_evidence.len(),
+        "proof_path_count": proof_path_count,
+        "proof_status": proof_status,
+        "graph_proof": graph_proof,
+        "evidence_status": packet.metadata.get("evidence_status").cloned().unwrap_or(Value::Null),
+        "proof_failure_reason": packet.metadata.get("proof_failure_reason").cloned().unwrap_or(Value::Null),
+        "truncation": {
+            "returned_count": returned_count,
+            "limit_applied": omitted_count > 0,
+            "limit": limit,
+            "omitted_count": omitted_count,
+            "total_available": result_count + snippet_count,
+            "total_available_unknown": false
+        },
+        "vector_candidate_diagnostics": mcp_compact_vector_diagnostics(vector_candidate_diagnostics),
+        "nuance_rescue_diagnostics": mcp_compact_nuance_rescue_diagnostics(nuance_rescue_diagnostics),
+        "proof": "Compact context-pack output omits full packet metadata and funnel trace. Use response_mode=verbose or response_mode=explain for audit detail.",
+    })
+}
+
+fn mcp_compact_lifecycle_summary(preflight: &DbLifecyclePreflight) -> Value {
+    json!({
+        "claimable": preflight.safe,
+        "diagnostic_only": !preflight.safe,
+        "decision": if preflight.safe { "read_reuse" } else { "diagnostic_stale_reuse" },
+        "db_problem_kind": preflight.db_problem_kind.clone(),
+        "passport_status": preflight.db_health.passport_status.clone(),
+        "schema_status": preflight.schema_status.clone(),
+        "scope_status": preflight.scope_status.clone(),
+        "repo_root_status": preflight.repo_root_status.clone(),
+        "sidecar_status": preflight.db_health.sidecar_status.clone(),
+        "path_access_status": preflight.path_access_status.clone(),
+        "exact_db_path_checked": preflight.exact_db_path_checked.clone(),
+    })
+}
+
+fn mcp_compact_path_evidence_json(path: &PathEvidence) -> Value {
+    let edge_limit = 8usize;
+    let span_limit = 8usize;
+    json!({
+        "path_id": path.id.clone(),
+        "summary": path.summary.clone(),
+        "source": path.source.clone(),
+        "target": path.target.clone(),
+        "relations": path.metapath.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        "edges": path.edges.iter().take(edge_limit).map(|(head, relation, tail)| {
+            json!({
+                "head_id": head,
+                "relation": relation.to_string(),
+                "tail_id": tail,
+            })
+        }).collect::<Vec<_>>(),
+        "source_spans": path.source_spans.iter().take(span_limit).collect::<Vec<_>>(),
+        "exactness": path.exactness.to_string(),
+        "confidence": path.confidence,
+        "evidence_role": path.metadata.get("evidence_role").and_then(Value::as_str).unwrap_or("unknown"),
+        "proof_status": path.metadata.get("proof_status").and_then(Value::as_str).unwrap_or("proof_path_found"),
+        "classification_reason": path.metadata.get("evidence_role_reason").or_else(|| path.metadata.get("classification_reason")).cloned().unwrap_or(Value::Null),
+        "omitted_edges": path.edges.len().saturating_sub(edge_limit),
+        "omitted_source_spans": path.source_spans.len().saturating_sub(span_limit),
+    })
+}
+
+fn mcp_compact_context_snippet_json(snippet: &ContextSnippet) -> Value {
+    json!({
+        "file": snippet.file.clone(),
+        "lines": snippet.lines.clone(),
+        "text": compact_mcp_text(&snippet.text, 600),
+        "reason": snippet.reason.clone(),
+    })
+}
+
+fn mcp_compact_vector_diagnostics(value: Value) -> Value {
+    let Some(object) = value.as_object() else {
+        return Value::Null;
+    };
+    let vector_candidate_count = object
+        .get("vector_candidate_count")
+        .or_else(|| object.get("candidate_count"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    json!({
+        "vector_index_status": object.get("vector_index_status").cloned().unwrap_or(Value::Null),
+        "candidate_count": vector_candidate_count.clone(),
+        "vector_candidate_count": vector_candidate_count,
+        "warning": object.get("warning").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn mcp_nuance_rescue_diagnostics(
+    enabled: bool,
+    candidates: &[RetrievalCandidate],
+    trace: &[RetrievalTraceStage],
+) -> Value {
+    let trace_stage = trace
+        .iter()
+        .find(|stage| stage.stage == "stage1_nuance_rescue");
+    let status = if enabled {
+        "active_current"
+    } else {
+        "disabled"
+    };
+    let dropped_count = trace_stage.map(|stage| stage.dropped.len()).unwrap_or(0);
+    let notes = trace_stage
+        .map(|stage| stage.notes.iter().take(8).cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let items = candidates
+        .iter()
+        .take(8)
+        .map(mcp_nuance_rescue_candidate_diagnostic_json)
+        .collect::<Vec<_>>();
+
+    json!({
+        "schema_version": 1,
+        "diagnostic_only": true,
+        "nuance_rescue_enabled": enabled,
+        "rescue_enabled": enabled,
+        "rescue_status": status,
+        "candidate_count": candidates.len(),
+        "rescue_candidate_count": candidates.len(),
+        "dropped_count": dropped_count,
+        "notes": notes,
+        "candidates": items,
+        "proof_contract": "nuance rescue candidates are deterministic candidate recall only; graph_proof remains false until graph/source verification"
+    })
+}
+
+fn mcp_nuance_rescue_candidate_diagnostic_json(candidate: &RetrievalCandidate) -> Value {
+    let matched_token = candidate.matched_seeds.first().cloned();
+    json!({
+        "candidate_id": candidate.candidate_id.clone(),
+        "candidate_source": mcp_enum_snake_case(candidate.candidate_source),
+        "candidate_sources": mcp_retrieval_candidate_sources(candidate),
+        "path": candidate.path.clone(),
+        "entity_id": candidate.entity_id.clone(),
+        "matched_token": matched_token,
+        "matched_tokens": candidate.matched_seeds.clone(),
+        "rescue_reason": candidate
+            .metadata
+            .get("rescue_basis")
+            .and_then(Value::as_str)
+            .unwrap_or("rare_token_identifier_overlap"),
+        "proof_status": mcp_enum_snake_case(candidate.proof_status),
+        "graph_proof": candidate.graph_proof,
+        "claimable_for_graph": candidate.claimable_for_graph,
+        "verification_status": mcp_enum_snake_case(candidate.verification_status),
+        "score": candidate.score,
+        "rank": candidate.rank,
+    })
+}
+
+fn mcp_retrieval_candidate_sources(candidate: &RetrievalCandidate) -> Vec<String> {
+    let mut sources = BTreeSet::new();
+    sources.insert(mcp_enum_snake_case(candidate.candidate_source));
+    if let Some(source) = candidate
+        .metadata
+        .get("upstream_candidate_source")
+        .and_then(Value::as_str)
+    {
+        sources.insert(source.to_string());
+    }
+    sources.into_iter().collect()
+}
+
+fn mcp_enum_snake_case<T: Serialize>(value: T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn mcp_compact_nuance_rescue_diagnostics(value: Value) -> Value {
+    let Some(object) = value.as_object() else {
+        return Value::Null;
+    };
+    json!({
+        "nuance_rescue_enabled": object
+            .get("nuance_rescue_enabled")
+            .or_else(|| object.get("rescue_enabled"))
+            .cloned()
+            .unwrap_or(Value::Bool(false)),
+        "rescue_status": object.get("rescue_status").cloned().unwrap_or(Value::Null),
+        "candidate_count": object.get("candidate_count").cloned().unwrap_or(Value::Null),
+        "rescue_candidate_count": object
+            .get("rescue_candidate_count")
+            .or_else(|| object.get("candidate_count"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "dropped_count": object.get("dropped_count").cloned().unwrap_or(Value::Null),
+        "proof_contract": object.get("proof_contract").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn compact_mcp_text(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut output = value.chars().take(max_chars).collect::<String>();
+    output.push_str("...");
+    output
 }
 
 fn query_limits(args: &Map<String, Value>) -> Result<QueryLimits, ToolCallError> {
@@ -4033,6 +4618,65 @@ mod tests {
     }
 
     #[test]
+    fn context_pack_mcp_vector_missing_index_is_diagnostic() {
+        let repo = fixture_repo();
+        let db_path = repo.join("external-db").join("mcp-vector.sqlite");
+        let missing_index = repo.join("external-db").join("missing-vector-index.json");
+        let server = McpServer::new(
+            McpServerConfig::for_repo(&repo)
+                .with_db_path(&db_path)
+                .without_trace(),
+        );
+        ok(server.call_tool(
+            "codegraph.index_repo",
+            &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
+        ));
+        assert!(
+            !repo.join(".codegraph").exists(),
+            "MCP vector diagnostic test must use explicit external DB"
+        );
+
+        let result = ok(server.call_tool(
+            "codegraph.context_pack",
+            &json!({
+                "repo": path_string(&repo),
+                "db_path": path_string(&db_path),
+                "task": "Change login email handling",
+                "enable_vector_candidates": true,
+                "vector_index": path_string(&missing_index)
+            }),
+        ));
+
+        assert_eq!(result["status"].as_str(), Some("ok"));
+        assert_eq!(
+            result["vector_candidate_diagnostics"]["vector_index_status"].as_str(),
+            Some("missing")
+        );
+        assert_eq!(
+            result["vector_candidate_diagnostics"]["vector_candidate_count"].as_u64(),
+            Some(0)
+        );
+
+        let explain = ok(server.call_tool(
+            "codegraph.context_pack",
+            &json!({
+                "repo": path_string(&repo),
+                "db_path": path_string(&db_path),
+                "task": "Change login email handling",
+                "response_mode": "explain",
+                "enable_vector_candidates": true,
+                "vector_index": path_string(&missing_index)
+            }),
+        ));
+        assert_eq!(
+            explain["packet"]["metadata"]["vector_candidate_trace"]["vector_index_status"].as_str(),
+            Some("missing")
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
     fn explain_missing_categories_are_structured() {
         let (server, repo, _login, _sanitize) = indexed_server();
 
@@ -4228,10 +4872,11 @@ mod tests {
 
         let mcp = ok(server.call_tool(
             "codegraph.context_pack",
-            &json!({"repo": path_string(&repo), "task": "Change login", "seeds": [seed.clone()]}),
+            &json!({"repo": path_string(&repo), "task": "Change login", "seeds": [seed.clone()], "response_mode": "explain"}),
         ));
 
         assert_eq!(mcp["status"].as_str(), Some("ok"));
+        assert_eq!(mcp["response_mode"].as_str(), Some("explain"));
         let trace = mcp["packet"]["metadata"]["trace"]
             .as_array()
             .expect("packet trace");
@@ -4260,6 +4905,110 @@ mod tests {
                 "exact seed should not be dropped by {stage}: {entry:?}"
             );
         }
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn context_pack_mcp_default_is_compact_and_bounded() {
+        let (server, repo, login, _sanitize) = indexed_server();
+
+        let compact = ok(server.call_tool(
+            "codegraph.context_pack",
+            &json!({"repo": path_string(&repo), "task": "Change login", "seeds": [login], "limit": 1}),
+        ));
+
+        assert_eq!(compact["status"].as_str(), Some("ok"));
+        assert_eq!(compact["schema_version"].as_u64(), Some(1));
+        assert_eq!(compact["command"].as_str(), Some("codegraph.context_pack"));
+        assert_eq!(compact["response_mode"].as_str(), Some("compact"));
+        assert!(compact["packet"].is_null(), "{compact}");
+        assert!(compact["funnel_trace"].is_null(), "{compact}");
+        assert_eq!(compact["limit"].as_u64(), Some(1));
+        assert!(compact["omitted_count"].as_u64().is_some());
+        assert!(compact["claimable"].as_bool().is_some());
+        assert!(compact["diagnostic_only"].as_bool().is_some());
+        assert!(compact["paths"].as_array().expect("paths").len() <= 1);
+        assert!(compact["snippets"].as_array().expect("snippets").len() <= 1);
+
+        let encoded = serde_json::to_vec(&compact).expect("compact json");
+        assert!(
+            encoded.len() < 16 * 1024,
+            "compact MCP output too large: {}",
+            encoded.len()
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn context_pack_mcp_nuance_rescue_is_explicit_and_candidate_only() {
+        let (server, repo, _login, _sanitize) = indexed_server();
+        let stage0_candidates = (0..48)
+            .map(|index| format!("quasarnettle nuance support candidate {index}"))
+            .collect::<Vec<_>>();
+
+        let compact = ok(server.call_tool(
+            "codegraph.context_pack",
+            &json!({
+                "repo": path_string(&repo),
+                "task": "Investigate quasarnettle nuance support",
+                "stage0_candidates": stage0_candidates,
+                "enable_nuance_rescue_candidates": true,
+                "limit": 2
+            }),
+        ));
+
+        assert_eq!(compact["status"].as_str(), Some("ok"));
+        assert_eq!(
+            compact["nuance_rescue_diagnostics"]["nuance_rescue_enabled"].as_bool(),
+            Some(true)
+        );
+        assert!(
+            compact["nuance_rescue_diagnostics"]["rescue_candidate_count"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0,
+            "{compact}"
+        );
+        assert!(compact["packet"].is_null(), "{compact}");
+        assert!(compact["funnel_trace"].is_null(), "{compact}");
+
+        let explain = ok(server.call_tool(
+            "codegraph.context_pack",
+            &json!({
+                "repo": path_string(&repo),
+                "task": "Investigate quasarnettle nuance support",
+                "stage0_candidates": stage0_candidates,
+                "enable_nuance_rescue_candidates": true,
+                "response_mode": "explain"
+            }),
+        ));
+        assert_eq!(
+            explain["nuance_rescue_diagnostics"]["rescue_candidate_count"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0,
+            true
+        );
+        let nuance_stage = explain["funnel_trace"]
+            .as_array()
+            .expect("funnel trace")
+            .iter()
+            .find(|stage| stage["stage"].as_str() == Some("stage1_nuance_rescue"))
+            .expect("nuance stage");
+        assert!(nuance_stage["notes"]
+            .as_array()
+            .expect("notes")
+            .iter()
+            .any(|note| note
+                .as_str()
+                .is_some_and(|note| note.contains("candidate recall only"))));
+        assert!(explain["nuance_rescue_diagnostics"]["candidates"]
+            .as_array()
+            .expect("candidates")
+            .iter()
+            .all(|candidate| candidate["graph_proof"].as_bool() == Some(false)));
+
         fs::remove_dir_all(repo).expect("cleanup");
     }
 

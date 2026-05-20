@@ -23,8 +23,9 @@ pub use model::{
     classify_edge_evidence_role, classify_entity_source_role, combine_evidence_roles,
     infer_edge_class, infer_edge_context, normalize_edge_classification, ContextPacket,
     ContextSnippet, DerivedClosureEdge, Edge, Entity, EvidenceRoleDecision, FileRecord, Metadata,
-    PathEvidence, RepoIndexState, RetrievalCandidate, RetrievalCandidateSource,
-    RetrievalProofStatus, RetrievalVerificationStatus, SourceSpan,
+    PathEvidence, RepoIndexState, RetrievalCandidate, RetrievalCandidateLifecycleBinding,
+    RetrievalCandidateLifecycleStatus, RetrievalCandidateSource, RetrievalProofStatus,
+    RetrievalVerificationStatus, SourceSpan, VectorEmbeddingSource,
 };
 pub use validation::{relation_allows, RelationEndpointClass};
 
@@ -36,8 +37,9 @@ mod tests {
         relation_allows, stable_edge_id, stable_entity_id, stable_entity_id_for_kind,
         ContextPacket, ContextSnippet, DerivedClosureEdge, Edge, EdgeClass, EdgeContext, Entity,
         EntityKind, EvidenceRole, Exactness, FileRecord, PathEvidence, RelationKind,
-        RepoIndexState, RetrievalCandidate, RetrievalCandidateSource, RetrievalProofStatus,
-        RetrievalVerificationStatus, SourceSpan,
+        RepoIndexState, RetrievalCandidate, RetrievalCandidateLifecycleBinding,
+        RetrievalCandidateLifecycleStatus, RetrievalCandidateSource, RetrievalProofStatus,
+        RetrievalVerificationStatus, SourceSpan, VectorEmbeddingSource,
     };
 
     fn ok<T, E: Debug>(result: Result<T, E>) -> T {
@@ -357,6 +359,189 @@ mod tests {
         assert_eq!(
             value["span"]["repo_relative_path"].as_str(),
             Some("src/auth.ts")
+        );
+
+        let reparsed: RetrievalCandidate = ok(serde_json::from_value(value));
+        assert_eq!(reparsed, candidate);
+    }
+
+    #[test]
+    fn vector_semantic_candidate_serializes_non_proof_contract() {
+        let mut candidate = RetrievalCandidate::new(
+            "vector://text-evidence/src/auth.ts/chunk-0001",
+            RetrievalCandidateSource::VectorSemantic,
+            "vector semantic candidate over text evidence; not graph proof",
+        );
+        candidate.embedding_source = Some(VectorEmbeddingSource::TextEvidence);
+        candidate.file_id = Some("src/auth.ts".to_string());
+        candidate.path = Some("src/auth.ts".to_string());
+        candidate.span = Some(SourceSpan::new("src/auth.ts", 82, 91));
+        candidate.matched_query_text = Some("where is the login token persisted".to_string());
+        candidate.evidence_role = EvidenceRole::Production;
+        candidate.proof_status = RetrievalProofStatus::NotGraphProof;
+        candidate.graph_proof = false;
+        candidate.claimable = true;
+        candidate.claimable_for_text = Some(true);
+        candidate.claimable_for_graph = Some(false);
+        candidate.score = Some(0.8125);
+        candidate.rank = Some(3);
+        candidate.embedding_model_id = Some("local-test-embedding".to_string());
+        candidate.embedding_dim = Some(384);
+        candidate.embedding_profile = Some("offline-contract-test".to_string());
+        candidate.chunk_id = Some("text-evidence://src/auth.ts#chunk-0001".to_string());
+        candidate.chunk_kind = Some("snippet".to_string());
+        candidate
+            .matched_seeds
+            .push("login token persisted".to_string());
+        candidate.requires_graph_verification = true;
+        candidate.verification_status = RetrievalVerificationStatus::NeedsGraphVerification;
+        candidate.lifecycle_binding = Some(RetrievalCandidateLifecycleBinding {
+            status: RetrievalCandidateLifecycleStatus::Fresh,
+            db_passport_fingerprint: Some("passport:test-fresh".to_string()),
+            repo_head: Some("HEAD:test".to_string()),
+            scope_policy_hash: Some("scope:test".to_string()),
+            embedding_model_id: Some("local-test-embedding".to_string()),
+            embedding_profile: Some("offline-contract-test".to_string()),
+            stale_reason: None,
+        });
+
+        let value = ok(serde_json::to_value(&candidate));
+        assert_eq!(value["candidate_source"].as_str(), Some("vector_semantic"));
+        assert_eq!(value["embedding_source"].as_str(), Some("text_evidence"));
+        assert_eq!(
+            value["matched_query_text"].as_str(),
+            candidate.matched_query_text.as_deref()
+        );
+        assert_eq!(
+            value["embedding_model_id"].as_str(),
+            Some("local-test-embedding")
+        );
+        assert_eq!(value["embedding_dim"].as_u64(), Some(384));
+        assert_eq!(
+            value["embedding_profile"].as_str(),
+            Some("offline-contract-test")
+        );
+        assert_eq!(
+            value["chunk_id"].as_str(),
+            Some("text-evidence://src/auth.ts#chunk-0001")
+        );
+        assert_eq!(value["chunk_kind"].as_str(), Some("snippet"));
+        assert_eq!(value["proof_status"].as_str(), Some("not_graph_proof"));
+        assert_eq!(value["graph_proof"].as_bool(), Some(false));
+        assert_eq!(value["claimable_for_text"].as_bool(), Some(true));
+        assert_eq!(value["claimable_for_graph"].as_bool(), Some(false));
+        assert_eq!(value["requires_graph_verification"].as_bool(), Some(true));
+        assert_eq!(
+            value["verification_status"].as_str(),
+            Some("needs_graph_verification")
+        );
+        assert_eq!(value["lifecycle_binding"]["status"].as_str(), Some("fresh"));
+        assert!(value.get("source_span_missing_reason").is_none());
+
+        let reparsed: RetrievalCandidate = ok(serde_json::from_value(value));
+        assert_eq!(reparsed, candidate);
+    }
+
+    #[test]
+    fn nuance_rescue_candidate_serializes_candidate_only_contract() {
+        let mut candidate = RetrievalCandidate::new(
+            "AuthService.requireFreshAdminToken",
+            RetrievalCandidateSource::NuanceRescue,
+            "1-bit nuance rescue recovered this candidate by rare-token overlap; not graph proof",
+        );
+        candidate.matched_query_text = Some("trace requireFreshAdminToken".to_string());
+        candidate.evidence_role = EvidenceRole::Production;
+        candidate.proof_status = RetrievalProofStatus::CandidateOnly;
+        candidate.graph_proof = false;
+        candidate.claimable = false;
+        candidate.claimable_for_text = Some(false);
+        candidate.claimable_for_graph = Some(false);
+        candidate.score = Some(0.77);
+        candidate.rank = Some(2);
+        candidate
+            .matched_seeds
+            .push("requirefreshadmintoken".to_string());
+        candidate.requires_graph_verification = true;
+        candidate.verification_status = RetrievalVerificationStatus::NeedsGraphVerification;
+
+        let value = ok(serde_json::to_value(&candidate));
+        assert_eq!(value["candidate_source"].as_str(), Some("nuance_rescue"));
+        assert_eq!(value["proof_status"].as_str(), Some("candidate_only"));
+        assert_eq!(value["graph_proof"].as_bool(), Some(false));
+        assert_eq!(value["claimable"].as_bool(), Some(false));
+        assert_eq!(value["claimable_for_text"].as_bool(), Some(false));
+        assert_eq!(value["claimable_for_graph"].as_bool(), Some(false));
+        assert_eq!(value["requires_graph_verification"].as_bool(), Some(true));
+        assert_eq!(
+            value["verification_status"].as_str(),
+            Some("needs_graph_verification")
+        );
+
+        let reparsed: RetrievalCandidate = ok(serde_json::from_value(value));
+        assert_eq!(reparsed, candidate);
+    }
+
+    #[test]
+    fn vector_semantic_candidate_without_span_explains_missing_span_and_stays_non_claimable() {
+        let mut candidate = RetrievalCandidate::new(
+            "vector://graph-entity/AuthService.login",
+            RetrievalCandidateSource::VectorSemantic,
+            "vector semantic graph-entity candidate; source span not verified",
+        );
+        candidate.embedding_source = Some(VectorEmbeddingSource::GraphEntity);
+        candidate.file_id = Some("src/auth.ts".to_string());
+        candidate.path = Some("src/auth.ts".to_string());
+        candidate.entity_id = Some("entity://AuthService.login".to_string());
+        candidate.source_span_missing_reason =
+            Some("entity source span was not loaded for this vector hit".to_string());
+        candidate.matched_query_text = Some("where is login implemented".to_string());
+        candidate.evidence_role = EvidenceRole::Production;
+        candidate.proof_status = RetrievalProofStatus::CandidateOnly;
+        candidate.graph_proof = false;
+        candidate.claimable = false;
+        candidate.claimable_for_text = Some(false);
+        candidate.claimable_for_graph = Some(false);
+        candidate.score = Some(0.71);
+        candidate.rank = Some(7);
+        candidate.embedding_model_id = Some("local-test-embedding-v2".to_string());
+        candidate.embedding_dim = Some(768);
+        candidate.embedding_profile = Some("offline-contract-test".to_string());
+        candidate.chunk_id = Some("entity://AuthService.login#signature".to_string());
+        candidate.chunk_kind = Some("signature".to_string());
+        candidate.requires_graph_verification = true;
+        candidate.verification_status = RetrievalVerificationStatus::StaleOrForeignDb;
+        candidate.lifecycle_binding = Some(RetrievalCandidateLifecycleBinding {
+            status: RetrievalCandidateLifecycleStatus::Stale,
+            db_passport_fingerprint: Some("passport:test-stale".to_string()),
+            repo_head: Some("HEAD:test".to_string()),
+            scope_policy_hash: Some("scope:test".to_string()),
+            embedding_model_id: Some("local-test-embedding-v2".to_string()),
+            embedding_profile: Some("offline-contract-test".to_string()),
+            stale_reason: Some("embedding provider or model changed".to_string()),
+        });
+
+        let value = ok(serde_json::to_value(&candidate));
+        assert_eq!(value["candidate_source"].as_str(), Some("vector_semantic"));
+        assert_eq!(value["embedding_source"].as_str(), Some("graph_entity"));
+        assert!(value["span"].is_null());
+        assert_eq!(
+            value["source_span_missing_reason"].as_str(),
+            Some("entity source span was not loaded for this vector hit")
+        );
+        assert_eq!(value["proof_status"].as_str(), Some("candidate_only"));
+        assert_eq!(value["graph_proof"].as_bool(), Some(false));
+        assert_eq!(value["claimable"].as_bool(), Some(false));
+        assert_eq!(value["claimable_for_text"].as_bool(), Some(false));
+        assert_eq!(value["claimable_for_graph"].as_bool(), Some(false));
+        assert_eq!(value["requires_graph_verification"].as_bool(), Some(true));
+        assert_eq!(
+            value["verification_status"].as_str(),
+            Some("stale_or_foreign_db")
+        );
+        assert_eq!(value["lifecycle_binding"]["status"].as_str(), Some("stale"));
+        assert_eq!(
+            value["lifecycle_binding"]["stale_reason"].as_str(),
+            Some("embedding provider or model changed")
         );
 
         let reparsed: RetrievalCandidate = ok(serde_json::from_value(value));

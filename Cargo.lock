@@ -110,6 +110,7 @@ dependencies = [
  "codegraph-query",
  "codegraph-store",
  "codegraph-trace",
+ "codegraph-vector",
  "serde",
  "serde_json",
 ]

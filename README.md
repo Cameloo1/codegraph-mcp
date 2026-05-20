@@ -1,6 +1,6 @@
-<img src="docs/assets/readme/title-pic.jpeg" alt="CodeGraph MCP" width="100%" />
+<img src="docs/assets/readme/title-pic.jpeg" alt="codegraph-mcp" width="100%" />
 
-# CodeGraph MCP
+# codegraph-mcp
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Cameloo1/codegraph-mcp/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/Cameloo1/codegraph-mcp/actions/workflows/ci.yml)
 [![MIT License](https://img.shields.io/github/license/Cameloo1/codegraph-mcp?style=flat-square&label=license)](LICENSE)
@@ -8,7 +8,7 @@
 
 **Local proof-grounded context for AI coding agents on large repositories. Vectors suggest, the typed program graph proves, source spans verify.**
 
-CodeGraph MCP indexes a repository into a deterministic typed program graph,
+codegraph-mcp indexes a repository into a deterministic typed program graph,
 verifies facts against source spans and provenance, and returns compact evidence
 packets that a coding agent can actually trust. Graph facts carry source spans,
 file hashes, extractors, provenance where available, and exactness labels from
@@ -37,11 +37,13 @@ repository
 |---|---|---|
 | ![Real-Repo Index Smoke](docs/assets/readme/large_repo_improvement.png) | ![Evidence Reliability](docs/assets/readme/evidence_reliability.png) | ![Warm Agent Loop](docs/assets/readme/warm_agent_loop_latency.png) |
 
-Current status: semantic-proof and context-packet gates are green,
-compact-proof storage is under the intended 250 MiB target, and stale or
-mismatched DB reuse is guarded by DB passport preflight. The published Intended
-Tool Quality Gate is still not a final green release verdict, and the CGC
-comparison remains diagnostic/incomplete with no superiority claim.
+Status: semantic-proof and context-packet gates are green; compact-proof storage
+is under 250 MiB; DB passport preflight blocks stale or mismatched reuse. The
+published Intended Tool Quality Gate is not a final green release verdict, and
+the CGC comparison remains diagnostic/incomplete with no superiority claim.
+Local 1-bit Nuance-Rescue gating passes 8 adversarial cases covering rare
+identifiers, short functions, near-duplicate names, Buildroot config tokens,
+auth/negation, route literals, test names, and no-extension support scripts.
 
 See: [Intended Tool Quality Gate](reports/final/intended_tool_quality_gate.md)
 and [Manual Relation Precision](reports/final/manual_relation_precision.md).
@@ -58,6 +60,10 @@ exactness labels, source spans, provenance, and stored path evidence, not from
 "top-k similar chunks."
 
 ## Quickstart
+
+<p align="center">
+  <img src="docs/assets/readme/codegraph_terminal.svg" alt="codegraph-mcp terminal demo" width="100%" />
+</p>
 
 Build:
 
@@ -113,6 +119,92 @@ CodeGraph is a 5-stage runtime funnel sitting on top of a typed program graph.
 Each stage does one specific job; downstream stages cannot fabricate facts not
 present upstream.
 
+The most important boundary is the candidate merge. It happens after independent
+candidate lanes have produced source-spanned candidates, and before graph/source
+verification turns any of them into claimable context. The merge is not part of
+Tree-sitter parsing and it is not a vector answer. It is the `context-pack`
+retrieval assembly step: candidates are unioned by stable path/span/entity keys,
+their `candidate_sources`, matched seeds, source labels, ranking features, and
+verification status are preserved, exact seeds are protected across caps, and
+mixed evidence stays role-labeled.
+
+Candidate lanes are explicit: exact symbol/file/path seeds, Stage 0
+lexical/text-evidence matches, graph-neighborhood and PathEvidence candidates,
+vector semantic candidates when explicitly enabled, binary/1-bit candidates with
+deterministic overfetch/rerank, and nuance-rescue candidates for rare
+identifiers, config keys, route literals, test names, negation terms, and
+no-extension support scripts. None is graph proof by itself.
+
+```text
+Index-time state
+---------------
+
+repository
+  |
+  v
+scope policy + DB lifecycle/passport preflight
+  |
+  +--> parser-backed files
+  |      |
+  |      v
+  |   Tree-sitter frontends
+  |      |
+  |      v
+  |   typed graph facts
+  |   entities + relations + source spans + exactness/provenance
+  |
+  +--> scoped non-parser text files
+         |
+         v
+      Stage 0 text evidence
+      path/title/tokens/snippets/FTS rows
+      evidence_role=text_evidence, graph_proof=false
+
+Both lanes publish into SQLite with passported repo/scope/storage identity.
+
+
+Query/context-pack flow
+-----------------------
+
+agent task + optional seed
+  |
+  v
+DB lifecycle read gate
+  |
+  v
+prompt intent + seed extraction
+  |
+  +--> exact symbol/file/path seeds
+  +--> Stage 0 lexical/FTS/text-evidence candidates
+  +--> graph-neighborhood/path-evidence candidates
+  +--> Stage 1 binary/1-bit candidates when available
+  +--> nuance-rescue candidates when enabled
+  +--> Stage 2 compressed-rerank candidates when available
+  |
+  v
+UNION / DEDUP / RANK
+stable key = path + span + entity when available
+preserve candidate_sources, matched_seeds, evidence_role, proof_status
+  |
+  v
+exact graph/source verification
+  |
+  +--> graph path found
+  |      -> PathEvidence with typed relations and source spans
+  |
+  +--> no graph path found
+         -> bounded source-text fallback with no_proof_path_found
+            text evidence is claimable as source text, not graph proof
+  |
+  v
+compact context packet
+proof paths + snippets + risks + recommended tests + omitted counts
+  |
+  v
+agent-safe output
+--agent-json / --concise / explicit verbose-audit modes
+```
+
 ### 1. Parse -> Typed Program Graph
 
 Tree-sitter parses 11 language families through 13 frontends: JavaScript, JSX,
@@ -160,17 +252,23 @@ and BM25/FTS5 matches over source. For code tasks, false negatives at the
 retrieval layer are expensive, so exact seeds are unioned with candidate
 retrieval rather than intersected away.
 
+Stage 0 also includes scoped text evidence for important files that are not
+parser-backed graph proof, such as build/config/docs/support files. Those rows
+can make a file queryable and source-spanned, but they remain labeled as text
+evidence rather than typed graph relations.
+
 ### 3. Stage 1 - 1-Bit Binary Sieve
 
-Each indexed entity can carry a deterministic bit-packed signature. Stage 1
-reduces large candidate sets via Hamming distance:
+Each indexed entity can carry a deterministic bit-packed signature. Stage 1 is a
+candidate lane that reduces large candidate sets via Hamming distance:
 
 ```text
 sim(x, y) = d - 2 * popcount(x XOR y)
 ```
 
 This is a cheap narrowing pass: XOR, popcount, no floating point, no full-vector
-decompression.
+decompression. It suggests candidates only; graph/source verification still
+decides what is claimable.
 
 ### 4. Stage 2 - Compressed Rerank
 
@@ -181,8 +279,9 @@ Surviving candidates are rescored against the query in compressed forms:
 - **Matryoshka prefixes:** one embedding usable at multiple prefix dimensions.
 
 The reranker is deterministic: same query and same index commit produce the same
-ranking. Exact seeds, text scores, compressed-vector scores, and uncertainty can
-be combined, but the result is still only a candidate set.
+ranking. Exact seeds, text scores, graph-neighborhood signals,
+compressed-vector scores, and uncertainty can be combined in the union/dedup/rank
+step, but the result is still only a candidate set.
 
 ### 5. Stage 3 - Exact Graph Verification
 
@@ -196,7 +295,9 @@ graph between seed entities and candidates:
 - derived closure edges that retain provenance to base edges
 
 Every retained step carries source-span and exactness evidence. Heuristic edges
-can participate, but the packet labels the evidence accordingly.
+can participate, but the packet labels the evidence accordingly. If no typed
+path exists, context-pack can still return bounded source-text fallback evidence
+with `no_proof_path_found`; that fallback is useful context, not relation proof.
 
 ### 6. Stage 4 - Compact Context Packet
 
@@ -283,8 +384,8 @@ links below for exact numbers and the current gate verdict.
 
 ## CodeGraph vs CodeGraphContext
 
-A fair comparison needs both systems to complete comparable indexing and query
-artifacts.
+A fair comparison requires comparable indexing and query artifacts from both
+systems.
 
 | Comparison item | Result |
 |---|---|
@@ -296,9 +397,9 @@ artifacts.
 | CodeGraph vs CGC quality | unknown |
 | Verdict | incomplete |
 
-CGC timed out on the comparable indexing run. Until CGC completes comparable
-artifacts, this is not reported as a CodeGraph win. A timeout, skipped run,
-partial DB, or fake-agent dry run is never counted as superiority evidence.
+CGC timed out on the comparable indexing run, so speed, storage, and quality
+remain unknown. Timeouts, skipped runs, partial DBs, and fake-agent dry runs are
+not superiority evidence.
 
 ## Architecture
 
@@ -313,7 +414,7 @@ Three practical layers, one funnel:
                                     | MCP
                                     v
                          +----------------------+
-                         |   CodeGraph MCP      |
+                         |   codegraph-mcp      |
                          |  context_pack API    |
                          +----------+-----------+
         +---------------------------+---------------------------+
@@ -432,28 +533,25 @@ outputs and local evidence directories are excluded.
 
 ## Manual Precision Status
 
-Manual precision evidence is sampled precision only:
+Manual precision is sampled precision only:
 
 - 320 labeled samples total.
-- Recall is unknown because there is no false-negative gold denominator.
-- No precision claim is made for absent proof-mode relations, including
+- Recall is unknown; there is no false-negative gold denominator.
+- No precision claim for absent proof-mode relations, including
   `AUTHORIZES`, `CHECKS_ROLE`, `SANITIZES`, `EXPOSES`, `TESTS`, `ASSERTS`,
   `MOCKS`, and `STUBS`.
 
 ## Known Limitations
 
-- Intended Tool Quality Gate is not fully green in the stable published report.
-- CGC comparison is diagnostic, blocked/incomplete, and does not support a
-  CodeGraph superiority claim.
+- Intended Tool Quality Gate is not fully green in the stable report.
+- CGC comparison is diagnostic/incomplete; no CodeGraph superiority claim.
 - Manual precision is sampled precision only; recall is unknown.
 - Relation coverage varies by language and extractor.
-- macOS is coming soon; it is not currently tested or supported by this
-  baseline.
+- macOS is coming soon; it is not tested or supported by this baseline.
 - Full-repo indexing is an explicit opt-in check, not a default CI smoke.
-- Knowledge-graph embedding methods such as TransE, RotatE, ComplEx, TuckER,
-  hyperbolic relation embeddings, and tensor decomposition are research
-  directions for offline prior learning. They are not required for the runtime
-  path.
+- Knowledge-graph embeddings such as TransE, RotatE, ComplEx, TuckER,
+  hyperbolic relation embeddings, and tensor decomposition are offline research
+  directions, not runtime requirements.
 
 ## Safety and Scope
 

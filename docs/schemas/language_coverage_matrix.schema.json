@@ -1,0 +1,175 @@
+{
+  "$defs": {
+    "claim_state": {
+      "enum": [
+        "exact",
+        "partial",
+        "heuristic",
+        "unsupported",
+        "unknown",
+        "not_applicable"
+      ]
+    },
+    "language": {
+      "additionalProperties": true,
+      "properties": {
+        "claim_boundary": {
+          "type": "string"
+        },
+        "exact_patterns": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "extensions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "extractor_kind": {
+          "type": "string"
+        },
+        "fixtures": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "heuristic_patterns": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "implementation_attempted": {
+          "type": "boolean"
+        },
+        "implementation_blockers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "language": {
+          "type": "string"
+        },
+        "next_required_fixture": {
+          "type": "string"
+        },
+        "parser_frontend": {
+          "type": "string"
+        },
+        "partial_patterns": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source_span_quality": {
+          "type": "string"
+        },
+        "supported_entity_kinds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "supported_relation_kinds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tests_present": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tier_0_status": {
+          "$ref": "#/$defs/claim_state"
+        },
+        "tier_1_status": {
+          "$ref": "#/$defs/claim_state"
+        },
+        "tier_2_status": {
+          "$ref": "#/$defs/claim_state"
+        },
+        "tier_3_status": {
+          "$ref": "#/$defs/claim_state"
+        },
+        "tier_4_status": {
+          "$ref": "#/$defs/claim_state"
+        },
+        "tier_5_status": {
+          "$ref": "#/$defs/claim_state"
+        },
+        "unknown_patterns": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "unsupported_patterns": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "language",
+        "extensions",
+        "parser_frontend",
+        "extractor_kind",
+        "tier_0_status",
+        "tier_1_status",
+        "tier_2_status",
+        "tier_3_status",
+        "tier_4_status",
+        "tier_5_status",
+        "supported_entity_kinds",
+        "supported_relation_kinds",
+        "source_span_quality",
+        "exact_patterns",
+        "partial_patterns",
+        "heuristic_patterns",
+        "unsupported_patterns",
+        "unknown_patterns",
+        "fixtures",
+        "tests_present",
+        "implementation_attempted",
+        "implementation_blockers",
+        "claim_boundary",
+        "next_required_fixture"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://codegraph.local/schemas/language_coverage_matrix.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "generated_at": {
+      "type": "string"
+    },
+    "languages": {
+      "items": {
+        "$ref": "#/$defs/language"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "generated_at",
+    "languages"
+  ],
+  "title": "CodeGraph Language Coverage Matrix",
+  "type": "object"
+}
