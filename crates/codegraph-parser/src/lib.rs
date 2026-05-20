@@ -1339,6 +1339,7 @@ struct BasicEntityExtractor<'a> {
     ambiguous_symbols_by_scope: BTreeMap<String, BTreeSet<String>>,
     table_symbols_by_scope: BTreeMap<String, BTreeMap<String, String>>,
     parameters_by_scope: BTreeMap<String, Vec<String>>,
+    return_sites_by_scope: BTreeMap<String, Vec<String>>,
     test_file_id: Option<String>,
 }
 
@@ -1462,6 +1463,7 @@ struct GenericLanguageExtractor<'a> {
     symbols_by_scope: BTreeMap<String, BTreeMap<String, SymbolRef>>,
     ambiguous_symbols_by_scope: BTreeMap<String, BTreeSet<String>>,
     parameters_by_scope: BTreeMap<String, Vec<String>>,
+    return_sites_by_scope: BTreeMap<String, Vec<String>>,
     test_file_id: Option<String>,
     test_case_by_scope: BTreeMap<String, String>,
 }
@@ -1481,6 +1483,7 @@ impl<'a> GenericLanguageExtractor<'a> {
             symbols_by_scope: BTreeMap::new(),
             ambiguous_symbols_by_scope: BTreeMap::new(),
             parameters_by_scope: BTreeMap::new(),
+            return_sites_by_scope: BTreeMap::new(),
             test_file_id: None,
             test_case_by_scope: BTreeMap::new(),
         }
@@ -1530,6 +1533,7 @@ impl<'a> GenericLanguageExtractor<'a> {
         self.push_edge(&module_id, RelationKind::DefinedIn, &file_id, &file_span);
 
         self.visit_children(self.parsed.tree.root_node(), &module_id, &module_name);
+        self.recover_syntax_error_declarations(&module_id, &module_name);
 
         BasicExtraction {
             file: file_record,
@@ -1542,6 +1546,90 @@ impl<'a> GenericLanguageExtractor<'a> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             self.visit_node(child, scope_id, scope_name);
+        }
+    }
+
+    fn recover_syntax_error_declarations(&mut self, scope_id: &str, scope_name: &str) {
+        if !self.parsed.has_syntax_errors() {
+            return;
+        }
+        for declaration in recoverable_declarations_from_source(
+            self.parsed.language,
+            &self.parsed.repo_relative_path,
+            self.source,
+        ) {
+            if self.entities.iter().any(|entity| {
+                entity.kind == declaration.kind
+                    && entity.name == declaration.name
+                    && entity.repo_relative_path == self.parsed.repo_relative_path
+            }) {
+                continue;
+            }
+            let qualified_name = qualify(scope_name, &declaration.name);
+            let id = self.push_entity(
+                declaration.kind,
+                &declaration.name,
+                &qualified_name,
+                declaration.span.clone(),
+            );
+            if let Some(entity) = self.entities.iter_mut().find(|entity| entity.id == id) {
+                entity.created_from = "tree-sitter-syntax-recovery".to_string();
+                annotate_untrusted_syntax_entity(
+                    entity,
+                    "recovered declaration from syntax-error source prefix",
+                );
+                entity
+                    .metadata
+                    .insert("syntax_recovery".to_string(), true.into());
+            }
+            if is_scope_kind(declaration.kind) {
+                self.scope_parents.insert(id.clone(), scope_id.to_string());
+            }
+            self.register_symbol_with(
+                scope_id,
+                &declaration.name,
+                &id,
+                Exactness::StaticHeuristic,
+                0.45,
+            );
+            self.push_edge_with(
+                scope_id,
+                RelationKind::Contains,
+                &id,
+                &declaration.span,
+                Exactness::StaticHeuristic,
+                0.45,
+            );
+            self.push_edge_with(
+                &id,
+                RelationKind::DefinedIn,
+                scope_id,
+                &declaration.span,
+                Exactness::StaticHeuristic,
+                0.45,
+            );
+            let relation = if matches!(
+                declaration.kind,
+                EntityKind::Class
+                    | EntityKind::Interface
+                    | EntityKind::Trait
+                    | EntityKind::Enum
+                    | EntityKind::Function
+                    | EntityKind::Method
+                    | EntityKind::Constructor
+            ) {
+                RelationKind::Defines
+            } else {
+                RelationKind::Declares
+            };
+            self.push_edge_with(
+                scope_id,
+                relation,
+                &id,
+                &declaration.span,
+                Exactness::StaticHeuristic,
+                0.45,
+            );
         }
     }
 
@@ -1726,6 +1814,14 @@ impl<'a> GenericLanguageExtractor<'a> {
                     source.confidence,
                 );
             }
+            let value_span = source_span_for_node(&self.parsed.repo_relative_path, right);
+            self.extract_return_value_assignment_flow(
+                right,
+                &target,
+                &value_span,
+                scope_id,
+                scope_name,
+            );
             self.extract_reads_from_expression(right, scope_id, Some(target.id.as_str()));
         }
     }
@@ -1743,6 +1839,10 @@ impl<'a> GenericLanguageExtractor<'a> {
         self.push_edge(&return_id, RelationKind::DefinedIn, scope_id, &span);
         self.push_edge(scope_id, RelationKind::Returns, &return_id, &span);
         self.push_edge(&return_id, RelationKind::ReturnsTo, scope_id, &span);
+        self.return_sites_by_scope
+            .entry(scope_id.to_string())
+            .or_default()
+            .push(return_id.clone());
 
         if let Some(value) = generic_return_value_node(self.parsed.language, node) {
             if let Some(source) = self.expression_entity(value, scope_id, scope_name) {
@@ -1757,6 +1857,40 @@ impl<'a> GenericLanguageExtractor<'a> {
                 );
             }
             self.extract_reads_from_expression(value, scope_id, None);
+        }
+    }
+
+    fn extract_return_value_assignment_flow(
+        &mut self,
+        value: Node<'_>,
+        target: &SymbolRef,
+        span: &SourceSpan,
+        scope_id: &str,
+        scope_name: &str,
+    ) {
+        if !is_generic_call_node(self.parsed.language, value)
+            || !is_proof_grade_exactness(target.exactness)
+        {
+            return;
+        }
+        let callee_node = generic_call_callee_node(self.parsed.language, value);
+        let (callee_id, exactness, confidence) =
+            self.callee_entity(callee_node, scope_id, scope_name);
+        if !is_proof_grade_exactness(exactness) {
+            return;
+        }
+        let Some(return_sites) = self.return_sites_by_scope.get(&callee_id).cloned() else {
+            return;
+        };
+        for return_site_id in return_sites {
+            self.push_edge_with(
+                &return_site_id,
+                RelationKind::FlowsTo,
+                &target.id,
+                span,
+                exactness,
+                confidence.min(target.confidence),
+            );
         }
     }
 
@@ -2792,6 +2926,7 @@ impl<'a> BasicEntityExtractor<'a> {
             ambiguous_symbols_by_scope: BTreeMap::new(),
             table_symbols_by_scope: BTreeMap::new(),
             parameters_by_scope: BTreeMap::new(),
+            return_sites_by_scope: BTreeMap::new(),
             test_file_id: None,
         }
     }
@@ -2842,6 +2977,7 @@ impl<'a> BasicEntityExtractor<'a> {
         self.push_edge(&module_id, RelationKind::DefinedIn, &file_id, &module_span);
 
         self.visit_children(self.parsed.tree.root_node(), &module_id, &module_name);
+        self.recover_syntax_error_declarations(&module_id, &module_name);
 
         BasicExtraction {
             file: file_record,
@@ -2854,6 +2990,91 @@ impl<'a> BasicEntityExtractor<'a> {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             self.visit_node(child, scope_id, scope_name);
+        }
+    }
+
+    fn recover_syntax_error_declarations(&mut self, scope_id: &str, scope_name: &str) {
+        if !self.parsed.has_syntax_errors() {
+            return;
+        }
+        for declaration in recoverable_declarations_from_source(
+            self.parsed.language,
+            &self.parsed.repo_relative_path,
+            self.source,
+        ) {
+            if self.entities.iter().any(|entity| {
+                entity.kind == declaration.kind
+                    && entity.name == declaration.name
+                    && entity.repo_relative_path == self.parsed.repo_relative_path
+            }) {
+                continue;
+            }
+            let qualified_name = qualify(scope_name, &declaration.name);
+            let id = self.push_entity_with(
+                declaration.kind,
+                &declaration.name,
+                &qualified_name,
+                declaration.span.clone(),
+                "tree-sitter-syntax-recovery",
+                0.45,
+            );
+            if let Some(entity) = self.entities.iter_mut().find(|entity| entity.id == id) {
+                annotate_untrusted_syntax_entity(
+                    entity,
+                    "recovered declaration from syntax-error source prefix",
+                );
+                entity
+                    .metadata
+                    .insert("syntax_recovery".to_string(), true.into());
+            }
+            if is_scope_kind(declaration.kind) {
+                self.scope_parents.insert(id.clone(), scope_id.to_string());
+            }
+            self.register_symbol_with(
+                scope_id,
+                &declaration.name,
+                &id,
+                Exactness::StaticHeuristic,
+                0.45,
+            );
+            self.push_edge_with(
+                scope_id,
+                RelationKind::Contains,
+                &id,
+                &declaration.span,
+                Exactness::StaticHeuristic,
+                0.45,
+            );
+            self.push_edge_with(
+                &id,
+                RelationKind::DefinedIn,
+                scope_id,
+                &declaration.span,
+                Exactness::StaticHeuristic,
+                0.45,
+            );
+            let relation = if matches!(
+                declaration.kind,
+                EntityKind::Class
+                    | EntityKind::Interface
+                    | EntityKind::Trait
+                    | EntityKind::Enum
+                    | EntityKind::Function
+                    | EntityKind::Method
+                    | EntityKind::Constructor
+            ) {
+                RelationKind::Defines
+            } else {
+                RelationKind::Declares
+            };
+            self.push_edge_with(
+                scope_id,
+                relation,
+                &id,
+                &declaration.span,
+                Exactness::StaticHeuristic,
+                0.45,
+            );
         }
     }
 
@@ -2953,11 +3174,11 @@ impl<'a> BasicEntityExtractor<'a> {
                     if looks_like_table_constant_name(&name) {
                         self.push_table_constant_entity(scope_id, &name, &qualified_name, node);
                     }
-                    if let Some(value) = node.child_by_field_name("value") {
+                    if let Some(value) = variable_declarator_value_node(node) {
+                        let value_span =
+                            source_span_for_node(&self.parsed.repo_relative_path, value);
                         if let Some(source_id) = self.expression_entity(value, scope_id, scope_name)
                         {
-                            let value_span =
-                                source_span_for_node(&self.parsed.repo_relative_path, value);
                             self.push_edge(
                                 &target_id,
                                 RelationKind::AssignedFrom,
@@ -2971,6 +3192,17 @@ impl<'a> BasicEntityExtractor<'a> {
                                 &value_span,
                             );
                         }
+                        self.extract_return_value_assignment_flow(
+                            value,
+                            &SymbolRef {
+                                id: target_id.clone(),
+                                exactness: Exactness::ParserVerified,
+                                confidence: 1.0,
+                            },
+                            &value_span,
+                            scope_id,
+                            scope_name,
+                        );
                         self.extract_reads_from_expression(value, scope_id, Some(&target_id));
                     }
                 }
@@ -3119,6 +3351,32 @@ impl<'a> BasicEntityExtractor<'a> {
             let binding_id = self.push_import_binding(scope_id, scope_name, node, index, &binding);
             annotate_import_artifact(&mut self.entities, &mut self.edges, &binding_id, &binding);
         }
+        for (index, (local_name, exported_name)) in
+            local_export_bindings_for_node(self.parsed.language, node, self.source)
+                .into_iter()
+                .enumerate()
+        {
+            let export_span = source_span_for_node(&self.parsed.repo_relative_path, node);
+            let export_id = self.push_entity(
+                EntityKind::Export,
+                &exported_name,
+                &qualify(
+                    scope_name,
+                    &format!("export:{exported_name}@{}", node.start_byte() + index),
+                ),
+                export_span.clone(),
+            );
+            self.push_edge(scope_id, RelationKind::Contains, &export_id, &export_span);
+            self.push_edge(scope_id, RelationKind::Exports, &export_id, &export_span);
+            self.push_edge(&export_id, RelationKind::DefinedIn, scope_id, &export_span);
+            if let Some(entity) = self
+                .entities
+                .iter_mut()
+                .find(|entity| entity.id == export_id)
+            {
+                annotate_local_export_metadata(entity, &local_name);
+            }
+        }
         id
     }
 
@@ -3204,6 +3462,14 @@ impl<'a> BasicEntityExtractor<'a> {
                 target.confidence,
             );
         }
+        let right_span = source_span_for_node(&self.parsed.repo_relative_path, right);
+        self.extract_return_value_assignment_flow(
+            right,
+            &target,
+            &right_span,
+            scope_id,
+            scope_name,
+        );
         self.extract_reads_from_expression(right, scope_id, Some(&target.id));
     }
 
@@ -3374,6 +3640,7 @@ impl<'a> BasicEntityExtractor<'a> {
         callee_label: &str,
     ) {
         let arguments = call_argument_nodes(node);
+        self.extract_dynamic_module_call(node, scope_id, scope_name, callee_label, &arguments);
         self.extract_route_call(
             node,
             callsite_id,
@@ -3400,6 +3667,102 @@ impl<'a> BasicEntityExtractor<'a> {
         );
         self.extract_persistence_call(node, scope_id, scope_name, callee_label, &arguments);
         self.extract_test_call(node, scope_id, scope_name, callee_label, &arguments);
+    }
+
+    fn extract_dynamic_module_call(
+        &mut self,
+        node: Node<'_>,
+        scope_id: &str,
+        scope_name: &str,
+        callee_label: &str,
+        arguments: &[Node<'_>],
+    ) {
+        let lower = callee_label.to_ascii_lowercase();
+        let import_kind = if lower == "import" {
+            "dynamic_import"
+        } else if lower == "require" || lower.ends_with(".require") {
+            "dynamic_require"
+        } else {
+            return;
+        };
+        let Some(first_argument) = arguments.first().copied() else {
+            return;
+        };
+
+        let span = source_span_for_node(&self.parsed.repo_relative_path, node);
+        let literal_target = string_literal_value(first_argument, self.source);
+        let (name, binding) = if let Some(target) = literal_target {
+            (
+                target.clone(),
+                ImportBinding::target_unsupported(
+                    target.clone(),
+                    None,
+                    Some(target),
+                    format!("{import_kind}_literal"),
+                    "dynamic module target resolution requires a module resolver",
+                ),
+            )
+        } else {
+            let name = format!("{import_kind}@{}", node.start_byte());
+            (
+                name.clone(),
+                ImportBinding::target_unsupported(
+                    name,
+                    None,
+                    None,
+                    format!("{import_kind}_computed"),
+                    "computed dynamic module target is unsupported for exact import proof",
+                ),
+            )
+        };
+        let id = self.push_entity_with(
+            EntityKind::Import,
+            &name,
+            &qualify(scope_name, &format!("{import_kind}:{name}")),
+            span.clone(),
+            "tree-sitter-dynamic-module-heuristic",
+            0.52,
+        );
+        self.push_edge_with(
+            scope_id,
+            RelationKind::Contains,
+            &id,
+            &span,
+            Exactness::StaticHeuristic,
+            0.52,
+        );
+        self.push_edge_with(
+            scope_id,
+            RelationKind::Imports,
+            &id,
+            &span,
+            Exactness::StaticHeuristic,
+            0.52,
+        );
+        self.push_edge_with(
+            &id,
+            RelationKind::DefinedIn,
+            scope_id,
+            &span,
+            Exactness::StaticHeuristic,
+            0.52,
+        );
+        annotate_import_artifact(&mut self.entities, &mut self.edges, &id, &binding);
+        if let Some(entity) = self.entities.iter_mut().find(|entity| entity.id == id) {
+            entity.metadata.insert("tier".to_string(), "5".into());
+            entity
+                .metadata
+                .insert("dynamic_module_call".to_string(), true.into());
+        }
+        for edge in self
+            .edges
+            .iter_mut()
+            .filter(|edge| edge.tail_id == id || edge.head_id == id)
+        {
+            edge.metadata.insert("tier".to_string(), "5".into());
+            edge.metadata
+                .insert("dynamic_module_call".to_string(), true.into());
+        }
     }
 
     fn extract_route_call(
@@ -4676,6 +5039,10 @@ impl<'a> BasicEntityExtractor<'a> {
         self.push_edge(&return_id, RelationKind::DefinedIn, scope_id, &span);
         self.push_edge(scope_id, RelationKind::Returns, &return_id, &span);
         self.push_edge(&return_id, RelationKind::ReturnsTo, scope_id, &span);
+        self.return_sites_by_scope
+            .entry(scope_id.to_string())
+            .or_default()
+            .push(return_id.clone());
 
         if let Some(value) = first_return_value(node) {
             if let Some(source_id) = self.expression_entity(value, scope_id, scope_name) {
@@ -4684,6 +5051,38 @@ impl<'a> BasicEntityExtractor<'a> {
             }
             self.extract_reads_from_expression(value, scope_id, None);
             self.extract_table_sink_return(value, scope_id, scope_name);
+        }
+    }
+
+    fn extract_return_value_assignment_flow(
+        &mut self,
+        value: Node<'_>,
+        target: &SymbolRef,
+        span: &SourceSpan,
+        scope_id: &str,
+        scope_name: &str,
+    ) {
+        if value.kind() != "call_expression" || !is_proof_grade_exactness(target.exactness) {
+            return;
+        }
+        let callee_node = value.child_by_field_name("function");
+        let (callee_id, exactness, confidence) =
+            self.callee_entity(callee_node, scope_id, scope_name);
+        if !is_proof_grade_exactness(exactness) {
+            return;
+        }
+        let Some(return_sites) = self.return_sites_by_scope.get(&callee_id).cloned() else {
+            return;
+        };
+        for return_site_id in return_sites {
+            self.push_edge_with(
+                &return_site_id,
+                RelationKind::FlowsTo,
+                &target.id,
+                span,
+                exactness,
+                confidence.min(target.confidence),
+            );
         }
     }
 
@@ -5399,6 +5798,182 @@ fn source_span_for_node(repo_relative_path: &str, node: Node<'_>) -> SourceSpan 
     SyntaxNodeRef::from_node(repo_relative_path, node).source_span
 }
 
+#[derive(Debug, Clone)]
+struct RecoveredDeclaration {
+    kind: EntityKind,
+    name: String,
+    span: SourceSpan,
+}
+
+fn recoverable_declarations_from_source(
+    language: SourceLanguage,
+    repo_relative_path: &str,
+    source: &str,
+) -> Vec<RecoveredDeclaration> {
+    let mut recovered = Vec::new();
+    for (line_index, line) in source.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || starts_with_comment_or_preprocessor(trimmed) {
+            continue;
+        }
+        if let Some((kind, name, column)) = recoverable_declaration_on_line(language, line, trimmed)
+        {
+            let start_line = line_index as u32 + 1;
+            let start_column = column as u32 + 1;
+            let end_column = (line.len() as u32 + 1).max(start_column + 1);
+            recovered.push(RecoveredDeclaration {
+                kind,
+                name,
+                span: SourceSpan::with_columns(
+                    repo_relative_path,
+                    start_line,
+                    start_column,
+                    start_line,
+                    end_column,
+                ),
+            });
+        }
+    }
+    recovered
+}
+
+fn recoverable_declaration_on_line(
+    language: SourceLanguage,
+    line: &str,
+    trimmed: &str,
+) -> Option<(EntityKind, String, usize)> {
+    match language {
+        SourceLanguage::JavaScript
+        | SourceLanguage::Jsx
+        | SourceLanguage::TypeScript
+        | SourceLanguage::Tsx => recover_js_family_declaration(line, trimmed),
+        SourceLanguage::Python => {
+            recover_keyword_declaration(line, trimmed, "def ", EntityKind::Function)
+                .or_else(|| recover_keyword_declaration(line, trimmed, "class ", EntityKind::Class))
+        }
+        SourceLanguage::Ruby => {
+            recover_keyword_declaration(line, trimmed, "def ", EntityKind::Function)
+                .or_else(|| recover_keyword_declaration(line, trimmed, "class ", EntityKind::Class))
+                .or_else(|| {
+                    recover_keyword_declaration(line, trimmed, "module ", EntityKind::Module)
+                })
+        }
+        SourceLanguage::Rust => {
+            let stripped = trimmed.strip_prefix("pub ").unwrap_or(trimmed);
+            recover_keyword_declaration(line, stripped, "fn ", EntityKind::Function)
+                .or_else(|| recover_keyword_declaration(line, stripped, "mod ", EntityKind::Module))
+                .or_else(|| {
+                    recover_keyword_declaration(line, stripped, "struct ", EntityKind::Class)
+                })
+                .or_else(|| recover_keyword_declaration(line, stripped, "enum ", EntityKind::Enum))
+                .or_else(|| {
+                    recover_keyword_declaration(line, stripped, "trait ", EntityKind::Trait)
+                })
+        }
+        SourceLanguage::Go => recover_go_declaration(line, trimmed),
+        SourceLanguage::C | SourceLanguage::Cpp => {
+            recover_c_like_function_declaration(line, trimmed)
+        }
+        SourceLanguage::Java | SourceLanguage::CSharp => {
+            recover_keyword_declaration(line, trimmed, "class ", EntityKind::Class).or_else(|| {
+                recover_keyword_declaration(line, trimmed, "interface ", EntityKind::Interface)
+            })
+        }
+        SourceLanguage::Php => {
+            recover_keyword_declaration(line, trimmed, "function ", EntityKind::Function)
+                .or_else(|| recover_keyword_declaration(line, trimmed, "class ", EntityKind::Class))
+                .or_else(|| {
+                    recover_keyword_declaration(line, trimmed, "interface ", EntityKind::Interface)
+                })
+        }
+    }
+}
+
+fn recover_js_family_declaration(line: &str, trimmed: &str) -> Option<(EntityKind, String, usize)> {
+    let mut stripped = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+    stripped = stripped.strip_prefix("default ").unwrap_or(stripped);
+    stripped = stripped.strip_prefix("async ").unwrap_or(stripped);
+    recover_keyword_declaration(line, stripped, "function ", EntityKind::Function)
+        .or_else(|| recover_keyword_declaration(line, stripped, "class ", EntityKind::Class))
+        .or_else(|| {
+            recover_keyword_declaration(line, stripped, "interface ", EntityKind::Interface)
+        })
+}
+
+fn recover_go_declaration(line: &str, trimmed: &str) -> Option<(EntityKind, String, usize)> {
+    if let Some(rest) = trimmed.strip_prefix("func ") {
+        let after_receiver = if rest.trim_start().starts_with('(') {
+            rest.find(')')
+                .and_then(|idx| rest.get(idx + 1..))
+                .unwrap_or(rest)
+        } else {
+            rest
+        };
+        let name = leading_identifier(after_receiver.trim_start())?;
+        let column = line.find(&name)?;
+        return Some((EntityKind::Function, name, column));
+    }
+    recover_keyword_declaration(line, trimmed, "type ", EntityKind::Class)
+}
+
+fn recover_c_like_function_declaration(
+    line: &str,
+    trimmed: &str,
+) -> Option<(EntityKind, String, usize)> {
+    if !trimmed.contains('(') || trimmed.contains("#define") {
+        return None;
+    }
+    let before_paren = trimmed.split_once('(')?.0.trim_end();
+    let declarator_tokens = before_paren
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .filter(|part| looks_like_identifier(part))
+        .collect::<Vec<_>>();
+    if declarator_tokens.len() < 2 {
+        return None;
+    }
+    let name = before_paren
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .rev()
+        .find(|part| looks_like_identifier(part))?
+        .to_string();
+    if name.chars().any(|ch| ch.is_ascii_lowercase()) == false {
+        return None;
+    }
+    let column = line.find(&name)?;
+    Some((EntityKind::Function, name, column))
+}
+
+fn recover_keyword_declaration(
+    line: &str,
+    text: &str,
+    keyword: &str,
+    kind: EntityKind,
+) -> Option<(EntityKind, String, usize)> {
+    let rest = text.strip_prefix(keyword)?;
+    let name = leading_identifier(rest.trim_start())?;
+    let column = line.find(&name)?;
+    Some((kind, name, column))
+}
+
+fn leading_identifier(text: &str) -> Option<String> {
+    let name: String = text
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+        .collect();
+    if looks_like_identifier(&name) {
+        Some(name)
+    } else {
+        None
+    }
+}
+
+fn starts_with_comment_or_preprocessor(trimmed: &str) -> bool {
+    trimmed.starts_with("//")
+        || trimmed.starts_with("/*")
+        || trimmed.starts_with('#')
+        || trimmed.starts_with("--")
+}
+
 fn node_has_error_or_missing_descendant(node: Node<'_>) -> bool {
     if node.is_error() || node.is_missing() {
         return true;
@@ -5969,7 +6544,22 @@ fn variable_name(node: Node<'_>, source: &str) -> Option<String> {
         })
 }
 
+fn variable_declarator_value_node(node: Node<'_>) -> Option<Node<'_>> {
+    node.child_by_field_name("value").or_else(|| {
+        let name = node.child_by_field_name("name")?;
+        let mut cursor = node.walk();
+        let value = node
+            .named_children(&mut cursor)
+            .find(|child| child.start_byte() >= name.end_byte() && child.id() != name.id());
+        value
+    })
+}
+
 fn parameter_name(node: Node<'_>, source: &str) -> Option<String> {
+    if node.kind() == "identifier" {
+        return node_text(node, source);
+    }
+
     node.child_by_field_name("pattern")
         .and_then(|child| node_text(child, source))
         .or_else(|| {
@@ -6719,6 +7309,30 @@ fn annotate_export_metadata(entity: &mut Entity, language: SourceLanguage, text:
     }
 }
 
+fn annotate_local_export_metadata(entity: &mut Entity, local_name: &str) {
+    entity.metadata.insert("tier".to_string(), "1".into());
+    entity
+        .metadata
+        .insert("export_kind".to_string(), "named_export".into());
+    entity
+        .metadata
+        .insert("local_name".to_string(), local_name.to_string().into());
+    entity
+        .metadata
+        .insert("syntax_claim_state".to_string(), "exact".into());
+    entity
+        .metadata
+        .insert("claim_state".to_string(), "partial".into());
+    entity.metadata.insert(
+        "target_resolution_claim_state".to_string(),
+        "unresolved".into(),
+    );
+    entity.metadata.insert(
+        "resolution".to_string(),
+        "parser_observed_local_export_unresolved_declaration".into(),
+    );
+}
+
 fn classify_export_kind(language: SourceLanguage, text: &str) -> &'static str {
     let trimmed = trim_statement(text);
     if language.is_javascript_family() {
@@ -6853,6 +7467,47 @@ fn parse_js_reexport_bindings(text: &str) -> Vec<ImportBinding> {
         )];
     }
     parse_js_named_import_list(export_clause, &module_specifier, "named_reexport")
+}
+
+fn local_export_bindings_for_node(
+    language: SourceLanguage,
+    node: Node<'_>,
+    source: &str,
+) -> Vec<(String, String)> {
+    if !language.is_javascript_family() {
+        return Vec::new();
+    }
+    node_text(node, source)
+        .map(|text| parse_js_local_export_bindings(&text))
+        .unwrap_or_default()
+}
+
+fn parse_js_local_export_bindings(text: &str) -> Vec<(String, String)> {
+    let trimmed = trim_statement(text);
+    if !trimmed.starts_with("export {") || trimmed.contains(" from ") {
+        return Vec::new();
+    }
+    let Some(open) = trimmed.find('{') else {
+        return Vec::new();
+    };
+    let Some(close) = trimmed[open + 1..].find('}') else {
+        return Vec::new();
+    };
+    let body = &trimmed[open + 1..open + 1 + close];
+    body.split(',')
+        .filter_map(|item| {
+            let item = strip_type_prefix(item.trim());
+            if item.is_empty() {
+                return None;
+            }
+            let (local, exported) = split_alias(item).unwrap_or((item, item));
+            if looks_like_identifier(local) && looks_like_identifier(exported) {
+                Some((local.to_string(), exported.to_string()))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn parse_js_named_import_list(
@@ -8203,6 +8858,59 @@ mod tests {
     }
 
     #[test]
+    fn tier0_fixture_shaped_broken_exports_recover_only_untrusted_declarations() {
+        let cases = [
+            (
+                "fixtures/language_coverage_matrix/partial_broken_code/typescript/src/broken.ts",
+                "export function broken(value: string) {\n  if (value) {\n    return value.trim()\n",
+                SourceLanguage::TypeScript,
+            ),
+            (
+                "fixtures/language_coverage_matrix/partial_broken_code/ruby/src/broken.rb",
+                "def broken(value)\n  if value\n    value.strip\n",
+                SourceLanguage::Ruby,
+            ),
+        ];
+
+        for (path, source, language) in cases {
+            let parsed = parsed(path, source);
+            assert_eq!(parsed.language, language);
+            assert!(parsed.has_syntax_errors(), "{path}");
+            let extraction = extract_basic_entities(&parsed, source);
+            let broken = extraction
+                .entities
+                .iter()
+                .find(|entity| entity.kind == EntityKind::Function && entity.name == "broken")
+                .expect("broken declaration should be recovered as untrusted syntax evidence");
+            assert_eq!(
+                broken
+                    .metadata
+                    .get("syntax_recovery")
+                    .and_then(serde_json::Value::as_bool),
+                Some(true),
+                "{path}"
+            );
+            assert_eq!(
+                broken
+                    .metadata
+                    .get("parser_reliability")
+                    .and_then(serde_json::Value::as_str),
+                Some("untrusted_syntax_region"),
+                "{path}"
+            );
+            assert_extraction_spans_inside_source(path, source, &extraction);
+            assert!(!extraction.edges.iter().any(|edge| {
+                edge.tail_id == broken.id
+                    && matches!(
+                        edge.relation,
+                        RelationKind::Defines | RelationKind::Declares
+                    )
+                    && edge.exactness == Exactness::ParserVerified
+            }));
+        }
+    }
+
+    #[test]
     fn tier0_malformed_constructs_do_not_emit_exact_calls_from_error_nodes() {
         let source = "function target() { return 1; }\nfunction broken() {\n  return target(\n}\n";
         let parsed = parsed("fixtures/tier0/malformed_call.ts", source);
@@ -8259,6 +8967,10 @@ mod tests {
             .entities
             .iter()
             .any(|entity| entity.kind == EntityKind::Function && entity.name == "generated"));
+        assert!(!c
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Function && entity.name == "MAKE_FN"));
     }
 
     #[test]
@@ -8359,6 +9071,58 @@ export default function run() { return aliasTarget(); }\n";
             .filter(|entity| entity.kind == EntityKind::Import)
             .all(|entity| metadata_str(entity, "resolution") != Some("resolved_static_import")));
         assert_extraction_spans_inside_source("fixtures/tier1/use.ts", source, &extraction);
+    }
+
+    #[test]
+    fn tier1_jsx_and_tsx_import_export_forms_match_js_ts_claim_boundaries() {
+        let jsx_source = "import React, { useMemo as memo } from 'react';\n\
+import * as widgets from './widgets';\n\
+export function View() { return <widgets.Panel>{memo(() => 1, [])}</widgets.Panel>; }\n\
+export { View as ExportedView };\n";
+        let jsx = extraction("fixtures/tier1/view.jsx", jsx_source);
+        let react_default = import_entity(&jsx, "React", "default");
+        assert_eq!(
+            metadata_str(react_default, "module_specifier"),
+            Some("react")
+        );
+        let memo = import_entity(&jsx, "memo", "named");
+        assert_eq!(metadata_str(memo, "imported_name"), Some("useMemo"));
+        let widgets = import_entity(&jsx, "widgets", "namespace");
+        assert_eq!(metadata_str(widgets, "imported_name"), Some("*"));
+        assert!(jsx
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Export
+                && entity.name == "ExportedView"
+                && metadata_str(entity, "export_kind") == Some("named_export")));
+        assert!(jsx
+            .entities
+            .iter()
+            .filter(|entity| entity.kind == EntityKind::Import)
+            .all(|entity| metadata_str(entity, "target_resolution_claim_state") != Some("exact")));
+        assert_extraction_spans_inside_source("fixtures/tier1/view.jsx", jsx_source, &jsx);
+
+        let tsx_source = "import type { Props as ViewProps } from './types';\n\
+import defaultWidget, * as widgets from './widgets';\n\
+export default function View(props: ViewProps) { return <widgets.Panel />; }\n";
+        let tsx = extraction("fixtures/tier1/view.tsx", tsx_source);
+        let props = import_entity(&tsx, "ViewProps", "named");
+        assert_eq!(metadata_str(props, "imported_name"), Some("Props"));
+        assert_eq!(metadata_str(props, "module_specifier"), Some("./types"));
+        let default_widget = import_entity(&tsx, "defaultWidget", "default");
+        assert_eq!(
+            metadata_str(default_widget, "module_specifier"),
+            Some("./widgets")
+        );
+        let widgets = import_entity(&tsx, "widgets", "namespace");
+        assert_eq!(metadata_str(widgets, "imported_name"), Some("*"));
+        assert!(tsx
+            .entities
+            .iter()
+            .filter(|entity| entity.kind == EntityKind::Import)
+            .all(|entity| metadata_str(entity, "resolution")
+                == Some("parser_observed_unresolved_static_import")));
+        assert_extraction_spans_inside_source("fixtures/tier1/view.tsx", tsx_source, &tsx);
     }
 
     #[test]
@@ -8763,6 +9527,23 @@ describe('subject', () => {
                     .and_then(serde_json::Value::as_str)
                     == Some("mock")
         }));
+        let test_case_span = test_case.source_span.as_ref().expect("test case span");
+        assert_eq!(test_case_span.start_line, 4);
+        assert_eq!(test_case_span.start_column, Some(3));
+        let assert_edge = extraction
+            .edges
+            .iter()
+            .find(|edge| edge.relation == RelationKind::Asserts)
+            .expect("assertion edge");
+        assert_eq!(assert_edge.source_span.start_line, 6);
+        assert_eq!(assert_edge.source_span.start_column, Some(5));
+        let mock_edge = extraction
+            .edges
+            .iter()
+            .find(|edge| edge.relation == RelationKind::Mocks)
+            .expect("mock edge");
+        assert_eq!(mock_edge.source_span.start_line, 5);
+        assert_eq!(mock_edge.source_span.start_column, Some(5));
     }
 
     #[test]
@@ -9124,6 +9905,93 @@ export function demo(items: string[], input: string) {
     }
 
     #[test]
+    fn tier3_return_value_flow_from_direct_call_assignment_is_exact() {
+        let source = "\
+function helper(x: string) {
+  return x;
+}
+
+export function run(input: string) {
+  const value = helper(input);
+  return value;
+}
+";
+        let extraction = extraction("fixtures/tier3/return_value_flow.ts", source);
+        assert_extraction_spans_inside_source(
+            "fixtures/tier3/return_value_flow.ts",
+            source,
+            &extraction,
+        );
+        let return_site = extraction
+            .entities
+            .iter()
+            .find(|entity| {
+                entity.kind == EntityKind::ReturnSite
+                    && entity.repo_relative_path == "fixtures/tier3/return_value_flow.ts"
+                    && entity
+                        .source_span
+                        .as_ref()
+                        .is_some_and(|span| span.start_line == 2)
+            })
+            .expect("helper return site");
+        let value = extraction
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::LocalVariable && entity.name == "value")
+            .expect("value local");
+        assert!(
+            extraction.edges.iter().any(|edge| {
+                edge.relation == RelationKind::FlowsTo
+                    && edge.head_id == return_site.id
+                    && edge.tail_id == value.id
+                    && edge.exactness == Exactness::ParserVerified
+                    && edge.source_span.start_line == 6
+                    && edge.source_span.start_column == Some(17)
+            }),
+            "missing exact helper return-site to assigned local flow"
+        );
+    }
+
+    #[test]
+    fn tier3_dynamic_return_value_assignment_does_not_emit_exact_return_flow() {
+        let source = "\
+function helper(x: string) {
+  return x;
+}
+
+export function run(registry: Record<string, (x: string) => string>, name: string, input: string) {
+  const value = registry[name](input);
+  return value;
+}
+";
+        let extraction = extraction("fixtures/tier3/dynamic_return_value_flow.ts", source);
+        let return_site = extraction
+            .entities
+            .iter()
+            .find(|entity| {
+                entity.kind == EntityKind::ReturnSite
+                    && entity.repo_relative_path == "fixtures/tier3/dynamic_return_value_flow.ts"
+                    && entity
+                        .source_span
+                        .as_ref()
+                        .is_some_and(|span| span.start_line == 2)
+            })
+            .expect("helper return site");
+        let value = extraction
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::LocalVariable && entity.name == "value")
+            .expect("value local");
+
+        assert!(!extraction.edges.iter().any(|edge| {
+            edge.relation == RelationKind::FlowsTo
+                && edge.head_id == return_site.id
+                && edge.tail_id == value.id
+                && edge.exactness == Exactness::ParserVerified
+        }));
+    }
+
+    #[test]
     fn return_statements_produce_returnsite_and_returns_edges() {
         let extraction = extraction("fixtures/core_relations.ts", CORE_RELATIONS);
         let return_sites = extraction
@@ -9249,6 +10117,22 @@ export function demo(items: string[], input: string) {
     #[test]
     fn tier2_generic_primary_reads_and_writes_are_ast_backed() {
         let cases = [
+            (
+                "fixtures/tier2/reads_writes.js",
+                "function run(input) {\n  let value = input;\n  let output = value;\n  return output;\n}\n",
+            ),
+            (
+                "fixtures/tier2/reads_writes.ts",
+                "function run(input: string): string {\n  let value = input;\n  let output = value;\n  return output;\n}\n",
+            ),
+            (
+                "fixtures/tier2/reads_writes.jsx",
+                "function run(input) {\n  const value = input;\n  const output = value;\n  return <span>{output}</span>;\n}\n",
+            ),
+            (
+                "fixtures/tier2/reads_writes.tsx",
+                "function run(input: string) {\n  const value = input;\n  const output = value;\n  return <span>{output}</span>;\n}\n",
+            ),
             (
                 "fixtures/tier2/reads_writes.py",
                 "def run(input):\n    value = input\n    output = value\n    return output\n",
@@ -9719,6 +10603,125 @@ export function boot(container: any, impl: unknown, name: string) {
         assert!(!extraction.edges.iter().any(|edge| {
             edge.relation == RelationKind::Injects
                 && super::is_proof_grade_exactness(edge.exactness)
+        }));
+    }
+
+    #[test]
+    fn tier5_dynamic_import_literal_and_computed_targets_are_not_exact_without_resolver() {
+        let source = "\
+export async function loadLiteral() {
+  return import(\"./plugins/fixed\");
+}
+
+export async function loadComputed(name: string) {
+  return import(\"./plugins/\" + name);
+}
+
+export function loadRequireLiteral() {
+  return require(\"./legacy\");
+}
+
+export function loadRequireComputed(name: string) {
+  return require(name);
+}
+";
+        let extraction = extraction("fixtures/tier5/dynamic_import.ts", source);
+        assert_extraction_spans_inside_source(
+            "fixtures/tier5/dynamic_import.ts",
+            source,
+            &extraction,
+        );
+
+        let literal_import = extraction
+            .entities
+            .iter()
+            .find(|entity| {
+                entity.kind == EntityKind::Import
+                    && entity.name == "./plugins/fixed"
+                    && entity
+                        .metadata
+                        .get("import_kind")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("dynamic_import_literal")
+            })
+            .expect("literal dynamic import artifact");
+        assert_eq!(
+            literal_import
+                .metadata
+                .get("target_resolution_claim_state")
+                .and_then(serde_json::Value::as_str),
+            Some("unsupported")
+        );
+        assert_eq!(
+            literal_import
+                .metadata
+                .get("module_specifier")
+                .and_then(serde_json::Value::as_str),
+            Some("./plugins/fixed")
+        );
+
+        let computed_import = extraction
+            .entities
+            .iter()
+            .find(|entity| {
+                entity.kind == EntityKind::Import
+                    && entity
+                        .metadata
+                        .get("import_kind")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("dynamic_import_computed")
+            })
+            .expect("computed dynamic import artifact");
+        assert_eq!(
+            computed_import
+                .metadata
+                .get("unsupported_reason")
+                .and_then(serde_json::Value::as_str),
+            Some("computed dynamic module target is unsupported for exact import proof")
+        );
+
+        let literal_require = extraction
+            .entities
+            .iter()
+            .find(|entity| {
+                entity.kind == EntityKind::Import
+                    && entity.name == "./legacy"
+                    && entity
+                        .metadata
+                        .get("import_kind")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("dynamic_require_literal")
+            })
+            .expect("literal dynamic require artifact");
+
+        for import_id in [
+            literal_import.id.as_str(),
+            computed_import.id.as_str(),
+            literal_require.id.as_str(),
+        ] {
+            let import_edge = extraction
+                .edges
+                .iter()
+                .find(|edge| edge.relation == RelationKind::Imports && edge.tail_id == import_id)
+                .expect("dynamic module IMPORTS edge");
+            assert_eq!(import_edge.exactness, Exactness::StaticHeuristic);
+            assert_eq!(
+                import_edge
+                    .metadata
+                    .get("target_resolution_claim_state")
+                    .and_then(serde_json::Value::as_str),
+                Some("unsupported")
+            );
+        }
+        assert!(!extraction.edges.iter().any(|edge| {
+            edge.relation == RelationKind::Imports
+                && edge.exactness == Exactness::ParserVerified
+                && [
+                    literal_import.id.as_str(),
+                    computed_import.id.as_str(),
+                    literal_require.id.as_str(),
+                ]
+                .contains(&edge.tail_id.as_str())
         }));
     }
 

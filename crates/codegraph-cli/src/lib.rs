@@ -17850,6 +17850,245 @@ struct ContextPackTextEvidenceHit {
     seed_match: String,
 }
 
+const CONTEXT_PLANNING_ROLES: [&str; 9] = [
+    "docs_authoring_guidance",
+    "package_metadata",
+    "kconfig_config_wiring",
+    "makefile_inclusion",
+    "download_infrastructure",
+    "build_install_infrastructure",
+    "support_scripts",
+    "examples",
+    "unknown",
+];
+
+fn context_planning_role_for_text_evidence(
+    file: &str,
+    symbol: &str,
+    kind: &str,
+    text: &str,
+) -> &'static str {
+    let normalized = context_planning_normalize_path(file);
+    let lower_file = normalized.to_ascii_lowercase();
+    let lower_text = format!("{symbol}\n{kind}\n{text}").to_ascii_lowercase();
+
+    if lower_file.contains("docs/manual/adding-packages")
+        || (lower_file.starts_with("docs/")
+            && (lower_text.contains("generic-package")
+                || lower_text.contains("package infrastructure")))
+    {
+        return "docs_authoring_guidance";
+    }
+    if lower_file.ends_with("config.in")
+        || lower_file.contains("/config.in")
+        || lower_text.contains("br2_package_")
+        || lower_text.contains("depends on")
+        || lower_text.contains("select ")
+    {
+        return "kconfig_config_wiring";
+    }
+    if lower_file == "package/pkg-download.mk"
+        || lower_file.starts_with("support/download/")
+        || lower_text.contains("download")
+        || lower_text.contains("_site")
+        || lower_text.contains("dl-wrapper")
+    {
+        return "download_infrastructure";
+    }
+    if lower_file.starts_with("support/scripts/") || lower_file.starts_with("support/download/") {
+        return "support_scripts";
+    }
+    if lower_file == "package/pkg-generic.mk"
+        || lower_text.contains("install_target")
+        || lower_text.contains("install_staging")
+    {
+        return "build_install_infrastructure";
+    }
+    if lower_file == "package/config.in"
+        || lower_file == "package/makefile.in"
+        || lower_text.contains("source \"package/")
+    {
+        return "makefile_inclusion";
+    }
+    if lower_file.ends_with(".mk")
+        && (lower_text.contains("_version")
+            || lower_text.contains("_license")
+            || lower_text.contains("_dependencies")
+            || lower_text.contains("_site"))
+    {
+        return "package_metadata";
+    }
+    if lower_text.contains("generic-package") {
+        return "build_install_infrastructure";
+    }
+    if lower_file.starts_with("package/")
+        && (lower_file.ends_with(".mk") || lower_file.ends_with("config.in"))
+    {
+        return "examples";
+    }
+    "unknown"
+}
+
+fn context_planning_role_for_evidence(evidence: &ContextPackFallbackEvidence) -> &'static str {
+    context_planning_role_for_text_evidence(
+        &evidence.source_span.repo_relative_path,
+        &evidence.symbol,
+        &evidence.kind,
+        &format!(
+            "{}\n{}\n{}",
+            evidence.classification_reason,
+            evidence.seed_matches.join("\n"),
+            evidence.follow_up_queries.join("\n")
+        ),
+    )
+}
+
+fn context_planning_role_for_value(value: &Value) -> &'static str {
+    if let Some(role) = value.get("planning_role").and_then(Value::as_str) {
+        if CONTEXT_PLANNING_ROLES.contains(&role) {
+            return CONTEXT_PLANNING_ROLES
+                .iter()
+                .copied()
+                .find(|candidate| *candidate == role)
+                .unwrap_or("unknown");
+        }
+    }
+    let file = context_planning_value_string(value, "file").unwrap_or_else(|| {
+        value
+            .get("source_span")
+            .or_else(|| value.get("span"))
+            .and_then(|span| context_planning_value_string(span, "file"))
+            .unwrap_or_default()
+    });
+    let symbol = context_planning_value_string(value, "symbol").unwrap_or_default();
+    let kind = context_planning_value_string(value, "kind").unwrap_or_default();
+    let mut text = String::new();
+    for key in [
+        "text",
+        "text_preview",
+        "reason",
+        "classification_reason",
+        "fallback_source",
+    ] {
+        if let Some(value) = value.get(key).and_then(Value::as_str) {
+            text.push_str(value);
+            text.push('\n');
+        }
+    }
+    context_planning_role_for_text_evidence(&file, &symbol, &kind, &text)
+}
+
+fn context_planning_role_rank(role: &str) -> usize {
+    CONTEXT_PLANNING_ROLES
+        .iter()
+        .position(|candidate| *candidate == role)
+        .unwrap_or(CONTEXT_PLANNING_ROLES.len())
+}
+
+fn context_planning_central_file_score(file: &str) -> usize {
+    let lower = context_planning_normalize_path(file).to_ascii_lowercase();
+    match lower.as_str() {
+        "docs/manual/adding-packages-generic.adoc" => 0,
+        "docs/manual/adding-packages.adoc" => 1,
+        "package/pkg-generic.mk" => 2,
+        "package/config.in" => 3,
+        "package/pkg-download.mk" => 4,
+        "support/download/dl-wrapper" => 5,
+        _ if lower.starts_with("support/download/") => 6,
+        _ if lower.starts_with("support/scripts/") => 7,
+        _ if lower.starts_with("docs/manual/") => 8,
+        _ if lower.starts_with("package/") && lower.ends_with(".mk") => 20,
+        _ if lower.starts_with("package/") && lower.ends_with("config.in") => 21,
+        _ => 30,
+    }
+}
+
+fn context_pack_fallback_role_rank_reason(evidence: &ContextPackFallbackEvidence) -> String {
+    let role = context_planning_role_for_evidence(evidence);
+    let file = evidence.source_span.repo_relative_path.as_str();
+    if context_planning_central_file_score(file) < 10 {
+        format!("{role}: central Buildroot planning surface selected before package examples")
+    } else if role == "examples" {
+        "examples: package example evidence is useful but deduped after central surfaces"
+            .to_string()
+    } else {
+        format!("{role}: selected by role-diverse text evidence ranking")
+    }
+}
+
+fn context_pack_select_role_diverse_fallback_evidence(
+    candidates: Vec<ContextPackFallbackEvidence>,
+    limit: usize,
+) -> Vec<ContextPackFallbackEvidence> {
+    if candidates.len() <= limit {
+        return candidates;
+    }
+
+    let mut indexed = candidates.into_iter().enumerate().collect::<Vec<_>>();
+    indexed.sort_by(|(left_index, left), (right_index, right)| {
+        let left_role = context_planning_role_for_evidence(left);
+        let right_role = context_planning_role_for_evidence(right);
+        context_planning_role_rank(left_role)
+            .cmp(&context_planning_role_rank(right_role))
+            .then_with(|| {
+                context_planning_central_file_score(&left.source_span.repo_relative_path).cmp(
+                    &context_planning_central_file_score(&right.source_span.repo_relative_path),
+                )
+            })
+            .then_with(|| {
+                left.score
+                    .unwrap_or(f64::INFINITY)
+                    .partial_cmp(&right.score.unwrap_or(f64::INFINITY))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| left_index.cmp(right_index))
+    });
+
+    let mut selected = Vec::<(usize, ContextPackFallbackEvidence)>::new();
+    let mut selected_keys = BTreeSet::new();
+    let mut example_count = 0usize;
+
+    for role in CONTEXT_PLANNING_ROLES {
+        if selected.len() >= limit {
+            break;
+        }
+        let Some(position) = indexed.iter().position(|(_, evidence)| {
+            context_planning_role_for_evidence(evidence) == role
+                && !selected_keys.contains(&context_span_key(&evidence.source_span))
+                && (role != "examples" || example_count == 0)
+        }) else {
+            continue;
+        };
+        let (index, evidence) = indexed.remove(position);
+        if role == "examples" {
+            example_count += 1;
+        }
+        selected_keys.insert(context_span_key(&evidence.source_span));
+        selected.push((index, evidence));
+    }
+
+    for (index, evidence) in indexed {
+        if selected.len() >= limit {
+            break;
+        }
+        let key = context_span_key(&evidence.source_span);
+        if selected_keys.contains(&key) {
+            continue;
+        }
+        let role = context_planning_role_for_evidence(&evidence);
+        if role == "examples" && example_count >= 2 {
+            continue;
+        }
+        if role == "examples" {
+            example_count += 1;
+        }
+        selected_keys.insert(key);
+        selected.push((index, evidence));
+    }
+
+    selected.into_iter().map(|(_, evidence)| evidence).collect()
+}
+
 fn context_pack_mode_needs_test_impact_fallback(mode: &str) -> bool {
     mode.to_ascii_lowercase().contains("test")
 }
@@ -18042,13 +18281,14 @@ fn build_context_pack_text_evidence_fallback(
     }
 
     let evidence_limit = budgets.max_snippets.saturating_mul(2).max(6);
-    let per_query_limit = evidence_limit.max(8);
+    let candidate_limit = evidence_limit.saturating_mul(4).max(24);
+    let per_query_limit = candidate_limit.max(8);
     let mut evidence = Vec::new();
     let mut seen = BTreeSet::new();
     let mut seen_files = BTreeSet::new();
     let mut deferred_hits = Vec::new();
     for query in &follow_up_queries {
-        if evidence.len() >= evidence_limit {
+        if evidence.len() >= candidate_limit {
             break;
         }
         let hits = load_context_pack_text_evidence_hits(connection, query, per_query_limit)?;
@@ -18065,7 +18305,7 @@ fn build_context_pack_text_evidence_fallback(
                     &mut evidence,
                     &mut seen,
                     hit,
-                    evidence_limit,
+                    candidate_limit,
                 );
             } else {
                 deferred_hits.push(hit);
@@ -18073,12 +18313,15 @@ fn build_context_pack_text_evidence_fallback(
         }
     }
     for hit in deferred_hits {
-        if evidence.len() >= evidence_limit {
+        if evidence.len() >= candidate_limit {
             break;
         }
-        push_context_pack_text_evidence_fallback(&mut evidence, &mut seen, hit, evidence_limit);
+        push_context_pack_text_evidence_fallback(&mut evidence, &mut seen, hit, candidate_limit);
     }
-    Ok(evidence)
+    Ok(context_pack_select_role_diverse_fallback_evidence(
+        evidence,
+        evidence_limit,
+    ))
 }
 
 fn push_context_pack_text_evidence_fallback(
@@ -18210,6 +18453,11 @@ fn context_pack_default_text_fallback_queries(task: &str) -> Vec<String> {
     let mut queries = Vec::new();
     if lower.contains("buildroot") && lower.contains("package") {
         queries.extend([
+            "adding-packages-generic".to_string(),
+            "adding-packages".to_string(),
+            "pkg-generic".to_string(),
+            "pkg-download".to_string(),
+            "dl-wrapper".to_string(),
             "generic-package".to_string(),
             "Config.in".to_string(),
             "depends on".to_string(),
@@ -18218,6 +18466,7 @@ fn context_pack_default_text_fallback_queries(task: &str) -> Vec<String> {
             ".mk".to_string(),
             ".adoc".to_string(),
             "support/scripts".to_string(),
+            "support/download".to_string(),
         ]);
     }
     queries
@@ -18489,6 +18738,7 @@ fn fallback_evidence_json(evidence: &ContextPackFallbackEvidence) -> Value {
         .proof_status
         .as_deref()
         .unwrap_or("no_proof_path_found");
+    let planning_role = context_planning_role_for_evidence(evidence);
     let mut value = json!({
         "id": evidence.id,
         "symbol": evidence.symbol,
@@ -18502,6 +18752,8 @@ fn fallback_evidence_json(evidence: &ContextPackFallbackEvidence) -> Value {
         "candidate_source": if evidence_role == "text_evidence" { "text_evidence" } else { "no_proof_fallback" },
         "classification_reason": evidence.classification_reason,
         "classification_source": evidence.classification_source,
+        "planning_role": planning_role,
+        "role_rank_reason": context_pack_fallback_role_rank_reason(evidence),
         "fallback_source": evidence.fallback_source,
         "proof_path_available": false,
         "seed_matches": evidence.seed_matches.clone(),
@@ -20105,6 +20357,19 @@ fn build_context_packet_from_stored_evidence(
         "requested_source_span_count".to_string(),
         json!(requested_span_count),
     );
+    metadata.insert("planning_roles".to_string(), json!(CONTEXT_PLANNING_ROLES));
+    metadata.insert(
+        "planning_packet_budgets".to_string(),
+        json!({
+            "evidence_budget": budgets.max_candidate_paths,
+            "snippet_budget": budgets.max_snippets,
+            "likely_files_budget": CONTEXT_PLANNING_PACKET_FILE_LIMIT,
+            "planning_summary_budget": 1,
+            "follow_up_queries_budget": CONTEXT_PLANNING_PACKET_QUERY_LIMIT,
+            "warning_budget": 8,
+            "explain_debug_budget": "separate_from_agent_json_evidence_budget",
+        }),
+    );
     metadata.insert(
         "source_span_coverage".to_string(),
         json!(if requested_span_count == 0 {
@@ -20192,6 +20457,14 @@ fn build_context_packet_from_stored_evidence(
         );
     }
     if !fallback_evidence.is_empty() {
+        let selected_role_coverage = unique_limited_strings(
+            fallback_evidence
+                .iter()
+                .map(context_planning_role_for_evidence)
+                .map(str::to_string)
+                .filter(|role| role != "unknown"),
+            CONTEXT_PLANNING_ROLES.len(),
+        );
         let likely_files = unique_limited_strings(
             fallback_evidence
                 .iter()
@@ -20206,7 +20479,12 @@ fn build_context_packet_from_stored_evidence(
         );
         metadata.insert("likely_files".to_string(), json!(likely_files));
         metadata.insert("follow_up_queries".to_string(), json!(follow_up_queries));
-        let metadata_fallback_limit = budgets.max_snippets.min(5).max(1);
+        metadata.insert(
+            "selected_role_coverage".to_string(),
+            json!(selected_role_coverage),
+        );
+        metadata.insert("omitted_by_dedup".to_string(), json!(0));
+        let metadata_fallback_limit = budgets.max_snippets.max(1);
         metadata.insert(
             "fallback_evidence".to_string(),
             json!(fallback_evidence
@@ -20985,6 +21263,42 @@ fn context_pack_retrieval_explain_json(
     Value::Object(explain)
 }
 
+fn context_pack_retrieval_explain_budget_summary(
+    retrieval_explain: &Value,
+    full_explain_bytes: usize,
+    max_output_bytes: usize,
+) -> Value {
+    json!({
+        "schema_version": 1,
+        "diagnostic_only": true,
+        "budget_limited": true,
+        "status": "summary_included_full_explain_omitted_by_explain_budget",
+        "reason": "retrieval_explain is separated from normal evidence budget; full diagnostic payload did not fit under --max-output-bytes",
+        "full_explain_bytes": full_explain_bytes,
+        "max_output_bytes": max_output_bytes,
+        "candidate_counts_by_source": retrieval_explain
+            .get("candidate_counts_by_source")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "proof_status": retrieval_explain
+            .get("proof_status")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "graph_proof": retrieval_explain
+            .get("graph_proof")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "ranking_reasons": {
+            "available_in_full_explain": true,
+            "omitted_by_explain_debug_budget": true
+        },
+        "budget_decisions": [
+            "normal agent-json evidence budget enforced before diagnostic explain attachment",
+            "fallback snippets and likely files are not pruned to make room for full explain payload"
+        ]
+    })
+}
+
 fn context_pack_no_proof_fallback_status(
     graph_proof: bool,
     fallback_evidence_count: usize,
@@ -21320,6 +21634,35 @@ fn context_pack_agent_json_response(
         graph_proof,
         omitted_paths + omitted_snippets + omitted_fallback_evidence,
     );
+    let fallback_snippets = snippets
+        .iter()
+        .filter(|snippet| snippet.get("fallback_source").is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    let selected_role_coverage =
+        context_planning_selected_role_coverage(&fallback_evidence, &snippets, &likely_files);
+    let omitted_by_dedup = packet
+        .metadata
+        .get("omitted_by_dedup")
+        .and_then(Value::as_u64)
+        .unwrap_or_default() as usize;
+    let omitted_by_budget = omitted_paths + omitted_snippets + omitted_fallback_evidence;
+    let evidence_budget_status = json!({
+        "status": if omitted_by_budget == 0 { "within_budget" } else { "bounded_with_omissions" },
+        "evidence_budget": budgets.max_candidate_paths,
+        "snippet_budget": snippet_limit,
+        "likely_files_budget": CONTEXT_PLANNING_PACKET_FILE_LIMIT,
+        "fallback_evidence_returned": fallback_evidence.len(),
+        "fallback_snippets_returned": fallback_snippets.len(),
+        "likely_files_returned": likely_files.as_array().map(Vec::len).unwrap_or_default(),
+        "omitted_by_budget": omitted_by_budget,
+        "omitted_by_dedup": omitted_by_dedup,
+    });
+    let explain_budget_status = json!({
+        "enabled": options.explain,
+        "status": if options.explain { "pending_separate_budget_check" } else { "disabled" },
+        "separate_from_evidence_budget": true,
+    });
     let retrieval_explain = options.explain.then(|| {
         context_pack_retrieval_explain_json(
             packet,
@@ -21392,9 +21735,15 @@ fn context_pack_agent_json_response(
         }
         object.insert("retrieval_architecture".to_string(), retrieval_architecture);
         object.insert("planning_packet".to_string(), planning_packet);
-        if let Some(retrieval_explain) = retrieval_explain {
-            object.insert("retrieval_explain".to_string(), retrieval_explain);
-        }
+        object.insert("fallback_snippets".to_string(), json!(fallback_snippets));
+        object.insert(
+            "selected_role_coverage".to_string(),
+            json!(selected_role_coverage),
+        );
+        object.insert("omitted_by_budget".to_string(), json!(omitted_by_budget));
+        object.insert("omitted_by_dedup".to_string(), json!(omitted_by_dedup));
+        object.insert("evidence_budget_status".to_string(), evidence_budget_status);
+        object.insert("explain_budget_status".to_string(), explain_budget_status);
         object.insert("candidates".to_string(), json!([]));
         object.insert("candidate_count".to_string(), json!(0));
         object.insert(
@@ -21493,6 +21842,67 @@ fn context_pack_agent_json_response(
             response = candidate_response;
         }
     }
+    if let Some(retrieval_explain) = retrieval_explain {
+        let mut explain_response = response.clone();
+        let full_explain_bytes = serialized_json_len(&retrieval_explain);
+        if let Some(object) = explain_response.as_object_mut() {
+            object.insert("retrieval_explain".to_string(), retrieval_explain.clone());
+            object.insert(
+                "explain_budget_status".to_string(),
+                json!({
+                    "enabled": true,
+                    "status": "full_explain_included",
+                    "separate_from_evidence_budget": true,
+                    "full_explain_bytes": full_explain_bytes,
+                }),
+            );
+        }
+        if serialized_json_len(&explain_response) <= max_output_bytes {
+            response = explain_response;
+        } else if let Some(object) = response.as_object_mut() {
+            object.insert(
+                "retrieval_explain".to_string(),
+                context_pack_retrieval_explain_budget_summary(
+                    &retrieval_explain,
+                    full_explain_bytes,
+                    max_output_bytes,
+                ),
+            );
+            object.insert(
+                "explain_budget_status".to_string(),
+                json!({
+                    "enabled": true,
+                    "status": "summary_included_full_explain_omitted_by_explain_budget",
+                    "separate_from_evidence_budget": true,
+                    "full_explain_bytes": full_explain_bytes,
+                }),
+            );
+        }
+        if serialized_json_len(&response) > max_output_bytes {
+            remove_context_agent_field(&mut response, "retrieval_architecture");
+            if let Some(object) = response.as_object_mut() {
+                object.insert(
+                    "explain_budget_status".to_string(),
+                    json!({
+                        "enabled": true,
+                        "status": "summary_included_full_explain_omitted_by_explain_budget",
+                        "separate_from_evidence_budget": true,
+                        "retrieval_architecture_omitted_for_explain_budget": true,
+                        "full_explain_bytes": full_explain_bytes,
+                    }),
+                );
+            }
+        }
+    } else if let Some(object) = response.as_object_mut() {
+        object.insert(
+            "explain_budget_status".to_string(),
+            json!({
+                "enabled": false,
+                "status": "disabled",
+                "separate_from_evidence_budget": true,
+            }),
+        );
+    }
     response
 }
 
@@ -21564,6 +21974,14 @@ fn context_pack_planning_packet_json(
     let follow_up_queries =
         context_planning_follow_up_queries(options, &likely_symbols, &evidence_items, snippets);
     let suggested_verification_commands = context_planning_verification_hints(&follow_up_queries);
+    let likely_files_value = json!(likely_files.clone());
+    let selected_role_coverage =
+        context_planning_selected_role_coverage(fallback_evidence, snippets, &likely_files_value);
+    let fallback_snippets = snippets
+        .iter()
+        .filter(|snippet| snippet.get("fallback_source").is_some())
+        .cloned()
+        .collect::<Vec<_>>();
     let claimability =
         context_planning_claimability_json(&evidence_type, lifecycle_claimable, graph_proof);
     let claimable = claimability
@@ -21601,6 +22019,11 @@ fn context_pack_planning_packet_json(
         + likely_files
             .len()
             .saturating_sub(CONTEXT_PLANNING_PACKET_FILE_LIMIT);
+    let omitted_by_dedup = packet
+        .metadata
+        .get("omitted_by_dedup")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
 
     json!({
         "task": packet.task,
@@ -21610,6 +22033,8 @@ fn context_pack_planning_packet_json(
         "proof_status": proof_status,
         "graph_proof": graph_proof,
         "likely_files": likely_files,
+        "fallback_snippets": fallback_snippets,
+        "selected_role_coverage": selected_role_coverage,
         "likely_symbols": likely_symbols,
         "evidence_items": evidence_items,
         "evidence_type": evidence_type,
@@ -21620,6 +22045,21 @@ fn context_pack_planning_packet_json(
         "suggested_verification_commands": suggested_verification_commands,
         "do_not_touch_areas": context_planning_do_not_touch_areas(&likely_files),
         "omitted_count": planning_omitted_count,
+        "omitted_by_budget": planning_omitted_count,
+        "omitted_by_dedup": omitted_by_dedup,
+        "evidence_budget_status": {
+            "status": if planning_omitted_count == 0 { "within_budget" } else { "bounded_with_omissions" },
+            "evidence_budget": CONTEXT_PLANNING_PACKET_EVIDENCE_LIMIT,
+            "snippet_budget": snippets.len(),
+            "likely_files_budget": CONTEXT_PLANNING_PACKET_FILE_LIMIT,
+            "follow_up_queries_budget": CONTEXT_PLANNING_PACKET_QUERY_LIMIT,
+            "omitted_by_budget": planning_omitted_count,
+            "omitted_by_dedup": omitted_by_dedup,
+        },
+        "packet_budget_status": {
+            "status": if planning_omitted_count == 0 { "within_budget" } else { "bounded_with_omissions" },
+            "role_diversity_applied": true,
+        },
         "warnings": warnings,
     })
 }
@@ -21644,6 +22084,51 @@ fn context_planning_evidence_type(
         return "fallback".to_string();
     }
     "unknown".to_string()
+}
+
+fn context_planning_selected_role_coverage(
+    fallback_evidence: &[Value],
+    snippets: &[Value],
+    likely_files: &Value,
+) -> Vec<Value> {
+    let mut roles = BTreeMap::<String, usize>::new();
+    for value in fallback_evidence.iter().chain(snippets.iter()) {
+        let role = context_planning_role_for_value(value);
+        if role != "unknown" {
+            *roles.entry(role.to_string()).or_default() += 1;
+        }
+    }
+    if let Some(files) = likely_files.as_array() {
+        for file in files.iter().filter_map(Value::as_str) {
+            let role = context_planning_role_for_text_evidence(file, file, "file", "");
+            if role != "unknown" {
+                *roles.entry(role.to_string()).or_default() += 1;
+            }
+        }
+    }
+    let mut coverage = roles
+        .into_iter()
+        .map(|(role, count)| {
+            json!({
+                "role": role,
+                "selected_count": count,
+            })
+        })
+        .collect::<Vec<_>>();
+    coverage.sort_by(|left, right| {
+        context_planning_role_rank(
+            left.get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+        )
+        .cmp(&context_planning_role_rank(
+            right
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+        ))
+    });
+    coverage
 }
 
 fn context_planning_likely_files(
@@ -21712,6 +22197,11 @@ fn context_planning_evidence_items(
                 .and_then(Value::as_str)
                 .unwrap_or("unknown")),
         );
+        item.insert("planning_role".to_string(), json!("unknown"));
+        item.insert(
+            "role_rank_reason".to_string(),
+            json!("graph proof path ranked by existing graph evidence"),
+        );
         item.insert("proof_status".to_string(), json!("proof_path_found"));
         item.insert("graph_proof".to_string(), json!(true));
         item.insert("confidence".to_string(), json!(0.95));
@@ -21752,6 +22242,13 @@ fn context_planning_evidence_items(
         item.insert("rank".to_string(), json!(items.len() + 1));
         item.insert("evidence_type".to_string(), json!(evidence_type));
         item.insert("evidence_role".to_string(), json!(evidence_role));
+        item.insert(
+            "planning_role".to_string(),
+            json!(context_planning_role_for_value(evidence)),
+        );
+        if let Some(reason) = evidence.get("role_rank_reason").cloned() {
+            item.insert("role_rank_reason".to_string(), reason);
+        }
         item.insert(
             "proof_status".to_string(),
             json!(evidence
@@ -21803,11 +22300,14 @@ fn context_planning_evidence_items(
         } else {
             "fallback"
         };
+        let planning_role = context_planning_role_for_value(snippet);
         items.push(json!({
             "id": format!("snippet://{}:{}", file, snippet.get("lines").and_then(Value::as_str).unwrap_or("unknown")),
             "rank": items.len() + 1,
             "evidence_type": evidence_type,
             "evidence_role": evidence_role,
+            "planning_role": planning_role,
+            "role_rank_reason": snippet.get("role_rank_reason").and_then(Value::as_str).unwrap_or("snippet retained under snippet budget"),
             "proof_status": snippet.get("proof_status").and_then(Value::as_str).unwrap_or("not_graph_proof"),
             "graph_proof": snippet.get("graph_proof").and_then(Value::as_bool).unwrap_or(false),
             "confidence": if evidence_type == "text_evidence" { 0.68 } else { 0.45 },
@@ -22290,6 +22790,10 @@ fn enforce_context_agent_max_output_bytes(
             omitted.snippets += 1;
             continue;
         }
+        if pop_context_agent_array_item(response, "fallback_snippets") {
+            omitted.snippets += 1;
+            continue;
+        }
         if pop_context_agent_array_item(response, "recommended_tests") {
             omitted.recommended_tests += 1;
             continue;
@@ -22391,6 +22895,7 @@ fn pop_context_agent_planning_array_item(response: &mut Value, key: &str) -> boo
             .unwrap_or_default()
             + 1;
         packet.insert("omitted_count".to_string(), json!(omitted_count));
+        packet.insert("omitted_by_budget".to_string(), json!(omitted_count));
     }
     popped
 }
@@ -22424,11 +22929,28 @@ fn update_context_agent_truncation(
         + omitted_recommended_tests
         + omitted_risks
         + omitted_planning_packet;
+    let omitted_by_budget =
+        omitted_paths + omitted_snippets + omitted_fallback_evidence + omitted_planning_packet;
     let byte_count = serde_json::to_vec(response)
         .map(|bytes| bytes.len())
         .unwrap_or_default();
     if let Some(object) = response.as_object_mut() {
         object.insert("omitted_count".to_string(), json!(omitted_count));
+        object.insert("omitted_by_budget".to_string(), json!(omitted_by_budget));
+        if let Some(status) = object
+            .get_mut("evidence_budget_status")
+            .and_then(Value::as_object_mut)
+        {
+            status.insert("omitted_by_budget".to_string(), json!(omitted_by_budget));
+            status.insert(
+                "status".to_string(),
+                json!(if omitted_by_budget == 0 {
+                    "within_budget"
+                } else {
+                    "bounded_with_omissions"
+                }),
+            );
+        }
         object.insert(
             "fallback_evidence_count".to_string(),
             json!(returned_fallback_evidence),
@@ -22631,6 +23153,21 @@ fn agent_context_snippet_json(
     if let Some(source) = label.fallback_source {
         object.insert("fallback_source".to_string(), json!(source));
     }
+    let planning_role = context_planning_role_for_text_evidence(
+        &snippet.file,
+        &snippet.file,
+        "snippet",
+        &format!("{}\n{}", snippet.reason, snippet.text),
+    );
+    object.insert("planning_role".to_string(), json!(planning_role));
+    object.insert(
+        "role_rank_reason".to_string(),
+        json!(if context_planning_central_file_score(&snippet.file) < 10 {
+            format!("{planning_role}: central Buildroot planning snippet")
+        } else {
+            format!("{planning_role}: snippet retained under snippet budget")
+        }),
+    );
     Value::Object(object)
 }
 
@@ -29231,6 +29768,35 @@ mod tests {
                 .all(|evidence| evidence.get("edges").is_none()
                     && evidence.get("relations").is_none())
         );
+        let response_fallback_snippets = response["fallback_snippets"]
+            .as_array()
+            .expect("fallback snippets");
+        assert!(!response_fallback_snippets.is_empty(), "{response:?}");
+        assert!(response_fallback_snippets
+            .iter()
+            .all(|snippet| snippet["graph_proof"].as_bool() == Some(false)));
+        let selected_roles = response["selected_role_coverage"]
+            .as_array()
+            .expect("selected role coverage")
+            .iter()
+            .filter_map(|role| role["role"].as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            selected_roles.contains("docs_authoring_guidance")
+                && selected_roles.contains("package_metadata")
+                && selected_roles.contains("kconfig_config_wiring"),
+            "{selected_roles:?}"
+        );
+        assert_eq!(
+            response["explain_budget_status"]["separate_from_evidence_budget"].as_bool(),
+            Some(true)
+        );
+        assert!(
+            serde_json::to_vec(&response)
+                .expect("serialize response")
+                .len()
+                <= 512 * 1024
+        );
         let planning = &response["planning_packet"];
         assert_eq!(planning["task"].as_str(), Some(options.task.as_str()));
         assert_eq!(planning["mode"].as_str(), Some("production"));
@@ -29266,6 +29832,18 @@ mod tests {
         assert!(
             planning_files.contains("docs/manual/adding-packages.adoc"),
             "{planning_files:?}"
+        );
+        let planning_roles = planning["selected_role_coverage"]
+            .as_array()
+            .expect("planning role coverage")
+            .iter()
+            .filter_map(|role| role["role"].as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            planning_roles.contains("docs_authoring_guidance")
+                && planning_roles.contains("package_metadata")
+                && planning_roles.contains("kconfig_config_wiring"),
+            "{planning_roles:?}"
         );
         assert!(planning["evidence_items"]
             .as_array()
@@ -29509,6 +30087,236 @@ mod tests {
 
         drop(connection);
         fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn context_pack_planning_packet_keeps_role_diverse_evidence_under_package_example_pressure() {
+        let make_evidence =
+            |file: &str, symbol: &str, text: &str, score: f64| super::ContextPackFallbackEvidence {
+                id: format!("text-evidence://{file}:1"),
+                symbol: symbol.to_string(),
+                kind: "file".to_string(),
+                source_span: SourceSpan::new(file, 1, 1),
+                score: Some(score),
+                evidence_role: EvidenceRole::Unknown,
+                evidence_role_label: Some("text_evidence".to_string()),
+                proof_status: Some("no_proof_path_found".to_string()),
+                graph_proof: false,
+                claimability: Some(super::text_evidence_claimability_json()),
+                seed_matches: vec![text.to_string()],
+                follow_up_queries: vec![text.to_string()],
+                classification_reason:
+                    "matched bounded text evidence via stage0_fts; budget pressure fixture"
+                        .to_string(),
+                classification_source: "unit-test/stage0_fts".to_string(),
+                fallback_source: "text_evidence/no_proof_path_found".to_string(),
+            };
+        let mut candidates = vec![
+            make_evidence(
+                "docs/manual/adding-packages-generic.adoc",
+                "adding packages generic",
+                "generic-package package infrastructure Config.in",
+                0.1,
+            ),
+            make_evidence(
+                "package/pkg-generic.mk",
+                "pkg-generic",
+                "generic-package install_target install_staging",
+                0.2,
+            ),
+            make_evidence(
+                "package/Config.in",
+                "Config.in",
+                "source \"package/foo/Config.in\" BR2_PACKAGE_FOO",
+                0.3,
+            ),
+            make_evidence(
+                "package/pkg-download.mk",
+                "pkg-download",
+                "download dl-wrapper _SITE",
+                0.4,
+            ),
+            make_evidence(
+                "support/download/dl-wrapper",
+                "dl-wrapper",
+                "download wrapper support script",
+                0.5,
+            ),
+        ];
+        for index in 0..20 {
+            candidates.push(make_evidence(
+                &format!("package/example{index}/example{index}.mk"),
+                &format!("EXAMPLE{index}_VERSION"),
+                "EXAMPLE_VERSION EXAMPLE_LICENSE $(eval $(generic-package))",
+                index as f64 + 10.0,
+            ));
+        }
+
+        let selected = super::context_pack_select_role_diverse_fallback_evidence(candidates, 6);
+        let selected_files = selected
+            .iter()
+            .map(|evidence| evidence.source_span.repo_relative_path.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            selected_files.contains("docs/manual/adding-packages-generic.adoc"),
+            "{selected_files:?}"
+        );
+        assert!(
+            selected_files.contains("package/pkg-generic.mk"),
+            "{selected_files:?}"
+        );
+        assert!(
+            selected_files.contains("package/Config.in"),
+            "{selected_files:?}"
+        );
+        assert!(
+            selected_files.contains("package/pkg-download.mk")
+                || selected_files.contains("support/download/dl-wrapper"),
+            "{selected_files:?}"
+        );
+        let example_count = selected_files
+            .iter()
+            .filter(|file| file.starts_with("package/example"))
+            .count();
+        assert!(example_count <= 2, "{selected_files:?}");
+
+        let options = context_agent_test_options("production", Some(3), Some(6), Some(128 * 1024));
+        let budgets = super::ContextPackBudgets::for_options(&options);
+        let packet = super::build_context_packet_from_stored_evidence(
+            &options,
+            &[],
+            &[],
+            &[],
+            Vec::new(),
+            Vec::new(),
+            selected,
+            None,
+            budgets,
+            0,
+            25,
+        );
+        let response = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &json!({"claimable": true, "diagnostic_only": false, "decision": "read_reuse"}),
+            budgets,
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        let likely_files = response["likely_files"]
+            .as_array()
+            .expect("likely files")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<BTreeSet<_>>();
+        assert!(
+            likely_files.contains("docs/manual/adding-packages-generic.adoc")
+                && likely_files.contains("package/pkg-generic.mk")
+                && likely_files.contains("package/Config.in"),
+            "{likely_files:?}"
+        );
+        assert!(
+            response["omitted_by_budget"].as_u64().unwrap_or_default() > 0
+                || response["omitted_by_dedup"].as_u64().unwrap_or_default() > 0,
+            "{response:?}"
+        );
+        assert!(serde_json::to_vec(&response).expect("serialize").len() <= 128 * 1024);
+    }
+
+    #[test]
+    fn context_pack_explain_budget_summary_does_not_starve_fallback_snippets() {
+        let mut options = context_agent_test_options("production", Some(3), Some(3), Some(12_000));
+        options.explain = true;
+        options.task = "Trace Buildroot generic package flow".to_string();
+        let budgets = super::ContextPackBudgets::for_options(&options);
+        let fallback_evidence = vec![super::ContextPackFallbackEvidence {
+            id: "text-evidence://docs/manual/adding-packages-generic.adoc:1".to_string(),
+            symbol: "adding packages generic".to_string(),
+            kind: "documentation".to_string(),
+            source_span: SourceSpan::new("docs/manual/adding-packages-generic.adoc", 1, 1),
+            score: Some(1.0),
+            evidence_role: EvidenceRole::Unknown,
+            evidence_role_label: Some("text_evidence".to_string()),
+            proof_status: Some("no_proof_path_found".to_string()),
+            graph_proof: false,
+            claimability: Some(super::text_evidence_claimability_json()),
+            seed_matches: vec!["generic-package".to_string()],
+            follow_up_queries: vec!["generic-package".to_string()],
+            classification_reason: "matched bounded text evidence via stage0_fts".to_string(),
+            classification_source: "unit-test/stage0_fts".to_string(),
+            fallback_source: "text_evidence/no_proof_path_found".to_string(),
+        }];
+        let snippets = vec![ContextSnippet {
+            file: "docs/manual/adding-packages-generic.adoc".to_string(),
+            lines: "1".to_string(),
+            text: "The generic-package infrastructure defines Buildroot package flow.".to_string(),
+            reason: "text evidence fallback".to_string(),
+        }];
+        let mut packet = super::build_context_packet_from_stored_evidence(
+            &options,
+            &["Buildroot".to_string()],
+            &[],
+            &[],
+            Vec::new(),
+            snippets,
+            fallback_evidence,
+            None,
+            budgets,
+            0,
+            1,
+        );
+        packet.metadata.insert(
+            "vector_semantic_candidates".to_string(),
+            json!((0..64)
+                .map(|index| json!({
+                    "candidate_id": format!("vector://noise/{index}"),
+                    "candidate_source": "vector_semantic",
+                    "candidate_sources": ["vector_semantic"],
+                    "path": format!("package/noise{index}/noise{index}.mk"),
+                    "evidence_role": "production",
+                    "proof_status": "candidate_only",
+                    "graph_proof": false,
+                    "claimable": false,
+                    "claimable_for_text": false,
+                    "claimable_for_graph": false,
+                    "requires_graph_verification": true,
+                    "verification_status": "needs_graph_verification",
+                    "graph_verification_status": "needs_graph_verification",
+                    "matched_seeds": [],
+                    "reason": "noisy vector candidate",
+                    "ranking_features": {}
+                }))
+                .collect::<Vec<_>>()),
+        );
+        let response = super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &json!({"claimable": true, "diagnostic_only": false, "decision": "read_reuse"}),
+            budgets,
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        );
+        assert!(!response["fallback_snippets"]
+            .as_array()
+            .expect("fallback snippets")
+            .is_empty());
+        assert_eq!(
+            response["retrieval_explain"]["budget_limited"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            response["explain_budget_status"]["status"].as_str(),
+            Some("summary_included_full_explain_omitted_by_explain_budget")
+        );
+        assert!(response["retrieval_explain"]["budget_decisions"]
+            .as_array()
+            .expect("budget decisions")
+            .iter()
+            .any(|item| item
+                .as_str()
+                .is_some_and(|text| text.contains("evidence budget"))));
     }
 
     #[test]
