@@ -3586,6 +3586,9 @@ fn context_pack_vector_candidates_are_explicit_diagnostic_and_safe() {
         missing_trace["vector_index_status"].as_str(),
         Some("missing")
     );
+    assert_eq!(missing["graph_db_status"].as_str(), Some("ready"));
+    assert_eq!(missing["vector_runtime_status"].as_str(), Some("missing"));
+    assert_eq!(missing["graph_proof_available"].as_bool(), Some(true));
     assert_eq!(missing_trace["vector_candidate_count"].as_u64(), Some(0));
 
     let ready_index = external_db_dir.join("codegraph-vector-chunks.json");
@@ -3608,6 +3611,12 @@ fn context_pack_vector_candidates_are_explicit_diagnostic_and_safe() {
     ));
     let ready_trace = &ready["retrieval_explain"]["vector_trace"];
     assert_eq!(ready_trace["vector_index_status"].as_str(), Some("ready"));
+    assert_eq!(ready["vector_runtime_status"].as_str(), Some("ready"));
+    assert!(ready["active_candidate_sources"]
+        .as_array()
+        .expect("candidate sources")
+        .iter()
+        .any(|source| source.as_str() == Some("vector_semantic")));
     assert!(
         ready_trace["vector_candidate_count"].as_u64().unwrap_or(0) > 0,
         "{ready_trace:?}"
@@ -3635,6 +3644,8 @@ fn context_pack_vector_candidates_are_explicit_diagnostic_and_safe() {
     );
     let compact = stdout_json(&compact_output);
     assert_eq!(compact["status"].as_str(), Some("ok"));
+    assert_eq!(compact["vector_runtime_status"].as_str(), Some("ready"));
+    assert!(compact.get("staged_availability").is_none());
     assert!(compact.get("retrieval_explain").is_none());
     assert!(
         compact_output.stdout.len() < 16_384,
@@ -3663,6 +3674,11 @@ fn context_pack_vector_candidates_are_explicit_diagnostic_and_safe() {
     ));
     let stale_trace = &stale["retrieval_explain"]["vector_trace"];
     assert_eq!(stale_trace["vector_index_status"].as_str(), Some("stale"));
+    assert_eq!(stale["vector_runtime_status"].as_str(), Some("stale"));
+    assert_eq!(
+        stale["staged_availability"]["recommended_next_step"].as_str(),
+        Some("rebuild vector sidecar")
+    );
     assert_eq!(stale_trace["vector_candidate_count"].as_u64(), Some(0));
     assert!(stale_trace["stale_missing_vector_index_reason"]
         .as_str()

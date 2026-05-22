@@ -22,11 +22,29 @@ use crate::{
     GraphStore, RetrievalTraceRecord, StoreError, StoreResult, TextSearchHit, TextSearchKind,
 };
 
-pub const SCHEMA_VERSION: u32 = 20;
+pub const SCHEMA_VERSION: u32 = 21;
 pub const DB_PASSPORT_VERSION: u32 = 1;
 pub const MAX_SYMBOL_VALUE_BYTES: usize = 512;
 pub const MAX_QUALIFIED_NAME_BYTES: usize = 1024;
 pub const MAX_QNAME_PREFIX_BYTES: usize = 768;
+pub const MAX_SPARSE_SIDECAR_PAYLOAD_BYTES: usize = 8192;
+pub const SPARSE_SIDECAR_TABLES: &[&str] = &[
+    "entity_features",
+    "edge_features",
+    "ast_micro_nodes",
+    "ast_micro_edges",
+    "local_flow_packets",
+    "routing_packet_handles",
+    "evidence_features",
+    "validation_findings",
+];
+pub const SPARSE_SIDECAR_INDEXES: &[&str] = &[
+    "idx_ast_micro_nodes_file_scope_kind",
+    "idx_ast_micro_edges_file_relation",
+    "idx_local_flow_packets_function",
+    "idx_routing_packet_handles_lifecycle",
+    "idx_validation_findings_file_severity",
+];
 const CONTENT_TEMPLATE_EXTRACTION_VERSION: &str = "local-fact-template-v1";
 
 const EDGE_FLAG_HEURISTIC: i64 = 1 << 0;
@@ -126,12 +144,118 @@ pub struct DbPassport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntityFeatureRow {
+    pub entity_id: String,
+    pub feature_kind: String,
+    pub payload_version: u32,
+    pub compact_payload: String,
+    pub extraction_version: String,
+    pub source_span_id: Option<String>,
+    pub claimability: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EdgeFeatureRow {
+    pub edge_id: String,
+    pub feature_kind: String,
+    pub payload_version: u32,
+    pub compact_payload: String,
+    pub extraction_version: String,
+    pub provenance_id: Option<String>,
+    pub source_span_id: Option<String>,
+    pub derived: bool,
+    pub claimability: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AstMicroNodeRow {
+    pub micro_node_id: String,
+    pub file_id: String,
+    pub function_entity_id: Option<String>,
+    pub scope_entity_id: Option<String>,
+    pub micro_kind: String,
+    pub symbol: Option<String>,
+    pub source_span_id: String,
+    pub extraction_version: String,
+    pub payload_version: u32,
+    pub claimability: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AstMicroEdgeRow {
+    pub micro_edge_id: String,
+    pub file_id: String,
+    pub source_micro_node_id: String,
+    pub target_micro_node_id: String,
+    pub relation_kind: String,
+    pub source_span_id: Option<String>,
+    pub exactness: String,
+    pub provenance_id: Option<String>,
+    pub extraction_version: String,
+    pub payload_version: u32,
+    pub claimability: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalFlowPacketRow {
+    pub packet_id: String,
+    pub file_id: String,
+    pub function_entity_id: String,
+    pub packet_kind: String,
+    pub compressed_steps: String,
+    pub source_span_ids_json: String,
+    pub proof_status: String,
+    pub extraction_version: String,
+    pub payload_version: u32,
+    pub claimability: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutingPacketHandleRow {
+    pub handle_id: String,
+    pub db_passport_hash: String,
+    pub task_intent_hash: String,
+    pub packet_kind: String,
+    pub evidence_refs_json: String,
+    pub expires_or_invalidates_on: String,
+    pub payload_version: u32,
+    pub claimability: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceFeatureRow {
+    pub evidence_ref: String,
+    pub evidence_kind: String,
+    pub feature_kind: String,
+    pub payload_version: u32,
+    pub compact_payload: String,
+    pub extraction_version: String,
+    pub source_span_id: Option<String>,
+    pub claimability: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationFindingRow {
+    pub finding_id: String,
+    pub file_id: String,
+    pub entity_id: Option<String>,
+    pub edge_id: Option<String>,
+    pub severity: String,
+    pub finding_kind: String,
+    pub source_span_id: Option<String>,
+    pub claimability: String,
+    pub lifecycle_binding: String,
+    pub payload_version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpectedDbPassport {
     pub canonical_repo_root: String,
     pub storage_mode: String,
     pub index_scope_policy_hash: String,
     pub git_remote: Option<String>,
     pub worktree_root: Option<String>,
+    pub repo_head: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -305,29 +429,95 @@ fn db_path_access_from_io_error(error: &io::Error) -> DbPathAccess {
     }
 }
 
-fn classify_sqlite_open_failure(
-    error: &rusqlite::Error,
-) -> (&'static str, &'static str, &'static str) {
-    let message = error.to_string().to_ascii_lowercase();
-    if message.contains("locked") {
-        ("locked", "db_locked", "ok")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SqliteAccessProblem {
+    pub passport_status: &'static str,
+    pub db_problem_kind: &'static str,
+    pub path_access_status: &'static str,
+}
+
+pub fn classify_sqlite_access_problem(message: &str) -> Option<SqliteAccessProblem> {
+    let message = message.to_ascii_lowercase();
+    if message.contains("locked") || message.contains("database is busy") {
+        Some(SqliteAccessProblem {
+            passport_status: "locked",
+            db_problem_kind: "db_locked",
+            path_access_status: "ok",
+        })
     } else if message.contains("permission denied")
         || message.contains("access permission denied")
         || message.contains("authorization denied")
+        || message.contains("attempt to write a readonly database")
+        || message.contains("readonly database")
     {
-        ("unknown", "permission_denied", "permission_denied")
+        Some(SqliteAccessProblem {
+            passport_status: "unknown",
+            db_problem_kind: "permission_denied",
+            path_access_status: "permission_denied",
+        })
+    } else if message.contains("unable to open database file")
+        || message.contains("disk i/o error")
+        || message.contains("i/o error")
+        || message.contains("io error")
+    {
+        Some(SqliteAccessProblem {
+            passport_status: "unknown",
+            db_problem_kind: "filesystem_inaccessible",
+            path_access_status: "filesystem_inaccessible",
+        })
     } else if message.contains("malformed")
         || message.contains("not a database")
         || message.contains("file is not a database")
     {
-        ("corrupt", "sqlite_corrupt", "ok")
+        Some(SqliteAccessProblem {
+            passport_status: "corrupt",
+            db_problem_kind: "sqlite_corrupt",
+            path_access_status: "ok",
+        })
     } else {
-        (
+        None
+    }
+}
+
+fn classify_sqlite_open_failure(
+    error: &rusqlite::Error,
+) -> (&'static str, &'static str, &'static str) {
+    classify_sqlite_access_problem(&error.to_string())
+        .map(|problem| {
+            (
+                problem.passport_status,
+                problem.db_problem_kind,
+                problem.path_access_status,
+            )
+        })
+        .unwrap_or((
             "unknown",
             "filesystem_inaccessible",
             "filesystem_inaccessible",
-        )
-    }
+        ))
+}
+
+fn preflight_report_for_sqlite_access_problem(
+    db_path: &Path,
+    sqlite_sidecars: &[PathBuf],
+    context: &str,
+    error: impl ToString,
+) -> Option<DbPreflightReport> {
+    let error = error.to_string();
+    let problem = classify_sqlite_access_problem(&error)?;
+    Some(db_preflight_report_with_problem(
+        db_path,
+        problem.passport_status.to_string(),
+        Some(problem.db_problem_kind.to_string()),
+        problem.path_access_status.to_string(),
+        Some(error.clone()),
+        false,
+        vec![format!("{context}: {error}")],
+        None,
+        None,
+        sqlite_sidecars.to_vec(),
+        true,
+    ))
 }
 
 fn db_problem_kind_from_reasons(passport_status: &str, reasons: &[String]) -> Option<String> {
@@ -340,6 +530,11 @@ fn db_problem_kind_from_reasons(passport_status: &str, reasons: &[String]) -> Op
         reason.contains("repo root mismatch") || reason.contains("git remote mismatch")
     }) {
         Some("repo_root_mismatch".to_string())
+    } else if reasons
+        .iter()
+        .any(|reason| reason.contains("repo head mismatch"))
+    {
+        Some("repo_head_mismatch".to_string())
     } else if reasons.iter().any(|reason| {
         reason.contains("schema version mismatch") || reason.contains("passport schema mismatch")
     }) {
@@ -432,7 +627,7 @@ impl SqliteGraphStore {
     pub fn open_read_only(path: impl AsRef<Path>) -> StoreResult<Self> {
         let connection_start = Instant::now();
         let path = path.as_ref();
-        let immutable = existing_sqlite_sidecars(path).is_empty();
+        let immutable = sqlite_immutable_read_safe(path);
         let uri = sqlite_read_only_uri(path, immutable)?;
         let connection = Connection::open_with_flags(
             &uri,
@@ -1413,6 +1608,14 @@ impl SqliteGraphStore {
             DELETE FROM stage0_fts;
             DELETE FROM retrieval_traces;
             DELETE FROM derived_edges;
+            DELETE FROM validation_findings;
+            DELETE FROM evidence_features;
+            DELETE FROM routing_packet_handles;
+            DELETE FROM local_flow_packets;
+            DELETE FROM ast_micro_edges;
+            DELETE FROM ast_micro_nodes;
+            DELETE FROM edge_features;
+            DELETE FROM entity_features;
             DELETE FROM path_evidence;
             DELETE FROM repo_index_state;
             DELETE FROM source_spans;
@@ -1440,6 +1643,216 @@ impl SqliteGraphStore {
 
     pub fn index_exists(&self, index_name: &str) -> StoreResult<bool> {
         exists_in_sqlite_master(&self.connection, "index", index_name)
+    }
+
+    pub fn sparse_sidecar_schema_ready(&self) -> StoreResult<bool> {
+        sparse_sidecar_schema_ready(&self.connection)
+    }
+
+    pub fn sparse_sidecar_counts(&self) -> StoreResult<BTreeMap<String, u64>> {
+        let mut counts = BTreeMap::new();
+        for table in SPARSE_SIDECAR_TABLES {
+            if self.table_exists(table)? {
+                counts.insert((*table).to_string(), count_rows(&self.connection, table)?);
+            }
+        }
+        Ok(counts)
+    }
+
+    pub fn insert_entity_feature(&self, row: &EntityFeatureRow) -> StoreResult<()> {
+        validate_sparse_sidecar_payload_len(
+            "entity_features.compact_payload",
+            &row.compact_payload,
+        )?;
+        self.connection.execute(
+            "INSERT INTO entity_features (
+                entity_id, feature_kind, payload_version, compact_payload,
+                extraction_version, source_span_id, claimability
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                row.entity_id,
+                row.feature_kind,
+                i64::from(row.payload_version),
+                row.compact_payload,
+                row.extraction_version,
+                row.source_span_id.as_deref(),
+                row.claimability
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_edge_feature(&self, row: &EdgeFeatureRow) -> StoreResult<()> {
+        validate_sparse_sidecar_payload_len("edge_features.compact_payload", &row.compact_payload)?;
+        self.connection.execute(
+            "INSERT INTO edge_features (
+                edge_id, feature_kind, payload_version, compact_payload,
+                extraction_version, provenance_id, source_span_id, derived,
+                claimability
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                row.edge_id,
+                row.feature_kind,
+                i64::from(row.payload_version),
+                row.compact_payload,
+                row.extraction_version,
+                row.provenance_id.as_deref(),
+                row.source_span_id.as_deref(),
+                if row.derived { 1_i64 } else { 0_i64 },
+                row.claimability
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_ast_micro_node(&self, row: &AstMicroNodeRow) -> StoreResult<()> {
+        self.connection.execute(
+            "INSERT INTO ast_micro_nodes (
+                micro_node_id, file_id, function_entity_id, scope_entity_id,
+                micro_kind, symbol, source_span_id, extraction_version,
+                payload_version, claimability
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                row.micro_node_id,
+                row.file_id,
+                row.function_entity_id.as_deref(),
+                row.scope_entity_id.as_deref(),
+                row.micro_kind,
+                row.symbol.as_deref(),
+                row.source_span_id,
+                row.extraction_version,
+                i64::from(row.payload_version),
+                row.claimability
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_ast_micro_edge(&self, row: &AstMicroEdgeRow) -> StoreResult<()> {
+        self.connection.execute(
+            "INSERT INTO ast_micro_edges (
+                micro_edge_id, file_id, source_micro_node_id, target_micro_node_id,
+                relation_kind, source_span_id, exactness, provenance_id,
+                extraction_version, payload_version, claimability
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                row.micro_edge_id,
+                row.file_id,
+                row.source_micro_node_id,
+                row.target_micro_node_id,
+                row.relation_kind,
+                row.source_span_id.as_deref(),
+                row.exactness,
+                row.provenance_id.as_deref(),
+                row.extraction_version,
+                i64::from(row.payload_version),
+                row.claimability
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_local_flow_packet(&self, row: &LocalFlowPacketRow) -> StoreResult<()> {
+        validate_sparse_sidecar_payload_len(
+            "local_flow_packets.compressed_steps",
+            &row.compressed_steps,
+        )?;
+        validate_sparse_sidecar_payload_len(
+            "local_flow_packets.source_span_ids_json",
+            &row.source_span_ids_json,
+        )?;
+        self.connection.execute(
+            "INSERT INTO local_flow_packets (
+                packet_id, file_id, function_entity_id, packet_kind,
+                compressed_steps, source_span_ids_json, proof_status,
+                extraction_version, payload_version, claimability
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                row.packet_id,
+                row.file_id,
+                row.function_entity_id,
+                row.packet_kind,
+                row.compressed_steps,
+                row.source_span_ids_json,
+                row.proof_status,
+                row.extraction_version,
+                i64::from(row.payload_version),
+                row.claimability
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_routing_packet_handle(&self, row: &RoutingPacketHandleRow) -> StoreResult<()> {
+        validate_sparse_sidecar_payload_len(
+            "routing_packet_handles.evidence_refs_json",
+            &row.evidence_refs_json,
+        )?;
+        self.connection.execute(
+            "INSERT INTO routing_packet_handles (
+                handle_id, db_passport_hash, task_intent_hash, packet_kind,
+                evidence_refs_json, expires_or_invalidates_on, payload_version,
+                claimability
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                row.handle_id,
+                row.db_passport_hash,
+                row.task_intent_hash,
+                row.packet_kind,
+                row.evidence_refs_json,
+                row.expires_or_invalidates_on,
+                i64::from(row.payload_version),
+                row.claimability
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_evidence_feature(&self, row: &EvidenceFeatureRow) -> StoreResult<()> {
+        validate_sparse_sidecar_payload_len(
+            "evidence_features.compact_payload",
+            &row.compact_payload,
+        )?;
+        self.connection.execute(
+            "INSERT INTO evidence_features (
+                evidence_ref, evidence_kind, feature_kind, payload_version,
+                compact_payload, extraction_version, source_span_id, claimability
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                row.evidence_ref,
+                row.evidence_kind,
+                row.feature_kind,
+                i64::from(row.payload_version),
+                row.compact_payload,
+                row.extraction_version,
+                row.source_span_id.as_deref(),
+                row.claimability
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_validation_finding(&self, row: &ValidationFindingRow) -> StoreResult<()> {
+        self.connection.execute(
+            "INSERT INTO validation_findings (
+                finding_id, file_id, entity_id, edge_id, severity,
+                finding_kind, source_span_id, claimability, lifecycle_binding,
+                payload_version
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                row.finding_id,
+                row.file_id,
+                row.entity_id.as_deref(),
+                row.edge_id.as_deref(),
+                row.severity,
+                row.finding_kind,
+                row.source_span_id.as_deref(),
+                row.claimability,
+                row.lifecycle_binding,
+                i64::from(row.payload_version)
+            ],
+        )?;
+        Ok(())
     }
 
     pub fn storage_accounting(&self) -> StoreResult<Vec<StorageAccountingRow>> {
@@ -1535,6 +1948,38 @@ impl SqliteGraphStore {
             (
                 "file_graph_digests",
                 "SELECT COALESCE(SUM(length(file_id) + length(digest)), 0) FROM file_graph_digests",
+            ),
+            (
+                "entity_features",
+                "SELECT COALESCE(SUM(length(entity_id) + length(feature_kind) + length(compact_payload) + length(extraction_version) + COALESCE(length(source_span_id), 0) + length(claimability) + 16), 0) FROM entity_features",
+            ),
+            (
+                "edge_features",
+                "SELECT COALESCE(SUM(length(edge_id) + length(feature_kind) + length(compact_payload) + length(extraction_version) + COALESCE(length(provenance_id), 0) + COALESCE(length(source_span_id), 0) + length(claimability) + 24), 0) FROM edge_features",
+            ),
+            (
+                "ast_micro_nodes",
+                "SELECT COALESCE(SUM(length(micro_node_id) + length(file_id) + COALESCE(length(function_entity_id), 0) + COALESCE(length(scope_entity_id), 0) + length(micro_kind) + COALESCE(length(symbol), 0) + length(source_span_id) + length(extraction_version) + length(claimability) + 24), 0) FROM ast_micro_nodes",
+            ),
+            (
+                "ast_micro_edges",
+                "SELECT COALESCE(SUM(length(micro_edge_id) + length(file_id) + length(source_micro_node_id) + length(target_micro_node_id) + length(relation_kind) + COALESCE(length(source_span_id), 0) + length(exactness) + COALESCE(length(provenance_id), 0) + length(extraction_version) + length(claimability) + 24), 0) FROM ast_micro_edges",
+            ),
+            (
+                "local_flow_packets",
+                "SELECT COALESCE(SUM(length(packet_id) + length(file_id) + length(function_entity_id) + length(packet_kind) + length(compressed_steps) + length(source_span_ids_json) + length(proof_status) + length(extraction_version) + length(claimability) + 24), 0) FROM local_flow_packets",
+            ),
+            (
+                "routing_packet_handles",
+                "SELECT COALESCE(SUM(length(handle_id) + length(db_passport_hash) + length(task_intent_hash) + length(packet_kind) + length(evidence_refs_json) + length(expires_or_invalidates_on) + length(claimability) + 16), 0) FROM routing_packet_handles",
+            ),
+            (
+                "evidence_features",
+                "SELECT COALESCE(SUM(length(evidence_ref) + length(evidence_kind) + length(feature_kind) + length(compact_payload) + length(extraction_version) + COALESCE(length(source_span_id), 0) + length(claimability) + 16), 0) FROM evidence_features",
+            ),
+            (
+                "validation_findings",
+                "SELECT COALESCE(SUM(length(finding_id) + length(file_id) + COALESCE(length(entity_id), 0) + COALESCE(length(edge_id), 0) + length(severity) + length(finding_kind) + COALESCE(length(source_span_id), 0) + length(claimability) + length(lifecycle_binding) + 16), 0) FROM validation_findings",
             ),
         ];
         let mut rows = Vec::new();
@@ -1853,6 +2298,7 @@ impl GraphStore for SqliteGraphStore {
             && !table_has_column(&self.connection, "structural_relations", "file_hash")?
             && !table_has_column(&self.connection, "callsites", "file_hash")?
             && !table_has_column(&self.connection, "callsite_args", "file_hash")?
+            && sparse_sidecar_schema_ready(&self.connection)?
         {
             return Ok(());
         }
@@ -1872,6 +2318,7 @@ impl GraphStore for SqliteGraphStore {
             ",
         )?;
         self.connection.execute_batch(SCHEMA_SQL)?;
+        migrate_sparse_sidecar_schema(&self.connection)?;
         migrate_edge_classification_columns(&self.connection)?;
         migrate_structural_compaction_columns(&self.connection)?;
         migrate_file_hash_normalization(&self.connection)?;
@@ -2681,6 +3128,35 @@ fn exists_in_sqlite_master(
     Ok(exists)
 }
 
+fn sparse_sidecar_schema_ready(connection: &Connection) -> StoreResult<bool> {
+    for table in SPARSE_SIDECAR_TABLES {
+        if !exists_in_sqlite_master(connection, "table", table)? {
+            return Ok(false);
+        }
+    }
+    for index in SPARSE_SIDECAR_INDEXES {
+        if !exists_in_sqlite_master(connection, "index", index)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn migrate_sparse_sidecar_schema(connection: &Connection) -> StoreResult<()> {
+    connection.execute_batch(SPARSE_SIDECAR_SCHEMA_SQL)?;
+    Ok(())
+}
+
+fn validate_sparse_sidecar_payload_len(field: &str, payload: &str) -> StoreResult<()> {
+    if payload.len() > MAX_SPARSE_SIDECAR_PAYLOAD_BYTES {
+        return Err(StoreError::Message(format!(
+            "{field} exceeds max sparse sidecar payload length {} bytes",
+            MAX_SPARSE_SIDECAR_PAYLOAD_BYTES
+        )));
+    }
+    Ok(())
+}
+
 pub fn inspect_db_preflight(
     db_path: &Path,
     expected_schema_version: u32,
@@ -2724,7 +3200,7 @@ pub fn inspect_db_preflight(
     }
 
     let mut reasons = Vec::new();
-    let sqlite_uri = match sqlite_read_only_uri(db_path, sqlite_sidecars.is_empty()) {
+    let sqlite_uri = match sqlite_read_only_uri(db_path, sqlite_immutable_read_safe(db_path)) {
         Ok(uri) => uri,
         Err(error) => {
             return db_preflight_report_with_problem(
@@ -2769,10 +3245,26 @@ pub fn inspect_db_preflight(
 
     let mut passport_status = "valid".to_string();
     if let Err(error) = validate_sqlite_check_rows(&connection, "quick_check") {
+        if let Some(report) = preflight_report_for_sqlite_access_problem(
+            db_path,
+            &sqlite_sidecars,
+            "read-only SQLite quick_check failed",
+            &error,
+        ) {
+            return report;
+        }
         passport_status = "corrupt".to_string();
         reasons.push(error.to_string());
     }
     if let Err(error) = validate_foreign_key_check(&connection) {
+        if let Some(report) = preflight_report_for_sqlite_access_problem(
+            db_path,
+            &sqlite_sidecars,
+            "read-only SQLite foreign_key_check failed",
+            &error,
+        ) {
+            return report;
+        }
         passport_status = "corrupt".to_string();
         reasons.push(error.to_string());
     }
@@ -2780,6 +3272,14 @@ pub fn inspect_db_preflight(
     let schema_version = match connection.query_row("PRAGMA user_version", [], |row| row.get(0)) {
         Ok(version) => Some(version),
         Err(error) => {
+            if let Some(report) = preflight_report_for_sqlite_access_problem(
+                db_path,
+                &sqlite_sidecars,
+                "schema version read failed",
+                &error,
+            ) {
+                return report;
+            }
             passport_status = "unknown".to_string();
             reasons.push(format!("schema version read failed: {error}"));
             None
@@ -2796,7 +3296,20 @@ pub fn inspect_db_preflight(
     }
 
     let passport_table =
-        exists_in_sqlite_master(&connection, "table", "codegraph_db_passport").unwrap_or(false);
+        match exists_in_sqlite_master(&connection, "table", "codegraph_db_passport") {
+            Ok(exists) => exists,
+            Err(error) => {
+                if let Some(report) = preflight_report_for_sqlite_access_problem(
+                    db_path,
+                    &sqlite_sidecars,
+                    "passport table lookup failed",
+                    &error,
+                ) {
+                    return report;
+                }
+                false
+            }
+        };
     if !passport_table {
         if passport_status == "valid" {
             passport_status = "missing".to_string();
@@ -2831,6 +3344,14 @@ pub fn inspect_db_preflight(
             );
         }
         Err(error) => {
+            if let Some(report) = preflight_report_for_sqlite_access_problem(
+                db_path,
+                &sqlite_sidecars,
+                "passport read failed",
+                &error,
+            ) {
+                return report;
+            }
             passport_status = "corrupt".to_string();
             reasons.push(format!("passport read failed: {error}"));
             return db_preflight_report(
@@ -2905,6 +3426,14 @@ pub fn inspect_db_preflight(
             passport.git_remote.as_deref().unwrap_or("unknown")
         ));
     }
+    if expected.repo_head.is_some() && passport.repo_head != expected.repo_head {
+        passport_status = "mismatched".to_string();
+        reasons.push(format!(
+            "repo head mismatch: expected {}, observed {}",
+            expected.repo_head.as_deref().unwrap_or("unknown"),
+            passport.repo_head.as_deref().unwrap_or("unknown")
+        ));
+    }
 
     db_preflight_report(
         db_path,
@@ -2926,6 +3455,11 @@ fn existing_sqlite_sidecars(db_path: &Path) -> Vec<PathBuf> {
         }
     }
     sidecars
+}
+
+fn sqlite_immutable_read_safe(db_path: &Path) -> bool {
+    existing_sqlite_sidecars(db_path).is_empty()
+        && !PathBuf::from(format!("{}-journal", db_path.display())).exists()
 }
 
 fn sqlite_read_only_uri(db_path: &Path, immutable: bool) -> StoreResult<String> {
@@ -6012,16 +6546,31 @@ fn cleanup_file_reverse_maps(
 
     let mut delete_entity_maps =
         connection.prepare_cached("DELETE FROM file_entities WHERE entity_id = ?1")?;
+    let mut delete_entity_features =
+        connection.prepare_cached("DELETE FROM entity_features WHERE entity_id = ?1")?;
+    let mut delete_entity_flow_packets = connection
+        .prepare_cached("DELETE FROM local_flow_packets WHERE function_entity_id = ?1")?;
+    let mut delete_entity_validation =
+        connection.prepare_cached("DELETE FROM validation_findings WHERE entity_id = ?1")?;
     for entity_id in stale_entity_ids {
         delete_entity_maps.execute([entity_id])?;
+        delete_entity_features.execute([entity_id])?;
+        delete_entity_flow_packets.execute([entity_id])?;
+        delete_entity_validation.execute([entity_id])?;
     }
     let mut delete_edge_maps =
         connection.prepare_cached("DELETE FROM file_edges WHERE edge_id = ?1")?;
     let mut delete_span_maps =
         connection.prepare_cached("DELETE FROM file_source_spans WHERE span_id = ?1")?;
+    let mut delete_edge_features =
+        connection.prepare_cached("DELETE FROM edge_features WHERE edge_id = ?1")?;
+    let mut delete_edge_validation =
+        connection.prepare_cached("DELETE FROM validation_findings WHERE edge_id = ?1")?;
     for edge_id in stale_edge_ids {
         delete_edge_maps.execute([edge_id])?;
         delete_span_maps.execute([edge_id])?;
+        delete_edge_features.execute([edge_id])?;
+        delete_edge_validation.execute([edge_id])?;
     }
     Ok(())
 }
@@ -6047,6 +6596,16 @@ fn delete_sidecar_facts_for_file(
         "DELETE FROM extraction_warnings WHERE repo_relative_path = ?1",
         [repo_relative_path],
     )?;
+    connection.execute("DELETE FROM evidence_features", [])?;
+    connection.execute("DELETE FROM routing_packet_handles", [])?;
+    for sql in [
+        "DELETE FROM validation_findings WHERE file_id = ?1",
+        "DELETE FROM local_flow_packets WHERE file_id = ?1",
+        "DELETE FROM ast_micro_edges WHERE file_id = ?1",
+        "DELETE FROM ast_micro_nodes WHERE file_id = ?1",
+    ] {
+        connection.execute(sql, [repo_relative_path])?;
+    }
     Ok(())
 }
 
@@ -9754,6 +10313,127 @@ CREATE INDEX IF NOT EXISTS idx_file_fts_rows_object ON file_fts_rows(object_id, 
 CREATE INDEX IF NOT EXISTS idx_retrieval_traces_created ON retrieval_traces(created_at_unix_ms);
 "#;
 
+const SPARSE_SIDECAR_SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS entity_features (
+    entity_id TEXT NOT NULL,
+    feature_kind TEXT NOT NULL,
+    payload_version INTEGER NOT NULL CHECK(payload_version > 0),
+    compact_payload TEXT NOT NULL CHECK(length(compact_payload) <= 8192),
+    extraction_version TEXT NOT NULL,
+    source_span_id TEXT,
+    claimability TEXT NOT NULL DEFAULT 'candidate_only',
+    CHECK(claimability NOT IN ('source_spanned', 'exact', 'proof', 'exact_local_flow') OR source_span_id IS NOT NULL),
+    PRIMARY KEY(entity_id, feature_kind, payload_version, extraction_version)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS edge_features (
+    edge_id TEXT NOT NULL,
+    feature_kind TEXT NOT NULL,
+    payload_version INTEGER NOT NULL CHECK(payload_version > 0),
+    compact_payload TEXT NOT NULL CHECK(length(compact_payload) <= 8192),
+    extraction_version TEXT NOT NULL,
+    provenance_id TEXT,
+    source_span_id TEXT,
+    derived INTEGER NOT NULL DEFAULT 0 CHECK(derived IN (0, 1)),
+    claimability TEXT NOT NULL DEFAULT 'candidate_only',
+    CHECK(derived = 0 OR provenance_id IS NOT NULL),
+    CHECK(claimability NOT IN ('source_spanned', 'exact', 'proof', 'exact_local_flow') OR source_span_id IS NOT NULL),
+    PRIMARY KEY(edge_id, feature_kind, payload_version, extraction_version)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS ast_micro_nodes (
+    micro_node_id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL,
+    function_entity_id TEXT,
+    scope_entity_id TEXT,
+    micro_kind TEXT NOT NULL,
+    symbol TEXT,
+    source_span_id TEXT NOT NULL,
+    extraction_version TEXT NOT NULL,
+    payload_version INTEGER NOT NULL CHECK(payload_version > 0),
+    claimability TEXT NOT NULL DEFAULT 'source_spanned'
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS ast_micro_edges (
+    micro_edge_id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL,
+    source_micro_node_id TEXT NOT NULL,
+    target_micro_node_id TEXT NOT NULL,
+    relation_kind TEXT NOT NULL,
+    source_span_id TEXT,
+    exactness TEXT NOT NULL CHECK(exactness IN ('exact', 'derived_with_provenance', 'heuristic', 'unsupported', 'unknown')),
+    provenance_id TEXT,
+    extraction_version TEXT NOT NULL,
+    payload_version INTEGER NOT NULL CHECK(payload_version > 0),
+    claimability TEXT NOT NULL DEFAULT 'candidate_only',
+    CHECK(exactness != 'exact' OR source_span_id IS NOT NULL),
+    CHECK(exactness != 'derived_with_provenance' OR provenance_id IS NOT NULL)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS local_flow_packets (
+    packet_id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL,
+    function_entity_id TEXT NOT NULL,
+    packet_kind TEXT NOT NULL,
+    compressed_steps TEXT NOT NULL CHECK(length(compressed_steps) <= 8192),
+    source_span_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(length(source_span_ids_json) <= 8192),
+    proof_status TEXT NOT NULL,
+    extraction_version TEXT NOT NULL,
+    payload_version INTEGER NOT NULL CHECK(payload_version > 0),
+    claimability TEXT NOT NULL DEFAULT 'candidate_only',
+    CHECK(proof_status != 'micro_flow_found' OR source_span_ids_json != '[]')
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS routing_packet_handles (
+    handle_id TEXT PRIMARY KEY,
+    db_passport_hash TEXT NOT NULL,
+    task_intent_hash TEXT NOT NULL,
+    packet_kind TEXT NOT NULL,
+    evidence_refs_json TEXT NOT NULL CHECK(length(evidence_refs_json) <= 8192),
+    expires_or_invalidates_on TEXT NOT NULL,
+    payload_version INTEGER NOT NULL CHECK(payload_version > 0),
+    claimability TEXT NOT NULL DEFAULT 'handle_not_evidence'
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS evidence_features (
+    evidence_ref TEXT NOT NULL,
+    evidence_kind TEXT NOT NULL,
+    feature_kind TEXT NOT NULL,
+    payload_version INTEGER NOT NULL CHECK(payload_version > 0),
+    compact_payload TEXT NOT NULL CHECK(length(compact_payload) <= 8192),
+    extraction_version TEXT NOT NULL,
+    source_span_id TEXT,
+    claimability TEXT NOT NULL DEFAULT 'candidate_only',
+    CHECK(claimability NOT IN ('source_spanned', 'exact', 'proof', 'exact_local_flow') OR source_span_id IS NOT NULL),
+    PRIMARY KEY(evidence_ref, evidence_kind, feature_kind, payload_version)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS validation_findings (
+    finding_id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL,
+    entity_id TEXT,
+    edge_id TEXT,
+    severity TEXT NOT NULL CHECK(severity IN ('blocking', 'warning', 'diagnostic_only', 'unknown', 'ok')),
+    finding_kind TEXT NOT NULL,
+    source_span_id TEXT,
+    claimability TEXT NOT NULL,
+    lifecycle_binding TEXT NOT NULL,
+    payload_version INTEGER NOT NULL CHECK(payload_version > 0),
+    CHECK(severity != 'blocking' OR source_span_id IS NOT NULL OR claimability LIKE 'lifecycle_%')
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_ast_micro_nodes_file_scope_kind
+    ON ast_micro_nodes(file_id, function_entity_id, micro_kind);
+CREATE INDEX IF NOT EXISTS idx_ast_micro_edges_file_relation
+    ON ast_micro_edges(file_id, relation_kind);
+CREATE INDEX IF NOT EXISTS idx_local_flow_packets_function
+    ON local_flow_packets(file_id, function_entity_id, packet_kind);
+CREATE INDEX IF NOT EXISTS idx_routing_packet_handles_lifecycle
+    ON routing_packet_handles(db_passport_hash, task_intent_hash);
+CREATE INDEX IF NOT EXISTS idx_validation_findings_file_severity
+    ON validation_findings(file_id, severity);
+"#;
+
 const BULK_INDEX_DROP_SQL: &str = r#"
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
@@ -9926,7 +10606,7 @@ mod tests {
         fs,
         hash::{Hash, Hasher},
         path::Path,
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use codegraph_core::{
@@ -9936,12 +10616,15 @@ mod tests {
     use rusqlite::{params, Connection};
 
     use super::{
-        count_rows, db_path_access_from_io_error, inspect_db_preflight, intern_object_id,
-        intern_qualified_name, lookup_object_id, lookup_qualified_name,
-        migrate_dictionary_compaction, register_sqlite_functions, stable_text_hash_key,
-        stable_text_len, table_has_column, ExpectedDbPassport, GraphStore, RetrievalTraceRecord,
-        SqliteGraphStore, StoreError, TextSearchKind, DB_PASSPORT_VERSION, MAX_QNAME_PREFIX_BYTES,
-        MAX_QUALIFIED_NAME_BYTES, SCHEMA_SQL, SCHEMA_VERSION,
+        classify_sqlite_access_problem, count_rows, db_path_access_from_io_error,
+        inspect_db_preflight, intern_object_id, intern_qualified_name, lookup_object_id,
+        lookup_qualified_name, migrate_dictionary_compaction, register_sqlite_functions,
+        stable_text_hash_key, stable_text_len, table_has_column, AstMicroEdgeRow, AstMicroNodeRow,
+        DbPassport, EdgeFeatureRow, EntityFeatureRow, EvidenceFeatureRow, ExpectedDbPassport,
+        GraphStore, LocalFlowPacketRow, RetrievalTraceRecord, RoutingPacketHandleRow,
+        SqliteGraphStore, StoreError, TextSearchKind, ValidationFindingRow, DB_PASSPORT_VERSION,
+        MAX_QNAME_PREFIX_BYTES, MAX_QUALIFIED_NAME_BYTES, MAX_SPARSE_SIDECAR_PAYLOAD_BYTES,
+        SCHEMA_SQL, SCHEMA_VERSION, SPARSE_SIDECAR_TABLES,
     };
 
     fn ok<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
@@ -9990,6 +10673,31 @@ mod tests {
             index_scope_policy_hash: "scope-hash".to_string(),
             git_remote: None,
             worktree_root: Some(repo_root.display().to_string()),
+            repo_head: None,
+        }
+    }
+
+    fn valid_passport_for_preflight(repo_root: &Path) -> DbPassport {
+        DbPassport {
+            passport_version: DB_PASSPORT_VERSION,
+            codegraph_schema_version: SCHEMA_VERSION,
+            storage_mode: "proof".to_string(),
+            index_scope_policy_hash: "scope-hash".to_string(),
+            scope_policy_json: "{}".to_string(),
+            canonical_repo_root: repo_root.display().to_string(),
+            git_remote: None,
+            worktree_root: Some(repo_root.display().to_string()),
+            repo_head: None,
+            source_discovery_policy_version: "scope-v1".to_string(),
+            codegraph_build_version: None,
+            last_successful_index_timestamp: Some(1),
+            last_completed_run_id: Some("test-run".to_string()),
+            last_run_status: "completed".to_string(),
+            integrity_gate_result: "ok".to_string(),
+            files_seen: 0,
+            files_indexed: 0,
+            created_at_unix_ms: 1,
+            updated_at_unix_ms: 1,
         }
     }
 
@@ -10089,6 +10797,14 @@ mod tests {
             "bench_runs",
             "retrieval_traces",
             "stage0_fts",
+            "entity_features",
+            "edge_features",
+            "ast_micro_nodes",
+            "ast_micro_edges",
+            "local_flow_packets",
+            "routing_packet_handles",
+            "evidence_features",
+            "validation_findings",
         ] {
             assert!(ok(store.table_exists(table)), "missing table {table}");
         }
@@ -10116,6 +10832,11 @@ mod tests {
             "idx_file_source_spans_span",
             "idx_file_path_evidence_path",
             "idx_file_fts_rows_object",
+            "idx_ast_micro_nodes_file_scope_kind",
+            "idx_ast_micro_edges_file_relation",
+            "idx_local_flow_packets_function",
+            "idx_routing_packet_handles_lifecycle",
+            "idx_validation_findings_file_severity",
         ] {
             assert!(ok(store.index_exists(index)), "missing index {index}");
         }
@@ -10147,6 +10868,294 @@ mod tests {
         }
 
         assert_eq!(ok(store.schema_version()), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn sparse_sidecar_schema_is_empty_and_does_not_bloat_core_rows() {
+        let store = store();
+
+        assert!(ok(store.sparse_sidecar_schema_ready()));
+        let counts = ok(store.sparse_sidecar_counts());
+        for table in SPARSE_SIDECAR_TABLES {
+            assert_eq!(counts.get(*table).copied(), Some(0), "{table}");
+            for forbidden in ["source_body", "full_source_body", "full_source"] {
+                assert!(
+                    !ok(table_has_column(&store.connection, table, forbidden)),
+                    "{table} must not store {forbidden}"
+                );
+            }
+        }
+
+        for table in ["entities", "edges", "source_spans", "files"] {
+            for forbidden in [
+                "entity_features",
+                "edge_features",
+                "micro_payload",
+                "local_flow_payload",
+                "validation_findings",
+                "routing_packet_cache",
+                "full_source_body",
+            ] {
+                assert!(
+                    !ok(table_has_column(&store.connection, table, forbidden)),
+                    "{table} must not receive MVP3/MVP4 payload column {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sparse_sidecar_rows_insert_and_preserve_claim_constraints() {
+        let store = store();
+
+        ok(store.insert_entity_feature(&EntityFeatureRow {
+            entity_id: "repo://e/auth-login".to_string(),
+            feature_kind: "ast_shape".to_string(),
+            payload_version: 1,
+            compact_payload: "{\"shape\":\"small\"}".to_string(),
+            extraction_version: "sidecar-test-v1".to_string(),
+            source_span_id: Some("span-auth-login".to_string()),
+            claimability: "source_spanned".to_string(),
+        }));
+        ok(store.insert_edge_feature(&EdgeFeatureRow {
+            edge_id: "edge-auth-login".to_string(),
+            feature_kind: "derived_reason".to_string(),
+            payload_version: 1,
+            compact_payload: "{\"kind\":\"CALLS->WRITES\"}".to_string(),
+            extraction_version: "sidecar-test-v1".to_string(),
+            provenance_id: Some("edge-base".to_string()),
+            source_span_id: Some("span-auth-login".to_string()),
+            derived: true,
+            claimability: "source_spanned".to_string(),
+        }));
+        ok(store.insert_ast_micro_node(&AstMicroNodeRow {
+            micro_node_id: "micro-node-token".to_string(),
+            file_id: "src/auth.ts".to_string(),
+            function_entity_id: Some("repo://e/auth-login".to_string()),
+            scope_entity_id: None,
+            micro_kind: "LocalBinding".to_string(),
+            symbol: Some("token".to_string()),
+            source_span_id: "span-auth-login".to_string(),
+            extraction_version: "sidecar-test-v1".to_string(),
+            payload_version: 1,
+            claimability: "source_spanned".to_string(),
+        }));
+        ok(store.insert_ast_micro_node(&AstMicroNodeRow {
+            micro_node_id: "micro-node-return".to_string(),
+            file_id: "src/auth.ts".to_string(),
+            function_entity_id: Some("repo://e/auth-login".to_string()),
+            scope_entity_id: None,
+            micro_kind: "ReturnSite".to_string(),
+            symbol: None,
+            source_span_id: "span-auth-return".to_string(),
+            extraction_version: "sidecar-test-v1".to_string(),
+            payload_version: 1,
+            claimability: "source_spanned".to_string(),
+        }));
+        ok(store.insert_ast_micro_edge(&AstMicroEdgeRow {
+            micro_edge_id: "micro-edge-token-return".to_string(),
+            file_id: "src/auth.ts".to_string(),
+            source_micro_node_id: "micro-node-token".to_string(),
+            target_micro_node_id: "micro-node-return".to_string(),
+            relation_kind: "LOCAL_FLOWS_TO".to_string(),
+            source_span_id: Some("span-auth-flow".to_string()),
+            exactness: "derived_with_provenance".to_string(),
+            provenance_id: Some("micro-edge-base".to_string()),
+            extraction_version: "sidecar-test-v1".to_string(),
+            payload_version: 1,
+            claimability: "source_spanned".to_string(),
+        }));
+        ok(store.insert_local_flow_packet(&LocalFlowPacketRow {
+            packet_id: "local-flow-auth-login".to_string(),
+            file_id: "src/auth.ts".to_string(),
+            function_entity_id: "repo://e/auth-login".to_string(),
+            packet_kind: "local_micro_flow".to_string(),
+            compressed_steps: "token LOCAL_FLOWS_TO return".to_string(),
+            source_span_ids_json: "[\"span-auth-flow\"]".to_string(),
+            proof_status: "micro_flow_found".to_string(),
+            extraction_version: "sidecar-test-v1".to_string(),
+            payload_version: 1,
+            claimability: "exact_local_flow".to_string(),
+        }));
+        ok(store.insert_routing_packet_handle(&RoutingPacketHandleRow {
+            handle_id: "handle-auth-login".to_string(),
+            db_passport_hash: "passport:test".to_string(),
+            task_intent_hash: "intent:test".to_string(),
+            packet_kind: "routing_packet".to_string(),
+            evidence_refs_json: "[\"span-auth-flow\"]".to_string(),
+            expires_or_invalidates_on: "db_passport_hash_change".to_string(),
+            payload_version: 1,
+            claimability: "handle_not_evidence".to_string(),
+        }));
+        ok(store.insert_evidence_feature(&EvidenceFeatureRow {
+            evidence_ref: "span-auth-flow".to_string(),
+            evidence_kind: "source_span".to_string(),
+            feature_kind: "risk_label".to_string(),
+            payload_version: 1,
+            compact_payload: "{\"risk\":\"none\"}".to_string(),
+            extraction_version: "sidecar-test-v1".to_string(),
+            source_span_id: Some("span-auth-flow".to_string()),
+            claimability: "source_spanned".to_string(),
+        }));
+        ok(store.insert_validation_finding(&ValidationFindingRow {
+            finding_id: "finding-auth-login".to_string(),
+            file_id: "src/auth.ts".to_string(),
+            entity_id: Some("repo://e/auth-login".to_string()),
+            edge_id: None,
+            severity: "blocking".to_string(),
+            finding_kind: "missing_source_span".to_string(),
+            source_span_id: Some("span-auth-login".to_string()),
+            claimability: "exact_graph_validation".to_string(),
+            lifecycle_binding: "passport:test".to_string(),
+            payload_version: 1,
+        }));
+
+        let counts = ok(store.sparse_sidecar_counts());
+        assert_eq!(counts.get("entity_features").copied(), Some(1));
+        assert_eq!(counts.get("edge_features").copied(), Some(1));
+        assert_eq!(counts.get("ast_micro_nodes").copied(), Some(2));
+        assert_eq!(counts.get("ast_micro_edges").copied(), Some(1));
+        assert_eq!(counts.get("local_flow_packets").copied(), Some(1));
+        assert_eq!(counts.get("routing_packet_handles").copied(), Some(1));
+        assert_eq!(counts.get("evidence_features").copied(), Some(1));
+        assert_eq!(counts.get("validation_findings").copied(), Some(1));
+
+        assert!(store
+            .insert_edge_feature(&EdgeFeatureRow {
+                edge_id: "edge-bad-derived".to_string(),
+                feature_kind: "derived_reason".to_string(),
+                payload_version: 1,
+                compact_payload: "{}".to_string(),
+                extraction_version: "sidecar-test-v1".to_string(),
+                provenance_id: None,
+                source_span_id: Some("span-bad".to_string()),
+                derived: true,
+                claimability: "source_spanned".to_string(),
+            })
+            .is_err());
+        assert!(store
+            .insert_ast_micro_edge(&AstMicroEdgeRow {
+                micro_edge_id: "micro-edge-bad-exact".to_string(),
+                file_id: "src/auth.ts".to_string(),
+                source_micro_node_id: "micro-node-token".to_string(),
+                target_micro_node_id: "micro-node-return".to_string(),
+                relation_kind: "LOCAL_FLOWS_TO".to_string(),
+                source_span_id: None,
+                exactness: "exact".to_string(),
+                provenance_id: None,
+                extraction_version: "sidecar-test-v1".to_string(),
+                payload_version: 1,
+                claimability: "source_spanned".to_string(),
+            })
+            .is_err());
+        assert!(store
+            .insert_local_flow_packet(&LocalFlowPacketRow {
+                packet_id: "local-flow-bad".to_string(),
+                file_id: "src/auth.ts".to_string(),
+                function_entity_id: "repo://e/auth-login".to_string(),
+                packet_kind: "local_micro_flow".to_string(),
+                compressed_steps: "missing spans".to_string(),
+                source_span_ids_json: "[]".to_string(),
+                proof_status: "micro_flow_found".to_string(),
+                extraction_version: "sidecar-test-v1".to_string(),
+                payload_version: 1,
+                claimability: "exact_local_flow".to_string(),
+            })
+            .is_err());
+        assert!(store
+            .insert_validation_finding(&ValidationFindingRow {
+                finding_id: "finding-bad-blocking".to_string(),
+                file_id: "src/auth.ts".to_string(),
+                entity_id: None,
+                edge_id: None,
+                severity: "blocking".to_string(),
+                finding_kind: "dangling_exact_call".to_string(),
+                source_span_id: None,
+                claimability: "exact_missing_target".to_string(),
+                lifecycle_binding: "passport:test".to_string(),
+                payload_version: 1,
+            })
+            .is_err());
+        assert!(store
+            .insert_entity_feature(&EntityFeatureRow {
+                entity_id: "repo://e/too-large".to_string(),
+                feature_kind: "ast_shape".to_string(),
+                payload_version: 1,
+                compact_payload: "x".repeat(MAX_SPARSE_SIDECAR_PAYLOAD_BYTES + 1),
+                extraction_version: "sidecar-test-v1".to_string(),
+                source_span_id: Some("span-large".to_string()),
+                claimability: "source_spanned".to_string(),
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn old_db_without_sparse_sidecars_is_read_only_safe_and_normal_open_migrates() {
+        let path = temp_db_path();
+        remove_temp_db_family(&path);
+        {
+            let connection = ok(Connection::open(&path));
+            ok(connection.execute_batch(SCHEMA_SQL));
+            ok(connection.pragma_update(None, "user_version", 20_u32));
+        }
+
+        let before = file_fingerprint(&path);
+        {
+            let store = ok(SqliteGraphStore::open_read_only(&path));
+            assert_eq!(ok(store.schema_version()), 20);
+            assert!(!ok(store.table_exists("entity_features")));
+        }
+        let after_read_only = file_fingerprint(&path);
+        assert_eq!(
+            before, after_read_only,
+            "read-only inspection must not add sparse sidecars"
+        );
+
+        {
+            let store = ok(SqliteGraphStore::open(&path));
+            assert_eq!(ok(store.schema_version()), SCHEMA_VERSION);
+            assert!(ok(store.sparse_sidecar_schema_ready()));
+        }
+        assert_ne!(
+            before,
+            file_fingerprint(&path),
+            "normal open is the explicit migration path for sparse sidecars"
+        );
+        remove_temp_db_family(&path);
+    }
+
+    #[test]
+    fn empty_sparse_sidecar_schema_overhead_stays_bounded() {
+        fn schema_size(path: &Path, include_sidecars: bool) -> u64 {
+            remove_temp_db_family(path);
+            {
+                let connection = ok(Connection::open(path));
+                ok(connection.execute_batch(SCHEMA_SQL));
+                if include_sidecars {
+                    ok(super::migrate_sparse_sidecar_schema(&connection));
+                    ok(connection.pragma_update(None, "user_version", SCHEMA_VERSION));
+                } else {
+                    ok(connection.pragma_update(None, "user_version", 20_u32));
+                }
+                ok(connection.execute_batch("VACUUM;"));
+            }
+            fs::metadata(path).expect("DB metadata").len()
+        }
+
+        let core_path = temp_db_path();
+        let sidecar_path = temp_db_path();
+        let core_bytes = schema_size(&core_path, false);
+        let sidecar_bytes = schema_size(&sidecar_path, true);
+        let overhead = sidecar_bytes.saturating_sub(core_bytes);
+        println!(
+            "empty sparse sidecar overhead: core_bytes={core_bytes} sidecar_bytes={sidecar_bytes} overhead={overhead}"
+        );
+        assert!(
+            overhead <= 262_144,
+            "empty sparse sidecar overhead should remain bounded, got {overhead} bytes"
+        );
+        remove_temp_db_family(&core_path);
+        remove_temp_db_family(&sidecar_path);
     }
 
     #[test]
@@ -10793,6 +11802,34 @@ mod tests {
     }
 
     #[test]
+    fn preflight_repo_head_mismatch_is_identity_contamination() {
+        let path = temp_db_path();
+        let repo_root = path.parent().expect("temp parent");
+        {
+            let store = ok(SqliteGraphStore::open(&path));
+            let mut passport = valid_passport_for_preflight(repo_root);
+            passport.repo_head = Some("old-head".to_string());
+            ok(store.upsert_db_passport(&passport));
+        }
+        let mut expected = expected_passport_for_preflight(repo_root);
+        expected.repo_head = Some("new-head".to_string());
+
+        let report = inspect_db_preflight(&path, SCHEMA_VERSION, &expected);
+
+        assert!(!report.valid);
+        assert_eq!(report.passport_status, "mismatched");
+        assert_eq!(
+            report.db_problem_kind.as_deref(),
+            Some("repo_head_mismatch")
+        );
+        assert!(report
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("repo head mismatch")));
+        remove_temp_db_family(&path);
+    }
+
+    #[test]
     fn preflight_passport_read_error_is_passport_corrupt() {
         let path = temp_db_path();
         {
@@ -10831,6 +11868,79 @@ mod tests {
         assert_eq!(access.status, "permission_denied");
         assert_eq!(access.problem_kind, Some("permission_denied"));
         assert!(access.main_db_exists);
+    }
+
+    #[test]
+    fn sqlite_access_problem_classifies_required_lock_and_access_labels() {
+        let locked = classify_sqlite_access_problem("sqlite error: database is locked")
+            .expect("locked classification");
+        assert_eq!(locked.passport_status, "locked");
+        assert_eq!(locked.db_problem_kind, "db_locked");
+        assert_eq!(locked.path_access_status, "ok");
+
+        let permission =
+            classify_sqlite_access_problem("unable to open database file: permission denied")
+                .expect("permission classification");
+        assert_eq!(permission.passport_status, "unknown");
+        assert_eq!(permission.db_problem_kind, "permission_denied");
+        assert_eq!(permission.path_access_status, "permission_denied");
+
+        let inaccessible =
+            classify_sqlite_access_problem("sqlite error: unable to open database file")
+                .expect("filesystem classification");
+        assert_eq!(inaccessible.db_problem_kind, "filesystem_inaccessible");
+
+        let corrupt = classify_sqlite_access_problem("file is not a database")
+            .expect("corrupt classification");
+        assert_eq!(corrupt.passport_status, "corrupt");
+        assert_eq!(corrupt.db_problem_kind, "sqlite_corrupt");
+    }
+
+    #[test]
+    fn preflight_locked_db_reports_db_locked_not_corrupt() {
+        let path = temp_db_path();
+        let repo_root = path.parent().expect("temp parent");
+        {
+            let store = ok(SqliteGraphStore::open(&path));
+            ok(store.upsert_db_passport(&valid_passport_for_preflight(repo_root)));
+            ok(store.wal_checkpoint_truncate());
+        }
+
+        let lock = Connection::open(&path).expect("open lock connection");
+        lock.busy_timeout(Duration::from_millis(0))
+            .expect("set busy timeout");
+        let _: String = lock
+            .query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))
+            .expect("switch to rollback journal for lock visibility");
+        lock.execute_batch(
+            "
+            PRAGMA locking_mode=EXCLUSIVE;
+            BEGIN EXCLUSIVE;
+            CREATE TABLE IF NOT EXISTS lock_marker(id INTEGER PRIMARY KEY);
+            INSERT INTO lock_marker(id) VALUES (1);
+            ",
+        )
+        .expect("hold exclusive write lock");
+
+        let expected = expected_passport_for_preflight(repo_root);
+        let report = inspect_db_preflight(&path, SCHEMA_VERSION, &expected);
+
+        assert!(!report.valid);
+        assert_eq!(report.passport_status, "locked");
+        assert_eq!(report.db_problem_kind.as_deref(), Some("db_locked"));
+        assert_eq!(report.path_access_status, "ok");
+        assert!(
+            report
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("db_locked") || reason.contains("locked")),
+            "expected lock reason, got {:?}",
+            report.reasons
+        );
+
+        lock.execute_batch("ROLLBACK").expect("release lock");
+        drop(lock);
+        remove_temp_db_family(&path);
     }
 
     #[test]

@@ -1,0 +1,30 @@
+[run]
+name = "repobench-small"
+run_id_prefix = "repobench_small"
+dataset = "repobench"
+dataset_path = "benchmarks/workspaces/repobench_data"
+dataset_version = "tianyang/repobench_python_v1.1"
+modes = ["none", "rg_only", "codegraph_exact_text", "codegraph_full"]
+max_tasks = 20
+max_wall_time_s = 300
+max_time_s = 300
+max_tool_calls = 10
+max_context_bytes = 90000
+max_output_bytes = 90000
+claim_boundary = "diagnostic"
+
+[adapter]
+dataset_version = "tianyang/repobench_python_v1.1"
+language = "python"
+official_scoring = false
+
+[codegraph]
+release_binary = "target/release/codegraph-mcp.exe"
+binary_path_policy = "release_binary_required"
+workspace_dir = "benchmarks/workspaces/repobench-small"
+db_path_policy = "ignored_benchmark_workspace"
+
+[agent]
+scaffold = "retrieval_only"
+model = "none"
+external_agent_required = false

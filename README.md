@@ -31,11 +31,17 @@ repository
   -> grounded model edits
 ```
 
-## Agent-Impact Benchmarks
+## Agent-Impact Benchmarks and Readiness
 
-| Real-Repo Index Smoke | Evidence Reliability | Warm Agent Loop |
+![Roadmap To MVP4 Agent Utility Readiness](docs/assets/readme/mvp4_readiness_over_time.png)
+
+| Retrieval Quality By Track | Evidence Safety | SWE-bench Readiness |
 |---|---|---|
-| ![Real-Repo Index Smoke](docs/assets/readme/large_repo_improvement.png) | ![Evidence Reliability](docs/assets/readme/evidence_reliability.png) | ![Warm Agent Loop](docs/assets/readme/warm_agent_loop_latency.png) |
+| ![Retrieval Quality By Benchmark Track](docs/assets/readme/retrieval_quality_by_track.png) | ![Evidence Safety / Claim Boundary Health](docs/assets/readme/evidence_safety.png) | ![SWE-bench Readiness Ladder](docs/assets/readme/swebench_readiness_ladder.png) |
+
+Internal readiness score, local diagnostic retrieval scores, and SWE-bench
+harness readiness only. These charts are not official SWE-bench, RepoBench,
+CrossCodeEval, CGC, or `rg` comparison results.
 
 Status: semantic-proof and context-packet gates are green; compact-proof storage
 is under 250 MiB; DB passport preflight blocks stale or mismatched reuse. The
@@ -45,8 +51,31 @@ Local 1-bit Nuance-Rescue gating passes 8 adversarial cases covering rare
 identifiers, short functions, near-duplicate names, Buildroot config tokens,
 auth/negation, route literals, test names, and no-extension support scripts.
 
+CodeGraph is also being moved toward SWE-bench-grade evaluation discipline: the
+benchmark layer holds the task set, model/scaffold, budget, evaluator, and
+environment constant, then varies only the context provider. Current diagnostic
+tracks cover no-context, rg-only, CodeGraph exact/text, and CodeGraph full
+retrieval. RepoBench-style and CrossCodeEval-style retrieval subsets run as
+local diagnostics, and the SWE-bench Lite harness has completed a
+gold-validation smoke for `sympy__sympy-20590`. Patch-quality scoring still
+requires a configured real external agent command; no official SWE-bench score
+or public benchmark result is claimed.
+
+Latest local diagnostic scores from `full_run_20260521_141313`:
+
+| Benchmark surface | Current evidence | Claim boundary |
+|---|---|---|
+| Internal retrieval ablations | CodeGraph full: **52.6% Recall@5**, **0.425 MRR** on 20 internal tasks | local custom harness |
+| RepoBench-style retrieval | CodeGraph full: **23.1% Recall@5**, **0.225 MRR** on 20 materialized Python v1.1 rows | diagnostic subset, not official RepoBench |
+| CrossCodeEval-style retrieval | CodeGraph full: **61.1% Recall@5**, **0.454 MRR** on 20 extracted tasks | diagnostic retrieval, not official generation scoring |
+| SWE-bench Lite harness | **1/1 gold-validation smoke passed** for `sympy__sympy-20590` | harness readiness, not agent quality |
+| SWE-bench patch quality | external agent command still required | no patch-quality score claimed |
+
 See: [Intended Tool Quality Gate](reports/final/intended_tool_quality_gate.md)
 and [Manual Relation Precision](reports/final/manual_relation_precision.md).
+Benchmark details: [Agent Benchmarking](docs/agent-benchmarking.md),
+[Current Benchmark Findings](docs/benchmark-findings.md), and
+[SWE-bench Readiness](docs/swe-bench-readiness.md).
 
 ## Why It Exists
 
@@ -142,33 +171,6 @@ identifiers, config keys, route literals, test names, negation terms, and
 no-extension support scripts. None is graph proof by itself.
 
 ```text
-Index-time state
----------------
-
-repository
-  |
-  v
-scope policy + DB lifecycle/passport preflight
-  |
-  +--> parser-backed files
-  |      |
-  |      v
-  |   Tree-sitter frontends
-  |      |
-  |      v
-  |   typed graph facts
-  |   entities + relations + source spans + exactness/provenance
-  |
-  +--> scoped non-parser text files
-         |
-         v
-      Stage 0 text evidence
-      path/title/tokens/snippets/FTS rows
-      evidence_role=text_evidence, graph_proof=false
-
-Both lanes publish into SQLite with passported repo/scope/storage identity.
-
-
 Query/context-pack flow
 -----------------------
 
@@ -209,6 +211,33 @@ proof paths + snippets + risks + recommended tests + omitted counts
   v
 agent-safe output
 --agent-json / --concise / explicit verbose-audit modes
+
+
+Index-time state
+---------------
+
+repository
+  |
+  v
+scope policy + DB lifecycle/passport preflight
+  |
+  +--> parser-backed files
+  |      |
+  |      v
+  |   Tree-sitter frontends
+  |      |
+  |      v
+  |   typed graph facts
+  |   entities + relations + source spans + exactness/provenance
+  |
+  +--> scoped non-parser text files
+         |
+         v
+      Stage 0 text evidence
+      path/title/tokens/snippets/FTS rows
+      evidence_role=text_evidence, graph_proof=false
+
+Both lanes publish into SQLite with passported repo/scope/storage identity.
 ```
 
 ### 1. Parse -> Typed Program Graph
@@ -473,6 +502,10 @@ matrix, exactness labels, and known limitations.
 Indexing uses DB passport preflight. Valid matching DBs can reuse
 incrementally; stale, mismatched, corrupt, or unknown default DBs are rebuilt
 safely instead of silently reused.
+Today, reindexing skips unchanged files and refreshes changed-file facts; the
+roadmap moves this toward a graph-delta validation loop that invalidates
+dependent evidence precisely and can return source/text/path context before full
+graph proof is rebuilt.
 
 ## Platform Support
 
@@ -525,6 +558,9 @@ Reference docs:
 - [docs/architecture.md](docs/architecture.md)
 - [docs/agent-use.md](docs/agent-use.md)
 - [docs/agent-json.md](docs/agent-json.md)
+- [docs/agent-benchmarking.md](docs/agent-benchmarking.md)
+- [docs/benchmark-findings.md](docs/benchmark-findings.md)
+- [docs/swe-bench-readiness.md](docs/swe-bench-readiness.md)
 - [docs/benchmark-guide.md](docs/benchmark-guide.md)
 - [docs/mcp-reference.md](docs/mcp-reference.md)
 - [docs/operational-profiles.md](docs/operational-profiles.md)

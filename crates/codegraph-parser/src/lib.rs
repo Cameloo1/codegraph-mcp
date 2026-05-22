@@ -1330,6 +1330,7 @@ struct BasicEntityExtractor<'a> {
     source: &'a str,
     file_hash: String,
     entities: Vec<Entity>,
+    entity_indices: BTreeMap<String, usize>,
     edges: Vec<Edge>,
     entity_kinds: BTreeMap<String, EntityKind>,
     entity_source_roles: BTreeMap<String, EvidenceRole>,
@@ -1455,6 +1456,7 @@ struct GenericLanguageExtractor<'a> {
     source: &'a str,
     file_hash: String,
     entities: Vec<Entity>,
+    entity_indices: BTreeMap<String, usize>,
     edges: Vec<Edge>,
     entity_kinds: BTreeMap<String, EntityKind>,
     entity_source_roles: BTreeMap<String, EvidenceRole>,
@@ -1475,6 +1477,7 @@ impl<'a> GenericLanguageExtractor<'a> {
             source,
             file_hash: content_hash(source),
             entities: Vec::new(),
+            entity_indices: BTreeMap::new(),
             edges: Vec::new(),
             entity_kinds: BTreeMap::new(),
             entity_source_roles: BTreeMap::new(),
@@ -2317,7 +2320,15 @@ impl<'a> GenericLanguageExtractor<'a> {
         skip_id: Option<&str>,
     ) {
         let mut identifiers = Vec::new();
-        collect_identifier_nodes(node, &mut identifiers);
+        collect_identifier_nodes_capped(
+            node,
+            &mut identifiers,
+            expression_read_identifier_cap(
+                &self.parsed.repo_relative_path,
+                self.source.len(),
+                node,
+            ),
+        );
         for identifier in identifiers {
             let Some(name) = node_text(identifier, self.source) else {
                 continue;
@@ -2567,7 +2578,7 @@ impl<'a> GenericLanguageExtractor<'a> {
             format!("{}:{}(static-reference)", kind.id_prefix(), qualified_name),
         );
         self.entity_kinds.insert(id.clone(), kind);
-        if !self.entities.iter().any(|entity| entity.id == id) {
+        if !self.entity_indices.contains_key(&id) {
             let role = source_role_annotation(
                 self.parsed.language,
                 &self.parsed.repo_relative_path,
@@ -2600,18 +2611,21 @@ impl<'a> GenericLanguageExtractor<'a> {
                 .metadata
                 .insert("source_role_source".to_string(), role.source.into());
             self.entity_source_roles.insert(id.clone(), role.role);
+            self.entity_indices.insert(id.clone(), self.entities.len());
             self.entities.push(entity);
         }
         self.annotate_entity_source_role(&id, kind, name, &qualified_name, Some(node));
-        if let Some(entity) = self.entities.iter_mut().find(|entity| entity.id == id) {
-            entity
-                .metadata
-                .insert("heuristic_reason".to_string(), reason.into());
-            entity.metadata.insert(
-                "resolution".to_string(),
-                "unresolved_static_heuristic".into(),
-            );
-            entity.metadata.insert("phase".to_string(), "28".into());
+        if let Some(index) = self.entity_indices.get(&id).copied() {
+            if let Some(entity) = self.entities.get_mut(index) {
+                entity
+                    .metadata
+                    .insert("heuristic_reason".to_string(), reason.into());
+                entity.metadata.insert(
+                    "resolution".to_string(),
+                    "unresolved_static_heuristic".into(),
+                );
+                entity.metadata.insert("phase".to_string(), "28".into());
+            }
         }
         id
     }
@@ -2632,11 +2646,13 @@ impl<'a> GenericLanguageExtractor<'a> {
             &qualify(scope_name, &compact_name),
             span,
         );
-        if let Some(entity) = self.entities.iter_mut().find(|entity| entity.id == id) {
-            entity
-                .metadata
-                .insert("expression_reason".to_string(), reason.into());
-            entity.confidence = entity.confidence.min(confidence);
+        if let Some(index) = self.entity_indices.get(&id).copied() {
+            if let Some(entity) = self.entities.get_mut(index) {
+                entity
+                    .metadata
+                    .insert("expression_reason".to_string(), reason.into());
+                entity.confidence = entity.confidence.min(confidence);
+            }
         }
         self.annotate_entity_source_role(
             &id,
@@ -2660,11 +2676,13 @@ impl<'a> GenericLanguageExtractor<'a> {
         let id = self.push_entity(kind, name, qualified_name, span.clone());
         self.annotate_entity_source_role(&id, kind, name, qualified_name, Some(node));
         let (exactness, confidence) = if node_has_error_or_missing_descendant(node) {
-            if let Some(entity) = self.entities.iter_mut().find(|entity| entity.id == id) {
-                annotate_untrusted_syntax_entity(
-                    entity,
-                    "declaration node contains tree-sitter ERROR or MISSING descendant",
-                );
+            if let Some(index) = self.entity_indices.get(&id).copied() {
+                if let Some(entity) = self.entities.get_mut(index) {
+                    annotate_untrusted_syntax_entity(
+                        entity,
+                        "declaration node contains tree-sitter ERROR or MISSING descendant",
+                    );
+                }
             }
             (Exactness::StaticHeuristic, 0.45)
         } else {
@@ -2730,7 +2748,7 @@ impl<'a> GenericLanguageExtractor<'a> {
             Some(&signature),
         );
         self.entity_kinds.insert(id.clone(), kind);
-        if !self.entities.iter().any(|entity| entity.id == id) {
+        if !self.entity_indices.contains_key(&id) {
             let mut entity = Entity {
                 id: id.clone(),
                 kind,
@@ -2768,6 +2786,7 @@ impl<'a> GenericLanguageExtractor<'a> {
                 .metadata
                 .insert("source_role_source".to_string(), role.source.into());
             self.entity_source_roles.insert(id.clone(), role.role);
+            self.entity_indices.insert(id.clone(), self.entities.len());
             self.entities.push(entity);
         }
         id
@@ -2791,16 +2810,18 @@ impl<'a> GenericLanguageExtractor<'a> {
             self.source,
         );
         self.entity_source_roles.insert(id.to_string(), role.role);
-        if let Some(entity) = self.entities.iter_mut().find(|entity| entity.id == id) {
-            entity
-                .metadata
-                .insert("source_role".to_string(), role.role.as_str().into());
-            entity
-                .metadata
-                .insert("source_role_reason".to_string(), role.reason.into());
-            entity
-                .metadata
-                .insert("source_role_source".to_string(), role.source.into());
+        if let Some(index) = self.entity_indices.get(id).copied() {
+            if let Some(entity) = self.entities.get_mut(index) {
+                entity
+                    .metadata
+                    .insert("source_role".to_string(), role.role.as_str().into());
+                entity
+                    .metadata
+                    .insert("source_role_reason".to_string(), role.reason.into());
+                entity
+                    .metadata
+                    .insert("source_role_source".to_string(), role.source.into());
+            }
         }
     }
 
@@ -2917,6 +2938,7 @@ impl<'a> BasicEntityExtractor<'a> {
             source,
             file_hash: content_hash(source),
             entities: Vec::new(),
+            entity_indices: BTreeMap::new(),
             edges: Vec::new(),
             entity_kinds: BTreeMap::new(),
             entity_source_roles: BTreeMap::new(),
@@ -5110,7 +5132,15 @@ impl<'a> BasicEntityExtractor<'a> {
         skip_id: Option<&str>,
     ) {
         let mut identifiers = Vec::new();
-        collect_identifier_nodes(node, &mut identifiers);
+        collect_identifier_nodes_capped(
+            node,
+            &mut identifiers,
+            expression_read_identifier_cap(
+                &self.parsed.repo_relative_path,
+                self.source.len(),
+                node,
+            ),
+        );
         for identifier in identifiers {
             let Some(name) = node_text(identifier, self.source) else {
                 continue;
@@ -5572,7 +5602,7 @@ impl<'a> BasicEntityExtractor<'a> {
             Some(&signature),
         );
         self.entity_kinds.insert(id.clone(), kind);
-        if !self.entities.iter().any(|entity| entity.id == id) {
+        if !self.entity_indices.contains_key(&id) {
             let role = source_role_annotation(
                 self.parsed.language,
                 &self.parsed.repo_relative_path,
@@ -5605,6 +5635,7 @@ impl<'a> BasicEntityExtractor<'a> {
                 .metadata
                 .insert("source_role_source".to_string(), role.source.into());
             self.entity_source_roles.insert(id.clone(), role.role);
+            self.entity_indices.insert(id.clone(), self.entities.len());
             self.entities.push(entity);
         }
         id
@@ -5628,16 +5659,18 @@ impl<'a> BasicEntityExtractor<'a> {
             self.source,
         );
         self.entity_source_roles.insert(id.to_string(), role.role);
-        if let Some(entity) = self.entities.iter_mut().find(|entity| entity.id == id) {
-            entity
-                .metadata
-                .insert("source_role".to_string(), role.role.as_str().into());
-            entity
-                .metadata
-                .insert("source_role_reason".to_string(), role.reason.into());
-            entity
-                .metadata
-                .insert("source_role_source".to_string(), role.source.into());
+        if let Some(index) = self.entity_indices.get(id).copied() {
+            if let Some(entity) = self.entities.get_mut(index) {
+                entity
+                    .metadata
+                    .insert("source_role".to_string(), role.role.as_str().into());
+                entity
+                    .metadata
+                    .insert("source_role_reason".to_string(), role.reason.into());
+                entity
+                    .metadata
+                    .insert("source_role_source".to_string(), role.source.into());
+            }
         }
     }
 
@@ -6482,13 +6515,56 @@ fn expression_label(node: Node<'_>, source: &str) -> String {
         .unwrap_or_else(|| format!("{}@{}", node.kind(), node.start_byte()))
 }
 
+const DEFAULT_EXPRESSION_READ_IDENTIFIER_CAP: usize = 4096;
+const LARGE_FILE_EXPRESSION_READ_IDENTIFIER_CAP: usize = 96;
+const LARGE_FILE_READ_CAP_THRESHOLD_BYTES: usize = 256 * 1024;
+const LARGE_EXPRESSION_READ_CAP_THRESHOLD_BYTES: usize = 1024;
+
+fn expression_read_identifier_cap(
+    repo_relative_path: &str,
+    source_len: usize,
+    node: Node<'_>,
+) -> usize {
+    let expression_bytes = node.end_byte().saturating_sub(node.start_byte());
+    if source_len >= LARGE_FILE_READ_CAP_THRESHOLD_BYTES
+        && expression_bytes >= LARGE_EXPRESSION_READ_CAP_THRESHOLD_BYTES
+        && (is_test_file_path(repo_relative_path)
+            || looks_generated_or_symbolic_fixture_path(repo_relative_path))
+    {
+        LARGE_FILE_EXPRESSION_READ_IDENTIFIER_CAP
+    } else {
+        DEFAULT_EXPRESSION_READ_IDENTIFIER_CAP
+    }
+}
+
+fn looks_generated_or_symbolic_fixture_path(path: &str) -> bool {
+    let path = path.replace('\\', "/").to_ascii_lowercase();
+    path.contains("/generated/")
+        || path.contains("/rubi_tests/")
+        || path.contains("/rubi/")
+        || path.contains("/fixtures/")
+}
+
 fn collect_identifier_nodes<'a>(node: Node<'a>, identifiers: &mut Vec<Node<'a>>) {
+    collect_identifier_nodes_capped(node, identifiers, usize::MAX);
+}
+
+fn collect_identifier_nodes_capped<'a>(
+    node: Node<'a>,
+    identifiers: &mut Vec<Node<'a>>,
+    max_identifiers: usize,
+) {
+    if identifiers.len() >= max_identifiers {
+        return;
+    }
     if node.is_error() || node.is_missing() {
         return;
     }
 
     if node.kind() == "identifier" {
-        identifiers.push(node);
+        if identifiers.len() < max_identifiers {
+            identifiers.push(node);
+        }
         return;
     }
 
@@ -6504,7 +6580,10 @@ fn collect_identifier_nodes<'a>(node: Node<'a>, identifiers: &mut Vec<Node<'a>>)
 
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        collect_identifier_nodes(child, identifiers);
+        if identifiers.len() >= max_identifiers {
+            break;
+        }
+        collect_identifier_nodes_capped(child, identifiers, max_identifiers);
     }
 }
 

@@ -5,6 +5,10 @@ reproducible, single-agent, and evidence-labeled. They measure CodeGraph against
 internal baselines and optional black-box CGC runs without changing retrieval
 logic.
 
+For the newer agent-infrastructure benchmark layer, current diagnostic findings,
+and SWE-bench readiness plan, see `docs/agent-benchmarking.md`,
+`docs/benchmark-findings.md`, and `docs/swe-bench-readiness.md`.
+
 There are two report classes:
 
 - **Stable public summaries** are durable Markdown/JSON files linked from the

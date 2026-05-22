@@ -33,33 +33,38 @@ use codegraph_core::{
     RetrievalVerificationStatus, SourceSpan, VectorEmbeddingSource,
 };
 pub use codegraph_index::{
-    build_vector_chunk_index_json_for_repo, collect_repo_files, default_db_path, graph_fact_hash,
-    index_repo, index_repo_to_db_with_options, index_repo_with_options,
-    inspect_db_lifecycle_preflight, inspect_db_lifecycle_surface_preflight,
-    inspect_repo_db_passport, load_vector_chunk_index_json, parse_extract_pending_files,
-    require_reusable_db_passport, scope_policy_hash, should_ignore_path,
-    should_start_new_index_batch, update_changed_files, update_changed_files_to_db,
-    update_changed_files_with_cache, update_changed_files_with_cache_to_db,
-    vector_chunk_search_hit_to_retrieval_candidate, DbLifecycleOperationKind, DbLifecyclePolicy,
-    DbLifecyclePreflight, DbLifecycleSurfacePreflight, DbLifecycleSurfacePreflightRequest,
-    IncrementalIndexCache, IncrementalIndexSummary, IndexBuildMode, IndexError, IndexIssue,
-    IndexOptions, IndexProfile, IndexScopeOptions, IndexSummary, LocalFactBundle, PendingIndexFile,
-    StorageMode, VectorChunkIndexBuildOptions, DEFAULT_INDEX_BATCH_MAX_FILES,
+    build_vector_chunk_index_artifacts_for_repo, build_vector_chunk_index_json_for_repo,
+    candidate_spool_index_status_for_repo, candidate_spool_query_index_path, collect_repo_files,
+    default_db_path, graph_fact_hash, index_repo, index_repo_to_db_with_options,
+    index_repo_with_options, inspect_db_lifecycle_preflight,
+    inspect_db_lifecycle_surface_preflight, inspect_repo_db_passport, load_vector_chunk_index_json,
+    parse_extract_pending_files, query_candidate_spool_index_for_repo,
+    rebuild_candidate_spool_query_index_for_repo, require_reusable_db_passport, scope_policy_hash,
+    should_ignore_path, should_start_new_index_batch, update_changed_files,
+    update_changed_files_to_db, update_changed_files_with_cache,
+    update_changed_files_with_cache_to_db, validate_vector_chunk_source_bindings,
+    vector_chunk_search_hit_to_retrieval_candidate, CandidateSpoolIndexLoad,
+    CandidateSpoolIndexQueryResult, CandidateSpoolPolicy, DbLifecycleOperationKind,
+    DbLifecyclePolicy, DbLifecyclePreflight, DbLifecycleSurfacePreflight,
+    DbLifecycleSurfacePreflightRequest, IncrementalIndexCache, IncrementalIndexSummary,
+    IndexBuildMode, IndexError, IndexIssue, IndexOptions, IndexProfile, IndexScopeOptions,
+    IndexSummary, LocalFactBundle, PendingIndexFile, StorageMode, VectorChunkArtifactFormat,
+    VectorChunkIndexArtifactOptions, VectorChunkIndexBuildOptions, DEFAULT_INDEX_BATCH_MAX_FILES,
     DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY, UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::{
-    detect_language, extract_entities_and_relations, language_frontends, LanguageParser,
-    TreeSitterParser,
+    content_hash, detect_language, extract_entities_and_relations, language_frontends,
+    LanguageParser, TreeSitterParser,
 };
 use codegraph_query::{
-    extract_prompt_seed_provenance, extract_prompt_seeds, ContextPackRequest,
+    extract_prompt_seed_provenance, extract_prompt_seeds, plan_task_retrieval, ContextPackRequest,
     ExactGraphQueryEngine, GraphPath, QueryLimits, RetrievalDocument, RetrievalFunnel,
     RetrievalFunnelConfig, RetrievalFunnelRequest, SymbolSearchHit, SymbolSearchIndex,
     TraversalDirection, TraversalPolicy, TraversalStep, VectorCandidateBranchStatus,
 };
 use codegraph_store::{
-    DbPassport, DbPreflightReport, GraphStore, SqliteGraphStore, TextSearchKind,
-    DB_PASSPORT_VERSION, SCHEMA_VERSION,
+    classify_sqlite_access_problem, DbPassport, DbPreflightReport, GraphStore, SqliteGraphStore,
+    TextSearchKind, DB_PASSPORT_VERSION, SCHEMA_VERSION,
 };
 use codegraph_trace::{
     append_trace_event, replay_trace_file, TraceAppendEvent, TraceConfig, TraceEventType,
@@ -99,6 +104,11 @@ const CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT: usize = CONTEXT_PLANNING_PACKET_E
 const AGENT_JSON_SCHEMA_VERSION: u32 = 1;
 const INDEX_CONCISE_JSON_SIZE_TARGET_BYTES: usize = 8 * 1024;
 const INDEX_AGENT_JSON_SIZE_TARGET_BYTES: usize = 4 * 1024;
+const CANDIDATE_SPOOL_MIN_USEFUL_BUDGET_BYTES: usize = 64 * 1024;
+const CANDIDATE_SPOOL_SAFETY_RESERVE_BYTES: usize = 1024 * 1024;
+const CANDIDATE_SPOOL_QUERY_INDEX_STORAGE_FACTOR: usize = 4;
+const CANDIDATE_SPOOL_RUNTIME_RESERVE_BYTES: usize = 6 * 1024 * 1024;
+const CANDIDATE_SPOOL_AUDIT_RESERVE_BYTES: usize = 2 * 1024 * 1024;
 #[cfg(test)]
 const QUERY_AGENT_JSON_SIZE_TARGET_BYTES: usize = 12 * 1024;
 const DEFAULT_CONTEXT_AGENT_PATH_LIMIT: usize = 5;
@@ -114,6 +124,7 @@ const CONTEXT_PLANNING_PACKET_EVIDENCE_LIMIT: usize = 3;
 const CONTEXT_PLANNING_PACKET_QUERY_LIMIT: usize = 6;
 const CONTEXT_PLANNING_PACKET_VERIFICATION_LIMIT: usize = 3;
 const CONTEXT_PACK_VECTOR_INDEX_FILE_NAME: &str = "codegraph-vector-chunks.json";
+const CONTEXT_PACK_VECTOR_AUDIT_FILE_NAME: &str = "codegraph-vector-audit.json";
 const CONTEXT_PACK_VECTOR_SOURCE_SCOPE: &str = "context-pack-release-vector-candidates";
 const CONTEXT_PACK_VECTOR_PROVIDER_DIMENSION: usize = 64;
 const CONTEXT_PACK_VECTOR_CANDIDATE_TOP_K: usize = 16;
@@ -128,17 +139,17 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "index",
-        usage: "codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--build-vector-index <path>] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]",
+        usage: "codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--build-vector-index <runtime_path>|--vector-runtime-sidecar <runtime_path>] [--vector-audit-artifact <audit_path>] [--no-vector-audit] [--vector-artifact-format compact_json|pretty_json] [--candidate-spool <path>] [--candidate-spool-policy off|bounded|audit] [--candidate-spool-max-mib <n>] [--candidate-spool-max-bytes <n>] [--candidate-spool-max-records <n>] [--candidate-spool-required] [--candidate-spool-query-index yes|no] [--candidate-spool-per-file-max-records <n>] [--candidate-spool-per-dir-soft-cap <n>] [--candidate-spool-max-snippet-bytes <n>] [--candidate-spool-max-snippets-per-file <n>] [--candidate-spool-max-symbols-per-file <n>] [--early-candidates] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]",
         description: "Index a repository into the local graph store.",
     },
     CommandSpec {
         name: "status",
-        usage: "codegraph-mcp status [repo] [--json]",
+        usage: "codegraph-mcp status [repo] [--json] [--candidate-spool <path>] [--vector-runtime-sidecar <path>] [--vector-audit-artifact <path>]",
         description: "Report local CodeGraph index status.",
     },
     CommandSpec {
         name: "query",
-        usage: "codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]\n  codegraph-mcp query symbols|text|files <query> [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain]\n  codegraph-mcp query callers|callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain] <symbol>\n  codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets]",
+        usage: "codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]\n  codegraph-mcp query symbols|text|files <query> [--limit <n>] [--candidate-spool <path> --early-candidates] [--concise|--agent-json] [--verbose|--debug|--explain]\n  codegraph-mcp query callers|callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain] <symbol>\n  codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets]",
         description: "Query symbols, text, files, references, definitions, calls, chains, or relation paths.",
     },
     CommandSpec {
@@ -148,7 +159,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "context-pack",
-        usage: "codegraph-mcp context-pack --task <task> [--budget <tokens>] [--mode <production|test-impact|debug|impact>] [--seed <symbol>] [--enable-vector-candidates] [--enable-nuance-rescue-candidates] [--vector-index <path>] [--agent-json|--concise|--explain|--audit-json] [--limit-paths <n>] [--limit-snippets <n>] [--max-output-bytes <n>] [--profile]",
+        usage: "codegraph-mcp context-pack --task <task> [--budget <tokens>] [--mode <production|test-impact|debug|impact>] [--seed <symbol>] [--candidate-spool <path> --early-candidates] [--enable-vector-candidates] [--enable-nuance-rescue-candidates] [--vector-index <path>|--vector-runtime-sidecar <path>] [--agent-json|--concise|--explain|--audit-json] [--limit-paths <n>] [--limit-snippets <n>] [--max-output-bytes <n>] [--profile]",
         description: "Build a compact proof-oriented context packet.",
     },
     CommandSpec {
@@ -198,8 +209,8 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "audit",
-        usage: "codegraph-mcp audit index-scope <repo> [--json [path]] [--markdown <path>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore true|false] [--explain-scope] [--print-included] [--print-excluded]\n  codegraph-mcp audit storage --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit storage-micro --out <dir> [--cases simple,expression,inline-tests,duplicates,excluded-junk,all] [--batch-sizes 1,10,100] [--keep-artifacts] [--json [path]] [--markdown [path]] [--no-context-pack] [--respect-gitignore true|false] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp audit schema-check --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit storage-experiments --db <path> [--workdir <dir>] [--json <path>] [--markdown <path>] [--keep-copies]\n  codegraph-mcp audit sample-edges --db <path> [--relation <RELATION>] [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets]\n  codegraph-mcp audit sample-paths --db <path> [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets] [--max-edge-load <n>] [--timeout-ms <ms>] [--mode <proof|audit|debug>]\n  codegraph-mcp audit relation-counts --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit label-samples --edges-json <path> [--edges-md <path>] [--paths-json <path>] [--paths-md <path>] [--json <path>] [--markdown <path>]\n  codegraph-mcp audit summarize-labels [--labels <path>] [--dir <path>] [--json <path>] [--markdown <path>]",
-        description: "Run read-only audit inspections for storage, sampled edges, relation counts, and manual sample labels.",
+        usage: "codegraph-mcp audit index-scope <repo> [--json [path]] [--markdown <path>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore true|false] [--explain-scope] [--print-included] [--print-excluded]\n  codegraph-mcp audit vector-chunks --artifact <path> [--db <path>] [--repo <path>] [--json [path]] [--markdown <path>] [--sample <n>]\n  codegraph-mcp audit vector-chunks --db <path> [--vectors <path>] [--json [path]] [--sample <n>]\n  codegraph-mcp audit storage --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit storage-micro --out <dir> [--cases simple,expression,inline-tests,duplicates,excluded-junk,all] [--batch-sizes 1,10,100] [--keep-artifacts] [--json [path]] [--markdown [path]] [--no-context-pack] [--respect-gitignore true|false] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp audit schema-check --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit storage-experiments --db <path> [--workdir <dir>] [--json <path>] [--markdown <path>] [--keep-copies]\n  codegraph-mcp audit sample-edges --db <path> [--relation <RELATION>] [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets]\n  codegraph-mcp audit sample-paths --db <path> [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets] [--max-edge-load <n>] [--timeout-ms <ms>] [--mode <proof|audit|debug>]\n  codegraph-mcp audit relation-counts --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit label-samples --edges-json <path> [--edges-md <path>] [--paths-json <path>] [--paths-md <path>] [--json <path>] [--markdown <path>]\n  codegraph-mcp audit summarize-labels [--labels <path>] [--dir <path>] [--json <path>] [--markdown <path>]",
+        description: "Run read-only audit inspections for vector chunks, storage, sampled edges, relation counts, and manual sample labels.",
     },
     CommandSpec {
         name: "languages",
@@ -1069,7 +1080,7 @@ fn run_init_command(args: &[String]) -> Result<Value, String> {
 }
 
 fn run_index_command(args: &[String]) -> Result<Value, String> {
-    let (repo, db, options, output_mode, budget_options, vector_index_output) =
+    let (repo, db, mut options, output_mode, budget_options, vector_index_options) =
         parse_index_command_options(args)?;
     let started = Instant::now();
     let repo_root = resolve_repo_root(Path::new(&repo))?;
@@ -1077,7 +1088,7 @@ fn run_index_command(args: &[String]) -> Result<Value, String> {
         .clone()
         .map(|path| normalize_db_path_for_repo(&repo_root, &path))
         .unwrap_or_else(|| default_db_path(&repo_root));
-    let vector_index_path = vector_index_output.as_ref().map(|path| {
+    let vector_index_path = vector_index_options.runtime_path.as_ref().map(|path| {
         if path.is_absolute() {
             path.clone()
         } else {
@@ -1086,15 +1097,62 @@ fn run_index_command(args: &[String]) -> Result<Value, String> {
                 .join(path)
         }
     });
+    let vector_audit_artifact_path =
+        vector_index_options
+            .audit_artifact_path
+            .as_ref()
+            .map(|path| {
+                if path.is_absolute() {
+                    path.clone()
+                } else {
+                    std::env::current_dir()
+                        .unwrap_or_else(|_| PathBuf::from("."))
+                        .join(path)
+                }
+            });
+    let candidate_spool_path = options.candidate_spool_path.as_ref().map(|path| {
+        if path.is_absolute() {
+            path.clone()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
+        }
+    });
+    options.candidate_spool_path = candidate_spool_path.clone();
+    let mut candidate_spool_budget_decision =
+        apply_candidate_spool_budget_policy(&mut options, &budget_options, &vector_index_options);
+    if options.candidate_spool_required
+        && candidate_spool_budget_decision.disabled_reason.is_some()
+        && matches!(
+            candidate_spool_budget_decision.decision.as_str(),
+            "candidate_spool_required_budget_exceeded"
+                | "candidate_spool_required_without_path"
+                | "candidate_spool_policy_off"
+        )
+    {
+        return Err(
+            serde_json::to_string(&candidate_spool_required_error_value(
+                &candidate_spool_budget_decision,
+                false,
+                false,
+                "candidate spool was marked required but cannot be built under the requested policy/budget",
+            ))
+            .map_err(|error| error.to_string())?,
+        );
+    }
+    let candidate_spool_path = options.candidate_spool_path.clone();
     let preflight = storage_budget::storage_budget_preflight(
         &budget_options,
         storage_budget::StorageBudgetContext {
             command: "codegraph-mcp index".to_string(),
             repo_root: Some(repo_root.clone()),
             db_path: Some(db_path.clone()),
-            out_path: vector_index_path.clone(),
+            out_path: vector_index_path.clone().or(candidate_spool_path.clone()),
             explicit_db: db.is_some(),
-            explicit_out: vector_index_path.is_some(),
+            explicit_out: vector_index_path.is_some()
+                || vector_audit_artifact_path.is_some()
+                || candidate_spool_path.is_some(),
             diagnostic_only: false,
         },
     );
@@ -1103,7 +1161,7 @@ fn run_index_command(args: &[String]) -> Result<Value, String> {
             storage_budget::storage_budget_error_value("codegraph-mcp index", &preflight),
         ));
     }
-    let summary = if let Some(db) = db {
+    let mut summary = if let Some(db) = db {
         index_repo_to_db_with_options(Path::new(&repo), &db, options)
     } else {
         index_repo_with_options(Path::new(&repo), options)
@@ -1112,12 +1170,16 @@ fn run_index_command(args: &[String]) -> Result<Value, String> {
     let vector_index_summary = if let Some(vector_index_path) = vector_index_path.as_ref() {
         let provider = context_pack_vector_provider()?;
         Some(
-            build_vector_chunk_index_json_for_repo(
+            build_vector_chunk_index_artifacts_for_repo(
                 &repo_root,
                 &db_path,
                 vector_index_path,
                 &provider,
                 context_pack_vector_build_options(),
+                VectorChunkIndexArtifactOptions {
+                    runtime_format: vector_index_options.runtime_format,
+                    audit_artifact_path: vector_audit_artifact_path.clone(),
+                },
             )
             .map_err(|error| error.to_string())?,
         )
@@ -1125,8 +1187,48 @@ fn run_index_command(args: &[String]) -> Result<Value, String> {
         None
     };
     let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let vector_outputs = vector_index_path.iter().cloned().collect::<Vec<PathBuf>>();
+    let mut vector_outputs = vector_index_path
+        .iter()
+        .chain(vector_audit_artifact_path.iter())
+        .cloned()
+        .collect::<Vec<PathBuf>>();
+    if candidate_spool_budget_decision.required {
+        if let Some(path) = candidate_spool_path.as_ref() {
+            vector_outputs.push(path.clone());
+            vector_outputs.push(candidate_spool_query_index_path(path));
+        }
+    }
     let budget = storage_budget::storage_budget_postflight(preflight, &[db_path], &vector_outputs);
+    let max_artifact_bytes = artifact_budget_bytes(&budget_options);
+    let hard_artifact_bytes = budget.artifact_bytes.unwrap_or(0);
+    let artifact_budget_remaining_bytes = max_artifact_bytes.saturating_sub(hard_artifact_bytes);
+    candidate_spool_budget_decision.artifact_budget_remaining_bytes =
+        Some(artifact_budget_remaining_bytes);
+    let spool_footprint_bytes = candidate_spool_footprint_bytes(&summary);
+    let runtime_sidecar_ready = vector_index_summary
+        .as_ref()
+        .is_some_and(|summary| summary.status == "ok" || summary.status == "ready");
+    if let Some(spool) = summary.candidate_spool.as_mut() {
+        spool.candidate_spool_required = candidate_spool_budget_decision.required;
+        spool.candidate_spool_policy = candidate_spool_budget_decision.policy.as_str().to_string();
+        spool.candidate_spool_budget_bytes =
+            candidate_spool_budget_decision.budget_bytes.unwrap_or(0);
+        spool.artifact_budget_remaining_bytes = Some(artifact_budget_remaining_bytes);
+        if spool_footprint_bytes > artifact_budget_remaining_bytes {
+            spool.candidate_spool_truncated = true;
+            spool.candidate_spool_partial = true;
+            spool.artifact_budget_decision =
+                Some("candidate_spool_exceeds_remaining_budget".to_string());
+            spool.candidate_spool_warning = Some(
+                "Candidate spool footprint exceeded remaining artifact budget; graph DB/runtime outputs remain governed by their own validation.".to_string(),
+            );
+        } else {
+            spool.artifact_budget_decision = Some(candidate_spool_budget_decision.decision.clone());
+            spool.candidate_spool_warning = candidate_spool_budget_decision.warning.clone();
+        }
+        spool.candidate_spool_disabled_reason =
+            candidate_spool_budget_decision.disabled_reason.clone();
+    }
     let mut value = match output_mode {
         IndexJsonOutputMode::Audit => index_summary_json(&summary),
         IndexJsonOutputMode::Agent => index_summary_agent_json(&summary, wall_ms),
@@ -1142,8 +1244,27 @@ fn run_index_command(args: &[String]) -> Result<Value, String> {
             object.insert("source_leaves_machine".to_string(), json!(false));
         }
         object.insert("storage_budget".to_string(), budget.to_json());
+        apply_candidate_spool_budget_json_fields(
+            object,
+            &summary,
+            &candidate_spool_budget_decision,
+            spool_footprint_bytes,
+            index_summary_claimable(&summary),
+            runtime_sidecar_ready,
+        );
     }
     if budget.is_refused() {
+        if candidate_spool_budget_decision.required {
+            return Err(serde_json::to_string(&candidate_spool_required_error_value(
+                &candidate_spool_budget_decision,
+                index_summary_claimable(&summary),
+                runtime_sidecar_ready,
+                budget.refusal_reason.clone().unwrap_or_else(|| {
+                    "candidate spool required and storage budget refused".to_string()
+                }),
+            ))
+            .map_err(|error| error.to_string())?);
+        }
         return Err(storage_budget::structured_error_string(
             storage_budget::storage_budget_error_value("codegraph-mcp index", &budget),
         ));
@@ -1152,13 +1273,24 @@ fn run_index_command(args: &[String]) -> Result<Value, String> {
 }
 
 fn run_status_command(args: &[String]) -> Result<Value, String> {
-    let repo = parse_status_args(args)?;
+    let status_options = parse_status_args(args)?;
+    let repo = status_options.repo;
     let repo_root = resolve_repo_root(&repo)?;
     let db_path = resolved_db_path_for_repo(&repo_root);
     let preflight = inspect_read_db_lifecycle_preflight(&repo_root, &db_path, None)?;
     let sqlite_sidecars = sqlite_sidecars_status_from_health(&db_path, &preflight.db_health);
+    let staged_availability = staged_availability_for_cli(
+        &repo_root,
+        &db_path,
+        Some(&preflight),
+        status_options.candidate_spool_path.as_deref(),
+        status_options.vector_runtime_path.as_deref(),
+        status_options.vector_audit_path.as_deref(),
+        None,
+    );
+    let staged_fields = staged_availability_top_level_fields(&staged_availability);
     if preflight.path_access_status == "db_missing" {
-        return Ok(json!({
+        let mut value = json!({
             "status": "not_indexed",
             "db_problem_kind": preflight.db_problem_kind.clone(),
             "repo_root": path_string(&repo_root),
@@ -1171,11 +1303,13 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
             "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
             "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true, false, false),
             "next_command": "codegraph-mcp index .",
-        }));
+        });
+        merge_json_object(&mut value, staged_fields);
+        return Ok(value);
     }
 
     if !preflight.safe {
-        return Ok(json!({
+        let mut value = json!({
             "status": "db_problem",
             "db_problem_kind": preflight.db_problem_kind.clone(),
             "repo_root": path_string(&repo_root),
@@ -1189,22 +1323,42 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
             "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
             "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true, false, false),
             "next_command": "codegraph-mcp index . --fresh",
-        }));
+        });
+        merge_json_object(&mut value, staged_fields);
+        return Ok(value);
     }
 
-    let store = SqliteGraphStore::open_read_only(&db_path).map_err(|error| error.to_string())?;
-    let files = store
-        .list_files(10_000)
-        .map_err(|error| error.to_string())?;
+    macro_rules! status_read {
+        ($expr:expr, $context:expr) => {
+            match $expr {
+                Ok(value) => value,
+                Err(error) => {
+                    let error = error.to_string();
+                    if let Some(value) = status_db_read_blocker_json(
+                        &repo_root,
+                        &db_path,
+                        &preflight,
+                        &sqlite_sidecars,
+                        $context,
+                        &error,
+                    ) {
+                        return Ok(value);
+                    }
+                    return Err(error);
+                }
+            }
+        };
+    }
+
+    let store = status_read!(SqliteGraphStore::open_read_only(&db_path), "open_read_only");
+    let files = status_read!(store.list_files(10_000), "list_files");
     let languages = files
         .iter()
         .filter_map(|file| file.language.clone())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let storage_accounting = store
-        .storage_accounting()
-        .map_err(|error| error.to_string())?
+    let storage_accounting = status_read!(store.storage_accounting(), "storage_accounting")
         .into_iter()
         .map(|row| {
             json!({
@@ -1214,12 +1368,10 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
             })
         })
         .collect::<Vec<_>>();
-    let relation_facts = store.count_edges().map_err(|error| error.to_string())?;
-    let source_span_facts = store
-        .count_source_spans()
-        .map_err(|error| error.to_string())?;
+    let relation_facts = status_read!(store.count_edges(), "count_edges");
+    let source_span_facts = status_read!(store.count_source_spans(), "count_source_spans");
 
-    Ok(json!({
+    let mut value = json!({
         "status": "ok",
         "phase": PHASE,
         "repo_root": path_string(&repo_root),
@@ -1234,9 +1386,9 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
         "sqlite_sidecars": sqlite_sidecars.clone(),
         "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
         "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true, false, false),
-        "schema_version": store.schema_version().map_err(|error| error.to_string())?,
-        "files": store.count_files().map_err(|error| error.to_string())?,
-        "entities": store.count_entities().map_err(|error| error.to_string())?,
+        "schema_version": status_read!(store.schema_version(), "schema_version"),
+        "files": status_read!(store.count_files(), "count_files"),
+        "entities": status_read!(store.count_entities(), "count_entities"),
         "relation_facts": relation_facts,
         "source_span_facts": source_span_facts,
         "release_reported_relation_facts": relation_facts,
@@ -1249,9 +1401,49 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
             "edges": "Deprecated compatibility alias for relation_facts.",
             "source_spans": "Deprecated compatibility alias for source_span_facts."
         },
-        "relation_counts": store.relation_counts().map_err(|error| error.to_string())?,
+        "relation_counts": status_read!(store.relation_counts(), "relation_counts"),
         "storage_accounting": storage_accounting,
         "languages": languages,
+    });
+    merge_json_object(&mut value, staged_fields);
+    Ok(value)
+}
+
+fn status_db_read_blocker_json(
+    repo_root: &Path,
+    db_path: &Path,
+    preflight: &DbLifecyclePreflight,
+    sqlite_sidecars: &Value,
+    context: &str,
+    error: &str,
+) -> Option<Value> {
+    let problem = classify_sqlite_access_problem(error)?;
+    Some(json!({
+        "status": "db_problem",
+        "db_problem_kind": problem.db_problem_kind,
+        "repo_root": path_string(repo_root),
+        "db_path": path_string(db_path),
+        "db_path_outside_workspace": preflight.db_path_outside_workspace,
+        "outside_workspace_note": preflight.outside_workspace_note.clone(),
+        "path_access_status": problem.path_access_status,
+        "path_access_error": error,
+        "db_health": preflight.db_health.clone(),
+        "sqlite_sidecars": sqlite_sidecars.clone(),
+        "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
+        "db_lifecycle_read": db_lifecycle_preflight_json(preflight, true, false, false),
+        "read_only_mode_used": true,
+        "immutable_mode_used": !sqlite_sidecar_path(db_path, "wal").exists()
+            && !sqlite_sidecar_path(db_path, "shm").exists()
+            && !sqlite_rollback_journal_path(db_path).exists(),
+        "blocked_operation": context,
+        "blockers": [
+            format!(
+                "read-only status inspection blocked by {} during {}: {}",
+                problem.db_problem_kind, context, error
+            )
+        ],
+        "suggested_next": "Retry after the current writer/publisher releases the SQLite DB lock; do not treat this diagnostic as claimable context.",
+        "next_command": "codegraph-mcp status . --json",
     }))
 }
 
@@ -1388,8 +1580,18 @@ fn run_doctor_command(args: &[String]) -> Result<Value, String> {
         &["schema version mismatch", "passport schema mismatch"],
         &db_lifecycle.schema_status,
     );
+    let staged_availability = staged_availability_for_cli(
+        &repo_root,
+        &db_path,
+        Some(&db_lifecycle.lifecycle_preflight),
+        None,
+        None,
+        None,
+        None,
+    );
+    let staged_fields = staged_availability_top_level_fields(&staged_availability);
 
-    Ok(json!({
+    let mut value = json!({
         "status": if errors == 0 { "ok" } else { "error" },
         "phase": PHASE,
         "repo_root": path_string(&repo_root),
@@ -1417,7 +1619,9 @@ fn run_doctor_command(args: &[String]) -> Result<Value, String> {
         "warning_count": warnings,
         "errors": errors,
         "proof": "Doctor is local-only and treats missing optional components as warnings.",
-    }))
+    });
+    merge_json_object(&mut value, staged_fields);
+    Ok(value)
 }
 
 fn push_doctor_check(
@@ -1511,10 +1715,14 @@ fn open_sqlite_read_only_side_effect_minimal(db_path: &Path) -> Result<ReadOnlyS
     if !db_path.exists() {
         return Err(format!("database does not exist: {}", db_path.display()));
     }
+    let rollback_journal_exists = sqlite_rollback_journal_path(db_path).exists();
     let immutable_mode_used = !sqlite_sidecar_path(db_path, "wal").exists()
-        && !sqlite_sidecar_path(db_path, "shm").exists();
+        && !sqlite_sidecar_path(db_path, "shm").exists()
+        && !rollback_journal_exists;
     let immutable_mode_reason = if immutable_mode_used {
-        "immutable=1 used because no WAL/SHM sidecars were present before inspection".to_string()
+        "immutable=1 used because no WAL/SHM sidecars or rollback journal were present before inspection".to_string()
+    } else if rollback_journal_exists {
+        "immutable=1 not used because a rollback journal was present; strict mode=ro preserves lock visibility".to_string()
     } else {
         "immutable=1 not used because WAL/SHM sidecars were present; strict mode=ro preserves WAL visibility".to_string()
     };
@@ -1675,11 +1883,31 @@ fn yes_no(value: bool) -> &'static str {
 
 fn run_query_command(args: &[String]) -> Result<Value, String> {
     let mut args = args.to_vec();
+    let candidate_spool_path = remove_path_option(
+        &mut args,
+        &["--candidate-spool", "--candidate_spool", "--spool"],
+    )?;
+    let early_candidates = remove_flag(&mut args, "--early-candidates")
+        || remove_flag(&mut args, "--early_candidates")
+        || candidate_spool_path.is_some();
+    let allow_stale_candidate_spool = remove_flag(&mut args, "--allow-stale-candidate-spool")
+        || remove_flag(&mut args, "--allow_stale_candidate_spool")
+        || remove_flag(&mut args, "--diagnostic-candidate-spool");
     reject_misplaced_global_flags_in_query_args(&args)?;
     let allow_stale_read = remove_flag(&mut args, "--allow-stale-read");
     let allow_foreign_db = remove_flag(&mut args, "--allow-foreign-db");
     let explicit_scope = parse_read_scope_options(&mut args)?;
     let repo_root = current_repo_root()?;
+    if early_candidates {
+        let spool_path =
+            candidate_spool_path.unwrap_or_else(|| default_candidate_spool_path(&repo_root));
+        return run_candidate_spool_query_command(
+            &repo_root,
+            &args,
+            &spool_path,
+            allow_stale_candidate_spool,
+        );
+    }
     if args.first().map(String::as_str) == Some("unresolved-calls") {
         return run_query_command_inner(
             &args,
@@ -2024,8 +2252,1422 @@ fn parse_list_query_args(command_name: &str, args: &[String]) -> Result<QueryLis
 
 fn list_query_usage(command_name: &str) -> String {
     format!(
-        "Usage: codegraph-mcp query {command_name} <query> [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain]\nLiteral flag-like query terms: codegraph-mcp query {command_name} [options] -- --db"
+        "Usage: codegraph-mcp query {command_name} <query> [--limit <n>] [--concise|--agent-json] [--candidate-spool <path> --early-candidates] [--verbose|--debug|--explain]\nLiteral flag-like query terms: codegraph-mcp query {command_name} [options] -- --db"
     )
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct CandidateSpoolLoad {
+    path: PathBuf,
+    metadata: Value,
+    chunks: Vec<Value>,
+    stale: bool,
+    reason: Option<String>,
+}
+
+fn default_candidate_spool_path(repo_root: &Path) -> PathBuf {
+    default_db_path(repo_root)
+        .parent()
+        .map(|parent| parent.join("codegraph-candidate-spool.jsonl"))
+        .unwrap_or_else(|| PathBuf::from("codegraph-candidate-spool.jsonl"))
+}
+
+fn run_candidate_spool_query_command(
+    repo_root: &Path,
+    args: &[String],
+    spool_path: &Path,
+    allow_stale: bool,
+) -> Result<Value, String> {
+    let Some(subcommand) = args.first().map(String::as_str) else {
+        return Err("Usage: codegraph-mcp query <files|text|symbols> <query> --candidate-spool <path> --early-candidates".to_string());
+    };
+    if !matches!(subcommand, "files" | "text" | "symbols") {
+        return Err(format!(
+            "candidate spool early mode only supports query files/text/symbols, got {subcommand}"
+        ));
+    }
+    if args.len() < 2 {
+        return Err(list_query_usage(subcommand));
+    }
+    let options = parse_list_query_args(subcommand, &args[1..])?;
+    let started = Instant::now();
+    let query_result = query_candidate_spool_index_for_repo(
+        repo_root,
+        spool_path,
+        subcommand,
+        &options.query,
+        options.fetch_limit(),
+        allow_stale,
+    )
+    .map_err(|error| error.to_string())?;
+    let hits = candidate_spool_index_query_hits(&query_result, subcommand);
+    let lifecycle = candidate_spool_index_lifecycle_json(&query_result.load);
+    let staged_availability =
+        staged_availability_for_spool_index_only(repo_root, spool_path, &query_result.load, None);
+    let staged_fields = staged_availability_top_level_fields(&staged_availability);
+    if options.output_mode.is_compact() {
+        let (hits, truncation) = truncate_for_agent(hits, options.limit);
+        let mut value = json!({
+            "schema_name": format!("query_{subcommand}_candidate_spool_agent_json"),
+            "schema_version": AGENT_JSON_SCHEMA_VERSION,
+            "status": "ok",
+            "command": format!("query {subcommand}"),
+            "output_mode": options.output_mode.as_str(),
+            "repo": path_string(repo_root),
+            "db": Value::Null,
+            "candidate_spool": lifecycle,
+            "index_in_progress": query_result.load.metadata.get("incomplete").and_then(Value::as_bool).unwrap_or(true),
+            "proof_status": "candidate_only",
+            "proof_strength": candidate_spool_proof_strength(subcommand, &Value::Null),
+            "graph_proof": false,
+            "candidate_only": true,
+            "staged_availability": staged_availability.clone(),
+            "query": {
+                "text": options.query,
+                "explicit_limit": options.explicit_limit,
+            },
+            "results": hits,
+            "result_count": hits.len(),
+            "omitted_count": query_result.omitted_count,
+            "limit": options.limit,
+            "truncation": query_truncation_json(&truncation),
+            "timings": agent_timings_json(started),
+            "warnings": staged_warning_values(&staged_availability),
+            "errors": [],
+        });
+        merge_json_object(&mut value, staged_fields);
+        return Ok(value);
+    }
+    let hits = hits.into_iter().take(options.limit).collect::<Vec<_>>();
+    let mut value = json!({
+        "status": "ok",
+        "query": options.query,
+        "result_count": hits.len(),
+        "limit": options.limit,
+        "explicit_limit": options.explicit_limit,
+        "output_mode": options.output_mode.as_str(),
+        "candidate_spool": lifecycle,
+        "index_in_progress": query_result.load.metadata.get("incomplete").and_then(Value::as_bool).unwrap_or(true),
+        "proof_status": "candidate_only",
+        "proof_strength": candidate_spool_proof_strength(subcommand, &Value::Null),
+        "graph_proof": false,
+        "candidate_only": true,
+        "staged_availability": staged_availability.clone(),
+        "hits": hits,
+        "omitted_count": query_result.omitted_count,
+        "proof": "Fast Candidate Spool query returns candidate-only source-navigation evidence; it cannot answer graph proof.",
+    });
+    merge_json_object(&mut value, staged_fields);
+    Ok(value)
+}
+
+#[allow(dead_code)]
+fn load_candidate_spool_for_repo(
+    repo_root: &Path,
+    spool_path: &Path,
+    allow_stale: bool,
+) -> Result<CandidateSpoolLoad, String> {
+    if !spool_path.exists() {
+        return Err(format!(
+            "candidate_spool_missing: {} does not exist",
+            spool_path.display()
+        ));
+    }
+    let text = fs::read_to_string(spool_path)
+        .map_err(|error| format!("candidate_spool_read_failed: {error}"))?;
+    let mut metadata = Value::Null;
+    let mut chunks = Vec::new();
+    for (line_index, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: Value = serde_json::from_str(trimmed)
+            .map_err(|error| format!("candidate_spool_corrupt line {}: {error}", line_index + 1))?;
+        if value.get("chunk_id").is_some() || value.get("text").is_some() {
+            chunks.push(value);
+        } else if metadata.is_null() {
+            metadata = value
+                .get("metadata")
+                .cloned()
+                .unwrap_or_else(|| value.clone());
+        }
+    }
+    let kind = metadata
+        .get("artifact_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    if kind != "candidate_spool" {
+        return Err(format!(
+            "candidate_spool_wrong_kind: expected candidate_spool, got {kind}"
+        ));
+    }
+    let mut stale_reasons = Vec::new();
+    if let Some(recorded_repo) = metadata.get("repo_root").and_then(Value::as_str) {
+        let current_repo = path_string(repo_root);
+        if !paths_equivalent_string(recorded_repo, &current_repo) {
+            stale_reasons.push(format!(
+                "foreign_repo: artifact repo_root={recorded_repo}, current_repo_root={current_repo}"
+            ));
+        }
+    }
+    for chunk in &chunks {
+        let Some(path) = chunk.get("path").and_then(Value::as_str) else {
+            continue;
+        };
+        let source_path = repo_root.join(path);
+        if !source_path.exists() {
+            stale_reasons.push(format!("deleted_file: {path}"));
+            continue;
+        }
+        if let Some(expected_size) = chunk.get("source_file_size_bytes").and_then(Value::as_u64) {
+            let actual_size = fs::metadata(&source_path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            if actual_size != expected_size {
+                stale_reasons.push(format!(
+                    "changed_file_size: {path} expected={expected_size} actual={actual_size}"
+                ));
+                continue;
+            }
+        }
+        if let Some(expected_hash) = chunk
+            .get("source_file_content_hash")
+            .and_then(Value::as_str)
+        {
+            match fs::read_to_string(&source_path) {
+                Ok(source) => {
+                    let actual_hash = content_hash(&source);
+                    if actual_hash != expected_hash {
+                        stale_reasons.push(format!("changed_file_hash: {path}"));
+                    }
+                }
+                Err(error) => stale_reasons.push(format!("read_failed: {path}: {error}")),
+            }
+        }
+    }
+    stale_reasons.sort();
+    stale_reasons.dedup();
+    let stale = !stale_reasons.is_empty();
+    if stale && !allow_stale {
+        return Err(format!(
+            "candidate_spool_stale: {}",
+            stale_reasons.join("; ")
+        ));
+    }
+    Ok(CandidateSpoolLoad {
+        path: spool_path.to_path_buf(),
+        metadata,
+        chunks,
+        stale,
+        reason: stale.then(|| stale_reasons.join("; ")),
+    })
+}
+
+#[allow(dead_code)]
+fn paths_equivalent_string(left: &str, right: &str) -> bool {
+    let normalize = |value: &str| {
+        let normalized = value.replace('\\', "/");
+        normalized
+            .strip_prefix("//?/")
+            .unwrap_or(&normalized)
+            .trim_end_matches('/')
+            .to_ascii_lowercase()
+    };
+    normalize(left) == normalize(right)
+}
+
+fn candidate_spool_index_lifecycle_json(load: &CandidateSpoolIndexLoad) -> Value {
+    json!({
+        "candidate_spool_status": if load.stale {
+            "stale"
+        } else {
+            load.metadata
+                .get("candidate_spool_status")
+                .and_then(Value::as_str)
+                .or_else(|| load.metadata.get("status").and_then(Value::as_str))
+                .unwrap_or("unknown")
+        },
+        "candidate_spool_path": path_string(&load.path),
+        "artifact_kind": "candidate_spool",
+        "artifact_format": load.metadata.get("artifact_format").and_then(Value::as_str).unwrap_or("jsonl"),
+        "lifecycle": load.metadata.get("lifecycle").cloned().unwrap_or(Value::Null),
+        "candidate_spool_policy": load.metadata.get("candidate_spool_policy").cloned().unwrap_or_else(|| json!("bounded")),
+        "candidate_spool_required": load.metadata.get("candidate_spool_required").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_spool_budget_bytes": load.metadata.get("candidate_spool_budget_bytes").cloned().unwrap_or(Value::Null),
+        "candidate_spool_written_bytes": load.metadata.get("candidate_spool_written_bytes").cloned().unwrap_or(Value::Null),
+        "candidate_spool_truncated": load.metadata.get("candidate_spool_truncated").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_spool_disabled_reason": load.metadata.get("candidate_spool_disabled_reason").cloned().unwrap_or(Value::Null),
+        "candidate_spool_warning": load.metadata.get("candidate_spool_warning").cloned().unwrap_or(Value::Null),
+        "artifact_budget_remaining_bytes": load.metadata.get("artifact_budget_remaining_bytes").cloned().unwrap_or(Value::Null),
+        "artifact_budget_decision": load.metadata.get("artifact_budget_decision").cloned().unwrap_or(Value::Null),
+        "incomplete": load.metadata.get("incomplete").and_then(Value::as_bool).unwrap_or(true),
+        "stale": load.stale,
+        "reason": load.reason.clone(),
+        "spooled_total_chunks": load.query_index_record_count,
+        "query_index_status": load.query_index_status.clone(),
+        "query_index_kind": load.query_index_kind.clone(),
+        "query_index_path": path_string(&load.query_index_path),
+        "query_index_bytes": load.query_index_bytes,
+        "query_index_record_count": load.query_index_record_count,
+        "query_index_source_binding_count": load.query_index_source_binding_count,
+        "query_index_version": load.query_index_version.clone(),
+        "query_index_bound_manifest_hash": load.query_index_bound_manifest_hash.clone(),
+        "candidate_only": true,
+        "graph_proof": false,
+        "claimable_for_graph": false,
+        "creates_graph_relations": false,
+        "can_answer_graph_proof": false,
+        "source_navigation_evidence": true,
+    })
+}
+
+fn candidate_spool_index_query_hits(
+    query_result: &CandidateSpoolIndexQueryResult,
+    subcommand: &str,
+) -> Vec<Value> {
+    query_result
+        .chunks
+        .iter()
+        .map(|chunk| candidate_spool_hit_json(chunk, subcommand))
+        .collect()
+}
+
+#[allow(dead_code)]
+fn candidate_spool_lifecycle_json(spool: &CandidateSpoolLoad) -> Value {
+    json!({
+        "candidate_spool_status": if spool.stale {
+            "stale"
+        } else {
+            spool.metadata
+                .get("candidate_spool_status")
+                .and_then(Value::as_str)
+                .or_else(|| spool.metadata.get("status").and_then(Value::as_str))
+                .unwrap_or("unknown")
+        },
+        "candidate_spool_path": path_string(&spool.path),
+        "artifact_kind": "candidate_spool",
+        "artifact_format": "jsonl",
+        "lifecycle": spool.metadata.get("lifecycle").cloned().unwrap_or(Value::Null),
+        "incomplete": spool.metadata.get("incomplete").and_then(Value::as_bool).unwrap_or(true),
+        "stale": spool.stale,
+        "reason": spool.reason.clone(),
+        "spooled_total_chunks": spool.chunks.len(),
+        "candidate_only": true,
+        "graph_proof": false,
+        "claimable_for_graph": false,
+        "creates_graph_relations": false,
+        "can_answer_graph_proof": false,
+        "source_navigation_evidence": true,
+    })
+}
+
+#[allow(dead_code)]
+fn candidate_spool_query_hits(
+    spool: &CandidateSpoolLoad,
+    subcommand: &str,
+    query: &str,
+    limit: usize,
+) -> Vec<Value> {
+    let query_lc = query.to_ascii_lowercase();
+    let aliases = split_file_query_aliases(query);
+    let mut scored = Vec::new();
+    for chunk in &spool.chunks {
+        if !candidate_spool_chunk_matches_subcommand(chunk, subcommand) {
+            continue;
+        }
+        let haystack = candidate_spool_chunk_haystack(chunk);
+        let mut score = 0i64;
+        if haystack.contains(&query_lc) {
+            score += 100;
+        }
+        for alias in &aliases {
+            if alias.len() >= 2 && haystack.contains(alias) {
+                score += 10;
+            }
+        }
+        if score == 0 {
+            continue;
+        }
+        scored.push((score, candidate_spool_hit_json(chunk, subcommand)));
+    }
+    scored.sort_by(|left, right| {
+        right.0.cmp(&left.0).then_with(|| {
+            candidate_spool_sort_key(&left.1).cmp(&candidate_spool_sort_key(&right.1))
+        })
+    });
+    scored
+        .into_iter()
+        .map(|(_, value)| value)
+        .take(limit)
+        .collect()
+}
+
+#[allow(dead_code)]
+fn candidate_spool_chunk_matches_subcommand(chunk: &Value, subcommand: &str) -> bool {
+    let chunk_kind = chunk
+        .get("chunk_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let source_kind = chunk
+        .get("source_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let selection_bucket = chunk
+        .get("selection_bucket")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    match subcommand {
+        "files" => chunk_kind == "file_path_title",
+        "text" => source_kind == "text_evidence" || chunk_kind == "snippet",
+        "symbols" => {
+            source_kind == "graph_entity"
+                || selection_bucket.contains("symbol")
+                || selection_bucket.contains("import")
+                || selection_bucket.contains("export")
+        }
+        _ => false,
+    }
+}
+
+#[allow(dead_code)]
+fn candidate_spool_chunk_haystack(chunk: &Value) -> String {
+    [
+        chunk.get("path").and_then(Value::as_str).unwrap_or(""),
+        chunk.get("entity_id").and_then(Value::as_str).unwrap_or(""),
+        chunk.get("text").and_then(Value::as_str).unwrap_or(""),
+        chunk
+            .get("selection_reason")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+        chunk
+            .get("source_kind")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+        chunk
+            .get("chunk_kind")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    ]
+    .join(" ")
+    .to_ascii_lowercase()
+}
+
+fn candidate_spool_hit_json(chunk: &Value, subcommand: &str) -> Value {
+    let span = chunk.get("source_span").cloned().unwrap_or(Value::Null);
+    let line = span
+        .get("start_line")
+        .and_then(Value::as_u64)
+        .or_else(|| span.get("line").and_then(Value::as_u64));
+    let text = chunk.get("text").and_then(Value::as_str).unwrap_or("");
+    json!({
+        "kind": subcommand.trim_end_matches('s'),
+        "id": chunk.get("chunk_id").cloned().unwrap_or(Value::Null),
+        "chunk_id": chunk.get("chunk_id").cloned().unwrap_or(Value::Null),
+        "chunk_kind": chunk.get("chunk_kind").cloned().unwrap_or(Value::Null),
+        "source_kind": chunk.get("source_kind").cloned().unwrap_or(Value::Null),
+        "repo_relative_path": chunk.get("path").cloned().unwrap_or(Value::Null),
+        "path": chunk.get("path").cloned().unwrap_or(Value::Null),
+        "line": line.map(Value::from).unwrap_or(Value::Null),
+        "source_span": span,
+        "entity_id": chunk.get("entity_id").cloned().unwrap_or(Value::Null),
+        "title": chunk.get("path").cloned().unwrap_or(Value::Null),
+        "text": truncate_candidate_spool_text(text),
+        "text_preview_truncated": text.len() > RETRIEVAL_CANDIDATE_SNIPPET_MAX_BYTES,
+        "match": "candidate_spool",
+        "score": chunk.get("selection_score").cloned().unwrap_or_else(|| json!(0.0)),
+        "selection_bucket": chunk.get("selection_bucket").cloned().unwrap_or(Value::Null),
+        "selection_reason": chunk.get("selection_reason").cloned().unwrap_or(Value::Null),
+        "proof_status": "candidate_only",
+        "proof_strength": candidate_spool_proof_strength(subcommand, chunk),
+        "graph_proof": false,
+        "claimable_for_graph": false,
+        "requires_graph_verification": true,
+        "verification_status": "needs_graph_verification",
+        "graph_verification_status": "needs_graph_verification",
+        "source_navigation_evidence": true,
+        "candidate_only": true,
+        "index_in_progress": chunk.get("incomplete").and_then(Value::as_bool).unwrap_or(true),
+    })
+}
+
+fn candidate_spool_proof_strength(subcommand: &str, chunk: &Value) -> &'static str {
+    match subcommand {
+        "text" => "text_evidence",
+        "symbols" => "symbol_evidence",
+        "files" => "source_navigation_evidence",
+        _ => match chunk.get("source_kind").and_then(Value::as_str) {
+            Some("text_evidence") => "text_evidence",
+            Some("graph_entity") => "symbol_evidence",
+            _ => "candidate_evidence",
+        },
+    }
+}
+
+fn default_vector_runtime_sidecar_path(db_path: &Path) -> PathBuf {
+    db_path
+        .parent()
+        .map(|parent| parent.join(CONTEXT_PACK_VECTOR_INDEX_FILE_NAME))
+        .unwrap_or_else(|| PathBuf::from(CONTEXT_PACK_VECTOR_INDEX_FILE_NAME))
+}
+
+fn default_vector_audit_artifact_path(db_path: &Path) -> PathBuf {
+    db_path
+        .parent()
+        .map(|parent| parent.join(CONTEXT_PACK_VECTOR_AUDIT_FILE_NAME))
+        .unwrap_or_else(|| PathBuf::from(CONTEXT_PACK_VECTOR_AUDIT_FILE_NAME))
+}
+
+fn resolve_optional_artifact_path(path: Option<&Path>, default_path: PathBuf) -> PathBuf {
+    let path = path.map(Path::to_path_buf).unwrap_or(default_path);
+    if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&path))
+            .unwrap_or(path)
+    }
+}
+
+fn merge_json_object(target: &mut Value, fields: Value) {
+    let Some(target_object) = target.as_object_mut() else {
+        return;
+    };
+    if let Some(fields_object) = fields.as_object() {
+        for (key, value) in fields_object {
+            if matches!(key.as_str(), "warnings" | "blockers") {
+                if let (Some(existing), Some(incoming)) = (
+                    target_object.get_mut(key).and_then(Value::as_array_mut),
+                    value.as_array(),
+                ) {
+                    let mut seen = existing
+                        .iter()
+                        .map(|item| item.to_string())
+                        .collect::<BTreeSet<_>>();
+                    for item in incoming {
+                        if seen.insert(item.to_string()) {
+                            existing.push(item.clone());
+                        }
+                    }
+                    continue;
+                }
+            }
+            target_object.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+fn staged_availability_for_cli(
+    repo_root: &Path,
+    db_path: &Path,
+    preflight: Option<&DbLifecyclePreflight>,
+    candidate_spool_path: Option<&Path>,
+    vector_runtime_path: Option<&Path>,
+    vector_audit_path: Option<&Path>,
+    vector_branch: Option<&ContextPackVectorBranch>,
+) -> Value {
+    let graph = graph_db_layer_status(preflight);
+    let spool_path = resolve_optional_artifact_path(
+        candidate_spool_path,
+        default_candidate_spool_path(repo_root),
+    );
+    let spool = candidate_spool_layer_status(repo_root, &spool_path);
+    let runtime_path = vector_branch
+        .map(|branch| branch.index_path.clone())
+        .unwrap_or_else(|| {
+            resolve_optional_artifact_path(
+                vector_runtime_path,
+                default_vector_runtime_sidecar_path(db_path),
+            )
+        });
+    let runtime =
+        vector_runtime_layer_status(repo_root, db_path, preflight, &runtime_path, vector_branch);
+    let audit_path = resolve_optional_artifact_path(
+        vector_audit_path,
+        default_vector_audit_artifact_path(db_path),
+    );
+    let audit = vector_audit_layer_status(db_path, preflight, &audit_path);
+    staged_availability_from_layers(graph, spool, runtime, audit)
+}
+
+fn staged_availability_for_context_pack(
+    repo_root: &Path,
+    db_path: &Path,
+    db_lifecycle_read: &Value,
+    options: &ContextPackOptions,
+    vector_branch: Option<&ContextPackVectorBranch>,
+) -> Value {
+    let graph = graph_db_layer_status_from_lifecycle(db_lifecycle_read);
+    let spool_path = resolve_optional_artifact_path(
+        options.candidate_spool_path.as_deref(),
+        default_candidate_spool_path(repo_root),
+    );
+    let spool = candidate_spool_layer_status(repo_root, &spool_path);
+    let runtime_path = vector_branch
+        .map(|branch| branch.index_path.clone())
+        .unwrap_or_else(|| {
+            resolve_optional_artifact_path(
+                options.vector_index_path.as_deref(),
+                default_vector_runtime_sidecar_path(db_path),
+            )
+        });
+    let runtime = if let Some(branch) = vector_branch {
+        vector_runtime_layer_status_from_branch(&runtime_path, branch)
+    } else if options.enable_vector_candidates || options.vector_index_path.is_some() {
+        vector_runtime_layer_status(repo_root, db_path, None, &runtime_path, None)
+    } else {
+        vector_runtime_layer_status_not_requested(&runtime_path)
+    };
+    let audit_path = resolve_optional_artifact_path(
+        options.vector_audit_artifact_path.as_deref(),
+        default_vector_audit_artifact_path(db_path),
+    );
+    let audit = vector_audit_layer_status(db_path, None, &audit_path);
+    staged_availability_from_layers(graph, spool, runtime, audit)
+}
+
+fn staged_availability_for_spool_index_only(
+    repo_root: &Path,
+    spool_path: &Path,
+    spool: &CandidateSpoolIndexLoad,
+    db_error: Option<&str>,
+) -> Value {
+    let graph = json!({
+        "layer": "graph_db",
+        "status": "building",
+        "ready": false,
+        "graph_proof_available": false,
+        "path": Value::Null,
+        "reason": db_error.unwrap_or("Graph DB is still building or unavailable."),
+    });
+    let spool_layer = candidate_spool_layer_from_index_load(spool_path, spool);
+    let db_path = default_db_path(repo_root);
+    let runtime =
+        vector_runtime_layer_status_not_requested(&default_vector_runtime_sidecar_path(&db_path));
+    let audit = vector_audit_layer_status(
+        &db_path,
+        None,
+        &default_vector_audit_artifact_path(&db_path),
+    );
+    staged_availability_from_layers(graph, spool_layer, runtime, audit)
+}
+
+fn graph_db_layer_status(preflight: Option<&DbLifecyclePreflight>) -> Value {
+    let Some(preflight) = preflight else {
+        return json!({
+            "layer": "graph_db",
+            "status": "unknown",
+            "ready": false,
+            "graph_proof_available": false,
+            "reason": "graph DB lifecycle was not inspected",
+        });
+    };
+    let status = if preflight.safe {
+        "ready"
+    } else if preflight.path_access_status == "db_missing" {
+        "no_index"
+    } else {
+        preflight.db_problem_kind.as_deref().unwrap_or("blocked")
+    };
+    json!({
+        "layer": "graph_db",
+        "status": status,
+        "ready": preflight.safe,
+        "graph_proof_available": preflight.safe,
+        "path": preflight.exact_db_path_checked.clone(),
+        "lifecycle_decision": if preflight.safe { "read_reuse" } else { "blocked" },
+        "claimable": preflight.safe,
+        "diagnostic_only": !preflight.safe,
+        "passport_status": preflight.db_health.passport_status.clone(),
+        "schema_status": preflight.schema_status.clone(),
+        "scope_status": preflight.scope_status.clone(),
+        "repo_root_status": preflight.repo_root_status.clone(),
+        "blockers": preflight.blockers.clone(),
+        "warnings": preflight.warnings.clone(),
+    })
+}
+
+fn graph_db_layer_status_from_lifecycle(lifecycle: &Value) -> Value {
+    let ready = lifecycle
+        .get("claimable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && !lifecycle
+            .get("diagnostic_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    json!({
+        "layer": "graph_db",
+        "status": if ready { "ready" } else { lifecycle.get("db_problem_kind").and_then(Value::as_str).unwrap_or("blocked") },
+        "ready": ready,
+        "graph_proof_available": ready,
+        "path": lifecycle.get("exact_db_path_checked").cloned().unwrap_or(Value::Null),
+        "lifecycle_decision": lifecycle.get("decision").cloned().unwrap_or_else(|| json!(if ready { "read_reuse" } else { "blocked" })),
+        "claimable": lifecycle.get("claimable").cloned().unwrap_or_else(|| json!(ready)),
+        "diagnostic_only": lifecycle.get("diagnostic_only").cloned().unwrap_or_else(|| json!(!ready)),
+        "passport_status": lifecycle.get("passport_status").cloned().unwrap_or(Value::Null),
+        "schema_status": lifecycle.get("schema_status").cloned().unwrap_or(Value::Null),
+        "scope_status": lifecycle.get("scope_status").cloned().unwrap_or(Value::Null),
+        "blockers": lifecycle.get("blockers").cloned().unwrap_or_else(|| json!([])),
+        "warnings": lifecycle.get("warnings").cloned().unwrap_or_else(|| json!([])),
+    })
+}
+
+fn candidate_spool_layer_status(repo_root: &Path, spool_path: &Path) -> Value {
+    if !spool_path.exists() {
+        return json!({
+            "layer": "candidate_spool",
+            "status": "no_spool",
+            "ready": false,
+            "path": path_string(spool_path),
+            "candidate_only": true,
+            "graph_proof": false,
+            "candidate_spool_unavailable": true,
+            "candidate_context_truncated": false,
+        });
+    }
+    match candidate_spool_index_status_for_repo(repo_root, spool_path, true) {
+        Ok(spool) => candidate_spool_layer_from_index_load(spool_path, &spool),
+        Err(error) => json!({
+            "layer": "candidate_spool",
+            "status": if error.to_string().contains("corrupt") { "corrupt" } else { "foreign" },
+            "ready": false,
+            "path": path_string(spool_path),
+            "candidate_only": true,
+            "graph_proof": false,
+            "candidate_spool_unavailable": true,
+            "candidate_context_truncated": false,
+            "reason": error.to_string(),
+        }),
+    }
+}
+
+fn candidate_spool_layer_from_index_load(
+    spool_path: &Path,
+    spool: &CandidateSpoolIndexLoad,
+) -> Value {
+    let lifecycle = candidate_spool_index_lifecycle_json(spool);
+    let status = match spool.query_index_status.as_str() {
+        "index_missing" => "query_index_missing",
+        "corrupt" => "query_index_corrupt",
+        "stale" => "stale",
+        _ => lifecycle
+            .get("candidate_spool_status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown"),
+    };
+    let ready = matches!(
+        status,
+        "building"
+            | "partial_ready"
+            | "bounded_ready"
+            | "truncated_ready"
+            | "superseded_by_graph_db"
+    ) && spool.query_index_status == "ready";
+    let candidate_context_truncated = lifecycle
+        .get("candidate_spool_truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    json!({
+        "layer": "candidate_spool",
+        "status": status,
+        "ready": ready,
+        "path": path_string(spool_path),
+        "candidate_only": true,
+        "graph_proof": false,
+        "proof_strength": "candidate_evidence",
+        "source_navigation_evidence": true,
+        "spooled_total_chunks": spool.query_index_record_count,
+        "incomplete": lifecycle.get("incomplete").cloned().unwrap_or(Value::Null),
+        "stale": spool.stale,
+        "reason": spool.reason.clone(),
+        "query_index_status": spool.query_index_status.clone(),
+        "query_index_kind": spool.query_index_kind.clone(),
+        "query_index_path": path_string(&spool.query_index_path),
+        "query_index_bytes": spool.query_index_bytes,
+        "query_index_record_count": spool.query_index_record_count,
+        "query_index_source_binding_count": spool.query_index_source_binding_count,
+        "query_index_version": spool.query_index_version.clone(),
+        "candidate_context_truncated": candidate_context_truncated,
+        "candidate_spool_unavailable": !ready,
+        "complete_path_symbol_index": false,
+        "candidate_spool_policy": lifecycle.get("candidate_spool_policy").cloned().unwrap_or_else(|| json!("bounded")),
+        "candidate_spool_required": lifecycle.get("candidate_spool_required").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_spool_budget_bytes": lifecycle.get("candidate_spool_budget_bytes").cloned().unwrap_or(Value::Null),
+        "candidate_spool_written_bytes": lifecycle.get("candidate_spool_written_bytes").cloned().unwrap_or(Value::Null),
+        "candidate_spool_truncated": lifecycle.get("candidate_spool_truncated").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_spool_disabled_reason": lifecycle.get("candidate_spool_disabled_reason").cloned().unwrap_or(Value::Null),
+        "candidate_spool_warning": lifecycle.get("candidate_spool_warning").cloned().unwrap_or(Value::Null),
+        "artifact_budget_remaining_bytes": lifecycle.get("artifact_budget_remaining_bytes").cloned().unwrap_or(Value::Null),
+        "artifact_budget_decision": lifecycle.get("artifact_budget_decision").cloned().unwrap_or(Value::Null),
+    })
+}
+
+#[allow(dead_code)]
+fn candidate_spool_layer_from_load(spool_path: &Path, spool: &CandidateSpoolLoad) -> Value {
+    let lifecycle = candidate_spool_lifecycle_json(spool);
+    let status = lifecycle
+        .get("candidate_spool_status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let ready = matches!(
+        status,
+        "building"
+            | "partial_ready"
+            | "bounded_ready"
+            | "truncated_ready"
+            | "superseded_by_graph_db"
+    );
+    json!({
+        "layer": "candidate_spool",
+        "status": status,
+        "ready": ready,
+        "path": path_string(spool_path),
+        "candidate_only": true,
+        "graph_proof": false,
+        "proof_strength": "candidate_evidence",
+        "source_navigation_evidence": true,
+        "spooled_total_chunks": spool.chunks.len(),
+        "incomplete": lifecycle.get("incomplete").cloned().unwrap_or(Value::Null),
+        "stale": spool.stale,
+        "candidate_context_truncated": lifecycle.get("candidate_spool_truncated").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_spool_unavailable": !ready,
+        "complete_path_symbol_index": false,
+        "reason": spool.reason.clone(),
+    })
+}
+
+fn vector_runtime_layer_status(
+    repo_root: &Path,
+    db_path: &Path,
+    preflight: Option<&DbLifecyclePreflight>,
+    runtime_path: &Path,
+    branch: Option<&ContextPackVectorBranch>,
+) -> Value {
+    if let Some(branch) = branch {
+        return vector_runtime_layer_status_from_branch(runtime_path, branch);
+    }
+    if !runtime_path.exists() {
+        return vector_runtime_layer_status_not_requested(runtime_path);
+    }
+    if preflight.is_some_and(|preflight| !preflight.safe) {
+        return json!({
+            "layer": "vector_runtime",
+            "status": "blocked_by_graph_db",
+            "ready": false,
+            "path": path_string(runtime_path),
+            "candidate_only": true,
+            "graph_proof": false,
+            "reason": "runtime sidecar validation requires a valid graph DB passport",
+        });
+    }
+    if preflight.is_none() {
+        return json!({
+            "layer": "vector_runtime",
+            "status": "present_unvalidated",
+            "ready": false,
+            "path": path_string(runtime_path),
+            "candidate_only": true,
+            "graph_proof": false,
+            "reason": "runtime sidecar exists but was not validated against the graph DB in this compact status path",
+        });
+    }
+    let provider = match context_pack_vector_provider() {
+        Ok(provider) => provider,
+        Err(error) => {
+            return json!({
+                "layer": "vector_runtime",
+                "status": "stale",
+                "ready": false,
+                "path": path_string(runtime_path),
+                "candidate_only": true,
+                "graph_proof": false,
+                "reason": error,
+            });
+        }
+    };
+    let store = match SqliteGraphStore::open_read_only(db_path) {
+        Ok(store) => store,
+        Err(error) => {
+            return json!({
+                "layer": "vector_runtime",
+                "status": "stale",
+                "ready": false,
+                "path": path_string(runtime_path),
+                "candidate_only": true,
+                "graph_proof": false,
+                "reason": format!("graph DB open failed: {error}"),
+            });
+        }
+    };
+    let passport = match store.get_db_passport() {
+        Ok(Some(passport)) => passport,
+        Ok(None) => {
+            return json!({
+                "layer": "vector_runtime",
+                "status": "stale",
+                "ready": false,
+                "path": path_string(runtime_path),
+                "candidate_only": true,
+                "graph_proof": false,
+                "reason": "graph DB passport missing",
+            });
+        }
+        Err(error) => {
+            return json!({
+                "layer": "vector_runtime",
+                "status": "stale",
+                "ready": false,
+                "path": path_string(runtime_path),
+                "candidate_only": true,
+                "graph_proof": false,
+                "reason": format!("graph DB passport read failed: {error}"),
+            });
+        }
+    };
+    match load_vector_chunk_index_json(
+        runtime_path,
+        &provider,
+        &passport,
+        context_pack_vector_build_options(),
+    ) {
+        Ok(index) => {
+            let source_binding_validation = match validate_vector_chunk_source_bindings(
+                repo_root, &index,
+            ) {
+                Ok(validation) if validation.is_valid() => validation,
+                Ok(validation) => {
+                    return json!({
+                        "layer": "vector_runtime",
+                        "status": "stale",
+                        "ready": false,
+                        "path": path_string(runtime_path),
+                        "candidate_only": true,
+                        "graph_proof": false,
+                        "reason": format!("vector_source_binding_stale: {}", validation.stale_reasons.join("; ")),
+                        "source_binding_validation": serde_json::to_value(validation).unwrap_or(Value::Null),
+                    });
+                }
+                Err(error) => {
+                    return json!({
+                        "layer": "vector_runtime",
+                        "status": "stale",
+                        "ready": false,
+                        "path": path_string(runtime_path),
+                        "candidate_only": true,
+                        "graph_proof": false,
+                        "reason": format!("vector source binding validation failed: {error}"),
+                    });
+                }
+            };
+            let mut metrics = context_pack_vector_index_metrics_json(runtime_path, &index);
+            if let Some(object) = metrics.as_object_mut() {
+                object.insert(
+                    "source_binding_validation".to_string(),
+                    serde_json::to_value(&source_binding_validation).unwrap_or(Value::Null),
+                );
+            }
+            json!({
+                "layer": "vector_runtime",
+                "status": "ready",
+                "ready": true,
+                "path": path_string(runtime_path),
+                "artifact_kind": metrics.get("artifact_kind").cloned().unwrap_or(Value::Null),
+                "candidate_only": true,
+                "graph_proof": false,
+                "complete_path_symbol_index": false,
+                "selected_chunks_only": true,
+                "metrics": metrics,
+            })
+        }
+        Err(error) => json!({
+            "layer": "vector_runtime",
+            "status": "stale",
+            "ready": false,
+            "path": path_string(runtime_path),
+            "candidate_only": true,
+            "graph_proof": false,
+            "reason": error.to_string(),
+        }),
+    }
+}
+
+fn vector_runtime_layer_status_from_branch(
+    runtime_path: &Path,
+    branch: &ContextPackVectorBranch,
+) -> Value {
+    json!({
+        "layer": "vector_runtime",
+        "status": branch.status.as_str(),
+        "ready": matches!(branch.status, VectorCandidateBranchStatus::Ready),
+        "path": path_string(runtime_path),
+        "candidate_only": true,
+        "graph_proof": false,
+        "complete_path_symbol_index": false,
+        "selected_chunks_only": true,
+        "candidate_count": branch.candidates.len(),
+        "reason": branch.warning.clone(),
+        "metrics": branch.index_metrics.clone().unwrap_or(Value::Null),
+    })
+}
+
+fn vector_runtime_layer_status_not_requested(runtime_path: &Path) -> Value {
+    json!({
+        "layer": "vector_runtime",
+        "status": if runtime_path.exists() { "not_requested" } else { "missing" },
+        "ready": false,
+        "path": path_string(runtime_path),
+        "candidate_only": true,
+        "graph_proof": false,
+        "complete_path_symbol_index": false,
+        "reason": if runtime_path.exists() {
+            "runtime vector sidecar exists but vector candidate lane was not enabled"
+        } else {
+            "runtime vector sidecar missing"
+        },
+    })
+}
+
+fn vector_audit_layer_status(
+    db_path: &Path,
+    preflight: Option<&DbLifecyclePreflight>,
+    audit_path: &Path,
+) -> Value {
+    if !audit_path.exists() {
+        return json!({
+            "layer": "vector_audit",
+            "status": "missing",
+            "ready": false,
+            "path": path_string(audit_path),
+            "diagnostic_only": true,
+            "runtime_dependency": false,
+        });
+    }
+    let value = match fs::read_to_string(audit_path)
+        .map_err(|error| error.to_string())
+        .and_then(|text| serde_json::from_str::<Value>(&text).map_err(|error| error.to_string()))
+    {
+        Ok(value) => value,
+        Err(error) => {
+            return json!({
+                "layer": "vector_audit",
+                "status": "corrupt",
+                "ready": false,
+                "path": path_string(audit_path),
+                "diagnostic_only": true,
+                "runtime_dependency": false,
+                "reason": error,
+            });
+        }
+    };
+    let metadata = value.get("metadata").unwrap_or(&value);
+    let artifact_kind = metadata
+        .get("artifact_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let mut status = if artifact_kind == "audit_artifact" {
+        "ready"
+    } else {
+        "unknown"
+    };
+    let mut reason = None;
+    if let Some(preflight) = preflight.filter(|preflight| preflight.safe) {
+        if let Some(passport) = preflight.db_health.passport.as_ref() {
+            let artifact_scope = metadata
+                .get("passport")
+                .and_then(|passport| passport.get("index_scope_policy_hash"))
+                .and_then(Value::as_str);
+            let artifact_repo = metadata
+                .get("passport")
+                .and_then(|passport| passport.get("canonical_repo_root"))
+                .and_then(Value::as_str);
+            if artifact_scope.is_some()
+                && artifact_scope != Some(passport.index_scope_policy_hash.as_str())
+                || artifact_repo.is_some()
+                    && artifact_repo != Some(passport.canonical_repo_root.as_str())
+            {
+                status = "stale";
+                reason = Some(
+                    "audit artifact passport scope/repo differs from current graph DB".to_string(),
+                );
+            }
+        }
+    } else if !db_path.exists() {
+        status = "diagnostic_only";
+        reason = Some("audit artifact exists without a validated graph DB".to_string());
+    }
+    json!({
+        "layer": "vector_audit",
+        "status": status,
+        "ready": matches!(status, "ready" | "diagnostic_only" | "stale"),
+        "path": path_string(audit_path),
+        "artifact_kind": artifact_kind,
+        "artifact_format": metadata.get("index_artifact_format").cloned().unwrap_or(Value::Null),
+        "diagnostic_only": true,
+        "runtime_dependency": false,
+        "reason": reason,
+    })
+}
+
+fn staged_availability_from_layers(
+    graph: Value,
+    spool: Value,
+    runtime: Value,
+    audit: Value,
+) -> Value {
+    let layers = vec![
+        ("graph_db", graph),
+        ("candidate_spool", spool),
+        ("vector_runtime", runtime),
+        ("vector_audit", audit),
+    ];
+    let mut layer_readiness = serde_json::Map::new();
+    let mut available_layers = Vec::new();
+    let mut missing_layers = Vec::new();
+    let mut active_candidate_sources = Vec::new();
+    let mut warnings = Vec::<String>::new();
+
+    for (name, layer) in &layers {
+        let status = layer
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let ready = layer.get("ready").and_then(Value::as_bool).unwrap_or(false);
+        layer_readiness.insert((*name).to_string(), layer.clone());
+        if ready {
+            available_layers.push((*name).to_string());
+        } else if matches!(
+            status,
+            "missing"
+                | "no_spool"
+                | "no_index"
+                | "blocked"
+                | "corrupt"
+                | "foreign"
+                | "stale"
+                | "query_index_missing"
+                | "query_index_corrupt"
+                | "disabled_budget_exceeded"
+        ) {
+            missing_layers.push((*name).to_string());
+        }
+    }
+
+    let graph_ready = layer_ready(&layer_readiness, "graph_db");
+    let spool_ready = layer_ready(&layer_readiness, "candidate_spool");
+    let vector_ready = layer_ready(&layer_readiness, "vector_runtime");
+    let audit_ready = layer_ready(&layer_readiness, "vector_audit");
+
+    if spool_ready {
+        active_candidate_sources.push("candidate_spool".to_string());
+    }
+    if graph_ready {
+        active_candidate_sources.push("graph_db".to_string());
+        active_candidate_sources.push("stage0_text_evidence".to_string());
+        active_candidate_sources.push("symbol_lookup".to_string());
+    }
+    if vector_ready {
+        active_candidate_sources.push("vector_semantic".to_string());
+    }
+
+    if !graph_ready && spool_ready {
+        warnings.push(
+            "Graph DB is still building; returning candidate-only spool context.".to_string(),
+        );
+    }
+    let spool_status = layer_readiness
+        .get("candidate_spool")
+        .and_then(|layer| layer.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("no_spool");
+    let candidate_context_truncated = layer_readiness
+        .get("candidate_spool")
+        .and_then(|layer| layer.get("candidate_context_truncated"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let candidate_spool_unavailable = layer_readiness
+        .get("candidate_spool")
+        .and_then(|layer| layer.get("candidate_spool_unavailable"))
+        .and_then(Value::as_bool)
+        .unwrap_or(!spool_ready);
+    if candidate_context_truncated {
+        warnings.push(
+            "Candidate spool context is truncated; returned spans are a bounded working set."
+                .to_string(),
+        );
+    }
+    if matches!(spool_status, "disabled_budget_exceeded") {
+        warnings.push(
+            "Candidate spool unavailable: storage budget disabled the optional spool.".to_string(),
+        );
+    }
+    let vector_status = layer_readiness
+        .get("vector_runtime")
+        .and_then(|layer| layer.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("missing");
+    if vector_status == "stale" {
+        warnings.push("Vector runtime sidecar is stale; vector candidates omitted.".to_string());
+    }
+    if vector_ready
+        || matches!(
+            vector_status,
+            "ready" | "not_requested" | "present_unvalidated"
+        )
+    {
+        warnings
+            .push("Selected vector sidecar is not a complete file/path/symbol index.".to_string());
+    }
+    if audit_ready {
+        warnings.push(
+            "Audit artifact exists but is diagnostic-only and not used for runtime retrieval."
+                .to_string(),
+        );
+    }
+
+    let recommended_next_step = if vector_status == "stale" {
+        "rebuild vector sidecar"
+    } else if !graph_ready && spool_ready {
+        "inspect candidate spans"
+    } else if !graph_ready {
+        "wait_for_graph_db"
+    } else {
+        "run final graph verification"
+    };
+    let candidate_only_available = spool_ready || vector_ready;
+    let graph_proof_available = graph_ready;
+
+    json!({
+        "schema_version": 1,
+        "available_layers": available_layers,
+        "missing_layers": missing_layers,
+        "layer_readiness": Value::Object(layer_readiness),
+        "graph_db_status": layer_status(&layers, "graph_db"),
+        "candidate_spool_status": layer_status(&layers, "candidate_spool"),
+        "vector_runtime_status": layer_status(&layers, "vector_runtime"),
+        "vector_audit_status": layer_status(&layers, "vector_audit"),
+        "active_candidate_sources": active_candidate_sources,
+        "candidate_context_available": candidate_only_available || graph_ready,
+        "candidate_context_truncated": candidate_context_truncated,
+        "candidate_spool_unavailable": candidate_spool_unavailable,
+        "candidate_only_available": candidate_only_available,
+        "graph_proof_available": graph_proof_available,
+        "lifecycle_decision": if graph_ready { "read_reuse" } else if spool_ready { "partial_candidate_context" } else { "blocked" },
+        "claimability": {
+            "claimable": graph_ready,
+            "candidate_only": candidate_only_available && !graph_ready,
+            "graph_proof_available": graph_proof_available,
+            "diagnostic_only": false,
+        },
+        "recommended_next_step": recommended_next_step,
+        "risks": staged_availability_risks(candidate_only_available || vector_ready || audit_ready),
+        "warnings": warnings,
+        "blockers": if graph_ready { Vec::<String>::new() } else { vec!["graph_db_not_ready".to_string()] },
+        "public_claim": false,
+    })
+}
+
+fn layer_ready(layer_readiness: &serde_json::Map<String, Value>, layer_name: &str) -> bool {
+    layer_readiness
+        .get(layer_name)
+        .and_then(|layer| layer.get("ready"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn layer_status(layers: &[(&str, Value)], layer_name: &str) -> Value {
+    layers
+        .iter()
+        .find(|(name, _)| *name == layer_name)
+        .and_then(|(_, layer)| layer.get("status").cloned())
+        .unwrap_or_else(|| json!("unknown"))
+}
+
+fn staged_availability_risks(include_candidate_risk: bool) -> Vec<Value> {
+    let mut risks = Vec::new();
+    if include_candidate_risk {
+        risks.push(json!({
+            "risk_id": "candidate_context_not_graph_proof",
+            "sentence": "Candidate context is not graph proof.",
+        }));
+    }
+    risks.push(json!({
+        "risk_id": "vector_sidecar_not_complete_path_index",
+        "sentence": "Selected vector sidecar is not a complete file/path/symbol index.",
+    }));
+    risks.push(json!({
+        "risk_id": "audit_artifact_not_runtime_source",
+        "sentence": "Audit artifact exists only for diagnostics and is not used for runtime retrieval.",
+    }));
+    risks
+}
+
+fn staged_availability_top_level_fields(staged: &Value) -> Value {
+    json!({
+        "staged_availability": staged,
+        "graph_db_status": staged.get("graph_db_status").cloned().unwrap_or(Value::Null),
+        "candidate_spool_status": staged.get("candidate_spool_status").cloned().unwrap_or(Value::Null),
+        "vector_runtime_status": staged.get("vector_runtime_status").cloned().unwrap_or(Value::Null),
+        "vector_audit_status": staged.get("vector_audit_status").cloned().unwrap_or(Value::Null),
+        "active_candidate_sources": staged.get("active_candidate_sources").cloned().unwrap_or_else(|| json!([])),
+        "candidate_context_truncated": staged.get("candidate_context_truncated").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_spool_unavailable": staged.get("candidate_spool_unavailable").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_only_available": staged.get("candidate_only_available").cloned().unwrap_or_else(|| json!(false)),
+        "graph_proof_available": staged.get("graph_proof_available").cloned().unwrap_or_else(|| json!(false)),
+        "lifecycle_decision": staged.get("lifecycle_decision").cloned().unwrap_or(Value::Null),
+        "claimability": staged.get("claimability").cloned().unwrap_or(Value::Null),
+        "warnings": staged_warning_values(staged),
+        "blockers": staged.get("blockers").cloned().unwrap_or_else(|| json!([])),
+    })
+}
+
+fn staged_availability_compact_top_level_fields(staged: &Value) -> Value {
+    json!({
+        "graph_db_status": staged.get("graph_db_status").cloned().unwrap_or(Value::Null),
+        "candidate_spool_status": staged.get("candidate_spool_status").cloned().unwrap_or(Value::Null),
+        "vector_runtime_status": staged.get("vector_runtime_status").cloned().unwrap_or(Value::Null),
+        "vector_audit_status": staged.get("vector_audit_status").cloned().unwrap_or(Value::Null),
+        "active_candidate_sources": staged.get("active_candidate_sources").cloned().unwrap_or_else(|| json!([])),
+        "candidate_context_truncated": staged.get("candidate_context_truncated").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_spool_unavailable": staged.get("candidate_spool_unavailable").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_only_available": staged.get("candidate_only_available").cloned().unwrap_or_else(|| json!(false)),
+        "graph_proof_available": staged.get("graph_proof_available").cloned().unwrap_or_else(|| json!(false)),
+        "lifecycle_decision": staged.get("lifecycle_decision").cloned().unwrap_or(Value::Null),
+        "staged_claimability": staged.get("claimability").cloned().unwrap_or(Value::Null),
+        "warnings": staged_warning_values(staged),
+        "blockers": staged.get("blockers").cloned().unwrap_or_else(|| json!([])),
+    })
+}
+
+fn staged_warning_values(staged: &Value) -> Value {
+    staged.get("warnings").cloned().unwrap_or_else(|| json!([]))
+}
+
+fn staged_availability_from_db_lifecycle_only(db_lifecycle_read: &Value) -> Value {
+    let graph = graph_db_layer_status_from_lifecycle(db_lifecycle_read);
+    let spool = json!({
+        "layer": "candidate_spool",
+        "status": "no_spool",
+        "ready": false,
+        "path": Value::Null,
+        "candidate_only": true,
+        "graph_proof": false,
+    });
+    let runtime = json!({
+        "layer": "vector_runtime",
+        "status": "missing",
+        "ready": false,
+        "path": Value::Null,
+        "candidate_only": true,
+        "graph_proof": false,
+        "complete_path_symbol_index": false,
+        "reason": "runtime vector sidecar missing or not requested",
+    });
+    let audit = json!({
+        "layer": "vector_audit",
+        "status": "missing",
+        "ready": false,
+        "path": Value::Null,
+        "diagnostic_only": true,
+        "runtime_dependency": false,
+    });
+    staged_availability_from_layers(graph, spool, runtime, audit)
+}
+
+fn staged_availability_for_packet(packet: &ContextPacket, db_lifecycle_read: &Value) -> Value {
+    packet
+        .metadata
+        .get("staged_availability")
+        .cloned()
+        .unwrap_or_else(|| staged_availability_from_db_lifecycle_only(db_lifecycle_read))
+}
+
+fn context_pack_response_proof_strength(
+    graph_proof: bool,
+    fallback_evidence: &[Value],
+    snippets: &[Value],
+    candidate_set: &ContextAgentCandidateSet,
+) -> &'static str {
+    if graph_proof {
+        return "graph_relation_proof";
+    }
+    if fallback_evidence.iter().any(|evidence| {
+        evidence.get("evidence_role").and_then(Value::as_str) == Some("text_evidence")
+            || evidence
+                .get("fallback_source")
+                .and_then(Value::as_str)
+                .is_some_and(|source| source.contains("text_evidence"))
+    }) {
+        return "text_evidence";
+    }
+    if candidate_set.candidates.iter().any(|candidate| {
+        candidate
+            .get("candidate_sources")
+            .and_then(Value::as_array)
+            .is_some_and(|sources| {
+                sources
+                    .iter()
+                    .any(|source| source.as_str() == Some("symbol"))
+            })
+            || candidate
+                .get("evidence_role")
+                .and_then(Value::as_str)
+                .is_some_and(|role| role.contains("symbol"))
+    }) {
+        return "symbol_evidence";
+    }
+    if !fallback_evidence.is_empty() || !snippets.is_empty() || candidate_set.total_count > 0 {
+        return "source_navigation_evidence";
+    }
+    "unknown"
+}
+
+fn staged_routing_packet_for_spool(
+    task: &str,
+    mode: &str,
+    snippets: &[Value],
+    staged: &Value,
+) -> Value {
+    json!({
+        "packet_kind": "agent_routing_packet",
+        "schema_version": 1,
+        "task": task,
+        "mode": mode,
+        "available_layers": staged.get("available_layers").cloned().unwrap_or_else(|| json!([])),
+        "missing_layers": staged.get("missing_layers").cloned().unwrap_or_else(|| json!([])),
+        "layer_readiness": staged.get("layer_readiness").cloned().unwrap_or(Value::Null),
+        "candidate_context_available": true,
+        "graph_proof_available": false,
+        "recommended_next_step": staged.get("recommended_next_step").cloned().unwrap_or_else(|| json!("inspect candidate spans")),
+        "proof_status": "candidate_only",
+        "proof_strength": "candidate_evidence",
+        "graph_proof": false,
+        "text_evidence": snippets.iter().filter(|snippet| snippet.get("proof_strength").and_then(Value::as_str) == Some("text_evidence")).cloned().collect::<Vec<_>>(),
+        "source_navigation_evidence": snippets.iter().filter(|snippet| snippet.get("proof_strength").and_then(Value::as_str) != Some("text_evidence")).cloned().collect::<Vec<_>>(),
+        "risks": staged.get("risks").cloned().unwrap_or_else(|| json!([])),
+        "warnings": staged.get("warnings").cloned().unwrap_or_else(|| json!([])),
+        "proof_contract": "Fast Candidate Spool routing packet is candidate-only; graph proof waits for a valid graph DB.",
+    })
+}
+
+#[allow(dead_code)]
+fn candidate_spool_sort_key(value: &Value) -> String {
+    format!(
+        "{}:{}:{}",
+        value.get("path").and_then(Value::as_str).unwrap_or(""),
+        value.get("line").and_then(Value::as_u64).unwrap_or(0),
+        value.get("chunk_id").and_then(Value::as_str).unwrap_or("")
+    )
+}
+
+fn truncate_candidate_spool_text(text: &str) -> String {
+    if text.len() <= RETRIEVAL_CANDIDATE_SNIPPET_MAX_BYTES {
+        return text.to_string();
+    }
+    text.chars()
+        .take(RETRIEVAL_CANDIDATE_SNIPPET_MAX_BYTES)
+        .collect()
 }
 
 fn query_response_uses_compact_lifecycle(value: &Value) -> bool {
@@ -2234,6 +3876,33 @@ fn remove_flag(args: &mut Vec<String>, flag: &str) -> bool {
     args.len() != before
 }
 
+fn remove_path_option(args: &mut Vec<String>, flags: &[&str]) -> Result<Option<PathBuf>, String> {
+    let mut retained = Vec::new();
+    let mut found = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = &args[index];
+        if flags.iter().any(|flag| arg == flag) {
+            index += 1;
+            let Some(value) = args.get(index) else {
+                return Err(format!("{} requires a path", flags[0]));
+            };
+            found = Some(PathBuf::from(value));
+        } else if let Some((flag, value)) = arg.split_once('=') {
+            if flags.iter().any(|candidate| *candidate == flag) {
+                found = Some(PathBuf::from(value));
+            } else {
+                retained.push(arg.clone());
+            }
+        } else {
+            retained.push(arg.clone());
+        }
+        index += 1;
+    }
+    *args = retained;
+    Ok(found)
+}
+
 fn parse_read_scope_options(args: &mut Vec<String>) -> Result<Option<IndexScopeOptions>, String> {
     let mut options = IndexScopeOptions::default();
     let mut explicit = false;
@@ -2288,13 +3957,30 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
     let total_start = Instant::now();
     let mut profile_spans = Vec::new();
     let db_path = default_db_path(&repo_root);
-    let db_lifecycle_read = read_db_lifecycle_guard(
+    let db_lifecycle_read = match read_db_lifecycle_guard(
         &repo_root,
         &db_path,
         options.allow_stale_read,
         options.allow_foreign_db,
         options.explicit_scope_policy.clone(),
-    )?;
+    ) {
+        Ok(value) => value,
+        Err(error) if options.enable_candidate_spool => {
+            let spool_path = options
+                .candidate_spool_path
+                .clone()
+                .unwrap_or_else(|| default_candidate_spool_path(&repo_root));
+            return run_candidate_spool_context_pack_command(
+                &repo_root,
+                &spool_path,
+                &options,
+                options.allow_stale_candidate_spool,
+                total_start,
+                Some(error),
+            );
+        }
+        Err(error) => return Err(error),
+    };
     let open_start = Instant::now();
     let connection = open_context_pack_connection(&db_path)?;
     profile_spans.push(profile_span_json(
@@ -2466,8 +4152,24 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
     } else {
         Vec::new()
     };
+    let proof_span_keys = stored_paths
+        .iter()
+        .flat_map(|path| path.source_spans.iter())
+        .map(context_span_key)
+        .collect::<BTreeSet<_>>();
+    let plan_atom_source_fallback = if stored_paths.is_empty() {
+        build_context_pack_plan_atom_source_navigation_fallback(
+            &connection,
+            &options,
+            &proof_span_keys,
+            budgets,
+        )?
+    } else {
+        Vec::new()
+    };
     let mut fallback_evidence = fallback_evidence;
     fallback_evidence.extend(text_fallback_evidence);
+    fallback_evidence.extend(plan_atom_source_fallback);
     profile_spans.push(profile_span_json(
         "sql_query_execution",
         text_fallback_start.elapsed(),
@@ -2554,6 +4256,7 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
             fallback_evidence_count,
         ),
     );
+    let mut staged_vector_branch = None;
     if options.enable_vector_candidates {
         let vector_start = Instant::now();
         let vector_branch = load_context_pack_vector_branch(&repo_root, &db_path, &options);
@@ -2591,6 +4294,7 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
             "vector_semantic_candidates".to_string(),
             json!(vector_candidates),
         );
+        staged_vector_branch = Some(vector_branch);
     }
     if options.enable_nuance_rescue_candidates {
         let nuance_start = Instant::now();
@@ -2641,6 +4345,16 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
             json!(branch.candidates),
         );
     }
+    let staged_availability = staged_availability_for_context_pack(
+        &repo_root,
+        &db_path,
+        &db_lifecycle_read,
+        &options,
+        staged_vector_branch.as_ref(),
+    );
+    packet
+        .metadata
+        .insert("staged_availability".to_string(), staged_availability);
     profile_spans.push(profile_span_json(
         "context_pack_graph_and_packet",
         context_start.elapsed(),
@@ -2719,16 +4433,151 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
     }))
 }
 
+fn run_candidate_spool_context_pack_command(
+    repo_root: &Path,
+    spool_path: &Path,
+    options: &ContextPackOptions,
+    allow_stale: bool,
+    total_start: Instant,
+    db_error: Option<String>,
+) -> Result<Value, String> {
+    let mut query_results = Vec::new();
+    let mut candidates = BTreeMap::<String, Value>::new();
+    for subcommand in ["symbols", "files", "text"] {
+        let query_result = query_candidate_spool_index_for_repo(
+            repo_root,
+            spool_path,
+            subcommand,
+            &options.task,
+            CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT,
+            allow_stale,
+        )
+        .map_err(|error| error.to_string())?;
+        for candidate in candidate_spool_index_query_hits(&query_result, subcommand) {
+            let key = candidate
+                .get("chunk_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            candidates.entry(key).or_insert(candidate);
+        }
+        query_results.push(query_result);
+    }
+    let Some(first_query_result) = query_results.first() else {
+        return Err("candidate_spool_query_index_unavailable: no indexed query result".to_string());
+    };
+    let limit = options
+        .limit_snippets
+        .unwrap_or(DEFAULT_CONTEXT_AGENT_SNIPPET_LIMIT)
+        .min(CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT);
+    let snippets = candidates.values().take(limit).cloned().collect::<Vec<_>>();
+    let lifecycle = candidate_spool_index_lifecycle_json(&first_query_result.load);
+    let staged_availability = staged_availability_for_spool_index_only(
+        repo_root,
+        spool_path,
+        &first_query_result.load,
+        db_error.as_deref(),
+    );
+    let staged_fields = staged_availability_top_level_fields(&staged_availability);
+    let trace = json!({
+        "schema_version": 1,
+        "candidate_spool_enabled": true,
+        "candidate_spool_status": lifecycle.get("candidate_spool_status").cloned().unwrap_or(Value::Null),
+        "candidate_spool_path": path_string(spool_path),
+        "query_index_status": lifecycle.get("query_index_status").cloned().unwrap_or(Value::Null),
+        "query_index_kind": lifecycle.get("query_index_kind").cloned().unwrap_or(Value::Null),
+        "query_index_bytes": lifecycle.get("query_index_bytes").cloned().unwrap_or(Value::Null),
+        "candidate_count": candidates.len(),
+        "index_in_progress": lifecycle.get("incomplete").cloned().unwrap_or_else(|| json!(true)),
+        "db_read_error": db_error,
+        "staged_availability": staged_availability.clone(),
+        "proof_contract": "Fast Candidate Spool context-pack is candidate-only source navigation; graph_proof remains false and normal proof waits for a valid graph DB."
+    });
+    if options.output_mode.is_compact() {
+        let mut value = json!({
+            "schema_name": "context_pack_candidate_spool_agent_json",
+            "schema_version": AGENT_JSON_SCHEMA_VERSION,
+            "status": "ok",
+            "task": options.task,
+            "mode": options.mode,
+            "repo": path_string(repo_root),
+            "db": Value::Null,
+            "proof_status": "candidate_only",
+            "proof_strength": "candidate_evidence",
+            "evidence_status": "source_navigation_evidence",
+            "graph_proof": false,
+            "candidate_only": true,
+            "claimable_for_graph": false,
+            "index_in_progress": lifecycle.get("incomplete").and_then(Value::as_bool).unwrap_or(true),
+            "context_lifecycle": "partial_candidate_context",
+            "lifecycle": {
+                "decision": "partial_candidate_context",
+                "indexing_in_progress": lifecycle.get("incomplete").and_then(Value::as_bool).unwrap_or(true),
+                "claimable": false,
+                "diagnostic_only": false,
+            },
+            "graph_verification": {
+                "status": "no_graph_db",
+                "proof_status": "no_proof_path_found",
+                "graph_proof": false,
+                "reason": "Graph proof unavailable until final DB is ready."
+            },
+            "candidate_spool": lifecycle,
+            "candidate_spool_trace": trace,
+            "staged_availability": staged_availability.clone(),
+            "routing_packet": staged_routing_packet_for_spool(&options.task, &options.mode, &snippets, &staged_availability),
+            "snippets": snippets,
+            "candidates": candidates.into_values().collect::<Vec<_>>(),
+            "timings": agent_timings_json(total_start),
+            "warnings": staged_warning_values(&staged_availability),
+            "errors": [],
+        });
+        merge_json_object(&mut value, staged_fields);
+        return Ok(value);
+    }
+    let mut value = json!({
+        "status": "ok",
+        "task": options.task,
+        "mode": options.mode,
+        "packet": {
+            "task": options.task,
+            "mode": options.mode,
+            "verified_paths": [],
+            "snippets": snippets,
+            "metadata": {
+                "candidate_spool_trace": trace,
+                "proof_status": "candidate_only",
+                "proof_strength": "candidate_evidence",
+                "graph_proof": false,
+                "candidate_only": true,
+                "staged_availability": staged_availability.clone(),
+            }
+        },
+        "candidate_spool": lifecycle,
+        "proof_status": "candidate_only",
+        "proof_strength": "candidate_evidence",
+        "evidence_status": "source_navigation_evidence",
+        "graph_proof": false,
+        "candidate_only": true,
+        "claimable_for_graph": false,
+        "staged_availability": staged_availability.clone(),
+        "proof": "Fast Candidate Spool context-pack returns candidate-only source-navigation evidence and cannot answer graph proof.",
+    });
+    merge_json_object(&mut value, staged_fields);
+    Ok(value)
+}
+
 #[derive(Debug, Clone)]
 struct ContextPackVectorBranch {
     index_path: PathBuf,
     status: VectorCandidateBranchStatus,
     candidates: Vec<RetrievalCandidate>,
+    index_metrics: Option<Value>,
     warning: Option<String>,
 }
 
 fn load_context_pack_vector_branch(
-    _repo_root: &Path,
+    repo_root: &Path,
     db_path: &Path,
     options: &ContextPackOptions,
 ) -> ContextPackVectorBranch {
@@ -2738,6 +4587,7 @@ fn load_context_pack_vector_branch(
             index_path,
             status: VectorCandidateBranchStatus::Missing,
             candidates: Vec::new(),
+            index_metrics: None,
             warning: Some("vector index missing; continuing without vector candidates".to_string()),
         };
     }
@@ -2751,6 +4601,7 @@ fn load_context_pack_vector_branch(
                     reason: format!("deterministic vector provider unavailable: {error}"),
                 },
                 candidates: Vec::new(),
+                index_metrics: None,
                 warning: Some("deterministic vector provider unavailable".to_string()),
             };
         }
@@ -2764,6 +4615,7 @@ fn load_context_pack_vector_branch(
                     reason: format!("db open failed for vector index validation: {error}"),
                 },
                 candidates: Vec::new(),
+                index_metrics: None,
                 warning: Some("vector index validation could not open graph DB".to_string()),
             };
         }
@@ -2777,6 +4629,7 @@ fn load_context_pack_vector_branch(
                     reason: "db passport missing".to_string(),
                 },
                 candidates: Vec::new(),
+                index_metrics: None,
                 warning: Some(
                     "vector index ignored because graph DB passport is missing".to_string(),
                 ),
@@ -2789,6 +4642,7 @@ fn load_context_pack_vector_branch(
                     reason: format!("db passport read failed: {error}"),
                 },
                 candidates: Vec::new(),
+                index_metrics: None,
                 warning: Some(
                     "vector index ignored because graph DB passport could not be read".to_string(),
                 ),
@@ -2807,9 +4661,46 @@ fn load_context_pack_vector_branch(
                     reason: error.to_string(),
                 },
                 candidates: Vec::new(),
+                index_metrics: None,
                 warning: Some(format!(
                     "vector index stale or incompatible; continuing without vector candidates: {error}"
                 )),
+            };
+        }
+    };
+    let source_binding_validation = match validate_vector_chunk_source_bindings(repo_root, &index) {
+        Ok(validation) if validation.is_valid() => validation,
+        Ok(validation) => {
+            return ContextPackVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: format!(
+                        "vector_source_binding_stale: {}",
+                        validation.stale_reasons.join("; ")
+                    ),
+                },
+                candidates: Vec::new(),
+                index_metrics: Some(json!({
+                    "source_binding_validation": validation,
+                })),
+                warning: Some(
+                    "vector index source file bindings are stale; continuing without vector candidates"
+                        .to_string(),
+                ),
+            };
+        }
+        Err(error) => {
+            return ContextPackVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: format!("vector source binding validation failed: {error}"),
+                },
+                candidates: Vec::new(),
+                index_metrics: None,
+                warning: Some(
+                    "vector index source file binding validation failed; continuing without vector candidates"
+                        .to_string(),
+                ),
             };
         }
     };
@@ -2826,12 +4717,21 @@ fn load_context_pack_vector_branch(
                     reason: error.to_string(),
                 },
                 candidates: Vec::new(),
+                index_metrics: None,
                 warning: Some(format!(
                     "vector index query failed; continuing without vector candidates: {error}"
                 )),
             };
         }
     };
+    let mut index_metrics_value = context_pack_vector_index_metrics_json(&index_path, &index);
+    if let Some(object) = index_metrics_value.as_object_mut() {
+        object.insert(
+            "source_binding_validation".to_string(),
+            serde_json::to_value(&source_binding_validation).unwrap_or(Value::Null),
+        );
+    }
+    let index_metrics = Some(index_metrics_value);
     let candidates = hits
         .iter()
         .map(|hit| {
@@ -2848,7 +4748,89 @@ fn load_context_pack_vector_branch(
         index_path,
         status: VectorCandidateBranchStatus::Ready,
         candidates,
+        index_metrics,
         warning: None,
+    }
+}
+
+fn context_pack_vector_index_metrics_json(
+    index_path: &Path,
+    index: &codegraph_index::InMemoryVectorChunkIndex,
+) -> Value {
+    let metadata = index.metadata();
+    let actual_index_file_bytes = fs::metadata(index_path).map(|metadata| metadata.len()).ok();
+    let artifact_kind =
+        context_pack_vector_artifact_kind(index_path, &metadata.index_artifact_format);
+    json!({
+        "actual_index_file_bytes": actual_index_file_bytes,
+        "artifact_kind": artifact_kind,
+        "runtime_sidecar_bytes": if artifact_kind == "vector_runtime_sidecar" {
+            actual_index_file_bytes.map(Value::from).unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        },
+        "audit_artifact_bytes": Value::Null,
+        "pretty_json_overhead": Value::Null,
+        "estimated_f32_payload_bytes": metadata.estimated_f32_payload_bytes,
+        "estimated_f32_payload_dim": metadata.estimated_f32_payload_dim,
+        "estimated_f32_payload_count": metadata.estimated_f32_payload_count,
+        "index_artifact_format": metadata.index_artifact_format.clone(),
+        "vector_payload_compression": metadata.vector_payload_compression.clone(),
+        "stores_chunk_text": metadata.stores_chunk_text,
+        "stores_chunk_metadata": metadata.stores_chunk_metadata,
+        "stores_full_source_body": metadata.stores_full_source_body,
+        "generated_total_chunks": metadata.generated_total_chunks,
+        "selected_total_chunks": metadata.selected_total_chunks,
+        "persisted_total_chunks": metadata.persisted_total_chunks,
+        "runtime_selected_chunks": if artifact_kind == "vector_runtime_sidecar" {
+            metadata.selected_total_chunks
+        } else {
+            0
+        },
+        "audit_chunks": 0,
+        "generated_text_evidence_chunks": metadata.generated_text_evidence_chunks,
+        "selected_text_evidence_chunks": metadata.selected_text_evidence_chunks,
+        "persisted_text_evidence_chunks": metadata.persisted_text_evidence_chunks,
+        "generated_graph_entity_chunks": metadata.generated_graph_entity_chunks,
+        "selected_graph_entity_chunks": metadata.selected_graph_entity_chunks,
+        "persisted_graph_entity_chunks": metadata.persisted_graph_entity_chunks,
+        "generated_file_path_title_chunks": metadata.generated_file_path_title_chunks,
+        "selected_file_path_title_chunks": metadata.selected_file_path_title_chunks,
+        "persisted_file_path_title_chunks": metadata.persisted_file_path_title_chunks,
+        "chunk_selection_strategy": metadata.chunk_selection_strategy.clone(),
+        "input_order_cap": metadata.input_order_cap,
+        "chunk_cap": metadata.chunk_cap,
+        "chunk_cap_applied": metadata.chunk_cap_applied,
+        "persisted_chunks_by_top_level_dir": metadata.persisted_chunks_by_top_level_dir.clone(),
+        "persisted_chunks_by_file_kind": metadata.persisted_chunks_by_file_kind.clone(),
+        "persisted_chunks_by_source_kind": metadata.persisted_chunks_by_source_kind.clone(),
+    })
+}
+
+fn context_pack_vector_artifact_kind(index_path: &Path, artifact_format: &str) -> &'static str {
+    if let Ok(text) = fs::read_to_string(index_path) {
+        if let Ok(value) = serde_json::from_str::<Value>(&text) {
+            if let Some(kind) = value
+                .get("metadata")
+                .and_then(|metadata| metadata.get("artifact_kind"))
+                .and_then(Value::as_str)
+            {
+                return match kind {
+                    "vector_runtime_sidecar" => "vector_runtime_sidecar",
+                    "audit_artifact" => "audit_artifact",
+                    "candidate_spool" => "candidate_spool",
+                    "legacy_pretty_json_vector_artifact" => "legacy_pretty_json_vector_artifact",
+                    _ => "unknown",
+                };
+            }
+        }
+    }
+    if artifact_format == "pretty_json" {
+        "legacy_pretty_json_vector_artifact"
+    } else if artifact_format == "compact_json" {
+        "vector_runtime_sidecar"
+    } else {
+        "unknown"
     }
 }
 
@@ -2899,6 +4881,9 @@ fn context_pack_vector_diagnostic_trace(
             "vector_index_path".to_string(),
             json!(path_string(&vector_branch.index_path)),
         );
+        if let Some(index_metrics) = &vector_branch.index_metrics {
+            object.insert("vector_index_metrics".to_string(), index_metrics.clone());
+        }
     }
     Ok(trace)
 }
@@ -6185,6 +8170,7 @@ fn inspect_existing_comprehensive_proof_artifact(
         issue_counts: BTreeMap::new(),
         issues: Vec::new(),
         scope: None,
+        candidate_spool: None,
         profile: Some(IndexProfile {
             file_discovery_ms: 0,
             parse_ms: 0,
@@ -11834,6 +13820,7 @@ fn run_bundle_import(args: &[String]) -> Result<Value, String> {
     let import_result = (|| {
         remove_sqlite_file_family(&temp_db_path)?;
         import_bundle_to_temp_db(&temp_db_path, &repo_root, &bundle, &evidence, true)?;
+        bundle_import_chaos_failpoint("bundle_after_temp_db_creation_before_validation")?;
         let temp_preflight =
             inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
                 repo_root: repo_root.clone(),
@@ -11852,6 +13839,7 @@ fn run_bundle_import(args: &[String]) -> Result<Value, String> {
                 temp_preflight.blockers.join("; ")
             ));
         }
+        bundle_import_chaos_failpoint("bundle_after_validation_before_publish")?;
         publish_bundle_import_db(&temp_db_path, &db_path)?;
         let final_preflight =
             inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
@@ -11975,6 +13963,22 @@ fn validate_bundle_manifest(
             expected_identity, expected_canonical, repo_identity, canonical_repo_root
         ));
     }
+    let expected_repo_head = git_head(repo_root);
+    match (&expected_repo_head, &bundle.manifest.repo_head) {
+        (Some(expected), Some(observed)) if expected != observed => {
+            return Err(format!(
+                "bundle repo head mismatch: expected {}, observed {}",
+                expected, observed
+            ));
+        }
+        (Some(expected), None) => {
+            return Err(format!(
+                "bundle repo head mismatch: expected {}, observed unknown",
+                expected
+            ));
+        }
+        _ => {}
+    }
 
     let scope_hash = required_bundle_string(&bundle.manifest.scope_hash, "scope_hash")?;
     let scope_policy_json =
@@ -12050,6 +14054,24 @@ fn git_head(repo_root: &Path) -> Option<String> {
     }
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!value.is_empty()).then_some(value)
+}
+
+fn bundle_import_chaos_failpoint_enabled(name: &str) -> bool {
+    std::env::var("CODEGRAPH_WRITE_PATH_FAILPOINT")
+        .ok()
+        .is_some_and(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .any(|value| value == name || value == "bundle_all")
+        })
+}
+
+fn bundle_import_chaos_failpoint(name: &str) -> Result<(), String> {
+    if bundle_import_chaos_failpoint_enabled(name) {
+        Err(format!("chaos_failpoint:{name}"))
+    } else {
+        Ok(())
+    }
 }
 
 fn inspect_bundle_target_state(db_path: &Path) -> BundleTargetState {
@@ -12172,6 +14194,13 @@ fn publish_bundle_import_db(temp_db_path: &Path, final_db_path: &Path) -> Result
         }
     } else {
         remove_sqlite_sidecars(final_db_path)?;
+    }
+    if let Err(error) = bundle_import_chaos_failpoint("bundle_during_publish") {
+        let _ = remove_sqlite_file_family(final_db_path);
+        if had_old_db {
+            let _ = rename_sqlite_file_family(&backup_db_path, final_db_path);
+        }
+        return Err(error);
     }
 
     match fs::rename(temp_db_path, final_db_path) {
@@ -14676,6 +16705,306 @@ fn parse_index_options(args: &[String]) -> Result<(String, Option<PathBuf>, Inde
     Ok((repo, db, options))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VectorIndexCliOptions {
+    runtime_path: Option<PathBuf>,
+    audit_artifact_path: Option<PathBuf>,
+    runtime_format: VectorChunkArtifactFormat,
+    no_audit: bool,
+}
+
+impl Default for VectorIndexCliOptions {
+    fn default() -> Self {
+        Self {
+            runtime_path: None,
+            audit_artifact_path: None,
+            runtime_format: VectorChunkArtifactFormat::CompactJson,
+            no_audit: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CandidateSpoolBudgetDecision {
+    policy: CandidateSpoolPolicy,
+    required: bool,
+    requested_path: Option<PathBuf>,
+    effective_path: Option<PathBuf>,
+    budget_bytes: Option<u64>,
+    artifact_budget_remaining_bytes: Option<u64>,
+    decision: String,
+    disabled_reason: Option<String>,
+    warning: Option<String>,
+}
+
+impl CandidateSpoolBudgetDecision {
+    fn base(options: &IndexOptions) -> Self {
+        Self {
+            policy: options.candidate_spool_policy,
+            required: options.candidate_spool_required,
+            requested_path: options.candidate_spool_path.clone(),
+            effective_path: options.candidate_spool_path.clone(),
+            budget_bytes: Some(options.candidate_spool_caps.global_max_bytes as u64),
+            artifact_budget_remaining_bytes: None,
+            decision: "candidate_spool_not_requested".to_string(),
+            disabled_reason: None,
+            warning: None,
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "candidate_spool_policy": self.policy.as_str(),
+            "candidate_spool_required": self.required,
+            "candidate_spool_budget_bytes": self.budget_bytes,
+            "artifact_budget_remaining_bytes": self.artifact_budget_remaining_bytes,
+            "artifact_budget_decision": self.decision,
+            "candidate_spool_disabled_reason": self.disabled_reason,
+            "candidate_spool_warning": self.warning,
+            "candidate_spool_requested_path": self.requested_path.as_ref().map(|path| path_string(path)),
+            "candidate_spool_effective_path": self.effective_path.as_ref().map(|path| path_string(path)),
+        })
+    }
+}
+
+fn artifact_budget_bytes(options: &storage_budget::StorageBudgetOptions) -> u64 {
+    (options.max_artifacts_mib * 1024.0 * 1024.0).max(0.0) as u64
+}
+
+fn apply_candidate_spool_budget_policy(
+    options: &mut IndexOptions,
+    budget_options: &storage_budget::StorageBudgetOptions,
+    vector_options: &VectorIndexCliOptions,
+) -> CandidateSpoolBudgetDecision {
+    let mut decision = CandidateSpoolBudgetDecision::base(options);
+    if options.candidate_spool_policy == CandidateSpoolPolicy::Off {
+        decision.effective_path = None;
+        decision.budget_bytes = Some(0);
+        decision.decision = "candidate_spool_policy_off".to_string();
+        decision.disabled_reason = Some("candidate_spool_policy_off".to_string());
+        options.candidate_spool_path = None;
+        options.candidate_spool_caps.global_max_bytes = 0;
+        options.candidate_spool_caps.global_max_records = 0;
+        return decision;
+    }
+    if options.candidate_spool_path.is_none() {
+        decision.decision = if options.candidate_spool_required {
+            "candidate_spool_required_without_path".to_string()
+        } else {
+            "candidate_spool_not_requested".to_string()
+        };
+        if options.candidate_spool_required {
+            decision.disabled_reason = Some("candidate_spool_required_without_path".to_string());
+        }
+        return decision;
+    }
+
+    let artifact_budget = artifact_budget_bytes(budget_options);
+    let runtime_reserve = if vector_options.runtime_path.is_some() {
+        CANDIDATE_SPOOL_RUNTIME_RESERVE_BYTES.min((artifact_budget as usize).saturating_div(2))
+    } else {
+        0
+    };
+    let audit_reserve = if vector_options.audit_artifact_path.is_some() {
+        CANDIDATE_SPOOL_AUDIT_RESERVE_BYTES.min((artifact_budget as usize).saturating_div(4))
+    } else {
+        0
+    };
+    let safety_reserve =
+        CANDIDATE_SPOOL_SAFETY_RESERVE_BYTES.min((artifact_budget as usize).saturating_div(4));
+    let remaining = (artifact_budget as usize)
+        .saturating_sub(runtime_reserve)
+        .saturating_sub(audit_reserve)
+        .saturating_sub(safety_reserve);
+    decision.artifact_budget_remaining_bytes = Some(remaining as u64);
+
+    if remaining < CANDIDATE_SPOOL_MIN_USEFUL_BUDGET_BYTES {
+        options.candidate_spool_caps.global_max_bytes = 0;
+        options.candidate_spool_caps.global_max_records = 0;
+        decision.budget_bytes = Some(0);
+        decision.decision = if options.candidate_spool_required {
+            "candidate_spool_required_budget_exceeded".to_string()
+        } else {
+            "candidate_spool_disabled_budget_exceeded".to_string()
+        };
+        decision.disabled_reason = Some("candidate_spool_budget_too_small".to_string());
+        decision.warning = Some(
+            "Candidate spool disabled because the remaining artifact budget is below the minimum useful bounded working-set threshold.".to_string(),
+        );
+        if !options.candidate_spool_required {
+            options.candidate_spool_path = None;
+            decision.effective_path = None;
+        }
+        return decision;
+    }
+
+    let storage_factor = if options.candidate_spool_query_index {
+        CANDIDATE_SPOOL_QUERY_INDEX_STORAGE_FACTOR
+    } else {
+        1
+    };
+    let adaptive_jsonl_budget = remaining
+        .saturating_div(storage_factor)
+        .max(CANDIDATE_SPOOL_MIN_USEFUL_BUDGET_BYTES)
+        .min(remaining);
+    let original = options.candidate_spool_caps.global_max_bytes;
+    let effective = original.min(adaptive_jsonl_budget);
+    options.candidate_spool_caps.global_max_bytes = effective;
+    decision.budget_bytes = Some(effective as u64);
+    if effective < original {
+        decision.decision = "candidate_spool_truncated_to_fit_artifact_budget".to_string();
+        decision.warning = Some(format!(
+            "Candidate spool cap reduced from {original} to {effective} bytes to leave room for required artifacts and the query index."
+        ));
+    } else {
+        decision.decision = "candidate_spool_within_artifact_budget".to_string();
+    }
+    if options.candidate_spool_policy == CandidateSpoolPolicy::Audit {
+        let note = "candidate_spool_policy=audit is explicit diagnostic mode; normal query/status/context-pack still treat spool records as candidate-only and do not use them as graph proof.";
+        decision.warning = Some(match decision.warning.take() {
+            Some(existing) => format!("{existing} {note}"),
+            None => note.to_string(),
+        });
+    }
+    decision
+}
+
+fn candidate_spool_footprint_bytes(summary: &IndexSummary) -> u64 {
+    summary
+        .candidate_spool
+        .as_ref()
+        .map(|spool| spool.spooled_bytes.saturating_add(spool.query_index_bytes))
+        .unwrap_or(0)
+}
+
+fn candidate_spool_required_error_value(
+    decision: &CandidateSpoolBudgetDecision,
+    graph_db_claimable: bool,
+    runtime_sidecar_ready: bool,
+    message: impl Into<String>,
+) -> Value {
+    json!({
+        "status": "error",
+        "error": "candidate_spool_required_budget_exceeded",
+        "message": message.into(),
+        "candidate_spool_policy": decision.policy.as_str(),
+        "candidate_spool_required": decision.required,
+        "candidate_spool_budget_bytes": decision.budget_bytes,
+        "artifact_budget_remaining_bytes": decision.artifact_budget_remaining_bytes,
+        "artifact_budget_decision": decision.decision,
+        "candidate_spool_disabled_reason": decision.disabled_reason,
+        "candidate_spool_warning": decision.warning,
+        "graph_db_claimable": graph_db_claimable,
+        "runtime_sidecar_ready": runtime_sidecar_ready,
+        "index_exit_status_reason": "candidate_spool_required_budget_exceeded",
+        "public_claim": false,
+    })
+}
+
+fn apply_candidate_spool_budget_json_fields(
+    object: &mut serde_json::Map<String, Value>,
+    summary: &IndexSummary,
+    decision: &CandidateSpoolBudgetDecision,
+    spool_footprint_bytes: u64,
+    graph_db_claimable: bool,
+    runtime_sidecar_ready: bool,
+) {
+    let spool = summary.candidate_spool.as_ref();
+    let disabled_reason = spool
+        .and_then(|spool| spool.candidate_spool_disabled_reason.clone())
+        .or_else(|| decision.disabled_reason.clone());
+    let warning = spool
+        .and_then(|spool| spool.candidate_spool_warning.clone())
+        .or_else(|| decision.warning.clone());
+    let artifact_decision = spool
+        .and_then(|spool| spool.artifact_budget_decision.clone())
+        .unwrap_or_else(|| decision.decision.clone());
+    let candidate_spool_truncated = spool
+        .map(|spool| spool.candidate_spool_truncated)
+        .unwrap_or(false)
+        || matches!(
+            artifact_decision.as_str(),
+            "candidate_spool_truncated_to_fit_artifact_budget"
+                | "candidate_spool_exceeds_remaining_budget"
+                | "candidate_spool_disabled_budget_exceeded"
+        );
+    let exit_reason = if disabled_reason.is_some() {
+        "indexed_candidate_spool_disabled_or_unavailable"
+    } else if warning.is_some() || candidate_spool_truncated {
+        "indexed_candidate_spool_warning"
+    } else {
+        "indexed"
+    };
+    let fields = [
+        (
+            "candidate_spool_policy",
+            json!(spool
+                .map(|spool| spool.candidate_spool_policy.as_str())
+                .unwrap_or_else(|| decision.policy.as_str())),
+        ),
+        (
+            "candidate_spool_required",
+            json!(spool
+                .map(|spool| spool.candidate_spool_required)
+                .unwrap_or(decision.required)),
+        ),
+        (
+            "candidate_spool_budget_bytes",
+            json!(spool
+                .map(|spool| spool.candidate_spool_budget_bytes)
+                .or(decision.budget_bytes)
+                .unwrap_or(0)),
+        ),
+        (
+            "candidate_spool_written_bytes",
+            json!(spool_footprint_bytes),
+        ),
+        (
+            "candidate_spool_truncated",
+            json!(candidate_spool_truncated),
+        ),
+        ("candidate_spool_disabled_reason", json!(disabled_reason)),
+        ("candidate_spool_warning", json!(warning)),
+        (
+            "artifact_budget_remaining_bytes",
+            json!(spool
+                .and_then(|spool| spool.artifact_budget_remaining_bytes)
+                .or(decision.artifact_budget_remaining_bytes)),
+        ),
+        ("artifact_budget_decision", json!(artifact_decision)),
+        ("index_exit_status_reason", json!(exit_reason)),
+        ("graph_db_claimable", json!(graph_db_claimable)),
+        ("runtime_sidecar_ready", json!(runtime_sidecar_ready)),
+    ];
+    for (key, value) in fields {
+        object.insert(key.to_string(), value);
+    }
+    object.insert("candidate_spool_budget".to_string(), decision.to_json());
+    let mirror = [
+        "candidate_spool_policy",
+        "candidate_spool_required",
+        "candidate_spool_budget_bytes",
+        "candidate_spool_written_bytes",
+        "candidate_spool_truncated",
+        "candidate_spool_disabled_reason",
+        "candidate_spool_warning",
+        "artifact_budget_remaining_bytes",
+        "artifact_budget_decision",
+        "index_exit_status_reason",
+        "graph_db_claimable",
+        "runtime_sidecar_ready",
+    ];
+    let mirror_values = mirror
+        .iter()
+        .filter_map(|key| object.get(*key).cloned().map(|value| (*key, value)))
+        .collect::<Vec<_>>();
+    if let Some(summary_value) = object.get_mut("summary").and_then(Value::as_object_mut) {
+        for (key, value) in mirror_values {
+            summary_value.insert(key.to_string(), value);
+        }
+    }
+}
+
 fn parse_index_command_options(
     args: &[String],
 ) -> Result<
@@ -14685,13 +17014,13 @@ fn parse_index_command_options(
         IndexOptions,
         IndexJsonOutputMode,
         storage_budget::StorageBudgetOptions,
-        Option<PathBuf>,
+        VectorIndexCliOptions,
     ),
     String,
 > {
     let mut repo = None;
     let mut db = None;
-    let mut vector_index_output = None;
+    let mut vector_index = VectorIndexCliOptions::default();
     let mut options = IndexOptions::default();
     let mut storage_budget = storage_budget::StorageBudgetOptions::normal_self_use();
     let mut output_mode = IndexJsonOutputMode::Concise;
@@ -14747,12 +17076,114 @@ fn parse_index_command_options(
             "--allow-stale-reuse" => {
                 options.db_lifecycle.policy = DbLifecyclePolicy::DiagnosticStaleReuse;
             }
-            "--build-vector-index" => {
+            "--build-vector-index" | "--vector-runtime-sidecar" | "--vector_runtime_sidecar" => {
                 index += 1;
                 let Some(raw) = args.get(index) else {
                     return Err("--build-vector-index requires a path".to_string());
                 };
-                vector_index_output = Some(PathBuf::from(raw));
+                vector_index.runtime_path = Some(PathBuf::from(raw));
+                options.json = true;
+            }
+            "--vector-audit-artifact" | "--vector_audit_artifact" => {
+                index += 1;
+                let Some(raw) = args.get(index) else {
+                    return Err("--vector-audit-artifact requires a path".to_string());
+                };
+                vector_index.audit_artifact_path = Some(PathBuf::from(raw));
+                options.json = true;
+            }
+            "--no-vector-audit" | "--no_vector_audit" => {
+                vector_index.no_audit = true;
+            }
+            "--vector-artifact-format" | "--vector_artifact_format" => {
+                index += 1;
+                let Some(raw) = args.get(index) else {
+                    return Err("--vector-artifact-format requires a value".to_string());
+                };
+                vector_index.runtime_format = raw.parse::<VectorChunkArtifactFormat>()?;
+                options.json = true;
+            }
+            "--candidate-spool" | "--emit-candidate-spool" => {
+                index += 1;
+                let Some(raw) = args.get(index) else {
+                    return Err("--candidate-spool requires a path".to_string());
+                };
+                options.candidate_spool_path = Some(PathBuf::from(raw));
+                options.json = true;
+            }
+            "--candidate-spool-policy" | "--candidate_spool_policy" => {
+                index += 1;
+                let Some(raw) = args.get(index) else {
+                    return Err(
+                        "--candidate-spool-policy requires off, bounded, or audit".to_string()
+                    );
+                };
+                options.candidate_spool_policy = raw.parse::<CandidateSpoolPolicy>()?;
+                options.json = true;
+            }
+            "--candidate-spool-required" | "--candidate_spool_required" => {
+                options.candidate_spool_required = true;
+                options.json = true;
+            }
+            "--candidate-spool-query-index" | "--candidate_spool_query_index" => {
+                index += 1;
+                let Some(raw) = args.get(index) else {
+                    return Err("--candidate-spool-query-index requires yes or no".to_string());
+                };
+                options.candidate_spool_query_index =
+                    parse_index_bool(raw, "--candidate-spool-query-index")?;
+                options.json = true;
+            }
+            "--candidate-spool-max-mib" | "--candidate_spool_max_mib" => {
+                index += 1;
+                let mib =
+                    parse_index_positive_f64_arg(args.get(index), "--candidate-spool-max-mib")?;
+                options.candidate_spool_caps.global_max_bytes =
+                    (mib * 1024.0 * 1024.0).round() as usize;
+            }
+            "--candidate-spool-max-bytes" | "--candidate_spool_max_bytes" => {
+                index += 1;
+                options.candidate_spool_caps.global_max_bytes =
+                    parse_index_usize_arg(args.get(index), "--candidate-spool-max-bytes")?;
+            }
+            "--candidate-spool-max-records" | "--candidate_spool_max_records" => {
+                index += 1;
+                options.candidate_spool_caps.global_max_records =
+                    parse_index_usize_arg(args.get(index), "--candidate-spool-max-records")?;
+            }
+            "--candidate-spool-per-file-max-records" | "--candidate_spool_per_file_max_records" => {
+                index += 1;
+                options.candidate_spool_caps.per_file_max_records = parse_index_usize_arg(
+                    args.get(index),
+                    "--candidate-spool-per-file-max-records",
+                )?;
+            }
+            "--candidate-spool-per-dir-soft-cap" | "--candidate_spool_per_dir_soft_cap" => {
+                index += 1;
+                options.candidate_spool_caps.per_top_level_dir_soft_cap =
+                    parse_index_usize_arg(args.get(index), "--candidate-spool-per-dir-soft-cap")?;
+            }
+            "--candidate-spool-max-snippet-bytes" | "--candidate_spool_max_snippet_bytes" => {
+                index += 1;
+                options.candidate_spool_caps.max_snippet_bytes =
+                    parse_index_usize_arg(args.get(index), "--candidate-spool-max-snippet-bytes")?;
+            }
+            "--candidate-spool-max-snippets-per-file"
+            | "--candidate_spool_max_snippets_per_file" => {
+                index += 1;
+                options.candidate_spool_caps.max_snippets_per_file_packet = parse_index_usize_arg(
+                    args.get(index),
+                    "--candidate-spool-max-snippets-per-file",
+                )?;
+            }
+            "--candidate-spool-max-symbols-per-file" | "--candidate_spool_max_symbols_per_file" => {
+                index += 1;
+                options.candidate_spool_caps.max_symbols_per_file_packet = parse_index_usize_arg(
+                    args.get(index),
+                    "--candidate-spool-max-symbols-per-file",
+                )?;
+            }
+            "--early-candidates" => {
                 options.json = true;
             }
             "--workers" => {
@@ -14830,15 +17261,26 @@ fn parse_index_command_options(
     {
         output_mode = IndexJsonOutputMode::Audit;
     }
+    if vector_index.no_audit && vector_index.audit_artifact_path.is_some() {
+        return Err(
+            "--no-vector-audit cannot be combined with --vector-audit-artifact".to_string(),
+        );
+    }
+    if vector_index.audit_artifact_path.is_some() && vector_index.runtime_path.is_none() {
+        return Err(
+            "--vector-audit-artifact requires --build-vector-index or --vector-runtime-sidecar"
+                .to_string(),
+        );
+    }
     Ok((
         repo.ok_or_else(|| {
-            "Usage: codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--build-vector-index <path>] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]".to_string()
+            "Usage: codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--build-vector-index <runtime_path>|--vector-runtime-sidecar <runtime_path>] [--vector-audit-artifact <audit_path>] [--no-vector-audit] [--vector-artifact-format compact_json|pretty_json] [--candidate-spool <path>] [--candidate-spool-policy off|bounded|audit] [--candidate-spool-max-mib <n>] [--candidate-spool-max-bytes <n>] [--candidate-spool-max-records <n>] [--candidate-spool-required] [--candidate-spool-query-index yes|no] [--early-candidates] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]".to_string()
         })?,
         db,
         options,
         output_mode,
         storage_budget,
-        vector_index_output,
+        vector_index,
     ))
 }
 
@@ -14848,6 +17290,32 @@ fn parse_index_bool(raw: &str, flag: &str) -> Result<bool, String> {
         "false" | "0" | "no" | "off" => Ok(false),
         _ => Err(format!("{flag} requires true or false, got {raw}")),
     }
+}
+
+fn parse_index_usize_arg(raw: Option<&String>, flag: &str) -> Result<usize, String> {
+    let Some(raw) = raw else {
+        return Err(format!("{flag} requires a value"));
+    };
+    let value = raw
+        .parse::<usize>()
+        .map_err(|_| format!("invalid {flag} value: {raw}"))?;
+    if value == 0 {
+        return Err(format!("{flag} must be at least 1"));
+    }
+    Ok(value)
+}
+
+fn parse_index_positive_f64_arg(raw: Option<&String>, flag: &str) -> Result<f64, String> {
+    let Some(raw) = raw else {
+        return Err(format!("{flag} requires a value"));
+    };
+    let value = raw
+        .parse::<f64>()
+        .map_err(|_| format!("invalid {flag} value: {raw}"))?;
+    if !value.is_finite() || value <= 0.0 {
+        return Err(format!("{flag} must be greater than zero"));
+    }
+    Ok(value)
 }
 
 fn parse_watch_options(args: &[String]) -> Result<WatchOptions, String> {
@@ -15926,6 +18394,10 @@ struct ContextPackOptions {
     enable_vector_candidates: bool,
     enable_nuance_rescue_candidates: bool,
     vector_index_path: Option<PathBuf>,
+    vector_audit_artifact_path: Option<PathBuf>,
+    enable_candidate_spool: bool,
+    candidate_spool_path: Option<PathBuf>,
+    allow_stale_candidate_spool: bool,
 }
 
 fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String> {
@@ -15947,6 +18419,10 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
     let mut enable_vector_candidates = false;
     let mut enable_nuance_rescue_candidates = false;
     let mut vector_index_path = None;
+    let mut vector_audit_artifact_path = None;
+    let mut enable_candidate_spool = false;
+    let mut candidate_spool_path = None;
+    let mut allow_stale_candidate_spool = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -16051,15 +18527,46 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
             "--enable-vector-candidates" | "--enable_vector_candidates" => {
                 enable_vector_candidates = true;
             }
+            "--enable-candidate-spool"
+            | "--enable_candidate_spool"
+            | "--early-candidates"
+            | "--early_candidates" => {
+                enable_candidate_spool = true;
+            }
+            "--candidate-spool" | "--candidate_spool" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--candidate-spool requires a path".to_string());
+                };
+                candidate_spool_path = Some(PathBuf::from(value));
+                enable_candidate_spool = true;
+            }
+            "--allow-stale-candidate-spool"
+            | "--allow_stale_candidate_spool"
+            | "--diagnostic-candidate-spool" => {
+                allow_stale_candidate_spool = true;
+            }
             "--enable-nuance-rescue-candidates" | "--enable_nuance_rescue_candidates" => {
                 enable_nuance_rescue_candidates = true;
             }
-            "--vector-index" | "--vector-index-path" | "--vector_index" | "--vector_index_path" => {
+            "--vector-index"
+            | "--vector-index-path"
+            | "--vector_index"
+            | "--vector_index_path"
+            | "--vector-runtime-sidecar"
+            | "--vector_runtime_sidecar" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
                     return Err("--vector-index requires a path".to_string());
                 };
                 vector_index_path = Some(PathBuf::from(value));
+            }
+            "--vector-audit-artifact" | "--vector_audit_artifact" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--vector-audit-artifact requires a path".to_string());
+                };
+                vector_audit_artifact_path = Some(PathBuf::from(value));
             }
             other => return Err(format!("unknown context-pack option: {other}")),
         }
@@ -16089,6 +18596,10 @@ fn parse_context_pack_args(args: &[String]) -> Result<ContextPackOptions, String
         enable_vector_candidates,
         enable_nuance_rescue_candidates,
         vector_index_path,
+        vector_audit_artifact_path,
+        enable_candidate_spool,
+        candidate_spool_path,
+        allow_stale_candidate_spool,
     })
 }
 
@@ -16118,11 +18629,47 @@ fn parse_output_arg(args: &[String]) -> Result<PathBuf, String> {
     Err("Usage: codegraph-mcp bundle export --output repo.cgc-bundle".to_string())
 }
 
-fn parse_status_args(args: &[String]) -> Result<PathBuf, String> {
+#[derive(Debug, Clone)]
+struct StatusOptions {
+    repo: PathBuf,
+    candidate_spool_path: Option<PathBuf>,
+    vector_runtime_path: Option<PathBuf>,
+    vector_audit_path: Option<PathBuf>,
+}
+
+fn parse_status_args(args: &[String]) -> Result<StatusOptions, String> {
     let mut repo = None;
-    for arg in args {
-        match arg.as_str() {
+    let mut candidate_spool_path = None;
+    let mut vector_runtime_path = None;
+    let mut vector_audit_path = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
             "--json" => {}
+            "--candidate-spool" | "--candidate_spool" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--candidate-spool requires a path".to_string());
+                };
+                candidate_spool_path = Some(PathBuf::from(value));
+            }
+            "--vector-runtime-sidecar"
+            | "--vector_runtime_sidecar"
+            | "--vector-index"
+            | "--vector_index" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--vector-runtime-sidecar requires a path".to_string());
+                };
+                vector_runtime_path = Some(PathBuf::from(value));
+            }
+            "--vector-audit-artifact" | "--vector_audit_artifact" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--vector-audit-artifact requires a path".to_string());
+                };
+                vector_audit_path = Some(PathBuf::from(value));
+            }
             value if value.starts_with('-') => {
                 if let Some(error) = misplaced_global_flag_error(value, "status") {
                     return Err(error);
@@ -16131,13 +18678,21 @@ fn parse_status_args(args: &[String]) -> Result<PathBuf, String> {
             }
             value => {
                 if repo.is_some() {
-                    return Err("Usage: codegraph-mcp status [repo] [--json]".to_string());
+                    return Err(
+                        "Usage: codegraph-mcp status [repo] [--json] [--candidate-spool <path>] [--vector-runtime-sidecar <path>] [--vector-audit-artifact <path>]".to_string(),
+                    );
                 }
                 repo = Some(PathBuf::from(value));
             }
         }
+        index += 1;
     }
-    Ok(repo.unwrap_or_else(|| PathBuf::from(".")))
+    Ok(StatusOptions {
+        repo: repo.unwrap_or_else(|| PathBuf::from(".")),
+        candidate_spool_path,
+        vector_runtime_path,
+        vector_audit_path,
+    })
 }
 
 fn generate_large_synthetic_repo(root: &Path, files: usize) -> std::io::Result<()> {
@@ -16319,6 +18874,7 @@ fn lifecycle_blocker_is_foreign_repo(blocker: &str) -> bool {
 fn lifecycle_blocker_is_stale_or_missing_passport(blocker: &str) -> bool {
     blocker.contains("previous run did not complete")
         || blocker.contains("previous integrity gate was not ok")
+        || blocker.contains("repo head mismatch")
         || blocker.contains("codegraph_db_passport table is missing")
         || blocker.contains("codegraph_db_passport row is missing")
         || blocker.contains("passport scope_policy_json is missing")
@@ -18591,6 +21147,358 @@ fn build_context_pack_text_evidence_fallback(
     ))
 }
 
+fn build_context_pack_plan_atom_source_navigation_fallback(
+    connection: &Connection,
+    options: &ContextPackOptions,
+    proof_span_keys: &BTreeSet<String>,
+    budgets: ContextPackBudgets,
+) -> Result<Vec<ContextPackFallbackEvidence>, String> {
+    let (task_intent, _task_profile, retrieval_plan) = plan_task_retrieval(&options.task);
+    if !context_pack_plan_atom_source_navigation_enabled(task_intent.task_kind.as_str()) {
+        return Ok(Vec::new());
+    }
+
+    let evidence_limit = budgets.max_snippets.saturating_mul(2).max(6);
+    let mut evidence = Vec::new();
+    let mut seen = BTreeSet::new();
+    for atom in &retrieval_plan.query_atoms {
+        if evidence.len() >= evidence_limit {
+            break;
+        }
+        let per_atom_limit = atom.max_candidates.clamp(1, 3);
+        let entities = load_context_pack_plan_atom_entity_hits(
+            connection,
+            atom,
+            &options.mode,
+            per_atom_limit,
+        )?;
+        for entity in entities {
+            if evidence.len() >= evidence_limit {
+                break;
+            }
+            let role = context_entity_fallback_role(&entity);
+            if !context_pack_plan_atom_entity_allowed(&atom.role, role.role, &options.mode) {
+                continue;
+            }
+            push_plan_atom_source_navigation_evidence(
+                &mut evidence,
+                &mut seen,
+                proof_span_keys,
+                &entity,
+                role,
+                atom,
+                evidence_limit,
+            );
+        }
+    }
+
+    Ok(evidence)
+}
+
+fn context_pack_plan_atom_source_navigation_enabled(task_kind: &str) -> bool {
+    matches!(
+        task_kind,
+        "codegraph_internal_debug"
+            | "implementation_trace"
+            | "storage_accounting_trace"
+            | "artifact_math_trace"
+            | "persistence_path_trace"
+            | "indexing_summary_trace"
+            | "schema_view_trace"
+            | "benchmark_metric_trace"
+            | "test_impact"
+            | "dataflow_trace"
+            | "security_review"
+    )
+}
+
+fn context_pack_plan_atom_entity_allowed(
+    role: &str,
+    evidence_role: EvidenceRole,
+    mode: &str,
+) -> bool {
+    let role_lower = role.to_ascii_lowercase();
+    if context_pack_mode_allows_test_mock(mode) || role_lower.contains("test") {
+        return true;
+    }
+    !matches!(
+        evidence_role,
+        EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
+    )
+}
+
+fn load_context_pack_plan_atom_entity_hits(
+    connection: &Connection,
+    atom: &codegraph_query::RetrievalQueryAtom,
+    mode: &str,
+    limit: usize,
+) -> Result<Vec<ContextEntitySummary>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let terms = context_pack_plan_atom_lookup_terms(atom);
+    if terms.is_empty() {
+        return Ok(Vec::new());
+    }
+    let path_patterns = context_pack_plan_atom_path_patterns(atom);
+    let mut entity_keys = BTreeSet::<i64>::new();
+    let lookup_limit = limit.saturating_mul(12).max(12);
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT e.id_key
+            FROM entities e
+            JOIN symbol_dict name ON name.id = e.name_id
+            JOIN qualified_name_lookup qname ON qname.id = e.qualified_name_id
+            JOIN path_dict path ON path.id = e.path_id
+            LEFT JOIN entity_kind_dict kind ON kind.id = e.kind_id
+            WHERE (name.value LIKE ?1 ESCAPE '\\'
+                   OR qname.value LIKE ?1 ESCAPE '\\'
+                   OR path.value LIKE ?1 ESCAPE '\\')
+              AND path.value LIKE ?2 ESCAPE '\\'
+            ORDER BY
+              CASE kind.value
+                WHEN 'Function' THEN 0
+                WHEN 'Method' THEN 1
+                WHEN 'Struct' THEN 2
+                WHEN 'Class' THEN 3
+                WHEN 'Enum' THEN 4
+                WHEN 'Trait' THEN 5
+                WHEN 'Interface' THEN 6
+                WHEN 'Module' THEN 7
+                ELSE 9
+              END,
+              length(qname.value),
+              qname.value
+            LIMIT ?3
+            ",
+        )
+        .map_err(|error| error.to_string())?;
+
+    'outer: for pattern in &path_patterns {
+        for term in &terms {
+            if entity_keys.len() >= lookup_limit {
+                break 'outer;
+            }
+            let term_pattern = context_pack_sql_like_pattern(term);
+            let rows = statement
+                .query_map(params![term_pattern, pattern, lookup_limit as i64], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(|error| error.to_string())?;
+            for key in collect_sql_rows(rows)? {
+                entity_keys.insert(key);
+                if entity_keys.len() >= lookup_limit {
+                    break 'outer;
+                }
+            }
+        }
+    }
+    if entity_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut entities = load_context_entities_by_keys(
+        connection,
+        &entity_keys.into_iter().collect::<Vec<_>>(),
+        lookup_limit,
+    )?;
+    entities.retain(|entity| {
+        let role = context_entity_fallback_role(entity);
+        context_pack_plan_atom_entity_allowed(&atom.role, role.role, mode)
+            && entity.source_span.is_some()
+            && context_pack_plan_atom_file_kind_matches(atom, &entity.repo_relative_path)
+    });
+    entities.sort_by(|left, right| {
+        context_pack_plan_atom_entity_score(atom, right)
+            .cmp(&context_pack_plan_atom_entity_score(atom, left))
+            .then_with(|| left.repo_relative_path.cmp(&right.repo_relative_path))
+            .then_with(|| left.qualified_name.cmp(&right.qualified_name))
+    });
+    entities.truncate(limit);
+    Ok(entities)
+}
+
+fn context_pack_plan_atom_lookup_terms(atom: &codegraph_query::RetrievalQueryAtom) -> Vec<String> {
+    let ignored = BTreeSet::from([
+        "source",
+        "text",
+        "graph",
+        "proof",
+        "candidate",
+        "candidates",
+        "required",
+        "span",
+        "spans",
+        "files",
+        "file",
+        "role",
+        "roles",
+        "trace",
+        "find",
+        "where",
+        "helper",
+    ]);
+    let mut terms = Vec::new();
+    for raw in format!("{} {}", atom.query_text, atom.expected_signal)
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'))
+    {
+        let lower = raw.trim().to_ascii_lowercase();
+        if lower.len() < 4 || ignored.contains(lower.as_str()) {
+            continue;
+        }
+        terms.push(lower.clone());
+        if lower.contains('-') {
+            terms.push(lower.replace('-', "_"));
+            terms.extend(
+                lower
+                    .split('-')
+                    .filter(|part| part.len() >= 4 && !ignored.contains(*part))
+                    .map(str::to_string),
+            );
+        }
+    }
+    unique_limited_strings(terms, 10)
+}
+
+fn context_pack_plan_atom_path_patterns(atom: &codegraph_query::RetrievalQueryAtom) -> Vec<String> {
+    if atom.path_hints.is_empty() {
+        return vec!["%".to_string()];
+    }
+    unique_limited_strings(
+        atom.path_hints
+            .iter()
+            .map(|hint| context_pack_plan_atom_path_pattern(hint)),
+        8,
+    )
+}
+
+fn context_pack_plan_atom_path_pattern(hint: &str) -> String {
+    let normalized = hint.trim().replace('\\', "/");
+    if normalized.is_empty() {
+        return "%".to_string();
+    }
+    let mut escaped = String::new();
+    for ch in normalized.chars() {
+        match ch {
+            '*' => escaped.push('%'),
+            '%' => escaped.push_str("\\%"),
+            '_' => escaped.push_str("\\_"),
+            '\\' => escaped.push_str("\\\\"),
+            other => escaped.push(other),
+        }
+    }
+    if escaped.ends_with('%') {
+        escaped
+    } else if escaped.contains('.') && !escaped.ends_with('/') {
+        format!("%{escaped}%")
+    } else {
+        format!("{escaped}%")
+    }
+}
+
+fn context_pack_plan_atom_file_kind_matches(
+    atom: &codegraph_query::RetrievalQueryAtom,
+    file: &str,
+) -> bool {
+    if atom.file_kind_hints.is_empty() {
+        return true;
+    }
+    let lower_file = file.to_ascii_lowercase();
+    atom.file_kind_hints.iter().any(|hint| {
+        let hint = hint.to_ascii_lowercase();
+        if hint == ".rs" {
+            lower_file.ends_with(".rs")
+        } else if hint.starts_with('.') {
+            lower_file.ends_with(&hint)
+        } else {
+            lower_file.contains(&hint)
+        }
+    })
+}
+
+fn context_pack_plan_atom_entity_score(
+    atom: &codegraph_query::RetrievalQueryAtom,
+    entity: &ContextEntitySummary,
+) -> i64 {
+    let terms = context_pack_plan_atom_lookup_terms(atom);
+    let file = entity.repo_relative_path.to_ascii_lowercase();
+    let name = entity.name.to_ascii_lowercase();
+    let qualified_name = entity.qualified_name.to_ascii_lowercase();
+    let mut score = 0i64;
+    for term in &terms {
+        if name.contains(term) {
+            score += 50;
+        }
+        if qualified_name.contains(term) {
+            score += 25;
+        }
+        if file.contains(term) {
+            score += 10;
+        }
+    }
+    if atom
+        .path_hints
+        .iter()
+        .any(|hint| routing_path_hint_matches(&file, &hint.to_ascii_lowercase()))
+    {
+        score += 30;
+    }
+    score += match entity.kind {
+        Some(EntityKind::Function | EntityKind::Method) => 20,
+        Some(EntityKind::Class | EntityKind::Enum | EntityKind::Type) => 16,
+        Some(EntityKind::Trait | EntityKind::Interface | EntityKind::Module) => 12,
+        Some(EntityKind::TestCase | EntityKind::TestSuite) => 8,
+        _ => 0,
+    };
+    score
+}
+
+fn push_plan_atom_source_navigation_evidence(
+    evidence: &mut Vec<ContextPackFallbackEvidence>,
+    seen: &mut BTreeSet<String>,
+    proof_span_keys: &BTreeSet<String>,
+    entity: &ContextEntitySummary,
+    role: CliEvidenceRoleDecision,
+    atom: &codegraph_query::RetrievalQueryAtom,
+    limit: usize,
+) {
+    if evidence.len() >= limit {
+        return;
+    }
+    let Some(span) = entity.source_span.clone() else {
+        return;
+    };
+    let span_key = context_span_key(&span);
+    let key = format!("plan-atom:{}:{span_key}", entity.id);
+    if proof_span_keys.contains(&span_key) || !seen.insert(key) {
+        return;
+    }
+    evidence.push(ContextPackFallbackEvidence {
+        id: format!("plan-atom://{}:{}", atom.role, entity.id),
+        symbol: entity.name.clone(),
+        kind: entity
+            .kind
+            .map(|kind| kind.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        source_span: span,
+        score: Some(context_pack_plan_atom_entity_score(atom, entity) as f64),
+        evidence_role: role.role,
+        evidence_role_label: Some("source_navigation".to_string()),
+        proof_status: Some("no_proof_path_found".to_string()),
+        graph_proof: false,
+        claimability: None,
+        seed_matches: vec![atom.query_text.clone()],
+        follow_up_queries: vec![atom.query_text.clone()],
+        classification_reason: format!(
+            "matched retrieval plan atom `{}` for expected signal: {}",
+            atom.role, atom.expected_signal
+        ),
+        classification_source: "retrieval_plan_atom/source_navigation".to_string(),
+        fallback_source: "retrieval_plan_atom/source_navigation/no_proof_path_found".to_string(),
+    });
+}
+
 fn push_context_pack_text_evidence_fallback(
     evidence: &mut Vec<ContextPackFallbackEvidence>,
     seen: &mut BTreeSet<String>,
@@ -19079,6 +21987,16 @@ fn fallback_evidence_json(evidence: &ContextPackFallbackEvidence) -> Value {
         .as_deref()
         .unwrap_or("no_proof_path_found");
     let planning_role = context_planning_role_for_evidence(evidence);
+    let candidate_source = if evidence_role == "text_evidence" {
+        "text_evidence"
+    } else if evidence
+        .fallback_source
+        .contains("retrieval_plan_atom/source_navigation")
+    {
+        "source_navigation"
+    } else {
+        "no_proof_fallback"
+    };
     let mut value = json!({
         "id": evidence.id,
         "symbol": evidence.symbol,
@@ -19089,7 +22007,7 @@ fn fallback_evidence_json(evidence: &ContextPackFallbackEvidence) -> Value {
         "evidence_role": evidence_role,
         "proof_status": proof_status,
         "graph_proof": evidence.graph_proof,
-        "candidate_source": if evidence_role == "text_evidence" { "text_evidence" } else { "no_proof_fallback" },
+        "candidate_source": candidate_source,
         "classification_reason": evidence.classification_reason,
         "classification_source": evidence.classification_source,
         "planning_role": planning_role,
@@ -20532,7 +23450,7 @@ fn recommended_tests_from_fallback_evidence(
         if matches!(
             evidence.evidence_role,
             EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed
-        ) && evidence.kind == "Function"
+        ) && context_fallback_evidence_kind_recommends_test(&evidence.kind)
         {
             let symbol = evidence.symbol.trim();
             if !symbol.is_empty()
@@ -20545,6 +23463,13 @@ fn recommended_tests_from_fallback_evidence(
         }
     }
     tests.into_iter().take(12).collect()
+}
+
+fn context_fallback_evidence_kind_recommends_test(kind: &str) -> bool {
+    matches!(
+        kind.trim().to_ascii_lowercase().as_str(),
+        "function" | "method" | "testcase" | "test_case" | "test-case" | "test"
+    )
 }
 
 fn load_context_fallback_snippets(
@@ -21173,6 +24098,15 @@ fn context_pack_retrieval_architecture_json(
             "shell_ready_probe_commands",
         ]
     };
+    let (task_intent, task_profile, retrieval_plan) = plan_task_retrieval(&packet.task);
+    let task_profile_summary = json!({
+        "profile_id": task_profile.profile_id,
+        "profile_name": task_profile.profile_name,
+        "graph_expectation": task_profile.graph_expectation,
+        "fallback_policy": task_profile.fallback_policy,
+        "role_budget": task_profile.role_budget,
+    });
+    let retrieval_plan_summary = retrieval_plan.summary_json();
 
     json!({
         "schema_version": 1,
@@ -21184,6 +24118,10 @@ fn context_pack_retrieval_architecture_json(
         "graph_verification": graph_verification,
         "prompt_intent": prompt_intent,
         "prompt_seed_provenance": prompt_seed_provenance,
+        "task_intent": task_intent.to_json(),
+        "task_profile": task_profile_summary,
+        "retrieval_plan": retrieval_plan_summary,
+        "retrieval_plan_summary": retrieval_plan.summary_json(),
         "candidate_flow": [
             {
                 "stage": "lifecycle_preflight",
@@ -21852,6 +24790,2026 @@ fn context_pack_candidate_values_with_compact_fallback(candidates: &[Value]) -> 
     )
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RoutingPacketBudgets {
+    critical_files_budget: usize,
+    critical_symbols_budget: usize,
+    proof_paths_budget: usize,
+    text_evidence_budget: usize,
+    source_navigation_evidence_budget: usize,
+    fallback_snippets_budget: usize,
+    follow_up_queries_budget: usize,
+    risks_budget: usize,
+    validation_steps_budget: usize,
+    edit_plan_budget: usize,
+    expansion_handles_budget: usize,
+    artifact_inspection_requirements_budget: usize,
+    db_inspection_requirements_budget: usize,
+    formulas_or_accounting_notes_budget: usize,
+    explain_debug_budget: usize,
+}
+
+impl Default for RoutingPacketBudgets {
+    fn default() -> Self {
+        Self {
+            critical_files_budget: 8,
+            critical_symbols_budget: 12,
+            proof_paths_budget: 3,
+            text_evidence_budget: 5,
+            source_navigation_evidence_budget: 6,
+            fallback_snippets_budget: 3,
+            follow_up_queries_budget: 6,
+            risks_budget: 8,
+            validation_steps_budget: 6,
+            edit_plan_budget: 6,
+            expansion_handles_budget: 6,
+            artifact_inspection_requirements_budget: 3,
+            db_inspection_requirements_budget: 3,
+            formulas_or_accounting_notes_budget: 4,
+            explain_debug_budget: 1,
+        }
+    }
+}
+
+impl RoutingPacketBudgets {
+    fn to_json(self) -> Value {
+        json!({
+            "critical_files_budget": self.critical_files_budget,
+            "critical_symbols_budget": self.critical_symbols_budget,
+            "proof_paths_budget": self.proof_paths_budget,
+            "text_evidence_budget": self.text_evidence_budget,
+            "source_navigation_evidence_budget": self.source_navigation_evidence_budget,
+            "fallback_snippets_budget": self.fallback_snippets_budget,
+            "follow_up_queries_budget": self.follow_up_queries_budget,
+            "risks_budget": self.risks_budget,
+            "validation_steps_budget": self.validation_steps_budget,
+            "edit_plan_budget": self.edit_plan_budget,
+            "expansion_handles_budget": self.expansion_handles_budget,
+            "artifact_inspection_requirements_budget": self.artifact_inspection_requirements_budget,
+            "db_inspection_requirements_budget": self.db_inspection_requirements_budget,
+            "formulas_or_accounting_notes_budget": self.formulas_or_accounting_notes_budget,
+            "explain_debug_budget": self.explain_debug_budget,
+        })
+    }
+}
+
+fn context_pack_routing_packet_json(
+    options: &ContextPackOptions,
+    packet: &ContextPacket,
+    db_lifecycle_read: &Value,
+    planning_packet: &Value,
+    candidate_set: &ContextAgentCandidateSet,
+    paths: &[Value],
+    fallback_evidence: &[Value],
+    snippets: &[Value],
+    lifecycle_claimable: bool,
+    proof_status: &str,
+    graph_proof: bool,
+    evidence_status: &str,
+    upstream_omitted_count: usize,
+) -> Value {
+    let budgets = RoutingPacketBudgets::default();
+    let (task_intent, task_profile, retrieval_plan) = plan_task_retrieval(&packet.task);
+    let task_kind = task_intent.task_kind.as_str();
+    let ranked_evidence = context_pack_routing_ranked_evidence(
+        task_kind,
+        &retrieval_plan,
+        &candidate_set.candidates,
+        paths,
+        fallback_evidence,
+        snippets,
+    );
+    let (critical_files, omitted_critical_files) =
+        routing_critical_files(&ranked_evidence, budgets.critical_files_budget);
+    let (critical_symbols, omitted_critical_symbols) =
+        routing_critical_symbols(packet, &ranked_evidence, budgets.critical_symbols_budget);
+    let verified_paths = routing_verified_paths(
+        paths,
+        lifecycle_claimable,
+        graph_proof,
+        budgets.proof_paths_budget,
+    );
+    let omitted_verified_paths = if graph_proof {
+        paths.len().saturating_sub(verified_paths.len())
+    } else {
+        0
+    };
+    let (text_evidence, omitted_text_evidence) =
+        routing_text_evidence(&ranked_evidence, budgets.text_evidence_budget);
+    let (source_navigation_evidence, omitted_source_navigation_evidence) =
+        routing_source_navigation_evidence(
+            task_kind,
+            &ranked_evidence,
+            budgets.source_navigation_evidence_budget,
+        );
+    let (fallback_snippets, omitted_fallback_snippets) =
+        routing_fallback_snippets(snippets, &text_evidence, budgets.fallback_snippets_budget);
+    let (follow_up_queries, omitted_follow_up_queries) = routing_follow_up_queries(
+        planning_packet,
+        &retrieval_plan,
+        budgets.follow_up_queries_budget,
+    );
+    let artifact_inspection_requirements = routing_artifact_inspection_requirements(
+        task_kind,
+        packet,
+        &ranked_evidence,
+        budgets.artifact_inspection_requirements_budget,
+    );
+    let db_inspection_requirements = routing_db_inspection_requirements(
+        task_kind,
+        &ranked_evidence,
+        budgets.db_inspection_requirements_budget,
+    );
+    let formulas_or_accounting_notes = routing_formulas_or_accounting_notes(
+        task_kind,
+        packet,
+        budgets.formulas_or_accounting_notes_budget,
+    );
+    let mut risks = routing_risks(
+        task_kind,
+        packet,
+        &text_evidence,
+        &formulas_or_accounting_notes,
+        budgets.risks_budget,
+    );
+    let staged_availability = staged_availability_for_packet(packet, db_lifecycle_read);
+    if let Some(staged_risks) = staged_availability.get("risks").and_then(Value::as_array) {
+        let mut risk_ids = risks
+            .iter()
+            .filter_map(|risk| risk.get("risk_id").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>();
+        for risk in staged_risks {
+            let risk_id = risk.get("risk_id").and_then(Value::as_str).unwrap_or("");
+            if !risk_id.is_empty() && risk_ids.insert(risk_id.to_string()) {
+                risks.push(risk.clone());
+            }
+            if risks.len() >= budgets.risks_budget {
+                break;
+            }
+        }
+    }
+    risks.truncate(budgets.risks_budget);
+    let unknowns = routing_unknowns(
+        task_kind,
+        graph_proof,
+        evidence_status,
+        &artifact_inspection_requirements,
+        &db_inspection_requirements,
+    );
+    let validation_steps = routing_validation_steps(
+        task_kind,
+        &critical_files,
+        &ranked_evidence,
+        &artifact_inspection_requirements,
+        &formulas_or_accounting_notes,
+        budgets.validation_steps_budget,
+    );
+    let edit_plan = routing_edit_plan(
+        task_kind,
+        &critical_files,
+        &ranked_evidence,
+        &artifact_inspection_requirements,
+        &formulas_or_accounting_notes,
+        budgets.edit_plan_budget,
+    );
+    let expansion_handles =
+        routing_expansion_handles(&ranked_evidence, budgets.expansion_handles_budget);
+    let retrieval_plan_summary =
+        routing_retrieval_plan_summary(&retrieval_plan, &ranked_evidence, budgets);
+    let claimability = routing_claimability_json(
+        lifecycle_claimable,
+        db_lifecycle_read,
+        proof_status,
+        graph_proof,
+        evidence_status,
+        !text_evidence.is_empty(),
+    );
+    let task_roles = retrieval_plan
+        .query_atoms
+        .iter()
+        .map(|atom| atom.role.clone())
+        .collect::<Vec<_>>();
+    let deterministic_sentences = routing_deterministic_sentences(
+        task_kind,
+        &task_intent.to_json(),
+        graph_proof,
+        verified_paths.len(),
+        &text_evidence,
+        &unknowns,
+        &risks,
+        &critical_files,
+        &artifact_inspection_requirements,
+        &db_inspection_requirements,
+        &formulas_or_accounting_notes,
+        db_lifecycle_read,
+    );
+    let section_omitted_by_budget = BTreeMap::from([
+        ("critical_files", omitted_critical_files),
+        ("critical_symbols", omitted_critical_symbols),
+        ("verified_paths", omitted_verified_paths),
+        ("text_evidence", omitted_text_evidence),
+        (
+            "source_navigation_evidence",
+            omitted_source_navigation_evidence,
+        ),
+        ("fallback_snippets", omitted_fallback_snippets),
+        ("follow_up_queries", omitted_follow_up_queries),
+    ]);
+    let omitted_by_budget = upstream_omitted_count
+        + section_omitted_by_budget.values().copied().sum::<usize>()
+        + candidate_set.omitted_count;
+    let omitted_by_dedup = packet
+        .metadata
+        .get("omitted_by_dedup")
+        .and_then(Value::as_u64)
+        .unwrap_or_default() as usize;
+    let budget_status = json!({
+        "status": if omitted_by_budget == 0 { "within_budget" } else { "bounded_with_omissions" },
+        "budgets": budgets.to_json(),
+        "separate_budgets": true,
+        "explain_debug_budget_separate": true,
+        "fallback_snippets_survive_compaction": true,
+        "source_navigation_evidence_survives_for_implementation_trace": true,
+        "omitted_by_budget": omitted_by_budget,
+        "omitted_by_dedup": omitted_by_dedup,
+        "candidate_omitted_by_candidate_cap": candidate_set.omitted_count,
+        "section_omitted_by_budget": section_omitted_by_budget,
+        "max_output_bytes": options.max_output_bytes.unwrap_or(DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES),
+    });
+
+    json!({
+        "packet_kind": "agent_routing_packet",
+        "schema_version": 1,
+        "task_intent": task_intent.to_json(),
+        "task_profile": {
+            "profile_id": task_profile.profile_id,
+            "profile_name": task_profile.profile_name,
+            "graph_expectation": task_profile.graph_expectation,
+            "fallback_policy": task_profile.fallback_policy,
+            "role_budget": task_profile.role_budget,
+        },
+        "task_roles": task_roles,
+        "retrieval_plan_summary": retrieval_plan_summary,
+        "available_layers": staged_availability.get("available_layers").cloned().unwrap_or_else(|| json!([])),
+        "missing_layers": staged_availability.get("missing_layers").cloned().unwrap_or_else(|| json!([])),
+        "layer_readiness": staged_availability.get("layer_readiness").cloned().unwrap_or(Value::Null),
+        "candidate_context_available": staged_availability.get("candidate_context_available").cloned().unwrap_or_else(|| json!(false)),
+        "graph_proof_available": staged_availability.get("graph_proof_available").cloned().unwrap_or_else(|| json!(graph_proof)),
+        "recommended_next_step": staged_availability.get("recommended_next_step").cloned().unwrap_or_else(|| json!(if graph_proof { "inspect candidate spans" } else { "run final graph verification" })),
+        "claimability": claimability,
+        "critical_files": critical_files,
+        "critical_symbols": critical_symbols,
+        "verified_paths": verified_paths,
+        "text_evidence": text_evidence,
+        "source_navigation_evidence": source_navigation_evidence,
+        "fallback_snippets": fallback_snippets,
+        "unknowns": unknowns,
+        "risks": risks,
+        "validation_steps": validation_steps,
+        "follow_up_queries": follow_up_queries,
+        "expansion_command_available": false,
+        "expansion_handles": expansion_handles,
+        "edit_plan": edit_plan,
+        "artifact_inspection_requirements": artifact_inspection_requirements,
+        "db_inspection_requirements": db_inspection_requirements,
+        "formulas_or_accounting_notes": formulas_or_accounting_notes,
+        "omitted_count": omitted_by_budget + omitted_by_dedup,
+        "budget_status": budget_status,
+        "deterministic_summary": deterministic_sentences,
+        "explain_summary": {
+            "candidate_total_count": candidate_set.total_count,
+            "candidate_returned_count": candidate_set.candidates.len(),
+            "candidate_sources": context_pack_candidate_sources_json(&candidate_set.candidates),
+            "omitted_candidates_preview": candidate_set.omitted_candidates.iter().take(budgets.explain_debug_budget).cloned().collect::<Vec<_>>(),
+            "proof_contract": "only verified graph/source evidence can set graph_proof=true; text, vector, binary, nuance, and follow-up query evidence remain candidate or source-text evidence"
+        }
+    })
+}
+
+fn context_pack_routing_ranked_evidence(
+    task_kind: &str,
+    retrieval_plan: &codegraph_query::RetrievalPlan,
+    candidates: &[Value],
+    paths: &[Value],
+    fallback_evidence: &[Value],
+    snippets: &[Value],
+) -> Vec<Value> {
+    let mut items = Vec::new();
+    items.extend(candidates.iter().filter_map(|candidate| {
+        routing_evidence_from_candidate(task_kind, retrieval_plan, candidate)
+    }));
+    items.extend(
+        paths
+            .iter()
+            .filter_map(|path| routing_evidence_from_proof_path(task_kind, retrieval_plan, path)),
+    );
+    items.extend(fallback_evidence.iter().filter_map(|evidence| {
+        routing_evidence_from_fallback(task_kind, retrieval_plan, evidence)
+    }));
+    items.extend(
+        snippets.iter().filter_map(|snippet| {
+            routing_evidence_from_snippet(task_kind, retrieval_plan, snippet)
+        }),
+    );
+
+    let mut deduped = BTreeMap::<String, Value>::new();
+    for mut item in items {
+        let key = routing_evidence_dedup_key(&item);
+        if let Some(existing) = deduped.get_mut(&key) {
+            routing_merge_evidence(existing, &mut item);
+        } else {
+            deduped.insert(key, item);
+        }
+    }
+    let mut ranked = deduped.into_values().collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        routing_evidence_rank_score(task_kind, right)
+            .cmp(&routing_evidence_rank_score(task_kind, left))
+            .then_with(|| routing_evidence_id(left).cmp(&routing_evidence_id(right)))
+    });
+
+    let role_order = retrieval_plan
+        .query_atoms
+        .iter()
+        .map(|atom| atom.role.as_str())
+        .collect::<Vec<_>>();
+    let mut selected = Vec::new();
+    let mut selected_keys = BTreeSet::new();
+    for role in role_order {
+        if let Some(index) = ranked.iter().position(|item| {
+            item.get("role").and_then(Value::as_str) == Some(role)
+                && !selected_keys.contains(&routing_evidence_dedup_key(item))
+        }) {
+            let item = ranked[index].clone();
+            selected_keys.insert(routing_evidence_dedup_key(&item));
+            selected.push(item);
+        }
+    }
+    for item in ranked {
+        let key = routing_evidence_dedup_key(&item);
+        if selected_keys.insert(key) {
+            selected.push(item);
+        }
+    }
+    for (index, item) in selected.iter_mut().enumerate() {
+        if let Some(object) = item.as_object_mut() {
+            object.insert("rank".to_string(), json!(index + 1));
+        }
+    }
+    selected
+}
+
+fn routing_evidence_from_candidate(
+    task_kind: &str,
+    retrieval_plan: &codegraph_query::RetrievalPlan,
+    candidate: &Value,
+) -> Option<Value> {
+    let candidate = context_pack_public_candidate_json(candidate);
+    let file = routing_candidate_file(&candidate)?;
+    let role = routing_role_for_value(task_kind, retrieval_plan, &candidate, &file);
+    let evidence_id = candidate
+        .get("candidate_id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("candidate://{}", context_agent_stable_component(&file)));
+    let graph_proof = candidate
+        .get("graph_proof")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let proof_status = candidate
+        .get("proof_status")
+        .and_then(Value::as_str)
+        .unwrap_or(if graph_proof {
+            "proof_path_found"
+        } else {
+            "candidate_only"
+        });
+    let matched_signal = routing_matched_signal(&candidate);
+    Some(json!({
+        "evidence_id": evidence_id,
+        "role": role,
+        "file": file,
+        "span": candidate.get("span").cloned().unwrap_or_else(|| candidate.get("source_span").cloned().unwrap_or(Value::Null)),
+        "candidate_sources": candidate.get("candidate_sources").cloned().unwrap_or_else(|| json!([])),
+        "evidence_role": candidate.get("evidence_role").cloned().unwrap_or_else(|| json!("unknown")),
+        "proof_status": proof_status,
+        "graph_proof": graph_proof,
+        "claimability": routing_candidate_claimability(&candidate),
+        "matched_signal": matched_signal,
+        "reason": candidate.get("reason").cloned().unwrap_or_else(|| json!("retrieval candidate")),
+        "rank_score": routing_evidence_rank_score(task_kind, &candidate),
+        "source_navigation_is_graph_proof": false,
+        "candidate": candidate,
+    }))
+}
+
+fn routing_evidence_from_proof_path(
+    task_kind: &str,
+    retrieval_plan: &codegraph_query::RetrievalPlan,
+    path: &Value,
+) -> Option<Value> {
+    let source_spans = path.get("source_spans").and_then(Value::as_array)?;
+    let first_span = source_spans.first()?;
+    let file = first_span
+        .get("file")
+        .and_then(Value::as_str)
+        .or_else(|| first_span.get("repo_relative_path").and_then(Value::as_str))?
+        .to_string();
+    let role = routing_role_for_value(task_kind, retrieval_plan, path, &file);
+    let evidence_id = path
+        .get("path_id")
+        .and_then(Value::as_str)
+        .map(|id| format!("proof-path://{id}"))
+        .unwrap_or_else(|| format!("proof-path://{}", context_agent_stable_component(&file)));
+    Some(json!({
+        "evidence_id": evidence_id,
+        "role": role,
+        "file": file,
+        "span": first_span,
+        "candidate_sources": ["path_evidence", "graph_neighbor"],
+        "evidence_role": path.get("evidence_role").cloned().unwrap_or_else(|| json!("unknown")),
+        "proof_status": "proof_path_found",
+        "graph_proof": true,
+        "claimability": {
+            "claimable_as": ["graph_relation_proof", "source_text_existence"],
+            "not_claimable_as": []
+        },
+        "matched_signal": path.get("classification_reason").and_then(Value::as_str).unwrap_or("verified graph path"),
+        "reason": path.get("classification_reason").cloned().unwrap_or_else(|| json!("verified graph path")),
+        "source_navigation_is_graph_proof": false,
+        "path": path,
+    }))
+}
+
+fn routing_evidence_from_fallback(
+    task_kind: &str,
+    retrieval_plan: &codegraph_query::RetrievalPlan,
+    evidence: &Value,
+) -> Option<Value> {
+    let file = context_planning_value_string(evidence, "file").or_else(|| {
+        evidence
+            .get("source_span")
+            .and_then(|span| context_planning_value_string(span, "file"))
+    })?;
+    let role = routing_role_for_value(task_kind, retrieval_plan, evidence, &file);
+    let evidence_id = context_planning_value_string(evidence, "id")
+        .unwrap_or_else(|| format!("text-evidence://{}", context_agent_stable_component(&file)));
+    let proof_status = evidence
+        .get("proof_status")
+        .and_then(Value::as_str)
+        .unwrap_or("no_proof_path_found");
+    let evidence_role = evidence
+        .get("evidence_role")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let fallback_source = evidence
+        .get("fallback_source")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let candidate_sources = if evidence_role == "text_evidence" {
+        json!(["text_evidence", "lexical_fts"])
+    } else if fallback_source.contains("retrieval_plan_atom/source_navigation") {
+        json!(["source_navigation", "retrieval_plan_atom"])
+    } else {
+        json!(["source_navigation", "fallback"])
+    };
+    Some(json!({
+        "evidence_id": evidence_id,
+        "role": role,
+        "file": file,
+        "span": evidence.get("source_span").cloned().unwrap_or_else(|| evidence.get("span").cloned().unwrap_or(Value::Null)),
+        "candidate_sources": candidate_sources,
+        "evidence_role": evidence.get("evidence_role").cloned().unwrap_or_else(|| json!("text_evidence")),
+        "proof_status": proof_status,
+        "graph_proof": false,
+        "claimability": {
+            "claimable_as": ["source_text_existence"],
+            "not_claimable_as": ["graph_relation_proof"]
+        },
+        "matched_signal": evidence.get("classification_reason").and_then(Value::as_str).unwrap_or("source text fallback"),
+        "reason": evidence.get("classification_reason").cloned().unwrap_or_else(|| json!("source text fallback")),
+        "source_navigation_is_graph_proof": false,
+        "fallback": evidence,
+    }))
+}
+
+fn routing_evidence_from_snippet(
+    task_kind: &str,
+    retrieval_plan: &codegraph_query::RetrievalPlan,
+    snippet: &Value,
+) -> Option<Value> {
+    let file = context_planning_value_string(snippet, "file")?;
+    let role = routing_role_for_value(task_kind, retrieval_plan, snippet, &file);
+    let evidence_id = format!(
+        "snippet://{}:{}",
+        context_agent_stable_component(&file),
+        snippet
+            .get("lines")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+    );
+    Some(json!({
+        "evidence_id": evidence_id,
+        "role": role,
+        "file": file,
+        "span": snippet.get("source_span").cloned().unwrap_or_else(|| snippet.get("span").cloned().unwrap_or(Value::Null)),
+        "candidate_sources": ["fallback_snippet"],
+        "evidence_role": snippet.get("evidence_role").cloned().unwrap_or_else(|| json!("unknown")),
+        "proof_status": snippet.get("proof_status").and_then(Value::as_str).unwrap_or("not_graph_proof"),
+        "graph_proof": false,
+        "claimability": {
+            "claimable_as": ["source_text_existence"],
+            "not_claimable_as": ["graph_relation_proof"]
+        },
+        "matched_signal": snippet.get("reason").and_then(Value::as_str).unwrap_or("fallback snippet"),
+        "reason": snippet.get("reason").cloned().unwrap_or_else(|| json!("fallback snippet")),
+        "source_navigation_is_graph_proof": false,
+        "snippet": snippet,
+    }))
+}
+
+fn routing_candidate_file(candidate: &Value) -> Option<String> {
+    candidate
+        .get("path")
+        .and_then(Value::as_str)
+        .or_else(|| candidate.get("file").and_then(Value::as_str))
+        .or_else(|| candidate.get("file_id").and_then(Value::as_str))
+        .or_else(|| {
+            candidate
+                .get("span")
+                .and_then(|span| span.get("file").and_then(Value::as_str))
+        })
+        .filter(|file| !file.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn routing_candidate_claimability(candidate: &Value) -> Value {
+    let graph_proof = candidate
+        .get("graph_proof")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let claimable_for_text = candidate
+        .get("claimable_for_text")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let mut claimable_as = Vec::new();
+    if graph_proof {
+        claimable_as.push("graph_relation_proof");
+    }
+    if claimable_for_text || graph_proof {
+        claimable_as.push("source_text_existence");
+    }
+    json!({
+        "claimable_as": claimable_as,
+        "not_claimable_as": if graph_proof { Vec::<&str>::new() } else { vec!["graph_relation_proof"] },
+    })
+}
+
+fn routing_role_for_value(
+    task_kind: &str,
+    retrieval_plan: &codegraph_query::RetrievalPlan,
+    value: &Value,
+    file: &str,
+) -> String {
+    if let Some(atom_role) = routing_plan_atom_role_from_value(retrieval_plan, value) {
+        return atom_role;
+    }
+    if let Some(atom_role) = routing_matching_atom_role(retrieval_plan, value, file) {
+        return atom_role;
+    }
+    let lower_file = context_planning_normalize_path(file).to_ascii_lowercase();
+    let text = routing_value_text(value).to_ascii_lowercase();
+    match task_kind {
+        "build_system_package_authoring" => routing_buildroot_role(&lower_file, &text).to_string(),
+        "codegraph_internal_debug" => routing_codegraph_debug_role(&lower_file, &text).to_string(),
+        "storage_accounting_trace" | "artifact_math_trace" | "benchmark_metric_trace" => {
+            routing_vector_metric_role(&lower_file, &text).to_string()
+        }
+        "implementation_trace"
+        | "persistence_path_trace"
+        | "indexing_summary_trace"
+        | "schema_view_trace" => routing_implementation_role(&lower_file, &text).to_string(),
+        "test_impact" => routing_test_impact_role(&lower_file, &text).to_string(),
+        "dataflow_trace" => routing_dataflow_role(&lower_file, &text).to_string(),
+        "security_review" => routing_security_role(&lower_file, &text).to_string(),
+        "docs_lookup" => routing_docs_role(&lower_file, &text).to_string(),
+        _ => if !lower_file.is_empty() {
+            "file_lookup"
+        } else {
+            "text_evidence"
+        }
+        .to_string(),
+    }
+}
+
+fn routing_plan_atom_role_from_value(
+    retrieval_plan: &codegraph_query::RetrievalPlan,
+    value: &Value,
+) -> Option<String> {
+    let mut candidates = Vec::new();
+    for key in ["evidence_id", "id", "candidate_id"] {
+        if let Some(raw) = value.get(key).and_then(Value::as_str) {
+            candidates.push(raw.to_string());
+        }
+    }
+    if let Some(fallback) = value.get("fallback") {
+        for key in ["id", "evidence_id"] {
+            if let Some(raw) = fallback.get(key).and_then(Value::as_str) {
+                candidates.push(raw.to_string());
+            }
+        }
+    }
+    for candidate in candidates {
+        let Some(rest) = candidate.strip_prefix("plan-atom://") else {
+            continue;
+        };
+        let Some((role, _)) = rest.split_once(':') else {
+            continue;
+        };
+        if retrieval_plan
+            .query_atoms
+            .iter()
+            .any(|atom| atom.role == role)
+        {
+            return Some(role.to_string());
+        }
+    }
+    None
+}
+
+fn routing_matching_atom_role(
+    retrieval_plan: &codegraph_query::RetrievalPlan,
+    value: &Value,
+    file: &str,
+) -> Option<String> {
+    let normalized_file = context_planning_normalize_path(file).to_ascii_lowercase();
+    let combined = format!(
+        "{}\n{}",
+        normalized_file,
+        routing_value_text(value).to_ascii_lowercase()
+    );
+    for atom in &retrieval_plan.query_atoms {
+        let path_match = atom
+            .path_hints
+            .iter()
+            .any(|hint| routing_path_hint_matches(&normalized_file, &hint.to_ascii_lowercase()));
+        let signal_match_count = atom
+            .expected_signal
+            .split(|character: char| {
+                !(character.is_ascii_alphanumeric() || character == '_' || character == '-')
+            })
+            .filter(|part| part.len() > 3)
+            .filter(|part| combined.contains(&part.to_ascii_lowercase()))
+            .count();
+        let signal_match = signal_match_count >= 2;
+        if path_match || signal_match {
+            return Some(atom.role.clone());
+        }
+    }
+    None
+}
+
+fn routing_path_hint_matches(file: &str, hint: &str) -> bool {
+    if hint.is_empty() {
+        return false;
+    }
+    let hint = hint.trim_matches('*').trim_end_matches('/');
+    if hint.is_empty() {
+        return false;
+    }
+    file == hint || file.starts_with(hint) || file.contains(hint)
+}
+
+fn routing_buildroot_role(file: &str, text: &str) -> &'static str {
+    if file.contains("docs/manual/adding-packages") || file.starts_with("docs/manual") {
+        "authoring_docs"
+    } else if file == "package/config.in" || text.contains("source \"package/") {
+        "kconfig_wiring"
+    } else if file == "package/pkg-download.mk" || file.starts_with("support/download") {
+        "download_infrastructure"
+    } else if file.starts_with("support/scripts") {
+        "support_scripts"
+    } else if file == "package/pkg-generic.mk" || text.contains("inner-generic-package") {
+        "build_install_infrastructure"
+    } else if file.ends_with(".mk") || text.contains("_version") || text.contains("_license") {
+        "package_metadata"
+    } else if file.ends_with("config.in") || text.contains("br2_package") {
+        "kconfig_wiring"
+    } else if file.starts_with("package/") {
+        "examples"
+    } else {
+        "text_evidence"
+    }
+}
+
+fn routing_codegraph_debug_role(file: &str, text: &str) -> &'static str {
+    if text.contains("preflight") || text.contains("passport") || text.contains("stale db") {
+        "lifecycle_preflight"
+    } else if text.contains("open_read") || text.contains("sqlitegraphstore") {
+        "store_open"
+    } else if text.contains("doctor") || text.contains("status") {
+        "status_doctor"
+    } else if file.contains("/tests") || text.contains("#[test]") {
+        "tests"
+    } else if text.contains("schema") || file.ends_with(".md") {
+        "schemas_docs"
+    } else {
+        "entrypoint_symbols"
+    }
+}
+
+fn routing_implementation_role(file: &str, text: &str) -> &'static str {
+    if file.contains("/tests") || text.contains("#[test]") {
+        "related_tests"
+    } else if text.contains("struct ") || text.contains("enum ") || text.contains(" type ") {
+        "relevant_structs"
+    } else if text.contains("const ") || text.contains("static ") {
+        "relevant_constants"
+    } else if text.contains("persist") || text.contains("write") || text.contains("artifact") {
+        "persistence_path"
+    } else if text.contains("count") || text.contains("summary") || text.contains("accounting") {
+        "accounting_summary"
+    } else if text.contains("helper") {
+        "same_file_helpers"
+    } else {
+        "definitions"
+    }
+}
+
+fn routing_vector_metric_role(file: &str, text: &str) -> &'static str {
+    if text.contains("diversity_ranked_v1") || text.contains("input_order_cap") {
+        "vector_chunk_selection"
+    } else if text.contains("actual_index_file_bytes")
+        || text.contains("estimated_f32_payload_bytes")
+        || text.contains("vector_payload_compression")
+    {
+        "metric_reporting"
+    } else if text.contains("write_vector") || text.contains("artifact") || file.ends_with(".json")
+    {
+        "artifact_writer"
+    } else if file.contains("/tests") || text.contains("#[test]") {
+        "tests"
+    } else if text.contains("persisted") || text.contains("generated") || text.contains("selected")
+    {
+        "persisted_index_summary"
+    } else {
+        "vector_chunk_index_build"
+    }
+}
+
+fn routing_test_impact_role(file: &str, text: &str) -> &'static str {
+    if file.contains("/tests") || text.contains("#[test]") || text.contains("assert") {
+        "test_files"
+    } else if text.contains("mock") || text.contains("fixture") {
+        "mocks_assertions"
+    } else if text.contains("impact") {
+        "test_impact_fallback"
+    } else {
+        "production_target"
+    }
+}
+
+fn routing_dataflow_role(_file: &str, text: &str) -> &'static str {
+    if text.contains("sanitize") || text.contains("validate") {
+        "sanitizer"
+    } else if text.contains("database") || text.contains("write") || text.contains("sink") {
+        "sink"
+    } else if text.contains("request") || text.contains("input") || text.contains("source") {
+        "source"
+    } else if text.contains("mutation") || text.contains("insert") || text.contains("update") {
+        "mutation_write"
+    } else {
+        "intermediate_helper"
+    }
+}
+
+fn routing_security_role(file: &str, text: &str) -> &'static str {
+    if text.contains("role") || text.contains("admin") || text.contains("checkrole") {
+        "role_check"
+    } else if text.contains("permission") || text.contains("gate") || text.contains("rbac") {
+        "permission_gate"
+    } else if text.contains("sanitize") || text.contains("validate") {
+        "sanitizer_validator"
+    } else if text.contains("authorize") || text.contains("auth") {
+        "auth_entrypoint"
+    } else if file.contains("/tests") || text.contains("#[test]") {
+        "tests"
+    } else {
+        "route_expose"
+    }
+}
+
+fn routing_docs_role(file: &str, _text: &str) -> &'static str {
+    if file.starts_with("docs/manual") {
+        "docs_manual"
+    } else if file.ends_with("readme.md") || file.starts_with("docs/") {
+        "readme_docs"
+    } else if file.ends_with(".toml") || file.ends_with(".json") || file.ends_with("config.in") {
+        "config_reference_files"
+    } else {
+        "related_source"
+    }
+}
+
+fn routing_value_text(value: &Value) -> String {
+    let mut parts = Vec::new();
+    for key in [
+        "symbol",
+        "kind",
+        "reason",
+        "classification_reason",
+        "fallback_source",
+        "text",
+        "text_preview",
+        "snippet",
+        "matched_signal",
+    ] {
+        if let Some(text) = value.get(key).and_then(Value::as_str) {
+            parts.push(text.to_string());
+        }
+    }
+    for nested in ["candidate", "fallback", "snippet"] {
+        if let Some(value) = value.get(nested) {
+            parts.push(routing_value_text(value));
+        }
+    }
+    parts.join("\n")
+}
+
+fn routing_matched_signal(candidate: &Value) -> String {
+    candidate
+        .get("matched_seeds")
+        .and_then(Value::as_array)
+        .and_then(|seeds| seeds.iter().filter_map(Value::as_str).next())
+        .or_else(|| candidate.get("matched_token").and_then(Value::as_str))
+        .or_else(|| candidate.get("reason").and_then(Value::as_str))
+        .unwrap_or("candidate retrieval signal")
+        .to_string()
+}
+
+fn routing_evidence_dedup_key(item: &Value) -> String {
+    let file = item
+        .get("file")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_ascii_lowercase();
+    let span = item.get("span").unwrap_or(&Value::Null);
+    let start = span
+        .get("start_line")
+        .or_else(|| span.get("line"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let end = span
+        .get("end_line")
+        .and_then(Value::as_u64)
+        .unwrap_or(start);
+    format!("{file}:{start}:{end}")
+}
+
+fn routing_evidence_id(item: &Value) -> String {
+    item.get("evidence_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn routing_merge_evidence(existing: &mut Value, incoming: &mut Value) {
+    let sources = routing_string_values(existing, "candidate_sources")
+        .into_iter()
+        .chain(routing_string_values(incoming, "candidate_sources"))
+        .collect::<BTreeSet<_>>();
+    let Some(existing_object) = existing.as_object_mut() else {
+        return;
+    };
+    existing_object.insert(
+        "candidate_sources".to_string(),
+        json!(sources.into_iter().collect::<Vec<_>>()),
+    );
+    let existing_graph = existing_object
+        .get("graph_proof")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let incoming_graph = incoming
+        .get("graph_proof")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if incoming_graph && !existing_graph {
+        existing_object.insert("graph_proof".to_string(), json!(true));
+        existing_object.insert("proof_status".to_string(), json!("proof_path_found"));
+    }
+}
+
+fn routing_string_values(value: &Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn routing_evidence_rank_score(task_kind: &str, item: &Value) -> i64 {
+    let mut score = 0i64;
+    if item
+        .get("graph_proof")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        score += 5_000;
+    }
+    if routing_string_values(item, "candidate_sources")
+        .iter()
+        .any(|source| source == "exact_seed" || source == "file_path_seed")
+    {
+        score += 4_000;
+    }
+    if routing_string_values(item, "candidate_sources")
+        .iter()
+        .any(|source| source == "text_evidence")
+    {
+        score += 1_500;
+    }
+    let role = item
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    score += (100usize.saturating_sub(routing_role_priority(task_kind, role)) as i64) * 20;
+    if let Some(file) = item.get("file").and_then(Value::as_str) {
+        score += (40usize.saturating_sub(context_planning_central_file_score(file)) as i64) * 25;
+        let lower = context_planning_normalize_path(file).to_ascii_lowercase();
+        if lower.contains("/tests") || lower.ends_with("_test.rs") {
+            if matches!(task_kind, "test_impact" | "security_review") {
+                score += 600;
+            } else {
+                score -= 450;
+            }
+        }
+    }
+    score
+}
+
+fn routing_role_priority(task_kind: &str, role: &str) -> usize {
+    let roles: &[&str] = match task_kind {
+        "build_system_package_authoring" => &[
+            "authoring_docs",
+            "package_metadata",
+            "kconfig_wiring",
+            "makefile_inclusion",
+            "download_infrastructure",
+            "build_install_infrastructure",
+            "support_scripts",
+            "examples",
+        ],
+        "codegraph_internal_debug" => &[
+            "entrypoint_symbols",
+            "lifecycle_preflight",
+            "store_open",
+            "status_doctor",
+            "tests",
+            "schemas_docs",
+        ],
+        "storage_accounting_trace" | "artifact_math_trace" | "benchmark_metric_trace" => &[
+            "vector_chunk_index_build",
+            "vector_chunk_selection",
+            "metric_reporting",
+            "artifact_writer",
+            "persisted_index_summary",
+            "tests",
+            "release_smoke_report_surfaces",
+        ],
+        "test_impact" => &[
+            "changed_symbol",
+            "production_target",
+            "test_files",
+            "mocks_assertions",
+            "test_impact_fallback",
+        ],
+        "dataflow_trace" => &[
+            "source",
+            "intermediate_helper",
+            "sanitizer",
+            "sink",
+            "mutation_write",
+            "proof_path_attempt",
+        ],
+        "security_review" => &[
+            "auth_entrypoint",
+            "role_check",
+            "permission_gate",
+            "sanitizer_validator",
+            "route_expose",
+            "tests",
+        ],
+        "docs_lookup" => &[
+            "docs_manual",
+            "readme_docs",
+            "config_reference_files",
+            "related_source",
+        ],
+        _ => &[
+            "definitions",
+            "same_file_helpers",
+            "relevant_structs",
+            "relevant_constants",
+            "callers",
+            "callees",
+            "related_tests",
+            "persistence_path",
+            "accounting_summary",
+        ],
+    };
+    roles
+        .iter()
+        .position(|candidate| *candidate == role)
+        .unwrap_or(roles.len() + 10)
+}
+
+fn routing_critical_files(evidence: &[Value], limit: usize) -> (Vec<Value>, usize) {
+    let mut files = Vec::<Value>::new();
+    let mut seen = BTreeSet::new();
+    for item in evidence {
+        let Some(file) = item.get("file").and_then(Value::as_str) else {
+            continue;
+        };
+        let key = context_planning_normalize_path(file).to_ascii_lowercase();
+        if !seen.insert(key) {
+            continue;
+        }
+        files.push(json!({
+            "file": file,
+            "role": item.get("role").cloned().unwrap_or_else(|| json!("unknown")),
+            "evidence_ids": [routing_evidence_id(item)],
+            "why": format!(
+                "selected as {} for this task",
+                item.get("role").and_then(Value::as_str).unwrap_or("evidence")
+            ),
+            "proof_status": item.get("proof_status").cloned().unwrap_or_else(|| json!("unknown")),
+            "graph_proof": item.get("graph_proof").and_then(Value::as_bool).unwrap_or(false),
+        }));
+    }
+    let omitted = files.len().saturating_sub(limit);
+    files.truncate(limit);
+    (files, omitted)
+}
+
+fn routing_critical_symbols(
+    packet: &ContextPacket,
+    evidence: &[Value],
+    limit: usize,
+) -> (Vec<Value>, usize) {
+    let mut symbols = Vec::new();
+    let mut seen = BTreeSet::new();
+    for symbol in &packet.symbols {
+        if !context_planning_symbol_allowed(symbol) {
+            continue;
+        }
+        if seen.insert(symbol.to_ascii_lowercase()) {
+            let evidence_ids = evidence
+                .iter()
+                .filter(|item| routing_value_text(item).contains(symbol))
+                .map(routing_evidence_id)
+                .take(3)
+                .collect::<Vec<_>>();
+            symbols.push(json!({
+                "symbol": symbol,
+                "evidence_ids": evidence_ids,
+                "proof_status": "candidate_or_source_navigation",
+                "graph_proof": false,
+            }));
+        }
+    }
+    let omitted = symbols.len().saturating_sub(limit);
+    symbols.truncate(limit);
+    (symbols, omitted)
+}
+
+fn routing_verified_paths(
+    paths: &[Value],
+    lifecycle_claimable: bool,
+    graph_proof: bool,
+    limit: usize,
+) -> Vec<Value> {
+    if !graph_proof {
+        return Vec::new();
+    }
+    paths
+        .iter()
+        .take(limit)
+        .map(|path| {
+            let mut path = path.clone();
+            if let Some(object) = path.as_object_mut() {
+                object.insert("proof_status".to_string(), json!("proof_path_found"));
+                object.insert("graph_proof".to_string(), json!(true));
+                object.insert(
+                    "claimability".to_string(),
+                    json!({
+                        "claimable": lifecycle_claimable,
+                        "claimable_as": if lifecycle_claimable { vec!["graph_relation_proof", "source_text_existence"] } else { Vec::<&str>::new() },
+                        "not_claimable_as": if lifecycle_claimable { Vec::<&str>::new() } else { vec!["graph_relation_proof"] },
+                    }),
+                );
+            }
+            path
+        })
+        .collect()
+}
+
+fn routing_text_evidence(evidence: &[Value], limit: usize) -> (Vec<Value>, usize) {
+    let mut selected = evidence
+        .iter()
+        .filter(|item| {
+            !item
+                .get("graph_proof")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                && (routing_string_values(item, "candidate_sources")
+                    .iter()
+                    .any(|source| {
+                        matches!(
+                            source.as_str(),
+                            "text_evidence" | "lexical_fts" | "fallback_snippet"
+                        )
+                    })
+                    || item.get("evidence_role").and_then(Value::as_str) == Some("text_evidence"))
+        })
+        .map(|item| routing_compact_evidence_json(item, false, "source_text_evidence"))
+        .collect::<Vec<_>>();
+    let omitted = selected.len().saturating_sub(limit);
+    selected.truncate(limit);
+    (selected, omitted)
+}
+
+fn routing_source_navigation_evidence(
+    task_kind: &str,
+    evidence: &[Value],
+    limit: usize,
+) -> (Vec<Value>, usize) {
+    let include = matches!(
+        task_kind,
+        "implementation_trace"
+            | "storage_accounting_trace"
+            | "artifact_math_trace"
+            | "persistence_path_trace"
+            | "indexing_summary_trace"
+            | "schema_view_trace"
+            | "benchmark_metric_trace"
+            | "codegraph_internal_debug"
+            | "test_impact"
+            | "dataflow_trace"
+            | "security_review"
+    );
+    if !include {
+        return (Vec::new(), 0);
+    }
+    let mut selected = evidence
+        .iter()
+        .filter(|item| item.get("file").and_then(Value::as_str).is_some())
+        .map(|item| routing_compact_evidence_json(item, false, "source_navigation_evidence"))
+        .collect::<Vec<_>>();
+    let omitted = selected.len().saturating_sub(limit);
+    selected.truncate(limit);
+    (selected, omitted)
+}
+
+fn routing_compact_evidence_json(item: &Value, graph_proof: bool, evidence_type: &str) -> Value {
+    json!({
+        "evidence_id": item.get("evidence_id").cloned().unwrap_or(Value::Null),
+        "role": item.get("role").cloned().unwrap_or_else(|| json!("unknown")),
+        "file": item.get("file").cloned().unwrap_or(Value::Null),
+        "span": item.get("span").cloned().unwrap_or(Value::Null),
+        "candidate_sources": item.get("candidate_sources").cloned().unwrap_or_else(|| json!([])),
+        "evidence_role": item.get("evidence_role").cloned().unwrap_or_else(|| json!("unknown")),
+        "evidence_type": evidence_type,
+        "proof_status": if graph_proof {
+            item.get("proof_status").cloned().unwrap_or_else(|| json!("proof_path_found"))
+        } else {
+            json!(item.get("proof_status").and_then(Value::as_str).unwrap_or("not_graph_proof"))
+        },
+        "graph_proof": graph_proof,
+        "claimability": if graph_proof {
+            json!({"claimable_as": ["graph_relation_proof", "source_text_existence"], "not_claimable_as": []})
+        } else {
+            json!({"claimable_as": ["source_text_existence"], "not_claimable_as": ["graph_relation_proof"]})
+        },
+        "matched_signal": item.get("matched_signal").cloned().unwrap_or_else(|| json!("source signal")),
+        "reason": item.get("reason").cloned().unwrap_or_else(|| json!("source evidence")),
+    })
+}
+
+fn routing_fallback_snippets(
+    snippets: &[Value],
+    text_evidence: &[Value],
+    limit: usize,
+) -> (Vec<Value>, usize) {
+    let mut selected = snippets
+        .iter()
+        .filter(|snippet| snippet.get("fallback_source").is_some())
+        .take(limit)
+        .cloned()
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        for evidence in text_evidence.iter().take(limit) {
+            selected.push(json!({
+                "file": evidence.get("file").cloned().unwrap_or(Value::Null),
+                "span": evidence.get("span").cloned().unwrap_or(Value::Null),
+                "evidence_id": evidence.get("evidence_id").cloned().unwrap_or(Value::Null),
+                "fallback_source": "text_evidence_compact_fallback",
+                "proof_status": evidence.get("proof_status").cloned().unwrap_or_else(|| json!("no_proof_path_found")),
+                "graph_proof": false,
+            }));
+        }
+    }
+    let total = snippets
+        .iter()
+        .filter(|snippet| snippet.get("fallback_source").is_some())
+        .count()
+        .max(selected.len());
+    let omitted = total.saturating_sub(limit);
+    selected.truncate(limit);
+    (selected, omitted)
+}
+
+fn routing_follow_up_queries(
+    planning_packet: &Value,
+    retrieval_plan: &codegraph_query::RetrievalPlan,
+    limit: usize,
+) -> (Vec<Value>, usize) {
+    let mut queries = planning_packet
+        .get("follow_up_queries")
+        .and_then(Value::as_array)
+        .map(|queries| {
+            queries
+                .iter()
+                .map(|query| {
+                    json!({
+                        "query_text": query.get("query_text").cloned().unwrap_or(Value::Null),
+                        "path_scope": query.get("path_scope").cloned().unwrap_or_else(|| json!("*")),
+                        "why": query.get("why").or_else(|| query.get("reason")).cloned().unwrap_or_else(|| json!("derived from current evidence")),
+                        "expected_signal": query.get("expected_signal").cloned().unwrap_or_else(|| json!("source signal")),
+                        "risk": query.get("risk").cloned().unwrap_or_else(|| json!("candidate_only_until_verified")),
+                        "max_results_hint": query.get("max_results_hint").cloned().unwrap_or_else(|| json!(10)),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if queries.is_empty() {
+        queries.extend(retrieval_plan.query_atoms.iter().map(|atom| {
+            json!({
+                "query_text": atom.query_text,
+                "path_scope": if atom.path_hints.is_empty() { "*".to_string() } else { atom.path_hints.join(",") },
+                "why": atom.why,
+                "expected_signal": atom.expected_signal,
+                "risk": "candidate_only_until_verified",
+                "max_results_hint": atom.max_candidates,
+            })
+        }));
+    }
+    let omitted = queries.len().saturating_sub(limit);
+    queries.truncate(limit);
+    (queries, omitted)
+}
+
+fn routing_artifact_inspection_requirements(
+    task_kind: &str,
+    packet: &ContextPacket,
+    evidence: &[Value],
+    limit: usize,
+) -> Vec<Value> {
+    if !routing_task_requires_artifact_or_db_inspection(task_kind, packet) {
+        return Vec::new();
+    }
+    let evidence_ids = evidence
+        .iter()
+        .map(routing_evidence_id)
+        .take(3)
+        .collect::<Vec<_>>();
+    let mut requirements = vec![json!({
+        "claim": "final persisted artifact values",
+        "why": "source code alone does not prove the final persisted value",
+        "evidence_ids": evidence_ids,
+        "required": true,
+        "sentence": "Artifact or DB inspection is required for final persisted artifact values; source code alone does not prove the final persisted value.",
+    })];
+    if routing_task_touches_vector_metrics(task_kind, packet) {
+        requirements.push(json!({
+            "claim": "actual vector runtime sidecar and audit artifact bytes",
+            "fields": [
+                "runtime_sidecar_bytes",
+                "audit_artifact_bytes",
+                "actual_index_file_bytes",
+                "estimated_f32_payload_bytes",
+                "index_artifact_format",
+                "vector_payload_compression",
+                "pretty_json_overhead"
+            ],
+            "required": true,
+            "sentence": "Inspect the runtime sidecar, optional audit artifact, and DB passport before claiming vector artifact byte math; source code alone does not prove persisted values.",
+        }));
+    }
+    requirements.truncate(limit);
+    requirements
+}
+
+fn routing_db_inspection_requirements(
+    task_kind: &str,
+    evidence: &[Value],
+    limit: usize,
+) -> Vec<Value> {
+    if !matches!(
+        task_kind,
+        "implementation_trace"
+            | "storage_accounting_trace"
+            | "artifact_math_trace"
+            | "persistence_path_trace"
+            | "indexing_summary_trace"
+            | "codegraph_internal_debug"
+    ) {
+        return Vec::new();
+    }
+    let evidence_ids = evidence
+        .iter()
+        .map(routing_evidence_id)
+        .take(3)
+        .collect::<Vec<_>>();
+    let mut requirements = vec![json!({
+        "claim": "final persisted DB rows or lifecycle state",
+        "why": "source code alone does not prove DB row counts, stale-DB state, or persisted values",
+        "evidence_ids": evidence_ids,
+        "required": true,
+        "sentence": "Artifact or DB inspection is required for final persisted DB rows or lifecycle state; source code alone does not prove the final persisted value.",
+    })];
+    requirements.truncate(limit);
+    requirements
+}
+
+fn routing_task_requires_artifact_or_db_inspection(
+    task_kind: &str,
+    packet: &ContextPacket,
+) -> bool {
+    matches!(
+        task_kind,
+        "implementation_trace"
+            | "storage_accounting_trace"
+            | "artifact_math_trace"
+            | "persistence_path_trace"
+            | "indexing_summary_trace"
+            | "benchmark_metric_trace"
+    ) || routing_task_touches_vector_metrics(task_kind, packet)
+}
+
+fn routing_task_touches_vector_metrics(task_kind: &str, packet: &ContextPacket) -> bool {
+    matches!(
+        task_kind,
+        "storage_accounting_trace" | "artifact_math_trace" | "benchmark_metric_trace"
+    ) || packet.task.to_ascii_lowercase().contains("vector")
+        || packet.task.contains("actual_index_file_bytes")
+        || packet.task.contains("estimated_f32_payload_bytes")
+}
+
+fn routing_formulas_or_accounting_notes(
+    task_kind: &str,
+    packet: &ContextPacket,
+    limit: usize,
+) -> Vec<Value> {
+    let mut notes = Vec::new();
+    if routing_task_touches_vector_metrics(task_kind, packet) {
+        notes.push(routing_vector_metric_truth_note(packet));
+    }
+    if matches!(
+        task_kind,
+        "implementation_trace" | "storage_accounting_trace" | "artifact_math_trace"
+    ) {
+        notes.push(json!({
+            "note_id": "implementation_accounting_not_relation_proof",
+            "claim": "implementation accounting trace",
+            "proof_status": "not_graph_relation_proof",
+            "sentence": "This packet traces implementation accounting, not graph relation proof.",
+        }));
+    }
+    notes.truncate(limit);
+    notes
+}
+
+fn routing_vector_metric_truth_note(packet: &ContextPacket) -> Value {
+    let metrics = packet
+        .metadata
+        .get("vector_candidate_trace")
+        .and_then(|trace| trace.get("vector_index_metrics"));
+    let metric_value = |key: &str| metrics.and_then(|metrics| metrics.get(key)).cloned();
+    let actual = metric_value("actual_index_file_bytes").unwrap_or_else(|| json!("unknown"));
+    let estimated = metric_value("estimated_f32_payload_bytes").unwrap_or_else(|| json!("unknown"));
+    let artifact_kind = metric_value("artifact_kind").unwrap_or_else(|| json!("unknown"));
+    json!({
+        "note_id": "vector_metric_truthfulness",
+        "artifact_kind": artifact_kind,
+        "actual_index_file_bytes": actual,
+        "runtime_sidecar_bytes": metric_value("runtime_sidecar_bytes").unwrap_or_else(|| json!("unknown")),
+        "audit_artifact_bytes": metric_value("audit_artifact_bytes").unwrap_or_else(|| json!("unknown")),
+        "pretty_json_overhead": metric_value("pretty_json_overhead").unwrap_or_else(|| json!("unknown")),
+        "estimated_f32_payload_bytes": estimated,
+        "index_artifact_format": metric_value("index_artifact_format").unwrap_or_else(|| json!("pretty_json")),
+        "vector_payload_compression": metric_value("vector_payload_compression").unwrap_or_else(|| json!("none")),
+        "stores_chunk_text": metric_value("stores_chunk_text").unwrap_or_else(|| json!("unknown")),
+        "stores_chunk_metadata": metric_value("stores_chunk_metadata").unwrap_or_else(|| json!("unknown")),
+        "stores_full_source_body": metric_value("stores_full_source_body").unwrap_or_else(|| json!("unknown")),
+        "generated_total_chunks": metric_value("generated_total_chunks").unwrap_or_else(|| json!("unknown")),
+        "selected_total_chunks": metric_value("selected_total_chunks").unwrap_or_else(|| json!("unknown")),
+        "persisted_total_chunks": metric_value("persisted_total_chunks").unwrap_or_else(|| json!("unknown")),
+        "chunk_selection_strategy": metric_value("chunk_selection_strategy").unwrap_or_else(|| json!("diversity_ranked_v1")),
+        "input_order_cap": metric_value("input_order_cap").unwrap_or_else(|| json!(false)),
+        "not_compressed_vector_storage_claim": true,
+        "sentence": routing_vector_metric_sentence(&metric_value("artifact_kind").unwrap_or_else(|| json!("unknown")), &metric_value("actual_index_file_bytes").unwrap_or_else(|| json!("unknown")), &metric_value("estimated_f32_payload_bytes").unwrap_or_else(|| json!("unknown"))),
+    })
+}
+
+fn routing_vector_metric_sentence(
+    artifact_kind: &Value,
+    actual: &Value,
+    estimated: &Value,
+) -> String {
+    format!(
+        "{} reports {} as the inspected artifact size for that runtime/audit/legacy artifact; {} is the estimated raw float32 payload size. This is not a compressed-vector storage claim.",
+        routing_sentence_value(artifact_kind),
+        routing_sentence_value(actual),
+        routing_sentence_value(estimated)
+    )
+}
+
+fn routing_sentence_value(value: &Value) -> String {
+    value
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn routing_risks(
+    task_kind: &str,
+    packet: &ContextPacket,
+    text_evidence: &[Value],
+    formulas_or_accounting_notes: &[Value],
+    limit: usize,
+) -> Vec<Value> {
+    let mut risks = vec![json!({
+        "risk_id": "text_evidence_not_graph_proof",
+        "forbidden_claim": "graph relation proof",
+        "evidence_type": "text evidence",
+        "sentence": "Do not infer graph relation proof from text evidence.",
+    })];
+    if !text_evidence.is_empty() {
+        risks.push(json!({
+            "risk_id": "source_navigation_not_graph_proof",
+            "forbidden_claim": "verified graph path",
+            "evidence_type": "source navigation evidence",
+            "sentence": "Do not infer verified graph path from source navigation evidence.",
+        }));
+    }
+    if routing_task_touches_vector_metrics(task_kind, packet) {
+        risks.push(json!({
+            "risk_id": "pretty_json_not_compressed_storage",
+            "forbidden_claim": "compressed-vector storage",
+            "evidence_type": "pretty_json vector artifact",
+            "sentence": "Do not infer compressed-vector storage from pretty_json vector artifact.",
+        }));
+        risks.push(json!({
+            "risk_id": "vector_sidecar_not_complete_path_index",
+            "forbidden_claim": "complete file/path/symbol index",
+            "evidence_type": "selected vector runtime sidecar",
+            "sentence": "Do not treat the selected vector runtime sidecar as a complete file/path/symbol index.",
+        }));
+        risks.push(json!({
+            "risk_id": "audit_artifact_not_runtime_source",
+            "forbidden_claim": "runtime retrieval source",
+            "evidence_type": "vector audit artifact",
+            "sentence": "Do not treat the vector audit artifact as a runtime retrieval source.",
+        }));
+    }
+    if formulas_or_accounting_notes.iter().any(|note| {
+        note.get("note_id").and_then(Value::as_str) == Some("vector_metric_truthfulness")
+    }) {
+        risks.push(json!({
+            "risk_id": "artifact_bytes_not_payload_bytes",
+            "forbidden_claim": "raw float32 payload size equals JSON artifact bytes",
+            "evidence_type": "vector metric labels",
+            "sentence": "Do not infer raw float32 payload size equals JSON artifact bytes from vector metric labels.",
+        }));
+    }
+    if matches!(task_kind, "security_review") {
+        risks.push(json!({
+            "risk_id": "strings_comments_not_authorization_proof",
+            "forbidden_claim": "authorization enforcement",
+            "evidence_type": "comments or strings",
+            "sentence": "Do not infer authorization enforcement from comments or strings.",
+        }));
+    }
+    risks.truncate(limit);
+    risks
+}
+
+fn routing_unknowns(
+    task_kind: &str,
+    graph_proof: bool,
+    evidence_status: &str,
+    artifact_requirements: &[Value],
+    db_requirements: &[Value],
+) -> Vec<Value> {
+    let mut unknowns = Vec::new();
+    if !graph_proof {
+        unknowns.push(json!({
+            "claim": "graph relation proof",
+            "reason": "no_proof_path_found",
+            "sentence": "I could not prove graph relation proof. Treat this as unknown unless a later graph/source verification step proves it.",
+        }));
+    }
+    if evidence_status == "no_evidence_found" {
+        unknowns.push(json!({
+            "claim": "relevant source evidence",
+            "reason": "no_evidence_found",
+            "sentence": "I could not prove relevant source evidence. Treat this as unknown unless a later graph/source verification step proves it.",
+        }));
+    }
+    if !artifact_requirements.is_empty() {
+        unknowns.push(json!({
+            "claim": "final persisted artifact value",
+            "reason": "artifact_inspection_required",
+            "sentence": "I could not prove final persisted artifact value. Treat this as unknown unless a later graph/source verification step proves it.",
+        }));
+    }
+    if !db_requirements.is_empty() {
+        unknowns.push(json!({
+            "claim": "final persisted DB value",
+            "reason": "db_inspection_required",
+            "sentence": "I could not prove final persisted DB value. Treat this as unknown unless a later graph/source verification step proves it.",
+        }));
+    }
+    if task_kind == "unknown" {
+        unknowns.push(json!({
+            "claim": "task-specific routing intent",
+            "reason": "unknown_or_ambiguous_task",
+            "sentence": "I could not prove task-specific routing intent. Treat this as unknown unless a later graph/source verification step proves it.",
+        }));
+    }
+    unknowns
+}
+
+fn routing_validation_steps(
+    task_kind: &str,
+    critical_files: &[Value],
+    evidence: &[Value],
+    artifact_requirements: &[Value],
+    formulas: &[Value],
+    limit: usize,
+) -> Vec<Value> {
+    let evidence_ids = evidence
+        .iter()
+        .map(routing_evidence_id)
+        .take(4)
+        .collect::<Vec<_>>();
+    let mut steps = match task_kind {
+        "build_system_package_authoring" => vec![
+            routing_validation_step("Validate menuconfig visibility for the new package Config.in entry.", &evidence_ids, "package menu wiring can be wrong even when text evidence is present", "Buildroot package authoring", "general_validation_hint"),
+            routing_validation_step("Validate the package build target after adding the .mk file.", &evidence_ids, "metadata and build hooks require a build check", "Buildroot package authoring", "general_validation_hint"),
+            routing_validation_step("Validate download hashes when a .hash file or download URL is used.", &evidence_ids, "download evidence does not prove hash correctness", "Buildroot download infrastructure", "general_validation_hint"),
+        ],
+        "storage_accounting_trace" | "artifact_math_trace" | "benchmark_metric_trace" => vec![
+            routing_validation_step("Validate release JSON/report output uses actual_index_file_bytes for JSON artifact bytes.", &evidence_ids, "metric label drift can create false storage claims", "vector metric reporting", "exact_recommendation"),
+            routing_validation_step("Validate estimated_f32_payload_bytes is reported as estimated raw float32 payload.", &evidence_ids, "estimated payload bytes are not artifact bytes", "vector metric reporting", "exact_recommendation"),
+            routing_validation_step("Inspect the vector index artifact before claiming final persisted bytes.", &routing_requirement_ids(artifact_requirements), "source code alone does not prove persisted artifact values", "artifact inspection", "exact_recommendation"),
+        ],
+        "implementation_trace" | "persistence_path_trace" | "indexing_summary_trace" => vec![
+            routing_validation_step("Inspect definition, helper, and related test spans before editing.", &evidence_ids, "implementation traces can miss same-file helper behavior", "implementation trace", "exact_recommendation"),
+            routing_validation_step("Inspect artifact or DB evidence before claiming final persisted values.", &routing_requirement_ids(artifact_requirements), "source code alone does not prove persisted values", "artifact/DB inspection", "exact_recommendation"),
+        ],
+        "test_impact" => vec![routing_validation_step(
+            "Validate production target and affected test files together.",
+            &evidence_ids,
+            "test-only evidence does not prove production behavior",
+            "test impact",
+            "exact_recommendation",
+        )],
+        "dataflow_trace" => vec![routing_validation_step(
+            "Validate source, sanitizer, and sink spans before claiming dataflow.",
+            &evidence_ids,
+            "source/sink text alone is not a verified dataflow path",
+            "dataflow",
+            "exact_recommendation",
+        )],
+        "security_review" => vec![routing_validation_step(
+            "Validate authorization gate and role check execution path before claiming enforcement.",
+            &evidence_ids,
+            "comments and role strings are not authorization proof",
+            "security",
+            "exact_recommendation",
+        )],
+        "docs_lookup" => vec![routing_validation_step(
+            "Validate the docs source text before using it as implementation guidance.",
+            &evidence_ids,
+            "documentation text is not graph proof",
+            "docs",
+            "general_validation_hint",
+        )],
+        _ => vec![routing_validation_step(
+            "Inspect the top candidate files before making task-specific claims.",
+            &critical_files
+                .iter()
+                .filter_map(|file| file.get("evidence_ids").and_then(Value::as_array))
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .take(3)
+                .collect::<Vec<_>>(),
+            "unknown task routing is conservative",
+            "unknown",
+            "general_validation_hint",
+        )],
+    };
+    if !formulas.is_empty()
+        && !steps.iter().any(|step| {
+            step.get("description")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .contains("actual_index_file_bytes")
+        })
+    {
+        steps.push(routing_validation_step(
+            "Compare artifact bytes vs estimated payload bytes only through the correctly labeled fields.",
+            &evidence_ids,
+            "field confusion can imply compressed storage that does not exist",
+            "vector metric reporting",
+            "exact_recommendation",
+        ));
+    }
+    steps.truncate(limit);
+    steps
+}
+
+fn routing_validation_step(
+    description: &str,
+    evidence_ids: &[String],
+    risk: &str,
+    scope: &str,
+    recommendation_kind: &str,
+) -> Value {
+    json!({
+        "description": description,
+        "command_hint": Value::Null,
+        "evidence_ids": evidence_ids,
+        "risk": risk,
+        "scope": scope,
+        "recommendation_kind": recommendation_kind,
+    })
+}
+
+fn routing_requirement_ids(requirements: &[Value]) -> Vec<String> {
+    requirements
+        .iter()
+        .enumerate()
+        .map(|(index, requirement)| {
+            requirement
+                .get("claim")
+                .and_then(Value::as_str)
+                .map(|claim| format!("requirement://{}", context_agent_stable_component(claim)))
+                .unwrap_or_else(|| format!("requirement://{}", index + 1))
+        })
+        .collect()
+}
+
+fn routing_edit_plan(
+    task_kind: &str,
+    critical_files: &[Value],
+    evidence: &[Value],
+    artifact_requirements: &[Value],
+    formulas: &[Value],
+    limit: usize,
+) -> Vec<Value> {
+    let evidence_ids = evidence
+        .iter()
+        .map(routing_evidence_id)
+        .take(4)
+        .collect::<Vec<_>>();
+    let mut steps = match task_kind {
+        "build_system_package_authoring" => vec![
+            routing_edit_step("Create package/<name>/Config.in.", &evidence_ids, "source_text_evidence", "package name, prompts, dependencies, and selects remain task-specific", "Validate menuconfig visibility."),
+            routing_edit_step("Add a source line to package/Config.in.", &evidence_ids, "source_text_evidence", "top-level menu placement may vary by package category", "Validate menuconfig/package menu wiring."),
+            routing_edit_step("Create package/<name>/<name>.mk with VERSION, SITE, LICENSE, and DEPENDENCIES as needed.", &evidence_ids, "source_navigation_evidence", "metadata values are package-specific and not proven by examples", "Validate package build target."),
+            routing_edit_step("End the package makefile with $(eval $(generic-package)) or the appropriate package macro.", &evidence_ids, "source_navigation_evidence", "host or specialized package macros may be required for some packages", "Inspect package infrastructure docs before choosing the macro."),
+            routing_edit_step("Add package/<name>/<name>.hash if downloads are used.", &evidence_ids, "source_text_evidence", "download URLs do not prove hash correctness", "Validate hashes after fetching."),
+        ],
+        "storage_accounting_trace" | "artifact_math_trace" | "benchmark_metric_trace" => vec![
+            routing_edit_step("Identify vector chunk index build and selection spans.", &evidence_ids, "source_navigation_evidence", "source spans do not prove final persisted artifact bytes", "Inspect artifact output before claiming final values."),
+            routing_edit_step("Preserve generated, selected, and persisted chunk counts as distinct values.", &evidence_ids, "source_navigation_evidence", "count collapse would hide selection behavior", "Validate release JSON/report output."),
+            routing_edit_step("Compare artifact bytes vs estimated payload bytes only through actual_index_file_bytes and estimated_f32_payload_bytes.", &evidence_ids, "source_navigation_evidence", "metric label confusion can imply nonexistent compression", "Validate metric labels in release output."),
+        ],
+        "implementation_trace" | "persistence_path_trace" | "indexing_summary_trace" => vec![
+            routing_edit_step("Identify definition and same-file helper spans before editing.", &evidence_ids, "source_navigation_evidence", "helper behavior can be missed by a definition-only trace", "Inspect definition and helper spans first."),
+            routing_edit_step("Inspect artifact or DB evidence when source code alone cannot prove final persisted values.", &routing_requirement_ids(artifact_requirements), "artifact_or_db_inspection_required", "source code alone is not persisted value proof", "Inspect artifact/DB evidence before claiming final values."),
+        ],
+        "test_impact" => vec![routing_edit_step(
+            "Edit the production helper only after mapping affected tests and assertions.",
+            &evidence_ids,
+            "source_navigation_evidence",
+            "test-only evidence can miss production callers",
+            "Run targeted affected tests after editing.",
+        )],
+        _ => Vec::new(),
+    };
+    if !formulas.is_empty()
+        && !steps.iter().any(|step| {
+            step.get("step")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .contains("estimated_f32_payload_bytes")
+        })
+    {
+        steps.push(routing_edit_step(
+            "Preserve vector metric truthfulness if this edit touches vector accounting surfaces.",
+            &evidence_ids,
+            "source_navigation_evidence",
+            "pretty_json artifact bytes are not compressed-vector storage",
+            "Validate actual_index_file_bytes and estimated_f32_payload_bytes labels.",
+        ));
+    }
+    steps.truncate(limit);
+    let _ = critical_files;
+    steps
+}
+
+fn routing_edit_step(
+    step: &str,
+    evidence_ids: &[String],
+    claimability: &str,
+    unknowns: &str,
+    validation_hint: &str,
+) -> Value {
+    json!({
+        "step": step,
+        "evidence_ids": evidence_ids,
+        "claimability": claimability,
+        "risk": "requires source inspection before edit",
+        "unknowns": [unknowns],
+        "validation_hint": validation_hint,
+    })
+}
+
+fn routing_expansion_handles(evidence: &[Value], limit: usize) -> Vec<Value> {
+    evidence
+        .iter()
+        .take(limit)
+        .enumerate()
+        .map(|(index, item)| {
+            json!({
+                "handle_id": format!("routing-evidence-{}", index + 1),
+                "role": item.get("role").cloned().unwrap_or_else(|| json!("unknown")),
+                "description": format!(
+                    "Expand {} evidence around {}",
+                    item.get("role").and_then(Value::as_str).unwrap_or("source"),
+                    item.get("file").and_then(Value::as_str).unwrap_or("unknown")
+                ),
+                "estimated_bytes": 2048,
+                "evidence_ids": [routing_evidence_id(item)],
+                "safety_label": "opaque_future_expansion_handle",
+                "claimability": item.get("claimability").cloned().unwrap_or_else(|| json!({"claimable_as": [], "not_claimable_as": ["graph_relation_proof"]})),
+                "valid_for_db_passport": true,
+                "expansion_command_available": false,
+            })
+        })
+        .collect()
+}
+
+fn routing_retrieval_plan_summary(
+    retrieval_plan: &codegraph_query::RetrievalPlan,
+    evidence: &[Value],
+    budgets: RoutingPacketBudgets,
+) -> Value {
+    let query_atoms = retrieval_plan
+        .query_atoms
+        .iter()
+        .map(|atom| {
+            let matched = evidence
+                .iter()
+                .filter(|item| item.get("role").and_then(Value::as_str) == Some(atom.role.as_str()))
+                .collect::<Vec<_>>();
+            let candidate_sources = matched
+                .iter()
+                .flat_map(|item| routing_string_values(item, "candidate_sources"))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            json!({
+                "role": atom.role,
+                "query_text": atom.query_text,
+                "path_hints": atom.path_hints,
+                "file_kind_hints": atom.file_kind_hints,
+                "evidence_role_filter": atom.evidence_role_filter,
+                "candidate_source_preference": atom.candidate_source_preference,
+                "max_candidates": atom.max_candidates,
+                "why": atom.why,
+                "expected_signal": atom.expected_signal,
+                "proof_expectation": atom.proof_expectation,
+                "matched_candidate_count": matched.len(),
+                "selected_evidence_ids": matched.iter().map(|item| routing_evidence_id(item)).take(atom.max_candidates.min(3)).collect::<Vec<_>>(),
+                "candidate_sources_seen": candidate_sources,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "plan_id": retrieval_plan.plan_id,
+        "task_intent_id": retrieval_plan.task_intent_id,
+        "profile_id": retrieval_plan.profile_id,
+        "query_atoms": query_atoms,
+        "candidate_branches": retrieval_plan.candidate_branches,
+        "role_budget": retrieval_plan.role_budget,
+        "proof_attempt_policy": retrieval_plan.proof_attempt_policy,
+        "fallback_policy": retrieval_plan.fallback_policy,
+        "max_candidates": retrieval_plan.max_candidates,
+        "max_files": retrieval_plan.max_files,
+        "max_snippets": retrieval_plan.max_snippets,
+        "max_output_bytes": retrieval_plan.max_output_bytes,
+        "explain_level": retrieval_plan.explain_level,
+        "packet_role_budget": budgets.critical_files_budget,
+    })
+}
+
+fn routing_claimability_json(
+    lifecycle_claimable: bool,
+    db_lifecycle_read: &Value,
+    proof_status: &str,
+    graph_proof: bool,
+    evidence_status: &str,
+    text_evidence_available: bool,
+) -> Value {
+    let diagnostic_only = db_lifecycle_read
+        .get("diagnostic_only")
+        .and_then(Value::as_bool)
+        .unwrap_or(!lifecycle_claimable);
+    let claimable =
+        lifecycle_claimable && !diagnostic_only && (graph_proof || text_evidence_available);
+    let claimable_as = if graph_proof && claimable {
+        vec!["graph_relation_proof", "source_text_existence"]
+    } else if text_evidence_available && claimable {
+        vec!["source_text_existence"]
+    } else {
+        Vec::new()
+    };
+    json!({
+        "claimable": claimable,
+        "diagnostic_only": diagnostic_only,
+        "claimable_as": claimable_as,
+        "not_claimable_as": if graph_proof && claimable { Vec::<&str>::new() } else { vec!["graph_relation_proof"] },
+        "proof_status": proof_status,
+        "graph_proof": graph_proof,
+        "evidence_status": evidence_status,
+        "lifecycle_blocker": db_lifecycle_read.get("reason").or_else(|| db_lifecycle_read.get("status")).cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn routing_deterministic_sentences(
+    task_kind: &str,
+    task_intent: &Value,
+    graph_proof: bool,
+    proof_path_count: usize,
+    text_evidence: &[Value],
+    unknowns: &[Value],
+    risks: &[Value],
+    critical_files: &[Value],
+    artifact_requirements: &[Value],
+    db_requirements: &[Value],
+    formulas: &[Value],
+    db_lifecycle_read: &Value,
+) -> Value {
+    let signals = task_intent
+        .get("signals")
+        .and_then(Value::as_array)
+        .map(|signals| {
+            signals
+                .iter()
+                .filter_map(Value::as_str)
+                .take(4)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|signals| !signals.is_empty())
+        .unwrap_or_else(|| "no strong signals".to_string());
+    let intent = format!("I classified this as {task_kind} because I found {signals}.");
+    let proof = if graph_proof {
+        format!("I found {proof_path_count} verified graph proof path(s).")
+    } else {
+        "I found no verified graph proof path. This packet uses source text evidence only."
+            .to_string()
+    };
+    let implementation_trace = matches!(
+        task_kind,
+        "implementation_trace"
+            | "storage_accounting_trace"
+            | "artifact_math_trace"
+            | "persistence_path_trace"
+            | "indexing_summary_trace"
+            | "benchmark_metric_trace"
+    )
+    .then(|| {
+        "I did not find a verified graph proof path, but I found source-navigation evidence for the implementation surface.".to_string()
+    });
+    let accounting_trace = matches!(
+        task_kind,
+        "storage_accounting_trace" | "artifact_math_trace" | "benchmark_metric_trace"
+    )
+    .then(|| "This packet traces implementation accounting, not graph relation proof.".to_string());
+    let text_evidence_sentences = text_evidence
+        .iter()
+        .take(3)
+        .map(|evidence| {
+            let file = evidence
+                .get("file")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let role = evidence
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("source evidence");
+            let matched = evidence
+                .get("matched_signal")
+                .and_then(Value::as_str)
+                .unwrap_or("a source text signal");
+            format!("{file} is included as {role} because {matched}. This is source text evidence, not graph proof.")
+        })
+        .collect::<Vec<_>>();
+    let unknown_sentences = unknowns
+        .iter()
+        .take(3)
+        .filter_map(|unknown| {
+            unknown
+                .get("sentence")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    let risk_sentences = risks
+        .iter()
+        .take(3)
+        .filter_map(|risk| {
+            risk.get("sentence")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    let next_inspection = critical_files.first().map(|file| {
+        format!(
+            "Inspect {} first because {}.",
+            file.get("file")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+            file.get("why")
+                .and_then(Value::as_str)
+                .unwrap_or("it is the top-ranked role-diverse evidence")
+        )
+    });
+    let artifact_db = artifact_requirements
+        .first()
+        .or_else(|| db_requirements.first())
+        .and_then(|requirement| requirement.get("sentence").and_then(Value::as_str))
+        .map(str::to_string);
+    let diagnostic = db_lifecycle_read
+        .get("diagnostic_only")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        .then(|| {
+            format!(
+                "This packet is diagnostic_only because {}. Do not use it as claimable evidence.",
+                db_lifecycle_read
+                    .get("reason")
+                    .or_else(|| db_lifecycle_read.get("status"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("lifecycle_blocker")
+            )
+        });
+    let vector_metric_truthfulness = formulas
+        .iter()
+        .find(|note| {
+            note.get("note_id").and_then(Value::as_str) == Some("vector_metric_truthfulness")
+        })
+        .and_then(|note| note.get("sentence").and_then(Value::as_str))
+        .map(str::to_string);
+    json!({
+        "intent": intent,
+        "proof": proof,
+        "implementation_trace": implementation_trace,
+        "accounting_trace": accounting_trace,
+        "text_evidence": text_evidence_sentences,
+        "unknown": unknown_sentences,
+        "risk": risk_sentences,
+        "next_inspection": next_inspection,
+        "artifact_db_inspection": artifact_db,
+        "diagnostic": diagnostic,
+        "vector_metric_truthfulness": vector_metric_truthfulness,
+    })
+}
+
 fn context_pack_metadata_u64(packet: &ContextPacket, key: &str) -> Value {
     packet
         .metadata
@@ -21959,6 +26917,18 @@ fn context_pack_agent_json_response(
     let candidate_total_count = candidate_set.total_count;
     let candidate_omitted_count = candidate_set.omitted_count;
     let candidate_exact_seed_cap_override = candidate_set.exact_seed_cap_override;
+    let proof_strength = context_pack_response_proof_strength(
+        graph_proof,
+        &fallback_evidence,
+        &snippets,
+        &candidate_set,
+    );
+    let staged_availability = staged_availability_for_packet(packet, db_lifecycle_read);
+    let staged_fields = if options.explain {
+        staged_availability_top_level_fields(&staged_availability)
+    } else {
+        staged_availability_compact_top_level_fields(&staged_availability)
+    };
     let (candidate_values_vec, candidate_compacted) =
         context_pack_candidate_values_with_compact_fallback(&candidate_set.candidates);
     let candidate_values = Value::Array(candidate_values_vec.clone());
@@ -22032,6 +27002,21 @@ fn context_pack_agent_json_response(
         graph_proof,
         omitted_paths + omitted_snippets + omitted_fallback_evidence,
     );
+    let routing_packet = context_pack_routing_packet_json(
+        options,
+        packet,
+        db_lifecycle_read,
+        &planning_packet,
+        &candidate_set,
+        &paths,
+        &fallback_evidence,
+        &snippets,
+        lifecycle_claimable,
+        proof_status,
+        graph_proof,
+        evidence_status,
+        omitted_paths + omitted_snippets + omitted_fallback_evidence,
+    );
     let fallback_snippets = snippets
         .iter()
         .filter(|snippet| snippet.get("fallback_source").is_some())
@@ -22102,6 +27087,7 @@ fn context_pack_agent_json_response(
         "proof_paths": Value::Null,
         "proof_path_available": proof_path_available,
         "proof_status": proof_status,
+        "proof_strength": proof_strength,
         "graph_proof": graph_proof,
         "evidence_status": evidence_status,
         "graph_verification": graph_verification,
@@ -22114,7 +27100,7 @@ fn context_pack_agent_json_response(
         "snippets": snippets,
         "recommended_tests": recommended_tests,
         "risks": risks,
-        "warnings": [],
+        "warnings": staged_warning_values(&staged_availability),
         "errors": [],
         "result_count": paths.len() + packet.metadata
             .get("fallback_evidence")
@@ -22133,6 +27119,13 @@ fn context_pack_agent_json_response(
         }
         object.insert("retrieval_architecture".to_string(), retrieval_architecture);
         object.insert("planning_packet".to_string(), planning_packet);
+        object.insert("routing_packet".to_string(), routing_packet);
+        if options.explain {
+            object.insert(
+                "staged_availability".to_string(),
+                staged_availability.clone(),
+            );
+        }
         object.insert("fallback_snippets".to_string(), json!(fallback_snippets));
         object.insert(
             "selected_role_coverage".to_string(),
@@ -22188,9 +27181,16 @@ fn context_pack_agent_json_response(
             object.insert("claimability".to_string(), claimability);
         }
     }
+    merge_json_object(&mut response, staged_fields);
+    if let Some(claimability) = packet.metadata.get("claimability").cloned() {
+        if let Some(object) = response.as_object_mut() {
+            object.insert("claimability".to_string(), claimability);
+        }
+    }
 
     let mut max_output_bytes_exceeded = false;
     let mut omitted_retrieval_architecture = 0;
+    let mut omitted_routing_packet = 0;
     for _ in 0..8 {
         let omitted_by_size =
             enforce_context_agent_max_output_bytes(&mut response, max_output_bytes);
@@ -22201,6 +27201,7 @@ fn context_pack_agent_json_response(
         omitted_recommended_tests += omitted_by_size.recommended_tests;
         omitted_risks += omitted_by_size.risks;
         omitted_planning_packet += omitted_by_size.planning_packet;
+        omitted_routing_packet += omitted_by_size.routing_packet;
         max_output_bytes_exceeded |= omitted_by_size.max_output_bytes_exceeded;
         update_context_agent_truncation(
             &mut response,
@@ -22212,6 +27213,7 @@ fn context_pack_agent_json_response(
             omitted_recommended_tests,
             omitted_risks,
             omitted_planning_packet,
+            omitted_routing_packet,
             max_output_bytes_exceeded,
         );
         if serialized_json_len(&response) <= max_output_bytes || max_output_bytes_exceeded {
@@ -22228,9 +27230,29 @@ fn context_pack_agent_json_response(
         omitted_recommended_tests,
         omitted_risks,
         omitted_planning_packet,
+        omitted_routing_packet,
         max_output_bytes_exceeded,
     );
     if candidate_count > 0 {
+        let candidate_bytes = serialized_json_len(&candidate_values);
+        if serialized_json_len(&response).saturating_add(candidate_bytes) > max_output_bytes
+            && compact_context_agent_routing_packet(&mut response)
+        {
+            omitted_routing_packet += 1;
+            update_context_agent_truncation(
+                &mut response,
+                path_limit,
+                omitted_retrieval_architecture,
+                omitted_paths,
+                omitted_snippets,
+                omitted_fallback_evidence,
+                omitted_recommended_tests,
+                omitted_risks,
+                omitted_planning_packet,
+                omitted_routing_packet,
+                max_output_bytes_exceeded,
+            );
+        }
         let mut candidate_response = response.clone();
         if let Some(object) = candidate_response.as_object_mut() {
             object.insert("candidates".to_string(), candidate_values);
@@ -23275,6 +28297,7 @@ struct ContextAgentSizeOmissions {
     recommended_tests: usize,
     risks: usize,
     planning_packet: usize,
+    routing_packet: usize,
     max_output_bytes_exceeded: bool,
 }
 
@@ -23290,43 +28313,6 @@ fn enforce_context_agent_max_output_bytes(
     {
         if remove_context_agent_field(response, "retrieval_architecture") {
             omitted.retrieval_architecture += 1;
-            continue;
-        }
-        if pop_context_agent_array_item(response, "snippets") {
-            omitted.snippets += 1;
-            continue;
-        }
-        if pop_context_agent_array_item(response, "fallback_snippets") {
-            omitted.snippets += 1;
-            continue;
-        }
-        if pop_context_agent_array_item(response, "recommended_tests") {
-            omitted.recommended_tests += 1;
-            continue;
-        }
-        if pop_context_agent_array_item(response, "risks") {
-            omitted.risks += 1;
-            continue;
-        }
-        if pop_context_agent_array_item(response, "fallback_evidence") {
-            omitted.fallback_evidence += 1;
-            if let Some(object) = response.as_object_mut() {
-                let fallback_count = object
-                    .get("fallback_evidence")
-                    .and_then(Value::as_array)
-                    .map(Vec::len)
-                    .unwrap_or_default();
-                object.insert("fallback_evidence_count".to_string(), json!(fallback_count));
-            }
-            continue;
-        }
-        if pop_context_agent_array_item(response, "paths") {
-            omitted.paths += 1;
-            if let Some(object) = response.as_object_mut() {
-                if let Some(paths) = object.get("paths").cloned() {
-                    object.insert("proof_paths".to_string(), paths);
-                }
-            }
             continue;
         }
         if pop_context_agent_planning_array_item(response, "evidence_items") {
@@ -23353,6 +28339,91 @@ fn enforce_context_agent_max_output_bytes(
             omitted.planning_packet += 1;
             continue;
         }
+        if pop_context_agent_routing_array_item(response, "expansion_handles") {
+            omitted.routing_packet += 1;
+            continue;
+        }
+        if pop_context_agent_routing_array_item(response, "edit_plan") {
+            omitted.routing_packet += 1;
+            continue;
+        }
+        if pop_context_agent_routing_array_item(response, "validation_steps") {
+            omitted.routing_packet += 1;
+            continue;
+        }
+        if pop_context_agent_routing_array_item(response, "follow_up_queries") {
+            omitted.routing_packet += 1;
+            continue;
+        }
+        if pop_context_agent_routing_array_item(response, "risks") {
+            omitted.routing_packet += 1;
+            continue;
+        }
+        if pop_context_agent_routing_array_item(response, "formulas_or_accounting_notes") {
+            omitted.routing_packet += 1;
+            continue;
+        }
+        if pop_context_agent_routing_array_item(response, "critical_symbols") {
+            omitted.routing_packet += 1;
+            continue;
+        }
+        if compact_context_agent_routing_packet(response) {
+            omitted.routing_packet += 1;
+            continue;
+        }
+        if remove_context_agent_field(response, "planning_packet") {
+            omitted.planning_packet += 1;
+            continue;
+        }
+        if pop_context_agent_array_item_preserve_one(response, "recommended_tests") {
+            omitted.recommended_tests += 1;
+            continue;
+        }
+        if pop_context_agent_array_item(response, "risks") {
+            omitted.risks += 1;
+            continue;
+        }
+        if pop_context_agent_array_item(response, "snippets") {
+            omitted.snippets += 1;
+            continue;
+        }
+        if pop_context_agent_array_item_preserve_one(response, "fallback_snippets") {
+            omitted.snippets += 1;
+            continue;
+        }
+        if pop_context_agent_array_item(response, "fallback_evidence") {
+            omitted.fallback_evidence += 1;
+            if let Some(object) = response.as_object_mut() {
+                let fallback_count = object
+                    .get("fallback_evidence")
+                    .and_then(Value::as_array)
+                    .map(Vec::len)
+                    .unwrap_or_default();
+                object.insert("fallback_evidence_count".to_string(), json!(fallback_count));
+            }
+            continue;
+        }
+        if pop_context_agent_routing_array_item(response, "critical_files") {
+            omitted.routing_packet += 1;
+            continue;
+        }
+        if pop_context_agent_routing_array_item(response, "text_evidence") {
+            omitted.routing_packet += 1;
+            continue;
+        }
+        if pop_context_agent_array_item(response, "paths") {
+            omitted.paths += 1;
+            if let Some(object) = response.as_object_mut() {
+                if let Some(paths) = object.get("paths").cloned() {
+                    object.insert("proof_paths".to_string(), paths);
+                }
+            }
+            continue;
+        }
+        if remove_context_agent_field(response, "routing_packet") {
+            omitted.routing_packet += 1;
+            continue;
+        }
         omitted.max_output_bytes_exceeded = true;
         break;
     }
@@ -23370,6 +28441,17 @@ fn pop_context_agent_array_item(response: &mut Value, key: &str) -> bool {
         return false;
     };
     if array.is_empty() {
+        return false;
+    }
+    array.pop();
+    true
+}
+
+fn pop_context_agent_array_item_preserve_one(response: &mut Value, key: &str) -> bool {
+    let Some(array) = response.get_mut(key).and_then(Value::as_array_mut) else {
+        return false;
+    };
+    if array.len() <= 1 {
         return false;
     }
     array.pop();
@@ -23406,6 +28488,115 @@ fn pop_context_agent_planning_array_item(response: &mut Value, key: &str) -> boo
     popped
 }
 
+fn pop_context_agent_routing_array_item(response: &mut Value, key: &str) -> bool {
+    let Some(packet) = response
+        .get_mut("routing_packet")
+        .and_then(Value::as_object_mut)
+    else {
+        return false;
+    };
+    let popped = packet
+        .get_mut(key)
+        .and_then(Value::as_array_mut)
+        .is_some_and(|array| array.pop().is_some());
+    if popped {
+        let omitted_count = packet
+            .get("omitted_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            + 1;
+        packet.insert("omitted_count".to_string(), json!(omitted_count));
+        if let Some(status) = packet
+            .get_mut("budget_status")
+            .and_then(Value::as_object_mut)
+        {
+            let omitted_by_budget = status
+                .get("omitted_by_budget")
+                .and_then(Value::as_u64)
+                .unwrap_or_default()
+                + 1;
+            status.insert("omitted_by_budget".to_string(), json!(omitted_by_budget));
+            status.insert("status".to_string(), json!("bounded_with_omissions"));
+        }
+    }
+    popped
+}
+
+fn compact_context_agent_routing_packet(response: &mut Value) -> bool {
+    let Some(packet) = response.get_mut("routing_packet") else {
+        return false;
+    };
+    if packet
+        .get("budget_status")
+        .and_then(|status| status.get("routing_packet_compacted"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let query_atom_roles = packet
+        .pointer("/retrieval_plan_summary/query_atoms")
+        .and_then(Value::as_array)
+        .map(|atoms| {
+            atoms
+                .iter()
+                .filter_map(|atom| atom.get("role").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let compact_retrieval_plan = json!({
+        "plan_id": packet.pointer("/retrieval_plan_summary/plan_id").cloned().unwrap_or(Value::Null),
+        "profile_id": packet.pointer("/retrieval_plan_summary/profile_id").cloned().unwrap_or(Value::Null),
+        "query_atom_roles": query_atom_roles,
+        "proof_attempt_policy": packet.pointer("/retrieval_plan_summary/proof_attempt_policy").cloned().unwrap_or(Value::Null),
+        "fallback_policy": packet.pointer("/retrieval_plan_summary/fallback_policy").cloned().unwrap_or(Value::Null),
+        "compacted": true,
+    });
+    let compact = json!({
+        "packet_kind": packet.get("packet_kind").cloned().unwrap_or_else(|| json!("agent_routing_packet")),
+        "schema_version": packet.get("schema_version").cloned().unwrap_or_else(|| json!(1)),
+        "task_intent": packet.get("task_intent").cloned().unwrap_or(Value::Null),
+        "task_profile": packet.get("task_profile").cloned().unwrap_or(Value::Null),
+        "task_roles": packet.get("task_roles").cloned().unwrap_or_else(|| json!([])),
+        "retrieval_plan_summary": compact_retrieval_plan,
+        "claimability": packet.get("claimability").cloned().unwrap_or(Value::Null),
+        "critical_files": routing_take_array(packet, "critical_files", 4),
+        "critical_symbols": routing_take_array(packet, "critical_symbols", 4),
+        "verified_paths": routing_take_array(packet, "verified_paths", 2),
+        "text_evidence": routing_take_array(packet, "text_evidence", 2),
+        "source_navigation_evidence": routing_take_array(packet, "source_navigation_evidence", 3),
+        "fallback_snippets": routing_take_array(packet, "fallback_snippets", 2),
+        "unknowns": routing_take_array(packet, "unknowns", 3),
+        "risks": routing_take_array(packet, "risks", 3),
+        "validation_steps": routing_take_array(packet, "validation_steps", 2),
+        "follow_up_queries": routing_take_array(packet, "follow_up_queries", 3),
+        "expansion_command_available": packet.get("expansion_command_available").cloned().unwrap_or_else(|| json!(false)),
+        "artifact_inspection_requirements": routing_take_array(packet, "artifact_inspection_requirements", 2),
+        "db_inspection_requirements": routing_take_array(packet, "db_inspection_requirements", 2),
+        "formulas_or_accounting_notes": routing_take_array(packet, "formulas_or_accounting_notes", 2),
+        "omitted_count": packet.get("omitted_count").cloned().unwrap_or_else(|| json!(0)),
+        "budget_status": {
+            "status": "bounded_with_omissions",
+            "routing_packet_compacted": true,
+            "fallback_snippets_survive_compaction": true,
+            "source_navigation_evidence_survives_for_implementation_trace": true,
+            "explain_debug_budget_separate": true,
+        },
+        "deterministic_summary": packet.get("deterministic_summary").cloned().unwrap_or(Value::Null),
+    });
+    *packet = compact;
+    true
+}
+
+fn routing_take_array(packet: &Value, key: &str, limit: usize) -> Value {
+    packet
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| Value::Array(items.iter().take(limit).cloned().collect()))
+        .unwrap_or_else(|| json!([]))
+}
+
 fn update_context_agent_truncation(
     response: &mut Value,
     path_limit: usize,
@@ -23416,6 +28607,7 @@ fn update_context_agent_truncation(
     omitted_recommended_tests: usize,
     omitted_risks: usize,
     omitted_planning_packet: usize,
+    omitted_routing_packet: usize,
     max_output_bytes_exceeded: bool,
 ) {
     let returned_paths = response
@@ -23434,7 +28626,8 @@ fn update_context_agent_truncation(
         + omitted_fallback_evidence
         + omitted_recommended_tests
         + omitted_risks
-        + omitted_planning_packet;
+        + omitted_planning_packet
+        + omitted_routing_packet;
     let omitted_by_budget =
         omitted_paths + omitted_snippets + omitted_fallback_evidence + omitted_planning_packet;
     let byte_count = serde_json::to_vec(response)
@@ -23475,6 +28668,7 @@ fn update_context_agent_truncation(
                 "recommended_tests": omitted_recommended_tests,
                 "risks": omitted_risks,
                 "planning_packet": omitted_planning_packet,
+                "routing_packet": omitted_routing_packet,
             }),
         );
         object.insert(
@@ -24811,6 +30005,23 @@ fn index_summary_concise_json(summary: &IndexSummary, wall_ms: f64) -> Result<Va
         "issue_counts": summary.issue_counts,
         "issues_count": summary.issues.len(),
         "scope": index_scope_summary_json(summary),
+        "candidate_spool": summary.candidate_spool.clone(),
+        "candidate_spool_status": summary
+            .candidate_spool
+            .as_ref()
+            .map(|spool| spool.candidate_spool_status.clone())
+            .unwrap_or_else(|| "no_spool".to_string()),
+        "candidate_spool_path": summary
+            .candidate_spool
+            .as_ref()
+            .map(|spool| spool.candidate_spool_path.clone()),
+        "spooled_total_chunks": summary
+            .candidate_spool
+            .as_ref()
+            .map(|spool| spool.spooled_total_chunks)
+            .unwrap_or(0),
+        "candidate_only": true,
+        "graph_proof": false,
         "artifact_freshness": index_artifact_freshness_json(summary),
         "output_contract": {
             "scope_examples_included": false,
@@ -24849,6 +30060,20 @@ fn index_summary_agent_json(summary: &IndexSummary, wall_ms: f64) -> Result<Valu
         json!(index_warning_count(summary)),
     );
     summary_object.insert("scope".to_string(), index_scope_summary_json(summary));
+    summary_object.insert(
+        "candidate_spool".to_string(),
+        serde_json::to_value(summary.candidate_spool.clone()).map_err(|error| error.to_string())?,
+    );
+    summary_object.insert(
+        "candidate_spool_status".to_string(),
+        json!(summary
+            .candidate_spool
+            .as_ref()
+            .map(|spool| spool.candidate_spool_status.clone())
+            .unwrap_or_else(|| "no_spool".to_string())),
+    );
+    summary_object.insert("candidate_only".to_string(), json!(true));
+    summary_object.insert("graph_proof".to_string(), json!(false));
     summary_object.insert(
         "artifact_freshness".to_string(),
         index_artifact_freshness_json(summary),
@@ -25858,6 +31083,10 @@ fn sqlite_sidecar_path(db: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(format!("{}-{suffix}", db.to_string_lossy()))
 }
 
+fn sqlite_rollback_journal_path(db: &Path) -> PathBuf {
+    PathBuf::from(format!("{}-journal", db.to_string_lossy()))
+}
+
 fn remove_file_if_exists(path: &Path) -> Result<(), String> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -26364,7 +31593,7 @@ mod tests {
         path::{Path, PathBuf},
         sync::{
             atomic::{AtomicU64, Ordering},
-            mpsc,
+            mpsc, Mutex,
         },
         thread,
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -26376,7 +31605,7 @@ mod tests {
         RelationKind, SourceSpan,
     };
     use codegraph_store::{GraphStore, SqliteGraphStore};
-    use rusqlite::Connection;
+    use rusqlite::{Connection, OpenFlags};
     use serde_json::{json, Value};
 
     use super::{
@@ -26396,6 +31625,7 @@ mod tests {
     };
 
     static TEMP_REPO_COUNTER: AtomicU64 = AtomicU64::new(0);
+    static BUNDLE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn top_level_help_lists_required_commands() {
@@ -26426,12 +31656,437 @@ mod tests {
     }
 
     #[test]
+    fn candidate_spool_query_returns_candidate_only_results() {
+        let repo = temp_repo();
+        let spool = write_candidate_spool_cli_fixture(&repo);
+        let args = vec![
+            "symbols".to_string(),
+            "spool_target".to_string(),
+            "--agent-json".to_string(),
+        ];
+        let value =
+            super::run_candidate_spool_query_command(&repo, &args, &spool, false).expect("query");
+        assert_eq!(value["status"].as_str(), Some("ok"));
+        assert_eq!(value["candidate_only"].as_bool(), Some(true));
+        assert_eq!(value["graph_proof"].as_bool(), Some(false));
+        assert_eq!(value["proof_strength"].as_str(), Some("symbol_evidence"));
+        assert_eq!(
+            value["candidate_spool_status"].as_str(),
+            Some("partial_ready")
+        );
+        assert_eq!(value["candidate_context_truncated"].as_bool(), Some(false));
+        assert_eq!(value["candidate_spool_unavailable"].as_bool(), Some(false));
+        assert_eq!(value["graph_db_status"].as_str(), Some("building"));
+        assert_eq!(value["graph_proof_available"].as_bool(), Some(false));
+        assert_eq!(value["candidate_only_available"].as_bool(), Some(true));
+        assert_eq!(
+            value["candidate_spool"]["query_index_status"].as_str(),
+            Some("ready")
+        );
+        assert_eq!(
+            value["candidate_spool"]["query_index_kind"].as_str(),
+            Some("sqlite")
+        );
+        let result = &value["results"][0];
+        assert_eq!(result["proof_status"].as_str(), Some("candidate_only"));
+        assert_eq!(result["graph_proof"].as_bool(), Some(false));
+        assert_eq!(
+            result["graph_verification_status"].as_str(),
+            Some("needs_graph_verification")
+        );
+    }
+
+    #[test]
+    fn candidate_spool_context_pack_returns_no_graph_proof() {
+        let repo = temp_repo();
+        let spool = write_candidate_spool_cli_fixture(&repo);
+        let options = super::parse_context_pack_args(&[
+            "--task".to_string(),
+            "spool_target".to_string(),
+            "--candidate-spool".to_string(),
+            path_string(&spool),
+            "--agent-json".to_string(),
+        ])
+        .expect("parse context-pack candidate spool args");
+        let value = super::run_candidate_spool_context_pack_command(
+            &repo,
+            &spool,
+            &options,
+            false,
+            Instant::now(),
+            Some("db missing".to_string()),
+        )
+        .expect("candidate spool context pack");
+        assert_eq!(value["status"].as_str(), Some("ok"));
+        assert_eq!(value["proof_status"].as_str(), Some("candidate_only"));
+        assert_eq!(value["proof_strength"].as_str(), Some("candidate_evidence"));
+        assert_eq!(value["graph_proof"].as_bool(), Some(false));
+        assert_eq!(
+            value["candidate_spool_status"].as_str(),
+            Some("partial_ready")
+        );
+        assert_eq!(value["graph_db_status"].as_str(), Some("building"));
+        assert_eq!(value["graph_proof_available"].as_bool(), Some(false));
+        assert_eq!(
+            value["staged_availability"]["recommended_next_step"].as_str(),
+            Some("inspect candidate spans")
+        );
+        assert_eq!(
+            value["routing_packet"]["available_layers"][0].as_str(),
+            Some("candidate_spool")
+        );
+        assert_eq!(
+            value["graph_verification"]["status"].as_str(),
+            Some("no_graph_db")
+        );
+        assert!(value["snippets"].as_array().map(Vec::len).unwrap_or(0) <= 5);
+    }
+
+    #[test]
+    fn candidate_spool_status_reports_missing_index_without_full_scan() {
+        let repo = temp_repo();
+        let spool = write_candidate_spool_cli_fixture(&repo);
+        let status = super::candidate_spool_layer_status(&repo, &spool);
+        assert_eq!(status["status"].as_str(), Some("query_index_missing"));
+        assert_eq!(status["ready"].as_bool(), Some(false));
+        assert_eq!(status["query_index_status"].as_str(), Some("index_missing"));
+        assert_eq!(status["candidate_spool_unavailable"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn candidate_spool_corrupt_query_index_is_structured_status() {
+        let repo = temp_repo();
+        let spool = write_candidate_spool_cli_fixture(&repo);
+        let index_path = super::candidate_spool_query_index_path(&spool);
+        let _ = fs::remove_file(&index_path);
+        Connection::open(&index_path).expect("create empty corrupt query index");
+        let status = super::candidate_spool_layer_status(&repo, &spool);
+        assert_eq!(status["status"].as_str(), Some("query_index_corrupt"));
+        assert_eq!(status["ready"].as_bool(), Some(false));
+        assert_eq!(status["candidate_spool_unavailable"].as_bool(), Some(true));
+        assert!(status["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("candidate_spool_query_index"));
+    }
+
+    #[test]
+    fn candidate_spool_indexed_status_and_query_reject_changed_and_deleted_files() {
+        let repo = temp_repo();
+        let spool = write_candidate_spool_cli_fixture(&repo);
+        let args = vec![
+            "symbols".to_string(),
+            "spool_target".to_string(),
+            "--agent-json".to_string(),
+        ];
+        let first =
+            super::run_candidate_spool_query_command(&repo, &args, &spool, false).expect("query");
+        assert_eq!(first["result_count"].as_u64(), Some(1));
+
+        write_cli_fixture_file(&repo, "src/lib.rs", "pub fn changed_spool_target() {}\n");
+        let status = super::candidate_spool_layer_status(&repo, &spool);
+        assert_eq!(status["status"].as_str(), Some("stale"));
+        assert_eq!(status["ready"].as_bool(), Some(false));
+        assert_eq!(status["query_index_status"].as_str(), Some("stale"));
+        assert_eq!(status["candidate_spool_unavailable"].as_bool(), Some(true));
+        assert!(status["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("changed_file"));
+        let error = super::run_candidate_spool_query_command(&repo, &args, &spool, false)
+            .expect_err("changed source must reject normal spool query");
+        assert!(error.contains("candidate_spool_stale"), "{error}");
+        let diagnostic = super::run_candidate_spool_query_command(&repo, &args, &spool, true)
+            .expect("diagnostic stale query");
+        assert_eq!(diagnostic["candidate_spool_status"].as_str(), Some("stale"));
+        assert_eq!(diagnostic["graph_proof"].as_bool(), Some(false));
+
+        fs::remove_file(repo.join("src").join("lib.rs")).expect("delete source");
+        let delete_status = super::candidate_spool_layer_status(&repo, &spool);
+        assert_eq!(delete_status["status"].as_str(), Some("stale"));
+        assert!(delete_status["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("deleted_file"));
+    }
+
+    #[test]
+    fn candidate_spool_legacy_firehose_without_index_is_not_hot_path() {
+        let repo = temp_repo();
+        let spool = repo.join("legacy-firehose-spool.jsonl");
+        let manifest = json!({
+            "metadata": {
+                "metadata_version": "candidate_spool_v1",
+                "artifact_kind": "candidate_spool",
+                "artifact_format": "jsonl",
+                "repo_root": path_string(&repo),
+                "candidate_spool_status": "partial_ready",
+                "spooled_total_chunks": 217514,
+                "persisted_total_chunks": 217514,
+                "candidate_only": true,
+                "graph_proof": false
+            }
+        });
+        let chunk = json!({
+            "chunk_id": "candidate-spool:legacy:one",
+            "chunk_kind": "signature",
+            "source_kind": "graph_entity",
+            "path": "src/lib.rs",
+            "text": "function legacy_firehose_target",
+            "proof_status": "candidate_only",
+            "graph_proof": false,
+            "claimable_for_graph": false
+        });
+        fs::write(
+            &spool,
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&manifest).expect("manifest"),
+                serde_json::to_string(&chunk).expect("chunk")
+            ),
+        )
+        .expect("write legacy spool");
+        let args = vec![
+            "symbols".to_string(),
+            "legacy_firehose_target".to_string(),
+            "--agent-json".to_string(),
+        ];
+        let error = super::run_candidate_spool_query_command(&repo, &args, &spool, false)
+            .expect_err("legacy firehose without index should not be scanned");
+        assert!(
+            error.contains("legacy or oversized candidate spool"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn candidate_spool_loader_rejects_stale_and_allows_diagnostic_stale() {
+        let repo = temp_repo();
+        let spool = write_candidate_spool_cli_fixture(&repo);
+        write_cli_fixture_file(&repo, "src/lib.rs", "pub fn changed() {}\n");
+        let error = super::load_candidate_spool_for_repo(&repo, &spool, false)
+            .expect_err("stale spool should be rejected by default");
+        assert!(error.contains("candidate_spool_stale"), "{error}");
+        let diagnostic = super::load_candidate_spool_for_repo(&repo, &spool, true)
+            .expect("diagnostic stale load");
+        assert!(diagnostic.stale);
+    }
+
+    #[test]
+    fn candidate_spool_loader_reports_corrupt_artifact_without_panic() {
+        let repo = temp_repo();
+        let spool = repo.join("candidate-spool.jsonl");
+        fs::write(&spool, "{not-json}\n").expect("write corrupt spool");
+        let error = super::load_candidate_spool_for_repo(&repo, &spool, false)
+            .expect_err("corrupt spool should error");
+        assert!(error.contains("candidate_spool_corrupt"), "{error}");
+    }
+
+    #[test]
+    fn candidate_spool_repo_binding_accepts_windows_extended_path_prefix() {
+        assert!(super::paths_equivalent_string(
+            r"\\?\C:\repo\codegraph",
+            r"C:\repo\codegraph"
+        ));
+    }
+
+    #[test]
     fn command_help_is_successful() {
         let output = run([BIN_NAME, "context-pack", "--help"]);
 
         assert_eq!(output.exit_code, 0);
         assert!(output.stdout.contains("Usage:"));
         assert!(output.stdout.contains("context-pack"));
+    }
+
+    #[test]
+    fn bundle_import_fresh_succeeds_and_non_empty_default_fails() {
+        let _guard = BUNDLE_TEST_LOCK.lock().expect("bundle lock");
+        let repo = bundle_fixture_repo("bundle_fresh_symbol");
+        let source_db = repo.join("source.sqlite");
+        let target_db = repo.join("target.sqlite");
+        let bundle_path = repo.join("fresh.cgc-bundle");
+        index_repo_to_db_with_options(&repo, &source_db, IndexOptions::default())
+            .expect("index source bundle DB");
+
+        super::with_repo_db_context(&repo, &source_db, || {
+            super::run_bundle_export(&["--output".to_string(), path_string(&bundle_path)])
+        })
+        .expect("export bundle");
+
+        let imported = super::with_repo_db_context(&repo, &target_db, || {
+            super::run_bundle_import(&[path_string(&bundle_path)])
+        })
+        .expect("fresh import");
+        assert_eq!(imported["status"].as_str(), Some("imported"));
+        assert_eq!(imported["claimable"].as_bool(), Some(true));
+        assert!(db_has_symbol(&target_db, "bundle_fresh_symbol"));
+
+        let error = super::with_repo_db_context(&repo, &target_db, || {
+            super::run_bundle_import(&[path_string(&bundle_path)])
+        })
+        .expect_err("non-empty import without replace must fail");
+        assert!(error.contains("without --replace"), "{error}");
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn bundle_import_rejects_foreign_corrupt_schema_and_repo_head_mismatch() {
+        let _guard = BUNDLE_TEST_LOCK.lock().expect("bundle lock");
+        let repo_a = bundle_fixture_repo("bundle_origin_symbol");
+        let repo_b = bundle_fixture_repo("bundle_foreign_target");
+        let source_db = repo_a.join("source.sqlite");
+        let target_db = repo_b.join("target.sqlite");
+        let bundle_path = repo_a.join("origin.cgc-bundle");
+        index_repo_to_db_with_options(&repo_a, &source_db, IndexOptions::default())
+            .expect("index origin DB");
+        super::with_repo_db_context(&repo_a, &source_db, || {
+            super::run_bundle_export(&["--output".to_string(), path_string(&bundle_path)])
+        })
+        .expect("export origin bundle");
+
+        let foreign_error = super::with_repo_db_context(&repo_b, &target_db, || {
+            super::run_bundle_import(&[path_string(&bundle_path)])
+        })
+        .expect_err("foreign bundle must fail");
+        assert!(
+            foreign_error.contains("bundle repo identity mismatch"),
+            "{foreign_error}"
+        );
+
+        let corrupt_path = repo_a.join("corrupt.cgc-bundle");
+        fs::write(&corrupt_path, "{not-json").expect("write corrupt bundle");
+        let corrupt_error =
+            super::with_repo_db_context(&repo_a, &repo_a.join("corrupt.sqlite"), || {
+                super::run_bundle_import(&[path_string(&corrupt_path)])
+            })
+            .expect_err("corrupt bundle must fail");
+        assert!(!corrupt_error.is_empty());
+
+        let mut schema_bundle: Value =
+            serde_json::from_str(&fs::read_to_string(&bundle_path).expect("read bundle"))
+                .expect("parse bundle");
+        schema_bundle["manifest"]["schema_version"] = json!(999_u32);
+        let schema_path = repo_a.join("schema-mismatch.cgc-bundle");
+        fs::write(
+            &schema_path,
+            serde_json::to_string_pretty(&schema_bundle).expect("encode schema bundle"),
+        )
+        .expect("write schema bundle");
+        let schema_error =
+            super::with_repo_db_context(&repo_a, &repo_a.join("schema.sqlite"), || {
+                super::run_bundle_import(&[path_string(&schema_path)])
+            })
+            .expect_err("schema mismatch bundle must fail");
+        assert!(
+            schema_error.contains("bundle schema mismatch"),
+            "{schema_error}"
+        );
+
+        let git_repo = bundle_fixture_repo("bundle_head_symbol");
+        let current_head = init_git_repo_for_bundle_test(&git_repo);
+        let git_source_db = git_repo.join("source.sqlite");
+        let git_bundle_path = git_repo.join("head.cgc-bundle");
+        index_repo_to_db_with_options(&git_repo, &git_source_db, IndexOptions::default())
+            .expect("index git bundle DB");
+        super::with_repo_db_context(&git_repo, &git_source_db, || {
+            super::run_bundle_export(&["--output".to_string(), path_string(&git_bundle_path)])
+        })
+        .expect("export git bundle");
+        let mut head_bundle: Value =
+            serde_json::from_str(&fs::read_to_string(&git_bundle_path).expect("read git bundle"))
+                .expect("parse git bundle");
+        assert_eq!(
+            head_bundle["manifest"]["repo_head"].as_str(),
+            Some(current_head.as_str())
+        );
+        head_bundle["manifest"]["repo_head"] = json!("stale-head-for-test");
+        let stale_head_path = git_repo.join("head-stale.cgc-bundle");
+        fs::write(
+            &stale_head_path,
+            serde_json::to_string_pretty(&head_bundle).expect("encode stale head bundle"),
+        )
+        .expect("write stale head bundle");
+        let head_error =
+            super::with_repo_db_context(&git_repo, &git_repo.join("head-target.sqlite"), || {
+                super::run_bundle_import(&[path_string(&stale_head_path)])
+            })
+            .expect_err("repo-head mismatch bundle must fail");
+        assert!(
+            head_error.contains("bundle repo head mismatch"),
+            "{head_error}"
+        );
+
+        fs::remove_dir_all(repo_a).expect("cleanup repo A");
+        fs::remove_dir_all(repo_b).expect("cleanup repo B");
+        fs::remove_dir_all(git_repo).expect("cleanup git repo");
+    }
+
+    #[test]
+    fn bundle_replace_failpoints_preserve_old_db_and_success_replaces_atomically() {
+        let _guard = BUNDLE_TEST_LOCK.lock().expect("bundle lock");
+        let repo = temp_repo();
+        write_cli_fixture_file(
+            &repo,
+            "src/old.ts",
+            "export function bundle_old_symbol() { return 1; }\n",
+        );
+        let target_db = repo.join("target.sqlite");
+        index_repo_to_db_with_options(&repo, &target_db, IndexOptions::default())
+            .expect("index old target DB");
+        assert!(db_has_symbol(&target_db, "bundle_old_symbol"));
+
+        fs::remove_file(repo.join("src").join("old.ts")).expect("remove old source");
+        write_cli_fixture_file(
+            &repo,
+            "src/new.ts",
+            "export function bundle_new_symbol() { return 2; }\n",
+        );
+        let source_db = repo.join("source.sqlite");
+        let bundle_path = repo.join("replace.cgc-bundle");
+        index_repo_to_db_with_options(&repo, &source_db, IndexOptions::default())
+            .expect("index replacement source DB");
+        super::with_repo_db_context(&repo, &source_db, || {
+            super::run_bundle_export(&["--output".to_string(), path_string(&bundle_path)])
+        })
+        .expect("export replacement bundle");
+
+        for failpoint in [
+            "bundle_after_temp_db_creation_before_validation",
+            "bundle_after_validation_before_publish",
+            "bundle_during_publish",
+        ] {
+            let _env_guard = BundleFailpointEnvGuard::set(failpoint);
+            let error = super::with_repo_db_context(&repo, &target_db, || {
+                super::run_bundle_import(&[path_string(&bundle_path), "--replace".to_string()])
+            })
+            .expect_err("replace failpoint must fail");
+            assert!(
+                error.contains(failpoint),
+                "failpoint={failpoint} error={error}"
+            );
+            assert!(
+                db_has_symbol(&target_db, "bundle_old_symbol"),
+                "old DB lost after {failpoint}"
+            );
+            assert!(
+                !db_has_symbol(&target_db, "bundle_new_symbol"),
+                "new DB leaked after {failpoint}"
+            );
+        }
+
+        let imported = super::with_repo_db_context(&repo, &target_db, || {
+            super::run_bundle_import(&[path_string(&bundle_path), "--replace".to_string()])
+        })
+        .expect("successful replace import");
+        assert_eq!(imported["status"].as_str(), Some("imported"));
+        assert_eq!(imported["atomic_publish"].as_bool(), Some(true));
+        assert_eq!(imported["claimable"].as_bool(), Some(true));
+        assert!(db_has_symbol(&target_db, "bundle_new_symbol"));
+        assert!(!db_has_symbol(&target_db, "bundle_old_symbol"));
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
     }
 
     #[test]
@@ -26919,9 +32574,145 @@ mod tests {
         assert!(options.json);
         assert_eq!(mode, super::IndexJsonOutputMode::Agent);
         assert_eq!(
-            vector_index_output,
+            vector_index_output.runtime_path,
             Some(PathBuf::from("vectors/codegraph-vector-chunks.json"))
         );
+        assert_eq!(
+            vector_index_output.runtime_format,
+            super::VectorChunkArtifactFormat::CompactJson
+        );
+    }
+
+    #[test]
+    fn parse_index_command_options_accepts_candidate_spool_caps() {
+        let args = vec![
+            ".".to_string(),
+            "--candidate-spool".to_string(),
+            "candidate-spool.jsonl".to_string(),
+            "--candidate-spool-policy".to_string(),
+            "bounded".to_string(),
+            "--candidate-spool-required".to_string(),
+            "--candidate-spool-query-index".to_string(),
+            "yes".to_string(),
+            "--candidate-spool-max-mib".to_string(),
+            "1".to_string(),
+            "--candidate-spool-max-bytes".to_string(),
+            "1048576".to_string(),
+            "--candidate-spool-max-records".to_string(),
+            "123".to_string(),
+            "--candidate-spool-per-file-max-records".to_string(),
+            "7".to_string(),
+            "--candidate-spool-per-dir-soft-cap".to_string(),
+            "23".to_string(),
+            "--candidate-spool-max-snippet-bytes".to_string(),
+            "96".to_string(),
+            "--candidate-spool-max-snippets-per-file".to_string(),
+            "2".to_string(),
+            "--candidate-spool-max-symbols-per-file".to_string(),
+            "5".to_string(),
+            "--max-artifacts-mib".to_string(),
+            "100".to_string(),
+        ];
+        let (_, _, options, _, budget, _) =
+            super::parse_index_command_options(&args).expect("parse candidate spool caps");
+        assert_eq!(
+            options.candidate_spool_path,
+            Some(PathBuf::from("candidate-spool.jsonl"))
+        );
+        assert_eq!(
+            options.candidate_spool_policy,
+            super::CandidateSpoolPolicy::Bounded
+        );
+        assert!(options.candidate_spool_required);
+        assert!(options.candidate_spool_query_index);
+        assert_eq!(options.candidate_spool_caps.global_max_bytes, 1_048_576);
+        assert_eq!(options.candidate_spool_caps.global_max_records, 123);
+        assert_eq!(options.candidate_spool_caps.per_file_max_records, 7);
+        assert_eq!(options.candidate_spool_caps.per_top_level_dir_soft_cap, 23);
+        assert_eq!(options.candidate_spool_caps.max_snippet_bytes, 96);
+        assert_eq!(options.candidate_spool_caps.max_snippets_per_file_packet, 2);
+        assert_eq!(options.candidate_spool_caps.max_symbols_per_file_packet, 5);
+        assert_eq!(budget.max_artifacts_mib, 100.0);
+    }
+
+    #[test]
+    fn index_optional_candidate_spool_budget_tight_disables_without_failing_db() {
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+        let spool = repo.join("candidate-spool.jsonl");
+        let value = run_index_output_json(
+            &repo,
+            &db,
+            &[
+                "--fresh",
+                "--agent-json",
+                "--candidate-spool",
+                spool.to_str().expect("spool path"),
+                "--max-artifacts-mib",
+                "0.01",
+            ],
+        );
+
+        assert_eq!(value["status"].as_str(), Some("ok"));
+        assert_eq!(value["graph_db_claimable"].as_bool(), Some(true));
+        assert_eq!(value["candidate_spool_required"].as_bool(), Some(false));
+        assert_eq!(
+            value["candidate_spool_disabled_reason"].as_str(),
+            Some("candidate_spool_budget_too_small")
+        );
+        assert_eq!(
+            value["artifact_budget_decision"].as_str(),
+            Some("candidate_spool_disabled_budget_exceeded")
+        );
+        assert_eq!(
+            value["index_exit_status_reason"].as_str(),
+            Some("indexed_candidate_spool_disabled_or_unavailable")
+        );
+        assert_eq!(
+            value["summary"]["candidate_spool_status"].as_str(),
+            Some("no_spool")
+        );
+        assert!(!spool.exists());
+        assert!(db.exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn index_required_candidate_spool_budget_tight_fails_explicitly() {
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+        let spool = repo.join("candidate-spool.jsonl");
+        let output = run([
+            BIN_NAME.to_string(),
+            "index".to_string(),
+            path_string(&repo),
+            "--db".to_string(),
+            path_string(&db),
+            "--fresh".to_string(),
+            "--agent-json".to_string(),
+            "--candidate-spool".to_string(),
+            path_string(&spool),
+            "--candidate-spool-required".to_string(),
+            "--max-artifacts-mib".to_string(),
+            "0.01".to_string(),
+        ]);
+
+        assert_eq!(output.exit_code, 1);
+        let error: Value = serde_json::from_str(&output.stderr).expect("error JSON");
+        assert_eq!(
+            error["error"].as_str(),
+            Some("candidate_spool_required_budget_exceeded")
+        );
+        assert_eq!(error["candidate_spool_required"].as_bool(), Some(true));
+        assert_eq!(
+            error["candidate_spool_disabled_reason"].as_str(),
+            Some("candidate_spool_budget_too_small")
+        );
+        assert_eq!(error["graph_db_claimable"].as_bool(), Some(false));
+        assert!(!spool.exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
     }
 
     #[test]
@@ -26977,7 +32768,22 @@ mod tests {
         );
         assert_eq!(
             value["vector_index"]["index_artifact_format"].as_str(),
-            Some("pretty_json")
+            Some("compact_json")
+        );
+        assert_eq!(
+            value["vector_index"]["runtime_sidecar_bytes"],
+            value["vector_index"]["actual_index_file_bytes"]
+        );
+        assert_eq!(
+            value["vector_index"]["runtime_selected_chunks"],
+            value["vector_index"]["selected_total_chunks"]
+        );
+        assert_eq!(value["vector_index"]["audit_artifact_bytes"], Value::Null);
+        assert_eq!(value["vector_index"]["audit_chunks"].as_u64(), Some(0));
+        assert_eq!(value["vector_index"]["pretty_json_overhead"], Value::Null);
+        assert_eq!(
+            value["vector_index"]["runtime_sidecar_path"].as_str(),
+            vector_index.to_str()
         );
         assert_eq!(
             value["vector_index"]["vector_payload_compression"].as_str(),
@@ -27001,9 +32807,287 @@ mod tests {
             Some("codegraph-deterministic-test")
         );
         assert_eq!(value["vector_index"]["graph_proof"].as_bool(), Some(false));
+        assert!(value["vector_index"]["build_timings"].is_object());
+        assert!(
+            value["vector_index"]["build_timings"]["total_ms"]
+                .as_f64()
+                .unwrap_or(0.0)
+                >= 0.0
+        );
+        assert!(
+            value["vector_index"]["build_timings"]["selection_ms"]
+                .as_f64()
+                .unwrap_or(0.0)
+                >= 0.0
+        );
+        assert!(
+            value["vector_index"]["build_timings"]["embedding_ms"]
+                .as_f64()
+                .unwrap_or(0.0)
+                >= 0.0
+        );
         assert_eq!(value["external_provider"].as_bool(), Some(false));
         assert_eq!(value["source_leaves_machine"].as_bool(), Some(false));
         assert!(vector_index.exists(), "vector index file was not written");
+        let runtime_text = fs::read_to_string(&vector_index).expect("runtime sidecar");
+        assert!(
+            !runtime_text.contains("selection_reason"),
+            "runtime sidecar must not store verbose selection_reason: {runtime_text}"
+        );
+        assert!(runtime_text.contains("\"artifact_kind\":\"vector_runtime_sidecar\""));
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn index_vector_runtime_and_audit_artifacts_are_split() {
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+        let runtime = repo.join("vectors").join("runtime.json");
+        let audit = repo.join("vectors").join("audit.json");
+        let value = run_index_output_json(
+            &repo,
+            &db,
+            &[
+                "--fresh",
+                "--agent-json",
+                "--build-vector-index",
+                runtime.to_str().expect("runtime path"),
+                "--vector-audit-artifact",
+                audit.to_str().expect("audit path"),
+            ],
+        );
+
+        assert_eq!(value["status"].as_str(), Some("ok"));
+        assert!(runtime.exists(), "runtime sidecar was not written");
+        assert!(audit.exists(), "audit artifact was not written");
+        assert_eq!(
+            value["vector_index"]["index_artifact_format"].as_str(),
+            Some("compact_json")
+        );
+        assert!(
+            value["vector_index"]["runtime_sidecar_bytes"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
+        assert!(
+            value["vector_index"]["audit_artifact_bytes"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
+        assert!(
+            value["vector_index"]["pretty_json_overhead"]
+                .as_i64()
+                .unwrap_or_default()
+                > 0
+        );
+        assert_eq!(
+            value["vector_index"]["audit_chunks"],
+            value["vector_index"]["selected_total_chunks"]
+        );
+        let runtime_text = fs::read_to_string(&runtime).expect("runtime");
+        let audit_text = fs::read_to_string(&audit).expect("audit");
+        assert!(!runtime_text.contains("selection_reason"));
+        assert!(audit_text.contains("selection_reason"));
+        assert!(runtime_text.contains("\"artifact_kind\":\"vector_runtime_sidecar\""));
+        assert!(audit_text.contains("\"artifact_kind\": \"audit_artifact\""));
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn index_vector_audit_artifact_requires_runtime_sidecar() {
+        let args = vec![
+            ".".to_string(),
+            "--agent-json".to_string(),
+            "--vector-audit-artifact".to_string(),
+            "audit.json".to_string(),
+        ];
+        let error = super::parse_index_command_options(&args)
+            .expect_err("audit-only vector artifact should be rejected");
+        assert!(error.contains("--vector-audit-artifact requires"));
+    }
+
+    #[test]
+    fn context_pack_loads_compact_runtime_vector_sidecar() {
+        let _guard = BUNDLE_TEST_LOCK.lock().expect("context-pack vector lock");
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+        let runtime = repo.join("vectors").join("runtime.json");
+        let _index = run_index_output_json(
+            &repo,
+            &db,
+            &[
+                "--fresh",
+                "--agent-json",
+                "--build-vector-index",
+                runtime.to_str().expect("runtime path"),
+            ],
+        );
+        let args = vec![
+            "--task".to_string(),
+            "indexOutputService".to_string(),
+            "--enable-vector-candidates".to_string(),
+            "--vector-runtime-sidecar".to_string(),
+            runtime.to_str().expect("runtime path").to_string(),
+            "--agent-json".to_string(),
+            "--explain".to_string(),
+            "--max-output-bytes".to_string(),
+            "1048576".to_string(),
+        ];
+        let value =
+            super::with_repo_db_context(&repo, &db, || super::run_context_pack_command(&args))
+                .expect("context-pack");
+
+        let trace = &value["retrieval_explain"]["vector_trace"];
+        assert_eq!(trace["vector_index_status"].as_str(), Some("ready"));
+        assert_eq!(value["vector_runtime_status"].as_str(), Some("ready"));
+        assert_eq!(value["graph_db_status"].as_str(), Some("ready"));
+        assert_eq!(value["graph_proof_available"].as_bool(), Some(true));
+        assert!(value["active_candidate_sources"]
+            .as_array()
+            .expect("candidate sources")
+            .iter()
+            .any(|source| source.as_str() == Some("vector_semantic")));
+        assert_eq!(
+            value["routing_packet"]["layer_readiness"]["vector_runtime"]["status"].as_str(),
+            Some("ready")
+        );
+        assert!(trace["vector_candidate_count"].as_u64().unwrap_or_default() > 0);
+        let metrics = &trace["vector_index_metrics"];
+        assert_eq!(
+            metrics["artifact_kind"].as_str(),
+            Some("vector_runtime_sidecar")
+        );
+        assert_eq!(
+            metrics["index_artifact_format"].as_str(),
+            Some("compact_json")
+        );
+        assert!(
+            metrics["runtime_sidecar_bytes"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
+        assert_eq!(metrics["audit_artifact_bytes"], Value::Null);
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn context_pack_omits_runtime_vector_sidecar_after_source_file_delete() {
+        let _guard = BUNDLE_TEST_LOCK
+            .lock()
+            .expect("context-pack vector stale lock");
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+        let runtime = repo.join("vectors").join("runtime.json");
+        let _index = run_index_output_json(
+            &repo,
+            &db,
+            &[
+                "--fresh",
+                "--agent-json",
+                "--build-vector-index",
+                runtime.to_str().expect("runtime path"),
+            ],
+        );
+        fs::remove_file(repo.join("src").join("service.ts")).expect("delete source file");
+
+        let args = vec![
+            "--task".to_string(),
+            "indexOutputService".to_string(),
+            "--enable-vector-candidates".to_string(),
+            "--vector-runtime-sidecar".to_string(),
+            runtime.to_str().expect("runtime path").to_string(),
+            "--agent-json".to_string(),
+            "--explain".to_string(),
+            "--max-output-bytes".to_string(),
+            "1048576".to_string(),
+        ];
+        let value =
+            super::with_repo_db_context(&repo, &db, || super::run_context_pack_command(&args))
+                .expect("context-pack with stale runtime");
+
+        let trace = &value["retrieval_explain"]["vector_trace"];
+        assert_eq!(trace["vector_index_status"].as_str(), Some("stale"));
+        assert_eq!(value["vector_runtime_status"].as_str(), Some("stale"));
+        assert_eq!(trace["vector_candidate_count"].as_u64(), Some(0));
+        assert!(trace["stale_missing_vector_index_reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("vector_source_binding_stale"));
+        assert_eq!(value["graph_proof_available"].as_bool(), Some(true));
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn context_pack_loads_legacy_pretty_vector_artifact() {
+        let _guard = BUNDLE_TEST_LOCK.lock().expect("context-pack vector lock");
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+        let runtime = repo.join("vectors").join("runtime.json");
+        let legacy = repo.join("vectors").join("legacy-pretty.json");
+        let _index = run_index_output_json(
+            &repo,
+            &db,
+            &[
+                "--fresh",
+                "--agent-json",
+                "--build-vector-index",
+                runtime.to_str().expect("runtime path"),
+            ],
+        );
+        let mut legacy_value: Value =
+            serde_json::from_str(&fs::read_to_string(&runtime).expect("runtime json"))
+                .expect("runtime value");
+        if let Some(metadata) = legacy_value
+            .get_mut("metadata")
+            .and_then(Value::as_object_mut)
+        {
+            metadata.remove("artifact_kind");
+        }
+        legacy_value["metadata"]["index_artifact_format"] = json!("pretty_json");
+        fs::write(
+            &legacy,
+            serde_json::to_string_pretty(&legacy_value).expect("legacy pretty json"),
+        )
+        .expect("write legacy artifact");
+
+        let args = vec![
+            "--task".to_string(),
+            "indexOutputService".to_string(),
+            "--enable-vector-candidates".to_string(),
+            "--vector-index".to_string(),
+            legacy.to_str().expect("legacy path").to_string(),
+            "--agent-json".to_string(),
+            "--explain".to_string(),
+            "--max-output-bytes".to_string(),
+            "1048576".to_string(),
+        ];
+        let value =
+            super::with_repo_db_context(&repo, &db, || super::run_context_pack_command(&args))
+                .expect("context-pack");
+
+        let metrics = &value["retrieval_explain"]["vector_trace"]["vector_index_metrics"];
+        assert_eq!(
+            metrics["artifact_kind"].as_str(),
+            Some("legacy_pretty_json_vector_artifact")
+        );
+        assert_eq!(
+            metrics["index_artifact_format"].as_str(),
+            Some("pretty_json")
+        );
+        assert_eq!(metrics["runtime_sidecar_bytes"], Value::Null);
+        assert!(
+            value["retrieval_explain"]["vector_trace"]["vector_candidate_count"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
 
         fs::remove_dir_all(repo).expect("cleanup");
     }
@@ -27511,6 +33595,53 @@ mod tests {
     }
 
     #[test]
+    fn status_and_doctor_do_not_migrate_old_schema_db() {
+        let repo = temp_repo();
+        let db_path = default_db_path(&repo);
+        fs::create_dir_all(db_path.parent().expect("db parent")).expect("create db parent");
+        {
+            let connection = Connection::open(&db_path).expect("open old schema");
+            connection
+                .execute_batch(
+                    "
+                    PRAGMA user_version = 1;
+                    CREATE TABLE legacy_only(id INTEGER PRIMARY KEY);
+                    INSERT INTO legacy_only(id) VALUES (1);
+                    ",
+                )
+                .expect("create old schema");
+        }
+        let before_bytes = fs::read(&db_path).expect("read old schema DB before inspection");
+        let before_metadata = fs::metadata(&db_path).expect("metadata before inspection");
+
+        let status = run_status_command(&[path_string(&repo)]).expect("status");
+        let doctor =
+            run_doctor_command(&[path_string(&repo), "--json".to_string()]).expect("doctor");
+
+        let after_metadata = fs::metadata(&db_path).expect("metadata after inspection");
+        let after_bytes = fs::read(&db_path).expect("read old schema DB after inspection");
+        let user_version_after =
+            Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .expect("open old schema read-only")
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+                .expect("user version");
+
+        assert_eq!(status["status"].as_str(), Some("db_problem"));
+        assert_eq!(status["db_problem_kind"].as_str(), Some("schema_mismatch"));
+        assert_eq!(doctor["db_problem_kind"].as_str(), Some("schema_mismatch"));
+        assert_eq!(doctor["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(user_version_after, 1);
+        assert_eq!(before_bytes, after_bytes);
+        assert_eq!(before_metadata.len(), after_metadata.len());
+        assert_eq!(
+            before_metadata.modified().expect("mtime before"),
+            after_metadata.modified().expect("mtime after")
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
     fn status_and_doctor_report_normal_sqlite_sidecars_for_valid_db() {
         let repo = ui_fixture_repo();
         index_repo(&repo).expect("index fixture");
@@ -27523,6 +33654,12 @@ mod tests {
 
         assert_eq!(status["status"].as_str(), Some("ok"));
         assert_eq!(doctor["status"].as_str(), Some("ok"));
+        assert_eq!(status["graph_db_status"].as_str(), Some("ready"));
+        assert_eq!(doctor["graph_db_status"].as_str(), Some("ready"));
+        assert_eq!(status["graph_proof_available"].as_bool(), Some(true));
+        assert_eq!(doctor["graph_proof_available"].as_bool(), Some(true));
+        assert_eq!(status["candidate_spool_status"].as_str(), Some("no_spool"));
+        assert_eq!(status["vector_runtime_status"].as_str(), Some("missing"));
         assert_eq!(status["sidecar_status"].as_str(), Some("normal"));
         assert_eq!(doctor["sidecar_status"].as_str(), Some("normal"));
         assert_eq!(
@@ -27550,6 +33687,62 @@ mod tests {
             .is_empty());
 
         drop(wal_connection);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn status_and_doctor_report_db_locked_without_mutating_main_db() {
+        let repo = ui_fixture_repo();
+        index_repo(&repo).expect("index fixture");
+        let db_path = default_db_path(&repo);
+
+        let lock = Connection::open(&db_path).expect("open lock connection");
+        lock.busy_timeout(Duration::from_millis(0))
+            .expect("set busy timeout");
+        let _: String = lock
+            .query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))
+            .expect("switch to rollback journal");
+        lock.execute_batch(
+            "
+            PRAGMA locking_mode=EXCLUSIVE;
+            BEGIN EXCLUSIVE;
+            CREATE TABLE IF NOT EXISTS lock_marker(id INTEGER PRIMARY KEY);
+            INSERT INTO lock_marker(id) VALUES (1);
+            ",
+        )
+        .expect("hold exclusive write lock");
+
+        let before_bytes = fs::read(&db_path).expect("read locked DB before inspection");
+        let before_metadata = fs::metadata(&db_path).expect("metadata before inspection");
+        let status = run_status_command(&[path_string(&repo)]).expect("status");
+        let doctor =
+            run_doctor_command(&[path_string(&repo), "--json".to_string()]).expect("doctor");
+        let mut cache = IncrementalIndexCache::new(256).expect("cache");
+        let update_error =
+            update_changed_files_with_cache(&repo, &[PathBuf::from("src/auth.ts")], &mut cache)
+                .expect_err("locked DB must block incremental update");
+        let after_metadata = fs::metadata(&db_path).expect("metadata after inspection");
+        let after_bytes = fs::read(&db_path).expect("read locked DB after inspection");
+
+        assert_eq!(status["status"].as_str(), Some("db_problem"));
+        assert_eq!(status["db_problem_kind"].as_str(), Some("db_locked"));
+        assert_eq!(status["path_access_status"].as_str(), Some("ok"));
+        assert_eq!(doctor["db_problem_kind"].as_str(), Some("db_locked"));
+        assert_eq!(doctor["safe_to_query"].as_bool(), Some(false));
+        assert!(
+            update_error.to_string().contains("db_locked")
+                || update_error.to_string().contains("locked"),
+            "{update_error}"
+        );
+        assert_eq!(before_bytes, after_bytes);
+        assert_eq!(before_metadata.len(), after_metadata.len());
+        assert_eq!(
+            before_metadata.modified().expect("mtime before"),
+            after_metadata.modified().expect("mtime after")
+        );
+
+        lock.execute_batch("ROLLBACK").expect("release lock");
+        drop(lock);
         fs::remove_dir_all(repo).expect("cleanup");
     }
 
@@ -30563,6 +36756,69 @@ mod tests {
     }
 
     #[test]
+    fn context_pack_plan_atoms_surface_source_navigation_without_exact_seed() {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join("crates").join("codegraph-cli").join("src"))
+            .expect("create cli src");
+        fs::write(
+            repo.join("Cargo.toml"),
+            "[package]\nname = \"plan_atom_source_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"crates/codegraph-cli/src/lib.rs\"\n",
+        )
+        .expect("write manifest");
+        fs::write(
+            repo.join("crates")
+                .join("codegraph-cli")
+                .join("src")
+                .join("lib.rs"),
+            r#"pub fn index_entrypoint() {}
+
+pub fn db_lifecycle_preflight_guard() {}
+
+pub fn open_store_for_passport() {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn lifecycle_preflight_tests() {}
+}
+"#,
+        )
+        .expect("write source");
+        index_repo(&repo).expect("index plan atom source fixture");
+
+        let connection =
+            super::open_context_pack_connection(&default_db_path(&repo)).expect("open context DB");
+        let mut options = context_agent_test_options("production", Some(8), Some(8), Some(65536));
+        options.task = "Trace indexing entry point and DB lifecycle guards.".to_string();
+        options.seeds.clear();
+        let budgets = super::ContextPackBudgets::for_options(&options);
+        let evidence = super::build_context_pack_plan_atom_source_navigation_fallback(
+            &connection,
+            &options,
+            &BTreeSet::new(),
+            budgets,
+        )
+        .expect("plan atom source navigation fallback");
+
+        assert!(
+            evidence.iter().any(|item| {
+                item.source_span
+                    .repo_relative_path
+                    .ends_with("crates/codegraph-cli/src/lib.rs")
+                    && item
+                        .fallback_source
+                        .contains("retrieval_plan_atom/source_navigation")
+                    && item.evidence_role_label.as_deref() == Some("source_navigation")
+                    && !item.graph_proof
+            }),
+            "{evidence:?}"
+        );
+
+        drop(connection);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
     fn context_pack_planning_packet_caps_broad_follow_up_queries() {
         let repo = temp_repo();
         fs::create_dir_all(repo.join("package").join("foo")).expect("create package");
@@ -32067,6 +38323,32 @@ mod tests {
     }
 
     #[test]
+    fn test_impact_recommendations_accept_lowercase_function_kind() {
+        let fallback_evidence = vec![super::ContextPackFallbackEvidence {
+            id: "entity://test".to_string(),
+            symbol: "greet_works".to_string(),
+            kind: "function".to_string(),
+            source_span: SourceSpan::new("src/lib.rs", 10, 12),
+            score: None,
+            evidence_role: EvidenceRole::Test,
+            evidence_role_label: None,
+            proof_status: Some("no_proof_path_found".to_string()),
+            graph_proof: false,
+            claimability: None,
+            seed_matches: Vec::new(),
+            follow_up_queries: Vec::new(),
+            classification_reason: "unit test fallback".to_string(),
+            classification_source: "unit-test".to_string(),
+            fallback_source: "source_role".to_string(),
+        }];
+
+        assert_eq!(
+            super::recommended_tests_from_fallback_evidence(&fallback_evidence),
+            vec!["cargo test greet_works"]
+        );
+    }
+
+    #[test]
     fn context_pack_test_impact_fallback_finds_inline_test_for_production_seed() {
         let repo = rust_inline_context_pack_fixture();
         index_repo(&repo).expect("index inline Rust fixture");
@@ -33195,6 +39477,640 @@ mod tests {
         assert!(ignored.iter().any(|token| token == "package"));
     }
 
+    #[test]
+    fn routing_packet_buildroot_role_diverse_edit_plan_and_followups() {
+        let response = routing_packet_response_for_task(
+            "Trace Buildroot generic package flow for adding a new package.",
+            &[
+                routing_fixture_evidence(
+                    "docs/manual/adding-packages-generic.adoc",
+                    "generic-package package infrastructure authoring docs",
+                ),
+                routing_fixture_evidence(
+                    "package/pkg-generic.mk",
+                    "inner-generic-package VERSION SITE LICENSE DEPENDENCIES",
+                ),
+                routing_fixture_evidence(
+                    "package/Config.in",
+                    "source \"package/foo/Config.in\" BR2_PACKAGE depends on",
+                ),
+                routing_fixture_evidence("package/pkg-download.mk", "download site hash support"),
+                routing_fixture_evidence("support/download/dl-wrapper", "download wrapper backend"),
+                routing_fixture_evidence("support/scripts/pkg-stats", "support scripts package"),
+                routing_fixture_evidence("package/zlib/zlib.mk", "ZLIB_VERSION generic-package"),
+            ],
+            &["generic-package", "BR2_PACKAGE_FOO"],
+            None,
+            Some(262_144),
+        );
+        let routing = &response["routing_packet"];
+        assert_eq!(
+            routing["task_intent"]["task_kind"].as_str(),
+            Some("build_system_package_authoring")
+        );
+        let files = routing_files(routing);
+        for expected in [
+            "docs/manual/adding-packages-generic.adoc",
+            "package/pkg-generic.mk",
+            "package/Config.in",
+            "package/pkg-download.mk",
+            "support/download/dl-wrapper",
+        ] {
+            assert!(files.iter().any(|file| file == expected), "{files:?}");
+        }
+        assert!(routing["text_evidence"]
+            .as_array()
+            .expect("text evidence")
+            .iter()
+            .all(|evidence| evidence["graph_proof"].as_bool() == Some(false)));
+        assert!(!routing["fallback_snippets"]
+            .as_array()
+            .expect("fallback snippets")
+            .is_empty());
+        assert!(routing["follow_up_queries"]
+            .as_array()
+            .expect("follow up")
+            .iter()
+            .all(|query| query.get("query_text").is_some()
+                && query.get("path_scope").is_some()
+                && query.get("why").is_some()
+                && query.get("max_results_hint").is_some()));
+        assert!(routing.get("suggested_rg_probes").is_none());
+        assert!(routing["edit_plan"]
+            .as_array()
+            .expect("edit plan")
+            .iter()
+            .any(|step| step["step"]
+                .as_str()
+                .is_some_and(|text| text.contains("Config.in"))));
+        assert!(!routing["validation_steps"]
+            .as_array()
+            .expect("validation")
+            .is_empty());
+    }
+
+    #[test]
+    fn routing_packet_codegraph_lifecycle_debug_surfaces_lifecycle_store_and_tests() {
+        let response = routing_packet_response_for_task(
+            "Trace indexing entry point and DB lifecycle guards.",
+            &[
+                routing_fixture_evidence(
+                    "crates/codegraph-cli/src/lib.rs",
+                    "context-pack index entrypoint symbols",
+                ),
+                routing_fixture_evidence(
+                    "crates/codegraph-index/src/lib.rs",
+                    "inspect_db_lifecycle_preflight passport stale DB",
+                ),
+                routing_fixture_evidence(
+                    "crates/codegraph-store/src/lib.rs",
+                    "SqliteGraphStore open_read_only lifecycle",
+                ),
+                routing_fixture_evidence(
+                    "crates/codegraph-cli/src/lib.rs",
+                    "#[test] doctor status lifecycle tests",
+                ),
+            ],
+            &["inspect_db_lifecycle_preflight", "SqliteGraphStore"],
+            None,
+            Some(65_536),
+        );
+        let routing = &response["routing_packet"];
+        assert_eq!(
+            routing["task_intent"]["task_kind"].as_str(),
+            Some("codegraph_internal_debug")
+        );
+        let roles = routing_roles(routing, "critical_files");
+        assert!(
+            roles.iter().any(|role| role == "lifecycle_preflight"),
+            "{roles:?}"
+        );
+        assert!(roles.iter().any(|role| role == "store_open"), "{roles:?}");
+        assert!(routing["critical_symbols"]
+            .as_array()
+            .expect("symbols")
+            .iter()
+            .any(|symbol| symbol["symbol"].as_str() == Some("SqliteGraphStore")));
+        assert!(routing["unknowns"]
+            .as_array()
+            .expect("unknowns")
+            .iter()
+            .any(|unknown| unknown["reason"].as_str() == Some("no_proof_path_found")));
+    }
+
+    #[test]
+    fn routing_packet_implementation_trace_keeps_source_navigation_and_inspection_requirements() {
+        let response = routing_packet_response_for_task(
+            "Trace vector chunk index build accounting and persisted vector index size math.",
+            &[
+                routing_fixture_evidence(
+                    "crates/codegraph-index/src/lib.rs",
+                    "build_vector_chunk_index_json_for_repo generated selected persisted counts",
+                ),
+                routing_fixture_evidence(
+                    "crates/codegraph-index/src/lib.rs",
+                    "write_vector_chunk_index_json artifact writer",
+                ),
+                routing_fixture_evidence(
+                    "crates/codegraph-cli/src/lib.rs",
+                    "#[test] vector chunk index accounting tests",
+                ),
+            ],
+            &["build_vector_chunk_index_json_for_repo"],
+            None,
+            Some(65_536),
+        );
+        let routing = &response["routing_packet"];
+        assert!(matches!(
+            routing["task_intent"]["task_kind"].as_str(),
+            Some("storage_accounting_trace" | "artifact_math_trace" | "implementation_trace")
+        ));
+        assert!(!routing["source_navigation_evidence"]
+            .as_array()
+            .expect("source nav")
+            .is_empty());
+        assert!(!routing["artifact_inspection_requirements"]
+            .as_array()
+            .expect("artifact requirements")
+            .is_empty());
+        assert!(routing["artifact_inspection_requirements"]
+            .as_array()
+            .expect("artifact requirements")
+            .iter()
+            .any(
+                |requirement| requirement["fields"].as_array().is_some_and(|fields| fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("runtime_sidecar_bytes"))
+                    && fields
+                        .iter()
+                        .any(|field| field.as_str() == Some("audit_artifact_bytes")))
+            ));
+        assert!(!routing["db_inspection_requirements"]
+            .as_array()
+            .expect("db requirements")
+            .is_empty());
+        assert!(routing["available_layers"]
+            .as_array()
+            .expect("available layers")
+            .iter()
+            .any(|layer| layer.as_str() == Some("graph_db")));
+        assert_eq!(routing["graph_proof_available"].as_bool(), Some(true));
+        assert!(
+            routing["risks"]
+                .as_array()
+                .expect("risks")
+                .iter()
+                .any(|risk| risk["risk_id"].as_str()
+                    == Some("vector_sidecar_not_complete_path_index"))
+        );
+        assert_eq!(
+            routing["deterministic_summary"]["proof"].as_str(),
+            Some(
+                "I found no verified graph proof path. This packet uses source text evidence only."
+            )
+        );
+    }
+
+    #[test]
+    fn routing_packet_vector_metric_accounting_truthful_labels() {
+        let response = routing_packet_response_for_task(
+            "Trace actual_index_file_bytes estimated_f32_payload_bytes vector index accounting.",
+            &[routing_fixture_evidence(
+                "crates/codegraph-index/src/lib.rs",
+                "actual_index_file_bytes estimated_f32_payload_bytes pretty_json vector_payload_compression diversity_ranked_v1 input_order_cap",
+            )],
+            &["actual_index_file_bytes", "estimated_f32_payload_bytes"],
+            Some(routing_vector_metric_trace()),
+            Some(65_536),
+        );
+        let note = response["routing_packet"]["formulas_or_accounting_notes"]
+            .as_array()
+            .expect("formula notes")
+            .iter()
+            .find(|note| note["note_id"].as_str() == Some("vector_metric_truthfulness"))
+            .cloned()
+            .expect("vector metric note");
+        assert_eq!(note["actual_index_file_bytes"].as_u64(), Some(1234));
+        assert_eq!(note["artifact_kind"].as_str(), Some("unknown"));
+        assert_eq!(note["runtime_sidecar_bytes"].as_str(), Some("unknown"));
+        assert_eq!(note["audit_artifact_bytes"].as_str(), Some("unknown"));
+        assert_eq!(note["estimated_f32_payload_bytes"].as_u64(), Some(256));
+        assert_eq!(note["index_artifact_format"].as_str(), Some("pretty_json"));
+        assert_eq!(note["vector_payload_compression"].as_str(), Some("none"));
+        assert_eq!(
+            note["chunk_selection_strategy"].as_str(),
+            Some("diversity_ranked_v1")
+        );
+        assert_eq!(note["input_order_cap"].as_bool(), Some(false));
+        assert!(note["sentence"]
+            .as_str()
+            .expect("sentence")
+            .contains("not a compressed-vector storage claim"));
+    }
+
+    #[test]
+    fn routing_packet_test_impact_keeps_production_and_test_labels() {
+        let response = routing_packet_response_for_task(
+            "Find test impact for changing a helper used by auth tests.",
+            &[
+                routing_fixture_evidence("src/auth/helper.rs", "production helper auth behavior"),
+                routing_fixture_evidence(
+                    "tests/auth_helper_test.rs",
+                    "#[test] mock assertion fixture auth tests",
+                ),
+            ],
+            &["auth_helper"],
+            None,
+            Some(65_536),
+        );
+        let routing = &response["routing_packet"];
+        assert_eq!(
+            routing["task_intent"]["task_kind"].as_str(),
+            Some("test_impact")
+        );
+        let roles = routing_roles(routing, "source_navigation_evidence");
+        assert!(
+            roles.iter().any(|role| role == "production_target"),
+            "{roles:?}"
+        );
+        assert!(roles.iter().any(|role| role == "test_files"), "{roles:?}");
+        assert!(routing["validation_steps"]
+            .as_array()
+            .expect("validation")
+            .iter()
+            .any(|step| step["scope"].as_str() == Some("test impact")));
+    }
+
+    #[test]
+    fn routing_packet_dataflow_roles_do_not_overclaim_without_path() {
+        let response = routing_packet_response_for_task(
+            "Trace request input flow to a database write.",
+            &[
+                routing_fixture_evidence("src/http.rs", "request input source handler"),
+                routing_fixture_evidence("src/validate.rs", "sanitize validate request"),
+                routing_fixture_evidence("src/db.rs", "database write sink insert mutation"),
+            ],
+            &["request", "database_write"],
+            None,
+            Some(65_536),
+        );
+        let routing = &response["routing_packet"];
+        assert_eq!(
+            routing["task_intent"]["task_kind"].as_str(),
+            Some("dataflow_trace")
+        );
+        let roles = routing_roles(routing, "source_navigation_evidence");
+        assert!(roles.iter().any(|role| role == "source"), "{roles:?}");
+        assert!(roles.iter().any(|role| role == "sanitizer"), "{roles:?}");
+        assert!(
+            roles
+                .iter()
+                .any(|role| role == "sink" || role == "mutation_write"),
+            "{roles:?}"
+        );
+        assert!(routing["verified_paths"]
+            .as_array()
+            .expect("verified paths")
+            .is_empty());
+        assert!(routing["unknowns"]
+            .as_array()
+            .expect("unknowns")
+            .iter()
+            .any(|unknown| unknown["claim"].as_str() == Some("graph relation proof")));
+    }
+
+    #[test]
+    fn routing_packet_security_review_warns_strings_are_not_proof() {
+        let response = routing_packet_response_for_task(
+            "Find where role checks authorize admin-only behavior.",
+            &[
+                routing_fixture_evidence("src/auth.rs", "auth route entrypoint span authorize"),
+                routing_fixture_evidence("src/routes/admin.rs", "admin role checkRole"),
+                routing_fixture_evidence(
+                    "src/authz.rs",
+                    "permission gate RBAC sanitizer validator",
+                ),
+                routing_fixture_evidence(
+                    "tests/admin_auth_test.rs",
+                    "#[test] admin role assertion",
+                ),
+            ],
+            &["checkRole", "admin"],
+            None,
+            Some(65_536),
+        );
+        let routing = &response["routing_packet"];
+        assert_eq!(
+            routing["task_intent"]["task_kind"].as_str(),
+            Some("security_review")
+        );
+        let roles = routing_roles(routing, "source_navigation_evidence");
+        assert!(
+            roles.iter().any(|role| role == "auth_entrypoint"),
+            "{roles:?}"
+        );
+        assert!(
+            roles
+                .iter()
+                .any(|role| role == "permission_gate" || role == "role_check"),
+            "{roles:?}"
+        );
+        assert!(routing["risks"]
+            .as_array()
+            .expect("risks")
+            .iter()
+            .any(
+                |risk| risk["risk_id"].as_str() == Some("strings_comments_not_authorization_proof")
+            ));
+    }
+
+    #[test]
+    fn routing_packet_docs_lookup_keeps_docs_text_as_non_graph_proof() {
+        let response = routing_packet_response_for_task(
+            "Find docs explaining package infrastructure.",
+            &[routing_fixture_evidence(
+                "docs/manual/adding-packages-generic.adoc",
+                "docs guide package infrastructure generic-package",
+            )],
+            &["generic-package"],
+            None,
+            Some(65_536),
+        );
+        let routing = &response["routing_packet"];
+        assert_eq!(
+            routing["task_intent"]["task_kind"].as_str(),
+            Some("docs_lookup")
+        );
+        assert!(routing["text_evidence"]
+            .as_array()
+            .expect("text evidence")
+            .iter()
+            .all(|evidence| evidence["graph_proof"].as_bool() == Some(false)));
+        assert!(routing["verified_paths"]
+            .as_array()
+            .expect("verified paths")
+            .is_empty());
+    }
+
+    #[test]
+    fn routing_packet_unknown_task_is_conservative() {
+        let response = routing_packet_response_for_task(
+            "Figure out what handles this thing.",
+            &[],
+            &[],
+            None,
+            Some(65_536),
+        );
+        let routing = &response["routing_packet"];
+        assert_eq!(
+            routing["task_intent"]["task_kind"].as_str(),
+            Some("unknown")
+        );
+        assert_eq!(
+            routing["claimability"]["graph_proof"].as_bool(),
+            Some(false)
+        );
+        assert!(routing["unknowns"]
+            .as_array()
+            .expect("unknowns")
+            .iter()
+            .any(|unknown| unknown["reason"].as_str() == Some("unknown_or_ambiguous_task")));
+        assert!(routing["follow_up_queries"]
+            .as_array()
+            .expect("follow up")
+            .iter()
+            .all(|query| query["risk"].as_str() == Some("candidate_only_until_verified")));
+    }
+
+    #[test]
+    fn routing_packet_budget_pressure_dedupes_examples_and_keeps_survivors() {
+        let mut evidence = vec![
+            routing_fixture_evidence(
+                "docs/manual/adding-packages-generic.adoc",
+                "generic-package package infrastructure",
+            ),
+            routing_fixture_evidence("package/pkg-generic.mk", "inner-generic-package"),
+            routing_fixture_evidence("package/Config.in", "BR2_PACKAGE source package"),
+            routing_fixture_evidence("package/pkg-download.mk", "download hash"),
+        ];
+        for index in 0..24 {
+            evidence.push(routing_fixture_evidence(
+                &format!("package/example{index}/example{index}.mk"),
+                "EXAMPLE_VERSION generic-package",
+            ));
+        }
+        let response = routing_packet_response_for_task(
+            "Trace Buildroot generic package flow for adding a new package.",
+            &evidence,
+            &["generic-package"],
+            None,
+            None,
+        );
+        assert!(
+            serialized_len_for_test(&response) <= super::DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES,
+            "{} bytes",
+            serialized_len_for_test(&response)
+        );
+        let routing = &response["routing_packet"];
+        assert!(!routing["fallback_snippets"]
+            .as_array()
+            .expect("fallback snippets")
+            .is_empty());
+        let example_count = routing["critical_files"]
+            .as_array()
+            .expect("critical files")
+            .iter()
+            .filter(|file| file["role"].as_str() == Some("examples"))
+            .count();
+        assert!(example_count <= 2, "{routing}");
+        assert!(routing["omitted_count"].as_u64().unwrap_or_default() > 0);
+    }
+
+    #[test]
+    fn routing_packet_deterministic_sentence_snapshot_is_stable() {
+        let first = routing_packet_response_for_task(
+            "Trace request input flow to a database write.",
+            &[routing_fixture_evidence(
+                "src/db.rs",
+                "request input database write",
+            )],
+            &["database_write"],
+            None,
+            Some(65_536),
+        );
+        let second = routing_packet_response_for_task(
+            "Trace request input flow to a database write.",
+            &[routing_fixture_evidence(
+                "src/db.rs",
+                "request input database write",
+            )],
+            &["database_write"],
+            None,
+            Some(65_536),
+        );
+        assert_eq!(
+            first["routing_packet"]["deterministic_summary"],
+            second["routing_packet"]["deterministic_summary"]
+        );
+        assert_eq!(
+            first["routing_packet"]["deterministic_summary"]["intent"].as_str(),
+            Some("I classified this as dataflow_trace because I found dataflow:request input, dataflow:database write, dataflow:flow.")
+        );
+        assert_eq!(
+            first["routing_packet"]["deterministic_summary"]["proof"].as_str(),
+            Some(
+                "I found no verified graph proof path. This packet uses source text evidence only."
+            )
+        );
+    }
+
+    fn routing_fixture_evidence(file: &str, text: &str) -> Value {
+        json!({
+            "id": format!("text-evidence://{}:1", file),
+            "symbol": file.rsplit('/').next().unwrap_or(file),
+            "kind": "source_text",
+            "file": file,
+            "source_span": {
+                "file": file,
+                "start_line": 1,
+                "end_line": 8
+            },
+            "evidence_role": "text_evidence",
+            "proof_status": "no_proof_path_found",
+            "graph_proof": false,
+            "claimability": super::text_evidence_claimability_json(),
+            "seed_matches": [text],
+            "matched_seeds": [text],
+            "follow_up_queries": [text],
+            "classification_reason": text,
+            "classification_source": "unit-test/stage0_fts",
+            "fallback_source": "text_evidence/no_proof_path_found",
+            "score": 1.0
+        })
+    }
+
+    fn routing_packet_response_for_task(
+        task: &str,
+        fallback_evidence: &[Value],
+        symbols: &[&str],
+        vector_trace: Option<Value>,
+        max_output_bytes: Option<usize>,
+    ) -> Value {
+        let mut options =
+            context_agent_test_options("production", Some(8), Some(8), max_output_bytes);
+        options.task = task.to_string();
+        options.seeds = symbols.iter().map(|symbol| (*symbol).to_string()).collect();
+        let snippets = fallback_evidence
+            .iter()
+            .filter_map(|evidence| {
+                let file = evidence.get("file").and_then(Value::as_str)?;
+                Some(ContextSnippet {
+                    file: file.to_string(),
+                    lines: "1-8".to_string(),
+                    text: evidence
+                        .get("classification_reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    reason: "text evidence fallback".to_string(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut metadata = Metadata::new();
+        metadata.insert(
+            "fallback_evidence".to_string(),
+            json!(fallback_evidence.to_vec()),
+        );
+        metadata.insert("proof_path_available".to_string(), json!(false));
+        metadata.insert("proof_status".to_string(), json!("no_proof_path_found"));
+        metadata.insert("graph_proof".to_string(), json!(false));
+        metadata.insert(
+            "graph_verification_status".to_string(),
+            json!("no_proof_path_found"),
+        );
+        metadata.insert(
+            "evidence_status".to_string(),
+            json!(if fallback_evidence.is_empty() {
+                "no_evidence_found"
+            } else {
+                "fallback_evidence_found"
+            }),
+        );
+        metadata.insert(
+            "likely_files".to_string(),
+            json!(fallback_evidence
+                .iter()
+                .filter_map(|evidence| evidence.get("file").and_then(Value::as_str))
+                .collect::<Vec<_>>()),
+        );
+        if let Some(vector_trace) = vector_trace {
+            metadata.insert("vector_candidate_trace".to_string(), vector_trace);
+        }
+        let packet = ContextPacket {
+            task: task.to_string(),
+            mode: "production".to_string(),
+            symbols: symbols.iter().map(|symbol| (*symbol).to_string()).collect(),
+            verified_paths: Vec::new(),
+            risks: Vec::new(),
+            recommended_tests: Vec::new(),
+            snippets,
+            metadata,
+        };
+        super::context_pack_agent_json_response(
+            &options,
+            &packet,
+            &json!({"claimable": true, "diagnostic_only": false, "decision": "read_reuse"}),
+            super::ContextPackBudgets::for_options(&options),
+            Path::new("fixture"),
+            Path::new("fixture/.codegraph/codegraph.sqlite"),
+            json!({"wall_ms": 1.0}),
+        )
+    }
+
+    fn routing_vector_metric_trace() -> Value {
+        json!({
+            "schema_version": 1,
+            "diagnostic_only": true,
+            "vector_enabled": true,
+            "vector_index_status": "ready",
+            "vector_candidate_count": 1,
+            "vector_index_metrics": {
+                "actual_index_file_bytes": 1234,
+                "estimated_f32_payload_bytes": 256,
+                "estimated_f32_payload_dim": 64,
+                "estimated_f32_payload_count": 1,
+                "index_artifact_format": "pretty_json",
+                "vector_payload_compression": "none",
+                "stores_chunk_text": true,
+                "stores_chunk_metadata": true,
+                "stores_full_source_body": false,
+                "generated_total_chunks": 10,
+                "selected_total_chunks": 4,
+                "persisted_total_chunks": 4,
+                "chunk_selection_strategy": "diversity_ranked_v1",
+                "input_order_cap": false
+            }
+        })
+    }
+
+    fn routing_files(routing: &Value) -> Vec<String> {
+        routing["critical_files"]
+            .as_array()
+            .expect("critical files")
+            .iter()
+            .filter_map(|file| file["file"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    fn routing_roles(routing: &Value, key: &str) -> Vec<String> {
+        routing[key]
+            .as_array()
+            .expect("routing section")
+            .iter()
+            .filter_map(|item| item["role"].as_str().map(str::to_string))
+            .collect()
+    }
+
     fn context_agent_test_options(
         mode: &str,
         limit_paths: Option<usize>,
@@ -33219,6 +40135,10 @@ mod tests {
             enable_vector_candidates: false,
             enable_nuance_rescue_candidates: false,
             vector_index_path: None,
+            vector_audit_artifact_path: None,
+            enable_candidate_spool: false,
+            candidate_spool_path: None,
+            allow_stale_candidate_spool: false,
         }
     }
 
@@ -33648,6 +40568,164 @@ mod tests {
         ));
         fs::create_dir_all(&path).expect("create temp repo");
         path
+    }
+
+    fn write_cli_fixture_file(root: &Path, relative: &str, source: &str) {
+        let path = root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create fixture parent");
+        }
+        fs::write(path, source).expect("write fixture source");
+    }
+
+    fn write_candidate_spool_cli_fixture(root: &Path) -> PathBuf {
+        let source = "pub fn spool_target() {}\n";
+        write_cli_fixture_file(root, "src/lib.rs", source);
+        let source_hash = codegraph_parser::content_hash(source);
+        let spool = root.join("candidate-spool.jsonl");
+        let manifest = json!({
+            "metadata": {
+                "metadata_version": "candidate_spool_v1",
+                "artifact_kind": "candidate_spool",
+                "artifact_format": "jsonl",
+                "repo_root": path_string(root),
+                "candidate_spool_status": "partial_ready",
+                "lifecycle": "partial_spool",
+                "incomplete": true,
+                "candidate_only": true,
+                "graph_proof": false,
+                "claimable_for_graph": false
+            }
+        });
+        let chunk = json!({
+            "chunk_id": "candidate-spool:test:symbol",
+            "chunk_kind": "signature",
+            "source_kind": "graph_entity",
+            "path": "src/lib.rs",
+            "entity_id": "entity:spool_target",
+            "source_span": {
+                "repo_relative_path": "src/lib.rs",
+                "start_line": 1,
+                "start_col": 1,
+                "end_line": 1,
+                "end_col": 23
+            },
+            "proof_status": "candidate_only",
+            "graph_proof": false,
+            "claimable_for_graph": false,
+            "requires_graph_verification": true,
+            "text": "function spool_target in src/lib.rs",
+            "selection_bucket": "symbol_signature",
+            "selection_reason": "test candidate spool symbol signature",
+            "source_file_content_hash": source_hash,
+            "source_file_size_bytes": source.as_bytes().len() as u64,
+            "lifecycle": "partial_spool",
+            "incomplete": true
+        });
+        fs::write(
+            &spool,
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&manifest).expect("manifest json"),
+                serde_json::to_string(&chunk).expect("chunk json")
+            ),
+        )
+        .expect("write candidate spool");
+        spool
+    }
+
+    fn init_git_repo_for_bundle_test(root: &Path) -> String {
+        let init = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .arg("init")
+            .output()
+            .expect("run git init");
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+        for (key, value) in [
+            ("user.email", "codegraph-tests@example.invalid"),
+            ("user.name", "CodeGraph Tests"),
+        ] {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(["config", key, value])
+                .output()
+                .expect("run git config");
+            assert!(
+                output.status.success(),
+                "git config {key} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let add = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["add", "."])
+            .output()
+            .expect("run git add");
+        assert!(
+            add.status.success(),
+            "git add failed: {}",
+            String::from_utf8_lossy(&add.stderr)
+        );
+        let commit = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["commit", "-m", "bundle-identity-test"])
+            .output()
+            .expect("run git commit");
+        assert!(
+            commit.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+        super::git_head(root).expect("bundle git head")
+    }
+
+    fn bundle_fixture_repo(symbol: &str) -> PathBuf {
+        let repo = temp_repo();
+        write_cli_fixture_file(
+            &repo,
+            "src/main.ts",
+            &format!("export function {symbol}() {{ return 1; }}\n"),
+        );
+        repo
+    }
+
+    fn db_has_symbol(db_path: &Path, symbol: &str) -> bool {
+        let store = SqliteGraphStore::open_read_only(db_path).expect("open read-only DB");
+        store
+            .list_entities(super::UNBOUNDED_STORE_READ_LIMIT)
+            .expect("list entities")
+            .iter()
+            .any(|entity| entity.name == symbol || entity.qualified_name.contains(symbol))
+    }
+
+    struct BundleFailpointEnvGuard {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl BundleFailpointEnvGuard {
+        fn set(failpoint: &str) -> Self {
+            let previous = std::env::var_os("CODEGRAPH_WRITE_PATH_FAILPOINT");
+            std::env::set_var("CODEGRAPH_WRITE_PATH_FAILPOINT", failpoint);
+            Self { previous }
+        }
+    }
+
+    impl Drop for BundleFailpointEnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var("CODEGRAPH_WRITE_PATH_FAILPOINT", previous);
+            } else {
+                std::env::remove_var("CODEGRAPH_WRITE_PATH_FAILPOINT");
+            }
+        }
     }
 
     fn ui_fixture_repo() -> PathBuf {

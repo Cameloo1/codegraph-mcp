@@ -96,6 +96,7 @@ dependencies = [
  "codegraph-query",
  "codegraph-store",
  "codegraph-vector",
+ "rusqlite",
  "serde",
  "serde_json",
 ]
@@ -111,6 +112,7 @@ dependencies = [
  "codegraph-store",
  "codegraph-trace",
  "codegraph-vector",
+ "rusqlite",
  "serde",
  "serde_json",
 ]

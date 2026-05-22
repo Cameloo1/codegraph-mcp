@@ -2344,6 +2344,351 @@ pub fn classify_prompt_intent(prompt: &str) -> PromptIntent {
     extract_prompt_seed_provenance(prompt).intent
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TaskKind {
+    BuildSystemPackageAuthoring,
+    CodegraphInternalDebug,
+    ImplementationTrace,
+    StorageAccountingTrace,
+    ArtifactMathTrace,
+    PersistencePathTrace,
+    IndexingSummaryTrace,
+    SchemaViewTrace,
+    BenchmarkMetricTrace,
+    TestImpact,
+    DataflowTrace,
+    SecurityReview,
+    DocsLookup,
+    EntityLookup,
+    FileLookup,
+    Unknown,
+}
+
+impl TaskKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BuildSystemPackageAuthoring => "build_system_package_authoring",
+            Self::CodegraphInternalDebug => "codegraph_internal_debug",
+            Self::ImplementationTrace => "implementation_trace",
+            Self::StorageAccountingTrace => "storage_accounting_trace",
+            Self::ArtifactMathTrace => "artifact_math_trace",
+            Self::PersistencePathTrace => "persistence_path_trace",
+            Self::IndexingSummaryTrace => "indexing_summary_trace",
+            Self::SchemaViewTrace => "schema_view_trace",
+            Self::BenchmarkMetricTrace => "benchmark_metric_trace",
+            Self::TestImpact => "test_impact",
+            Self::DataflowTrace => "dataflow_trace",
+            Self::SecurityReview => "security_review",
+            Self::DocsLookup => "docs_lookup",
+            Self::EntityLookup => "entity_lookup",
+            Self::FileLookup => "file_lookup",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskIntent {
+    pub task_kind: TaskKind,
+    pub domain: String,
+    pub confidence: f64,
+    pub selected_profile: String,
+    pub signals: Vec<String>,
+    pub ignored_terms: Vec<String>,
+    pub exact_seeds: Vec<String>,
+    pub text_seeds: Vec<String>,
+    pub file_path_seeds: Vec<String>,
+    pub config_keys: Vec<String>,
+    pub relation_goals: Vec<String>,
+    pub evidence_expectation: String,
+    pub ambiguity: String,
+    pub why_this_intent: String,
+    pub fallback_intent: Option<String>,
+}
+
+impl TaskIntent {
+    pub fn task_intent_id(&self) -> String {
+        format!("task_intent_{}_v1", self.task_kind.as_str())
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "task_kind": self.task_kind.as_str(),
+            "task_intent_id": self.task_intent_id(),
+            "domain": self.domain,
+            "confidence": self.confidence,
+            "selected_profile": self.selected_profile,
+            "signals": self.signals,
+            "ignored_terms": self.ignored_terms,
+            "exact_seeds": self.exact_seeds,
+            "text_seeds": self.text_seeds,
+            "file_path_seeds": self.file_path_seeds,
+            "config_keys": self.config_keys,
+            "relation_goals": self.relation_goals,
+            "evidence_expectation": self.evidence_expectation,
+            "expected_evidence_type": self.evidence_expectation,
+            "ambiguity": self.ambiguity,
+            "why_this_intent": self.why_this_intent,
+            "fallback_intent": self.fallback_intent,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskProfile {
+    pub profile_id: String,
+    pub profile_name: String,
+    pub signals: Vec<String>,
+    pub ignored_generic_terms: Vec<String>,
+    pub preferred_evidence_roles: Vec<String>,
+    pub preferred_file_kinds: Vec<String>,
+    pub retrieval_branches: Vec<String>,
+    pub graph_expectation: String,
+    pub fallback_policy: String,
+    pub validation_templates: Vec<String>,
+    pub risk_templates: Vec<String>,
+    pub role_budget: usize,
+    pub confidence_rules: Vec<String>,
+}
+
+impl TaskProfile {
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "profile_id": self.profile_id,
+            "profile_name": self.profile_name,
+            "signals": self.signals,
+            "ignored_generic_terms": self.ignored_generic_terms,
+            "preferred_evidence_roles": self.preferred_evidence_roles,
+            "preferred_file_kinds": self.preferred_file_kinds,
+            "retrieval_branches": self.retrieval_branches,
+            "graph_expectation": self.graph_expectation,
+            "fallback_policy": self.fallback_policy,
+            "validation_templates": self.validation_templates,
+            "risk_templates": self.risk_templates,
+            "role_budget": self.role_budget,
+            "confidence_rules": self.confidence_rules,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetrievalQueryAtom {
+    pub role: String,
+    pub query_text: String,
+    pub path_hints: Vec<String>,
+    pub file_kind_hints: Vec<String>,
+    pub evidence_role_filter: Vec<String>,
+    pub candidate_source_preference: Vec<String>,
+    pub max_candidates: usize,
+    pub why: String,
+    pub expected_signal: String,
+    pub proof_expectation: String,
+}
+
+impl RetrievalQueryAtom {
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "role": self.role,
+            "query_text": self.query_text,
+            "path_hints": self.path_hints,
+            "file_kind_hints": self.file_kind_hints,
+            "evidence_role_filter": self.evidence_role_filter,
+            "candidate_source_preference": self.candidate_source_preference,
+            "max_candidates": self.max_candidates,
+            "why": self.why,
+            "expected_signal": self.expected_signal,
+            "proof_expectation": self.proof_expectation,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetrievalPlan {
+    pub plan_id: String,
+    pub task_intent_id: String,
+    pub profile_id: String,
+    pub query_atoms: Vec<RetrievalQueryAtom>,
+    pub candidate_branches: Vec<String>,
+    pub role_budget: usize,
+    pub proof_attempt_policy: String,
+    pub fallback_policy: String,
+    pub max_candidates: usize,
+    pub max_files: usize,
+    pub max_snippets: usize,
+    pub max_output_bytes: usize,
+    pub explain_level: String,
+}
+
+impl RetrievalPlan {
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "plan_id": self.plan_id,
+            "task_intent_id": self.task_intent_id,
+            "profile_id": self.profile_id,
+            "query_atoms": self.query_atoms.iter().map(RetrievalQueryAtom::to_json).collect::<Vec<_>>(),
+            "candidate_branches": self.candidate_branches,
+            "role_budget": self.role_budget,
+            "proof_attempt_policy": self.proof_attempt_policy,
+            "fallback_policy": self.fallback_policy,
+            "max_candidates": self.max_candidates,
+            "max_files": self.max_files,
+            "max_snippets": self.max_snippets,
+            "max_output_bytes": self.max_output_bytes,
+            "explain_level": self.explain_level,
+        })
+    }
+
+    pub fn summary_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "plan_id": self.plan_id,
+            "task_intent_id": self.task_intent_id,
+            "profile_id": self.profile_id,
+            "query_atom_roles": self.query_atoms.iter().map(|atom| atom.role.clone()).collect::<Vec<_>>(),
+            "query_atom_count": self.query_atoms.len(),
+            "max_candidates": self.max_candidates,
+            "max_files": self.max_files,
+            "max_snippets": self.max_snippets,
+            "proof_attempt_policy": self.proof_attempt_policy,
+            "fallback_policy": self.fallback_policy,
+        })
+    }
+}
+
+pub fn parse_task_intent(task: &str) -> TaskIntent {
+    let prompt_seed_extraction = extract_prompt_seed_provenance(task);
+    let mut exact_seeds = Vec::new();
+    let mut text_seeds = Vec::new();
+    let mut file_path_seeds = Vec::new();
+    let mut config_keys = Vec::new();
+    let mut ignored_terms = Vec::new();
+
+    for seed in &prompt_seed_extraction.seeds {
+        match seed.kind {
+            PromptSeedKind::Symbol | PromptSeedKind::TestName | PromptSeedKind::Identifier => {
+                exact_seeds.push(seed.value.clone());
+            }
+            PromptSeedKind::FilePath
+            | PromptSeedKind::LineNumber
+            | PromptSeedKind::StackTrace
+            | PromptSeedKind::FilePattern
+            | PromptSeedKind::PathToken => {
+                if let Some(value) = seed.exact_value() {
+                    file_path_seeds.push(value);
+                }
+            }
+            PromptSeedKind::ConfigToken => {
+                config_keys.push(seed.value.clone());
+            }
+            PromptSeedKind::TextToken | PromptSeedKind::ErrorMessage => {
+                text_seeds.push(seed.value.clone());
+            }
+            PromptSeedKind::TaskVerbIgnored => {
+                ignored_terms.push(seed.value.to_ascii_lowercase());
+            }
+            PromptSeedKind::Unknown => {}
+        }
+    }
+
+    ignored_terms.extend(routing_ignored_terms_from_text(task));
+    let exact_seeds = unique_task_strings(exact_seeds);
+    let text_seeds = unique_task_strings(text_seeds);
+    let file_path_seeds = unique_task_strings(file_path_seeds);
+    let config_keys = unique_task_strings(config_keys);
+    let ignored_terms = unique_task_strings(ignored_terms);
+
+    let mut scores = BTreeMap::<TaskKind, i32>::new();
+    let mut signals = Vec::<String>::new();
+    score_task_signals(task, &mut scores, &mut signals);
+
+    let (task_kind, confidence, ambiguity, why_this_intent, fallback_intent) = select_task_kind(
+        task,
+        &scores,
+        &signals,
+        &exact_seeds,
+        &file_path_seeds,
+        &config_keys,
+    );
+    let selected_profile = profile_id_for_task_kind(task_kind).to_string();
+    let domain = task_domain_for_kind(task_kind).to_string();
+    let relation_goals = relation_goals_for_task_kind(task_kind);
+    let evidence_expectation = evidence_expectation_for_task_kind(task_kind).to_string();
+
+    TaskIntent {
+        task_kind,
+        domain,
+        confidence,
+        selected_profile,
+        signals: unique_task_strings(signals),
+        ignored_terms,
+        exact_seeds,
+        text_seeds,
+        file_path_seeds,
+        config_keys,
+        relation_goals,
+        evidence_expectation,
+        ambiguity,
+        why_this_intent,
+        fallback_intent,
+    }
+}
+
+pub fn task_profile_registry() -> Vec<TaskProfile> {
+    [
+        "build_system_package_authoring",
+        "codegraph_internal_debug",
+        "implementation_trace",
+        "storage_accounting_trace",
+        "artifact_math_trace",
+        "persistence_path_trace",
+        "indexing_summary_trace",
+        "schema_view_trace",
+        "benchmark_metric_trace",
+        "test_impact",
+        "dataflow_trace",
+        "security_review",
+        "docs_lookup",
+        "unknown_fallback",
+    ]
+    .into_iter()
+    .map(task_profile_by_id)
+    .collect()
+}
+
+pub fn select_task_profile(intent: &TaskIntent) -> TaskProfile {
+    task_profile_by_id(&intent.selected_profile)
+}
+
+pub fn build_retrieval_plan(intent: &TaskIntent, profile: &TaskProfile) -> RetrievalPlan {
+    let query_atoms = retrieval_atoms_for_profile(intent, profile);
+    let max_candidates = query_atoms
+        .iter()
+        .map(|atom| atom.max_candidates)
+        .sum::<usize>()
+        .min(32);
+    RetrievalPlan {
+        plan_id: format!("retrieval_plan_{}_v1", profile.profile_id),
+        task_intent_id: intent.task_intent_id(),
+        profile_id: profile.profile_id.clone(),
+        candidate_branches: profile.retrieval_branches.clone(),
+        role_budget: profile.role_budget,
+        proof_attempt_policy: proof_attempt_policy_for_intent(intent),
+        fallback_policy: profile.fallback_policy.clone(),
+        max_candidates,
+        max_files: 8,
+        max_snippets: 8,
+        max_output_bytes: 65_536,
+        explain_level: "structured_summary".to_string(),
+        query_atoms,
+    }
+}
+
+pub fn plan_task_retrieval(task: &str) -> (TaskIntent, TaskProfile, RetrievalPlan) {
+    let intent = parse_task_intent(task);
+    let profile = select_task_profile(&intent);
+    let plan = build_retrieval_plan(&intent, &profile);
+    (intent, profile, plan)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextPackRequest {
     pub task: String,
@@ -3971,7 +4316,7 @@ impl RetrievalFunnel {
         let prompt_seeds = prompt_seed_extraction.seeds;
         let prompt_exact_seeds = prompt_seeds
             .iter()
-            .filter_map(PromptSeed::exact_value)
+            .filter_map(prompt_seed_graph_exact_value)
             .collect::<Vec<_>>();
         let request_stage0_ids = request
             .stage0_candidates
@@ -4775,6 +5120,2088 @@ fn contains_word_any(haystack: &str, words: &[&str]) -> bool {
         .any(|part| words.contains(&part))
 }
 
+fn routing_ignored_terms_from_text(task: &str) -> Vec<String> {
+    task.split(|ch: char| !(ch == '_' || ch.is_ascii_alphanumeric()))
+        .filter_map(|part| {
+            let lower = part.to_ascii_lowercase();
+            if is_prompt_task_verb(&lower) {
+                Some(lower)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn unique_task_strings(values: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut unique = Vec::new();
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let key = trimmed.to_ascii_lowercase();
+        if seen.insert(key) {
+            unique.push(trimmed.to_string());
+        }
+    }
+    unique
+}
+
+fn add_task_signal(
+    scores: &mut BTreeMap<TaskKind, i32>,
+    signals: &mut Vec<String>,
+    signal: &str,
+    weights: &[(TaskKind, i32)],
+) {
+    signals.push(signal.to_string());
+    for (kind, weight) in weights {
+        *scores.entry(*kind).or_default() += *weight;
+    }
+}
+
+fn score_contains(
+    lower: &str,
+    scores: &mut BTreeMap<TaskKind, i32>,
+    signals: &mut Vec<String>,
+    needle: &str,
+    signal: &str,
+    weights: &[(TaskKind, i32)],
+) {
+    if lower.contains(needle) {
+        add_task_signal(scores, signals, signal, weights);
+    }
+}
+
+fn score_word(
+    lower: &str,
+    scores: &mut BTreeMap<TaskKind, i32>,
+    signals: &mut Vec<String>,
+    word: &str,
+    signal: &str,
+    weights: &[(TaskKind, i32)],
+) {
+    if contains_word_any(lower, &[word]) {
+        add_task_signal(scores, signals, signal, weights);
+    }
+}
+
+fn score_task_signals(task: &str, scores: &mut BTreeMap<TaskKind, i32>, signals: &mut Vec<String>) {
+    let lower = task.to_ascii_lowercase();
+
+    score_contains(
+        &lower,
+        scores,
+        signals,
+        "buildroot",
+        "buildroot:Buildroot",
+        &[(TaskKind::BuildSystemPackageAuthoring, 4)],
+    );
+    score_word(
+        &lower,
+        scores,
+        signals,
+        "package",
+        "buildroot:package",
+        &[(TaskKind::BuildSystemPackageAuthoring, 1)],
+    );
+    score_contains(
+        &lower,
+        scores,
+        signals,
+        "generic-package",
+        "buildroot:generic-package",
+        &[(TaskKind::BuildSystemPackageAuthoring, 4)],
+    );
+    score_contains(
+        &lower,
+        scores,
+        signals,
+        "generic package",
+        "buildroot:generic-package",
+        &[(TaskKind::BuildSystemPackageAuthoring, 4)],
+    );
+    score_contains(
+        &lower,
+        scores,
+        signals,
+        "config.in",
+        "buildroot:Config.in",
+        &[(TaskKind::BuildSystemPackageAuthoring, 3)],
+    );
+    if lower.contains(".mk") {
+        add_task_signal(
+            scores,
+            signals,
+            "buildroot:.mk",
+            &[(TaskKind::BuildSystemPackageAuthoring, 2)],
+        );
+    }
+    score_contains(
+        &lower,
+        scores,
+        signals,
+        "br2_package",
+        "buildroot:BR2_PACKAGE",
+        &[(TaskKind::BuildSystemPackageAuthoring, 3)],
+    );
+    score_contains(
+        &lower,
+        scores,
+        signals,
+        "package infrastructure",
+        "buildroot:package infrastructure",
+        &[(TaskKind::BuildSystemPackageAuthoring, 2)],
+    );
+    for (word, signal, weight) in [
+        ("download", "buildroot:download", 2),
+        ("hash", "buildroot:hash", 1),
+        ("license", "buildroot:license", 1),
+        ("version", "buildroot:version", 1),
+        ("dependencies", "buildroot:dependencies", 1),
+    ] {
+        score_word(
+            &lower,
+            scores,
+            signals,
+            word,
+            signal,
+            &[(TaskKind::BuildSystemPackageAuthoring, weight)],
+        );
+    }
+
+    score_contains(
+        &lower,
+        scores,
+        signals,
+        "db lifecycle",
+        "codegraph:DB lifecycle",
+        &[(TaskKind::CodegraphInternalDebug, 5)],
+    );
+    for (needle, signal, weight) in [
+        ("passport", "codegraph:passport", 3),
+        ("preflight", "codegraph:preflight", 3),
+        ("stale db", "codegraph:stale DB", 3),
+        ("bundle import", "codegraph:bundle import", 2),
+        ("context-pack", "codegraph:context-pack", 3),
+    ] {
+        score_contains(
+            &lower,
+            scores,
+            signals,
+            needle,
+            signal,
+            &[(TaskKind::CodegraphInternalDebug, weight)],
+        );
+    }
+    for (word, signal, weight) in [
+        ("codegraph", "codegraph:CodeGraph", 2),
+        ("schema", "codegraph:schema", 2),
+        ("scope", "codegraph:scope", 2),
+        ("doctor", "codegraph:doctor", 3),
+        ("status", "codegraph:status", 2),
+        ("index", "codegraph:index", 2),
+    ] {
+        score_word(
+            &lower,
+            scores,
+            signals,
+            word,
+            signal,
+            &[
+                (TaskKind::CodegraphInternalDebug, weight),
+                (
+                    if word == "schema" {
+                        TaskKind::SchemaViewTrace
+                    } else if word == "index" {
+                        TaskKind::IndexingSummaryTrace
+                    } else {
+                        TaskKind::CodegraphInternalDebug
+                    },
+                    if matches!(word, "schema" | "index") {
+                        2
+                    } else {
+                        0
+                    },
+                ),
+            ],
+        );
+    }
+
+    if lower.contains("trace implementation")
+        || (lower.contains("implementation") && contains_word_any(&lower, &["trace"]))
+    {
+        add_task_signal(
+            scores,
+            signals,
+            "implementation:trace implementation",
+            &[(TaskKind::ImplementationTrace, 5)],
+        );
+    }
+    for (needle, signal, weights) in [
+        (
+            "accounting",
+            "accounting:accounting",
+            vec![
+                (TaskKind::StorageAccountingTrace, 4),
+                (TaskKind::ArtifactMathTrace, 2),
+                (TaskKind::ImplementationTrace, 1),
+            ],
+        ),
+        (
+            "persisted size",
+            "accounting:persisted size",
+            vec![
+                (TaskKind::StorageAccountingTrace, 4),
+                (TaskKind::PersistencePathTrace, 2),
+            ],
+        ),
+        (
+            "vector index",
+            "accounting:vector index",
+            vec![
+                (TaskKind::StorageAccountingTrace, 3),
+                (TaskKind::ArtifactMathTrace, 3),
+                (TaskKind::ImplementationTrace, 2),
+            ],
+        ),
+        (
+            "chunk selection",
+            "accounting:chunk selection",
+            vec![
+                (TaskKind::StorageAccountingTrace, 3),
+                (TaskKind::ImplementationTrace, 2),
+            ],
+        ),
+        (
+            "artifact size",
+            "accounting:artifact size",
+            vec![
+                (TaskKind::ArtifactMathTrace, 4),
+                (TaskKind::StorageAccountingTrace, 2),
+            ],
+        ),
+        (
+            "payload size",
+            "accounting:payload size",
+            vec![
+                (TaskKind::ArtifactMathTrace, 4),
+                (TaskKind::StorageAccountingTrace, 2),
+            ],
+        ),
+        (
+            "metric labels",
+            "accounting:metric labels",
+            vec![
+                (TaskKind::ArtifactMathTrace, 3),
+                (TaskKind::BenchmarkMetricTrace, 2),
+            ],
+        ),
+        (
+            "storage audit",
+            "accounting:storage audit",
+            vec![
+                (TaskKind::StorageAccountingTrace, 4),
+                (TaskKind::ArtifactMathTrace, 2),
+            ],
+        ),
+        (
+            "summary counters",
+            "accounting:summary counters",
+            vec![
+                (TaskKind::StorageAccountingTrace, 3),
+                (TaskKind::IndexingSummaryTrace, 2),
+            ],
+        ),
+    ] {
+        score_contains(&lower, scores, signals, needle, signal, &weights);
+    }
+    if lower.contains("db size math") || (lower.contains("db size") && lower.contains("math")) {
+        add_task_signal(
+            scores,
+            signals,
+            "accounting:DB size math",
+            &[
+                (TaskKind::StorageAccountingTrace, 5),
+                (TaskKind::ArtifactMathTrace, 2),
+            ],
+        );
+    }
+    if lower.contains("generated") && lower.contains("selected") && lower.contains("persisted") {
+        add_task_signal(
+            scores,
+            signals,
+            "accounting:generated/selected/persisted counts",
+            &[
+                (TaskKind::StorageAccountingTrace, 5),
+                (TaskKind::ArtifactMathTrace, 2),
+            ],
+        );
+    }
+    score_word(
+        &lower,
+        scores,
+        signals,
+        "formula",
+        "accounting:formula",
+        &[(TaskKind::ArtifactMathTrace, 4)],
+    );
+    for (needle, signal) in [
+        (
+            "actual_index_file_bytes",
+            "vector_metrics:actual_index_file_bytes",
+        ),
+        (
+            "estimated_f32_payload_bytes",
+            "vector_metrics:estimated_f32_payload_bytes",
+        ),
+        ("pretty_json", "vector_metrics:pretty_json"),
+        (
+            "vector_payload_compression",
+            "vector_metrics:vector_payload_compression",
+        ),
+        ("stores_chunk_text", "vector_metrics:stores_chunk_text"),
+        (
+            "stores_chunk_metadata",
+            "vector_metrics:stores_chunk_metadata",
+        ),
+        ("selected chunks", "vector_metrics:selected chunks"),
+        ("diversity_ranked_v1", "vector_metrics:diversity_ranked_v1"),
+        ("input_order_cap", "vector_metrics:input_order_cap"),
+    ] {
+        score_contains(
+            &lower,
+            scores,
+            signals,
+            needle,
+            signal,
+            &[
+                (TaskKind::ArtifactMathTrace, 4),
+                (TaskKind::StorageAccountingTrace, 3),
+                (TaskKind::BenchmarkMetricTrace, 2),
+            ],
+        );
+    }
+
+    for (needle, signal, weights) in [
+        (
+            "test-impact",
+            "test_impact:test-impact",
+            vec![(TaskKind::TestImpact, 5)],
+        ),
+        (
+            "test impact",
+            "test_impact:test impact",
+            vec![(TaskKind::TestImpact, 5)],
+        ),
+        (
+            "failing test",
+            "test_impact:failing test",
+            vec![(TaskKind::TestImpact, 4)],
+        ),
+    ] {
+        score_contains(&lower, scores, signals, needle, signal, &weights);
+    }
+    for (word, signal, weight) in [
+        ("test", "test_impact:test", 1),
+        ("spec", "test_impact:spec", 1),
+        ("mock", "test_impact:mock", 2),
+        ("assertion", "test_impact:assertion", 2),
+        ("fixture", "test_impact:fixture", 2),
+    ] {
+        score_word(
+            &lower,
+            scores,
+            signals,
+            word,
+            signal,
+            &[(TaskKind::TestImpact, weight)],
+        );
+    }
+
+    for (needle, signal, weights) in [
+        (
+            "dataflow",
+            "dataflow:dataflow",
+            vec![(TaskKind::DataflowTrace, 5)],
+        ),
+        (
+            "data flow",
+            "dataflow:data flow",
+            vec![(TaskKind::DataflowTrace, 5)],
+        ),
+        (
+            "request input",
+            "dataflow:request input",
+            vec![(TaskKind::DataflowTrace, 4)],
+        ),
+        (
+            "database write",
+            "dataflow:database write",
+            vec![(TaskKind::DataflowTrace, 4)],
+        ),
+    ] {
+        score_contains(&lower, scores, signals, needle, signal, &weights);
+    }
+    for (word, signal, weight) in [
+        ("flow", "dataflow:flow", 1),
+        ("source", "dataflow:source", 1),
+        ("sink", "dataflow:sink", 2),
+        ("sanitizer", "dataflow:sanitizer", 1),
+        ("mutation", "dataflow:mutation", 2),
+    ] {
+        score_word(
+            &lower,
+            scores,
+            signals,
+            word,
+            signal,
+            &[(TaskKind::DataflowTrace, weight)],
+        );
+    }
+
+    for (word, signal, weight) in [
+        ("auth", "security:auth", 2),
+        ("authorize", "security:authorize", 3),
+        ("authorization", "security:authorization", 3),
+        ("role", "security:role", 2),
+        ("admin", "security:admin", 3),
+        ("permission", "security:permission", 3),
+        ("rbac", "security:RBAC", 3),
+        ("checkrole", "security:checkRole", 3),
+        ("sanitizer", "security:sanitizer", 1),
+    ] {
+        score_word(
+            &lower,
+            scores,
+            signals,
+            word,
+            signal,
+            &[(TaskKind::SecurityReview, weight)],
+        );
+    }
+
+    for (word, signal, weight) in [
+        ("docs", "docs:docs", 3),
+        ("readme", "docs:README", 3),
+        ("manual", "docs:manual", 3),
+        ("guide", "docs:guide", 2),
+        ("explain", "docs:explain", 1),
+        ("explaining", "docs:explain", 1),
+    ] {
+        score_word(
+            &lower,
+            scores,
+            signals,
+            word,
+            signal,
+            &[(TaskKind::DocsLookup, weight)],
+        );
+    }
+}
+
+fn score_for(scores: &BTreeMap<TaskKind, i32>, kind: TaskKind) -> i32 {
+    scores.get(&kind).copied().unwrap_or_default()
+}
+
+fn has_signal_prefix(signals: &[String], prefix: &str) -> bool {
+    signals.iter().any(|signal| signal.starts_with(prefix))
+}
+
+fn has_signal(signals: &[String], needle: &str) -> bool {
+    signals.iter().any(|signal| signal.contains(needle))
+}
+
+fn select_task_kind(
+    task: &str,
+    scores: &BTreeMap<TaskKind, i32>,
+    signals: &[String],
+    exact_seeds: &[String],
+    file_path_seeds: &[String],
+    config_keys: &[String],
+) -> (TaskKind, f64, String, String, Option<String>) {
+    let lower = task.to_ascii_lowercase();
+    let top_score = scores.values().copied().max().unwrap_or_default();
+    let second_score = {
+        let mut values = scores.values().copied().collect::<Vec<_>>();
+        values.sort_by(|left, right| right.cmp(left));
+        values.get(1).copied().unwrap_or_default()
+    };
+    let has_vague_unknown = contains_any(
+        &lower,
+        &[
+            "this thing",
+            "what handles this",
+            "figure out what",
+            "handles this thing",
+        ],
+    );
+    let buildroot_explicit = has_signal(signals, "Buildroot")
+        || has_signal(signals, "generic-package")
+        || has_signal(signals, "Config.in")
+        || has_signal(signals, ".mk")
+        || has_signal(signals, "BR2_PACKAGE");
+    let vector_metric = has_signal_prefix(signals, "vector_metrics:")
+        || has_signal(signals, "generated/selected/persisted")
+        || has_signal(signals, "artifact size")
+        || has_signal(signals, "payload size")
+        || has_signal(signals, "DB size math");
+    let docs_requested = score_for(scores, TaskKind::DocsLookup) >= 3;
+    let test_strong = has_signal(signals, "test-impact")
+        || has_signal(signals, "test impact")
+        || has_signal(signals, "failing test")
+        || ((lower.contains("change") || lower.contains("changing")) && lower.contains("test"));
+
+    let selected = if has_vague_unknown || top_score == 0 {
+        TaskKind::Unknown
+    } else if docs_requested && !buildroot_explicit && score_for(scores, TaskKind::DocsLookup) >= 3
+    {
+        TaskKind::DocsLookup
+    } else if buildroot_explicit && score_for(scores, TaskKind::BuildSystemPackageAuthoring) >= 4 {
+        TaskKind::BuildSystemPackageAuthoring
+    } else if vector_metric
+        && (score_for(scores, TaskKind::ArtifactMathTrace) >= 4
+            || score_for(scores, TaskKind::StorageAccountingTrace) >= 4)
+    {
+        if has_signal(signals, "actual_index_file_bytes")
+            || has_signal(signals, "estimated_f32_payload_bytes")
+            || has_signal(signals, "formula")
+            || has_signal(signals, "artifact size")
+            || has_signal(signals, "payload size")
+        {
+            TaskKind::ArtifactMathTrace
+        } else {
+            TaskKind::StorageAccountingTrace
+        }
+    } else if score_for(scores, TaskKind::CodegraphInternalDebug) >= 5 {
+        TaskKind::CodegraphInternalDebug
+    } else if test_strong || score_for(scores, TaskKind::TestImpact) >= 5 {
+        TaskKind::TestImpact
+    } else if score_for(scores, TaskKind::SecurityReview) >= 5
+        && score_for(scores, TaskKind::SecurityReview) >= score_for(scores, TaskKind::DataflowTrace)
+    {
+        TaskKind::SecurityReview
+    } else if score_for(scores, TaskKind::DataflowTrace) >= 5 {
+        TaskKind::DataflowTrace
+    } else if score_for(scores, TaskKind::StorageAccountingTrace) >= 5 {
+        TaskKind::StorageAccountingTrace
+    } else if score_for(scores, TaskKind::ArtifactMathTrace) >= 5 {
+        TaskKind::ArtifactMathTrace
+    } else if score_for(scores, TaskKind::ImplementationTrace) >= 4 {
+        TaskKind::ImplementationTrace
+    } else if score_for(scores, TaskKind::SchemaViewTrace) >= 4 {
+        TaskKind::SchemaViewTrace
+    } else if score_for(scores, TaskKind::IndexingSummaryTrace) >= 4 {
+        TaskKind::IndexingSummaryTrace
+    } else if score_for(scores, TaskKind::BenchmarkMetricTrace) >= 4 {
+        TaskKind::BenchmarkMetricTrace
+    } else if !file_path_seeds.is_empty() && top_score < 3 {
+        TaskKind::FileLookup
+    } else if (!exact_seeds.is_empty() || !config_keys.is_empty()) && top_score < 3 {
+        TaskKind::EntityLookup
+    } else {
+        TaskKind::Unknown
+    };
+
+    let ambiguity = if selected == TaskKind::Unknown {
+        "high".to_string()
+    } else if second_score >= 3 && top_score.saturating_sub(second_score) <= 1 {
+        "medium_conflicting_signals".to_string()
+    } else {
+        "low".to_string()
+    };
+    let confidence = if selected == TaskKind::Unknown {
+        0.18
+    } else {
+        (0.42 + (top_score.min(9) as f64 * 0.055)
+            - if ambiguity == "medium_conflicting_signals" {
+                0.08
+            } else {
+                0.0
+            })
+        .clamp(0.42, 0.94)
+    };
+    let fallback_intent = if confidence < 0.50 || selected == TaskKind::Unknown {
+        Some("unknown".to_string())
+    } else {
+        None
+    };
+    let signal_summary = if signals.is_empty() {
+        "no scoped routing signals".to_string()
+    } else {
+        unique_task_strings(signals.to_vec())
+            .into_iter()
+            .take(5)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let why = format!(
+        "I classified this as {} because I found {}.",
+        selected.as_str(),
+        signal_summary
+    );
+    (selected, confidence, ambiguity, why, fallback_intent)
+}
+
+fn profile_id_for_task_kind(kind: TaskKind) -> &'static str {
+    match kind {
+        TaskKind::BuildSystemPackageAuthoring => "build_system_package_authoring",
+        TaskKind::CodegraphInternalDebug => "codegraph_internal_debug",
+        TaskKind::ImplementationTrace => "implementation_trace",
+        TaskKind::StorageAccountingTrace => "storage_accounting_trace",
+        TaskKind::ArtifactMathTrace => "artifact_math_trace",
+        TaskKind::PersistencePathTrace => "persistence_path_trace",
+        TaskKind::IndexingSummaryTrace => "indexing_summary_trace",
+        TaskKind::SchemaViewTrace => "schema_view_trace",
+        TaskKind::BenchmarkMetricTrace => "benchmark_metric_trace",
+        TaskKind::TestImpact => "test_impact",
+        TaskKind::DataflowTrace => "dataflow_trace",
+        TaskKind::SecurityReview => "security_review",
+        TaskKind::DocsLookup => "docs_lookup",
+        TaskKind::EntityLookup | TaskKind::FileLookup | TaskKind::Unknown => "unknown_fallback",
+    }
+}
+
+fn task_domain_for_kind(kind: TaskKind) -> &'static str {
+    match kind {
+        TaskKind::BuildSystemPackageAuthoring => "build_system_package_authoring",
+        TaskKind::CodegraphInternalDebug => "codegraph_internal",
+        TaskKind::ImplementationTrace => "implementation",
+        TaskKind::StorageAccountingTrace => "storage_accounting",
+        TaskKind::ArtifactMathTrace => "artifact_math",
+        TaskKind::PersistencePathTrace => "persistence_path",
+        TaskKind::IndexingSummaryTrace => "indexing_summary",
+        TaskKind::SchemaViewTrace => "schema_view",
+        TaskKind::BenchmarkMetricTrace => "benchmark_metrics",
+        TaskKind::TestImpact => "tests",
+        TaskKind::DataflowTrace => "dataflow",
+        TaskKind::SecurityReview => "security",
+        TaskKind::DocsLookup => "docs",
+        TaskKind::EntityLookup => "entity_lookup",
+        TaskKind::FileLookup => "file_lookup",
+        TaskKind::Unknown => "unknown",
+    }
+}
+
+fn relation_goals_for_task_kind(kind: TaskKind) -> Vec<String> {
+    let goals = match kind {
+        TaskKind::BuildSystemPackageAuthoring => {
+            vec!["source_text", "source_navigation", "package_wiring"]
+        }
+        TaskKind::CodegraphInternalDebug => {
+            vec!["entrypoint", "lifecycle_guard", "store_open", "tests"]
+        }
+        TaskKind::ImplementationTrace => {
+            vec!["definitions", "callers", "callees", "helpers", "tests"]
+        }
+        TaskKind::StorageAccountingTrace | TaskKind::ArtifactMathTrace => vec![
+            "accounting_formula",
+            "artifact_writer",
+            "persisted_summary",
+            "artifact_or_db_inspection_required",
+        ],
+        TaskKind::PersistencePathTrace => vec!["writer", "persist_path", "reader"],
+        TaskKind::IndexingSummaryTrace => vec!["summary_counter", "index_entrypoint", "tests"],
+        TaskKind::SchemaViewTrace => vec!["schema_source", "status_surface", "docs"],
+        TaskKind::BenchmarkMetricTrace => vec!["metric_label", "report_surface", "tests"],
+        TaskKind::TestImpact => vec!["TESTS", "MOCKS", "ASSERTS", "source_navigation"],
+        TaskKind::DataflowTrace => vec!["FLOWS_TO", "WRITES", "SANITIZES", "MUTATES"],
+        TaskKind::SecurityReview => vec!["AUTHORIZES", "CHECKS_ROLE", "SANITIZES", "EXPOSES"],
+        TaskKind::DocsLookup => vec!["source_text"],
+        TaskKind::EntityLookup => vec!["definition", "references"],
+        TaskKind::FileLookup => vec!["file_path", "source_text"],
+        TaskKind::Unknown => vec![],
+    };
+    goals.into_iter().map(str::to_string).collect()
+}
+
+fn evidence_expectation_for_task_kind(kind: TaskKind) -> &'static str {
+    match kind {
+        TaskKind::BuildSystemPackageAuthoring => "source_text_and_source_navigation",
+        TaskKind::CodegraphInternalDebug => "source_navigation_with_lifecycle_guards",
+        TaskKind::ImplementationTrace => "source_navigation_with_optional_graph_proof",
+        TaskKind::StorageAccountingTrace | TaskKind::ArtifactMathTrace => {
+            "source_navigation_plus_artifact_or_db_inspection_required"
+        }
+        TaskKind::PersistencePathTrace => "source_navigation_plus_runtime_artifact_check",
+        TaskKind::IndexingSummaryTrace => "source_navigation_and_summary_counter_tests",
+        TaskKind::SchemaViewTrace => "source_text_and_schema_status",
+        TaskKind::BenchmarkMetricTrace => "source_text_and_report_surface_validation",
+        TaskKind::TestImpact => "source_navigation_tests",
+        TaskKind::DataflowTrace => "graph_or_source_verified_dataflow",
+        TaskKind::SecurityReview => "graph_or_source_verified_authorization",
+        TaskKind::DocsLookup => "source_text_evidence",
+        TaskKind::EntityLookup => "exact_entity_or_source_navigation",
+        TaskKind::FileLookup => "exact_file_or_source_text",
+        TaskKind::Unknown => "candidate_only_until_verified",
+    }
+}
+
+fn task_profile_by_id(profile_id: &str) -> TaskProfile {
+    match profile_id {
+        "build_system_package_authoring" => task_profile(
+            profile_id,
+            "Build system package authoring",
+            &[
+                "Buildroot",
+                "generic-package",
+                "Config.in",
+                ".mk",
+                "BR2_PACKAGE",
+                "download",
+                "hash",
+            ],
+            &["source_text", "source_navigation", "config_text"],
+            &[".adoc", ".mk", "Config.in", ".hash", ".patch", ".sh"],
+            &[
+                "authoring_docs",
+                "package_metadata",
+                "kconfig_wiring",
+                "download_infrastructure",
+            ],
+            "source navigation expected; graph proof optional and never inferred from docs",
+            "fall back to role-diverse source text across docs/package/kconfig/support",
+            &[
+                "Verify docs and package infrastructure spans before editing",
+                "Inspect package metadata, Kconfig wiring, download/hash, and install hooks",
+            ],
+            &[
+                "Do not infer graph proof from Buildroot docs text",
+                "Do not treat package examples as exact target package behavior",
+            ],
+            8,
+        ),
+        "codegraph_internal_debug" => task_profile(
+            profile_id,
+            "CodeGraph internal debug",
+            &[
+                "DB lifecycle",
+                "passport",
+                "preflight",
+                "stale DB",
+                "doctor",
+                "status",
+                "index",
+                "context-pack",
+            ],
+            &["source_navigation", "test_evidence", "lifecycle_diagnostic"],
+            &[".rs", ".md", ".json"],
+            &[
+                "entrypoint_symbols",
+                "lifecycle_preflight",
+                "store_open",
+                "tests",
+            ],
+            "graph proof useful only when source spans verify lifecycle relations",
+            "fall back to source navigation and lifecycle diagnostics",
+            &[
+                "Verify lifecycle preflight decision and store open guard",
+                "Run the targeted lifecycle/status test before claiming fixed behavior",
+            ],
+            &[
+                "Do not use diagnostic-only lifecycle output as claimable evidence",
+                "Do not hide stale/passport/schema/scope blockers",
+            ],
+            6,
+        ),
+        "implementation_trace" => task_profile(
+            profile_id,
+            "Implementation trace",
+            &[
+                "trace implementation",
+                "definitions",
+                "helpers",
+                "callers",
+                "callees",
+                "tests",
+            ],
+            &["source_navigation", "graph_entity", "test_evidence"],
+            &[".rs", ".ts", ".tsx", ".js", ".py", ".go"],
+            &[
+                "definitions",
+                "helpers",
+                "call_graph",
+                "tests",
+                "persistence",
+            ],
+            "attempt graph/source verification; text and vectors remain candidate-only",
+            "fall back to same-file helpers, tests, and inspection requirements",
+            &[
+                "Inspect definitions and helper/caller/callee spans first",
+                "Validate behavior with the smallest targeted test or smoke",
+            ],
+            &[
+                "Do not infer final persisted values from source code alone",
+                "Do not overclaim graph proof when only source navigation exists",
+            ],
+            10,
+        ),
+        "storage_accounting_trace" => task_profile(
+            profile_id,
+            "Storage accounting trace",
+            &[
+                "accounting",
+                "persisted size",
+                "generated/selected/persisted counts",
+                "actual_index_file_bytes",
+                "estimated_f32_payload_bytes",
+                "DB size math",
+            ],
+            &[
+                "source_navigation",
+                "metric_label",
+                "artifact_inspection_requirement",
+            ],
+            &[".rs", ".json", ".md"],
+            &[
+                "vector_chunk_index_build",
+                "metric_reporting",
+                "artifact_writer",
+                "tests",
+            ],
+            "implementation accounting is not graph relation proof",
+            "require artifact or DB inspection before final persisted-size claims",
+            &[
+                "Validate generated, selected, and persisted counts separately",
+                "Inspect artifact/DB state before claiming final persisted bytes",
+            ],
+            &[
+                "Do not call pretty_json artifact size compressed-vector storage",
+                "Do not collapse actual_index_file_bytes and estimated_f32_payload_bytes",
+            ],
+            7,
+        ),
+        "artifact_math_trace" => task_profile(
+            profile_id,
+            "Artifact math trace",
+            &[
+                "artifact size",
+                "payload size",
+                "formula",
+                "metric labels",
+                "actual_index_file_bytes",
+                "estimated_f32_payload_bytes",
+            ],
+            &[
+                "source_navigation",
+                "metric_label",
+                "artifact_inspection_requirement",
+            ],
+            &[".rs", ".json", ".md"],
+            &[
+                "metric_reporting",
+                "artifact_writer",
+                "persisted_index_summary",
+                "tests",
+            ],
+            "formula/source evidence is not persisted artifact proof",
+            "require artifact inspection before claims about on-disk bytes",
+            &[
+                "Validate metric labels against latest vector metric contract",
+                "Inspect report/status surfaces that expose storage math",
+            ],
+            &[
+                "Do not treat estimated raw f32 payload bytes as JSON artifact bytes",
+                "Do not claim compression unless product compression exists",
+            ],
+            7,
+        ),
+        "persistence_path_trace" => task_profile(
+            profile_id,
+            "Persistence path trace",
+            &["persist", "write", "artifact", "DB", "reader"],
+            &["source_navigation", "artifact_inspection_requirement"],
+            &[".rs", ".json", ".sqlite"],
+            &["writer", "persist_path", "reader", "tests"],
+            "source navigation can locate persistence path; artifact proof requires inspection",
+            "fall back to writer/reader source spans and DB inspection requirements",
+            &["Inspect writer and reader code before claiming persistence behavior"],
+            &["Do not infer final persisted state without artifact or DB inspection"],
+            6,
+        ),
+        "indexing_summary_trace" => task_profile(
+            profile_id,
+            "Indexing summary trace",
+            &[
+                "index",
+                "summary counters",
+                "generated",
+                "selected",
+                "persisted",
+            ],
+            &["source_navigation", "summary_counter", "test_evidence"],
+            &[".rs", ".json", ".md"],
+            &["index_entrypoint", "summary_counter", "tests", "reports"],
+            "source navigation plus tests; graph proof only if verified spans exist",
+            "fall back to summary structs/counters and status/report surfaces",
+            &["Validate summary counter labels and test coverage"],
+            &["Do not merge generated, selected, and persisted counts"],
+            6,
+        ),
+        "schema_view_trace" => task_profile(
+            profile_id,
+            "Schema view trace",
+            &["schema", "status", "view", "doctor"],
+            &["source_text", "schema_status", "source_navigation"],
+            &[".rs", ".sql", ".md", ".json"],
+            &["schema_source", "status_surface", "docs", "tests"],
+            "schema/status text is source evidence unless graph/source verification succeeds",
+            "fall back to schema source, status/doctor surface, and docs",
+            &["Verify schema surface and status output labels"],
+            &["Do not claim relation precision absent proof DB relations"],
+            5,
+        ),
+        "benchmark_metric_trace" => task_profile(
+            profile_id,
+            "Benchmark metric trace",
+            &["benchmark", "metric", "quality gate", "report"],
+            &["source_text", "metric_label", "test_evidence"],
+            &[".rs", ".json", ".md"],
+            &["metric_definition", "report_surface", "tests"],
+            "benchmark/report evidence is diagnostic unless promoted and verified",
+            "fall back to report surface and metric-definition source spans",
+            &["Validate metric labels against stable contract before reporting"],
+            &["Do not claim final intended-performance pass"],
+            5,
+        ),
+        "test_impact" => task_profile(
+            profile_id,
+            "Test impact",
+            &[
+                "test-impact",
+                "test",
+                "spec",
+                "mock",
+                "assertion",
+                "fixture",
+            ],
+            &["source_navigation", "test_evidence", "mock_assertion"],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &[
+                "changed_symbol",
+                "production_target",
+                "test_files",
+                "mocks_assertions",
+            ],
+            "TESTS/MOCKS/ASSERTS graph proof only if verified; otherwise source navigation",
+            "fall back to exact changed symbol, nearby tests, and assertion text",
+            &["Run the smallest test that covers the changed helper"],
+            &["Do not assume all tests are impacted from a generic helper mention"],
+            5,
+        ),
+        "dataflow_trace" => task_profile(
+            profile_id,
+            "Dataflow trace",
+            &[
+                "dataflow",
+                "request input",
+                "source",
+                "sink",
+                "database write",
+                "mutation",
+            ],
+            &["source_navigation", "dataflow_edge", "sanitizer"],
+            &[".rs", ".ts", ".tsx", ".js", ".py", ".sql"],
+            &[
+                "source",
+                "sink",
+                "intermediate_helper",
+                "sanitizer",
+                "mutation_write",
+            ],
+            "proof path preferred for FLOWS_TO/WRITES; source spans required either way",
+            "fall back to source/sink text and explicit proof-path attempt",
+            &["Verify source, sink, sanitizer, and mutation/write spans"],
+            &["Do not infer dataflow from same-file proximity alone"],
+            6,
+        ),
+        "security_review" => task_profile(
+            profile_id,
+            "Security review",
+            &[
+                "auth",
+                "authorize",
+                "role",
+                "admin",
+                "permission",
+                "RBAC",
+                "checkRole",
+            ],
+            &["source_navigation", "auth_policy", "test_evidence"],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &[
+                "auth_entrypoint",
+                "role_check",
+                "permission_gate",
+                "sanitizer_validator",
+            ],
+            "AUTHORIZES/CHECKS_ROLE proof preferred; source spans required",
+            "fall back to route/auth/role/test source navigation",
+            &["Verify role/permission checks and tests before claiming authorization behavior"],
+            &["Do not infer authorization from route names or comments"],
+            6,
+        ),
+        "docs_lookup" => task_profile(
+            profile_id,
+            "Docs lookup",
+            &["docs", "README", "manual", "guide", "explain"],
+            &["source_text", "documentation"],
+            &[".md", ".adoc", ".txt"],
+            &["docs_manual", "readme_docs", "config_reference_files"],
+            "docs are source text evidence, not graph proof",
+            "fall back to docs/readme/manual text and related source only if requested",
+            &["Verify docs text and avoid implementation claims without source inspection"],
+            &["Do not treat documentation support as graph proof"],
+            4,
+        ),
+        _ => task_profile(
+            "unknown_fallback",
+            "Unknown fallback",
+            &["insufficient or conflicting signals"],
+            &["source_text", "file_path"],
+            &[".rs", ".ts", ".tsx", ".js", ".py", ".md", ".json", ".toml"],
+            &["text_evidence_lookup", "file_lookup"],
+            "no graph proof expected unless exact seeds exist and verification succeeds",
+            "return conservative text/file lookup atoms and label unknowns",
+            &["Inspect exact file or symbol seeds first when present"],
+            &["Do not infer task kind or graph proof from generic task verbs"],
+            2,
+        ),
+    }
+}
+
+fn task_profile(
+    profile_id: &str,
+    profile_name: &str,
+    signals: &[&str],
+    preferred_evidence_roles: &[&str],
+    preferred_file_kinds: &[&str],
+    retrieval_branches: &[&str],
+    graph_expectation: &str,
+    fallback_policy: &str,
+    validation_templates: &[&str],
+    risk_templates: &[&str],
+    role_budget: usize,
+) -> TaskProfile {
+    TaskProfile {
+        profile_id: profile_id.to_string(),
+        profile_name: profile_name.to_string(),
+        signals: string_vec(signals),
+        ignored_generic_terms: string_vec(&[
+            "find",
+            "trace",
+            "plan",
+            "inspect",
+            "how",
+            "where",
+            "add",
+            "fix",
+            "change",
+            "understand",
+        ]),
+        preferred_evidence_roles: string_vec(preferred_evidence_roles),
+        preferred_file_kinds: string_vec(preferred_file_kinds),
+        retrieval_branches: string_vec(retrieval_branches),
+        graph_expectation: graph_expectation.to_string(),
+        fallback_policy: fallback_policy.to_string(),
+        validation_templates: string_vec(validation_templates),
+        risk_templates: string_vec(risk_templates),
+        role_budget,
+        confidence_rules: vec![
+            "exact domain signals outrank generic task verbs".to_string(),
+            "generic task verbs do not become exact symbol seeds".to_string(),
+            "conflicting high scores reduce confidence and preserve ambiguity".to_string(),
+        ],
+    }
+}
+
+fn string_vec(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| (*value).to_string()).collect()
+}
+
+fn proof_attempt_policy_for_intent(intent: &TaskIntent) -> String {
+    match intent.task_kind {
+        TaskKind::BuildSystemPackageAuthoring | TaskKind::DocsLookup => {
+            "source_text_first_graph_optional_no_overclaim".to_string()
+        }
+        TaskKind::StorageAccountingTrace | TaskKind::ArtifactMathTrace => {
+            "source_navigation_then_artifact_or_db_inspection_required".to_string()
+        }
+        TaskKind::Unknown if intent.exact_seeds.is_empty() && intent.file_path_seeds.is_empty() => {
+            "no_exact_graph_proof_expectation".to_string()
+        }
+        TaskKind::Unknown => "attempt_exact_seed_source_verification_only".to_string(),
+        _ => "attempt_graph_or_source_verification_for_exact_seeds".to_string(),
+    }
+}
+
+fn retrieval_atoms_for_profile(
+    intent: &TaskIntent,
+    profile: &TaskProfile,
+) -> Vec<RetrievalQueryAtom> {
+    match profile.profile_id.as_str() {
+        "build_system_package_authoring" => buildroot_authoring_atoms(intent),
+        "codegraph_internal_debug" => codegraph_internal_debug_atoms(intent),
+        "implementation_trace" => implementation_trace_atoms(intent),
+        "storage_accounting_trace" | "artifact_math_trace" => {
+            vector_metric_accounting_atoms(intent)
+        }
+        "persistence_path_trace" => persistence_path_atoms(intent),
+        "indexing_summary_trace" => indexing_summary_atoms(intent),
+        "schema_view_trace" => schema_view_atoms(intent),
+        "benchmark_metric_trace" => benchmark_metric_atoms(intent),
+        "test_impact" => test_impact_atoms(intent),
+        "dataflow_trace" => dataflow_trace_atoms(intent),
+        "security_review" => security_review_atoms(intent),
+        "docs_lookup" => docs_lookup_atoms(intent),
+        _ => unknown_fallback_atoms(intent),
+    }
+}
+
+fn atom(
+    role: &str,
+    query_text: String,
+    path_hints: &[&str],
+    file_kind_hints: &[&str],
+    evidence_role_filter: &[&str],
+    candidate_source_preference: &[&str],
+    max_candidates: usize,
+    why: &str,
+    expected_signal: &str,
+    proof_expectation: &str,
+) -> RetrievalQueryAtom {
+    RetrievalQueryAtom {
+        role: role.to_string(),
+        query_text,
+        path_hints: string_vec(path_hints),
+        file_kind_hints: string_vec(file_kind_hints),
+        evidence_role_filter: string_vec(evidence_role_filter),
+        candidate_source_preference: string_vec(candidate_source_preference),
+        max_candidates,
+        why: why.to_string(),
+        expected_signal: expected_signal.to_string(),
+        proof_expectation: proof_expectation.to_string(),
+    }
+}
+
+fn intent_seed_query(intent: &TaskIntent, base: &str) -> String {
+    let seeds = intent
+        .exact_seeds
+        .iter()
+        .chain(intent.config_keys.iter())
+        .chain(intent.file_path_seeds.iter())
+        .take(4)
+        .cloned()
+        .collect::<Vec<_>>();
+    if seeds.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base} {}", seeds.join(" "))
+    }
+}
+
+fn buildroot_authoring_atoms(_intent: &TaskIntent) -> Vec<RetrievalQueryAtom> {
+    vec![
+        atom(
+            "authoring_docs",
+            "generic-package package infrastructure manual".to_string(),
+            &["docs/manual"],
+            &[".adoc"],
+            &["source_text", "documentation"],
+            &["text_evidence", "file_path"],
+            3,
+            "Find the authoring rules before inspecting implementation files.",
+            "generic-package documentation and package infrastructure wording",
+            "source_text_evidence_not_graph_proof",
+        ),
+        atom(
+            "package_metadata",
+            "package metadata VERSION SITE LICENSE DEPENDENCIES generic-package".to_string(),
+            &["package/*/*.mk", "package/pkg-generic.mk"],
+            &[".mk"],
+            &["source_text", "source_navigation"],
+            &["text_evidence", "graph_entity"],
+            4,
+            "Package authoring depends on metadata variables and generic-package invocation.",
+            "package metadata variables and generic-package call",
+            "source_navigation_evidence_not_graph_proof_unless_verified",
+        ),
+        atom(
+            "kconfig_wiring",
+            "Config.in BR2_PACKAGE depends on select source package Config.in".to_string(),
+            &["package/Config.in", "package/*/Config.in"],
+            &["Config.in", ".in"],
+            &["config_text", "source_text"],
+            &["text_evidence", "file_path"],
+            4,
+            "Kconfig wiring is a separate authoring role from package metadata.",
+            "BR2_PACKAGE config entry and package/Config.in inclusion",
+            "source_text_evidence_not_graph_proof",
+        ),
+        atom(
+            "makefile_inclusion",
+            "package makefile include generic-package pkg-generic".to_string(),
+            &["package/pkg-generic.mk", "package/Makefile.in"],
+            &[".mk"],
+            &["source_navigation", "source_text"],
+            &["text_evidence", "graph_entity"],
+            3,
+            "Makefile inclusion proves where package infrastructure is wired.",
+            "pkg-generic include or package makefile wiring",
+            "source_navigation_evidence_not_graph_proof_unless_verified",
+        ),
+        atom(
+            "download_infrastructure",
+            "download site hash pkg-download support/download".to_string(),
+            &["package/pkg-download.mk", "support/download"],
+            &[".mk", ".sh", ".hash"],
+            &["source_navigation", "source_text"],
+            &["text_evidence", "file_path"],
+            3,
+            "Download and hash handling are separate from package metadata.",
+            "download site/hash implementation or docs",
+            "source_text_or_source_navigation_not_graph_proof",
+        ),
+        atom(
+            "build_install_infrastructure",
+            "inner-generic-package BUILD_CMDS INSTALL_TARGET_CMDS install infrastructure"
+                .to_string(),
+            &["package/pkg-generic.mk", "package/*/*.mk"],
+            &[".mk"],
+            &["source_navigation", "source_text"],
+            &["graph_entity", "text_evidence"],
+            3,
+            "Build and install hooks are the execution surface for package authoring.",
+            "build/install command variables and inner-generic-package",
+            "source_navigation_evidence_not_graph_proof_unless_verified",
+        ),
+        atom(
+            "support_scripts",
+            "support scripts package infrastructure download helpers".to_string(),
+            &["support/scripts", "support/download"],
+            &[".sh", ".py", ".mk"],
+            &["source_navigation", "source_text"],
+            &["file_path", "text_evidence"],
+            2,
+            "Support scripts often explain behavior not visible in package metadata.",
+            "support/download or support/scripts helpers",
+            "source_navigation_evidence_not_graph_proof_unless_verified",
+        ),
+        atom(
+            "examples",
+            "generic-package Config.in package example .mk".to_string(),
+            &["docs/manual", "package/*"],
+            &[".adoc", ".mk", "Config.in"],
+            &["source_text"],
+            &["text_evidence"],
+            2,
+            "Examples are useful comparison evidence but not proof of the target package.",
+            "small package examples using generic-package",
+            "example_source_text_not_graph_proof",
+        ),
+    ]
+}
+
+fn codegraph_internal_debug_atoms(intent: &TaskIntent) -> Vec<RetrievalQueryAtom> {
+    vec![
+        atom(
+            "entrypoint_symbols",
+            intent_seed_query(
+                intent,
+                "context-pack index status doctor entrypoint symbols",
+            ),
+            &[
+                "crates/codegraph-cli/src",
+                "crates/codegraph-mcp-server/src",
+            ],
+            &[".rs"],
+            &["source_navigation", "graph_entity"],
+            &["graph_entity", "text_evidence"],
+            4,
+            "Start from the command/tool entrypoints that expose the behavior.",
+            "CLI or MCP entrypoint symbols",
+            "graph_or_source_verification_required",
+        ),
+        atom(
+            "lifecycle_preflight",
+            "DB lifecycle passport preflight stale DB scope guards".to_string(),
+            &[
+                "crates/codegraph-index/src",
+                "crates/codegraph-cli/src",
+                "crates/codegraph-mcp-server/src",
+            ],
+            &[".rs"],
+            &["source_navigation", "lifecycle_diagnostic"],
+            &["graph_entity", "text_evidence"],
+            4,
+            "Lifecycle gates decide whether packet evidence is claimable.",
+            "passport/preflight/stale DB/scope guard logic",
+            "source_navigation_required_diagnostic_output_not_claimable",
+        ),
+        atom(
+            "store_open",
+            "open store SqliteGraphStore DB passport reusable DB guard".to_string(),
+            &[
+                "crates/codegraph-store/src",
+                "crates/codegraph-index/src",
+                "crates/codegraph-cli/src",
+            ],
+            &[".rs"],
+            &["source_navigation"],
+            &["graph_entity", "text_evidence"],
+            3,
+            "DB lifecycle bugs usually cross the store-open boundary.",
+            "store open and reusable DB guard",
+            "source_navigation_or_graph_proof_if_verified",
+        ),
+        atom(
+            "status_doctor",
+            "status doctor lifecycle diagnostics schema scope passport".to_string(),
+            &[
+                "crates/codegraph-cli/src",
+                "crates/codegraph-mcp-server/src",
+            ],
+            &[".rs"],
+            &["source_navigation", "diagnostic"],
+            &["text_evidence", "graph_entity"],
+            3,
+            "Status and doctor surfaces expose lifecycle state to agents.",
+            "status/doctor diagnostic output",
+            "diagnostic_output_not_graph_proof",
+        ),
+        atom(
+            "tests",
+            "lifecycle preflight stale DB passport status doctor tests".to_string(),
+            &["crates/*/src", "crates/*/tests"],
+            &[".rs"],
+            &["test_evidence", "source_navigation"],
+            &["text_evidence", "graph_entity"],
+            3,
+            "Lifecycle behavior needs targeted tests before claimable changes.",
+            "unit or CLI smoke tests for lifecycle guards",
+            "test_source_evidence_not_graph_proof_unless_verified",
+        ),
+        atom(
+            "schemas_docs",
+            "schema passport lifecycle docs status contract".to_string(),
+            &["docs", "README.md", "reports/final"],
+            &[".md", ".json"],
+            &["source_text", "documentation"],
+            &["text_evidence"],
+            2,
+            "Schema/docs can explain public contract but do not prove implementation.",
+            "schema or lifecycle public contract text",
+            "source_text_evidence_not_graph_proof",
+        ),
+    ]
+}
+
+fn implementation_trace_atoms(intent: &TaskIntent) -> Vec<RetrievalQueryAtom> {
+    vec![
+        atom(
+            "definitions",
+            intent_seed_query(
+                intent,
+                "function type definitions for implementation surface",
+            ),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py", ".go"],
+            &["graph_entity", "source_navigation"],
+            &["graph_entity", "text_evidence"],
+            4,
+            "Definitions anchor the implementation surface before expanding outward.",
+            "definition span for exact symbol or implementation surface",
+            "graph_or_source_verification_required",
+        ),
+        atom(
+            "same_file_helpers",
+            intent_seed_query(intent, "same-file helpers near implementation surface"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py", ".go"],
+            &["source_navigation"],
+            &["graph_entity", "text_evidence"],
+            3,
+            "Helpers often explain behavior without requiring a broad repo pull.",
+            "helper functions in the same file or module",
+            "source_navigation_evidence_not_graph_proof_unless_verified",
+        ),
+        atom(
+            "relevant_structs",
+            intent_seed_query(
+                intent,
+                "struct types enum types config structs for implementation surface",
+            ),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py", ".go"],
+            &["graph_entity", "source_navigation"],
+            &["graph_entity"],
+            3,
+            "Types and structs define the state being traced.",
+            "related type/struct/entity definitions",
+            "graph_or_source_verification_required",
+        ),
+        atom(
+            "relevant_constants",
+            intent_seed_query(
+                intent,
+                "constants metric labels configuration keys used by implementation",
+            ),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py", ".go"],
+            &["source_navigation"],
+            &["text_evidence", "graph_entity"],
+            2,
+            "Constants often hold labels or formula terms that must remain truthful.",
+            "constants or labels referenced by the implementation",
+            "source_text_evidence_not_graph_proof",
+        ),
+        atom(
+            "callers",
+            intent_seed_query(intent, "callers of implementation surface"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py", ".go"],
+            &["graph_entity", "source_navigation"],
+            &["graph_entity"],
+            3,
+            "Callers show who exercises the implementation surface.",
+            "caller edges or source references",
+            "graph_proof_only_if_verified_path_exists",
+        ),
+        atom(
+            "callees",
+            intent_seed_query(intent, "callees dependencies of implementation surface"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py", ".go"],
+            &["graph_entity", "source_navigation"],
+            &["graph_entity"],
+            3,
+            "Callees show where the implementation delegates work.",
+            "callee edges or source references",
+            "graph_proof_only_if_verified_path_exists",
+        ),
+        atom(
+            "related_tests",
+            intent_seed_query(intent, "tests validating implementation behavior"),
+            &["crates/*/src", "crates/*/tests"],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["test_evidence"],
+            &["text_evidence", "graph_entity"],
+            3,
+            "Tests bound the behavior before edits.",
+            "unit/smoke tests for the implementation surface",
+            "test_source_evidence_not_graph_proof_unless_verified",
+        ),
+        atom(
+            "persistence_path",
+            intent_seed_query(
+                intent,
+                "write persist save artifact DB path for implementation",
+            ),
+            &[],
+            &[".rs", ".json", ".sql"],
+            &["source_navigation"],
+            &["text_evidence", "graph_entity"],
+            3,
+            "Persistence claims require locating writer and reader paths.",
+            "artifact or DB write/read source path",
+            "source_navigation_then_artifact_or_db_inspection_required",
+        ),
+        atom(
+            "accounting_summary",
+            intent_seed_query(
+                intent,
+                "summary counters accounting generated selected persisted counts",
+            ),
+            &[],
+            &[".rs", ".json", ".md"],
+            &["source_navigation", "metric_label"],
+            &["text_evidence", "graph_entity"],
+            3,
+            "Accounting summaries must preserve distinct generated/selected/persisted counts.",
+            "summary counter or metric label source",
+            "source_text_evidence_not_final_persisted_value_proof",
+        ),
+        atom(
+            "artifact_inspection_requirements",
+            "artifact inspection required for final persisted value claims".to_string(),
+            &["reports", "target", ".codegraph"],
+            &[".json", ".sqlite"],
+            &["artifact_inspection_requirement"],
+            &["artifact_or_db_inspection_requirement"],
+            1,
+            "Source code alone does not prove final artifact bytes.",
+            "explicit artifact inspection requirement",
+            "required_for_persisted_value_claims",
+        ),
+        atom(
+            "db_inspection_requirements",
+            "DB inspection required for final persisted database value claims".to_string(),
+            &[".codegraph", "reports/audit/artifacts"],
+            &[".sqlite", ".db"],
+            &["db_inspection_requirement"],
+            &["artifact_or_db_inspection_requirement"],
+            1,
+            "Source code alone does not prove DB row counts or persisted values.",
+            "explicit DB inspection requirement",
+            "required_for_persisted_value_claims",
+        ),
+    ]
+}
+
+fn vector_metric_accounting_atoms(_intent: &TaskIntent) -> Vec<RetrievalQueryAtom> {
+    vec![
+        atom(
+            "vector_chunk_index_build",
+            "vector chunk index build generated selected persisted accounting summary".to_string(),
+            &["crates/codegraph-index/src", "crates/codegraph-vector/src", "crates/codegraph-cli/src"],
+            &[".rs"],
+            &["source_navigation", "metric_label"],
+            &["graph_entity", "text_evidence"],
+            4,
+            "Vector chunk index build is the source of generated/selected/persisted counts.",
+            "build summary counters and vector chunk index build logic",
+            "source_navigation_not_graph_relation_proof",
+        ),
+        atom(
+            "vector_chunk_selection",
+            "chunk selection diversity_ranked_v1 input_order_cap selected chunks".to_string(),
+            &["crates/codegraph-index/src", "crates/codegraph-vector/src"],
+            &[".rs"],
+            &["source_navigation", "metric_label"],
+            &["graph_entity", "text_evidence"],
+            4,
+            "Selection strategy must preserve selected-count semantics and representation guarantees.",
+            "diversity_ranked_v1, input_order_cap, selected chunks",
+            "source_navigation_not_graph_relation_proof",
+        ),
+        atom(
+            "metric_reporting",
+            "actual_index_file_bytes estimated_f32_payload_bytes pretty_json vector_payload_compression".to_string(),
+            &["crates/codegraph-index/src", "crates/codegraph-cli/src", "crates/codegraph-mcp-server/src"],
+            &[".rs", ".json", ".md"],
+            &["metric_label", "source_text"],
+            &["text_evidence", "graph_entity"],
+            4,
+            "Metric labels must distinguish JSON artifact bytes from estimated raw float32 payload.",
+            "truthful vector metric labels",
+            "source_text_evidence_not_storage_claim_without_artifact_inspection",
+        ),
+        atom(
+            "artifact_writer",
+            "vector index artifact writer JSON artifact size stores_chunk_text stores_chunk_metadata".to_string(),
+            &["crates/codegraph-index/src", "crates/codegraph-cli/src"],
+            &[".rs", ".json"],
+            &["source_navigation"],
+            &["graph_entity", "text_evidence"],
+            3,
+            "The writer determines what is actually persisted into the JSON artifact.",
+            "artifact write path and stored chunk text/metadata fields",
+            "source_navigation_then_artifact_inspection_required",
+        ),
+        atom(
+            "persisted_index_summary",
+            "persisted vector index summary selected persisted generated counts artifact size payload size".to_string(),
+            &["crates/codegraph-index/src", "crates/codegraph-cli/src", "reports/final"],
+            &[".rs", ".json", ".md"],
+            &["source_navigation", "metric_label"],
+            &["text_evidence", "graph_entity"],
+            3,
+            "Summary surfaces must keep generated/selected/persisted values distinct.",
+            "persisted index summary and status/report fields",
+            "source_text_evidence_not_final_persisted_value_proof",
+        ),
+        atom(
+            "tests",
+            "vector chunk index accounting metric labels artifact size tests".to_string(),
+            &["crates/*/src", "crates/*/tests"],
+            &[".rs"],
+            &["test_evidence"],
+            &["text_evidence", "graph_entity"],
+            3,
+            "Metric truthfulness needs focused tests over labels and counts.",
+            "tests validating vector accounting and metric labels",
+            "test_source_evidence_not_graph_proof_unless_verified",
+        ),
+        atom(
+            "release_smoke_report_surfaces",
+            "release smoke status context output vector metrics report surfaces".to_string(),
+            &["reports/final", "reports/audit", "crates/codegraph-cli/src"],
+            &[".md", ".json", ".rs"],
+            &["source_text", "diagnostic"],
+            &["text_evidence"],
+            2,
+            "Release/status/report surfaces are where misleading metric labels become user-visible.",
+            "status/context/report vector metric output",
+            "diagnostic_or_source_text_not_graph_proof",
+        ),
+    ]
+}
+
+fn persistence_path_atoms(intent: &TaskIntent) -> Vec<RetrievalQueryAtom> {
+    vec![
+        atom(
+            "writer",
+            intent_seed_query(intent, "writer save persist artifact DB write path"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["source_navigation"],
+            &["graph_entity", "text_evidence"],
+            4,
+            "Persistence traces start at the writer.",
+            "write/persist/save source span",
+            "source_navigation_then_artifact_or_db_inspection_required",
+        ),
+        atom(
+            "reader",
+            intent_seed_query(intent, "reader load persisted artifact DB read path"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["source_navigation"],
+            &["graph_entity", "text_evidence"],
+            3,
+            "Readers determine how persisted state is consumed.",
+            "load/read source span",
+            "source_navigation_evidence_not_final_state_proof",
+        ),
+        atom(
+            "tests",
+            intent_seed_query(intent, "tests for persistence path"),
+            &["crates/*/src", "crates/*/tests"],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["test_evidence"],
+            &["text_evidence"],
+            2,
+            "Persistence behavior should have a targeted test or smoke.",
+            "persistence test or smoke",
+            "test_source_evidence_not_graph_proof_unless_verified",
+        ),
+    ]
+}
+
+fn indexing_summary_atoms(intent: &TaskIntent) -> Vec<RetrievalQueryAtom> {
+    let mut atoms = implementation_trace_atoms(intent);
+    atoms.retain(|atom| {
+        matches!(
+            atom.role.as_str(),
+            "definitions"
+                | "accounting_summary"
+                | "related_tests"
+                | "artifact_inspection_requirements"
+        )
+    });
+    atoms.push(atom(
+        "index_entrypoint",
+        "index entrypoint summary counters generated selected persisted".to_string(),
+        &["crates/codegraph-index/src", "crates/codegraph-cli/src"],
+        &[".rs"],
+        &["source_navigation", "metric_label"],
+        &["graph_entity", "text_evidence"],
+        4,
+        "Indexing summaries must be traced from the entrypoint that produces them.",
+        "index entrypoint and summary counter source",
+        "source_navigation_not_graph_relation_proof",
+    ));
+    atoms
+}
+
+fn schema_view_atoms(_intent: &TaskIntent) -> Vec<RetrievalQueryAtom> {
+    vec![
+        atom(
+            "schema_source",
+            "schema status schema_version passport scope status fields".to_string(),
+            &["crates/codegraph-store/src", "crates/codegraph-index/src"],
+            &[".rs", ".sql"],
+            &["source_text", "source_navigation"],
+            &["text_evidence", "graph_entity"],
+            4,
+            "Schema view claims need the schema source and status surface.",
+            "schema source or status field",
+            "source_text_evidence_not_graph_proof",
+        ),
+        atom(
+            "status_surface",
+            "status doctor schema view output".to_string(),
+            &[
+                "crates/codegraph-cli/src",
+                "crates/codegraph-mcp-server/src",
+            ],
+            &[".rs"],
+            &["source_navigation"],
+            &["text_evidence"],
+            3,
+            "Status/doctor surfaces reveal how schema state is exposed.",
+            "schema/status output fields",
+            "diagnostic_output_not_graph_proof",
+        ),
+        atom(
+            "docs",
+            "schema status docs README".to_string(),
+            &["docs", "README.md"],
+            &[".md"],
+            &["source_text", "documentation"],
+            &["text_evidence"],
+            2,
+            "Docs can support the public contract but cannot prove runtime state.",
+            "schema docs or README text",
+            "source_text_evidence_not_graph_proof",
+        ),
+    ]
+}
+
+fn benchmark_metric_atoms(_intent: &TaskIntent) -> Vec<RetrievalQueryAtom> {
+    vec![
+        atom(
+            "metric_definition",
+            "benchmark metric quality gate report metric labels".to_string(),
+            &["crates/codegraph-bench/src", "crates/codegraph-cli/src"],
+            &[".rs"],
+            &["metric_label", "source_navigation"],
+            &["text_evidence", "graph_entity"],
+            4,
+            "Metric claims need the defining source, not only a report value.",
+            "metric definition or label source",
+            "source_text_evidence_not_final_performance_claim",
+        ),
+        atom(
+            "report_surface",
+            "final audit report quality gate metrics status".to_string(),
+            &["reports/final", "reports/audit"],
+            &[".md", ".json"],
+            &["source_text", "diagnostic"],
+            &["text_evidence"],
+            3,
+            "Report surfaces show current labels and diagnostic scope.",
+            "report/status metric surface",
+            "diagnostic_or_source_text_not_graph_proof",
+        ),
+        atom(
+            "tests",
+            "benchmark metric label tests quality gate".to_string(),
+            &["crates/*/src", "crates/*/tests"],
+            &[".rs"],
+            &["test_evidence"],
+            &["text_evidence"],
+            3,
+            "Metric label regressions need targeted tests.",
+            "metric or quality-gate tests",
+            "test_source_evidence_not_graph_proof_unless_verified",
+        ),
+    ]
+}
+
+fn test_impact_atoms(intent: &TaskIntent) -> Vec<RetrievalQueryAtom> {
+    vec![
+        atom(
+            "changed_symbol",
+            intent_seed_query(intent, "changed helper symbol definition"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["graph_entity", "source_navigation"],
+            &["graph_entity", "text_evidence"],
+            3,
+            "Test impact starts from the exact changed symbol or helper.",
+            "changed production symbol definition",
+            "graph_or_source_verification_required",
+        ),
+        atom(
+            "production_target",
+            intent_seed_query(intent, "production target using changed helper"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["source_navigation", "graph_entity"],
+            &["graph_entity"],
+            3,
+            "The production target narrows which tests are relevant.",
+            "production caller/user of changed helper",
+            "graph_proof_only_if_verified_path_exists",
+        ),
+        atom(
+            "test_files",
+            intent_seed_query(intent, "tests specs covering production target"),
+            &["crates/*/tests", "crates/*/src", "tests"],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["test_evidence"],
+            &["text_evidence", "graph_entity"],
+            4,
+            "Impacted tests should be explicit files/spans, not a broad test suite pull.",
+            "test or spec files for the changed surface",
+            "test_source_evidence_not_graph_proof_unless_verified",
+        ),
+        atom(
+            "mocks_assertions",
+            intent_seed_query(intent, "mocks assertions fixtures around changed helper"),
+            &["crates/*/tests", "crates/*/src", "tests"],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["mock_assertion", "test_evidence"],
+            &["text_evidence", "graph_entity"],
+            3,
+            "Mocks and assertions show what behavior the test actually checks.",
+            "mock/assertion/fixture evidence",
+            "source_text_evidence_not_graph_proof",
+        ),
+        atom(
+            "test_impact_fallback",
+            intent_seed_query(intent, "fallback nearby tests for changed helper"),
+            &["crates/*/tests", "tests"],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["test_evidence"],
+            &["text_evidence"],
+            2,
+            "Fallback is bounded to nearby/exact-seed tests.",
+            "nearby tests if exact graph relation is missing",
+            "fallback_source_text_not_graph_proof",
+        ),
+    ]
+}
+
+fn dataflow_trace_atoms(intent: &TaskIntent) -> Vec<RetrievalQueryAtom> {
+    vec![
+        atom(
+            "source",
+            intent_seed_query(intent, "request input source entrypoint"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["source_navigation", "dataflow_edge"],
+            &["graph_entity", "text_evidence"],
+            3,
+            "A dataflow packet needs an explicit source.",
+            "request/input source span",
+            "graph_or_source_verification_required",
+        ),
+        atom(
+            "sink",
+            intent_seed_query(intent, "database write sink"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py", ".sql"],
+            &["source_navigation", "dataflow_edge"],
+            &["graph_entity", "text_evidence"],
+            3,
+            "The sink defines the dataflow claim boundary.",
+            "database write or sink span",
+            "graph_or_source_verification_required",
+        ),
+        atom(
+            "intermediate_helper",
+            intent_seed_query(
+                intent,
+                "intermediate helper transforms request input before sink",
+            ),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["source_navigation", "dataflow_edge"],
+            &["graph_entity", "text_evidence"],
+            3,
+            "Intermediate helpers prevent a shallow source-to-sink jump.",
+            "helper or transform between source and sink",
+            "source_navigation_or_verified_dataflow_path_required",
+        ),
+        atom(
+            "sanitizer",
+            intent_seed_query(intent, "sanitizer validator before database write"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["sanitizer", "source_navigation"],
+            &["graph_entity", "text_evidence"],
+            3,
+            "Sanitizer evidence changes the interpretation of the flow.",
+            "sanitizer/validator source span",
+            "source_navigation_not_sufficient_for_dataflow_proof",
+        ),
+        atom(
+            "mutation_write",
+            intent_seed_query(intent, "mutation write database write persistence"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py", ".sql"],
+            &["source_navigation", "dataflow_edge"],
+            &["graph_entity", "text_evidence"],
+            3,
+            "Writes/mutations are the side effect to verify.",
+            "mutation/write source span",
+            "graph_or_source_verification_required",
+        ),
+        atom(
+            "proof_path_attempt",
+            intent_seed_query(intent, "FLOWS_TO WRITES SANITIZES proof path attempt"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["dataflow_edge", "source_navigation"],
+            &["graph_entity"],
+            2,
+            "Dataflow claims should attempt a proof path but must label missing proof.",
+            "FLOWS_TO/WRITES/SANITIZES relation path",
+            "no_proof_path_found_must_remain_visible_if_missing",
+        ),
+    ]
+}
+
+fn security_review_atoms(intent: &TaskIntent) -> Vec<RetrievalQueryAtom> {
+    vec![
+        atom(
+            "auth_entrypoint",
+            intent_seed_query(intent, "auth entrypoint route handler admin behavior"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["source_navigation", "auth_policy"],
+            &["graph_entity", "text_evidence"],
+            3,
+            "Authorization review starts at the exposed entrypoint.",
+            "auth or route entrypoint span",
+            "graph_or_source_verification_required",
+        ),
+        atom(
+            "role_check",
+            intent_seed_query(intent, "role check checkRole admin RBAC"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["auth_policy", "source_navigation"],
+            &["graph_entity", "text_evidence"],
+            3,
+            "Role checks are the core authorization gate.",
+            "role/checkRole/RBAC source span",
+            "AUTHORIZES_or_CHECKS_ROLE_graph_proof_only_if_verified",
+        ),
+        atom(
+            "permission_gate",
+            intent_seed_query(intent, "permission gate authorize admin-only behavior"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["auth_policy", "source_navigation"],
+            &["graph_entity", "text_evidence"],
+            3,
+            "Permission gates decide whether admin-only behavior is protected.",
+            "permission/authorize guard span",
+            "source_navigation_required_graph_proof_optional",
+        ),
+        atom(
+            "sanitizer_validator",
+            intent_seed_query(intent, "sanitizer validator authorization input checks"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["sanitizer", "source_navigation"],
+            &["graph_entity", "text_evidence"],
+            2,
+            "Validators and sanitizers can be relevant adjacent controls.",
+            "validator/sanitizer source span",
+            "source_navigation_not_authorization_proof",
+        ),
+        atom(
+            "route_expose",
+            intent_seed_query(intent, "route expose endpoint admin behavior"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["source_navigation"],
+            &["graph_entity", "text_evidence"],
+            2,
+            "Exposed routes define whether the gate is reachable.",
+            "route/endpoint exposure source span",
+            "source_navigation_not_authorization_proof",
+        ),
+        atom(
+            "tests",
+            intent_seed_query(intent, "authorization role admin permission tests"),
+            &["crates/*/tests", "tests"],
+            &[".rs", ".ts", ".tsx", ".js", ".py"],
+            &["test_evidence"],
+            &["text_evidence", "graph_entity"],
+            3,
+            "Security behavior needs tests over allowed and denied paths.",
+            "authorization/permission tests",
+            "test_source_evidence_not_graph_proof_unless_verified",
+        ),
+    ]
+}
+
+fn docs_lookup_atoms(intent: &TaskIntent) -> Vec<RetrievalQueryAtom> {
+    vec![
+        atom(
+            "docs_manual",
+            intent_seed_query(intent, "docs manual guide explanation"),
+            &["docs", "docs/manual"],
+            &[".md", ".adoc", ".txt"],
+            &["source_text", "documentation"],
+            &["text_evidence", "file_path"],
+            4,
+            "Docs/manual text is the primary evidence for docs lookup.",
+            "manual/docs text matching the task",
+            "source_text_evidence_not_graph_proof",
+        ),
+        atom(
+            "readme_docs",
+            intent_seed_query(intent, "README docs guide explanation"),
+            &["README.md", "crates/*/README.md"],
+            &[".md"],
+            &["source_text", "documentation"],
+            &["text_evidence", "file_path"],
+            3,
+            "README surfaces often hold stable public usage details.",
+            "README or guide text",
+            "source_text_evidence_not_graph_proof",
+        ),
+        atom(
+            "config_reference_files",
+            intent_seed_query(intent, "config reference files docs"),
+            &["docs", "templates", "fixtures"],
+            &[".md", ".adoc", ".json", ".toml", "Config.in"],
+            &["source_text", "config_text"],
+            &["text_evidence", "file_path"],
+            2,
+            "Reference/config files can support docs answers without broad code pulls.",
+            "configuration reference text",
+            "source_text_evidence_not_graph_proof",
+        ),
+        atom(
+            "related_source_if_implementation",
+            intent_seed_query(intent, "related source only if task asks implementation"),
+            &["crates"],
+            &[".rs"],
+            &["source_navigation"],
+            &["graph_entity", "text_evidence"],
+            1,
+            "Implementation source is secondary for docs lookup and only used when requested.",
+            "related source span if implementation is explicitly requested",
+            "source_navigation_not_docs_or_graph_proof",
+        ),
+    ]
+}
+
+fn unknown_fallback_atoms(intent: &TaskIntent) -> Vec<RetrievalQueryAtom> {
+    let proof_expectation = if intent.exact_seeds.is_empty() && intent.file_path_seeds.is_empty() {
+        "no_exact_graph_proof_expectation"
+    } else {
+        "attempt_exact_seed_source_verification_only"
+    };
+    vec![
+        atom(
+            "text_evidence_lookup",
+            intent_seed_query(
+                intent,
+                "conservative source text evidence for ambiguous task",
+            ),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py", ".md", ".json", ".toml"],
+            &["source_text"],
+            &["text_evidence"],
+            3,
+            "Ambiguous tasks should return conservative source text evidence, not broad context.",
+            "bounded text evidence around exact seeds if present",
+            proof_expectation,
+        ),
+        atom(
+            "file_lookup",
+            intent_seed_query(intent, "conservative file lookup for ambiguous task"),
+            &[],
+            &[".rs", ".ts", ".tsx", ".js", ".py", ".md", ".json", ".toml"],
+            &["source_navigation", "source_text"],
+            &["file_path", "text_evidence"],
+            3,
+            "File lookup is bounded to explicit file/path seeds when available.",
+            "exact file path or nearest file text if present",
+            proof_expectation,
+        ),
+    ]
+}
+
 fn extract_stack_trace_seed(line: &str, seeds: &mut Vec<PromptSeed>) {
     let trimmed = line.trim_start();
     let Some(after_at) = trimmed.strip_prefix("at ") else {
@@ -4922,6 +7349,7 @@ fn extract_buildroot_phrase_seeds(line: &str, seeds: &mut Vec<PromptSeed>) {
     let lower = line.to_ascii_lowercase();
     for (needle, value) in [
         ("generic-package", "generic-package"),
+        ("generic package", "generic-package"),
         ("host-generic-package", "host-generic-package"),
         ("config.in", "Config.in"),
         ("package infrastructure", "package infrastructure"),
@@ -5250,7 +7678,16 @@ fn looks_code_like_identifier(value: &str) -> bool {
 fn is_prompt_task_verb(value: &str) -> bool {
     matches!(
         value.to_ascii_lowercase().as_str(),
-        "find" | "plan" | "trace" | "inspect" | "add" | "where" | "how"
+        "find"
+            | "plan"
+            | "trace"
+            | "inspect"
+            | "add"
+            | "where"
+            | "how"
+            | "fix"
+            | "change"
+            | "understand"
     )
 }
 
@@ -5279,8 +7716,11 @@ fn is_keyword_or_common_word(value: &str) -> bool {
             | "error"
             | "false"
             | "file"
+            | "figure"
             | "from"
             | "function"
+            | "handle"
+            | "handles"
             | "using"
             | "import"
             | "line"
@@ -5537,6 +7977,24 @@ fn dropped_ids(before: &[String], after: &[String], preserved: &[String]) -> Vec
         .filter(|id| !after.contains(id) && !preserved.contains(id))
         .cloned()
         .collect()
+}
+
+fn prompt_seed_graph_exact_value(seed: &PromptSeed) -> Option<String> {
+    match seed.kind {
+        PromptSeedKind::Symbol
+        | PromptSeedKind::TestName
+        | PromptSeedKind::Identifier
+        | PromptSeedKind::ConfigToken
+        | PromptSeedKind::FilePath
+        | PromptSeedKind::LineNumber
+        | PromptSeedKind::StackTrace
+        | PromptSeedKind::PathToken => seed.exact_value(),
+        PromptSeedKind::FilePattern
+        | PromptSeedKind::TextToken
+        | PromptSeedKind::ErrorMessage
+        | PromptSeedKind::TaskVerbIgnored
+        | PromptSeedKind::Unknown => None,
+    }
 }
 
 fn preserve_exact_rerank_scores(
@@ -7998,6 +10456,282 @@ mod tests {
             .any(|seed| seed.kind.as_str() == "exact_symbol" && seed.exact));
     }
 
+    #[test]
+    fn task_intent_buildroot_prompt_produces_package_authoring_atoms() {
+        let (intent, profile, plan) =
+            plan_task_retrieval("Trace Buildroot generic package flow for adding a new package.");
+
+        assert_eq!(intent.task_kind, TaskKind::BuildSystemPackageAuthoring);
+        assert_eq!(profile.profile_id, "build_system_package_authoring");
+        assert!(intent
+            .signals
+            .iter()
+            .any(|signal| signal.contains("generic-package")));
+        assert_atom_roles(
+            &plan,
+            &[
+                "authoring_docs",
+                "package_metadata",
+                "kconfig_wiring",
+                "makefile_inclusion",
+                "download_infrastructure",
+                "build_install_infrastructure",
+                "support_scripts",
+                "examples",
+            ],
+        );
+        assert!(plan.query_atoms.iter().any(|atom| {
+            atom.role == "authoring_docs" && atom.path_hints.contains(&"docs/manual".to_string())
+        }));
+    }
+
+    #[test]
+    fn task_intent_codegraph_lifecycle_prompt_selects_internal_debug() {
+        let (intent, profile, plan) =
+            plan_task_retrieval("Trace indexing entry point and DB lifecycle guards.");
+
+        assert_eq!(intent.task_kind, TaskKind::CodegraphInternalDebug);
+        assert_eq!(profile.profile_id, "codegraph_internal_debug");
+        assert_atom_roles(
+            &plan,
+            &[
+                "entrypoint_symbols",
+                "lifecycle_preflight",
+                "store_open",
+                "status_doctor",
+                "tests",
+            ],
+        );
+    }
+
+    #[test]
+    fn task_intent_implementation_trace_prompt_selects_implementation_trace() {
+        let (intent, profile, plan) =
+            plan_task_retrieval("Trace implementation for AuthService.login callers and helpers.");
+
+        assert_eq!(intent.task_kind, TaskKind::ImplementationTrace);
+        assert_eq!(profile.profile_id, "implementation_trace");
+        assert_atom_roles(
+            &plan,
+            &[
+                "definitions",
+                "same_file_helpers",
+                "relevant_structs",
+                "relevant_constants",
+                "callers",
+                "callees",
+                "related_tests",
+                "persistence_path",
+                "accounting_summary",
+                "artifact_inspection_requirements",
+                "db_inspection_requirements",
+            ],
+        );
+    }
+
+    #[test]
+    fn task_intent_vector_metric_prompt_selects_accounting_atoms() {
+        let (intent, _profile, plan) = plan_task_retrieval(
+            "Trace vector chunk index build accounting and persisted vector index size math with actual_index_file_bytes and estimated_f32_payload_bytes.",
+        );
+
+        assert!(matches!(
+            intent.task_kind,
+            TaskKind::StorageAccountingTrace | TaskKind::ArtifactMathTrace
+        ));
+        assert!(intent
+            .signals
+            .iter()
+            .any(|signal| signal.contains("actual_index_file_bytes")));
+        assert!(intent
+            .signals
+            .iter()
+            .any(|signal| signal.contains("estimated_f32_payload_bytes")));
+        assert_atom_roles(
+            &plan,
+            &[
+                "vector_chunk_index_build",
+                "vector_chunk_selection",
+                "metric_reporting",
+                "artifact_writer",
+                "persisted_index_summary",
+                "tests",
+                "release_smoke_report_surfaces",
+            ],
+        );
+        let metric_atom = plan
+            .query_atoms
+            .iter()
+            .find(|atom| atom.role == "metric_reporting")
+            .expect("metric_reporting atom");
+        assert!(metric_atom.query_text.contains("actual_index_file_bytes"));
+        assert!(metric_atom
+            .query_text
+            .contains("estimated_f32_payload_bytes"));
+    }
+
+    #[test]
+    fn task_intent_test_impact_prompt_selects_test_impact() {
+        let (intent, profile, plan) =
+            plan_task_retrieval("Find test impact for changing a helper used by auth tests.");
+
+        assert_eq!(intent.task_kind, TaskKind::TestImpact);
+        assert_eq!(profile.profile_id, "test_impact");
+        assert_atom_roles(
+            &plan,
+            &[
+                "changed_symbol",
+                "production_target",
+                "test_files",
+                "mocks_assertions",
+                "test_impact_fallback",
+            ],
+        );
+    }
+
+    #[test]
+    fn task_intent_dataflow_prompt_selects_dataflow() {
+        let (intent, profile, plan) =
+            plan_task_retrieval("Trace request input flow to a database write.");
+
+        assert_eq!(intent.task_kind, TaskKind::DataflowTrace);
+        assert_eq!(profile.profile_id, "dataflow_trace");
+        assert_atom_roles(
+            &plan,
+            &[
+                "source",
+                "sink",
+                "intermediate_helper",
+                "sanitizer",
+                "mutation_write",
+                "proof_path_attempt",
+            ],
+        );
+    }
+
+    #[test]
+    fn task_intent_security_prompt_selects_security_review() {
+        let (intent, profile, plan) =
+            plan_task_retrieval("Find where role checks authorize admin-only behavior.");
+
+        assert_eq!(intent.task_kind, TaskKind::SecurityReview);
+        assert_eq!(profile.profile_id, "security_review");
+        assert_atom_roles(
+            &plan,
+            &[
+                "auth_entrypoint",
+                "role_check",
+                "permission_gate",
+                "sanitizer_validator",
+                "route_expose",
+                "tests",
+            ],
+        );
+    }
+
+    #[test]
+    fn task_intent_docs_prompt_selects_docs_lookup() {
+        let (intent, profile, plan) =
+            plan_task_retrieval("Find docs explaining package infrastructure.");
+
+        assert_eq!(intent.task_kind, TaskKind::DocsLookup);
+        assert_eq!(profile.profile_id, "docs_lookup");
+        assert_atom_roles(
+            &plan,
+            &[
+                "docs_manual",
+                "readme_docs",
+                "config_reference_files",
+                "related_source_if_implementation",
+            ],
+        );
+    }
+
+    #[test]
+    fn task_intent_ambiguous_prompt_uses_unknown_fallback() {
+        let (intent, profile, plan) = plan_task_retrieval("Figure out what handles this thing.");
+
+        assert_eq!(intent.task_kind, TaskKind::Unknown);
+        assert_eq!(profile.profile_id, "unknown_fallback");
+        assert_eq!(intent.ambiguity, "high");
+        assert_atom_roles(&plan, &["text_evidence_lookup", "file_lookup"]);
+        assert!(plan
+            .proof_attempt_policy
+            .contains("no_exact_graph_proof_expectation"));
+    }
+
+    #[test]
+    fn task_intent_generic_verbs_are_ignored_as_exact_symbols() {
+        let intent =
+            parse_task_intent("Find trace plan inspect how where add fix change understand");
+
+        for value in [
+            "find",
+            "trace",
+            "plan",
+            "inspect",
+            "how",
+            "where",
+            "add",
+            "fix",
+            "change",
+            "understand",
+        ] {
+            assert!(
+                intent.ignored_terms.iter().any(|term| term == value),
+                "missing ignored term {value:?} in {:?}",
+                intent.ignored_terms
+            );
+            assert!(
+                !intent
+                    .exact_seeds
+                    .iter()
+                    .any(|seed| seed.eq_ignore_ascii_case(value)),
+                "generic verb became exact seed: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn task_intent_preserves_file_paths_and_symbols_as_seeds() {
+        let intent = parse_task_intent(
+            "Inspect src/auth/login.ts and AuthService.login with BR2_PACKAGE_OPENSSL.",
+        );
+
+        assert!(intent
+            .file_path_seeds
+            .contains(&"src/auth/login.ts".to_string()));
+        assert!(intent
+            .exact_seeds
+            .contains(&"AuthService.login".to_string()));
+        assert!(intent
+            .config_keys
+            .contains(&"BR2_PACKAGE_OPENSSL".to_string()));
+    }
+
+    #[test]
+    fn retrieval_plan_atoms_are_precise_not_broad_context_pulls() {
+        let (_intent, _profile, plan) =
+            plan_task_retrieval("Trace request input flow to a database write.");
+
+        assert!(!plan.query_atoms.is_empty());
+        for atom in &plan.query_atoms {
+            assert!(
+                atom.max_candidates <= 4,
+                "atom {} pulls too many candidates",
+                atom.role
+            );
+            assert!(
+                !atom.query_text.eq_ignore_ascii_case("context")
+                    && !atom.query_text.eq_ignore_ascii_case("repo")
+                    && !atom.query_text.to_ascii_lowercase().contains("whole repo"),
+                "atom {} is too broad: {}",
+                atom.role,
+                atom.query_text
+            );
+        }
+    }
+
     fn assert_seed(seeds: &[PromptSeed], kind: PromptSeedKind, value: &str) {
         assert!(
             seeds
@@ -8026,6 +10760,20 @@ mod tests {
             }),
             "unexpected exact symbol seed {value:?} in {seeds:?}"
         );
+    }
+
+    fn assert_atom_roles(plan: &RetrievalPlan, expected_roles: &[&str]) {
+        let roles = plan
+            .query_atoms
+            .iter()
+            .map(|atom| atom.role.as_str())
+            .collect::<Vec<_>>();
+        for role in expected_roles {
+            assert!(
+                roles.contains(role),
+                "missing atom role {role:?} in {roles:?}"
+            );
+        }
     }
 
     #[test]
@@ -9467,6 +12215,53 @@ mod tests {
 
         assert!(stage1.kept.contains(&"Exact.seed".to_string()));
         assert!(stage2.kept.contains(&"Exact.seed".to_string()));
+    }
+
+    #[test]
+    fn retrieval_funnel_keeps_text_tokens_out_of_graph_exact_seed_lane() {
+        let funnel = ok(RetrievalFunnel::new(
+            vec![edge(
+                "Exact.seed",
+                RelationKind::Calls,
+                "verified-target",
+                1,
+            )],
+            vec![RetrievalDocument::new(
+                "Exact.seed",
+                "explicit exact seed document",
+            )],
+            funnel_config(1, 1),
+        ));
+
+        let result = ok(funnel.run(
+            RetrievalFunnelRequest::new(
+                "semantic package metadata generic package noise",
+                "impact",
+                1_000,
+            )
+            .exact_seeds(vec!["Exact.seed".to_string()]),
+        ));
+        let stage0 = result
+            .trace
+            .iter()
+            .find(|stage| stage.stage == "stage0_exact_seed_extraction")
+            .expect("stage0 trace");
+        let exact_rerank_ids = result
+            .rerank_scores
+            .iter()
+            .filter(|score| score.exact_seed)
+            .map(|score| score.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(stage0.kept.contains(&"Exact.seed".to_string()));
+        assert!(!stage0.kept.contains(&"generic-package".to_string()));
+        assert!(exact_rerank_ids.contains(&"Exact.seed"));
+        assert!(!exact_rerank_ids.contains(&"generic-package"));
+        assert!(result
+            .packet
+            .verified_paths
+            .iter()
+            .any(|path| path.source == "Exact.seed"));
     }
 
     #[test]

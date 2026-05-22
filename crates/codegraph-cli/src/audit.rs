@@ -7,11 +7,11 @@ use std::{
 };
 
 use codegraph_index::{
-    index_repo_to_db_with_options,
+    candidate_spool_query_index_path, index_repo_to_db_with_options,
     scope::{self, IndexScope, IndexScopeDecision, ScopeAction, ScopePathKind, ScopeRuleKind},
     IndexBuildMode, IndexOptions, IndexScopeOptions, StorageMode,
 };
-use codegraph_parser::detect_language;
+use codegraph_parser::{content_hash, detect_language};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -21,8 +21,12 @@ use crate::storage_budget;
 const AUDIT_SCHEMA_VERSION: u32 = 1;
 const LABEL_SCHEMA_VERSION: u32 = 1;
 const STORAGE_MICRO_SCHEMA_VERSION: u32 = 1;
+const VECTOR_CHUNK_INSPECTOR_SCHEMA_VERSION: u32 = 1;
+const DEFAULT_VECTOR_CHUNKS_FILE_NAME: &str = "codegraph-vector-chunks.json";
 const DEFAULT_SAMPLE_LIMIT: usize = 100;
 const DEFAULT_PATH_SAMPLE_LIMIT: usize = 20;
+const DEFAULT_VECTOR_CHUNK_SAMPLE_LIMIT: usize = 20;
+const VECTOR_CHUNK_TEXT_PREVIEW_CHARS: usize = 240;
 const DEFAULT_SAMPLE_SEED: u64 = 1;
 const DEFAULT_PATH_SAMPLE_MAX_EDGE_LOAD: usize = 512;
 const DEFAULT_PATH_SAMPLE_TIMEOUT_MS: u64 = 120_000;
@@ -102,12 +106,15 @@ const MOCK_RELATIONS: &[&str] = &["MOCKS", "STUBS"];
 pub fn run_audit_command(args: &[String]) -> Result<Value, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         return Err(
-            "Usage: codegraph-mcp audit <index-scope|storage|storage-micro|schema-check|storage-experiments|sample-edges|sample-paths|relation-counts|label-samples|summarize-labels> [ARGS]".to_string(),
+            "Usage: codegraph-mcp audit <index-scope|vector-chunks|storage|storage-micro|schema-check|storage-experiments|sample-edges|sample-paths|relation-counts|label-samples|summarize-labels> [ARGS]".to_string(),
         );
     };
 
     match subcommand {
         "index-scope" | "index_scope" | "scope" => run_index_scope_command(&args[1..]),
+        "vector-chunks" | "vector_chunks" | "vectors" | "vector-artifact" => {
+            run_vector_chunks_command(&args[1..])
+        }
         "storage" | "storage-forensics" => run_storage_command(&args[1..]),
         "storage-micro" | "storage_micro" => run_storage_micro_command(&args[1..]),
         "schema-check" | "schema" | "validate-schema" => run_schema_check_command(&args[1..]),
@@ -126,6 +133,41 @@ struct StorageOptions {
     db_path: PathBuf,
     json_path: Option<PathBuf>,
     markdown_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct VectorChunksOptions {
+    artifact_path: Option<PathBuf>,
+    runtime_sidecar_path: Option<PathBuf>,
+    audit_artifact_path: Option<PathBuf>,
+    db_path: Option<PathBuf>,
+    repo: Option<PathBuf>,
+    json_path: Option<PathBuf>,
+    markdown_path: Option<PathBuf>,
+    sample_limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VectorInspectorDbPassport {
+    passport_version: u32,
+    codegraph_schema_version: u32,
+    storage_mode: String,
+    index_scope_policy_hash: String,
+    scope_policy_json: String,
+    canonical_repo_root: String,
+    git_remote: Option<String>,
+    worktree_root: Option<String>,
+    repo_head: Option<String>,
+    source_discovery_policy_version: String,
+    codegraph_build_version: Option<String>,
+    last_successful_index_timestamp: Option<u64>,
+    last_completed_run_id: Option<String>,
+    last_run_status: String,
+    integrity_gate_result: String,
+    files_seen: u64,
+    files_indexed: u64,
+    created_at_unix_ms: u64,
+    updated_at_unix_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1553,6 +1595,1521 @@ fn compact_visibility_entry(entry: &Value) -> Value {
     })
 }
 
+fn run_vector_chunks_command(args: &[String]) -> Result<Value, String> {
+    let options = parse_vector_chunks_options(args)?;
+    let resolved_db_path = resolve_vector_chunks_db_path(&options);
+    let artifact_path = resolve_vector_chunks_artifact_path(&options, resolved_db_path.as_deref())?;
+    let report =
+        inspect_vector_chunks_artifact(&options, &artifact_path, resolved_db_path.as_deref());
+    let markdown = render_vector_chunks_markdown(&report);
+    write_optional_outputs(
+        &report,
+        &markdown,
+        &options.json_path,
+        &options.markdown_path,
+    )?;
+    Ok(report)
+}
+
+fn inspect_vector_chunks_artifact(
+    options: &VectorChunksOptions,
+    artifact_path: &Path,
+    db_path: Option<&Path>,
+) -> Value {
+    let started = Instant::now();
+    let artifact_exists = artifact_path.exists();
+    let artifact_hash_before = stable_file_hash(artifact_path);
+    let artifact_mtime_before = fs::metadata(artifact_path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .map(system_time_unix_ms);
+    let artifact_bytes = fs::metadata(artifact_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+
+    if !artifact_exists {
+        return vector_chunks_error_report(
+            options,
+            artifact_path,
+            db_path,
+            "missing",
+            "artifact_missing",
+            &format!("artifact does not exist: {}", artifact_path.display()),
+            artifact_hash_before,
+            artifact_mtime_before,
+            artifact_bytes,
+            started,
+        );
+    }
+
+    let raw = match fs::read(artifact_path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            return vector_chunks_error_report(
+                options,
+                artifact_path,
+                db_path,
+                "corrupt",
+                "artifact_read_failed",
+                &format!("failed to read artifact: {error}"),
+                artifact_hash_before,
+                artifact_mtime_before,
+                artifact_bytes,
+                started,
+            )
+        }
+    };
+
+    let compression_status = detect_vector_artifact_compression(&raw);
+    let mut artifact_format = detect_vector_artifact_format(artifact_path, &raw);
+    if artifact_format == "binary" {
+        return vector_chunks_error_report(
+            options,
+            artifact_path,
+            db_path,
+            "corrupt",
+            "unsupported_binary_or_compressed_artifact",
+            "artifact is not UTF-8 JSON/JSONL; binary vector sidecar parsing is not implemented by this inspector",
+            artifact_hash_before,
+            artifact_mtime_before,
+            artifact_bytes,
+            started,
+        );
+    }
+
+    let text = match std::str::from_utf8(&raw) {
+        Ok(text) => text,
+        Err(error) => {
+            return vector_chunks_error_report(
+                options,
+                artifact_path,
+                db_path,
+                "corrupt",
+                "artifact_utf8_decode_failed",
+                &format!("artifact is not UTF-8 JSON/JSONL: {error}"),
+                artifact_hash_before,
+                artifact_mtime_before,
+                artifact_bytes,
+                started,
+            )
+        }
+    };
+
+    let parsed = match parse_vector_artifact_text(text, &artifact_format) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return vector_chunks_error_report(
+                options,
+                artifact_path,
+                db_path,
+                "corrupt",
+                "artifact_parse_failed",
+                &error,
+                artifact_hash_before,
+                artifact_mtime_before,
+                artifact_bytes,
+                started,
+            )
+        }
+    };
+    artifact_format = parsed.artifact_format.clone();
+
+    let artifact_kind =
+        classify_vector_artifact_kind(&parsed.root, &parsed.metadata, &parsed.chunks);
+    let chunk_counts = vector_chunk_counts(
+        &artifact_kind,
+        &parsed.metadata,
+        &parsed.root,
+        &parsed.chunks,
+    );
+    let composition = vector_chunk_composition(&parsed.chunks);
+    let mut byte_accounting = vector_chunk_byte_accounting(
+        &parsed.root,
+        &parsed.metadata,
+        &parsed.chunks,
+        artifact_bytes,
+        text.len() as u64,
+    );
+    annotate_vector_artifact_byte_accounting(&mut byte_accounting, &artifact_kind, artifact_bytes);
+    let provider_lifecycle = vector_provider_lifecycle(
+        options.repo.as_deref(),
+        db_path,
+        &parsed.root,
+        &parsed.metadata,
+        &parsed.chunks,
+        &artifact_hash_before,
+    );
+    let related_artifacts = vector_related_artifacts(options, artifact_path, &artifact_kind);
+    let query_index = vector_query_index_metadata(&parsed.metadata, &parsed.root, artifact_path);
+    let sample_chunks = vector_chunk_samples(&parsed.chunks, options.sample_limit);
+    let safety = vector_safety_conclusions(&parsed.root, &parsed.metadata, &parsed.chunks);
+    let artifact_hash_after = stable_file_hash(artifact_path);
+    let artifact_mtime_after = fs::metadata(artifact_path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .map(system_time_unix_ms);
+
+    json!({
+        "schema_version": VECTOR_CHUNK_INSPECTOR_SCHEMA_VERSION,
+        "status": "ok",
+        "audit": "vector_chunks",
+        "command": "codegraph-mcp audit vector-chunks",
+        "generated_at_unix_ms": now_unix_ms(),
+        "duration_ms": round3(started.elapsed().as_secs_f64() * 1000.0),
+        "options": {
+            "artifact": path_string(artifact_path),
+            "runtime_sidecar": options.runtime_sidecar_path.as_ref().map(path_string),
+            "audit_artifact": options.audit_artifact_path.as_ref().map(path_string),
+            "db": db_path.map(path_string),
+            "repo": options.repo.as_ref().map(path_string),
+            "sample": options.sample_limit,
+            "json_output": options.json_path.as_ref().map(path_string),
+            "markdown_output": options.markdown_path.as_ref().map(path_string),
+        },
+        "artifact_identity": {
+            "artifact_path": path_string(artifact_path),
+            "artifact_exists": true,
+            "artifact_kind": artifact_kind,
+            "artifact_format": artifact_format,
+            "artifact_bytes": artifact_bytes,
+            "pretty_json": parsed.artifact_format == "pretty_json",
+            "compact_json": parsed.artifact_format == "compact_json",
+            "jsonl": parsed.artifact_format == "jsonl",
+            "binary": false,
+            "compression_status": compression_status,
+            "vector_payload_compression": vector_string(&parsed.metadata, &parsed.root, &[&["vector_payload_compression"]])
+                .unwrap_or_else(|| compression_status.to_string()),
+        },
+        "chunk_counts": chunk_counts,
+        "chunk_composition": composition,
+        "byte_accounting": byte_accounting,
+        "query_index": query_index,
+        "related_artifacts": related_artifacts,
+        "passport_lifecycle_provider": provider_lifecycle,
+        "sample_chunks": sample_chunks,
+        "safety_conclusions": safety,
+        "mutation_check": {
+            "artifact_hash_algorithm": "fnv1a64",
+            "artifact_hash_before": artifact_hash_before,
+            "artifact_hash_after": artifact_hash_after,
+            "artifact_mtime_before": artifact_mtime_before,
+            "artifact_mtime_after": artifact_mtime_after,
+            "artifact_mutated_during_inspection": artifact_hash_before != artifact_hash_after || artifact_mtime_before != artifact_mtime_after,
+            "db": db_path.map(|path| vector_db_mutation_status(path)),
+        },
+        "claim_boundaries": {
+            "candidate_only": true,
+            "diagnostic_only": true,
+            "public_claim": false,
+            "can_answer_graph_proof": false,
+            "creates_graph_relations": false,
+            "graph_verification_required_for_entity_hits": true,
+            "full_split_implemented": matches!(artifact_kind.as_str(), "vector_runtime_sidecar" | "audit_artifact"),
+        },
+    })
+}
+
+fn vector_chunks_error_report(
+    options: &VectorChunksOptions,
+    artifact_path: &Path,
+    db_path: Option<&Path>,
+    validity_status: &str,
+    error_kind: &str,
+    message: &str,
+    artifact_hash_before: Option<String>,
+    artifact_mtime_before: Option<u64>,
+    artifact_bytes: u64,
+    started: Instant,
+) -> Value {
+    let artifact_hash_after = stable_file_hash(artifact_path);
+    let artifact_mtime_after = fs::metadata(artifact_path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .map(system_time_unix_ms);
+    let (artifact_format, compression_status, binary) = if artifact_path.exists() {
+        match fs::read(artifact_path) {
+            Ok(raw) => {
+                let format = detect_vector_artifact_format(artifact_path, &raw);
+                let binary = format == "binary";
+                (
+                    format,
+                    detect_vector_artifact_compression(&raw).to_string(),
+                    binary,
+                )
+            }
+            Err(_) => ("unknown".to_string(), "unknown".to_string(), false),
+        }
+    } else {
+        ("missing".to_string(), "unknown".to_string(), false)
+    };
+    json!({
+        "schema_version": VECTOR_CHUNK_INSPECTOR_SCHEMA_VERSION,
+        "status": "error",
+        "audit": "vector_chunks",
+        "command": "codegraph-mcp audit vector-chunks",
+        "generated_at_unix_ms": now_unix_ms(),
+        "duration_ms": round3(started.elapsed().as_secs_f64() * 1000.0),
+        "error": {
+            "kind": error_kind,
+            "message": message,
+        },
+        "options": {
+            "artifact": path_string(artifact_path),
+            "runtime_sidecar": options.runtime_sidecar_path.as_ref().map(path_string),
+            "audit_artifact": options.audit_artifact_path.as_ref().map(path_string),
+            "db": db_path.map(path_string),
+            "repo": options.repo.as_ref().map(path_string),
+            "sample": options.sample_limit,
+            "json_output": options.json_path.as_ref().map(path_string),
+            "markdown_output": options.markdown_path.as_ref().map(path_string),
+        },
+        "artifact_identity": {
+            "artifact_path": path_string(artifact_path),
+            "artifact_exists": artifact_path.exists(),
+            "artifact_kind": "unknown",
+            "artifact_format": artifact_format,
+            "artifact_bytes": artifact_bytes,
+            "pretty_json": false,
+            "compact_json": false,
+            "jsonl": false,
+            "binary": binary,
+            "compression_status": compression_status.clone(),
+            "vector_payload_compression": compression_status,
+        },
+        "chunk_counts": empty_vector_chunk_counts(),
+        "chunk_composition": empty_vector_chunk_composition(),
+        "byte_accounting": {
+            "actual_index_file_bytes": artifact_bytes,
+            "estimated_f32_payload_bytes": 0,
+            "indexed_chunk_text_bytes": 0,
+            "metadata_estimated_bytes": 0,
+            "selection_reason_bytes": 0,
+            "repeated_field_overhead_estimate": 0,
+            "artifact_to_payload_ratio": Value::Null,
+            "chunk_text_share_percent": 0.0,
+            "metadata_share_percent": 0.0,
+            "audit_overhead_share_percent": 0.0,
+            "byte_accounting_method": "error_path_no_chunks_loaded",
+        },
+        "passport_lifecycle_provider": {
+            "db_passport_hash": Value::Null,
+            "repo_hash": Value::Null,
+            "scope_hash": Value::Null,
+            "provider_name": Value::Null,
+            "model": Value::Null,
+            "dims": Value::Null,
+            "extraction_version": Value::Null,
+            "validity_status": validity_status,
+            "reason": message,
+            "db_binding": db_path.map(|path| vector_db_binding_without_artifact(path)),
+        },
+        "sample_chunks": [],
+        "safety_conclusions": {
+            "stores_embedding_vectors": false,
+            "stores_chunk_text": false,
+            "stores_chunk_metadata": false,
+            "stores_full_source_body": false,
+            "creates_graph_relations": false,
+            "can_answer_graph_proof": false,
+            "candidate_only": true,
+            "deterministic_embeddings_regenerated_from_chunk_text": false,
+            "embedding_reconstruction": "not_available_error_path",
+        },
+        "mutation_check": {
+            "artifact_hash_algorithm": "fnv1a64",
+            "artifact_hash_before": artifact_hash_before,
+            "artifact_hash_after": artifact_hash_after,
+            "artifact_mtime_before": artifact_mtime_before,
+            "artifact_mtime_after": artifact_mtime_after,
+            "artifact_mutated_during_inspection": artifact_hash_before != artifact_hash_after || artifact_mtime_before != artifact_mtime_after,
+            "db": db_path.map(|path| vector_db_mutation_status(path)),
+        },
+        "claim_boundaries": {
+            "candidate_only": true,
+            "diagnostic_only": true,
+            "public_claim": false,
+            "can_answer_graph_proof": false,
+            "creates_graph_relations": false,
+            "graph_verification_required_for_entity_hits": true,
+            "full_split_implemented": false,
+        },
+    })
+}
+
+#[derive(Debug, Clone)]
+struct ParsedVectorArtifact {
+    root: Value,
+    metadata: Value,
+    chunks: Vec<Value>,
+    artifact_format: String,
+}
+
+fn parse_vector_artifact_text(
+    text: &str,
+    detected_format: &str,
+) -> Result<ParsedVectorArtifact, String> {
+    if detected_format == "jsonl" {
+        return parse_vector_jsonl_artifact(text);
+    }
+    let root: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
+    let artifact_format = if detected_format == "unknown" {
+        if text.lines().count() > 1 {
+            "pretty_json".to_string()
+        } else {
+            "compact_json".to_string()
+        }
+    } else {
+        detected_format.to_string()
+    };
+    let metadata = root
+        .get("metadata")
+        .or_else(|| root.get("manifest"))
+        .or_else(|| root.get("artifact_metadata"))
+        .cloned()
+        .unwrap_or_else(|| {
+            if root.is_object() {
+                root.clone()
+            } else {
+                Value::Null
+            }
+        });
+    let chunks = if let Some(array) = root.get("chunks").and_then(Value::as_array) {
+        array.clone()
+    } else if let Some(array) = root.get("runtime_chunks").and_then(Value::as_array) {
+        array.clone()
+    } else if let Some(array) = root.get("audit_chunks").and_then(Value::as_array) {
+        array.clone()
+    } else if let Some(array) = root.as_array() {
+        array.clone()
+    } else {
+        Vec::new()
+    };
+    Ok(ParsedVectorArtifact {
+        root,
+        metadata,
+        chunks,
+        artifact_format,
+    })
+}
+
+fn parse_vector_jsonl_artifact(text: &str) -> Result<ParsedVectorArtifact, String> {
+    let mut chunks = Vec::new();
+    let mut metadata = Value::Null;
+    let mut manifest_lines = Vec::new();
+    for (line_index, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: Value = serde_json::from_str(trimmed)
+            .map_err(|error| format!("invalid JSONL line {}: {error}", line_index + 1))?;
+        if value.get("chunk_id").is_some() || value.get("text").is_some() {
+            chunks.push(value);
+        } else {
+            if metadata.is_null() {
+                metadata = value
+                    .get("metadata")
+                    .or_else(|| value.get("manifest"))
+                    .cloned()
+                    .unwrap_or_else(|| value.clone());
+            }
+            manifest_lines.push(value);
+        }
+    }
+    let root = json!({
+        "artifact_format": "jsonl",
+        "metadata": metadata,
+        "manifest_lines": manifest_lines,
+        "chunks": chunks,
+    });
+    let chunks = root["chunks"].as_array().cloned().unwrap_or_default();
+    Ok(ParsedVectorArtifact {
+        root,
+        metadata,
+        chunks,
+        artifact_format: "jsonl".to_string(),
+    })
+}
+
+fn detect_vector_artifact_format(path: &Path, raw: &[u8]) -> String {
+    if std::str::from_utf8(raw).is_err() {
+        return "binary".to_string();
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let text = std::str::from_utf8(raw).unwrap_or_default();
+    let trimmed = text.trim_start();
+    if extension == "jsonl" {
+        return "jsonl".to_string();
+    }
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        if text.lines().count() > 1 && (text.contains("\n  \"") || text.contains("\n    \"")) {
+            "pretty_json".to_string()
+        } else {
+            "compact_json".to_string()
+        }
+    } else if !trimmed.is_empty() {
+        "jsonl".to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+fn detect_vector_artifact_compression(raw: &[u8]) -> &'static str {
+    if raw.starts_with(&[0x1f, 0x8b]) {
+        "gzip"
+    } else if raw.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+        "zstd"
+    } else {
+        "none"
+    }
+}
+
+fn classify_vector_artifact_kind(root: &Value, metadata: &Value, chunks: &[Value]) -> String {
+    for value in [
+        vector_string(metadata, root, &[&["artifact_kind"]]),
+        vector_string(metadata, root, &[&["kind"]]),
+        vector_string(metadata, root, &[&["metadata", "artifact_kind"]]),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        match normalize_vector_artifact_kind(&value).as_deref() {
+            Some(kind) => return kind.to_string(),
+            None => {}
+        }
+    }
+    if vector_bool(metadata, root, &[&["diagnostic_only"]]).unwrap_or(false) {
+        return "audit_artifact".to_string();
+    }
+    if vector_string(metadata, root, &[&["metadata_version"]]).as_deref()
+        == Some("vector_chunk_index_metadata_v1")
+        && vector_string(metadata, root, &[&["index_artifact_format"]]).as_deref()
+            == Some("pretty_json")
+        && !chunks.is_empty()
+    {
+        return "legacy_pretty_json_vector_artifact".to_string();
+    }
+    let scope = vector_string(metadata, root, &[&["source_scope"]]).unwrap_or_default();
+    let scope_lower = scope.to_ascii_lowercase();
+    if scope_lower.contains("spool") {
+        "candidate_spool".to_string()
+    } else if scope_lower.contains("runtime") {
+        "vector_runtime_sidecar".to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+fn normalize_vector_artifact_kind(value: &str) -> Option<&'static str> {
+    match value.to_ascii_lowercase().replace('-', "_").as_str() {
+        "candidate_spool" | "spool" | "fast_candidate_spool" => Some("candidate_spool"),
+        "vector_runtime_sidecar" | "runtime_sidecar" | "runtime" => Some("vector_runtime_sidecar"),
+        "audit_artifact" | "audit" | "diagnostic_artifact" => Some("audit_artifact"),
+        "legacy_pretty_json_vector_artifact" | "legacy_vector_artifact" => {
+            Some("legacy_pretty_json_vector_artifact")
+        }
+        "unknown" => Some("unknown"),
+        _ => None,
+    }
+}
+
+fn vector_chunk_counts(
+    artifact_kind: &str,
+    metadata: &Value,
+    root: &Value,
+    chunks: &[Value],
+) -> Value {
+    let chunk_len = chunks.len() as u64;
+    let generated = vector_u64(metadata, root, &[&["generated_total_chunks"]]).unwrap_or(chunk_len);
+    let selected = vector_u64(metadata, root, &[&["selected_total_chunks"]]).unwrap_or(chunk_len);
+    let persisted = vector_u64(
+        metadata,
+        root,
+        &[&["persisted_total_chunks"], &["chunk_count"]],
+    )
+    .unwrap_or(chunk_len);
+    let spooled = vector_u64(metadata, root, &[&["spooled_total_chunks"]]).unwrap_or_else(|| {
+        if artifact_kind == "candidate_spool" {
+            chunk_len
+        } else {
+            0
+        }
+    });
+    let runtime = vector_u64(metadata, root, &[&["runtime_total_chunks"]]).unwrap_or_else(|| {
+        if artifact_kind == "vector_runtime_sidecar" {
+            chunk_len
+        } else {
+            0
+        }
+    });
+    let audit = vector_u64(metadata, root, &[&["audit_total_chunks"]]).unwrap_or_else(|| {
+        if artifact_kind == "audit_artifact" {
+            chunk_len
+        } else {
+            0
+        }
+    });
+    json!({
+        "generated_total_chunks": generated,
+        "spooled_total_chunks": spooled,
+        "selected_total_chunks": selected,
+        "persisted_total_chunks": persisted,
+        "runtime_total_chunks": runtime,
+        "audit_total_chunks": audit,
+        "omitted_by_cap": vector_u64(metadata, root, &[&["omitted_by_cap"], &["omitted_chunks"]]).unwrap_or(0),
+        "omitted_low_signal": vector_u64(metadata, root, &[&["omitted_low_signal"]]).unwrap_or(0),
+        "omitted_by_bucket_limit": vector_u64(metadata, root, &[&["omitted_by_bucket_limit"]]).unwrap_or(0),
+        "omitted_by_dedup": vector_u64(metadata, root, &[&["omitted_by_dedup"]]).unwrap_or(0),
+    })
+}
+
+fn empty_vector_chunk_counts() -> Value {
+    json!({
+        "generated_total_chunks": 0,
+        "spooled_total_chunks": 0,
+        "selected_total_chunks": 0,
+        "persisted_total_chunks": 0,
+        "runtime_total_chunks": 0,
+        "audit_total_chunks": 0,
+        "omitted_by_cap": 0,
+        "omitted_low_signal": 0,
+        "omitted_by_bucket_limit": 0,
+        "omitted_by_dedup": 0,
+    })
+}
+
+fn vector_chunk_composition(chunks: &[Value]) -> Value {
+    let mut by_source_kind = BTreeMap::new();
+    let mut by_chunk_kind = BTreeMap::new();
+    let mut by_file_kind = BTreeMap::new();
+    let mut by_top_level_dir = BTreeMap::new();
+    let mut by_proof_status = BTreeMap::new();
+    let mut by_graph_proof = BTreeMap::new();
+    let mut by_claimable = BTreeMap::new();
+    let mut by_requires_graph_verification = BTreeMap::new();
+    let mut by_selection_bucket = BTreeMap::new();
+
+    for chunk in chunks {
+        let source_kind = chunk_str(chunk, "source_kind").unwrap_or("unknown");
+        let chunk_kind = chunk_str(chunk, "chunk_kind").unwrap_or("unknown");
+        let path = chunk_str(chunk, "path").unwrap_or("");
+        let file_kind = chunk_str(chunk, "file_kind")
+            .map(str::to_string)
+            .unwrap_or_else(|| infer_vector_file_kind(path));
+        let top_level = chunk_str(chunk, "top_level_dir")
+            .map(str::to_string)
+            .unwrap_or_else(|| top_level_component(path));
+        let proof_status = chunk_str(chunk, "proof_status").unwrap_or("unknown");
+        let graph_proof = chunk_bool(chunk, "graph_proof")
+            .unwrap_or(false)
+            .to_string();
+        let claimable = chunk_bool(chunk, "claimable_for_graph")
+            .unwrap_or(false)
+            .to_string();
+        let requires_graph_verification = chunk_requires_graph_verification(chunk).to_string();
+        let selection_bucket = chunk_str(chunk, "selection_bucket").unwrap_or("unknown");
+
+        increment_count(&mut by_source_kind, source_kind);
+        increment_count(&mut by_chunk_kind, chunk_kind);
+        increment_count(&mut by_file_kind, &file_kind);
+        increment_count(&mut by_top_level_dir, &top_level);
+        increment_count(&mut by_proof_status, proof_status);
+        increment_count(&mut by_graph_proof, &graph_proof);
+        increment_count(&mut by_claimable, &claimable);
+        increment_count(
+            &mut by_requires_graph_verification,
+            &requires_graph_verification,
+        );
+        increment_count(&mut by_selection_bucket, selection_bucket);
+    }
+
+    json!({
+        "by_source_kind": by_source_kind,
+        "by_chunk_kind": by_chunk_kind,
+        "by_file_kind": by_file_kind,
+        "by_top_level_dir": by_top_level_dir,
+        "by_proof_status": by_proof_status,
+        "by_graph_proof": by_graph_proof,
+        "by_claimable_for_graph": by_claimable,
+        "by_requires_graph_verification": by_requires_graph_verification,
+        "by_selection_bucket": by_selection_bucket,
+    })
+}
+
+fn empty_vector_chunk_composition() -> Value {
+    json!({
+        "by_source_kind": {},
+        "by_chunk_kind": {},
+        "by_file_kind": {},
+        "by_top_level_dir": {},
+        "by_proof_status": {},
+        "by_graph_proof": {},
+        "by_claimable_for_graph": {},
+        "by_requires_graph_verification": {},
+        "by_selection_bucket": {},
+    })
+}
+
+fn vector_query_index_metadata(metadata: &Value, root: &Value, artifact_path: &Path) -> Value {
+    let query_index_path = vector_string(metadata, root, &[&["query_index_path"]])
+        .map(PathBuf::from)
+        .unwrap_or_else(|| candidate_spool_query_index_path(artifact_path));
+    let query_index_exists = query_index_path.exists();
+    let query_index_bytes = fs::metadata(&query_index_path)
+        .map(|metadata| metadata.len())
+        .ok()
+        .or_else(|| vector_u64(metadata, root, &[&["query_index_bytes"]]));
+    json!({
+        "query_index_status": vector_string(metadata, root, &[&["query_index_status"]])
+            .unwrap_or_else(|| if query_index_exists { "present_unvalidated".to_string() } else { "missing".to_string() }),
+        "query_index_kind": vector_string(metadata, root, &[&["query_index_kind"]])
+            .unwrap_or_else(|| if query_index_exists { "sqlite".to_string() } else { "none".to_string() }),
+        "query_index_path": path_string(&query_index_path),
+        "query_index_exists": query_index_exists,
+        "query_index_bytes": query_index_bytes,
+        "query_index_record_count": vector_u64(metadata, root, &[&["query_index_record_count"]]),
+        "query_index_version": vector_string(metadata, root, &[&["query_index_version"]]),
+        "query_index_bound_manifest_hash": vector_string(metadata, root, &[&["query_index_bound_manifest_hash"]]),
+        "hot_path_contract": "normal candidate-spool query/status/context-pack uses this indexed sidecar, not a full JSONL scan",
+    })
+}
+
+fn vector_chunk_byte_accounting(
+    root: &Value,
+    metadata: &Value,
+    chunks: &[Value],
+    artifact_bytes: u64,
+    parsed_text_bytes: u64,
+) -> Value {
+    let indexed_chunk_text_bytes = chunks
+        .iter()
+        .filter_map(|chunk| chunk.get("text").and_then(Value::as_str))
+        .map(|text| text.as_bytes().len() as u64)
+        .sum::<u64>();
+    let selection_reason_bytes = chunks
+        .iter()
+        .filter_map(|chunk| chunk.get("selection_reason").and_then(Value::as_str))
+        .map(|text| text.as_bytes().len() as u64)
+        .sum::<u64>();
+    let repeated_field_overhead = repeated_field_overhead_estimate(chunks);
+    let estimated_f32_payload_bytes =
+        vector_u64(metadata, root, &[&["estimated_f32_payload_bytes"]]).unwrap_or_else(|| {
+            let dims = vector_u64(
+                metadata,
+                root,
+                &[&["provider", "dimension"], &["dims"], &["dim"]],
+            )
+            .unwrap_or(0);
+            dims.saturating_mul(4).saturating_mul(chunks.len() as u64)
+        });
+    let metadata_estimated_bytes = artifact_bytes.saturating_sub(indexed_chunk_text_bytes);
+    let audit_overhead_bytes =
+        selection_reason_bytes.saturating_add(selection_field_overhead(chunks));
+    json!({
+        "actual_index_file_bytes": artifact_bytes,
+        "parsed_artifact_text_bytes": parsed_text_bytes,
+        "estimated_f32_payload_bytes": estimated_f32_payload_bytes,
+        "indexed_chunk_text_bytes": indexed_chunk_text_bytes,
+        "metadata_estimated_bytes": metadata_estimated_bytes,
+        "selection_reason_bytes": selection_reason_bytes,
+        "repeated_field_overhead_estimate": repeated_field_overhead,
+        "artifact_to_payload_ratio": if estimated_f32_payload_bytes == 0 {
+            Value::Null
+        } else {
+            json!(round3(artifact_bytes as f64 / estimated_f32_payload_bytes as f64))
+        },
+        "chunk_text_share_percent": percent(indexed_chunk_text_bytes, artifact_bytes),
+        "metadata_share_percent": percent(metadata_estimated_bytes, artifact_bytes),
+        "audit_overhead_share_percent": percent(audit_overhead_bytes, artifact_bytes),
+        "byte_accounting_method": "read_only_artifact_bytes_minus_stored_chunk_text; metadata and repeated field overhead are estimates",
+    })
+}
+
+fn annotate_vector_artifact_byte_accounting(
+    byte_accounting: &mut Value,
+    artifact_kind: &str,
+    artifact_bytes: u64,
+) {
+    if let Some(object) = byte_accounting.as_object_mut() {
+        object.insert(
+            "runtime_sidecar_bytes".to_string(),
+            if artifact_kind == "vector_runtime_sidecar" {
+                json!(artifact_bytes)
+            } else {
+                Value::Null
+            },
+        );
+        object.insert(
+            "audit_artifact_bytes".to_string(),
+            if artifact_kind == "audit_artifact" {
+                json!(artifact_bytes)
+            } else {
+                Value::Null
+            },
+        );
+        object.insert("pretty_json_overhead".to_string(), Value::Null);
+    }
+}
+
+fn vector_related_artifacts(
+    options: &VectorChunksOptions,
+    inspected_artifact_path: &Path,
+    inspected_artifact_kind: &str,
+) -> Value {
+    let runtime_path = options.runtime_sidecar_path.as_ref().cloned().or_else(|| {
+        (inspected_artifact_kind == "vector_runtime_sidecar")
+            .then(|| inspected_artifact_path.to_path_buf())
+    });
+    let audit_path = options.audit_artifact_path.as_ref().cloned().or_else(|| {
+        (inspected_artifact_kind == "audit_artifact").then(|| inspected_artifact_path.to_path_buf())
+    });
+    let runtime = runtime_path
+        .as_ref()
+        .map(|path| vector_artifact_brief(path))
+        .unwrap_or_else(|| {
+            json!({
+                "path": Value::Null,
+                "exists": false,
+                "artifact_kind": Value::Null,
+                "artifact_format": Value::Null,
+                "bytes": Value::Null,
+                "chunk_count": Value::Null,
+            })
+        });
+    let audit = audit_path
+        .as_ref()
+        .map(|path| vector_artifact_brief(path))
+        .unwrap_or_else(|| {
+            json!({
+                "path": Value::Null,
+                "exists": false,
+                "artifact_kind": Value::Null,
+                "artifact_format": Value::Null,
+                "bytes": Value::Null,
+                "chunk_count": Value::Null,
+            })
+        });
+    let runtime_bytes = runtime.get("bytes").and_then(Value::as_u64);
+    let audit_bytes = audit.get("bytes").and_then(Value::as_u64);
+    let overhead_reduction_bytes = match (audit_bytes, runtime_bytes) {
+        (Some(audit), Some(runtime)) if audit >= runtime => Some(audit - runtime),
+        _ => None,
+    };
+    json!({
+        "runtime_will_use": if runtime.get("artifact_kind").and_then(Value::as_str) == Some("vector_runtime_sidecar") {
+            runtime.get("path").cloned().unwrap_or(Value::Null)
+        } else if inspected_artifact_kind == "legacy_pretty_json_vector_artifact" {
+            json!(path_string(inspected_artifact_path))
+        } else {
+            Value::Null
+        },
+        "runtime_sidecar": runtime,
+        "audit_artifact": audit,
+        "audit_required_for_runtime": false,
+        "runtime_prefers_compact_sidecar": true,
+        "overhead_reduction_bytes": overhead_reduction_bytes.map(Value::from).unwrap_or(Value::Null),
+        "overhead_reduction_percent": match (overhead_reduction_bytes, audit_bytes) {
+            (Some(saved), Some(audit)) if audit > 0 => json!(percent(saved, audit)),
+            _ => Value::Null,
+        },
+    })
+}
+
+fn vector_artifact_brief(path: &Path) -> Value {
+    let exists = path.exists();
+    let bytes = fs::metadata(path).map(|metadata| metadata.len()).ok();
+    if !exists {
+        return json!({
+            "path": path_string(path),
+            "exists": false,
+            "artifact_kind": "missing",
+            "artifact_format": "missing",
+            "bytes": Value::Null,
+            "chunk_count": Value::Null,
+        });
+    }
+    let raw = match fs::read(path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            return json!({
+                "path": path_string(path),
+                "exists": true,
+                "artifact_kind": "unknown",
+                "artifact_format": "unknown",
+                "bytes": bytes,
+                "chunk_count": Value::Null,
+                "error": format!("read failed: {error}"),
+            })
+        }
+    };
+    let format = detect_vector_artifact_format(path, &raw);
+    let text = match std::str::from_utf8(&raw) {
+        Ok(text) => text,
+        Err(error) => {
+            return json!({
+                "path": path_string(path),
+                "exists": true,
+                "artifact_kind": "unknown",
+                "artifact_format": format,
+                "bytes": bytes,
+                "chunk_count": Value::Null,
+                "error": format!("utf8 decode failed: {error}"),
+            })
+        }
+    };
+    match parse_vector_artifact_text(text, &format) {
+        Ok(parsed) => {
+            let kind =
+                classify_vector_artifact_kind(&parsed.root, &parsed.metadata, &parsed.chunks);
+            json!({
+                "path": path_string(path),
+                "exists": true,
+                "artifact_kind": kind,
+                "artifact_format": parsed.artifact_format,
+                "bytes": bytes,
+                "chunk_count": parsed.chunks.len(),
+                "selection_reason_bytes": parsed.chunks.iter()
+                    .filter_map(|chunk| chunk.get("selection_reason").and_then(Value::as_str))
+                    .map(|text| text.as_bytes().len() as u64)
+                    .sum::<u64>(),
+            })
+        }
+        Err(error) => json!({
+            "path": path_string(path),
+            "exists": true,
+            "artifact_kind": "unknown",
+            "artifact_format": format,
+            "bytes": bytes,
+            "chunk_count": Value::Null,
+            "error": error,
+        }),
+    }
+}
+
+fn repeated_field_overhead_estimate(chunks: &[Value]) -> u64 {
+    chunks
+        .iter()
+        .filter_map(Value::as_object)
+        .flat_map(|object| object.keys())
+        .map(|key| key.as_bytes().len() as u64 + 3)
+        .sum()
+}
+
+fn selection_field_overhead(chunks: &[Value]) -> u64 {
+    chunks
+        .iter()
+        .filter_map(Value::as_object)
+        .map(|object| {
+            [
+                "selection_score",
+                "selection_bucket",
+                "selection_reason",
+                "cap_stage",
+            ]
+            .iter()
+            .filter(|field| object.contains_key(**field))
+            .map(|field| field.len() as u64 + 3)
+            .sum::<u64>()
+        })
+        .sum()
+}
+
+fn vector_provider_lifecycle(
+    repo_path: Option<&Path>,
+    db_path: Option<&Path>,
+    root: &Value,
+    metadata: &Value,
+    chunks: &[Value],
+    artifact_hash_before: &Option<String>,
+) -> Value {
+    let provider = metadata
+        .get("provider")
+        .or_else(|| root.get("provider"))
+        .unwrap_or(&Value::Null);
+    let passport = metadata
+        .get("passport")
+        .or_else(|| root.get("passport"))
+        .or_else(|| root.get("db_passport"))
+        .unwrap_or(&Value::Null);
+    let db_binding = db_path
+        .map(|path| vector_db_binding(path, passport))
+        .unwrap_or_else(|| {
+            json!({
+                "status": "missing",
+                "reason": "no --db path supplied; DB passport compatibility was not checked",
+            })
+        });
+    let validity_status = db_binding["status"].as_str().unwrap_or("missing");
+    let reason = db_binding["reason"].as_str().unwrap_or("unknown");
+    let source_binding = vector_source_binding_status(repo_path, chunks);
+    let source_status = source_binding
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("missing");
+    let source_reason = source_binding
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or("source bindings were not checked");
+    let combined_status = if matches!(source_status, "stale" | "foreign" | "corrupt") {
+        source_status
+    } else {
+        validity_status
+    };
+    let combined_reason = if matches!(source_status, "stale" | "foreign" | "corrupt") {
+        source_reason
+    } else {
+        reason
+    };
+    json!({
+        "db_passport_hash": passport.get("passport_fingerprint")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "repo_hash": passport.get("repo_head")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "scope_hash": passport.get("index_scope_policy_hash")
+            .or_else(|| metadata.get("scope_hash"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "provider_name": provider.get("provider_id")
+            .or_else(|| provider.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "model": provider.get("model_id")
+            .or_else(|| provider.get("model"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "dims": provider.get("dimension")
+            .or_else(|| provider.get("dims"))
+            .or_else(|| provider.get("dim"))
+            .and_then(Value::as_u64),
+        "extraction_version": metadata.get("extraction_version")
+            .or_else(|| root.get("extraction_version"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "source_scope": metadata.get("source_scope")
+            .or_else(|| root.get("source_scope"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "artifact_hash": artifact_hash_before,
+        "validity_status": combined_status,
+        "reason": combined_reason,
+        "stale_valid_foreign_missing_corrupt": combined_status,
+        "db_binding": db_binding,
+        "source_binding": source_binding,
+    })
+}
+
+fn vector_source_binding_status(repo_path: Option<&Path>, chunks: &[Value]) -> Value {
+    let Some(repo_path) = repo_path else {
+        return json!({
+            "status": "missing",
+            "reason": "no --repo path supplied; source file bindings were not checked",
+            "checked_files": 0,
+            "checked_chunks": 0,
+            "unbound_chunks": chunks.len(),
+            "stale_reasons": [],
+        });
+    };
+    let repo_root = match fs::canonicalize(repo_path) {
+        Ok(path) => path,
+        Err(error) => {
+            return json!({
+                "status": "foreign",
+                "reason": format!("repo path could not be canonicalized: {error}"),
+                "checked_files": 0,
+                "checked_chunks": 0,
+                "unbound_chunks": chunks.len(),
+                "stale_reasons": [format!("repo_path_failed:{error}")],
+            });
+        }
+    };
+    let mut by_path = BTreeMap::<String, (Option<String>, Option<u64>, usize)>::new();
+    let mut unbound_chunks = 0usize;
+    for chunk in chunks {
+        let Some(path) = chunk.get("path").and_then(Value::as_str) else {
+            unbound_chunks += 1;
+            continue;
+        };
+        let expected_hash = chunk
+            .get("source_file_content_hash")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let expected_size = chunk.get("source_file_size_bytes").and_then(Value::as_u64);
+        if expected_hash.is_none() && expected_size.is_none() {
+            unbound_chunks += 1;
+            continue;
+        }
+        let binding =
+            by_path
+                .entry(path.replace('\\', "/"))
+                .or_insert((expected_hash, expected_size, 0));
+        binding.2 += 1;
+    }
+    let checked_files = by_path.len();
+    let mut checked_chunks = 0usize;
+    let mut stale_reasons = Vec::<String>::new();
+    for (path, (expected_hash, expected_size, chunk_count)) in by_path {
+        checked_chunks += chunk_count;
+        let source_path = repo_root.join(&path);
+        let metadata = match fs::metadata(&source_path) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            Ok(_) => {
+                stale_reasons.push(format!("not_file:{path}"));
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                stale_reasons.push(format!("deleted_file:{path}"));
+                continue;
+            }
+            Err(error) => {
+                stale_reasons.push(format!("metadata_failed:{path}:{error}"));
+                continue;
+            }
+        };
+        if let Some(expected_size) = expected_size {
+            if metadata.len() != expected_size {
+                stale_reasons.push(format!(
+                    "changed_file_size:{path}:expected={expected_size}:actual={}",
+                    metadata.len()
+                ));
+                continue;
+            }
+        }
+        if let Some(expected_hash) = expected_hash.as_deref() {
+            match fs::read_to_string(&source_path) {
+                Ok(source) => {
+                    let actual_hash = content_hash(&source);
+                    if actual_hash != expected_hash {
+                        stale_reasons.push(format!("changed_file_hash:{path}"));
+                    }
+                }
+                Err(error) => stale_reasons.push(format!("source_read_failed:{path}:{error}")),
+            }
+        }
+    }
+    stale_reasons.sort();
+    stale_reasons.dedup();
+    json!({
+        "status": if stale_reasons.is_empty() { "valid" } else { "stale" },
+        "reason": if stale_reasons.is_empty() {
+            "source file bindings match current repo files".to_string()
+        } else {
+            format!("source file bindings stale: {}", stale_reasons.join("; "))
+        },
+        "checked_files": checked_files,
+        "checked_chunks": checked_chunks,
+        "unbound_chunks": unbound_chunks,
+        "stale_reasons": stale_reasons,
+    })
+}
+
+fn vector_db_binding_without_artifact(db_path: &Path) -> Value {
+    vector_db_binding(db_path, &Value::Null)
+}
+
+fn vector_db_binding(db_path: &Path, artifact_passport: &Value) -> Value {
+    let before = db_file_snapshot(db_path);
+    if !db_path.exists() {
+        return json!({
+            "db_path": path_string(db_path),
+            "db_exists": false,
+            "status": "missing",
+            "reason": "DB path does not exist",
+            "db_hash_before": before.main_db_hash,
+            "db_hash_after": stable_file_hash(db_path),
+            "db_mutated_during_inspection": false,
+        });
+    }
+    let read_only = match open_read_only_with_snapshot(db_path, &before) {
+        Ok(read_only) => read_only,
+        Err(error) => {
+            let after = db_file_snapshot(db_path);
+            return json!({
+                "db_path": path_string(db_path),
+                "db_exists": true,
+                "status": "corrupt",
+                "reason": format!("failed to open DB read-only: {error}"),
+                "db_hash_before": before.main_db_hash,
+                "db_hash_after": after.main_db_hash,
+                "db_mutated_during_inspection": before.main_db_hash != after.main_db_hash || before.main_db_mtime_unix_ms != after.main_db_mtime_unix_ms,
+            });
+        }
+    };
+    let passport = match read_vector_inspector_db_passport(&read_only.connection) {
+        Ok(Some(passport)) => passport,
+        Ok(None) => {
+            let after = db_file_snapshot(db_path);
+            return json!({
+                "db_path": path_string(db_path),
+                "db_exists": true,
+                "status": "missing",
+                "reason": "codegraph_db_passport row is missing",
+                "read_only_mode_used": read_only.read_only_mode_used,
+                "immutable_mode_used": read_only.immutable_mode_used,
+                "db_hash_before": before.main_db_hash,
+                "db_hash_after": after.main_db_hash,
+                "db_mutated_during_inspection": before.main_db_hash != after.main_db_hash || before.main_db_mtime_unix_ms != after.main_db_mtime_unix_ms,
+            });
+        }
+        Err(error) => {
+            let after = db_file_snapshot(db_path);
+            return json!({
+                "db_path": path_string(db_path),
+                "db_exists": true,
+                "status": "corrupt",
+                "reason": error,
+                "read_only_mode_used": read_only.read_only_mode_used,
+                "immutable_mode_used": read_only.immutable_mode_used,
+                "db_hash_before": before.main_db_hash,
+                "db_hash_after": after.main_db_hash,
+                "db_mutated_during_inspection": before.main_db_hash != after.main_db_hash || before.main_db_mtime_unix_ms != after.main_db_mtime_unix_ms,
+            });
+        }
+    };
+    let passport_json = serde_json::to_string(&passport).unwrap_or_default();
+    let db_passport_hash = content_hash(&passport_json);
+    let artifact_passport_hash = artifact_passport
+        .get("passport_fingerprint")
+        .and_then(Value::as_str);
+    let artifact_repo_root = artifact_passport
+        .get("canonical_repo_root")
+        .and_then(Value::as_str);
+    let artifact_scope_hash = artifact_passport
+        .get("index_scope_policy_hash")
+        .and_then(Value::as_str);
+    let artifact_repo_head = artifact_passport.get("repo_head").and_then(Value::as_str);
+    let (status, reason) = if artifact_passport.is_null() {
+        (
+            "missing",
+            "artifact does not include DB passport binding".to_string(),
+        )
+    } else if artifact_passport_hash == Some(db_passport_hash.as_str()) {
+        ("valid", "artifact DB passport hash matches DB".to_string())
+    } else if artifact_repo_root.is_some_and(|value| value != passport.canonical_repo_root) {
+        (
+            "foreign",
+            "artifact canonical_repo_root differs from DB".to_string(),
+        )
+    } else if artifact_scope_hash.is_some_and(|value| value != passport.index_scope_policy_hash) {
+        ("stale", "artifact scope hash differs from DB".to_string())
+    } else if artifact_repo_head != passport.repo_head.as_deref() {
+        ("stale", "artifact repo_head differs from DB".to_string())
+    } else {
+        (
+            "stale",
+            "artifact DB passport hash differs from DB".to_string(),
+        )
+    };
+    let after = db_file_snapshot(db_path);
+    json!({
+        "db_path": path_string(db_path),
+        "db_exists": true,
+        "status": status,
+        "reason": reason,
+        "db_passport_hash": db_passport_hash,
+        "artifact_passport_hash": artifact_passport_hash,
+        "db_passport_hash_matches_artifact": artifact_passport_hash == Some(db_passport_hash.as_str()),
+        "canonical_repo_root": passport.canonical_repo_root,
+        "repo_head": passport.repo_head,
+        "scope_hash": passport.index_scope_policy_hash,
+        "storage_mode": passport.storage_mode,
+        "schema_version": passport.codegraph_schema_version,
+        "read_only_mode_used": read_only.read_only_mode_used,
+        "immutable_mode_used": read_only.immutable_mode_used,
+        "db_hash_before": before.main_db_hash,
+        "db_hash_after": after.main_db_hash,
+        "db_mtime_before": before.main_db_mtime_unix_ms,
+        "db_mtime_after": after.main_db_mtime_unix_ms,
+        "db_mutated_during_inspection": before.main_db_hash != after.main_db_hash || before.main_db_mtime_unix_ms != after.main_db_mtime_unix_ms,
+    })
+}
+
+fn vector_db_mutation_status(db_path: &Path) -> Value {
+    let snapshot = db_file_snapshot(db_path);
+    json!({
+        "db_path": path_string(db_path),
+        "db_exists": db_path.exists(),
+        "hash_algorithm": "fnv1a64",
+        "main_db_size": snapshot.main_db_size,
+        "main_db_hash": snapshot.main_db_hash,
+        "main_db_mtime_unix_ms": snapshot.main_db_mtime_unix_ms,
+        "sidecars": snapshot.sidecars,
+    })
+}
+
+fn read_vector_inspector_db_passport(
+    connection: &Connection,
+) -> Result<Option<VectorInspectorDbPassport>, String> {
+    if !table_exists(connection, "codegraph_db_passport")? {
+        return Ok(None);
+    }
+    connection
+        .query_row(
+            "SELECT passport_version, codegraph_schema_version, storage_mode, index_scope_policy_hash, scope_policy_json, canonical_repo_root, git_remote, worktree_root, repo_head, source_discovery_policy_version, codegraph_build_version, last_successful_index_timestamp, last_completed_run_id, last_run_status, integrity_gate_result, files_seen, files_indexed, created_at_unix_ms, updated_at_unix_ms FROM codegraph_db_passport WHERE id = 1",
+            [],
+            |row| {
+                Ok(VectorInspectorDbPassport {
+                    passport_version: row.get::<_, u32>(0)?,
+                    codegraph_schema_version: row.get::<_, u32>(1)?,
+                    storage_mode: row.get(2)?,
+                    index_scope_policy_hash: row.get(3)?,
+                    scope_policy_json: row.get(4)?,
+                    canonical_repo_root: row.get(5)?,
+                    git_remote: row.get(6)?,
+                    worktree_root: row.get(7)?,
+                    repo_head: row.get(8)?,
+                    source_discovery_policy_version: row.get(9)?,
+                    codegraph_build_version: row.get(10)?,
+                    last_successful_index_timestamp: row.get::<_, Option<i64>>(11)?.map(|value| value.max(0) as u64),
+                    last_completed_run_id: row.get(12)?,
+                    last_run_status: row.get(13)?,
+                    integrity_gate_result: row.get(14)?,
+                    files_seen: row.get::<_, i64>(15)?.max(0) as u64,
+                    files_indexed: row.get::<_, i64>(16)?.max(0) as u64,
+                    created_at_unix_ms: row.get::<_, i64>(17)?.max(0) as u64,
+                    updated_at_unix_ms: row.get::<_, i64>(18)?.max(0) as u64,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())
+}
+
+fn vector_chunk_samples(chunks: &[Value], sample_limit: usize) -> Vec<Value> {
+    chunks
+        .iter()
+        .take(sample_limit)
+        .map(|chunk| {
+            let text = chunk
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let (preview, truncated) = truncate_preview(text, VECTOR_CHUNK_TEXT_PREVIEW_CHARS);
+            json!({
+                "chunk_id": chunk_string_value(chunk, "chunk_id"),
+                "chunk_kind": chunk_string_value(chunk, "chunk_kind"),
+                "source_kind": chunk_string_value(chunk, "source_kind"),
+                "path": chunk_string_value(chunk, "path"),
+                "source_span": chunk.get("source_span").cloned().unwrap_or(Value::Null),
+                "entity_id": chunk.get("entity_id").cloned().unwrap_or(Value::Null),
+                "proof_status": chunk_string_value(chunk, "proof_status"),
+                "graph_proof": chunk_bool(chunk, "graph_proof").unwrap_or(false),
+                "claimable_for_graph": chunk_bool(chunk, "claimable_for_graph").unwrap_or(false),
+                "requires_graph_verification": chunk_requires_graph_verification(chunk),
+                "text_preview": preview,
+                "text_preview_truncated": truncated,
+                "text_bytes": text.as_bytes().len(),
+                "selection_score": chunk.get("selection_score").cloned().unwrap_or(Value::Null),
+                "selection_bucket": chunk.get("selection_bucket").cloned().unwrap_or(Value::Null),
+                "selection_reason": chunk.get("selection_reason").cloned().unwrap_or(Value::Null),
+                "source_file_content_hash": chunk.get("source_file_content_hash").cloned().unwrap_or(Value::Null),
+                "source_file_size_bytes": chunk.get("source_file_size_bytes").cloned().unwrap_or(Value::Null),
+                "source_file_modified_unix_nanos": chunk.get("source_file_modified_unix_nanos").cloned().unwrap_or(Value::Null),
+                "lifecycle_binding": chunk.get("lifecycle_binding")
+                    .or_else(|| chunk.get("lifecycle"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            })
+        })
+        .collect()
+}
+
+fn vector_safety_conclusions(root: &Value, metadata: &Value, chunks: &[Value]) -> Value {
+    let stores_embedding_vectors = root.get("vectors").is_some()
+        || root.get("embeddings").is_some()
+        || chunks.iter().any(chunk_has_embedding_vector);
+    let stores_chunk_text = vector_bool(metadata, root, &[&["stores_chunk_text"]])
+        .unwrap_or_else(|| chunks.iter().any(|chunk| chunk.get("text").is_some()));
+    let stores_chunk_metadata = vector_bool(metadata, root, &[&["stores_chunk_metadata"]])
+        .unwrap_or_else(|| !chunks.is_empty() || metadata.is_object());
+    let stores_full_source_body =
+        vector_bool(metadata, root, &[&["stores_full_source_body"]]).unwrap_or(false);
+    let graph_proof_true = chunks
+        .iter()
+        .filter(|chunk| chunk_bool(chunk, "graph_proof").unwrap_or(false))
+        .count();
+    let claimable_true = chunks
+        .iter()
+        .filter(|chunk| chunk_bool(chunk, "claimable_for_graph").unwrap_or(false))
+        .count();
+    json!({
+        "stores_embedding_vectors": stores_embedding_vectors,
+        "stores_chunk_text": stores_chunk_text,
+        "stores_chunk_metadata": stores_chunk_metadata,
+        "stores_full_source_body": stores_full_source_body,
+        "creates_graph_relations": false,
+        "can_answer_graph_proof": false,
+        "candidate_only": graph_proof_true == 0 && claimable_true == 0,
+        "graph_proof_true_chunks": graph_proof_true,
+        "claimable_for_graph_true_chunks": claimable_true,
+        "deterministic_embeddings_regenerated_from_chunk_text": !stores_embedding_vectors && stores_chunk_text,
+        "embedding_reconstruction": if !stores_embedding_vectors && stores_chunk_text {
+            "stored chunk.text is the deterministic embedding input; vectors are regenerated at runtime"
+        } else if stores_embedding_vectors {
+            "artifact stores embedding/vector arrays"
+        } else {
+            "embedding input unavailable in artifact"
+        },
+        "full_source_body_detection_method": "explicit metadata flag only; samples expose truncated text_preview, never full chunk text",
+    })
+}
+
+fn chunk_has_embedding_vector(chunk: &Value) -> bool {
+    ["embedding", "vector", "embedding_vector"]
+        .iter()
+        .any(|field| chunk.get(*field).and_then(Value::as_array).is_some())
+}
+
+fn render_vector_chunks_markdown(report: &Value) -> String {
+    let identity = &report["artifact_identity"];
+    let counts = &report["chunk_counts"];
+    let bytes = &report["byte_accounting"];
+    let query_index = &report["query_index"];
+    let provider = &report["passport_lifecycle_provider"];
+    let safety = &report["safety_conclusions"];
+    let mut output = String::new();
+    output.push_str("# Vector Chunk Artifact Inspector\n\n");
+    output.push_str("Diagnostic-only read-only artifact inspection. This report does not create graph proof; runtime sidecars remain candidate-only and audit artifacts remain diagnostic-only.\n\n");
+    output.push_str("## Artifact Identity\n\n");
+    output.push_str("| Field | Value |\n| --- | --- |\n");
+    for (field, value) in [
+        ("status", report["status"].clone()),
+        ("artifact_path", identity["artifact_path"].clone()),
+        ("artifact_exists", identity["artifact_exists"].clone()),
+        ("artifact_kind", identity["artifact_kind"].clone()),
+        ("artifact_format", identity["artifact_format"].clone()),
+        ("artifact_bytes", identity["artifact_bytes"].clone()),
+        ("compression_status", identity["compression_status"].clone()),
+        ("provider", provider["provider_name"].clone()),
+        ("model", provider["model"].clone()),
+        ("dims", provider["dims"].clone()),
+        ("validity_status", provider["validity_status"].clone()),
+        ("reason", provider["reason"].clone()),
+    ] {
+        output.push_str(&format!("| `{}` | `{}` |\n", field, markdown_value(&value)));
+    }
+    output.push_str("\n## Chunk Counts\n\n");
+    output.push_str("| Count | Value |\n| --- | ---: |\n");
+    for field in [
+        "generated_total_chunks",
+        "spooled_total_chunks",
+        "selected_total_chunks",
+        "persisted_total_chunks",
+        "runtime_total_chunks",
+        "audit_total_chunks",
+        "omitted_by_cap",
+        "omitted_low_signal",
+        "omitted_by_bucket_limit",
+        "omitted_by_dedup",
+    ] {
+        output.push_str(&format!(
+            "| `{}` | {} |\n",
+            field,
+            markdown_value(&counts[field])
+        ));
+    }
+    output.push_str("\n## Byte Accounting\n\n");
+    output.push_str("| Metric | Value |\n| --- | ---: |\n");
+    for field in [
+        "actual_index_file_bytes",
+        "runtime_sidecar_bytes",
+        "audit_artifact_bytes",
+        "pretty_json_overhead",
+        "estimated_f32_payload_bytes",
+        "indexed_chunk_text_bytes",
+        "metadata_estimated_bytes",
+        "selection_reason_bytes",
+        "repeated_field_overhead_estimate",
+        "artifact_to_payload_ratio",
+        "chunk_text_share_percent",
+        "metadata_share_percent",
+        "audit_overhead_share_percent",
+    ] {
+        output.push_str(&format!(
+            "| `{}` | {} |\n",
+            field,
+            markdown_value(&bytes[field])
+        ));
+    }
+    output.push_str("\n## Query Index\n\n");
+    output.push_str("| Field | Value |\n| --- | --- |\n");
+    for field in [
+        "query_index_status",
+        "query_index_kind",
+        "query_index_path",
+        "query_index_exists",
+        "query_index_bytes",
+        "query_index_record_count",
+        "query_index_version",
+        "query_index_bound_manifest_hash",
+    ] {
+        output.push_str(&format!(
+            "| `{}` | `{}` |\n",
+            field,
+            markdown_value(&query_index[field])
+        ));
+    }
+    output.push_str("\n## Safety Conclusions\n\n");
+    output.push_str("| Field | Value |\n| --- | --- |\n");
+    for field in [
+        "stores_embedding_vectors",
+        "stores_chunk_text",
+        "stores_chunk_metadata",
+        "stores_full_source_body",
+        "creates_graph_relations",
+        "can_answer_graph_proof",
+        "candidate_only",
+        "deterministic_embeddings_regenerated_from_chunk_text",
+    ] {
+        output.push_str(&format!(
+            "| `{}` | `{}` |\n",
+            field,
+            markdown_value(&safety[field])
+        ));
+    }
+    output.push_str("\n## Sample Chunks\n\n");
+    output.push_str("| # | chunk_id | kind | source | path | proof_status | text_bytes | truncated | preview |\n");
+    output.push_str("| ---: | --- | --- | --- | --- | --- | ---: | --- | --- |\n");
+    if let Some(samples) = report["sample_chunks"].as_array() {
+        for (index, sample) in samples.iter().enumerate() {
+            output.push_str(&format!(
+                "| {} | `{}` | `{}` | `{}` | `{}` | `{}` | {} | `{}` | {} |\n",
+                index + 1,
+                markdown_escape(sample["chunk_id"].as_str().unwrap_or("unknown")),
+                markdown_escape(sample["chunk_kind"].as_str().unwrap_or("unknown")),
+                markdown_escape(sample["source_kind"].as_str().unwrap_or("unknown")),
+                markdown_escape(sample["path"].as_str().unwrap_or("unknown")),
+                markdown_escape(sample["proof_status"].as_str().unwrap_or("unknown")),
+                sample["text_bytes"].as_u64().unwrap_or(0),
+                sample["text_preview_truncated"].as_bool().unwrap_or(false),
+                markdown_escape(sample["text_preview"].as_str().unwrap_or_default()),
+            ));
+        }
+    }
+    output.push_str("\n## Claim Boundary\n\n");
+    output.push_str("Vector chunks are candidate-only. Entity-linked vector hits require graph/source verification before any graph-proof claim.\n");
+    output
+}
+
+fn markdown_value(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::String(value) => markdown_escape(value),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        _ => serde_json::to_string(value).unwrap_or_else(|_| "unknown".to_string()),
+    }
+}
+
+fn markdown_escape(value: &str) -> String {
+    value.replace('|', "\\|").replace('\n', " ")
+}
+
 fn push_limited_value(items: &mut Vec<Value>, value: Value, limit: usize) {
     if items.len() < limit {
         items.push(value);
@@ -1925,6 +3482,107 @@ fn parse_index_scope_options(args: &[String]) -> Result<IndexScopeAuditOptions, 
 
 fn index_scope_usage() -> String {
     "Usage: codegraph-mcp audit index-scope <repo> [--json [path]] [--markdown <path>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore true|false] [--explain-scope] [--print-included] [--print-excluded] [--limit-examples <n>]".to_string()
+}
+
+fn parse_vector_chunks_options(args: &[String]) -> Result<VectorChunksOptions, String> {
+    let mut options = VectorChunksOptions {
+        artifact_path: None,
+        runtime_sidecar_path: None,
+        audit_artifact_path: None,
+        db_path: None,
+        repo: None,
+        json_path: None,
+        markdown_path: None,
+        sample_limit: DEFAULT_VECTOR_CHUNK_SAMPLE_LIMIT,
+    };
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--artifact" | "--vector-artifact" | "--vector_artifact" | "--vectors"
+            | "--vector-index" | "--vector_index" => {
+                options.artifact_path = Some(take_path(args, &mut index, "--artifact")?)
+            }
+            "--runtime-sidecar"
+            | "--runtime_sidecar"
+            | "--vector-runtime-sidecar"
+            | "--vector_runtime_sidecar" => {
+                options.runtime_sidecar_path =
+                    Some(take_path(args, &mut index, "--runtime-sidecar")?)
+            }
+            "--audit-artifact"
+            | "--audit_artifact"
+            | "--vector-audit-artifact"
+            | "--vector_audit_artifact" => {
+                options.audit_artifact_path = Some(take_path(args, &mut index, "--audit-artifact")?)
+            }
+            "--db" => options.db_path = Some(take_path(args, &mut index, "--db")?),
+            "--repo" => options.repo = Some(take_path(args, &mut index, "--repo")?),
+            "--json" => {
+                if args
+                    .get(index + 1)
+                    .is_some_and(|value| !value.starts_with("--"))
+                {
+                    options.json_path = Some(take_path(args, &mut index, "--json")?);
+                }
+            }
+            "--markdown" | "--md" => {
+                options.markdown_path = Some(take_path(args, &mut index, "--markdown")?)
+            }
+            "--sample" | "--limit" => {
+                let raw = take_value(args, &mut index, "--sample")?;
+                options.sample_limit = raw
+                    .parse::<usize>()
+                    .map_err(|_| format!("invalid --sample value: {raw}"))?;
+            }
+            "--help" | "-h" => return Err(vector_chunks_usage()),
+            value => return Err(format!("unknown audit vector-chunks option: {value}")),
+        }
+        index += 1;
+    }
+    if options.artifact_path.is_none()
+        && options.runtime_sidecar_path.is_none()
+        && options.audit_artifact_path.is_none()
+        && options.db_path.is_none()
+        && options.repo.is_none()
+    {
+        return Err(vector_chunks_usage());
+    }
+    Ok(options)
+}
+
+fn vector_chunks_usage() -> String {
+    "Usage: codegraph-mcp audit vector-chunks --artifact <path> [--db <path>] [--repo <path>] [--json [path]] [--markdown <path>] [--sample <n>]\n  codegraph-mcp audit vector-chunks --runtime-sidecar <path> [--audit-artifact <path>] [--db <path>] [--json [path]] [--sample <n>]\n  codegraph-mcp audit vector-chunks --db <path> [--vectors <path>] [--json [path]] [--sample <n>]".to_string()
+}
+
+fn resolve_vector_chunks_db_path(options: &VectorChunksOptions) -> Option<PathBuf> {
+    options.db_path.clone().or_else(|| {
+        options
+            .repo
+            .as_ref()
+            .map(|repo| repo.join(".codegraph").join("codegraph.sqlite"))
+    })
+}
+
+fn resolve_vector_chunks_artifact_path(
+    options: &VectorChunksOptions,
+    db_path: Option<&Path>,
+) -> Result<PathBuf, String> {
+    if let Some(path) = &options.artifact_path {
+        return Ok(path.clone());
+    }
+    if let Some(path) = &options.runtime_sidecar_path {
+        return Ok(path.clone());
+    }
+    if let Some(path) = &options.audit_artifact_path {
+        return Ok(path.clone());
+    }
+    if let Some(db_path) = db_path {
+        return Ok(db_path
+            .parent()
+            .map(|parent| parent.join(DEFAULT_VECTOR_CHUNKS_FILE_NAME))
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_VECTOR_CHUNKS_FILE_NAME)));
+    }
+    Err(vector_chunks_usage())
 }
 
 fn parse_storage_options(args: &[String]) -> Result<StorageOptions, String> {
@@ -6363,9 +8021,12 @@ fn open_read_only_with_snapshot(
     if !db_path.exists() {
         return Err(format!("database does not exist: {}", db_path.display()));
     }
-    let immutable_mode_used = before.sidecars.is_empty();
+    let rollback_journal_exists = sqlite_rollback_journal_path(db_path).exists();
+    let immutable_mode_used = before.sidecars.is_empty() && !rollback_journal_exists;
     let immutable_mode_reason = if immutable_mode_used {
-        "immutable=1 used because no WAL/SHM sidecars were present before inspection".to_string()
+        "immutable=1 used because no WAL/SHM sidecars or rollback journal were present before inspection".to_string()
+    } else if rollback_journal_exists {
+        "immutable=1 not used because a rollback journal was present; strict mode=ro preserves lock visibility".to_string()
     } else {
         "immutable=1 not used because WAL/SHM sidecars were present; strict mode=ro preserves WAL visibility".to_string()
     };
@@ -6406,6 +8067,10 @@ fn sqlite_read_only_uri(db_path: &Path, immutable: bool) -> Result<String, Strin
     let path = encoded.trim_start_matches('/');
     let immutable_param = if immutable { "&immutable=1" } else { "" };
     Ok(format!("file:///{path}?mode=ro{immutable_param}"))
+}
+
+fn sqlite_rollback_journal_path(db_path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}-journal", db_path.display()))
 }
 
 fn percent_encode_sqlite_uri_path(path: &str) -> String {
@@ -9632,6 +11297,114 @@ fn path_string(path: impl AsRef<Path>) -> String {
     path.as_ref().display().to_string().replace('\\', "/")
 }
 
+fn vector_string(metadata: &Value, root: &Value, paths: &[&[&str]]) -> Option<String> {
+    paths
+        .iter()
+        .find_map(|path| value_at(metadata, path).or_else(|| value_at(root, path)))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn vector_bool(metadata: &Value, root: &Value, paths: &[&[&str]]) -> Option<bool> {
+    paths
+        .iter()
+        .find_map(|path| value_at(metadata, path).or_else(|| value_at(root, path)))
+        .and_then(Value::as_bool)
+}
+
+fn vector_u64(metadata: &Value, root: &Value, paths: &[&[&str]]) -> Option<u64> {
+    paths
+        .iter()
+        .find_map(|path| value_at(metadata, path).or_else(|| value_at(root, path)))
+        .and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_i64().and_then(|number| u64::try_from(number).ok()))
+        })
+}
+
+fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    Some(current)
+}
+
+fn chunk_str<'a>(chunk: &'a Value, field: &str) -> Option<&'a str> {
+    chunk.get(field).and_then(Value::as_str)
+}
+
+fn chunk_bool(chunk: &Value, field: &str) -> Option<bool> {
+    chunk.get(field).and_then(Value::as_bool)
+}
+
+fn chunk_string_value(chunk: &Value, field: &str) -> Value {
+    chunk
+        .get(field)
+        .and_then(Value::as_str)
+        .map(|value| Value::String(value.to_string()))
+        .unwrap_or(Value::Null)
+}
+
+fn chunk_requires_graph_verification(chunk: &Value) -> bool {
+    chunk_bool(chunk, "requires_graph_verification").unwrap_or_else(|| {
+        let has_entity = chunk
+            .get("entity_id")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty());
+        let graph_entity = chunk_str(chunk, "source_kind") == Some("graph_entity");
+        has_entity || graph_entity
+    })
+}
+
+fn infer_vector_file_kind(path: &str) -> String {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".rs")
+        || lower.ends_with(".py")
+        || lower.ends_with(".c")
+        || lower.ends_with(".h")
+        || lower.ends_with(".cc")
+        || lower.ends_with(".cpp")
+        || lower.ends_with(".js")
+        || lower.ends_with(".ts")
+        || lower.ends_with(".java")
+        || lower.ends_with(".go")
+    {
+        "source".to_string()
+    } else if lower.ends_with(".md") || lower.ends_with(".adoc") || lower.ends_with(".rst") {
+        "documentation".to_string()
+    } else if lower.ends_with(".mk") || lower.ends_with("makefile") {
+        "makefile".to_string()
+    } else if lower.ends_with("config.in") || lower.contains("/config.in") {
+        "kconfig".to_string()
+    } else if path.is_empty() {
+        "unknown".to_string()
+    } else {
+        "other".to_string()
+    }
+}
+
+fn increment_count(map: &mut BTreeMap<String, u64>, key: &str) {
+    *map.entry(key.to_string()).or_insert(0) += 1;
+}
+
+fn truncate_preview(text: &str, max_chars: usize) -> (String, bool) {
+    let mut preview = String::new();
+    let mut truncated = false;
+    for (index, ch) in text.chars().enumerate() {
+        if index >= max_chars {
+            truncated = true;
+            break;
+        }
+        preview.push(ch);
+    }
+    if truncated {
+        preview.push_str("...");
+    }
+    (preview.replace('\n', "\\n"), truncated)
+}
+
 fn now_unix_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -9647,6 +11420,415 @@ mod tests {
         RelationKind, SourceSpan,
     };
     use codegraph_store::{GraphStore, SqliteGraphStore};
+
+    #[test]
+    fn vector_chunk_inspector_legacy_pretty_json_fixture() {
+        let root = temp_audit_dir("vector-legacy-pretty");
+        let artifact = root.join("legacy.vector.json");
+        write_json(&artifact, &legacy_vector_fixture("short legacy text")).expect("write fixture");
+
+        let options = vector_test_options(Some(artifact.clone()));
+        let report = inspect_vector_chunks_artifact(&options, &artifact, None);
+
+        assert_vector_chunk_schema(&report);
+        assert_eq!(report["status"].as_str(), Some("ok"));
+        assert_eq!(
+            report["artifact_identity"]["artifact_kind"].as_str(),
+            Some("legacy_pretty_json_vector_artifact")
+        );
+        assert_eq!(
+            report["artifact_identity"]["artifact_format"].as_str(),
+            Some("pretty_json")
+        );
+        assert_eq!(
+            report["safety_conclusions"]["stores_embedding_vectors"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            report["safety_conclusions"]["deterministic_embeddings_regenerated_from_chunk_text"]
+                .as_bool(),
+            Some(true)
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn vector_chunk_inspector_compact_runtime_fixture() {
+        let root = temp_audit_dir("vector-runtime-compact");
+        let artifact = root.join("runtime.vector.json");
+        fs::write(
+            &artifact,
+            serde_json::to_string(&runtime_vector_fixture("compact runtime text"))
+                .expect("compact json"),
+        )
+        .expect("write fixture");
+
+        let options = vector_test_options(Some(artifact.clone()));
+        let report = inspect_vector_chunks_artifact(&options, &artifact, None);
+
+        assert_vector_chunk_schema(&report);
+        assert_eq!(
+            report["artifact_identity"]["artifact_kind"].as_str(),
+            Some("vector_runtime_sidecar")
+        );
+        assert_eq!(
+            report["artifact_identity"]["artifact_format"].as_str(),
+            Some("compact_json")
+        );
+        assert_eq!(
+            report["chunk_counts"]["runtime_total_chunks"].as_u64(),
+            Some(2)
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn vector_chunk_inspector_runtime_and_audit_split_fixture() {
+        let root = temp_audit_dir("vector-runtime-audit-split");
+        let runtime = root.join("runtime.vector.json");
+        let audit = root.join("audit.vector.json");
+        fs::write(
+            &runtime,
+            serde_json::to_string(&runtime_vector_fixture("compact runtime text"))
+                .expect("runtime json"),
+        )
+        .expect("write runtime");
+        write_json(&audit, &audit_vector_fixture("verbose audit text")).expect("write audit");
+
+        let options = VectorChunksOptions {
+            artifact_path: None,
+            runtime_sidecar_path: Some(runtime.clone()),
+            audit_artifact_path: Some(audit.clone()),
+            db_path: None,
+            repo: None,
+            json_path: None,
+            markdown_path: None,
+            sample_limit: 2,
+        };
+        let report = inspect_vector_chunks_artifact(&options, &runtime, None);
+
+        assert_vector_chunk_schema(&report);
+        assert_eq!(
+            report["artifact_identity"]["artifact_kind"].as_str(),
+            Some("vector_runtime_sidecar")
+        );
+        assert_eq!(
+            report["related_artifacts"]["runtime_will_use"].as_str(),
+            Some(path_string(&runtime).as_str())
+        );
+        assert_eq!(
+            report["related_artifacts"]["audit_required_for_runtime"].as_bool(),
+            Some(false)
+        );
+        assert!(
+            report["related_artifacts"]["overhead_reduction_bytes"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
+        assert_eq!(
+            report["related_artifacts"]["audit_artifact"]["artifact_kind"].as_str(),
+            Some("audit_artifact")
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn vector_chunk_inspector_candidate_spool_jsonl_fixture() {
+        let root = temp_audit_dir("vector-spool-jsonl");
+        let artifact = root.join("candidate-spool.jsonl");
+        let query_index = candidate_spool_query_index_path(&artifact);
+        fs::write(&query_index, "sqlite placeholder").expect("write placeholder query index");
+        let mut metadata = vector_fixture_metadata(Some("candidate_spool"), "jsonl");
+        if let Some(object) = metadata.as_object_mut() {
+            object.insert("query_index_status".to_string(), json!("ready"));
+            object.insert("query_index_kind".to_string(), json!("sqlite"));
+            object.insert(
+                "query_index_path".to_string(),
+                json!(path_string(&query_index)),
+            );
+            object.insert("query_index_record_count".to_string(), json!(2));
+            object.insert(
+                "query_index_version".to_string(),
+                json!("candidate_spool_query_index_v1"),
+            );
+        }
+        let manifest = json!({
+            "metadata": metadata,
+        });
+        let chunks = vector_fixture_chunks("spool snippet");
+        let mut lines = vec![serde_json::to_string(&manifest).expect("manifest line")];
+        lines.extend(
+            chunks
+                .iter()
+                .map(|chunk| serde_json::to_string(chunk).expect("chunk line")),
+        );
+        fs::write(&artifact, format!("{}\n", lines.join("\n"))).expect("write jsonl");
+
+        let options = vector_test_options(Some(artifact.clone()));
+        let report = inspect_vector_chunks_artifact(&options, &artifact, None);
+
+        assert_vector_chunk_schema(&report);
+        assert_eq!(
+            report["artifact_identity"]["artifact_kind"].as_str(),
+            Some("candidate_spool")
+        );
+        assert_eq!(
+            report["artifact_identity"]["artifact_format"].as_str(),
+            Some("jsonl")
+        );
+        assert_eq!(
+            report["chunk_counts"]["spooled_total_chunks"].as_u64(),
+            Some(2)
+        );
+        assert_eq!(
+            report["query_index"]["query_index_status"].as_str(),
+            Some("ready")
+        );
+        assert_eq!(
+            report["query_index"]["query_index_kind"].as_str(),
+            Some("sqlite")
+        );
+        assert_eq!(
+            report["query_index"]["query_index_record_count"].as_u64(),
+            Some(2)
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn vector_chunk_inspector_corrupt_artifact_is_structured_error() {
+        let root = temp_audit_dir("vector-corrupt");
+        let artifact = root.join("corrupt.vector.json");
+        fs::write(&artifact, "{ not valid json").expect("write corrupt");
+
+        let options = vector_test_options(Some(artifact.clone()));
+        let report = inspect_vector_chunks_artifact(&options, &artifact, None);
+
+        assert_eq!(report["status"].as_str(), Some("error"));
+        assert_eq!(
+            report["error"]["kind"].as_str(),
+            Some("artifact_parse_failed")
+        );
+        assert_eq!(
+            report["passport_lifecycle_provider"]["validity_status"].as_str(),
+            Some("corrupt")
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn vector_chunk_inspector_missing_artifact_is_structured_error() {
+        let root = temp_audit_dir("vector-missing");
+        let artifact = root.join("missing.vector.json");
+
+        let options = vector_test_options(Some(artifact.clone()));
+        let report = inspect_vector_chunks_artifact(&options, &artifact, None);
+
+        assert_eq!(report["status"].as_str(), Some("error"));
+        assert_eq!(report["error"]["kind"].as_str(), Some("artifact_missing"));
+        assert_eq!(
+            report["artifact_identity"]["artifact_exists"].as_bool(),
+            Some(false)
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn vector_chunk_inspector_byte_accounting_reports_text_and_metadata() {
+        let root = temp_audit_dir("vector-byte-accounting");
+        let artifact = root.join("legacy.vector.json");
+        write_json(&artifact, &legacy_vector_fixture("byte accounting text")).expect("write");
+
+        let options = vector_test_options(Some(artifact.clone()));
+        let report = inspect_vector_chunks_artifact(&options, &artifact, None);
+
+        assert!(
+            report["byte_accounting"]["actual_index_file_bytes"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert!(
+            report["byte_accounting"]["indexed_chunk_text_bytes"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert!(
+            report["byte_accounting"]["metadata_estimated_bytes"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert!(
+            report["byte_accounting"]["repeated_field_overhead_estimate"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn vector_chunk_inspector_never_outputs_full_source_body() {
+        let root = temp_audit_dir("vector-no-full-body");
+        let artifact = root.join("legacy.vector.json");
+        let long_text = "FULL_SOURCE_BODY_MARKER ".repeat(80);
+        write_json(&artifact, &legacy_vector_fixture(&long_text)).expect("write");
+
+        let options = vector_test_options(Some(artifact.clone()));
+        let report = inspect_vector_chunks_artifact(&options, &artifact, None);
+        let encoded = serde_json::to_string(&report).expect("report json");
+
+        assert!(!encoded.contains(&long_text));
+        assert_eq!(
+            report["sample_chunks"][0]["text_preview_truncated"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            report["safety_conclusions"]["stores_full_source_body"].as_bool(),
+            Some(false)
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn vector_chunk_inspector_does_not_mutate_artifact_or_db() {
+        let root = temp_audit_dir("vector-no-mutation");
+        let artifact = root.join("legacy.vector.json");
+        let db = root.join("codegraph.sqlite");
+        write_json(&artifact, &legacy_vector_fixture("mutation check text")).expect("write");
+        create_storage_experiment_fixture_db(&db);
+        remove_test_sidecars(&db);
+        let artifact_hash_before = stable_file_hash(&artifact);
+        let db_hash_before = stable_file_hash(&db);
+
+        let options = VectorChunksOptions {
+            artifact_path: Some(artifact.clone()),
+            runtime_sidecar_path: None,
+            audit_artifact_path: None,
+            db_path: Some(db.clone()),
+            repo: None,
+            json_path: None,
+            markdown_path: None,
+            sample_limit: 2,
+        };
+        let report = inspect_vector_chunks_artifact(&options, &artifact, Some(&db));
+
+        assert_eq!(artifact_hash_before, stable_file_hash(&artifact));
+        assert_eq!(db_hash_before, stable_file_hash(&db));
+        assert_eq!(
+            report["mutation_check"]["artifact_mutated_during_inspection"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            report["passport_lifecycle_provider"]["db_binding"]["db_mutated_during_inspection"]
+                .as_bool(),
+            Some(false)
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn vector_chunk_inspector_reports_stale_source_binding_without_mutation() {
+        let root = temp_audit_dir("vector-source-binding-stale");
+        let repo = root.join("repo");
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::write(repo.join("src").join("lib.rs"), "pub fn live() {}\n").expect("write live");
+        let artifact = root.join("runtime.vector.json");
+        let mut fixture = runtime_vector_fixture("bound runtime text");
+        if let Some(chunk) = fixture
+            .get_mut("chunks")
+            .and_then(Value::as_array_mut)
+            .and_then(|chunks| chunks.first_mut())
+            .and_then(Value::as_object_mut)
+        {
+            chunk.insert(
+                "source_file_content_hash".to_string(),
+                json!(content_hash("pub fn old() {}\n")),
+            );
+            chunk.insert("source_file_size_bytes".to_string(), json!(16));
+        }
+        fs::write(
+            &artifact,
+            serde_json::to_string(&fixture).expect("fixture json"),
+        )
+        .expect("write runtime fixture");
+        let artifact_hash_before = stable_file_hash(&artifact);
+
+        let options = VectorChunksOptions {
+            artifact_path: Some(artifact.clone()),
+            runtime_sidecar_path: None,
+            audit_artifact_path: None,
+            db_path: None,
+            repo: Some(repo.clone()),
+            json_path: None,
+            markdown_path: None,
+            sample_limit: 2,
+        };
+        let report = inspect_vector_chunks_artifact(&options, &artifact, None);
+
+        assert_eq!(report["status"].as_str(), Some("ok"));
+        assert_eq!(
+            report["passport_lifecycle_provider"]["validity_status"].as_str(),
+            Some("stale")
+        );
+        assert_eq!(
+            report["passport_lifecycle_provider"]["source_binding"]["status"].as_str(),
+            Some("stale")
+        );
+        assert_eq!(artifact_hash_before, stable_file_hash(&artifact));
+        assert_eq!(
+            report["mutation_check"]["artifact_mutated_during_inspection"].as_bool(),
+            Some(false)
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn vector_chunk_inspector_json_schema_shape() {
+        let root = temp_audit_dir("vector-schema-shape");
+        let artifact = root.join("legacy.vector.json");
+        write_json(&artifact, &legacy_vector_fixture("schema shape text")).expect("write");
+
+        let options = vector_test_options(Some(artifact.clone()));
+        let report = inspect_vector_chunks_artifact(&options, &artifact, None);
+
+        assert_vector_chunk_schema(&report);
+        serde_json::to_string(&report).expect("valid json serialization");
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn vector_chunk_inspector_writes_markdown_report_when_requested() {
+        let root = temp_audit_dir("vector-markdown");
+        let artifact = root.join("legacy.vector.json");
+        let json_out = root.join("report.json");
+        let md_out = root.join("report.md");
+        write_json(&artifact, &legacy_vector_fixture("markdown report text")).expect("write");
+
+        let args = vec![
+            "--artifact".to_string(),
+            path_string(&artifact),
+            "--json".to_string(),
+            path_string(&json_out),
+            "--markdown".to_string(),
+            path_string(&md_out),
+            "--sample".to_string(),
+            "1".to_string(),
+        ];
+        let report = run_vector_chunks_command(&args).expect("run vector chunks");
+
+        assert_vector_chunk_schema(&report);
+        assert!(json_out.exists());
+        assert!(md_out.exists());
+        let markdown = fs::read_to_string(&md_out).expect("read markdown");
+        assert!(markdown.contains("Vector Chunk Artifact Inspector"));
+        assert!(markdown.contains("candidate-only"));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
 
     #[test]
     fn infer_context_keeps_unknown_when_context_is_not_first_class() {
@@ -10125,6 +12307,28 @@ mod tests {
     }
 
     #[test]
+    fn sample_paths_read_only_does_not_mutate_main_db_or_create_sidecars() {
+        let root = temp_audit_dir("path-sample-read-only");
+        let db = root.join("codegraph.sqlite");
+        create_path_evidence_fixture_db(&db);
+        remove_test_sidecars(&db);
+        let before = db_file_snapshot(&db);
+        assert!(before.sidecars.is_empty());
+        let mut options = sample_paths_test_options(db.clone());
+        options.limit = 1;
+
+        let report = sample_paths(&options).expect("sample paths");
+        let after = db_file_snapshot(&db);
+
+        assert_eq!(report.samples.len(), 1);
+        assert_eq!(before.main_db_size, after.main_db_size);
+        assert_eq!(before.main_db_mtime_unix_ms, after.main_db_mtime_unix_ms);
+        assert_eq!(before.main_db_hash, after.main_db_hash);
+        assert!(after.sidecars.is_empty());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn sample_paths_proof_mode_does_not_generate_fallback_paths() {
         let root = temp_audit_dir("path-sample-proof-no-fallback");
         let db = root.join("codegraph.sqlite");
@@ -10393,6 +12597,196 @@ mod tests {
             max_edge_load: 64,
             timeout_ms: 10_000,
             mode: PathSampleMode::Proof,
+        }
+    }
+
+    fn vector_test_options(artifact_path: Option<PathBuf>) -> VectorChunksOptions {
+        VectorChunksOptions {
+            artifact_path,
+            runtime_sidecar_path: None,
+            audit_artifact_path: None,
+            db_path: None,
+            repo: None,
+            json_path: None,
+            markdown_path: None,
+            sample_limit: 2,
+        }
+    }
+
+    fn legacy_vector_fixture(text: &str) -> Value {
+        json!({
+            "metadata": vector_fixture_metadata(None, "pretty_json"),
+            "chunks": vector_fixture_chunks(text),
+        })
+    }
+
+    fn runtime_vector_fixture(text: &str) -> Value {
+        json!({
+            "metadata": vector_fixture_metadata(Some("vector_runtime_sidecar"), "compact_json"),
+            "chunks": vector_fixture_chunks(text),
+        })
+    }
+
+    fn audit_vector_fixture(text: &str) -> Value {
+        let mut metadata = vector_fixture_metadata(Some("audit_artifact"), "pretty_json");
+        metadata["diagnostic_only"] = json!(true);
+        metadata["runtime_total_chunks"] = json!(0);
+        metadata["audit_total_chunks"] = json!(2);
+        json!({
+            "metadata": metadata,
+            "chunks": vector_fixture_chunks(text),
+        })
+    }
+
+    fn vector_fixture_metadata(artifact_kind: Option<&str>, format: &str) -> Value {
+        let mut metadata = json!({
+            "metadata_version": "vector_chunk_index_metadata_v1",
+            "provider": {
+                "provider_id": "codegraph-deterministic-test",
+                "model_id": "codegraph-deterministic-token-projection-v1",
+                "dimension": 64,
+                "normalization": "l2",
+                "provider_version": "deterministic-test-embedding-v1",
+                "privacy_mode": "local_only"
+            },
+            "passport": {
+                "passport_fingerprint": "fnv64:test-passport",
+                "passport_version": 1,
+                "codegraph_schema_version": 21,
+                "storage_mode": "proof",
+                "index_scope_policy_hash": "scope-test",
+                "canonical_repo_root": "fixture/repo",
+                "repo_head": "fixture-head"
+            },
+            "source_scope": "context-pack-release-vector-candidates",
+            "extraction_version": "vector_embedding_chunk_v1",
+            "max_chunks": 8,
+            "chunk_count": 2,
+            "generated_total_chunks": 3,
+            "spooled_total_chunks": 2,
+            "selected_total_chunks": 2,
+            "persisted_total_chunks": 2,
+            "runtime_total_chunks": 2,
+            "audit_total_chunks": 0,
+            "omitted_by_cap": 1,
+            "omitted_low_signal": 0,
+            "omitted_by_bucket_limit": 0,
+            "omitted_by_dedup": 0,
+            "indexed_text_bytes": 1,
+            "estimated_f32_payload_bytes": 512,
+            "index_artifact_format": format,
+            "stores_chunk_text": true,
+            "stores_chunk_metadata": true,
+            "stores_full_source_body": false,
+            "vector_payload_compression": "none",
+        });
+        if let Some(kind) = artifact_kind {
+            metadata["artifact_kind"] = json!(kind);
+        }
+        metadata
+    }
+
+    fn vector_fixture_chunks(text: &str) -> Vec<Value> {
+        vec![
+            json!({
+                "chunk_id": "chunk://fixture/src/lib.rs#1",
+                "chunk_kind": "function",
+                "source_kind": "graph_entity",
+                "file_id": "file://src/lib.rs",
+                "path": "src/lib.rs",
+                "entity_id": "repo://e/abc",
+                "source_span": {
+                    "repo_relative_path": "src/lib.rs",
+                    "start_line": 1,
+                    "start_column": 1,
+                    "end_line": 3,
+                    "end_column": 1
+                },
+                "source_role": "implementation",
+                "evidence_role": "production",
+                "proof_status": "candidate_only",
+                "graph_proof": false,
+                "claimable_for_graph": false,
+                "text": text,
+                "token_count": 4,
+                "byte_count": text.as_bytes().len(),
+                "language": "rust",
+                "file_kind": "source",
+                "lifecycle_binding": {
+                    "db_passport_fingerprint": "fnv64:test-passport",
+                    "read_decision": "read_reuse",
+                    "claimable": false
+                },
+                "content_hash": "fnv64:chunk",
+                "extraction_version": "vector_embedding_chunk_v1",
+                "selection_score": 512.0,
+                "selection_bucket": "graph_entity",
+                "selection_reason": "source_kind=graph_entity; score=512.000",
+                "top_level_dir": "src",
+                "cap_stage": "selected"
+            }),
+            json!({
+                "chunk_id": "chunk://fixture/README.md#path",
+                "chunk_kind": "file_path_title",
+                "source_kind": "metadata",
+                "file_id": "file://README.md",
+                "path": "README.md",
+                "entity_id": Value::Null,
+                "source_span": Value::Null,
+                "source_role": "metadata",
+                "evidence_role": "unknown",
+                "proof_status": "not_graph_proof",
+                "graph_proof": false,
+                "claimable_for_graph": false,
+                "text": "file path README.md title Fixture",
+                "token_count": 5,
+                "byte_count": 33,
+                "language": Value::Null,
+                "file_kind": "documentation",
+                "lifecycle_binding": {
+                    "db_passport_fingerprint": "fnv64:test-passport",
+                    "read_decision": "read_reuse",
+                    "claimable": false
+                },
+                "content_hash": "fnv64:path",
+                "extraction_version": "vector_embedding_chunk_v1",
+                "selection_score": 360.0,
+                "selection_bucket": "metadata",
+                "selection_reason": "source_kind=metadata; score=360.000",
+                "top_level_dir": "(repo_root)",
+                "cap_stage": "selected"
+            }),
+        ]
+    }
+
+    fn assert_vector_chunk_schema(report: &Value) {
+        assert!(report["schema_version"].is_number());
+        assert_eq!(report["audit"].as_str(), Some("vector_chunks"));
+        assert!(report["artifact_identity"]["artifact_path"].is_string());
+        assert!(report["artifact_identity"]["artifact_kind"].is_string());
+        assert!(report["chunk_counts"]["generated_total_chunks"].is_number());
+        assert!(report["chunk_composition"]["by_source_kind"].is_object());
+        assert!(report["byte_accounting"]["actual_index_file_bytes"].is_number());
+        assert!(report["passport_lifecycle_provider"]["validity_status"].is_string());
+        assert!(report["safety_conclusions"]["candidate_only"].is_boolean());
+        assert!(report["sample_chunks"].is_array());
+        if let Some(sample) = report["sample_chunks"]
+            .as_array()
+            .and_then(|items| items.first())
+        {
+            for field in [
+                "chunk_id",
+                "chunk_kind",
+                "source_kind",
+                "path",
+                "proof_status",
+                "text_preview",
+                "text_bytes",
+                "text_preview_truncated",
+            ] {
+                assert!(sample.get(field).is_some(), "missing sample field {field}");
+            }
+            assert!(sample.get("text").is_none());
         }
     }
 
