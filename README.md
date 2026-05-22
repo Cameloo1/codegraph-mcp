@@ -61,6 +61,14 @@ gold-validation smoke for `sympy__sympy-20590`. Patch-quality scoring still
 requires a configured real external agent command; no official SWE-bench score
 or public benchmark result is claimed.
 
+CodeGraph also has an experimental OpenEvolve lab on the `openevolve-lab`
+branch. OpenEvolve is used there as a bounded policy-search engine: it proposes
+small retrieval and ranking policy variants, then fixed evaluators score them
+for recall, latency, packet size, and claim-boundary safety. It is not part of
+the shipped runtime, not a proof source, and not an automatic merge path. Useful
+ideas must be replayed, reviewed, manually ported, and passed through normal
+CodeGraph gates before they can move into `fix`.
+
 Latest local diagnostic scores from `full_run_20260521_141313`:
 
 | Benchmark surface | Current evidence | Claim boundary |
