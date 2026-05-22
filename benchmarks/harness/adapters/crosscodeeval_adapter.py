@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.harness.adapters.base import AdapterSetupStatus, read_jsonl
+from benchmarks.harness.paths import fixture_path, resolve_benchmark_path, upstream_path, workspace_path
 
 
 class CrossCodeEvalAdapter:
@@ -12,13 +13,13 @@ class CrossCodeEvalAdapter:
     dataset_version = "amazon-science/cceval"
 
     def __init__(self, dataset_path: str | Path, languages: list[str] | None = None):
-        self.dataset_path = Path(dataset_path)
+        self.dataset_path = resolve_benchmark_path(dataset_path)
         self.languages = languages or ["python", "java", "typescript", "csharp"]
 
     def setup_status(self) -> AdapterSetupStatus:
         data_root = self._data_root()
         data_files = self._find_data_files()
-        tree_sitter_build = Path("benchmarks/upstream/cceval/build")
+        tree_sitter_build = resolve_benchmark_path(upstream_path("crosscodeeval", "cceval", "build"))
         expected_parser_libs = [
             tree_sitter_build / "python-lang-parser.so",
             tree_sitter_build / "java-lang-parser.so",
@@ -32,19 +33,19 @@ class CrossCodeEvalAdapter:
             return AdapterSetupStatus(
                 benchmark=self.benchmark,
                 setup_state="fixture_only"
-                if Path("benchmarks/datasets/adapter_fixtures/crosscodeeval_tiny.jsonl").exists()
+                if fixture_path("crosscodeeval", "crosscodeeval_tiny.jsonl").exists()
                 else "skipped_with_precise_blocker",
                 status="blocked_manual_download",
                 dataset_version=self.dataset_version,
                 local_path=str(self.dataset_path),
                 ready=False,
                 smoke_ready=False,
-                fixture_only=Path("benchmarks/datasets/adapter_fixtures/crosscodeeval_tiny.jsonl").exists(),
+                fixture_only=fixture_path("crosscodeeval", "crosscodeeval_tiny.jsonl").exists(),
                 blockers=[
                     "CrossCodeEval data is not extracted. Run tar -xJf data/crosscodeeval_data.tar.xz -C data/ inside the pinned cceval checkout."
                 ],
                 setup_commands=[
-                    "tar -xJf benchmarks/upstream/cceval/data/crosscodeeval_data.tar.xz -C benchmarks/upstream/cceval/data",
+                    "tar -xJf benchmarks/tracks/crosscodeeval/upstream/cceval/data/crosscodeeval_data.tar.xz -C benchmarks/tracks/crosscodeeval/upstream/cceval/data",
                     "bash scripts/build_treesitter.sh",
                 ],
             )
@@ -71,7 +72,7 @@ class CrossCodeEvalAdapter:
                     "Windows fallback: call Visual Studio Build Tools vcvars64.bat, ensure rc.exe is available, "
                     "then run python scripts/build_ts_lib.py"
                 ),
-                "Docker fallback: benchmarks/scripts/setup_crosscodeeval_docker.ps1",
+                "Docker fallback: benchmarks/tracks/crosscodeeval/scripts/setup_docker.ps1",
             ],
             notes=[
                 "Extracted CrossCodeEval JSONL data is enough for adapter smoke and retrieval-context diagnostics.",
@@ -109,7 +110,7 @@ class CrossCodeEvalAdapter:
         return tasks
 
     def load_fixture_tasks(self, limit: int | None = None) -> list[dict]:
-        fixture = Path("benchmarks/datasets/adapter_fixtures/crosscodeeval_tiny.jsonl")
+        fixture = fixture_path("crosscodeeval", "crosscodeeval_tiny.jsonl")
         rows = read_jsonl(fixture, limit=limit)
         return [self._map_row(row, index) for index, row in enumerate(rows)]
 
@@ -174,7 +175,7 @@ class CrossCodeEvalAdapter:
 
 def _materialize_crosscodeeval_repo(task_id: str, row: dict[str, Any], context_items: list[Any]) -> Path:
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-    root = Path("benchmarks/workspaces/crosscodeeval_materialized") / _safe_id(task_id)
+    root = workspace_path("crosscodeeval", "materialized") / _safe_id(task_id)
     root.mkdir(parents=True, exist_ok=True)
     target = str(metadata.get("file") or "target.py").replace("\\", "/")
     target_text = "\n".join(str(part) for part in (row.get("prompt"), row.get("groundtruth"), row.get("right_context")) if part)

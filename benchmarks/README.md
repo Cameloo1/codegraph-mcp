@@ -27,6 +27,25 @@ python -m benchmarks.harness.runners.verify_benchmark_setup --output-dir benchma
 Generated results, workspaces, raw logs, predictions, patches, cloned upstream
 repos, DBs, WAL/SHM files, and model outputs are ignored/local by default.
 
+## Track Layout
+
+Tracked benchmark definitions now live under dedicated track homes:
+
+```text
+benchmarks/tracks/internal_gold/
+benchmarks/tracks/repobench/
+benchmarks/tracks/crosscodeeval/
+benchmarks/tracks/swebench_lite/
+benchmarks/tracks/graph_truth/
+benchmarks/tracks/openevolve/
+```
+
+Each track owns its `configs/`, fixtures or datasets, setup scripts, local
+upstream checkout area, generated workspaces, and generated results. Shared
+provider, scoring, runner, and schema code stays in `benchmarks/harness/`.
+Legacy `benchmarks/configs/*.toml` and `benchmarks/scripts/*` entrypoints are
+kept as thin compatibility aliases/wrappers for one migration window.
+
 ## Current Setup Shape
 
 - Internal gold retrieval tasks are ready and deterministic.
@@ -44,31 +63,32 @@ repos, DBs, WAL/SHM files, and model outputs are ignored/local by default.
 Use the ignored benchmark venv for external setup:
 
 ```powershell
-python -m venv benchmarks/workspaces/benchmark-setup-venv
-benchmarks/workspaces/benchmark-setup-venv/Scripts/python.exe -m pip install datasets
-benchmarks/workspaces/benchmark-setup-venv/Scripts/python.exe -m pip install -e benchmarks/upstream/SWE-bench
+python -m venv benchmarks/tracks/repobench/workspaces/benchmark-setup-venv
+benchmarks/tracks/repobench/workspaces/benchmark-setup-venv/Scripts/python.exe -m pip install datasets
+python -m pip install -e benchmarks/tracks/swebench_lite/upstream/SWE-bench
 ```
 
 RepoBench Python v1.1 export:
 
 ```powershell
-benchmarks/workspaces/benchmark-setup-venv/Scripts/python.exe -c "from datasets import load_dataset; ds=load_dataset('tianyang/repobench_python_v1.1', split='cross_file_first', streaming=True); print(next(iter(ds)))"
+benchmarks/tracks/repobench/scripts/setup_repobench.ps1 -Rows 20
 ```
 
 CrossCodeEval parser build:
 
 ```powershell
-benchmarks/scripts/setup_crosscodeeval_docker.ps1
+benchmarks/tracks/crosscodeeval/scripts/setup_docker.ps1
 ```
 
 The Docker setup pins grammar repositories to 0.20-era tags before building so
 the generated parser libraries match CrossCodeEval's `tree_sitter==0.20.4`
-API. Native MSVC and WSL scripts are also available under `benchmarks/scripts/`.
+API. Native MSVC and WSL scripts are also available under
+`benchmarks/tracks/crosscodeeval/scripts/`.
 
 SWE-bench Lite gold validation through a Linux container:
 
 ```powershell
-benchmarks/scripts/run_swebench_harness_linux_container.ps1
+benchmarks/tracks/swebench_lite/scripts/run_harness_linux_container.ps1
 ```
 
 This validates the official harness path for one gold task. It is not a model
@@ -78,14 +98,14 @@ Patch-quality runs require:
 
 ```powershell
 $env:CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND = "<fixed agent command>"
-python -m benchmarks.harness.runners.run_patch_eval --config benchmarks/configs/patch_runner_external_agent.example.toml
+python -m benchmarks.harness.runners.run_patch_eval --config benchmarks/tracks/swebench_lite/configs/patch_runner_external_agent.example.toml
 ```
 
 For the local Codex CLI wrapper, use:
 
 ```powershell
-$env:CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND = "powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/scripts/run_codex_external_patch_agent.ps1"
-python -m benchmarks.harness.runners.run_patch_eval --config benchmarks/configs/codex_external_agent.example.toml
+$env:CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND = "powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/tracks/swebench_lite/scripts/run_codex_external_patch_agent.ps1"
+python -m benchmarks.harness.runners.run_patch_eval --config benchmarks/tracks/swebench_lite/configs/codex_external_agent.example.toml
 ```
 
 The wrapper reads benchmark JSON from stdin, runs `codex exec`

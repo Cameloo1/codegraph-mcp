@@ -11,11 +11,12 @@ from typing import Any
 
 from benchmarks.harness.adapters.swebench_adapter import SWEBenchAdapter
 from benchmarks.harness.config import load_config
+from benchmarks.harness.paths import resolve_benchmark_path
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="benchmarks/configs/swebench_lite_smoke.toml")
+    parser.add_argument("--config", default="benchmarks/tracks/swebench_lite/configs/smoke.toml")
     parser.add_argument("--output", default=None)
     args = parser.parse_args(argv)
     summary = patch_setup_summary(args.config)
@@ -31,7 +32,7 @@ def patch_setup_summary(config_path: str) -> dict:
     config = load_config(config_path)
     adapter_cfg = config.raw.get("adapter", {})
     agent_cfg = config.raw.get("agent", {})
-    upstream_repo = adapter_cfg.get("upstream_repo", "benchmarks/upstream/SWE-bench")
+    upstream_repo = resolve_benchmark_path(adapter_cfg.get("upstream_repo", "benchmarks/tracks/swebench_lite/upstream/SWE-bench"))
     swebench = SWEBenchAdapter(upstream_repo)
     swe_status = swebench.setup_status().to_dict()
     command_env = str(agent_cfg.get("external_agent_command_env", "CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND"))

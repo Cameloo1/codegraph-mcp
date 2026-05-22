@@ -1,0 +1,25 @@
+[run]
+name = "internal-gold-smoke"
+run_id_prefix = "internal_gold_smoke"
+dataset = "internal_gold"
+dataset_path = "benchmarks/tracks/internal_gold/datasets/internal_gold"
+dataset_version = "codegraph_internal_gold_v1"
+modes = ["none", "rg_only", "codegraph_exact_text", "codegraph_full"]
+max_tasks = 20
+max_wall_time_s = 120
+max_time_s = 120
+max_tool_calls = 8
+max_context_bytes = 60000
+max_output_bytes = 60000
+claim_boundary = "diagnostic"
+
+[codegraph]
+release_binary = "target/release/codegraph-mcp.exe"
+binary_path_policy = "release_binary_required"
+workspace_dir = "benchmarks/tracks/internal_gold/workspaces/internal-gold-smoke"
+db_path_policy = "ignored_benchmark_workspace"
+
+[agent]
+scaffold = "retrieval_only"
+model = "none"
+external_agent_required = false

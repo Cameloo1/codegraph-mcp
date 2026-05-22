@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.harness.adapters.base import AdapterSetupStatus, read_jsonl
+from benchmarks.harness.paths import fixture_path, resolve_benchmark_path, workspace_path
 
 
 class RepoBenchAdapter:
@@ -12,11 +13,11 @@ class RepoBenchAdapter:
     dataset_version = "tianyang/repobench_python_v1.1"
 
     def __init__(self, dataset_path: str | Path, language: str = "python"):
-        self.dataset_path = Path(dataset_path)
+        self.dataset_path = resolve_benchmark_path(dataset_path)
         self.language = language
 
     def setup_status(self) -> AdapterSetupStatus:
-        fixture = Path("benchmarks/datasets/adapter_fixtures/repobench_tiny.jsonl")
+        fixture = fixture_path("repobench", "repobench_tiny.jsonl")
         data_file = self._find_data_file()
         blockers: list[str] = []
         if data_file is None:
@@ -41,7 +42,7 @@ class RepoBenchAdapter:
                         "python -c \"from datasets import load_dataset; "
                         "load_dataset('tianyang/repobench_python_v1.1')\""
                     ),
-                    "export or cache the dataset under benchmarks/workspaces/repobench_data",
+                    "export or cache the dataset under benchmarks/tracks/repobench/workspaces/repobench_data",
                 ],
                 notes=[
                     "The pinned RepoBench repository is source code plus metadata; the official v1.1 data is on Hugging Face."
@@ -72,7 +73,7 @@ class RepoBenchAdapter:
         return [self._map_row(row, index) for index, row in enumerate(rows)]
 
     def load_fixture_tasks(self, limit: int | None = None) -> list[dict]:
-        fixture = Path("benchmarks/datasets/adapter_fixtures/repobench_tiny.jsonl")
+        fixture = fixture_path("repobench", "repobench_tiny.jsonl")
         rows = read_jsonl(fixture, limit=limit)
         return [self._map_row(row, index) for index, row in enumerate(rows)]
 
@@ -146,7 +147,7 @@ def _context_items(row: dict[str, Any]) -> list[Any]:
 
 
 def _materialize_repobench_repo(task_id: str, row: dict[str, Any], context_items: list[Any]) -> Path:
-    root = Path("benchmarks/workspaces/repobench_materialized") / _safe_id(task_id)
+    root = workspace_path("repobench", "materialized") / _safe_id(task_id)
     root.mkdir(parents=True, exist_ok=True)
     target = str(row.get("file_path") or "target.py").replace("\\", "/")
     target_text = "\n".join(

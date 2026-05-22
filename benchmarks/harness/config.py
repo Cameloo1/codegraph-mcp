@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from benchmarks.harness.paths import resolve_benchmark_path
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover
@@ -33,19 +35,27 @@ class BenchmarkConfig:
     raw: dict[str, Any]
 
 
-def load_config(path: str | Path) -> BenchmarkConfig:
+def load_config(path: str | Path, _seen: set[str] | None = None) -> BenchmarkConfig:
     if tomllib is None:
         raise RuntimeError("tomllib is required; use Python 3.11+")
-    config_path = Path(path)
+    config_path = resolve_benchmark_path(path)
+    seen = _seen or set()
+    config_key = config_path.as_posix()
+    if config_key in seen:
+        raise RuntimeError(f"cyclic benchmark config alias: {config_path}")
+    seen.add(config_key)
     with config_path.open("rb") as handle:
         raw = tomllib.load(handle)
+    compat = raw.get("compat", {})
+    if isinstance(compat, dict) and compat.get("canonical_config"):
+        return load_config(str(compat["canonical_config"]), seen)
     run = raw.get("run", {})
     codegraph = raw.get("codegraph", {})
     agent = raw.get("agent", {})
     return BenchmarkConfig(
         name=str(run.get("name", config_path.stem)),
         dataset=str(run.get("dataset", "internal_gold")),
-        dataset_path=Path(str(run.get("dataset_path", ""))),
+        dataset_path=resolve_benchmark_path(str(run.get("dataset_path", ""))),
         dataset_version=str(run.get("dataset_version", run.get("dataset_name", ""))),
         modes=list(run.get("modes", ["none", "rg_only"])),
         max_tasks=_maybe_int(run.get("max_tasks")),
@@ -54,8 +64,8 @@ def load_config(path: str | Path) -> BenchmarkConfig:
         max_context_bytes=int(run.get("max_context_bytes", 60000)),
         max_output_bytes=int(run.get("max_output_bytes", run.get("max_context_bytes", 60000))),
         claim_boundary=str(run.get("claim_boundary", "diagnostic")),
-        release_binary=Path(str(codegraph.get("release_binary", "target/release/codegraph-mcp.exe"))),
-        workspace_dir=Path(str(codegraph.get("workspace_dir", f"benchmarks/workspaces/{config_path.stem}"))),
+        release_binary=resolve_benchmark_path(str(codegraph.get("release_binary", "target/release/codegraph-mcp.exe")), prefer_existing=False),
+        workspace_dir=resolve_benchmark_path(str(codegraph.get("workspace_dir", f"benchmarks/tracks/{run.get('dataset', 'internal_gold')}/workspaces/{config_path.stem}")), prefer_existing=False),
         binary_path_policy=str(codegraph.get("binary_path_policy", "release_binary_required")),
         db_path_policy=str(codegraph.get("db_path_policy", "ignored_benchmark_workspace")),
         agent_scaffold=str(agent.get("scaffold", "retrieval_only")),
@@ -86,8 +96,9 @@ def validate_config(config: BenchmarkConfig) -> list[str]:
         errors.append("CodeGraph binary path policy must be release_binary_required")
     if config.db_path_policy != "ignored_benchmark_workspace":
         errors.append("DB path policy must be ignored_benchmark_workspace")
-    if "benchmarks/workspaces" not in config.workspace_dir.as_posix():
-        errors.append("workspace_dir must be under benchmarks/workspaces")
+    workspace = config.workspace_dir.as_posix()
+    if "benchmarks/workspaces" not in workspace and "benchmarks/tracks/" not in workspace:
+        errors.append("workspace_dir must be under benchmarks/workspaces or benchmarks/tracks/<track>/workspaces")
     if config.max_context_bytes <= 0 or config.max_output_bytes <= 0:
         errors.append("context/output byte budgets must be positive")
     return errors

@@ -48,6 +48,7 @@ pub struct GraphTruthGateOptions {
 pub fn default_graph_truth_gate_options() -> GraphTruthGateOptions {
     GraphTruthGateOptions {
         cases: PathBuf::from("benchmarks")
+            .join("tracks")
             .join("graph_truth")
             .join("fixtures"),
         fixture_root: PathBuf::from("."),
@@ -83,6 +84,7 @@ pub struct ContextPacketGateOptions {
 pub fn default_context_packet_gate_options() -> ContextPacketGateOptions {
     ContextPacketGateOptions {
         cases: PathBuf::from("benchmarks")
+            .join("tracks")
             .join("graph_truth")
             .join("fixtures"),
         fixture_root: PathBuf::from("."),
@@ -4117,6 +4119,7 @@ mod tests {
             .expect("workspace root");
         options.cases = workspace_root
             .join("benchmarks")
+            .join("tracks")
             .join("graph_truth")
             .join("fixtures");
         options.fixture_root = workspace_root.to_path_buf();

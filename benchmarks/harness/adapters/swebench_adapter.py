@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.harness.adapters.base import AdapterSetupStatus
+from benchmarks.harness.paths import resolve_benchmark_path, workspace_path
 
 
 class SWEBenchAdapter:
@@ -15,7 +16,7 @@ class SWEBenchAdapter:
     dataset_version = "princeton-nlp/SWE-bench_Lite"
 
     def __init__(self, upstream_repo: str | Path):
-        self.upstream_repo = Path(upstream_repo)
+        self.upstream_repo = resolve_benchmark_path(upstream_repo)
 
     def setup_status(self) -> AdapterSetupStatus:
         blockers: list[str] = []
@@ -33,8 +34,8 @@ class SWEBenchAdapter:
                 local_path=str(self.upstream_repo),
                 blockers=blockers,
                 setup_commands=[
-                    "git clone https://github.com/SWE-bench/SWE-bench benchmarks/upstream/SWE-bench",
-                    "git -C benchmarks/upstream/SWE-bench checkout f7bbbb2ccdf479001d6467c9e34af59e44a840f9",
+                    "git clone https://github.com/SWE-bench/SWE-bench benchmarks/tracks/swebench_lite/upstream/SWE-bench",
+                    "git -C benchmarks/tracks/swebench_lite/upstream/SWE-bench checkout f7bbbb2ccdf479001d6467c9e34af59e44a840f9",
                 ],
             )
         docker_status = _docker_status()
@@ -100,7 +101,7 @@ class SWEBenchAdapter:
 
 def _docker_status() -> dict[str, Any]:
     env = os.environ.copy()
-    docker_config = Path("benchmarks/workspaces/docker-config").resolve()
+    docker_config = workspace_path("swebench_lite", "docker-config").resolve()
     docker_config.mkdir(parents=True, exist_ok=True)
     env.setdefault("DOCKER_CONFIG", str(docker_config))
     env.setdefault("DOCKER_HOST", "npipe:////./pipe/dockerDesktopLinuxEngine")
@@ -153,8 +154,13 @@ def _python_import_status() -> dict[str, Any]:
     except Exception:
         spec = None
     if spec is None:
-        venv_python = Path("benchmarks/workspaces/benchmark-setup-venv/Scripts/python.exe")
-        if venv_python.exists():
+        venv_candidates = [
+            resolve_benchmark_path(workspace_path("swebench_lite", "benchmark-setup-venv", "Scripts", "python.exe")),
+            Path("benchmarks/workspaces/benchmark-setup-venv/Scripts/python.exe"),
+        ]
+        for venv_python in venv_candidates:
+            if not venv_python.exists():
+                continue
             proc = subprocess.run(
                 [
                     str(venv_python),
@@ -175,7 +181,7 @@ def _python_import_status() -> dict[str, Any]:
                     return {"status": "ready", "blocker": "", "via": str(venv_python), **parsed}
         return {
             "status": "blocked_python_install",
-            "blocker": "SWE-bench package is not importable. Run python -m pip install -e benchmarks/upstream/SWE-bench.",
+            "blocker": "SWE-bench package is not importable. Run python -m pip install -e benchmarks/tracks/swebench_lite/upstream/SWE-bench.",
         }
     return {
         "status": "ready",
@@ -185,8 +191,13 @@ def _python_import_status() -> dict[str, Any]:
 
 
 def _linux_harness_status() -> dict[str, Any]:
-    report = Path("benchmarks/workspaces/swebench_gold_validation/gold.codegraph-setup-gold.json")
-    if report.exists():
+    report_candidates = [
+        resolve_benchmark_path(workspace_path("swebench_lite", "gold_validation", "gold.codegraph-setup-gold.json")),
+        Path("benchmarks/workspaces/swebench_gold_validation/gold.codegraph-setup-gold.json"),
+    ]
+    for report in report_candidates:
+        if not report.exists():
+            continue
         try:
             parsed = json.loads(report.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
@@ -203,8 +214,8 @@ def _linux_harness_status() -> dict[str, Any]:
     return {
         "status": "hard_external_prerequisite_linux_harness",
         "blocker": (
-            "Run benchmarks/scripts/run_swebench_harness_linux_container.ps1 to validate the official harness "
-            "through a Linux container or run benchmarks/scripts/setup_swebench_wsl.ps1 after installing a WSL distro."
+            "Run benchmarks/tracks/swebench_lite/scripts/run_harness_linux_container.ps1 to validate the official harness "
+            "through a Linux container or run benchmarks/tracks/swebench_lite/scripts/setup_wsl.ps1 after installing a WSL distro."
         ),
         "route": "docker_linux_container_or_wsl",
     }

@@ -501,6 +501,7 @@ fn bench_graph_truth_gate_runs_adversarial_fixtures_and_writes_reports() {
         .expect("workspace root");
     let cases = workspace_root
         .join("benchmarks")
+        .join("tracks")
         .join("graph_truth")
         .join("fixtures");
     let output_dir = empty_repo().join("graph-truth-output");
@@ -585,6 +586,7 @@ fn bench_context_packet_gate_runs_adversarial_fixtures_and_writes_reports() {
         .expect("workspace root");
     let cases = workspace_root
         .join("benchmarks")
+        .join("tracks")
         .join("graph_truth")
         .join("fixtures");
     let output_dir = empty_repo().join("context-packet-output");
@@ -636,6 +638,7 @@ fn bench_retrieval_ablation_reports_stage0_and_full_funnel_separately() {
         .expect("workspace root");
     let cases = workspace_root
         .join("benchmarks")
+        .join("tracks")
         .join("graph_truth")
         .join("fixtures");
     let output_dir = empty_repo().join("retrieval-ablation-output");

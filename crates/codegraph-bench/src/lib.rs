@@ -5179,7 +5179,7 @@ mod tests {
             );
             assert_eq!(
                 string_field(&case, "repo_fixture_path").expect("repo_fixture_path"),
-                format!("benchmarks/graph_truth/fixtures/{case_id}/repo"),
+                format!("benchmarks/tracks/graph_truth/fixtures/{case_id}/repo"),
                 "repo_fixture_path should point at the fixture repo"
             );
             assert!(
@@ -5265,6 +5265,7 @@ mod tests {
             .join("..")
             .join("..")
             .join("benchmarks")
+            .join("tracks")
             .join("graph_truth")
             .join("schemas")
             .join("graph_truth_case.schema.json");
@@ -5277,6 +5278,7 @@ mod tests {
             .join("..")
             .join("..")
             .join("benchmarks")
+            .join("tracks")
             .join("graph_truth")
             .join("fixtures")
     }
@@ -5388,7 +5390,7 @@ mod tests {
             "schema_version": 1,
             "case_id": "auth.role-check.strict",
             "description": "Login must call the production role checker and must not prove through a mock.",
-            "repo_fixture_path": "benchmarks/graph_truth/fixtures/auth_role_check",
+            "repo_fixture_path": "benchmarks/tracks/graph_truth/fixtures/auth_role_check",
             "task_prompt": "Change login authorization behavior.",
             "expected_entities": [
                 {

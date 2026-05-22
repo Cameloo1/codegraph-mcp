@@ -19,6 +19,7 @@ from benchmarks.harness.scoring.claimability import claimability_violations, no_
 from benchmarks.harness.scoring.context_recall import score_retrieval
 from benchmarks.harness.scoring.efficiency import aggregate_by_mode
 from benchmarks.harness.scoring.hallucination import unsupported_claim_violations
+from benchmarks.harness.paths import results_path
 from benchmarks.harness.workspace import ensure_dir, stable_id
 
 
@@ -33,14 +34,14 @@ PROVIDERS = {
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="benchmarks/configs/internal_gold_smoke.toml")
+    parser.add_argument("--config", default="benchmarks/tracks/internal_gold/configs/smoke.toml")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--modes", nargs="*", default=None)
     parser.add_argument("--max-tasks", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     config = load_config(args.config)
-    output_dir = Path(args.output_dir) if args.output_dir else Path("benchmarks/results/summaries") / f"{int(time.time())}_{config.name}"
+    output_dir = Path(args.output_dir) if args.output_dir else _default_output_dir(config)
     results = run(config, output_dir, modes=args.modes, max_tasks=args.max_tasks, dry_run=args.dry_run)
     errors = [error for result in results for error in validate_result(result)]
     return 1 if errors else 0
@@ -146,6 +147,19 @@ def _benchmark_name(config: BenchmarkConfig) -> str:
     if config.dataset == "internal_gold":
         return "internal"
     return config.dataset
+
+
+def _default_output_dir(config: BenchmarkConfig) -> Path:
+    track_by_dataset = {
+        "internal_gold": "internal_gold",
+        "repobench": "repobench",
+        "crosscodeeval": "crosscodeeval",
+        "swe_bench_lite": "swebench_lite",
+    }
+    track_id = track_by_dataset.get(config.dataset)
+    if track_id is None:
+        return Path("benchmarks/results/summaries") / f"{int(time.time())}_{config.name}"
+    return results_path(track_id, f"{int(time.time())}_{config.name}")
 
 
 def _track_name(config: BenchmarkConfig, dry_run: bool) -> str:

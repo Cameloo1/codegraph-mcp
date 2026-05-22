@@ -13,14 +13,14 @@ class ExternalAgentCommandTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                "CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND": "powershell -File benchmarks/scripts/run_codex_external_patch_agent.ps1",
+                "CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND": "powershell -File benchmarks/tracks/swebench_lite/scripts/run_codex_external_patch_agent.ps1",
                 "CODEGRAPH_BENCH_AGENT_COMMAND": "legacy-command",
             },
             clear=False,
         ):
             self.assertEqual(
                 _command_from_env(),
-                ["powershell", "-File", "benchmarks/scripts/run_codex_external_patch_agent.ps1"],
+                ["powershell", "-File", "benchmarks/tracks/swebench_lite/scripts/run_codex_external_patch_agent.ps1"],
             )
 
     def test_legacy_external_agent_env_var_still_works_as_fallback(self):

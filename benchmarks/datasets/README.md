@@ -1,11 +1,16 @@
-# Benchmark Datasets
+# Legacy Benchmark Dataset Compatibility
 
-Tracked datasets here must be small, pinned, and safe to commit.
+Canonical tracked datasets and fixtures now live under the owning benchmark
+track in `benchmarks/tracks/<track>/`.
 
-Large official benchmark datasets, cloned repositories, Docker layers, raw model
-outputs, predictions, and patches belong under ignored benchmark workspaces or
-results directories.
+This directory is kept only as a compatibility reference while older commands
+and docs migrate. Large official benchmark datasets, cloned repositories,
+Docker layers, raw model outputs, predictions, and patches belong under ignored
+track-local workspaces or results directories.
 
-`adapter_fixtures/` contains tiny non-official rows used only to test adapter
-plumbing when official data is absent. Do not cite these fixtures as RepoBench
-or CrossCodeEval results.
+Current tiny non-official adapter fixtures:
+
+- `benchmarks/tracks/repobench/fixtures/`
+- `benchmarks/tracks/crosscodeeval/fixtures/`
+
+Do not cite these fixtures as RepoBench or CrossCodeEval results.

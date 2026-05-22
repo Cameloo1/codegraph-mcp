@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Iterable
 
+from benchmarks.harness.paths import resolve_benchmark_path
 from benchmarks.harness.schema import validate_task
 
 
@@ -12,7 +13,7 @@ class InternalGoldAdapter:
     dataset_version = "internal_gold_v1"
 
     def __init__(self, path: str | Path):
-        self.path = Path(path)
+        self.path = resolve_benchmark_path(path)
 
     def load_tasks(self, limit: int | None = None) -> list[dict]:
         if not self.path.exists():

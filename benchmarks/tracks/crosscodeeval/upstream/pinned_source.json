@@ -1,0 +1,17 @@
+{
+  "schema_version": "benchmark_track_pinned_source_v1",
+  "source_name": "CrossCodeEval",
+  "official_url": "https://github.com/amazon-science/cceval",
+  "local_path": "benchmarks/tracks/crosscodeeval/upstream/cceval",
+  "legacy_local_path": "benchmarks/upstream/cceval",
+  "pinned_commit_or_version": "40c68d2b7ca2a8eae95d901ac80e6a540a84a53d",
+  "dataset_version": "amazon-science/cceval extracted JSONL",
+  "setup_status": "ready_for_official_smoke",
+  "clone_command": "git clone https://github.com/amazon-science/cceval benchmarks/tracks/crosscodeeval/upstream/cceval && git -C benchmarks/tracks/crosscodeeval/upstream/cceval checkout 40c68d2b7ca2a8eae95d901ac80e6a540a84a53d",
+  "install_command": "benchmarks/tracks/crosscodeeval/scripts/setup_docker.ps1 or benchmarks/tracks/crosscodeeval/scripts/setup_windows_msvc.ps1",
+  "dataset_command": "tar -xJf benchmarks/tracks/crosscodeeval/upstream/cceval/data/crosscodeeval_data.tar.xz -C benchmarks/tracks/crosscodeeval/upstream/cceval/data",
+  "smoke_command": "python -m benchmarks.harness.runners.run_retrieval_eval --config benchmarks/tracks/crosscodeeval/configs/smoke.toml; parser-load smoke: benchmarks/tracks/crosscodeeval/scripts/setup_docker.ps1",
+  "scoring_command": "python -m benchmarks.harness.runners.run_retrieval_eval --config benchmarks/tracks/crosscodeeval/configs/small.toml",
+  "exact_remaining_action": "Retrieval-context runs and parser-load smoke are ready. Full generation quality still requires a configured model/inference path and upstream scoring run; no official score is claimed.",
+  "claim_boundary": "diagnostic retrieval setup unless official generation scoring is run exactly"
+}

@@ -1,0 +1,32 @@
+[run]
+name = "swebench-lite-10"
+run_id_prefix = "swebench_lite_10"
+dataset = "swe_bench_lite"
+dataset_name = "princeton-nlp/SWE-bench_Lite"
+dataset_version = "princeton-nlp/SWE-bench_Lite"
+modes = ["baseline", "rg_only", "codegraph_exact_text", "codegraph_full"]
+max_tasks = 10
+max_wall_time_s = 7200
+max_time_s = 7200
+max_tool_calls = 120
+max_context_bytes = 120000
+max_output_bytes = 120000
+claim_boundary = "official_compatible"
+
+[adapter]
+upstream_repo = "benchmarks/tracks/swebench_lite/upstream/SWE-bench"
+requires_docker = true
+quality_requires_external_agent = true
+official_scoring = true
+
+[codegraph]
+release_binary = "target/release/codegraph-mcp.exe"
+binary_path_policy = "release_binary_required"
+workspace_dir = "benchmarks/tracks/swebench_lite/workspaces/swebench-lite-10"
+db_path_policy = "ignored_benchmark_workspace"
+
+[agent]
+scaffold = "external_agent_command"
+model = "external"
+external_agent_required = true
+external_agent_command_env = "CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND"

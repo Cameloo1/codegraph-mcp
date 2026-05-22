@@ -1,0 +1,17 @@
+{
+  "schema_version": "benchmark_track_pinned_source_v1",
+  "source_name": "RepoBench",
+  "official_url": "https://github.com/Leolty/repobench",
+  "local_path": "benchmarks/tracks/repobench/upstream/repobench",
+  "legacy_local_path": "benchmarks/upstream/repobench",
+  "pinned_commit_or_version": "e0cfd34c9e7cd8f057efd32b9280b9719ae12a91",
+  "dataset_version": "tianyang/repobench_python_v1.1",
+  "setup_status": "ready_for_full_run",
+  "clone_command": "git clone https://github.com/Leolty/repobench benchmarks/tracks/repobench/upstream/repobench && git -C benchmarks/tracks/repobench/upstream/repobench checkout e0cfd34c9e7cd8f057efd32b9280b9719ae12a91",
+  "install_command": "benchmarks/tracks/repobench/scripts/setup_repobench.ps1",
+  "dataset_command": "benchmarks/tracks/repobench/scripts/setup_repobench.ps1 -Rows 20",
+  "smoke_command": "python -m benchmarks.harness.runners.run_retrieval_eval --config benchmarks/tracks/repobench/configs/smoke.toml",
+  "scoring_command": "python -m benchmarks.harness.runners.run_retrieval_eval --config benchmarks/tracks/repobench/configs/small.toml",
+  "exact_remaining_action": "None for the current Python v1.1 20-row diagnostic retrieval run; export Java v1.1 separately if a Java-balanced run is needed.",
+  "claim_boundary": "diagnostic retrieval setup only; no official benchmark score claimed"
+}

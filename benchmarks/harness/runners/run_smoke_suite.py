@@ -14,7 +14,7 @@ from benchmarks.harness.runners.run_retrieval_eval import run as run_retrieval
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="benchmarks/configs/internal_gold_smoke.toml")
+    parser.add_argument("--config", default="benchmarks/tracks/internal_gold/configs/smoke.toml")
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--output-dir", default=None)
     args = parser.parse_args(argv)
@@ -64,4 +64,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

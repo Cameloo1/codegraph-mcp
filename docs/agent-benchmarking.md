@@ -107,3 +107,15 @@ python -m benchmarks.harness.runners.verify_benchmark_setup --output-dir benchma
 Then run the configured retrieval suites from the benchmark configs. Generated
 results, DBs, logs, upstream checkouts, and raw payloads are local/ignored by
 default.
+
+Canonical benchmark definitions now live under `benchmarks/tracks/<track>/`.
+For example:
+
+```powershell
+python -m benchmarks.harness.runners.run_retrieval_eval --config benchmarks/tracks/internal_gold/configs/smoke.toml
+python -m benchmarks.harness.runners.run_retrieval_eval --config benchmarks/tracks/repobench/configs/small.toml
+python -m benchmarks.harness.runners.run_retrieval_eval --config benchmarks/tracks/crosscodeeval/configs/small.toml
+```
+
+Legacy configs under `benchmarks/configs/` remain compatibility aliases during
+the migration window.

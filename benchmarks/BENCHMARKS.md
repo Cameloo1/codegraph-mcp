@@ -74,6 +74,26 @@ The verifier checks:
 - pinned source metadata
 - tracked large-artifact leaks
 
+## Canonical Track Homes
+
+Each benchmark target owns its tracked config and local generated roots under
+`benchmarks/tracks/<track>/`:
+
+| Track | Canonical home | Primary configs |
+|---|---|---|
+| Internal gold | `benchmarks/tracks/internal_gold/` | `configs/smoke.toml`, `configs/full.toml` |
+| RepoBench | `benchmarks/tracks/repobench/` | `configs/smoke.toml`, `configs/small.toml` |
+| CrossCodeEval | `benchmarks/tracks/crosscodeeval/` | `configs/smoke.toml`, `configs/small.toml` |
+| SWE-bench Lite | `benchmarks/tracks/swebench_lite/` | `configs/smoke.toml`, `configs/lite_10.toml` |
+| Graph truth | `benchmarks/tracks/graph_truth/` | fixture-driven graph/proof cases |
+| OpenEvolve lab | `benchmarks/tracks/openevolve/` | experimental policy-lab configs |
+
+Legacy paths under `benchmarks/configs/` and `benchmarks/scripts/` are
+compatibility aliases/wrappers. New runs should prefer the track-local paths.
+Full multi-track reports may still aggregate under `benchmarks/results/`, but
+per-track generated workspaces, upstream checkouts, and results belong under
+the owning track and remain ignored/local.
+
 ## Current External Targets
 
 ### RepoBench
@@ -84,13 +104,12 @@ retrieval-context smoke and configured small retrieval runs.
 Required setup:
 
 ```powershell
-benchmarks/workspaces/benchmark-setup-venv/Scripts/python.exe -m pip install datasets
-benchmarks/workspaces/benchmark-setup-venv/Scripts/python.exe -c "from datasets import load_dataset; ds=load_dataset('tianyang/repobench_python_v1.1', split='cross_file_first', streaming=True); print(next(iter(ds)))"
+benchmarks/tracks/repobench/scripts/setup_repobench.ps1 -Rows 20
 ```
 
 Exported real rows live under ignored benchmark workspaces. The tiny tracked
-fixture under `benchmarks/datasets/adapter_fixtures/` remains adapter-test-only
-and is not official data.
+fixture under `benchmarks/tracks/repobench/fixtures/` remains
+adapter-test-only and is not official data.
 
 ### CrossCodeEval
 
@@ -101,7 +120,7 @@ created and parser-load smoked.
 Parser-library setup:
 
 ```powershell
-benchmarks/scripts/setup_crosscodeeval_docker.ps1
+benchmarks/tracks/crosscodeeval/scripts/setup_docker.ps1
 ```
 
 The Docker setup pins `tree-sitter-python` `v0.20.4`, `tree-sitter-java`
@@ -122,7 +141,7 @@ for `sympy__sympy-20590`.
 Gold validation command:
 
 ```powershell
-benchmarks/scripts/run_swebench_harness_linux_container.ps1
+benchmarks/tracks/swebench_lite/scripts/run_harness_linux_container.ps1
 ```
 
 Patch scoring still needs a real external agent command.
@@ -131,14 +150,14 @@ Configure a real patch-quality run with:
 
 ```powershell
 $env:CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND = "<your fixed agent command>"
-python -m benchmarks.harness.runners.run_patch_eval --config benchmarks/configs/patch_runner_external_agent.example.toml
+python -m benchmarks.harness.runners.run_patch_eval --config benchmarks/tracks/swebench_lite/configs/patch_runner_external_agent.example.toml
 ```
 
 Codex CLI can be used through the saved wrapper:
 
 ```powershell
-$env:CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND = "powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/scripts/run_codex_external_patch_agent.ps1"
-python -m benchmarks.harness.runners.run_patch_eval --config benchmarks/configs/codex_external_agent.example.toml
+$env:CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND = "powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/tracks/swebench_lite/scripts/run_codex_external_patch_agent.ps1"
+python -m benchmarks.harness.runners.run_patch_eval --config benchmarks/tracks/swebench_lite/configs/codex_external_agent.example.toml
 ```
 
 The wrapper contract is stable: stdin is benchmark task/context JSON, stdout is

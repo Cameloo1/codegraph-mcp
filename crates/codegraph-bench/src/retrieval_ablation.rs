@@ -41,6 +41,7 @@ pub struct RetrievalAblationOptions {
 pub fn default_retrieval_ablation_options() -> RetrievalAblationOptions {
     RetrievalAblationOptions {
         cases: PathBuf::from("benchmarks")
+            .join("tracks")
             .join("graph_truth")
             .join("fixtures"),
         fixture_root: PathBuf::from("."),
