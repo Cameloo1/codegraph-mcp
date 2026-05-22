@@ -1,7 +1,8 @@
 # OpenEvolve Lab Branch
 
-This branch is for experimental OpenEvolve policy work around CodeGraph retrieval,
-candidate spool packetization, ranking, and bounded context preparation.
+This branch is for experimental OpenEvolve policy work around CodeGraph
+retrieval, candidate query ranking, planned provider behavior, and bounded
+context preparation.
 
 The lab branch is intentionally separate from the release pipeline:
 
@@ -20,6 +21,9 @@ running the normal CodeGraph checks on `fix`.
 - Evaluator variants and synthetic fixtures.
 - Sanitized experiment summaries.
 - Replay scripts and notes that explain how to reproduce an experiment.
+- Larger fixed candidate inventories used to replay policy ideas.
+- Planned retrieval policy experiments for `codegraph_planned` and
+  `rg_planned`.
 
 ## Keep Local Or Ignored
 
@@ -41,3 +45,9 @@ running the normal CodeGraph checks on `fix`.
 
 OpenEvolve output is optimization evidence only. It is not a public benchmark
 claim and it is not product code until manually reviewed and promoted.
+
+The old candidate-spool firehose is no longer the primary lab target. CodeGraph
+now has bounded selection, packet aggregation, SQLite query indexing,
+budget-graceful optional spool behavior, and lifecycle/source-binding checks in
+the product baseline. OpenEvolve should now focus on improving how those
+surfaces are used, ranked, and compared under fixed evaluators.

@@ -1,8 +1,21 @@
 # OpenEvolve Policy Lab
 
-This directory contains small, isolated OpenEvolve experiments for CodeGraph policy tuning. These runs are experimental design inputs, not shipped product behavior and not public benchmark evidence.
+This directory contains small, isolated OpenEvolve experiments for CodeGraph
+policy tuning. These runs are experimental design inputs, not shipped product
+behavior and not public benchmark evidence.
 
-The first experiment tunes a standalone Python candidate-spool policy for packet grouping, ranking, and caps. OpenEvolve mutates only the policy file given to its CLI. It must not edit CodeGraph Rust crates, normal benchmark reports, README assets, MVP docs, or any normal `.codegraph` database.
+OpenEvolve is used here as a bounded policy-search engine. It proposes small
+retrieval and ranking policy variants, then fixed evaluators score them for
+recall, latency, packet size, diversity, and claim-boundary safety. It must not
+edit CodeGraph Rust crates, normal benchmark reports, README assets, MVP docs,
+or any normal `.codegraph` database.
+
+The first scaffold still uses a standalone Python candidate-spool policy target,
+but the objective has changed. Bounded candidate-spool size, packet aggregation,
+SQLite query indexing, budget-graceful optional spool behavior, and
+lifecycle/source-binding checks are now product baseline. The lab should use
+that baseline to tune ranking quality, planned retrieval policy, strong
+human-style `rg` comparison policy, and larger-corpus replay.
 
 Generated run outputs belong under:
 
@@ -49,3 +62,15 @@ python "$repo\benchmarks\workspaces\openevolve_research\openevolve-run.py" `
 ```
 
 The evaluator hard-fails policies that drop required gold hits, emit graph-proof claims from candidate evidence, exceed packet budgets, or behave nondeterministically.
+
+## Current Priorities
+
+See [CURRENT_PRIORITIES.md](CURRENT_PRIORITIES.md) for the current rebased
+objectives. In short:
+
+1. Replay candidate-spool policy ideas on a larger real corpus.
+2. Tune candidate query ranking over the current SQLite query index.
+3. Build/evaluate `codegraph_planned` provider policy.
+4. Build/evaluate `rg_planned` as the fair strong baseline.
+5. Tune runtime vector chunk-selection weights only after planned retrieval
+   exposes quality gaps.
