@@ -34693,6 +34693,19 @@ mod tests {
         )
         .expect("write no-extension script");
         fs::write(
+            repo.join("expected_text_evidence.json"),
+            [
+                "{",
+                "  \"fixture_name\": \"buildroot_text_evidence_mini\",",
+                "  \"purpose\": \"Expected text evidence manifest\",",
+                "  \"expected_surfaces\": [\"Makefile\", \"Config.in\", \"manual\", \"support script\"]",
+                "}",
+                "",
+            ]
+            .join("\n"),
+        )
+        .expect("write expected text evidence manifest");
+        fs::write(
             repo.join("src").join("download.c"),
             "int download_archive(void) {\n    return 0;\n}\n",
         )
@@ -34777,6 +34790,12 @@ mod tests {
 
         let script = file_query("pkg-stats", 5);
         assert_text_evidence(&find_file(&script, "support/scripts/pkg-stats"));
+
+        let manifest_by_path = file_query("expected_text_evidence", 5);
+        assert_text_evidence(&find_file(&manifest_by_path, "expected_text_evidence.json"));
+
+        let manifest_by_body = text_query("fixture_name", 5);
+        assert_text_evidence(&find_file(&manifest_by_body, "expected_text_evidence.json"));
 
         let parsed_source = file_query("download.c", 5);
         let parsed_source_result = find_file(&parsed_source, "src/download.c");

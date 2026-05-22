@@ -796,6 +796,7 @@ enum TextEvidenceFileKind {
     PythonSupportScript,
     TextLikeSupportScript,
     BuildrootPackageMetadata,
+    FixtureManifest,
 }
 
 impl TextEvidenceFileKind {
@@ -809,6 +810,7 @@ impl TextEvidenceFileKind {
             Self::PythonSupportScript => "python_support_script",
             Self::TextLikeSupportScript => "text_like_support_script",
             Self::BuildrootPackageMetadata => "buildroot_package_metadata",
+            Self::FixtureManifest => "fixture_manifest",
         }
     }
 
@@ -822,6 +824,7 @@ impl TextEvidenceFileKind {
             Self::PythonSupportScript => "Python support script",
             Self::TextLikeSupportScript => "text-like support script",
             Self::BuildrootPackageMetadata => "Buildroot package metadata",
+            Self::FixtureManifest => "fixture manifest",
         }
     }
 }
@@ -10671,6 +10674,9 @@ fn classify_scoped_text_evidence_path(repo_relative_path: &str) -> Option<TextEv
     }
 
     let file_name = lower.rsplit('/').next().unwrap_or(lower.as_str());
+    if file_name == "expected_text_evidence.json" {
+        return Some(TextEvidenceFileKind::FixtureManifest);
+    }
     if lower.ends_with(".mk") {
         return Some(TextEvidenceFileKind::MakefileFragment);
     }
