@@ -4,7 +4,7 @@ CodeGraph is being built toward SWE-bench-grade evaluation discipline. That
 does not mean CodeGraph has an official SWE-bench score.
 
 CodeGraph is a context/retrieval/trust layer. For SWE-bench-family evaluation,
-the right comparison is:
+the right product comparison is:
 
 ```text
 same task set
@@ -13,7 +13,8 @@ same agent scaffold
 same budget
 same evaluator
 same environment
-different context provider
+Mode A: same agent + normal rg/search/edit/test tools
+Mode B: same agent + normal rg/search/edit/test tools + CodeGraph
 ```
 
 ## Goal
@@ -23,7 +24,7 @@ The goal is to answer:
 ```text
 Does the same configured coding agent solve more tasks, make fewer wrong-file
 edits, reference fewer nonexistent symbols, and use context more efficiently
-when CodeGraph is enabled?
+when CodeGraph is added to normal rg use?
 ```
 
 The answer must come from real patch runs through an official-compatible
@@ -69,7 +70,7 @@ $env:CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND = "<fixed agent command>"
 For this repository's Codex CLI path, use the saved wrapper:
 
 ```powershell
-$env:CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND = "powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/tracks/swebench_lite/scripts/run_codex_external_patch_agent.ps1"
+$env:CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND = "powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/scripts/run_codex_external_patch_agent.ps1"
 ```
 
 The wrapper resolves `codex.cmd` before the PowerShell shim, reads benchmark
@@ -109,12 +110,12 @@ The intended path is deliberately incremental:
 6. SWE-bench Verified only after Lite runs are boring and reproducible.
 7. SWE-bench-Live later for contamination-resistant current tasks.
 
-At each step, CodeGraph should be compared as a context provider:
+At each step, CodeGraph should be compared as an added reliability layer:
 
-- no context;
-- strong `rg` workflow;
-- CodeGraph exact/text/routing;
-- CodeGraph full retrieval stack.
+- rg-only agent;
+- rg + CodeGraph exact/text/routing agent;
+- rg + CodeGraph full retrieval stack agent;
+- later, rg + CodeGraph MVP4 micro-flow proof packets.
 
 ## Claim Boundaries
 
@@ -127,6 +128,11 @@ The SWE-bench Lite harness path is ready for gold validation.
 ```text
 On this pinned local diagnostic subset, the same configured agent solved A
 tasks with one context provider and B tasks with another.
+```
+
+```text
+On this pinned diagnostic subset, the same rg-using agent made fewer wrong-file
+edits with CodeGraph enabled than without CodeGraph.
 ```
 
 Unsafe wording:

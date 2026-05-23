@@ -3,9 +3,10 @@
 This directory contains benchmark harness code for measuring CodeGraph as a
 context, retrieval, and trust layer for coding agents.
 
-CodeGraph is not benchmarked as the agent. Serious comparisons must keep the
-model, agent scaffold, task set, budget, evaluator, and environment fixed, then
-vary only the context provider:
+CodeGraph is not benchmarked as the agent and is not benchmarked as an `rg`
+replacement. Component diagnostics keep the model, agent scaffold, task set,
+budget, evaluator, and environment fixed, then vary the retrieval/context
+provider:
 
 - `baseline`
 - `rg_only`
@@ -13,6 +14,16 @@ vary only the context provider:
 - `codegraph_exact_text`
 - `codegraph_full`
 - `codegraph_planned` (v0.5 planned CodeGraph provider; local diagnostic comparison complete)
+
+The product benchmark is stricter:
+
+```text
+Mode A: same agent + normal rg/search/edit/test tools
+Mode B: same agent + normal rg/search/edit/test tools + CodeGraph
+```
+
+v0/v0.5 results are provider diagnostics. v1 is the first layer that can answer
+whether CodeGraph improves agent reliability on top of normal `rg` use.
 
 Provider input is sanitized before a provider runs. Providers may see task text,
 visible prompts, visible file/symbol/text hints, stack frames, error messages,
@@ -203,4 +214,5 @@ See:
 
 - `benchmarks/BENCHMARKS.md`
 - `benchmarks/BENCHMARK_CLAIMS.md`
+- `docs/agent-reliability-benchmark-lab.md`
 - `benchmarks/upstream/pinned_sources.json`

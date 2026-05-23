@@ -1,178 +1,138 @@
 # Current Benchmark Findings
 
-These findings summarize the latest local diagnostic scoring pass. They are not
-public benchmark results and not official leaderboard numbers.
+These findings summarize the latest local diagnostic benchmark sweep. They are
+not public benchmark results, not official leaderboard numbers, and not a
+CodeGraph-over-rg claim.
 
-CodeGraph was evaluated as a context/retrieval/trust layer. The benchmark held
-the task set, evaluator, scaffold, and budgets constant while varying the
-context provider:
+The important framing is:
 
-- `baseline`
-- `rg_only`
-- `codegraph_exact_text`
-- `codegraph_full`
+```text
+v0/v0.5 measure component behavior.
+v1 must measure rg-only agent vs rg + CodeGraph agent.
+```
 
-## Headline
+## Latest Clean Sweep
 
-Raw `rg` remains excellent for exact literal search. CodeGraph shows value when
-tasks need path-aware retrieval, structured packets, provenance labels, and
-claimability boundaries.
+Source report:
 
-The current `rg_only` provider is a bounded literal-content baseline. It does
-not yet represent an expert human workflow with `rg --files`, path search,
-`rg -l`, or manual query refinement.
+- `reports/final/full_benchmark_sweep_latest.md`
+- `reports/final/full_benchmark_sweep_latest.json`
 
-## Current CodeGraph Scores
+The latest clean sweep ran smoke, full v0, v0.5 internal, v0.5 external, and a
+SWE-bench-focused suite alias after fixing an `rg`/Python output-flood
+regression. It recorded:
 
-Latest local diagnostic scores from `full_run_20260521_141313`:
+- claimability violations: 0;
+- unsupported-claim violations: 0;
+- graph-proof overclaims: 0;
+- query-leakage violations: 0;
+- normal `.codegraph` mutation: false.
 
-| Track | Best CodeGraph result | Boundary |
-|---|---|---|
-| Internal 20-task retrieval | `codegraph_full`: **52.6% Recall@5**, **0.425 MRR** | local custom harness |
-| RepoBench configured subset | `codegraph_full`: **23.1% Recall@5**, **0.225 MRR** | diagnostic 20-row subset, not official RepoBench |
-| CrossCodeEval configured subset | `codegraph_full`: **61.1% Recall@5**; `codegraph_exact_text`: **0.652 MRR** | diagnostic retrieval subset, not official generation scoring |
-| SWE-bench Lite harness | **1/1 gold-validation smoke passed** for `sympy__sympy-20590` | harness readiness only, not agent/model quality |
+## Full v0 Aggregate
 
-These scores are worth showing because they are reproducible local
-product-ablation evidence. They are not public benchmark claims.
+Full v0 aggregates 60 local diagnostic retrieval tasks across internal gold,
+RepoBench-style, and CrossCodeEval-style tracks.
 
-## Internal Retrieval Ablation
-
-The internal 20-task set covers Buildroot-style text evidence and CodeGraph
-self-use tasks such as DB lifecycle, vector accounting, PathEvidence hydration,
-no-proof fallback, language coverage, bundle import safety, read-only sidecars,
-nuance rescue, bounded graph traversal, and agent JSON output.
-
-| Mode | Tasks | Recall@5 | MRR | Avg context bytes | Avg tool calls | Avg ms/task | Claim violations |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `baseline` | 20 | 0.000 | 0.000 | 0.0 | 0.00 | 0.0 | 0 |
-| `rg_only` | 20 | 🟢 **0.575** | 🔴 **0.334** | 32714.2 | 3.00 | 61.6 | 0 |
-| `codegraph_exact_text` | 20 | 0.456 | 🟢 **0.373** | 48842.8 | 3.45 | 3208.8 | 0 |
-| `codegraph_full` | 20 | 🟡 **0.526** | 🟢 **0.425** | 53719.6 | 3.45 | 4017.2 | 0 |
+| Provider | Recall@5 | MRR | Precision@5 | Context bytes | Warm ms/task |
+|---|---:|---:|---:|---:|---:|
+| `rg_only` | 0.531 | 0.490 | 0.261 | 132,259 | 195 |
+| `codegraph_full` | 0.460 | 0.356 | 0.217 | 52,496 | 1,418 |
+| `codegraph_exact_text` | 0.138 | 0.127 | 0.044 | 43,038 | 1,305 |
+| `baseline` | 0.000 | 0.000 | 0.000 | 0 | 0 |
 
 Interpretation:
 
-- `rg_only` had the best Recall@5 on this internal set because many tasks
-  include exact literal hooks such as `FOO_SITE`, `generic-package`,
-  `Config.in`, `PathEvidence`, and `no_proof_path_found`.
-- `codegraph_full` ranked the first useful hit better than `rg_only` by MRR.
-- CodeGraph packets cost more time and bytes in this run, but preserve
-  structured context and evidence boundaries.
+- `rg_only` is strong even as a bounded provider after the output/scope fixes.
+- `codegraph_full` is the best current CodeGraph v0 aggregate provider.
+- CodeGraph is slower than `rg` in this diagnostic and should not be framed as
+  an `rg` replacement.
 
-## RepoBench-Style Retrieval
+## v0.5 Internal Diagnostic
 
-The configured RepoBench subset uses 20 materialized Python v1.1 rows. This is a
-local product-ablation diagnostic, not an official full RepoBench score.
+The v0.5 internal suite covers 10 task families, including Buildroot gold,
+implementation trace, routing packet, no-proof fallback, DB lifecycle/debug,
+same-name ambiguity, mock leakage, dataflow distractors, dynamic dispatch, and
+large-codebase planning.
 
-RepoBench configured subset note: `rg_only` is 0 because this bounded provider
-does literal content search only; it does not use path search, `rg -l`, or
-expert follow-up for repository-context rows.
-
-| Mode | Tasks | Recall@5 | MRR | Avg context bytes | Avg tool calls | Avg ms/task | Claim violations |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `baseline` | 20 | 0.000 | 0.000 | 0.0 | 0.00 | 0.0 | 0 |
-| `rg_only` | 20 | 0.000 | 0.000 | 0.0 | 4.35 | 65.0 | 0 |
-| `codegraph_exact_text` | 20 | 0.214 | 0.175 | 25528.5 | 4.00 | 1760.7 | 0 |
-| `codegraph_full` | 20 | 0.231 | 0.225 | 27779.5 | 4.00 | 1758.9 | 0 |
+| Provider | Recall@5 | MRR | Precision@5 | Context bytes | Warm ms/task |
+|---|---:|---:|---:|---:|---:|
+| `rg_planned` | 0.758 | 0.925 | 0.400 | 43,903 | 433 |
+| `codegraph_current` | 0.483 | 0.588 | 0.200 | 62,877 | 2,521 |
+| `codegraph_planned` | 0.492 | 0.517 | 0.200 | 87,897 | 7,391 |
+| `rg_only` | 0.475 | 0.553 | 0.200 | 395,999 | 327 |
 
 Interpretation:
 
-- The current literal `rg_only` provider returned no gold files on this subset.
-- CodeGraph recovered some gold files through indexed file/path/text surfaces.
-- This does not prove CodeGraph beats expert `rg`; it proves CodeGraph beats the
-  bounded literal-content baseline on this diagnostic subset.
+- `rg_planned` is currently the strongest local v0.5 retriever by Recall@5,
+  MRR, and speed.
+- `codegraph_planned` improves routing structure and role coverage over current
+  CodeGraph behavior, but it is much slower due repeated CodeGraph subprocesses.
+- This is a useful component diagnostic, not the product verdict.
 
-## CrossCodeEval-Style Retrieval
+## v0.5 External Diagnostic
 
-The configured CrossCodeEval subset uses 20 tasks from the extracted
-CrossCodeEval data. Python, Java, TypeScript, and C# data are available in the
-local setup, but this configured 20-task run is a retrieval-context diagnostic
-slice, not a language-balanced run and not full official generation scoring.
+The v0.5 external suite covers the configured RepoBench-style and
+CrossCodeEval-style local diagnostic subsets after query-leakage hardening.
 
-CrossCodeEval configured subset note: `rg_only` is 0 because these tasks need
-cross-file dependency/context recovery, while the current provider only tries
-bounded literal content probes.
-
-| Mode | Tasks | Recall@5 | MRR | Avg context bytes | Avg tool calls | Avg ms/task | Claim violations |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `baseline` | 20 | 0.000 | 0.000 | 0.0 | 0.00 | 0.0 | 0 |
-| `rg_only` | 20 | 0.000 | 0.000 | 0.0 | 5.95 | 83.8 | 0 |
-| `codegraph_exact_text` | 20 | 0.586 | 0.652 | 45157.2 | 4.00 | 1774.0 | 0 |
-| `codegraph_full` | 20 | 0.611 | 0.454 | 47816.1 | 4.00 | 1796.2 | 0 |
+| Provider | Recall@5 | MRR | Precision@5 | Context bytes | Warm ms/task |
+|---|---:|---:|---:|---:|---:|
+| `rg_planned` | 0.973 | 0.500 | 0.560 | 288 | 145 |
+| `codegraph_planned` | 0.573 | 0.611 | 0.310 | 59,078 | 3,684 |
+| `rg_only` | 0.539 | 0.571 | 0.310 | 2,956 | 125 |
+| `codegraph_current` | 0.466 | 0.362 | 0.250 | 47,489 | 986 |
 
 Interpretation:
 
-- Cross-file retrieval often depends on related module/file identity, not a
-  literal term in file contents.
-- CodeGraph's file/path/text index performed better than literal-content
-  search here.
-- `codegraph_exact_text` had higher MRR than `codegraph_full`, which means
-  candidate lanes can improve recall while still needing better ranking.
+- `rg_planned` recovers many gold files with very low context volume on these
+  local diagnostic tasks.
+- `codegraph_planned` improves over `codegraph_current` on external local
+  Recall@5/MRR, but at much higher warm cost.
+- The next CodeGraph performance target is batching `query`/`context-pack` or
+  using a warm server/MCP path.
 
-## Trust Metrics
+## SWE-bench Status
 
-Across the scored retrieval tracks:
+SWE-bench Lite gold validation has completed for `sympy__sympy-20590` through
+the local Linux-container route in a normal user/approved unsandboxed process.
+That is harness readiness evidence only.
 
-| Metric | Result |
-|---|---:|
-| Claimability violations | 0 |
-| Unsupported-claim violations | 0 |
-
-This matters because CodeGraph's benchmark target is not only recall. The
-system must also avoid promoting text evidence, vector candidates, binary
-candidates, or nuance candidates into graph proof.
-
-## SWE-bench Lite Harness Status
-
-SWE-bench Lite gold validation ran through the Linux-container harness route for
-`sympy__sympy-20590`.
-
-| Item | Result |
-|---|---:|
-| Total instances | 1 |
-| Completed instances | 1 |
-| Resolved instances | 1 |
-| Error instances | 0 |
-
-This is harness readiness evidence. It is not an agent/model quality result.
-Patch-quality ablations still require a configured real external agent command.
+Patch-quality scoring still requires actual external-agent predictions
+evaluated through the SWE-bench harness. Setup readiness, mock-agent runs, and
+gold-validation runs are not patch-quality scores.
 
 ## What The Results Actually Say
 
-The current evidence supports these statements:
+Supported:
 
-- CodeGraph can run local retrieval ablations against internal, RepoBench-style,
-  and CrossCodeEval-style tasks.
-- CodeGraph preserves claimability and unsupported-claim boundaries in these
-  runs.
-- CodeGraph provides value beyond literal grep when tasks depend on path-aware
-  or cross-file retrieval.
-- `rg` remains a strong exact-search baseline and should be tested again with a
-  stronger human-style workflow.
+- The benchmark harness can run local v0/v0.5 diagnostic suites.
+- Query-leakage, proof-label, and claimability boundaries are now first-class
+  checks.
+- `rg_planned` is a hard, realistic component baseline.
+- CodeGraph planned packets add routing/proof/implementation structure, but
+  current top-file quality and speed are not enough to claim product success.
 
-The current evidence does not support these statements:
+Not supported:
 
-- CodeGraph has an official SWE-bench score.
-- CodeGraph improves patch success rate.
 - CodeGraph beats `rg`.
-- CodeGraph beats CodeGraphContext.
-- CodeGraph has real-world recall.
+- CodeGraph has an official SWE-bench score.
+- CodeGraph improves real-agent patch success.
+- CodeGraph improves real-world recall.
+- Candidate/text/vector/source-navigation evidence is graph proof.
 
-## Planned Benchmark Improvements
+## Correct Next Benchmark
 
-The next retrieval benchmark should compare CodeGraph against a stronger
-`rg` workflow:
+The next product benchmark is not `rg vs CodeGraph`.
 
-- `rg --files` for path/name search;
-- `rg -l` for file-level content hits;
-- `rg -n` for line evidence;
-- path-normalized and case-insensitive variants where appropriate;
-- deterministic query expansion from task terms.
+It is:
 
-CodeGraph should also use its own primitives more intelligently:
+```text
+same agent + normal rg
+vs
+same agent + normal rg + CodeGraph
+```
 
-- route path-looking terms to file/path search;
-- route identifier-looking terms to symbol search;
-- route prose/docs/config tasks to text evidence;
-- use implementation-trace packets for accounting and source-navigation tasks;
-- rank exact path/symbol/text hits before candidate-only vector or nuance lanes.
+That v1 benchmark must measure wrong-file edits, nonexistent-symbol references,
+unsupported claims, evidence alignment, plan accuracy, patch success, time,
+tokens, tool calls, and cost under the same task/model/scaffold/budget.
+
+See [Agent Reliability Benchmark Lab](agent-reliability-benchmark-lab.md).

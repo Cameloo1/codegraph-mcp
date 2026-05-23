@@ -14,7 +14,7 @@ Every serious comparison must hold constant:
 - same environment
 - same scoring code
 
-Only the context layer may vary:
+Component diagnostics may vary the retrieval/context provider:
 
 - `baseline`
 - `none`
@@ -29,12 +29,24 @@ Their implementation reports and v0.5 comparison reports are local diagnostic
 evidence only; no CodeGraph-over-rg or public benchmark claim is made from
 them.
 
+For product claims, `rg` must remain available in both arms:
+
+```text
+Mode A: same agent + normal rg/search/edit/test tools
+Mode B: same agent + normal rg/search/edit/test tools + CodeGraph
+```
+
+CodeGraph is not evaluated as an `rg` replacement. It is evaluated by the
+additional reliability it provides on top of normal `rg` use.
+
 ## Safe Wording
 
-- "On a pinned internal 20-task retrieval set, CodeGraph full improved
-  gold-file recall@5 from A to B over rg-only."
+- "On a pinned local diagnostic retrieval set, provider X returned these gold
+  files with this recall, ranking, cost, and proof-label behavior."
 - "On a pinned SWE-bench Lite 10-task diagnostic subset, the same configured
-  agent solved A tasks without CodeGraph and B tasks with CodeGraph."
+  rg-using agent solved A tasks without CodeGraph and B tasks with CodeGraph."
+- "On a pinned diagnostic patch subset, the same agent using rg + CodeGraph had
+  fewer wrong-file edits than the same agent using rg alone."
 - "This is a local diagnostic ablation, not an official leaderboard result."
 - "CodeGraph reduced claimability violations from A to B on this pinned task
   set."
@@ -44,6 +56,7 @@ them.
 Do not say:
 
 - "CodeGraph gets X% on SWE-bench."
+- "CodeGraph beats rg."
 - "CodeGraph beats CGC."
 - "CodeGraph improves real-world recall."
 - "CodeGraph solves SWE-bench."

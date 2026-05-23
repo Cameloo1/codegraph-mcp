@@ -15,7 +15,20 @@ Rules:
 
 ## Track 2: CodeGraph Product/Ablation Track
 
-Purpose: measure CodeGraph's contribution as a context layer.
+Purpose: measure CodeGraph's contribution as a context, routing, and proof
+layer for an agent that can still use normal `rg`.
+
+The product comparison is not `rg` versus CodeGraph as competing search tools.
+The product comparison is:
+
+```text
+same agent + normal rg/search/edit/test tools
+same agent + normal rg/search/edit/test tools + CodeGraph
+```
+
+Benchmark Layer v0 and v0.5 are component diagnostics. Benchmark Layer v1 is
+the first product-decision layer because it measures whether adding CodeGraph to
+normal `rg` use improves real agent behavior.
 
 Metrics:
 
@@ -53,6 +66,51 @@ Benchmark Layer v0.5 adds `rg_planned` and `codegraph_planned` provider modes.
 They are implemented and have been run in local v0.5 internal/external
 diagnostic comparisons. Those runs remain local diagnostics only and do not
 support a CodeGraph-over-rg or public benchmark claim.
+
+## Benchmark Layer v1: Agent Reliability Lab
+
+Layer v1 should answer:
+
+```text
+Does rg + CodeGraph make the same agent better than rg alone?
+```
+
+Required v1 test families:
+
+- routing-packet quality tests;
+- pre-edit plan-accuracy tests;
+- proof-discipline scoring;
+- hallucination-trap fixtures;
+- full-codebase complexity tasks;
+- real patch-outcome runs.
+
+Required v1 metrics:
+
+- resolved percentage and test pass rate;
+- wrong-file edit rate;
+- nonexistent-symbol reference rate;
+- unsupported claim rate;
+- evidence alignment;
+- plan accuracy and affected-test coverage;
+- time, tokens, tool calls, context bytes, and cost;
+- patch size and retry count.
+
+The safe v1 claim shape is:
+
+```text
+On this pinned diagnostic patch subset, the same agent using rg + CodeGraph had
+fewer wrong-file edits and better evidence alignment than the same agent using
+rg alone.
+```
+
+The unsafe claim shape is:
+
+```text
+CodeGraph beats rg.
+```
+
+The full benchmark-lab contract is documented in
+`docs/agent-reliability-benchmark-lab.md`.
 
 ## Upstream Notes
 

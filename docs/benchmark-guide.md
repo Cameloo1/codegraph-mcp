@@ -1,12 +1,20 @@
 # Benchmark Guide
 
 The root `README.md` is the public setup contract. Benchmarks are local,
-reproducible, single-agent, and evidence-labeled. They measure CodeGraph against
-internal baselines and optional black-box CGC runs without changing retrieval
-logic.
+reproducible, single-agent, and evidence-labeled.
+
+The current benchmark framing is agent reliability, not `CodeGraph vs rg`.
+Component diagnostics may compare retrieval providers, but the product
+benchmark is:
+
+```text
+same agent + normal rg/search/edit/test tools
+same agent + normal rg/search/edit/test tools + CodeGraph
+```
 
 For the newer agent-infrastructure benchmark layer, current diagnostic findings,
-and SWE-bench readiness plan, see `docs/agent-benchmarking.md`,
+agent-reliability lab plan, and SWE-bench readiness plan, see
+`docs/agent-benchmarking.md`, `docs/agent-reliability-benchmark-lab.md`,
 `docs/benchmark-findings.md`, and `docs/swe-bench-readiness.md`.
 
 There are two report classes:
