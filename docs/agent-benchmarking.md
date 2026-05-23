@@ -1,109 +1,162 @@
 # Agent Benchmarking
 
-CodeGraph is benchmarked as agent infrastructure, not as the coding agent or
-the model. The question is:
+CodeGraph is benchmarked as agent infrastructure, not as the coding agent, the
+model, or an `rg` replacement.
+
+The product question is:
 
 ```text
-Does the same agent, on the same task set and budget, produce better grounded
-work when CodeGraph supplies the context layer?
+Does the same rg-using coding agent produce better grounded work when
+CodeGraph is added as the context, routing, and proof layer?
 ```
 
-That means serious comparisons must keep the task set, model, agent scaffold,
-time budget, token/tool budget, evaluator, and environment constant. The only
-thing that changes is the context provider.
+The serious comparison is therefore:
+
+```text
+Mode A: same agent + normal rg/search/edit/test tools
+Mode B: same agent + normal rg/search/edit/test tools + CodeGraph
+```
+
+The task set, model, scaffold, time budget, token/tool budget, evaluator,
+repository commit, environment, and scoring code must stay fixed.
+
+See the full benchmark-lab contract in
+[Agent Reliability Benchmark Lab](agent-reliability-benchmark-lab.md).
+
+## Benchmark Layers
+
+| Layer | Purpose | Product Verdict? |
+|---|---|---|
+| v0 | Internal/external retrieval diagnostics, claimability scoring, setup readiness, timing accounting. | No. Component health only. |
+| v0.5 | Stronger provider diagnostics: `rg_planned` and `codegraph_planned`. | No. Provider comparison only. |
+| v1 | Real agent A/B runs: rg-only agent vs rg + CodeGraph agent. | Yes, if the harness is official-compatible or explicitly diagnostic. |
+
+v0/v0.5 are still valuable. They find retrieval regressions, query leakage,
+proof-label bugs, context poison, and timing problems. They do not decide
+whether CodeGraph is a useful product.
 
 ## Context Provider Modes
 
-The benchmark harness currently uses these retrieval modes:
+The current harness includes these retrieval/provider modes:
 
 | Mode | Meaning |
 |---|---|
-| `baseline` | No retrieval context. |
+| `baseline` / `none` | No retrieval context. |
 | `rg_only` | Bounded literal ripgrep search. Text matches are not graph proof. |
+| `rg_planned` | Stronger human-style rg workflow with file/path discovery, file shortlisting, line evidence, dedupe, and flood control. |
 | `codegraph_exact_text` | CodeGraph exact symbols, file/text queries, Stage 0 text evidence, and routing packet behavior with vector and nuance lanes disabled. |
-| `codegraph_full` | CodeGraph exact/text/routing plus enabled vector and nuance candidate lanes where configured. |
+| `codegraph_full` / `codegraph_current` | Current CodeGraph exact/text/routing plus vector and nuance candidate lanes where configured. |
+| `codegraph_planned` | TaskIntent/RetrievalPlan-driven CodeGraph provider with role-diverse routing, implementation-trace structure, and follow-up probes. |
 
-The current `rg_only` mode is intentionally simple. It uses bounded literal
-content search and does not yet model a strong human `rg` workflow with
-`rg --files`, path search, `rg -l`, query expansion, or manual follow-up. That
-stronger baseline is planned because raw `rg` is the right bar for fast exact
-developer search.
+These modes are component diagnostics. A low-level provider win is not the same
+as a product win. A product win requires the agent using normal `rg` plus
+CodeGraph to outperform the same agent using normal `rg` alone.
 
-## What The Harness Measures
+## What The Harness Measures Today
 
-The retrieval track measures whether a context provider returns known useful
-files near the top of the packet.
+Retrieval diagnostics measure whether a provider returns known useful files and
+context near the top of the packet.
 
 | Metric | Meaning |
 |---|---|
 | Recall@k | Share of known gold files returned in the first `k` files. |
 | MRR | How early the first correct file appears. |
-| Context bytes | Approximate amount of context emitted by the provider. |
+| Precision@k | Share of top `k` returned items that are gold or allowed. |
+| Wrong-context rate | Share of top results that are irrelevant or distracting. |
+| Context bytes / tokens | Approximate amount of context emitted. |
 | Tool calls | Retrieval calls needed for the task. |
-| Claimability violations | Cases where candidate/text evidence is incorrectly treated as proof. |
-| Unsupported-claim violations | Cases where a result claims unsupported proof strength. |
+| Claimability violations | Candidate/text evidence incorrectly treated as proof. |
+| Unsupported-claim violations | Output claims unsupported proof strength. |
 
-Patch-outcome evaluation is separate. It requires a real external agent command
-and, for SWE-bench-family results, official-compatible harness evaluation.
-Mock-agent runs are scaffold checks only.
+Recall@5 and MRR are not enough for CodeGraph's mission. The benchmark must
+also measure whether CodeGraph reduces hallucinated plans and edits.
+
+## What v1 Must Measure
+
+Benchmark Layer v1 should compare:
+
+```text
+rg-only agent
+rg + CodeGraph agent
+```
+
+Required metrics:
+
+- resolved percentage;
+- test pass rate;
+- wrong-file edit rate;
+- nonexistent-symbol reference rate;
+- unsupported claim rate;
+- evidence alignment;
+- plan accuracy;
+- affected-test coverage;
+- time, tokens, tool calls, and context bytes;
+- patch size;
+- retry count;
+- cost per solved task.
+
+Routing-packet quality, plan-accuracy, proof-discipline, hallucination-trap,
+and full-codebase complexity tests should be first-class parts of this lab.
 
 ## Why SWE-bench Matters
 
 SWE-bench-style evaluation is valuable because it tests complete issue
-resolution through real repositories and test harnesses. CodeGraph's goal is
-not to become a SWE-bench agent. The goal is to become a context layer that can
-be compared under SWE-bench-grade discipline:
+resolution through real repositories and test harnesses. CodeGraph's goal is not
+to become a SWE-bench agent. The goal is to become a context/retrieval/trust
+layer that can be compared under SWE-bench-grade discipline.
 
-- same model
-- same agent scaffold
-- same tasks
-- same budgets
-- same evaluator
-- same environment
-- only the context provider changes
-
-An official SWE-bench score requires real model/agent predictions evaluated by
-the official-compatible harness. CodeGraph does not claim such a score.
+An official SWE-bench-family score requires real model/agent predictions
+evaluated by an official-compatible harness, pinned datasets, recorded Docker
+dependencies, retained logs/predictions, and reported skipped/failed tasks.
+CodeGraph does not currently claim such a score.
 
 ## What CodeGraph Should Prove
 
-The benchmark layer should show whether CodeGraph helps an agent:
+CodeGraph should prove that it helps an rg-using agent:
 
-- retrieve the right files and symbols;
+- understand task intent and implementation surface;
+- find critical files, symbols, tests, and risks;
+- preserve `unknown` when evidence is missing;
 - avoid wrong-file edits;
 - avoid nonexistent-symbol references;
-- respect proof and claimability boundaries;
-- use fewer blind follow-up calls;
-- keep context bounded enough for agent loops;
-- preserve `unknown` when evidence is missing.
+- avoid unsupported source or relation claims;
+- use proof/candidate/text labels correctly;
+- produce better patches or safer plans under the same budget.
 
 ## What CodeGraph Must Not Claim
 
-The following are not valid claims from the current diagnostic runs:
+The following are not valid claims from current diagnostic runs:
 
 - CodeGraph gets a SWE-bench score.
 - CodeGraph beats `rg`.
 - CodeGraph beats CodeGraphContext.
 - CodeGraph improves real-world recall.
 - Text evidence proves graph behavior.
-- Vector, binary, or nuance candidates are graph proof.
+- Vector, binary, nuance, routing-packet, or candidate-spool evidence is graph proof.
 
-Valid wording is narrower:
+Valid component wording is narrower:
 
 ```text
-On this pinned local diagnostic retrieval subset, this context provider returned
-these gold files with this recall and ranking.
+On this pinned local diagnostic retrieval subset, this provider returned these
+gold files with this recall, ranking, cost, and proof-label behavior.
+```
+
+Valid product wording requires v1-style agent A/B evidence:
+
+```text
+On this pinned diagnostic patch subset, the same agent using rg + CodeGraph had
+fewer wrong-file edits and better evidence alignment than the same agent using
+rg alone.
 ```
 
 ## Running Local Diagnostics
 
-The benchmark setup and scoring commands live under `benchmarks/`. Use setup
-verification before scoring:
+The benchmark setup and scoring commands live under `benchmarks/`. Use the
+operator-grade suite when available:
 
 ```powershell
-python -m benchmarks.harness.runners.verify_benchmark_setup --output-dir benchmarks/results/summaries/setup_verification_local
+python -m benchmarks.harness.runners.run_benchmark_suite --suite full --output-dir benchmarks/results/summaries/<run_id>
 ```
 
-Then run the configured retrieval suites from the benchmark configs. Generated
-results, DBs, logs, upstream checkouts, and raw payloads are local/ignored by
-default.
+Generated results, DBs, logs, upstream checkouts, patches, predictions, and raw
+payloads are local/ignored by default.

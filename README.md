@@ -43,23 +43,29 @@ Internal readiness score, local diagnostic retrieval scores, and SWE-bench
 harness readiness only. These charts are not official SWE-bench, RepoBench,
 CrossCodeEval, CGC, or `rg` comparison results.
 
-Status: semantic-proof and context-packet gates are green; compact-proof storage
-is under 250 MiB; DB passport preflight blocks stale or mismatched reuse. The
-published Intended Tool Quality Gate is not a final green release verdict, and
-the CGC comparison remains diagnostic/incomplete with no superiority claim.
-Local 1-bit Nuance-Rescue gating passes 8 adversarial cases covering rare
-identifiers, short functions, near-duplicate names, Buildroot config tokens,
-auth/negation, route literals, test names, and no-extension support scripts.
+Status: semantic-proof and context-packet gates are green; DB passport
+preflight blocks stale or mismatched reuse; candidate, vector, text, and
+source-navigation evidence remain non-proof unless graph/source verification
+proves the relation. The published Intended Tool Quality Gate is not a final
+green release verdict, and the CGC comparison remains diagnostic/incomplete
+with no superiority claim.
 
-CodeGraph is also being moved toward SWE-bench-grade evaluation discipline: the
-benchmark layer holds the task set, model/scaffold, budget, evaluator, and
-environment constant, then varies only the context provider. Current diagnostic
-tracks cover no-context, rg-only, CodeGraph exact/text, and CodeGraph full
-retrieval. RepoBench-style and CrossCodeEval-style retrieval subsets run as
-local diagnostics, and the SWE-bench Lite harness has completed a
-gold-validation smoke for `sympy__sympy-20590`. Patch-quality scoring still
-requires a configured real external agent command; no official SWE-bench score
-or public benchmark result is claimed.
+The benchmark framing is now deliberately **agent reliability**, not
+`CodeGraph vs rg`. `rg` remains the fast literal/path-search baseline and should
+stay available to the agent. The product benchmark is:
+
+```text
+same agent + normal rg
+vs
+same agent + normal rg + CodeGraph
+```
+
+Current v0/v0.5 diagnostics are component checks: retrieval quality,
+claimability, query-leakage, context poison, timing, and provider cost. They do
+not prove product success by themselves. The real v1 product question is whether
+adding CodeGraph to a normal `rg`-using agent reduces wrong-file edits,
+nonexistent-symbol references, unsupported claims, and patch failures under the
+same task/model/scaffold/budget.
 
 CodeGraph also has an experimental OpenEvolve lab on the `openevolve-lab`
 branch. OpenEvolve is used there as a bounded policy-search engine: it proposes
@@ -69,19 +75,20 @@ the shipped runtime, not a proof source, and not an automatic merge path. Useful
 ideas must be replayed, reviewed, manually ported, and passed through normal
 CodeGraph gates before they can move into `fix`.
 
-Latest local diagnostic scores from `full_run_20260521_141313`:
+Latest clean local diagnostic pattern:
 
 | Benchmark surface | Current evidence | Claim boundary |
 |---|---|---|
-| Internal retrieval ablations | CodeGraph full: **52.6% Recall@5**, **0.425 MRR** on 20 internal tasks | local custom harness |
-| RepoBench-style retrieval | CodeGraph full: **23.1% Recall@5**, **0.225 MRR** on 20 materialized Python v1.1 rows | diagnostic subset, not official RepoBench |
-| CrossCodeEval-style retrieval | CodeGraph full: **61.1% Recall@5**, **0.454 MRR** on 20 extracted tasks | diagnostic retrieval, not official generation scoring |
-| SWE-bench Lite harness | **1/1 gold-validation smoke passed** for `sympy__sympy-20590` | harness readiness, not agent quality |
-| SWE-bench patch quality | external agent command still required | no patch-quality score claimed |
+| v0 retrieval diagnostics | `rg_only` and `codegraph_full` both run cleanly; CodeGraph is not faster than `rg` | component diagnostic only |
+| v0.5 provider diagnostics | `rg_planned` is the strongest local retriever; `codegraph_planned` adds routing/proof structure but is slower | not a CodeGraph-over-rg claim |
+| Claim/proof discipline | claimability, unsupported-claim, graph-proof-overclaim, and query-leakage violations are 0 in the latest clean sweep | local diagnostic only |
+| SWE-bench Lite harness | gold-validation path has passed for `sympy__sympy-20590` | harness readiness, not agent quality |
+| SWE-bench patch quality | requires real external-agent predictions evaluated through the SWE-bench harness | no patch-quality score claimed |
 
 See: [Intended Tool Quality Gate](reports/final/intended_tool_quality_gate.md)
 and [Manual Relation Precision](reports/final/manual_relation_precision.md).
 Benchmark details: [Agent Benchmarking](docs/agent-benchmarking.md),
+[Agent Reliability Benchmark Lab](docs/agent-reliability-benchmark-lab.md),
 [Current Benchmark Findings](docs/benchmark-findings.md), and
 [SWE-bench Readiness](docs/swe-bench-readiness.md).
 
