@@ -2,7 +2,8 @@ param(
     [string]$Image = "node:20-bookworm",
     [string]$InstanceId = "sympy__sympy-20590",
     [string]$RunId = "codegraph-setup-gold",
-    [int]$TimeoutSeconds = 120
+    [int]$TimeoutSeconds = 120,
+    [string]$DockerCommand = "docker"
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,9 +34,15 @@ python3 -m swebench.harness.run_evaluation \
   --timeout $TimeoutSeconds \
   --report_dir /work/benchmarks/tracks/swebench_lite/workspaces/gold_validation/report
 "@
+$script = $script -replace "`r`n", "`n"
+$script = $script -replace "`r", "`n"
 
-docker run --rm `
+& $DockerCommand run --rm `
   -v /var/run/docker.sock:/var/run/docker.sock `
   -v "${repoRoot}:/work" `
   -w /work `
   $Image bash -lc $script
+
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}

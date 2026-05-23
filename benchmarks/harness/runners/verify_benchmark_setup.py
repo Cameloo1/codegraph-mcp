@@ -16,8 +16,10 @@ from benchmarks.harness.adapters.swebench_adapter import SWEBenchAdapter
 from benchmarks.harness.config import load_config, validate_config
 from benchmarks.harness.context_providers.codegraph_exact_text import CodeGraphExactTextProvider
 from benchmarks.harness.context_providers.codegraph_full import CodeGraphFullProvider
+from benchmarks.harness.context_providers.codegraph_planned import CodeGraphPlannedProvider
 from benchmarks.harness.context_providers.none import NoneProvider
 from benchmarks.harness.context_providers.rg_only import RgOnlyProvider
+from benchmarks.harness.context_providers.rg_planned import RgPlannedProvider
 from benchmarks.harness.paths import dataset_path, upstream_path, workspace_path
 from benchmarks.harness.runners.run_patch_eval import patch_setup_summary
 
@@ -34,8 +36,14 @@ CONFIGS = [
     "benchmarks/tracks/swebench_lite/configs/patch_runner_external_agent.example.toml",
     "benchmarks/tracks/swebench_lite/configs/codex_external_agent.example.toml",
     "benchmarks/configs/internal_gold_smoke.toml",
+    "benchmarks/configs/internal_gold_full.toml",
+    "benchmarks/configs/internal_gold_v05.toml",
     "benchmarks/configs/repobench_smoke.toml",
+    "benchmarks/configs/repobench_small.toml",
+    "benchmarks/configs/repobench_v05_external.toml",
     "benchmarks/configs/crosscodeeval_smoke.toml",
+    "benchmarks/configs/crosscodeeval_small.toml",
+    "benchmarks/configs/crosscodeeval_v05_external.toml",
     "benchmarks/configs/swebench_lite_smoke.toml",
 ]
 
@@ -167,19 +175,29 @@ def _provider_isolation() -> dict[str, Any]:
     providers = [
         NoneProvider(repo, workspace, release),
         RgOnlyProvider(repo, workspace, release),
+        RgPlannedProvider(repo, workspace, release),
         CodeGraphExactTextProvider(repo, workspace, release),
         CodeGraphFullProvider(repo, workspace, release),
+        CodeGraphPlannedProvider(repo, workspace, release),
     ]
     metadata = {provider.mode: provider.metadata() for provider in providers}
     errors = []
     if metadata["rg_only"]["uses_codegraph"]:
         errors.append("rg_only reports CodeGraph usage")
-    if metadata["codegraph_exact_text"]["uses_rg"] or metadata["codegraph_full"]["uses_rg"]:
+    if metadata["rg_planned"]["uses_codegraph"]:
+        errors.append("rg_planned reports CodeGraph usage")
+    if (
+        metadata["codegraph_exact_text"]["uses_rg"]
+        or metadata["codegraph_full"]["uses_rg"]
+        or metadata["codegraph_planned"]["uses_rg"]
+    ):
         errors.append("CodeGraph provider reports rg usage")
     if metadata["codegraph_exact_text"].get("vector_candidates_enabled"):
         errors.append("codegraph_exact_text enables vector candidates")
     if not metadata["codegraph_full"].get("vector_candidates_enabled"):
         errors.append("codegraph_full does not report vector candidates")
+    if not metadata["codegraph_planned"].get("uses_retrieval_plan"):
+        errors.append("codegraph_planned does not report retrieval-plan usage")
     return {"status": "ready" if not errors else "invalid", "metadata": metadata, "errors": errors}
 
 

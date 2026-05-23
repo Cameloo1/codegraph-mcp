@@ -83,7 +83,16 @@ def _maybe_int(value: Any) -> int | None:
 
 def validate_config(config: BenchmarkConfig) -> list[str]:
     errors: list[str] = []
-    valid_modes = {"none", "baseline", "rg_only", "codegraph_exact_text", "codegraph_full"}
+    valid_modes = {
+        "none",
+        "baseline",
+        "rg_only",
+        "rg_planned",
+        "codegraph_exact_text",
+        "codegraph_full",
+        "codegraph_current",
+        "codegraph_planned",
+    }
     valid_claims = {"diagnostic", "official_compatible", "official", "scaffold_only"}
     if config.dataset not in {"internal_gold", "repobench", "crosscodeeval", "swe_bench_lite"}:
         errors.append(f"unsupported dataset adapter: {config.dataset}")

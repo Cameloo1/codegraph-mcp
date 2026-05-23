@@ -17,9 +17,17 @@ Every serious comparison must hold constant:
 Only the context layer may vary:
 
 - `baseline`
+- `none`
 - `rg_only`
+- `rg_planned`
 - `codegraph_exact_text`
 - `codegraph_full`
+- `codegraph_planned`
+
+`rg_planned` and `codegraph_planned` are Benchmark Layer v0.5 provider modes.
+Their implementation reports and v0.5 comparison reports are local diagnostic
+evidence only; no CodeGraph-over-rg or public benchmark claim is made from
+them.
 
 ## Safe Wording
 
@@ -44,6 +52,12 @@ Do not say:
 These statements are only allowed when the exact official or comparable harness
 requirements were met, documented, and the result is not diagnostic-only.
 
+Also do not cite RepoBench or CrossCodeEval numbers from runs where provider
+query terms came from gold files, gold symbols, hidden context filenames,
+expected completions, or answer metadata. Those artifacts are
+`gold_hint_diagnostic` / `over_assisted_diagnostic` only and are not clean
+retrieval comparisons.
+
 ## Proof Boundaries
 
 - Text evidence is source-text existence, not graph proof.
@@ -52,6 +66,10 @@ requirements were met, documented, and the result is not diagnostic-only.
   evidence only.
 - Graph/source verification is required before a graph relation is claimable.
 - Mock-agent and plumbing runs never count as model quality.
+- Recall/MRR without precision, wrong-context, and context-poison metrics is not
+  enough to claim retrieval quality.
+- Forbidden-context hits or dangerous-context flags must be reported, not hidden
+  by high recall.
 
 ## Setup Status Boundaries
 
@@ -65,6 +83,12 @@ requirements were met, documented, and the result is not diagnostic-only.
   a bounded smoke, but this is still not a public score.
 - `ready_for_gold_validation` means SWE-bench gold validation has completed or
   can be rerun through the recorded Linux route.
+- `gold_validation_live_ready` means the current preflight can reach the
+  Docker/Linux harness route. It is a setup/live-run readiness state, not a
+  patch-quality result.
+- `ready_for_official_smoke` on SWE-bench patch quality means the external
+  agent command validates and setup can run. It is not a real-agent score until
+  predictions are generated and evaluated through the harness.
 - `ready_for_retrieval_blocked_official_generation` means product-ablation
   retrieval/context scoring can run, but the upstream generation scorer is not
   ready.
@@ -77,3 +101,52 @@ requirements were met, documented, and the result is not diagnostic-only.
 Do not convert setup readiness into performance language. A source checkout,
 extracted dataset, Docker check, or mock-agent run is not a CodeGraph quality
 result.
+
+## Suite Claim Boundaries
+
+The operator suite command:
+
+```powershell
+python -m benchmarks.harness.runners.run_benchmark_suite --suite full --output-dir benchmarks/results/summaries/<run_id>
+```
+
+is still local diagnostic infrastructure unless the exact official/comparable
+harness requirements are met and the result is intentionally promoted. The
+presence of `summary.json`, charts, timing buckets, or quality-per-budget
+metrics is not a public claim by itself.
+
+SWE-bench boundaries:
+
+- Cached prior gold validation is evidence only and does not count as a current
+  live gold-validation run.
+- Docker failure must produce a blocked live-run status, not a green result.
+- Missing `CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND` blocks patch quality.
+- Current live gold validation may be reported only when the Docker/Linux
+  harness actually reruns in the current environment. On 2026-05-23,
+  `codegraph-live-gold-20260523-083023` completed 1/1 gold validation for
+  `sympy__sympy-20590`; this remains harness readiness evidence, not model
+  quality.
+- The Codex external-agent wrapper can be setup-ready via
+  `CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND`, but setup readiness is not a
+  patch-quality score.
+- Mock-agent runs are scaffold-only and never count as model quality.
+- No SWE-bench score or real-agent patch-quality claim exists unless actual
+  external-agent predictions are evaluated through the official-compatible
+  harness and skipped/failed tasks are reported.
+
+Timing boundaries:
+
+- Cold DB build and optional vector sidecar build are setup costs and must be
+  shown separately.
+- Warm retrieval excludes cold setup but includes query/context-pack subprocess
+  cost where the current CLI path pays it.
+- Raw end-to-end first-use timing remains visible; cold setup is never hidden
+  inside one task average.
+
+Leakage boundaries:
+
+- Provider-visible fields and evaluator-only fields are separate.
+- Gold files/symbols/context paths, expected answer files, forbidden files, and
+  oracle patch metadata must never be passed to providers.
+- `blocked_query_leakage` means a track did not produce a clean benchmark
+  result and must not be summarized as completed.

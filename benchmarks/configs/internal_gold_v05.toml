@@ -1,0 +1,25 @@
+[run]
+name = "internal-gold-v05"
+run_id_prefix = "internal_gold_v05"
+dataset = "internal_gold"
+dataset_path = "benchmarks/datasets/internal_gold_v05/codegraph_v05_internal.jsonl"
+dataset_version = "codegraph_internal_gold_v05"
+modes = ["rg_only", "rg_planned", "codegraph_current", "codegraph_planned"]
+max_tasks = 10
+max_wall_time_s = 240
+max_time_s = 240
+max_tool_calls = 10
+max_context_bytes = 90000
+max_output_bytes = 90000
+claim_boundary = "diagnostic"
+
+[codegraph]
+release_binary = "target/release/codegraph-mcp.exe"
+binary_path_policy = "release_binary_required"
+workspace_dir = "benchmarks/workspaces/internal-gold-v05"
+db_path_policy = "ignored_benchmark_workspace"
+
+[agent]
+scaffold = "retrieval_only"
+model = "none"
+external_agent_required = false

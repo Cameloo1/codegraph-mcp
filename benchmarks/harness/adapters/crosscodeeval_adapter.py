@@ -145,24 +145,28 @@ class CrossCodeEvalAdapter:
                 gold_files.append(str(item["filename"]).replace("\\", "/"))
         task_id = str(metadata.get("task_id") or row.get("task_id") or f"crosscodeeval_{index}")
         repo_path = _materialize_crosscodeeval_repo(task_id, row, context_items)
-        query_terms = [Path(file).name for file in gold_files[:5]]
-        groundtruth = row.get("groundtruth")
-        if groundtruth:
-            query_terms.append(str(groundtruth).split("(")[0].strip()[:80])
+        visible_file_hints = []
+        if metadata.get("file"):
+            visible_file_hints.append(Path(str(metadata["file"])).name)
         return {
             "task_id": task_id,
             "repo_kind": "crosscodeeval",
             "task": str(row.get("prompt") or "CrossCodeEval cross-file completion context retrieval task"),
+            "task_text": str(row.get("prompt") or "CrossCodeEval cross-file completion context retrieval task"),
+            "prompt": str(row.get("prompt") or "CrossCodeEval cross-file completion context retrieval task"),
             "repo_path": str(repo_path),
             "gold_files": gold_files,
             "gold_symbols": [],
             "gold_spans": [],
+            "gold_context_filenames": [Path(file).name for file in gold_files],
+            "gold_context_paths": gold_files,
             "forbidden_files": [],
             "forbidden_symbols": [],
             "expected_claimability": {"graph_proof_allowed": False, "text_evidence_allowed": True},
             "task_type": "cross_file_context_retrieval",
             "source": "crosscodeeval_real_or_fixture",
-            "query_terms": [term for term in query_terms if term],
+            "visible_file_hints": visible_file_hints,
+            "visible_query_terms": [],
             "metadata": {
                 "language": language or row.get("language"),
                 "repository": metadata.get("repository"),
@@ -178,7 +182,7 @@ def _materialize_crosscodeeval_repo(task_id: str, row: dict[str, Any], context_i
     root = workspace_path("crosscodeeval", "materialized") / _safe_id(task_id)
     root.mkdir(parents=True, exist_ok=True)
     target = str(metadata.get("file") or "target.py").replace("\\", "/")
-    target_text = "\n".join(str(part) for part in (row.get("prompt"), row.get("groundtruth"), row.get("right_context")) if part)
+    target_text = str(row.get("prompt") or "")
     _write_repo_file(root, target, target_text or "# CrossCodeEval target file placeholder from official row metadata\n")
     for item in context_items:
         if not isinstance(item, dict):

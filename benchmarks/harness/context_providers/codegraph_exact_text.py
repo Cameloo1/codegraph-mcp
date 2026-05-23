@@ -30,6 +30,11 @@ class CodeGraphExactTextProvider(ContextProvider):
         if not self.release_binary or not self.release_binary.exists():
             packet.unknowns.append("release binary missing")
             return packet
+        timing = {
+            "query_subprocess_ms": 0,
+            "context_pack_subprocess_ms": 0,
+            "index_prebuild_ms": 0,
+        }
         workspace = self._workspace_root()
         repo = resolve_repo_path(task.get("repo_path"), self.repo_root)
         db = workspace / "dbs" / f"{stable_id(str(repo))}.sqlite"
@@ -37,15 +42,16 @@ class CodeGraphExactTextProvider(ContextProvider):
         if not db.exists():
             index_cmd = [str(self.release_binary), "index", str(repo), "--db", str(db), "--fresh", "--json"]
             record = run_command(index_cmd, self.repo_root, workspace / "logs" / f"codegraph_index_{stable_id(str(repo))}.json", timeout_s=budget.max_time_s or 120)
+            timing["index_prebuild_ms"] += record.wall_time_ms
             packet.tool_calls += 1
             if record.exit_code != 0:
                 packet.unknowns.append(f"codegraph index failed: exit {record.exit_code}")
-                packet.raw = {"stderr": record.stderr[-1000:]}
+                packet.raw = {"stderr": record.stderr[-1000:], "codegraph_subprocess_timing_ms": timing}
                 return packet
         vector_path = workspace / "vectors" / f"{stable_id(str(repo))}.json"
         if full:
             self._ensure_vector_sidecar(packet, repo, db, vector_path, workspace, budget)
-        self._run_targeted_queries(packet, task, budget, repo, db, workspace)
+        self._run_targeted_queries(packet, task, budget, repo, db, workspace, timing)
         task_text = str(task.get("task", ""))
         context_cmd = [
             str(self.release_binary),
@@ -65,17 +71,18 @@ class CodeGraphExactTextProvider(ContextProvider):
                 context_cmd.extend(["--enable-vector-candidates", "--vector-index", str(vector_path)])
             context_cmd.append("--enable-nuance-rescue-candidates")
         record = run_command(context_cmd, self.repo_root, workspace / "logs" / f"codegraph_context_{task['task_id']}_{self.mode}.json", timeout_s=budget.max_time_s or 120)
+        timing["context_pack_subprocess_ms"] += record.wall_time_ms
         packet.tool_calls += 1
         packet.raw_context_bytes += len(record.stdout.encode("utf-8", errors="ignore"))
         if record.exit_code != 0:
             packet.unknowns.append(f"codegraph context-pack failed: exit {record.exit_code}")
-            packet.raw = {"stderr": record.stderr[-1000:]}
+            packet.raw = {"stderr": record.stderr[-1000:], "codegraph_subprocess_timing_ms": timing}
             return packet
         parsed = _parse_json(record.stdout)
         if parsed is not None:
             _merge_codegraph_json(packet, parsed)
         _rerank_for_task_profile(packet, task)
-        packet.raw = {"provider": self.mode, "db": str(db)}
+        packet.raw = {"provider": self.mode, "db": str(db), "codegraph_subprocess_timing_ms": timing}
         return packet
 
     def _workspace_root(self) -> Path:
@@ -135,6 +142,7 @@ class CodeGraphExactTextProvider(ContextProvider):
         repo: Path,
         db: Path,
         workspace: Path,
+        timing: dict,
     ) -> None:
         max_calls = budget.max_tool_calls or 10
         remaining_for_queries = max(0, max_calls - packet.tool_calls - 1)
@@ -160,6 +168,7 @@ class CodeGraphExactTextProvider(ContextProvider):
                 ]
                 log_name = f"codegraph_query_{task['task_id']}_{query_kind}_{stable_id(term)}.json"
                 q = run_command(query_cmd, self.repo_root, workspace / "logs" / log_name, timeout_s=budget.max_time_s or 120)
+                timing["query_subprocess_ms"] += q.wall_time_ms
                 packet.tool_calls += 1
                 calls_used += 1
                 packet.raw_context_bytes += len(q.stdout.encode("utf-8", errors="ignore"))

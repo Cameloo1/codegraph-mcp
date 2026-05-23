@@ -21,10 +21,29 @@ class RgOnlyProvider(ContextProvider):
         max_calls = budget.max_tool_calls or 4
         for index, term in enumerate(query_terms(task)[:max_calls]):
             log_path = self.workspace / "logs" / f"rg_{task['task_id']}_{index}_{stable_id(term)}.json"
-            cmd = [str(rg), "-n", "--glob", "!target/**", "--glob", "!node_modules/**", term, "."]
+            cmd = [
+                str(rg),
+                "--no-ignore",
+                "-n",
+                "--glob",
+                "!.git/**",
+                "--glob",
+                "!target/**",
+                "--glob",
+                "!node_modules/**",
+                "--glob",
+                "!benchmarks/results/**",
+                "--glob",
+                "!reports/audit/artifacts/**",
+                "--glob",
+                "!.codegraph/**",
+                term,
+                ".",
+            ]
             record = run_command(cmd, repo, log_path=log_path, timeout_s=budget.max_time_s)
             packet.tool_calls += 1
-            text = (record.stdout or "")[: budget.max_context_bytes]
+            stdout = record.stdout or ""
+            text = stdout[: budget.max_context_bytes]
             packet.raw_context_bytes += len(text.encode("utf-8", errors="ignore"))
             for line in text.splitlines():
                 parts = line.split(":", 2)
@@ -33,8 +52,8 @@ class RgOnlyProvider(ContextProvider):
                     if file_path not in packet.files:
                         packet.files.append(file_path)
                     packet.snippets.append({"file": file_path, "line": parts[1], "text": parts[2] if len(parts) > 2 else ""})
-            if len(record.stdout.encode("utf-8", errors="ignore")) > budget.max_context_bytes:
-                packet.risks.append({"kind": "rg_flood", "term": term, "omitted_bytes": len(record.stdout) - len(text)})
+            if len(stdout.encode("utf-8", errors="ignore")) > budget.max_context_bytes:
+                packet.risks.append({"kind": "rg_flood", "term": term, "omitted_bytes": len(stdout) - len(text)})
         packet.raw = {"provider": self.mode}
         return packet
 

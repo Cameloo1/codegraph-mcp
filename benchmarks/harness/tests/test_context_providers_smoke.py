@@ -10,9 +10,11 @@ from benchmarks.harness.context_providers.codegraph_exact_text import (
     _rerank_for_task_profile,
 )
 from benchmarks.harness.context_providers.codegraph_full import CodeGraphFullProvider
+from benchmarks.harness.context_providers.codegraph_planned import CodeGraphPlannedProvider
 from benchmarks.harness.context_providers.none import NoneProvider
 from benchmarks.harness.context_providers.rg_only import RgOnlyProvider
 from benchmarks.harness.logging_utils import CommandRecord
+from benchmarks.harness.context_providers.rg_planned import RgPlannedProvider
 
 
 class ContextProviderSmokeTests(unittest.TestCase):
@@ -40,18 +42,26 @@ class ContextProviderSmokeTests(unittest.TestCase):
         release = Path("target/release/codegraph-mcp.exe")
         none = NoneProvider(repo, workspace, release).metadata()
         rg = RgOnlyProvider(repo, workspace, release).metadata()
+        rg_planned = RgPlannedProvider(repo, workspace, release).metadata()
         exact = CodeGraphExactTextProvider(repo, workspace, release).metadata()
         full = CodeGraphFullProvider(repo, workspace, release).metadata()
+        codegraph_planned = CodeGraphPlannedProvider(repo, workspace, release).metadata()
         self.assertFalse(none["uses_rg"])
         self.assertFalse(none["uses_codegraph"])
         self.assertTrue(rg["uses_rg"])
         self.assertFalse(rg["uses_codegraph"])
+        self.assertTrue(rg_planned["uses_rg"])
+        self.assertFalse(rg_planned["uses_codegraph"])
+        self.assertFalse(rg_planned["graph_proof"])
         self.assertTrue(exact["uses_codegraph"])
         self.assertFalse(exact["uses_rg"])
         self.assertFalse(exact["vector_candidates_enabled"])
         self.assertTrue(full["uses_codegraph"])
         self.assertFalse(full["uses_rg"])
         self.assertTrue(full["vector_candidates_enabled"])
+        self.assertTrue(codegraph_planned["uses_codegraph"])
+        self.assertFalse(codegraph_planned["uses_rg"])
+        self.assertTrue(codegraph_planned["uses_retrieval_plan"])
 
     def test_codegraph_routes_symbol_terms_to_symbol_query_first(self):
         self.assertEqual(_query_routes_for_term("DbPreflightReport")[0], "symbols")

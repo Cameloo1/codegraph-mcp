@@ -75,8 +75,8 @@ class ContextProvider:
 
 
 def query_terms(task: dict) -> list[str]:
-    terms = task.get("query_terms")
+    terms = task.get("visible_query_terms") or task.get("query_terms")
     if isinstance(terms, list) and terms:
         return [str(term) for term in terms]
-    words = [part.strip(".,:;()[]{}\"'") for part in str(task.get("task", "")).split()]
+    words = [part.strip(".,:;()[]{}\"'") for part in str(task.get("task_text") or task.get("prompt") or task.get("task", "")).split()]
     return [word for word in words if len(word) > 3][:5]

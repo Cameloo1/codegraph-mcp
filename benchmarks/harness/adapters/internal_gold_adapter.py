@@ -26,6 +26,10 @@ class InternalGoldAdapter:
                     if not line.strip():
                         continue
                     task = json.loads(line)
+                    if "query_terms" in task and "visible_query_terms" not in task:
+                        task["visible_query_terms"] = list(task.get("query_terms") or [])
+                    if "task" in task and "task_text" not in task:
+                        task["task_text"] = task["task"]
                     errors = validate_task(task)
                     if errors:
                         joined = "; ".join(errors)

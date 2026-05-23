@@ -25,6 +25,8 @@ def run_command(command: list[str], cwd: Path, log_path: Path | None = None, tim
             command,
             cwd=str(cwd),
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=timeout_s,
             check=False,
@@ -55,4 +57,3 @@ def run_command(command: list[str], cwd: Path, log_path: Path | None = None, tim
             encoding="utf-8",
         )
     return record
-

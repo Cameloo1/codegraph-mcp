@@ -107,23 +107,28 @@ class RepoBenchAdapter:
             prompt = "Retrieve cross-file context for "
             prompt += str(row.get("file_path") or row.get("repo_name") or "RepoBench task")
         repo_path = _materialize_repobench_repo(task_id, row, context_items)
-        query_terms = gold_symbols[:5]
+        visible_file_hints = []
         if row.get("file_path"):
-            query_terms.append(Path(str(row["file_path"])).name)
+            visible_file_hints.append(Path(str(row["file_path"])).name)
         return {
             "task_id": task_id,
             "repo_kind": "repobench",
             "task": str(prompt),
+            "task_text": str(prompt),
+            "prompt": str(prompt),
             "repo_path": str(repo_path),
             "gold_files": gold_files,
             "gold_symbols": gold_symbols,
             "gold_spans": [],
+            "gold_context_filenames": [Path(file).name for file in gold_files],
+            "gold_context_paths": gold_files,
             "forbidden_files": [],
             "forbidden_symbols": [],
             "expected_claimability": {"graph_proof_allowed": False, "text_evidence_allowed": True},
             "task_type": "repo_context_retrieval",
             "source": "repobench_real_or_fixture",
-            "query_terms": query_terms,
+            "visible_file_hints": visible_file_hints,
+            "visible_query_terms": [],
             "metadata": {
                 "repo_name": row.get("repo_name"),
                 "target_file": row.get("file_path"),
@@ -152,7 +157,7 @@ def _materialize_repobench_repo(task_id: str, row: dict[str, Any], context_items
     target = str(row.get("file_path") or "target.py").replace("\\", "/")
     target_text = "\n".join(
         str(part)
-        for part in (row.get("import_statement"), row.get("cropped_code"), row.get("all_code"), row.get("next_line"))
+        for part in (row.get("prompt"), row.get("import_statement"), row.get("cropped_code"))
         if part
     )
     _write_repo_file(root, target, target_text or "# RepoBench target file placeholder from official row metadata\n")

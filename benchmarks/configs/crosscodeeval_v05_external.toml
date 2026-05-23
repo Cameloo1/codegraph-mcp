@@ -1,0 +1,29 @@
+[run]
+name = "crosscodeeval-v05-external"
+run_id_prefix = "crosscodeeval_v05_external"
+dataset = "crosscodeeval"
+dataset_path = "benchmarks/upstream/cceval/data"
+dataset_version = "amazon-science/cceval@40c68d2b7ca2a8eae95d901ac80e6a540a84a53d"
+modes = ["rg_only", "rg_planned", "codegraph_current", "codegraph_planned"]
+max_tasks = 20
+max_wall_time_s = 300
+max_time_s = 300
+max_tool_calls = 10
+max_context_bytes = 90000
+max_output_bytes = 90000
+claim_boundary = "diagnostic"
+
+[adapter]
+languages = ["python", "java", "typescript", "csharp"]
+official_scoring = false
+
+[codegraph]
+release_binary = "target/release/codegraph-mcp.exe"
+binary_path_policy = "release_binary_required"
+workspace_dir = "benchmarks/workspaces/crosscodeeval-v05-external"
+db_path_policy = "ignored_benchmark_workspace"
+
+[agent]
+scaffold = "retrieval_only"
+model = "none"
+external_agent_required = false

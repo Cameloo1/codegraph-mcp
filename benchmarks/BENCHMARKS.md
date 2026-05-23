@@ -23,6 +23,10 @@ Metrics:
 - gold symbol recall@k
 - gold span recall@k
 - MRR
+- precision@1/@5/@10
+- non-gold top-k counts and wrong-context rate
+- gold density in returned context
+- forbidden file/symbol hits and context-poison rate
 - context recall@k
 - context bytes and estimated context tokens
 - tool calls
@@ -35,6 +39,20 @@ Metrics:
 - unsupported-claim violations
 - no-proof behavior correctness
 - patch resolved/pass rate where a real patch evaluator exists
+
+Provider-visible task fields are separated from evaluator-only fields. Providers
+may use prompt/task text, visible file/symbol/text hints, stack frames, error
+messages, visible config keys, language, repo metadata explicitly allowed by
+the task, and budget fields. Providers must not receive gold files/symbols,
+gold spans, gold context paths, expected answer files/symbols, forbidden
+files/symbols/spans, oracle patch files, answer metadata, evaluator notes, or
+hidden benchmark labels. The runner records sanitized fields removed and visible
+query-term provenance for every task.
+
+Benchmark Layer v0.5 adds `rg_planned` and `codegraph_planned` provider modes.
+They are implemented and have been run in local v0.5 internal/external
+diagnostic comparisons. Those runs remain local diagnostics only and do not
+support a CodeGraph-over-rg or public benchmark claim.
 
 ## Upstream Notes
 
@@ -56,7 +74,26 @@ used without modification and the full run metadata is retained.
 
 ## Setup Verification
 
-Run setup verification before any dedicated benchmark run:
+Normal usage is the one-command benchmark suite:
+
+```powershell
+python -m benchmarks.harness.runners.run_benchmark_suite --suite full --output-dir benchmarks/results/summaries/<run_id>
+```
+
+Focused suite modes:
+
+```powershell
+python -m benchmarks.harness.runners.run_benchmark_suite --suite smoke --output-dir benchmarks/results/summaries/<run_id>
+python -m benchmarks.harness.runners.run_benchmark_suite --suite retrieval --output-dir benchmarks/results/summaries/<run_id>
+python -m benchmarks.harness.runners.run_benchmark_suite --suite swebench-focused --output-dir benchmarks/results/summaries/<run_id>
+```
+
+The suite owns preflight, run planning, command logging, blocked-track records,
+timing accounting, quality-per-budget metrics, aggregation, charts, and final
+reports. It writes `run_plan.json` before executing tracks and records skipped
+or blocked tracks in `blocked_tracks.json`.
+
+Targeted setup verification remains available:
 
 ```powershell
 python -m benchmarks.harness.runners.verify_benchmark_setup --output-dir benchmarks/results/summaries/setup_verification_local
@@ -111,6 +148,11 @@ Exported real rows live under ignored benchmark workspaces. The tiny tracked
 fixture under `benchmarks/tracks/repobench/fixtures/` remains
 adapter-test-only and is not official data.
 
+Current clean retrieval runs derive provider query terms only from visible task
+text and explicit visible hints. Any older RepoBench result whose provider
+terms came from gold symbols/files is `gold_hint_diagnostic`, not comparable
+with clean task-driven retrieval.
+
 ### CrossCodeEval
 
 Status: source checkout pinned; Python, Java, TypeScript, and C# JSONL data are
@@ -131,12 +173,24 @@ Full CrossCodeEval generation quality still requires an explicit model/inference
 configuration and an upstream scoring run. Retrieval-context runs remain local
 diagnostic product-ablation results unless official scoring is used exactly.
 
+Current clean retrieval runs do not derive provider query terms from gold
+context filenames, expected completions, or hidden answer metadata. Any older
+CrossCodeEval result that did so is `gold_hint_diagnostic`, not comparable with
+clean task-driven retrieval.
+
 ### SWE-bench Lite
 
 Status: source checkout pinned, editable package install succeeded in the
-ignored benchmark venv, Docker Desktop is reachable, Lite dataset access was
-verified, and the official harness completed one Linux-container gold validation
-for `sympy__sympy-20590`.
+ignored benchmark venv, Docker Desktop is reachable from the normal user shell,
+Lite dataset access was verified, and the official harness completed a current
+Linux-container gold validation for `sympy__sympy-20590`.
+
+Cached prior gold validation may be recorded as evidence only. It must not be
+counted as a current live gold-validation run. Current live readiness is only
+true when Docker/Linux harness prerequisites are ready in the current preflight.
+The Codex sandbox identity cannot access Docker Desktop named pipes on this
+machine, so Docker-backed SWE-bench commands must run from a normal
+user/elevated PowerShell process or an explicitly approved unsandboxed command.
 
 Gold validation command:
 
@@ -144,7 +198,14 @@ Gold validation command:
 benchmarks/tracks/swebench_lite/scripts/run_harness_linux_container.ps1
 ```
 
-Patch scoring still needs a real external agent command.
+Latest live gold validation:
+
+- Run id: `codegraph-live-gold-20260523-083023`
+- Result: 1 completed, 1 resolved, 0 errors for `sympy__sympy-20590`
+- Report: `benchmarks/workspaces/swebench_gold_validation/gold.codegraph-live-gold-20260523-083023.json`
+
+Patch scoring setup is ready when the Codex wrapper command below is configured.
+That setup readiness is not a real patch-quality result.
 
 Configure a real patch-quality run with:
 
@@ -165,4 +226,59 @@ the final `diff --git` patch, and raw prompts/logs stay under ignored benchmark
 workspaces. The wrapper supports `-ValidateOnly` for readiness checks that do
 not call a model.
 
+Latest setup check:
+
+- `CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND` set to the Codex wrapper above.
+- `run_patch_eval --config benchmarks/configs/swebench_lite_smoke.toml` returned `status=ready`.
+- `run_benchmark_suite --suite swebench-focused --output-dir benchmarks/results/summaries/swebench_live_unblock_20260523_083023` completed live gold validation and patch-quality setup tracks.
+- No external-agent predictions were generated by that suite run, so no real-agent patch-quality score or SWE-bench score is claimed.
+
 Mock-agent patch runs are scaffold-only and never count as model quality.
+
+## Timing Model
+
+Benchmark timing is reported in explicit buckets:
+
+- `cold_db_build_ms`
+- `vector_sidecar_build_ms`
+- `warm_query_ms`
+- `warm_context_pack_ms`
+- `rg_ms`
+- `codegraph_query_subprocess_ms`
+- `codegraph_context_pack_subprocess_ms`
+- `codegraph_index_subprocess_ms`
+- `harness_scoring_ms`
+- `harness_bookkeeping_ms`
+- `harness_overhead_ms`
+- `raw_total_ms`
+- `cold_setup_excluded_total_ms`
+- `end_to_end_first_use_ms`
+
+Reports must explain raw end-to-end timing and warm/cold-adjusted timing
+separately. The setup phase prebuilds one DB per unique repo where CodeGraph
+providers are part of the run, then timed provider retrieval uses those
+artifacts. Provider timing must say whether cold setup is paid by that task or
+amortized.
+
+Index profiling is downstream of truthful timing accounting. Do not start index
+profiling work until the suite can separate cold setup, warm retrieval,
+subprocess cost, and harness overhead.
+
+## Quality Per Budget
+
+The suite emits `quality_per_budget.json` with:
+
+- recall/MRR per 1k tokens
+- recall/MRR per tool call
+- context bytes per recalled gold file
+- warm milliseconds per recalled gold file
+- recall/MRR per 1k context bytes
+- files recalled per warm second
+- files recalled per tool call
+- precision@k, wrong-context rate, and gold density in context
+- forbidden-context and context-poison metrics when the task defines forbidden
+  files or symbols
+
+If CodeGraph improves Recall@5 or MRR but spends more context, tool calls, or
+wall time, the report must say so plainly. This remains local diagnostic
+evidence, not a public benchmark claim.
