@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 
@@ -59,9 +61,15 @@ def timing_breakdown(records: Iterable[dict[str, Any]], *, setup_paid_labels: li
         wall = int(record.get("wall_time_ms") or 0)
         buckets["raw_total_ms"] += wall
         classified = classify_timing_bucket(record)
+        vector_ms = _vector_sidecar_ms(record)
         for bucket in classified:
             if bucket in buckets and bucket != "raw_total_ms":
-                buckets[bucket] += wall
+                if bucket == "vector_sidecar_build_ms":
+                    buckets[bucket] += vector_ms
+                elif bucket == "cold_db_build_ms" and "vector_sidecar_build_ms" in classified and vector_ms:
+                    buckets[bucket] += max(0, wall - vector_ms)
+                else:
+                    buckets[bucket] += wall
         command_records.append(
             {
                 "command_id": record.get("command_id"),
@@ -109,3 +117,24 @@ def _is_rg(argv: list[str]) -> bool:
         return False
     executable = argv[0].replace("\\", "/").split("/")[-1]
     return executable in {"rg", "rg.exe"}
+
+
+def _vector_sidecar_ms(record: dict[str, Any]) -> int:
+    stdout_path = record.get("stdout_path")
+    if not stdout_path:
+        return 0
+    try:
+        data = json.loads(Path(str(stdout_path)).read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    vector = data.get("vector_index")
+    if not isinstance(vector, dict):
+        return 0
+    timings = vector.get("build_timings")
+    if not isinstance(timings, dict):
+        return 0
+    total = timings.get("total_ms")
+    try:
+        return int(float(total))
+    except (TypeError, ValueError):
+        return 0

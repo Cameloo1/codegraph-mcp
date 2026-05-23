@@ -142,6 +142,11 @@ SWE-bench boundaries:
 - The Codex external-agent wrapper can be setup-ready via
   `CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND`, but setup readiness is not a
   patch-quality score.
+- The one-task local external-agent smoke
+  `swebench_official_compatible_smoke_20260523_174023` produced resolving
+  patches for `baseline` and `rg_only`, but both failed the clean-source-patch
+  gate due an extra test-file edit. This is local diagnostic evidence only, not
+  an official SWE-bench score and not CodeGraph attribution.
 - Mock-agent runs are scaffold-only and never count as model quality.
 - No SWE-bench score or real-agent patch-quality claim exists unless actual
   external-agent predictions are evaluated through the official-compatible

@@ -17,7 +17,9 @@ EXCLUDE_GLOBS = (
     "!target/**",
     "!node_modules/**",
     "!benchmarks/results/**",
-    "!reports/audit/artifacts/**",
+    "!benchmarks/workspaces/**",
+    "!benchmarks/upstream/**",
+    "!reports/audit/**",
     "!.codegraph/**",
 )
 
@@ -111,6 +113,8 @@ class RgPlannedProvider(ContextProvider):
                 cwd=repo,
                 timeout_s=limits["per_command_timeout_s"],
                 command_id=command["command_id"],
+                max_stdout_bytes=limits["command_stdout_cap_bytes"],
+                max_stderr_bytes=65_536,
             )
             state.tool_calls += 1
             command["exit_code"] = record.exit_code
@@ -121,6 +125,15 @@ class RgPlannedProvider(ContextProvider):
             command["stderr_bytes"] = record.stderr_bytes
             command["wall_time_ms"] = record.wall_time_ms
             command["failure_kind"] = record.failure_kind
+            if record.failure_kind == "output_limit":
+                state.flood_events.append(
+                    {
+                        "kind": "command_stdout_cap",
+                        "command_id": command["command_id"],
+                        "cap_bytes": limits["command_stdout_cap_bytes"],
+                        "label": "command_output_cap",
+                    }
+                )
             stdout = _read_text(Path(record.stdout_path))
             if command["kind"] == "file_discovery":
                 _consume_file_discovery(stdout, command, state)
@@ -163,6 +176,7 @@ class RgPlannedProvider(ContextProvider):
                 "max_lines": limits["max_lines"],
                 "max_bytes": limits["max_bytes"],
                 "per_query_result_cap": limits["per_query_result_cap"],
+                "command_stdout_cap_bytes": limits["command_stdout_cap_bytes"],
                 "noisy_probe_labels": sorted({event.get("label", "") for event in state.flood_events if event.get("label")}),
             },
             "metrics": {
@@ -272,6 +286,7 @@ def _limits(task: dict, budget: ProviderBudget) -> dict[str, int]:
         "max_files": min(60, max(10, int(task.get("max_files") or 40))),
         "max_lines": min(120, max(10, int(task.get("max_lines") or 80))),
         "max_bytes": max(1000, int(budget.max_context_bytes or task.get("max_output_bytes") or 60000)),
+        "command_stdout_cap_bytes": min(1_000_000, max(64_000, int((budget.max_context_bytes or task.get("max_output_bytes") or 60000) * 4))),
         "per_command_timeout_s": max(1, min(20, int(budget.max_time_s or 10))),
         "per_query_result_cap": min(40, max(5, int(task.get("per_query_result_cap") or 20))),
         "per_file_line_cap": min(8, max(1, int(task.get("per_file_line_cap") or 2))),
@@ -299,7 +314,7 @@ def _build_plan(rg: str, task: dict, limits: dict[str, int]) -> list[dict[str, A
     for index, term_info in enumerate(selected_terms, 1):
         term = term_info["term"]
         scope_globs = _scope_globs(term, clues)
-        common = [*base_globs, *_glob_args(scope_globs), "--", term, "."]
+        common = [*base_globs, *_glob_args(scope_globs), "--max-filesize", "1M", "--", term, "."]
         plan.append(
             {
                 "command_id": f"rg_planned_shortlist_{index}_{safe_slug(term)[:24]}",

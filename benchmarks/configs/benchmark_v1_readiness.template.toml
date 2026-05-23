@@ -1,0 +1,73 @@
+[run]
+name = "benchmark-v1-readiness-template"
+run_id_prefix = "benchmark_v1_readiness"
+dataset = "swe_bench_lite"
+dataset_name = "pinned-v1-task-manifest-required"
+dataset_version = "PIN_REQUIRED_BEFORE_RUN"
+modes = ["rg_only", "codegraph_planned"]
+max_tasks = 0
+max_wall_time_s = 1800
+max_time_s = 1800
+max_tool_calls = 80
+max_context_bytes = 120000
+max_output_bytes = 120000
+claim_boundary = "scaffold_only"
+
+[adapter]
+upstream_repo = "benchmarks/upstream/SWE-bench"
+requires_docker = true
+quality_requires_external_agent = true
+official_scoring = true
+
+[codegraph]
+release_binary = "target/release/codegraph-mcp.exe"
+binary_path_policy = "release_binary_required"
+workspace_dir = "benchmarks/workspaces/benchmark-v1-readiness"
+db_path_policy = "ignored_benchmark_workspace"
+
+[agent]
+scaffold = "external_agent_command"
+model = "external"
+external_agent_required = true
+external_agent_command_env = "CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND"
+
+[v1]
+schema_version = "benchmark_v1_readiness_config_v1"
+readiness_only = true
+patch_quality_runs_enabled = false
+require_explicit_patch_run = true
+public_claim = false
+real_patch_quality_claim = false
+task_manifest = "benchmarks/datasets/v1_readiness/task_manifest.template.json"
+output_dir = "reports/audit/artifacts/benchmark_v1_readiness_scaffold/v1_runs"
+predictions_dir = "reports/audit/artifacts/benchmark_v1_readiness_scaffold/predictions"
+patches_dir = "reports/audit/artifacts/benchmark_v1_readiness_scaffold/patches"
+logs_dir = "reports/audit/artifacts/benchmark_v1_readiness_scaffold/logs"
+arm_a_mode = "rg_only_agent_patch"
+arm_b_mode = "rg_plus_codegraph_agent_patch"
+normal_tools = ["rg", "search", "edit", "test"]
+codegraph_extra_tools = ["codegraph"]
+same_agent_scaffold = "external_agent_command"
+evaluator = "official_compatible_patch_plus_agent_reliability_scorers_v1"
+mock_agent_allowed_for_quality = false
+docker_official_harness_required = true
+
+[v1.result_schema]
+resolved_percentage = "patch.resolved_percentage"
+test_pass_rate = "patch.test_pass_rate"
+wrong_file_edits = "patch.wrong_file_edits"
+nonexistent_symbol_references = "patch.nonexistent_symbol_refs"
+unsupported_claims = "trust.unsupported_claim_count"
+evidence_alignment = "patch.evidence_alignment"
+time_ms = "efficiency.wall_time_ms"
+tokens = "efficiency.total_tokens"
+tool_calls = "efficiency.tool_calls"
+context_bytes = "retrieval.context_bytes"
+patch_size = "patch.patch_size_bytes"
+retry_count = "patch.retry_count"
+cost_per_solved_task = "efficiency.cost_per_solved_task_usd"
+no_proof_behavior = "trust.no_proof_behavior_ok"
+stale_db_behavior = "trust.stale_db_behavior"
+context_attribution_validity = "patch.context_attribution_valid"
+skipped_blocked_task_status = "patch.skipped_status"
+public_claim = "public_claim"

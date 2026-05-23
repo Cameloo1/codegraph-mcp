@@ -189,6 +189,12 @@ SWE-bench-family results require real external-agent predictions evaluated by an
 official-compatible harness. Setup checks, mock-agent runs, and gold-patch
 validation are prerequisites, not patch-quality scores.
 
+Current lab status: the first local one-task official-compatible smoke ran on
+`sympy__sympy-20590` for `baseline` and `rg_only`. Both resolved under the
+local SWE-bench Lite harness, but both failed the clean-source-patch gate by
+editing an extra test file. That makes the result useful as harness evidence,
+not a product win or public benchmark claim.
+
 ## 9. Full-Codebase Complexity Tests
 
 Use tasks where a single grep hit is not enough:

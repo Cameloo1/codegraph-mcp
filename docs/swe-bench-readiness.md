@@ -39,7 +39,7 @@ are prerequisites, not quality scores.
 | SWE-bench Lite dataset access | verified |
 | Docker/Linux harness route | working |
 | Gold-validation smoke | passed for `sympy__sympy-20590` |
-| Patch-quality ablation | blocked until a real external agent command is configured |
+| Patch-quality ablation | first one-task local smoke completed for `baseline` and `rg_only` |
 | Mock-agent scaffold | available, non-quality only |
 | Official SWE-bench score | not claimed |
 
@@ -78,9 +78,27 @@ JSON from stdin, runs `codex exec` non-interactively in the task workspace, and
 prints only a `diff --git` patch to stdout. Use `-ValidateOnly` to check
 readiness without making a model call.
 
-Until that is configured, the benchmark layer can run setup checks and
+Without that configured, the benchmark layer can run setup checks and
 scaffold-only mock-agent flows, but it cannot claim model quality, solved task
 rate, or SWE-bench improvement.
+
+## Latest Patch-Quality Smoke
+
+On 2026-05-23, the local official-compatible one-task smoke
+`swebench_official_compatible_smoke_20260523_174023` ran real Codex external
+agent predictions for `sympy__sympy-20590` and evaluated them through the local
+SWE-bench Lite harness.
+
+| Mode | Resolved | Clean source patch | Reason |
+|---|---:|---:|---|
+| `baseline` | true | false | extra test-file edit |
+| `rg_only` | true | false | extra test-file edit |
+
+Both modes edited `sympy/core/_print_helpers.py` and also edited
+`sympy/core/tests/test_symbol.py`. This is useful local patch-quality evidence,
+but it is not an official SWE-bench score and does not prove CodeGraph value.
+CodeGraph modes remain gated until their context packets are valid for
+attribution.
 
 ## Official-Compatible Requirements
 
@@ -102,8 +120,9 @@ Anything less is local diagnostic evidence.
 
 The intended path is deliberately incremental:
 
-1. Gold-validation smoke.
-2. One real external-agent SWE-bench Lite smoke.
+1. Gold-validation smoke. Complete for `sympy__sympy-20590`.
+2. One real external-agent SWE-bench Lite smoke. Complete for `baseline` and
+   `rg_only`, with clean-source-patch gate failing due to extra test-file edits.
 3. 10-task SWE-bench Lite diagnostic subset.
 4. 25-task and 50-task Lite diagnostic subsets.
 5. Full SWE-bench Lite diagnostic run when cost and runtime are understood.

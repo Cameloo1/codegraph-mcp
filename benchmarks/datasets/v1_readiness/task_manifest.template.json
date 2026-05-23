@@ -1,0 +1,87 @@
+{
+  "schema_version": "benchmark_v1_task_manifest_template_v1",
+  "manifest_status": "template_pinning_required",
+  "public_claim": false,
+  "real_patch_quality_claim": false,
+  "claim_boundary": "readiness scaffold only; no public benchmark, SWE-bench score, or real patch-quality claim",
+  "product_comparison": {
+    "arm_a": "same agent + normal rg/search/edit/test tools",
+    "arm_b": "same agent + normal rg/search/edit/test tools + CodeGraph",
+    "only_allowed_difference": "CodeGraph context/routing/proof packet availability in arm B"
+  },
+  "provider_visible_fields": [
+    "task_id",
+    "prompt",
+    "visible_query_terms",
+    "visible_file_hints",
+    "visible_symbol_hints",
+    "visible_text_hints",
+    "visible_language",
+    "visible_repo_metadata"
+  ],
+  "evaluator_only_fields": [
+    "hidden_gold_files",
+    "hidden_gold_symbols",
+    "forbidden_files",
+    "forbidden_symbols",
+    "oracle_labels",
+    "expected_result_fields",
+    "expected_tests",
+    "evaluator_notes"
+  ],
+  "tasks": [
+    {
+      "task_id": "v1-template-pin-required-001",
+      "repo": {
+        "source": "swe_bench_lite_or_verified",
+        "repo_name": "PIN_REQUIRED_BEFORE_RUN",
+        "pinned_commit": "PIN_REQUIRED_BEFORE_RUN",
+        "task_source_id": "PIN_REQUIRED_BEFORE_RUN",
+        "pinning_required": true
+      },
+      "visible": {
+        "prompt": "PIN_REQUIRED_BEFORE_RUN: user-visible issue prompt goes here.",
+        "visible_query_terms": [],
+        "visible_file_hints": [],
+        "visible_symbol_hints": [],
+        "visible_text_hints": [],
+        "visible_language": "unknown",
+        "visible_repo_metadata": {
+          "repo_name": "PIN_REQUIRED_BEFORE_RUN"
+        }
+      },
+      "evaluator_only": {
+        "hidden_gold_files": [],
+        "hidden_gold_symbols": [],
+        "forbidden_files": [],
+        "forbidden_symbols": [],
+        "oracle_labels": [],
+        "expected_result_fields": [
+          "resolved_percentage",
+          "test_pass_rate",
+          "wrong_file_edits",
+          "nonexistent_symbol_references",
+          "unsupported_claims",
+          "evidence_alignment",
+          "time_tokens_tool_calls",
+          "context_bytes",
+          "patch_size",
+          "retry_count",
+          "cost_per_solved_task",
+          "no_proof_behavior",
+          "stale_db_behavior",
+          "context_attribution_validity",
+          "skipped_blocked_task_status"
+        ],
+        "expected_tests": [],
+        "evaluator_notes": "Template placeholder only. Replace with pinned task oracle labels before any v1 execution."
+      },
+      "claim_boundaries": {
+        "public_claim": false,
+        "real_patch_quality_claim": false,
+        "requires_real_external_agent_prediction": true,
+        "mock_agent_quality_allowed": false
+      }
+    }
+  ]
+}

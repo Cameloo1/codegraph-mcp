@@ -3,11 +3,17 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from benchmarks.harness.resource_guard import (
+    ResourceLimits,
+    resource_limits_from_env,
+    run_command_with_resource_guard,
+)
 from benchmarks.harness.workspace import ensure_dir, safe_slug
 
 
@@ -19,11 +25,19 @@ FAILURE_KINDS = {
     "setup_blocked",
     "docker_unavailable",
     "external_agent_missing",
+    "output_limit",
+    "resource_limit",
     "unknown",
 }
 
 DEFAULT_ENV_ALLOWLIST = (
     "CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND",
+    "CODEGRAPH_BENCH_AGENT_STATION",
+    "CODEGRAPH_BENCH_MAX_PROCESS_TREE_RSS_MIB",
+    "CODEGRAPH_BENCH_MIN_SYSTEM_AVAILABLE_MIB",
+    "CODEGRAPH_BENCH_RESOURCE_GUARD",
+    "CODEGRAPH_BENCH_RESOURCE_SAMPLE_INTERVAL_S",
+    "CODEGRAPH_BENCH_RESOURCE_VIOLATION_GRACE_SAMPLES",
     "DOCKER_CONFIG",
     "DOCKER_HOST",
     "PYTHONPATH",
@@ -48,6 +62,7 @@ class CommandLogRecord:
     stderr_bytes: int
     exception: str | None
     failure_kind: str | None
+    resource_guard: dict | None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -62,6 +77,7 @@ class CommandRunner:
         *,
         commands_jsonl: str | Path | None = None,
         env_allowlist: Sequence[str] = DEFAULT_ENV_ALLOWLIST,
+        resource_limits: ResourceLimits | None = None,
     ):
         self.log_dir = ensure_dir(Path(log_dir))
         self.stdout_dir = ensure_dir(self.log_dir / "stdout")
@@ -69,6 +85,7 @@ class CommandRunner:
         self.commands_jsonl = Path(commands_jsonl) if commands_jsonl else self.log_dir / "commands.jsonl"
         self.commands_jsonl.parent.mkdir(parents=True, exist_ok=True)
         self.env_allowlist = tuple(env_allowlist)
+        self.resource_limits = resource_limits or resource_limits_from_env()
         self._counter = 0
 
     def run(
@@ -81,6 +98,8 @@ class CommandRunner:
         env_allowlist: Sequence[str] | None = None,
         command_id: str | None = None,
         failure_kind_hint: str | None = None,
+        max_stdout_bytes: int | None = None,
+        max_stderr_bytes: int | None = None,
     ) -> CommandLogRecord:
         self._counter += 1
         argv_error = _validate_argv(argv)
@@ -96,6 +115,7 @@ class CommandRunner:
         stdout = b""
         stderr = b""
         failure_kind: str | None = None
+        resource_guard: dict | None = None
 
         if argv_error is not None:
             exception = argv_error
@@ -105,18 +125,36 @@ class CommandRunner:
             if env:
                 command_env.update({str(key): str(value) for key, value in env.items()})
             try:
-                proc = subprocess.run(
-                    argv_list,
-                    cwd=str(cwd_path),
-                    env=command_env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=timeout_s,
-                    check=False,
-                )
-                exit_code = proc.returncode
-                stdout = proc.stdout or b""
-                stderr = proc.stderr or b""
+                if self.resource_limits.enabled or max_stdout_bytes is not None or max_stderr_bytes is not None:
+                    guarded = run_command_with_resource_guard(
+                        argv_list,
+                        cwd=cwd_path,
+                        env=command_env,
+                        timeout_s=timeout_s,
+                        resource_limits=self.resource_limits,
+                        max_stdout_bytes=max_stdout_bytes,
+                        max_stderr_bytes=max_stderr_bytes,
+                    )
+                    exit_code = guarded.exit_code
+                    stdout = guarded.stdout
+                    stderr = guarded.stderr
+                    exception = guarded.exception
+                    failure_kind = guarded.failure_kind
+                    resource_guard = guarded.resource_guard
+                else:
+                    proc = subprocess.run(
+                        argv_list,
+                        cwd=str(cwd_path),
+                        env=command_env,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=timeout_s,
+                        check=False,
+                    )
+                    exit_code = proc.returncode
+                    stdout = proc.stdout or b""
+                    stderr = proc.stderr or b""
+                    resource_guard = {"enabled": False}
             except subprocess.TimeoutExpired as exc:
                 stdout = _bytes_or_empty(exc.stdout)
                 stderr = _bytes_or_empty(exc.stderr)
@@ -160,6 +198,7 @@ class CommandRunner:
             stderr_bytes=len(stderr),
             exception=exception,
             failure_kind=None if success else failure_kind or "unknown",
+            resource_guard=resource_guard,
         )
         self._append(record)
         return record
@@ -208,6 +247,67 @@ def _classify_failure(
     if exit_code not in (0, None):
         return "nonzero_exit"
     return "unknown"
+
+
+def _run_limited_output(
+    argv: Sequence[str],
+    *,
+    cwd_path: Path,
+    env: Mapping[str, str],
+    timeout_s: int | None,
+    max_stdout_bytes: int | None,
+    max_stderr_bytes: int | None,
+) -> tuple[int | None, bytes, bytes, str | None]:
+    proc = subprocess.Popen(
+        list(argv),
+        cwd=str(cwd_path),
+        env=dict(env),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+    state: dict[str, str | None] = {"limit_stream": None}
+
+    def read_limited(pipe, chunks: list[bytes], limit: int | None, stream_name: str) -> None:
+        total = 0
+        try:
+            while True:
+                chunk = pipe.read(65536)
+                if not chunk:
+                    break
+                if limit is None or total < limit:
+                    remaining = None if limit is None else max(0, limit - total)
+                    chunks.append(chunk if remaining is None else chunk[:remaining])
+                total += len(chunk)
+                if limit is not None and total > limit and state["limit_stream"] is None:
+                    state["limit_stream"] = stream_name
+                    proc.kill()
+                    break
+        finally:
+            try:
+                pipe.close()
+            except Exception:
+                pass
+
+    threads = [
+        threading.Thread(target=read_limited, args=(proc.stdout, stdout_chunks, max_stdout_bytes, "stdout"), daemon=True),
+        threading.Thread(target=read_limited, args=(proc.stderr, stderr_chunks, max_stderr_bytes, "stderr"), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        exit_code = proc.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        for thread in threads:
+            thread.join(timeout=1)
+        raise
+    for thread in threads:
+        thread.join(timeout=1)
+    if state["limit_stream"] is not None and exit_code is None:
+        exit_code = -2
+    return exit_code, b"".join(stdout_chunks), b"".join(stderr_chunks), state["limit_stream"]
 
 
 def _allowlisted_env(env: Mapping[str, str], allowlist: Sequence[str]) -> dict[str, str]:

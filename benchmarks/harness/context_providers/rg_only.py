@@ -4,8 +4,20 @@ import shutil
 from pathlib import Path
 
 from benchmarks.harness.context_providers.base import ContextPacket, ContextProvider, ProviderBudget, query_terms
-from benchmarks.harness.logging_utils import run_command
+from benchmarks.harness.command_runner import CommandRunner
 from benchmarks.harness.workspace import resolve_repo_path, stable_id
+
+
+EXCLUDE_GLOBS = (
+    "!.git/**",
+    "!target/**",
+    "!node_modules/**",
+    "!benchmarks/results/**",
+    "!benchmarks/workspaces/**",
+    "!benchmarks/upstream/**",
+    "!reports/audit/**",
+    "!.codegraph/**",
+)
 
 
 class RgOnlyProvider(ContextProvider):
@@ -19,30 +31,37 @@ class RgOnlyProvider(ContextProvider):
             packet.unknowns.append("rg not found")
             return packet
         max_calls = budget.max_tool_calls or 4
+        max_stdout_bytes = min(1_000_000, max(64_000, int((budget.max_context_bytes or 60_000) * 4)))
+        runner = CommandRunner(self.workspace / "logs" / "rg_only" / str(task["task_id"]))
         for index, term in enumerate(query_terms(task)[:max_calls]):
-            log_path = self.workspace / "logs" / f"rg_{task['task_id']}_{index}_{stable_id(term)}.json"
             cmd = [
                 str(rg),
                 "--no-ignore",
                 "-n",
-                "--glob",
-                "!.git/**",
-                "--glob",
-                "!target/**",
-                "--glob",
-                "!node_modules/**",
-                "--glob",
-                "!benchmarks/results/**",
-                "--glob",
-                "!reports/audit/artifacts/**",
-                "--glob",
-                "!.codegraph/**",
-                term,
-                ".",
+                "--max-filesize",
+                "1M",
+                "--max-count",
+                "20",
             ]
-            record = run_command(cmd, repo, log_path=log_path, timeout_s=budget.max_time_s)
+            for glob in EXCLUDE_GLOBS:
+                cmd.extend(["--glob", glob])
+            cmd.extend(
+                [
+                    "--",
+                    term,
+                    ".",
+                ]
+            )
+            record = runner.run(
+                cmd,
+                cwd=repo,
+                timeout_s=min(int(budget.max_time_s or 20), 20),
+                command_id=f"rg_{index}_{stable_id(term)}",
+                max_stdout_bytes=max_stdout_bytes,
+                max_stderr_bytes=64_000,
+            )
             packet.tool_calls += 1
-            stdout = record.stdout or ""
+            stdout = _read_text(Path(record.stdout_path))
             text = stdout[: budget.max_context_bytes]
             packet.raw_context_bytes += len(text.encode("utf-8", errors="ignore"))
             for line in text.splitlines():
@@ -54,7 +73,9 @@ class RgOnlyProvider(ContextProvider):
                     packet.snippets.append({"file": file_path, "line": parts[1], "text": parts[2] if len(parts) > 2 else ""})
             if len(stdout.encode("utf-8", errors="ignore")) > budget.max_context_bytes:
                 packet.risks.append({"kind": "rg_flood", "term": term, "omitted_bytes": len(stdout) - len(text)})
-        packet.raw = {"provider": self.mode}
+            if record.failure_kind == "output_limit":
+                packet.risks.append({"kind": "rg_stdout_cap", "term": term, "cap_bytes": max_stdout_bytes})
+        packet.raw = {"provider": self.mode, "command_log_path": str(runner.commands_jsonl)}
         return packet
 
     def metadata(self) -> dict:
@@ -71,3 +92,10 @@ class RgOnlyProvider(ContextProvider):
             return local
         found = shutil.which("rg")
         return Path(found) if found else None
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return ""

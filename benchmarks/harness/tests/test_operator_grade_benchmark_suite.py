@@ -1,4 +1,6 @@
 import unittest
+import json
+import tempfile
 from pathlib import Path
 
 from benchmarks.harness.quality_metrics import quality_per_budget
@@ -152,6 +154,23 @@ class OperatorGradeBenchmarkSuiteTests(unittest.TestCase):
         breakdown = timing_breakdown([record])
         self.assertEqual(breakdown["buckets"]["codegraph_context_pack_subprocess_ms"], 50)
         self.assertEqual(breakdown["buckets"]["warm_context_pack_ms"], 50)
+
+    def test_combined_index_vector_timing_uses_vector_subtiming(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stdout = Path(tmp) / "index.stdout.json"
+            stdout.write_text(
+                json.dumps({"vector_index": {"build_timings": {"total_ms": 123.4}}}),
+                encoding="utf-8",
+            )
+            record = {
+                "argv": ["target/release/codegraph-mcp.exe", "index", "--build-vector-index"],
+                "command_id": "index",
+                "wall_time_ms": 1000,
+                "stdout_path": str(stdout),
+            }
+            breakdown = timing_breakdown([record])
+            self.assertEqual(breakdown["buckets"]["vector_sidecar_build_ms"], 123)
+            self.assertEqual(breakdown["buckets"]["cold_db_build_ms"], 877)
 
     def test_quality_per_budget_metrics(self):
         results = [

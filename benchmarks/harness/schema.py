@@ -34,9 +34,106 @@ MODES = {
     "codegraph_planned",
 }
 
+AGENT_RELIABILITY_TASK_SCHEMA_VERSION = "agent_reliability_task_v1"
+
+AGENT_RELIABILITY_TASK_FAMILIES = {
+    "routing_packet_quality",
+    "plan_accuracy",
+    "proof_discipline",
+    "hallucination_trap",
+    "investigation_layer",
+    "patch_outcome_placeholder",
+}
+
+AGENT_RELIABILITY_REQUIRED_FIELDS = {
+    "task_id",
+    "task_family",
+    "repo_fixture",
+    "prompt",
+    "visible_query_terms",
+    "visible_file_hints",
+    "visible_symbol_hints",
+    "hidden_gold_files",
+    "hidden_gold_symbols",
+    "forbidden_files",
+    "forbidden_symbols",
+    "expected_intent",
+    "expected_critical_files",
+    "expected_critical_symbols",
+    "expected_unknowns",
+    "expected_risks",
+    "expected_validation_steps",
+    "expected_proof_status",
+    "expected_proof_ladder",
+    "expected_plan_facts",
+    "forbidden_plan_claims",
+    "forbidden_edit_targets",
+    "expected_tests",
+    "v0_compatible",
+    "v05_transition",
+    "v1_patch_outcome",
+}
+
+AGENT_RELIABILITY_EVALUATOR_ONLY_FIELDS = {
+    "hidden_gold_files",
+    "hidden_gold_symbols",
+    "forbidden_files",
+    "forbidden_symbols",
+    "expected_intent",
+    "expected_critical_files",
+    "expected_critical_symbols",
+    "expected_unknowns",
+    "expected_risks",
+    "expected_validation_steps",
+    "expected_proof_status",
+    "expected_proof_ladder",
+    "expected_plan_facts",
+    "forbidden_plan_claims",
+    "forbidden_edit_targets",
+    "expected_tests",
+    "oracle_labels",
+}
+
+AGENT_RELIABILITY_PROVIDER_VISIBLE_FIELDS = {
+    "task_id",
+    "task_family",
+    "prompt",
+    "visible_query_terms",
+    "visible_file_hints",
+    "visible_symbol_hints",
+}
+
+AGENT_RELIABILITY_LIST_FIELDS = {
+    "visible_query_terms",
+    "visible_file_hints",
+    "visible_symbol_hints",
+    "hidden_gold_files",
+    "hidden_gold_symbols",
+    "forbidden_files",
+    "forbidden_symbols",
+    "expected_critical_files",
+    "expected_critical_symbols",
+    "expected_unknowns",
+    "expected_risks",
+    "expected_validation_steps",
+    "expected_proof_ladder",
+    "expected_plan_facts",
+    "forbidden_plan_claims",
+    "forbidden_edit_targets",
+    "expected_tests",
+}
+
+AGENT_RELIABILITY_BOOL_FIELDS = {
+    "v0_compatible",
+    "v05_transition",
+    "v1_patch_outcome",
+}
+
 
 RESULT_TEMPLATE: dict[str, Any] = {
     "schema_version": RESULT_SCHEMA_VERSION,
+    "public_claim": False,
+    "real_patch_quality_claim": False,
     "run_id": "",
     "task_id": "",
     "benchmark": "internal",
@@ -99,10 +196,18 @@ RESULT_TEMPLATE: dict[str, Any] = {
     },
     "patch": {
         "resolved": None,
+        "resolved_percentage": None,
         "tests_passed": None,
+        "test_pass_rate": None,
         "patch_applied": None,
+        "patch_size_bytes": None,
+        "retry_count": None,
         "wrong_file_edits": None,
         "nonexistent_symbol_refs": None,
+        "evidence_alignment": None,
+        "context_attribution_valid": None,
+        "skipped_status": None,
+        "blocked_reason": None,
     },
     "efficiency": {
         "wall_time_ms": None,
@@ -115,13 +220,19 @@ RESULT_TEMPLATE: dict[str, Any] = {
         "tool_calls": None,
         "codegraph_calls": None,
         "rg_calls": None,
+        "input_tokens": None,
+        "output_tokens": None,
+        "total_tokens": None,
         "cost_usd": None,
+        "cost_per_solved_task_usd": None,
     },
     "trust": {
         "claimability_violations": 0,
         "unsupported_claim_violations": 0,
+        "unsupported_claim_count": None,
         "no_proof_behavior_ok": None,
         "stale_db_blocked": None,
+        "stale_db_behavior": None,
     },
     "artifacts": {
         "raw_log": "",
@@ -176,4 +287,30 @@ def validate_task(task: dict[str, Any]) -> list[str]:
             errors.append(f"{list_field} must be a list")
     if "expected_claimability" in task and not isinstance(task["expected_claimability"], dict):
         errors.append("expected_claimability must be an object")
+    return errors
+
+
+def validate_agent_reliability_task(task: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    missing = sorted(field for field in AGENT_RELIABILITY_REQUIRED_FIELDS if field not in task)
+    errors.extend(f"missing agent reliability task field: {field}" for field in missing)
+
+    task_family = task.get("task_family")
+    if task_family not in AGENT_RELIABILITY_TASK_FAMILIES:
+        errors.append(f"invalid agent reliability task_family: {task_family}")
+
+    for field in AGENT_RELIABILITY_LIST_FIELDS:
+        if field in task and not isinstance(task[field], list):
+            errors.append(f"{field} must be a list")
+
+    for field in AGENT_RELIABILITY_BOOL_FIELDS:
+        if field in task and not isinstance(task[field], bool):
+            errors.append(f"{field} must be a boolean")
+
+    for field in ("task_id", "repo_fixture", "prompt", "expected_intent", "expected_proof_status"):
+        if field in task and not isinstance(task[field], str):
+            errors.append(f"{field} must be a string")
+        elif field in task and not task[field].strip():
+            errors.append(f"{field} must not be empty")
+
     return errors

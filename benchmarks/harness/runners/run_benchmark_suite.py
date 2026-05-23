@@ -13,6 +13,12 @@ from benchmarks.harness.command_runner import CommandRunner
 from benchmarks.harness.config import BenchmarkConfig, load_config
 from benchmarks.harness.quality_metrics import quality_per_budget
 from benchmarks.harness.reports.generate_charts import generate_charts
+from benchmarks.harness.resource_guard import (
+    ResourceLimits,
+    add_resource_guard_arguments,
+    resource_limits_from_args,
+    summarize_resource_limit_failures,
+)
 from benchmarks.harness.runners.run_patch_eval import patch_setup_summary
 from benchmarks.harness.runners.verify_benchmark_setup import verify_setup
 from benchmarks.harness.scoring.claimability import claimability_violations, no_proof_behavior_ok
@@ -82,16 +88,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--suite", required=True, choices=sorted(SUITES))
     parser.add_argument("--output-dir", required=True)
+    add_resource_guard_arguments(parser)
     args = parser.parse_args(argv)
     output_dir = ensure_dir(Path(args.output_dir))
-    result = run_suite(args.suite, output_dir)
+    result = run_suite(args.suite, output_dir, resource_limits=resource_limits_from_args(args))
     return 0 if result["status"] == "pass" else 1
 
 
-def run_suite(suite: str, output_dir: Path) -> dict[str, Any]:
+def run_suite(suite: str, output_dir: Path, *, resource_limits: ResourceLimits | None = None) -> dict[str, Any]:
     started = time.perf_counter()
     run_id = output_dir.name or f"{suite}_{int(time.time())}"
-    command_runner = CommandRunner(output_dir / "command_logs", commands_jsonl=output_dir / "commands.jsonl")
+    command_runner = CommandRunner(
+        output_dir / "command_logs",
+        commands_jsonl=output_dir / "commands.jsonl",
+        resource_limits=resource_limits,
+    )
     preflight = collect_preflight(command_runner, output_dir)
     run_plan = build_run_plan(suite, output_dir, preflight)
     _write_json(output_dir / "run_plan.json", run_plan)
@@ -128,6 +139,7 @@ def run_suite(suite: str, output_dir: Path) -> dict[str, Any]:
 
     blocked_tracks.extend(_blocked_tracks_from_execution(executed_tracks, run_plan))
     commands = _load_jsonl(output_dir / "commands.jsonl")
+    resource_limit_failures = summarize_resource_limit_failures(commands)
     timing = timing_breakdown(commands, setup_paid_labels=_setup_paid_labels(run_plan))
     timing_by_mode = _timing_by_mode(all_results)
     quality = quality_per_budget(all_results, timing_by_mode=timing_by_mode)
@@ -146,6 +158,8 @@ def run_suite(suite: str, output_dir: Path) -> dict[str, Any]:
         elapsed_ms=int((time.perf_counter() - started) * 1000),
         run_plan_written_at=run_plan_written_at,
     )
+    summary["resource_guard"] = (resource_limits or command_runner.resource_limits).to_dict()
+    summary["resource_limit_failures"] = resource_limit_failures
     all_results_doc = {
         "schema_version": "benchmark_suite_all_results_v1",
         "suite": suite,
@@ -972,6 +986,7 @@ def _write_summary_md(path: Path, summary: dict[str, Any], quality: dict[str, An
         "Local diagnostic only. No public benchmark claim, no CodeGraph-over-rg claim, no SWE-bench score claim, and no real-agent patch-quality claim is made.",
         "",
         f"Leakage audit pass: {summary.get('leakage_audit_pass')}",
+        f"Resource limit failures: {summary.get('resource_limit_failures', {}).get('count', 0)}",
         "",
         "## Tracks",
         "",

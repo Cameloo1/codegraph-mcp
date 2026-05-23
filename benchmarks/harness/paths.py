@@ -31,6 +31,7 @@ LEGACY_TO_CANONICAL = {
     "benchmarks/datasets/internal_gold": "benchmarks/tracks/internal_gold/datasets/internal_gold",
     "benchmarks/datasets/adapter_fixtures/repobench_tiny.jsonl": "benchmarks/tracks/repobench/fixtures/repobench_tiny.jsonl",
     "benchmarks/datasets/adapter_fixtures/crosscodeeval_tiny.jsonl": "benchmarks/tracks/crosscodeeval/fixtures/crosscodeeval_tiny.jsonl",
+    "benchmarks/datasets/adapter_fixtures/swebench_lite_sympy_20590.json": "benchmarks/tracks/swebench_lite/fixtures/swebench_lite_sympy_20590.json",
     "benchmarks/scripts/setup_repobench.ps1": "benchmarks/tracks/repobench/scripts/setup_repobench.ps1",
     "benchmarks/scripts/setup_crosscodeeval_docker.ps1": "benchmarks/tracks/crosscodeeval/scripts/setup_docker.ps1",
     "benchmarks/scripts/setup_crosscodeeval_windows_msvc.ps1": "benchmarks/tracks/crosscodeeval/scripts/setup_windows_msvc.ps1",
