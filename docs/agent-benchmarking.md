@@ -110,6 +110,14 @@ evaluated by an official-compatible harness, pinned datasets, recorded Docker
 dependencies, retained logs/predictions, and reported skipped/failed tasks.
 CodeGraph does not currently claim such a score.
 
+Current SWE-bench Lite pilot status: the local one-task E2E path can generate
+real external-agent patches and evaluate them through Docker for `baseline` and
+`rg_only` on `sympy__sympy-20590`. CodeGraph patch-quality is still not
+measured because CodeGraph modes were skipped before agent execution when
+context was invalid for attribution. See
+[SWE-bench Readiness](swe-bench-readiness.md) for the exact run and recreate
+commands.
+
 ## What CodeGraph Should Prove
 
 CodeGraph should prove that it helps an rg-using agent:

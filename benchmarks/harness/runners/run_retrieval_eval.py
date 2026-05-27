@@ -21,7 +21,6 @@ from benchmarks.harness.scoring.claimability import claimability_violations, no_
 from benchmarks.harness.scoring.context_recall import score_retrieval
 from benchmarks.harness.scoring.efficiency import aggregate_by_mode
 from benchmarks.harness.scoring.hallucination import unsupported_claim_violations
-from benchmarks.harness.paths import results_path
 from benchmarks.harness.task_sanitizer import sanitize_provider_task
 from benchmarks.harness.workspace import ensure_dir, stable_id
 
@@ -40,14 +39,14 @@ PROVIDERS = {
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="benchmarks/tracks/internal_gold/configs/smoke.toml")
+    parser.add_argument("--config", default="benchmarks/configs/internal_gold_smoke.toml")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--modes", nargs="*", default=None)
     parser.add_argument("--max-tasks", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     config = load_config(args.config)
-    output_dir = Path(args.output_dir) if args.output_dir else _default_output_dir(config)
+    output_dir = Path(args.output_dir) if args.output_dir else Path("benchmarks/results/summaries") / f"{int(time.time())}_{config.name}"
     results = run(config, output_dir, modes=args.modes, max_tasks=args.max_tasks, dry_run=args.dry_run)
     errors = [error for result in results for error in validate_result(result)]
     leakage_failures = [
@@ -179,12 +178,17 @@ def _provider(mode: str, config: BenchmarkConfig) -> ContextProvider:
 def _provider_timing(packet: dict) -> dict:
     raw = packet.get("raw") if isinstance(packet.get("raw"), dict) else {}
     timing = raw.get("codegraph_subprocess_timing_ms") if isinstance(raw.get("codegraph_subprocess_timing_ms"), dict) else {}
+    metrics = raw.get("metrics") if isinstance(raw.get("metrics"), dict) else {}
     query_ms = int(timing.get("query_subprocess_ms") or 0)
     context_ms = int(timing.get("context_pack_subprocess_ms") or 0)
     index_ms = int(timing.get("index_prebuild_ms") or 0)
+    provider_ms = int(metrics.get("command_wall_time_ms") or metrics.get("wall_time_ms") or 0)
+    warm_ms = query_ms + context_ms
+    if warm_ms == 0 and provider_ms:
+        warm_ms = provider_ms
     return {
         "cold_setup_time_ms": index_ms,
-        "warm_retrieval_time_ms": query_ms + context_ms,
+        "warm_retrieval_time_ms": warm_ms,
         "codegraph_query_subprocess_ms": query_ms,
         "codegraph_context_pack_subprocess_ms": context_ms,
         "codegraph_index_subprocess_ms": index_ms,
@@ -207,19 +211,6 @@ def _benchmark_name(config: BenchmarkConfig) -> str:
     if config.dataset == "internal_gold":
         return "internal"
     return config.dataset
-
-
-def _default_output_dir(config: BenchmarkConfig) -> Path:
-    track_by_dataset = {
-        "internal_gold": "internal_gold",
-        "repobench": "repobench",
-        "crosscodeeval": "crosscodeeval",
-        "swe_bench_lite": "swebench_lite",
-    }
-    track_id = track_by_dataset.get(config.dataset)
-    if track_id is None:
-        return Path("benchmarks/results/summaries") / f"{int(time.time())}_{config.name}"
-    return results_path(track_id, f"{int(time.time())}_{config.name}")
 
 
 def _track_name(config: BenchmarkConfig, dry_run: bool) -> str:

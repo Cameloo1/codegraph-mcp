@@ -5,6 +5,7 @@ from pathlib import Path
 
 from benchmarks.harness.context_providers.base import ProviderBudget
 from benchmarks.harness.context_providers.rg_planned import RgPlannedProvider
+from benchmarks.harness.task_sanitizer import sanitize_provider_task
 
 
 def _write(root: Path, rel: str, text: str) -> None:
@@ -31,6 +32,9 @@ class RgPlannedProviderTests(unittest.TestCase):
             self.assertTrue(any("-l" in argv for argv in argvs))
             self.assertTrue(any("-n" in argv for argv in argvs))
             self.assertTrue(any("target_symbol" in command for command in flattened))
+            self.assertTrue(all(isinstance(argv, list) for argv in argvs))
+            self.assertTrue(all("--" in argv for argv in argvs if "-l" in argv or "-n" in argv))
+            self.assertFalse(any(" ".join(argv).startswith("cmd /c") for argv in argvs))
             log_path = Path(packet.raw["command_log_path"])
             self.assertTrue(log_path.exists())
             parsed = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
@@ -92,6 +96,32 @@ class RgPlannedProviderTests(unittest.TestCase):
             keys = [(item["file"], item["line"], item["text"]) for item in packet.snippets]
             self.assertEqual(len(keys), len(set(keys)))
 
+    def test_hidden_gold_terms_do_not_reach_rg_planned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _write(repo, "src/public.py", "def public_symbol(): pass\n")
+            _write(repo, "src/secret_gold.py", "def SecretSymbol(): pass\n")
+            task = sanitize_provider_task(
+                {
+                    "task_id": "t",
+                    "repo_path": str(repo),
+                    "task": "Find the public entry point",
+                    "query_terms": ["src/secret_gold.py", "SecretSymbol"],
+                    "visible_query_terms": ["public_symbol"],
+                    "gold_files": ["src/secret_gold.py"],
+                    "gold_symbols": ["SecretSymbol"],
+                    "gold_spans": [],
+                }
+            )
+            packet = RgPlannedProvider(Path.cwd(), repo / ".bench-workspace").get_context(
+                task, ProviderBudget(max_tool_calls=6, max_context_bytes=20000, max_time_s=10)
+            )
+            serialized_plan = json.dumps(packet.raw["plan"])
+            self.assertTrue(task["leakage_audit"]["pass"])
+            self.assertIn("public_symbol", serialized_plan)
+            self.assertNotIn("secret_gold.py", serialized_plan)
+            self.assertNotIn("SecretSymbol", serialized_plan)
+
     def test_exact_filename_query_ranks_filename_hit_high(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -152,6 +182,10 @@ class RgPlannedProviderTests(unittest.TestCase):
             self.assertIn("raw", payload)
             self.assertEqual(packet.tool_calls, len([command for command in packet.raw["plan"] if not command.get("skipped")]))
             self.assertEqual(packet.raw_context_bytes, packet.raw["context_payload"]["bytes"])
+            self.assertEqual(packet.raw["metrics"]["tool_calls"], packet.tool_calls)
+            self.assertIn("command_wall_time_ms", packet.raw["metrics"])
+            self.assertGreaterEqual(packet.raw["metrics"]["command_wall_time_ms"], 0)
+            self.assertGreaterEqual(packet.raw["metrics"]["stdout_bytes_total"], 0)
             self.assertFalse(packet.claimability["graph_proof"])
             self.assertEqual(packet.claimability["evidence_role"], "lexical/text/path evidence")
 

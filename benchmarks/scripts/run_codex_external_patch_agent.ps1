@@ -9,6 +9,40 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$script:RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
+
+function Convert-StatusObjectToOrderedHashtable {
+    param($Object)
+    $result = [ordered]@{}
+    if ($null -eq $Object) {
+        return $result
+    }
+    foreach ($property in $Object.PSObject.Properties) {
+        $result[$property.Name] = $property.Value
+    }
+    return $result
+}
+
+function Merge-AgentStatusFields {
+    param([string]$Path, [hashtable]$Fields)
+    $data = [ordered]@{}
+    if ($Path -and (Test-Path -LiteralPath $Path)) {
+        try {
+            $existing = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+            $data = Convert-StatusObjectToOrderedHashtable $existing
+        } catch {
+            $data = [ordered]@{}
+        }
+    }
+    foreach ($key in $Fields.Keys) {
+        $data[$key] = $Fields[$key]
+    }
+    $now = (Get-Date).ToString("o")
+    $data["updated_at"] = $now
+    $data["last_event_at"] = $now
+    $json = $data | ConvertTo-Json -Depth 20
+    [System.IO.File]::WriteAllText($Path, $json, [System.Text.UTF8Encoding]::new($false))
+}
 
 function Resolve-CodexCommand {
     param([string]$Requested)
@@ -146,17 +180,40 @@ function Write-AgentStatus {
         [string]$Message = "",
         [int]$ContextBytes = 0,
         [int]$ToolCalls = 0,
-        [string]$Mode = ""
+        [string]$Mode = "",
+        [string]$StationLaunchStatus = "",
+        [string]$StationLaunchError = "",
+        [string]$Phase = "",
+        [object]$ResourceGuard = $null,
+        [string]$CurrentCommand = "",
+        [int]$PatchBytes = -1,
+        [object]$CleanSourcePatch = $null,
+        [string]$BlockedReason = ""
     )
+
+    $existing = $null
+    if ($Path -and (Test-Path -LiteralPath $Path)) {
+        try { $existing = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $existing = $null }
+    }
+    function Get-ExistingStatusValue {
+        param($Object, [string]$Name, $Default = $null)
+        if ($null -ne $Object -and $Object.PSObject.Properties.Name -contains $Name) {
+            $value = $Object.$Name
+            if ($null -ne $value) { return $value }
+        }
+        return $Default
+    }
 
     $startedPath = Join-Path $LogRoot "agent_started_epoch.txt"
     if (-not (Test-Path -LiteralPath $startedPath)) {
         Set-Content -LiteralPath $startedPath -Value ([string][double](Get-Date -UFormat %s)) -Encoding ASCII
     }
     $started = [double](Get-Content -LiteralPath $startedPath -Raw)
+    $now = (Get-Date).ToString("o")
     $data = [ordered]@{
         schema_version = "codegraph_external_agent_status_v1"
         state = $State
+        phase = $(if ($Phase) { $Phase } else { Get-ExistingStatusValue $existing "phase" $State })
         task_id = $TaskId
         workspace = $Workspace
         log_root = $LogRoot
@@ -166,8 +223,16 @@ function Write-AgentStatus {
         context_bytes = $ContextBytes
         tool_calls = $ToolCalls
         mode = $Mode
+        station_launch_status = $(if ($StationLaunchStatus) { $StationLaunchStatus } else { Get-ExistingStatusValue $existing "station_launch_status" $null })
+        station_launch_error = $(if ($StationLaunchError) { $StationLaunchError } else { Get-ExistingStatusValue $existing "station_launch_error" $null })
+        resource_guard = $(if ($null -ne $ResourceGuard) { $ResourceGuard } else { Get-ExistingStatusValue $existing "resource_guard" $null })
+        current_command = $(if ($CurrentCommand) { $CurrentCommand } else { Get-ExistingStatusValue $existing "current_command" $null })
+        patch_bytes = $(if ($PatchBytes -ge 0) { $PatchBytes } else { Get-ExistingStatusValue $existing "patch_bytes" $null })
+        clean_source_patch = $(if ($null -ne $CleanSourcePatch) { $CleanSourcePatch } else { Get-ExistingStatusValue $existing "clean_source_patch" $null })
+        blocked_reason = $(if ($BlockedReason) { $BlockedReason } else { Get-ExistingStatusValue $existing "blocked_reason" $null })
         started_at_epoch = $started
-        updated_at = (Get-Date).ToString("o")
+        last_event_at = $now
+        updated_at = $now
     }
     $json = $data | ConvertTo-Json -Depth 10
     [System.IO.File]::WriteAllText($Path, $json, [System.Text.UTF8Encoding]::new($false))
@@ -185,9 +250,13 @@ function Start-AgentStation {
     )
 
     if ($Mode -eq "never") {
+        Merge-AgentStatusFields -Path $StatusPath -Fields @{
+            station_launch_status = "disabled"
+            station_launch_error = $null
+        }
         return
     }
-    $scriptPath = Join-Path (Get-Location).Path "benchmarks\scripts\show_external_agent_station.ps1"
+    $scriptPath = Join-Path $script:RepoRoot "benchmarks\scripts\show_external_agent_station.ps1"
     $stationArgs = @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
@@ -198,22 +267,65 @@ function Start-AgentStation {
         "-TimeoutSeconds", [string]$Timeout,
         "-StatusPath", $StatusPath
     )
-    $launchText = "powershell.exe $(Join-ProcessArgs $stationArgs)"
+    $safeTitle = "CodeGraph-Agent-$TaskId" -replace '\s+', '-'
+    $safeTitle = $safeTitle -replace '[^\w_.-]', '_'
+    $wtArgs = @("new-tab", "--title", $safeTitle, "powershell.exe") + $stationArgs
+    $fallbackArgs = $stationArgs
+    $launchText = "wt.exe $(Join-ProcessArgs $wtArgs)"
+    $fallbackText = "powershell.exe $(Join-ProcessArgs $fallbackArgs)"
     $launchPath = Join-Path $LogRoot "station_launch_command.txt"
-    Set-Content -LiteralPath $launchPath -Value $launchText -Encoding UTF8
+    $fallbackLaunchPath = Join-Path $LogRoot "station_launch_fallback_command.txt"
+    $argvPath = Join-Path $LogRoot "station_launch_argv.json"
+    [System.IO.File]::WriteAllText($launchPath, $launchText, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($fallbackLaunchPath, $fallbackText, [System.Text.UTF8Encoding]::new($false))
+    $launchShape = [ordered]@{
+        schema_version = "codegraph_external_agent_station_launch_v1"
+        preferred = "wt"
+        title = $safeTitle
+        station_script_path = $scriptPath
+        wt_file = "wt.exe"
+        wt_args = $wtArgs
+        fallback_file = "powershell.exe"
+        fallback_args = $fallbackArgs
+    }
+    [System.IO.File]::WriteAllText($argvPath, ($launchShape | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
     if ($DryRun) {
+        Merge-AgentStatusFields -Path $StatusPath -Fields @{
+            station_launch_status = "dry_run"
+            station_launch_error = $null
+        }
         return
     }
 
     $wt = Get-Command "wt.exe" -ErrorAction SilentlyContinue
     if ($wt) {
-        $safeTitle = "CodeGraph-Agent-$TaskId"
-        $wtArgs = @("new-tab", "--title", $safeTitle, "powershell.exe") + $stationArgs
-        Start-Process -FilePath $wt.Source -ArgumentList $wtArgs -WindowStyle Normal | Out-Null
-        return
+        try {
+            Start-Process -FilePath $wt.Source -ArgumentList (Join-ProcessArgs $wtArgs) -WindowStyle Normal | Out-Null
+            Merge-AgentStatusFields -Path $StatusPath -Fields @{
+                station_launch_status = "launched_wt"
+                station_launch_error = $null
+            }
+            return
+        } catch {
+            Merge-AgentStatusFields -Path $StatusPath -Fields @{
+                station_launch_status = "wt_failed"
+                station_launch_error = $_.Exception.Message
+            }
+        }
     }
 
-    Start-Process -FilePath "powershell.exe" -ArgumentList $stationArgs -WindowStyle Normal | Out-Null
+    try {
+        Start-Process -FilePath "powershell.exe" -ArgumentList (Join-ProcessArgs $fallbackArgs) -WindowStyle Normal | Out-Null
+        Merge-AgentStatusFields -Path $StatusPath -Fields @{
+            station_launch_status = "fallback_powershell"
+            station_launch_error = $null
+        }
+    } catch {
+        Merge-AgentStatusFields -Path $StatusPath -Fields @{
+            station_launch_status = "station_launch_failed"
+            station_launch_error = $_.Exception.Message
+        }
+    }
 }
 
 function Quote-ProcessArg {
@@ -263,7 +375,7 @@ function Invoke-CodexPatchAgent {
     $args += "-"
 
     $commandLine = "type $(Quote-ProcessArg $promptPath) | $(Quote-ProcessArg $CodexPath) $(Join-ProcessArgs $args) > $(Quote-ProcessArg $stdoutPath) 2> $(Quote-ProcessArg $stderrPath)"
-    Write-AgentStatus -Path $StatusPath -State "launching" -TaskId $TaskId -Workspace $Workspace -LogRoot $LogRoot -Timeout $Timeout -Message "launching Codex CLI" -ContextBytes $ContextBytes -ToolCalls $ToolCalls -Mode $Mode
+    Write-AgentStatus -Path $StatusPath -State "launching" -Phase "agent" -TaskId $TaskId -Workspace $Workspace -LogRoot $LogRoot -Timeout $Timeout -Message "launching Codex CLI" -ContextBytes $ContextBytes -ToolCalls $ToolCalls -Mode $Mode -CurrentCommand $commandLine
 
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $env:ComSpec
@@ -278,20 +390,20 @@ function Invoke-CodexPatchAgent {
     $proc = [System.Diagnostics.Process]::new()
     $proc.StartInfo = $psi
     [void]$proc.Start()
-    Write-AgentStatus -Path $StatusPath -State "running" -TaskId $TaskId -Workspace $Workspace -LogRoot $LogRoot -Timeout $Timeout -CodexPid $proc.Id -Message "Codex CLI running" -ContextBytes $ContextBytes -ToolCalls $ToolCalls -Mode $Mode
+    Write-AgentStatus -Path $StatusPath -State "running" -Phase "agent" -TaskId $TaskId -Workspace $Workspace -LogRoot $LogRoot -Timeout $Timeout -CodexPid $proc.Id -Message "Codex CLI running" -ContextBytes $ContextBytes -ToolCalls $ToolCalls -Mode $Mode -CurrentCommand $commandLine
 
     if (-not $proc.WaitForExit($Timeout * 1000)) {
-        Write-AgentStatus -Path $StatusPath -State "timeout" -TaskId $TaskId -Workspace $Workspace -LogRoot $LogRoot -Timeout $Timeout -CodexPid $proc.Id -Message "Codex CLI exceeded timeout" -ContextBytes $ContextBytes -ToolCalls $ToolCalls -Mode $Mode
+        Write-AgentStatus -Path $StatusPath -State "timeout" -Phase "timeout" -TaskId $TaskId -Workspace $Workspace -LogRoot $LogRoot -Timeout $Timeout -CodexPid $proc.Id -Message "Codex CLI exceeded timeout" -ContextBytes $ContextBytes -ToolCalls $ToolCalls -Mode $Mode -CurrentCommand $commandLine -BlockedReason "codex_cli_timeout"
         try { $proc.Kill($true) } catch { }
         throw "codex_cli_timeout"
     }
 
     if ($proc.ExitCode -ne 0) {
-        Write-AgentStatus -Path $StatusPath -State "failed" -TaskId $TaskId -Workspace $Workspace -LogRoot $LogRoot -Timeout $Timeout -CodexPid $proc.Id -Message "Codex CLI exited $($proc.ExitCode)" -ContextBytes $ContextBytes -ToolCalls $ToolCalls -Mode $Mode
+        Write-AgentStatus -Path $StatusPath -State "failed" -Phase "failed" -TaskId $TaskId -Workspace $Workspace -LogRoot $LogRoot -Timeout $Timeout -CodexPid $proc.Id -Message "Codex CLI exited $($proc.ExitCode)" -ContextBytes $ContextBytes -ToolCalls $ToolCalls -Mode $Mode -CurrentCommand $commandLine -BlockedReason "codex_cli_exit_$($proc.ExitCode)"
         [Console]::Error.WriteLine("codex_cli_exit_$($proc.ExitCode)")
         exit $proc.ExitCode
     }
-    Write-AgentStatus -Path $StatusPath -State "collecting_diff" -TaskId $TaskId -Workspace $Workspace -LogRoot $LogRoot -Timeout $Timeout -CodexPid $proc.Id -Message "Codex finished; collecting git diff" -ContextBytes $ContextBytes -ToolCalls $ToolCalls -Mode $Mode
+    Write-AgentStatus -Path $StatusPath -State "collecting_diff" -Phase "patch" -TaskId $TaskId -Workspace $Workspace -LogRoot $LogRoot -Timeout $Timeout -CodexPid $proc.Id -Message "Codex finished; collecting git diff" -ContextBytes $ContextBytes -ToolCalls $ToolCalls -Mode $Mode
 }
 
 function Get-GitDiff {
@@ -371,10 +483,10 @@ try {
         if ($payload.context.PSObject.Properties.Name -contains "provider") { $mode = [string]$payload.context.provider }
     }
     $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-    $logRoot = Join-Path (Join-Path (Get-Location).Path "benchmarks\workspaces\external_patch_agent_logs") "$safeTaskId`_$timestamp"
+    $logRoot = Join-Path (Join-Path $script:RepoRoot "benchmarks\workspaces\external_patch_agent_logs") "$safeTaskId`_$timestamp"
     New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
     $statusPath = Join-Path $logRoot "agent_status.json"
-    Write-AgentStatus -Path $statusPath -State "initialized" -TaskId $safeTaskId -Workspace $workspace -LogRoot $logRoot -Timeout $TimeoutSeconds -Message "payload parsed; station/logs initialized" -ContextBytes $contextBytes -ToolCalls $toolCalls -Mode $mode
+    Write-AgentStatus -Path $statusPath -State "initialized" -Phase "initialize" -TaskId $safeTaskId -Workspace $workspace -LogRoot $logRoot -Timeout $TimeoutSeconds -Message "payload parsed; station/logs initialized" -ContextBytes $contextBytes -ToolCalls $toolCalls -Mode $mode
     $resolvedStationMode = Resolve-StationMode -Requested $StationMode
     Start-AgentStation -Mode $resolvedStationMode -LogRoot $logRoot -TaskId $safeTaskId -Workspace $workspace -Timeout $TimeoutSeconds -StatusPath $statusPath -DryRun:$StationDryRun
 
@@ -382,11 +494,11 @@ try {
     Invoke-CodexPatchAgent -CodexPath $codexPath -Workspace $workspace -Prompt $prompt -LogRoot $logRoot -Timeout $TimeoutSeconds -ModelName $Model -StatusPath $statusPath -TaskId $safeTaskId -ContextBytes $contextBytes -ToolCalls $toolCalls -Mode $mode
     $patch = Get-GitDiff -Workspace $workspace
     $patchBytes = [System.Text.Encoding]::UTF8.GetByteCount($patch)
-    Write-AgentStatus -Path $statusPath -State "completed" -TaskId $safeTaskId -Workspace $workspace -LogRoot $logRoot -Timeout $TimeoutSeconds -Message "patch collected ($patchBytes bytes)" -ContextBytes $contextBytes -ToolCalls $toolCalls -Mode $mode
+    Write-AgentStatus -Path $statusPath -State "completed" -Phase "completed" -TaskId $safeTaskId -Workspace $workspace -LogRoot $logRoot -Timeout $TimeoutSeconds -Message "patch collected ($patchBytes bytes)" -ContextBytes $contextBytes -ToolCalls $toolCalls -Mode $mode -PatchBytes $patchBytes -CleanSourcePatch $true
     [Console]::Out.WriteLine($patch)
 } catch {
     if ($statusPath) {
-        Write-AgentStatus -Path $statusPath -State "failed" -TaskId $safeTaskId -Workspace $workspace -LogRoot $logRoot -Timeout $TimeoutSeconds -Message $_.Exception.Message
+        Write-AgentStatus -Path $statusPath -State "failed" -Phase "failed" -TaskId $safeTaskId -Workspace $workspace -LogRoot $logRoot -Timeout $TimeoutSeconds -Message $_.Exception.Message -BlockedReason $_.Exception.Message
     }
     [Console]::Error.WriteLine($_.Exception.Message)
     exit 1

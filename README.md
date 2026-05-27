@@ -82,8 +82,8 @@ Latest clean local diagnostic pattern:
 | v0 retrieval diagnostics | `rg_only` and `codegraph_full` both run cleanly; CodeGraph is not faster than `rg` | component diagnostic only |
 | v0.5 provider diagnostics | `rg_planned` is the strongest local retriever; `codegraph_planned` adds routing/proof structure but is slower | not a CodeGraph-over-rg claim |
 | Claim/proof discipline | claimability, unsupported-claim, graph-proof-overclaim, and query-leakage violations are 0 in the latest clean sweep | local diagnostic only |
-| SWE-bench Lite harness | gold-validation path has passed for `sympy__sympy-20590` | harness readiness, not agent quality |
-| SWE-bench patch quality | requires real external-agent predictions evaluated through the SWE-bench harness | no patch-quality score claimed |
+| SWE-bench Lite harness | gold validation and Docker patch evaluation have passed for `sympy__sympy-20590` | local harness readiness, not an official score |
+| SWE-bench patch quality | one-task `baseline` / `rg_only` E2E ran with real external-agent patches; CodeGraph modes are not yet attributable | local diagnostic only; no CodeGraph patch-quality claim |
 
 See: [Intended Tool Quality Gate](reports/final/intended_tool_quality_gate.md)
 and [Manual Relation Precision](reports/final/manual_relation_precision.md).

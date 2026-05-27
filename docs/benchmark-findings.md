@@ -96,9 +96,12 @@ SWE-bench Lite gold validation has completed for `sympy__sympy-20590` through
 the local Linux-container route in a normal user/approved unsandboxed process.
 That is harness readiness evidence only.
 
-Patch-quality scoring still requires actual external-agent predictions
-evaluated through the SWE-bench harness. Setup readiness, mock-agent runs, and
-gold-validation runs are not patch-quality scores.
+Patch-quality predictions have now run for `baseline` and `rg_only` on the
+same one-task local diagnostic. Both modes generated real patches, completed
+Docker evaluation, and resolved, but both failed the clean-source-patch gate due
+an extra test-file edit. CodeGraph patch-quality is still unmeasured because
+`codegraph_exact_text` and `codegraph_full` were skipped before agent execution
+when context was invalid for attribution.
 
 ## What The Results Actually Say
 

@@ -189,11 +189,18 @@ SWE-bench-family results require real external-agent predictions evaluated by an
 official-compatible harness. Setup checks, mock-agent runs, and gold-patch
 validation are prerequisites, not patch-quality scores.
 
-Current lab status: the first local one-task official-compatible smoke ran on
-`sympy__sympy-20590` for `baseline` and `rg_only`. Both resolved under the
-local SWE-bench Lite harness, but both failed the clean-source-patch gate by
-editing an extra test file. That makes the result useful as harness evidence,
-not a product win or public benchmark claim.
+Current lab status: the one-task SWE-bench Lite E2E path now generates real
+external-agent patches and evaluates them through Docker for `baseline` and
+`rg_only` on `sympy__sympy-20590`. Both modes resolved under the local harness,
+but both failed the clean-source-patch gate by editing an extra test file. That
+proves the harness path is alive, not that the product is winning.
+
+CodeGraph patch-quality is still unmeasured. In
+`swebench_lite_e2e_20260523_192718`, `codegraph_exact_text` and
+`codegraph_full` were skipped before agent execution because context was invalid
+for attribution: `blocked_index_timeout;
+candidate_spool_present_but_no_gold_hit`. This skip is correct; it prevents an
+independent agent patch from being counted as CodeGraph evidence.
 
 ## 9. Full-Codebase Complexity Tests
 

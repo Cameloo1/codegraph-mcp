@@ -186,6 +186,7 @@ class RgPlannedProvider(ContextProvider):
                 "context_bytes": state.context_bytes,
                 "context_lines": len(state.snippets),
                 "wall_time_ms": int((time.perf_counter() - started) * 1000),
+                "command_wall_time_ms": sum(int(command.get("wall_time_ms") or 0) for command in plan),
             },
             "claimability": packet.claimability,
         }

@@ -285,6 +285,13 @@ workspaces. The wrapper supports `-ValidateOnly` for readiness checks that do
 not call a model. Local runs open the Windows agent station by default; use
 `-StationMode never` for noninteractive execution.
 
+The station reads the same stable files every run: `agent_status.json`,
+`codex_stdout.jsonl`, `codex_stderr.txt`, `codex_last_message.txt`,
+`prompt.md`, and `station_launch_command.txt`. The current implementation is
+PowerShell-native; a future `benchstation` Bubble Tea TUI should consume this
+same JSON/event contract instead of changing the wrapper stdout or patch
+capture contract.
+
 Latest setup check:
 
 - `CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND` set to the Codex wrapper above.
@@ -303,6 +310,43 @@ Latest one-task external-agent patch smoke:
   extra test file: `sympy/core/tests/test_symbol.py`.
 - This is local one-task patch-quality evidence only. It is not an official
   SWE-bench score, not a public benchmark claim, and not CodeGraph attribution.
+
+Latest one-task E2E diagnostic:
+
+- Run id: `swebench_lite_e2e_20260523_192718`
+- Task: `sympy__sympy-20590`
+- Modes requested: `baseline`, `rg_only`, `codegraph_exact_text`,
+  `codegraph_full`
+- Resource guard: enabled, 12 GiB process-tree RSS cap, 3 GiB system-free RAM
+  floor, no resource-limit failures.
+
+| Surface | Current result |
+|---|---|
+| `baseline` | agent ran, Docker evaluation completed, resolved, clean-source-patch failed due extra test-file edit |
+| `rg_only` | agent ran, Docker evaluation completed, resolved, clean-source-patch failed due extra test-file edit |
+| `codegraph_exact_text` | agent skipped because context was invalid for attribution |
+| `codegraph_full` | agent skipped because context was invalid for attribution |
+| CodeGraph blocker | `blocked_index_timeout; candidate_spool_present_but_no_gold_hit` |
+
+The measured patches edited `sympy/core/_print_helpers.py` and also edited
+`sympy/core/tests/test_symbol.py`. The clean-source-patch gate therefore failed
+for both measured modes even though the SWE-bench harness marked both patches
+resolved.
+
+This updates the phase interpretation:
+
+| Gate | Status |
+|---|---|
+| SWE-bench harness unblock | pass |
+| External-agent patch generation | pass for `baseline` and `rg_only` |
+| Docker patch evaluation | pass for `baseline` and `rg_only` |
+| CodeGraph context attribution | blocked |
+| CodeGraph patch-quality measurement | not measured |
+
+`status=complete` means the local runner completed and wrote reports. It does
+not mean the CodeGraph SWE-bench patch-quality gate is ready. That gate requires
+valid CodeGraph context, agent execution, and SWE-bench evaluation for a
+CodeGraph-enabled mode.
 
 Mock-agent patch runs are scaffold-only and never count as model quality.
 

@@ -12,12 +12,16 @@ from benchmarks.harness.runners.run_swebench_patch_smoke import (
     BenchmarkBlocked,
     PatchSmokeRunner,
     TASK_ID,
+    _classify_codegraph_gold_miss,
     _candidate_context_has_gold_hit,
     _candidate_query_index_path,
+    _context_gold_diagnostic,
     _index_progress_summary,
     _is_test_path,
     _patch_file_quality,
+    _phase_gates,
     _prebuild_status,
+    _provider_visible_query_specs,
 )
 
 
@@ -95,7 +99,83 @@ class SwebenchPatchSmokeRunnerTests(unittest.TestCase):
     def test_candidate_query_index_path_matches_release_sidecar_name(self) -> None:
         spool = Path("sympy__sympy-20590.candidate_spool.jsonl")
 
-        self.assertEqual(_candidate_query_index_path(spool).name, "sympy__sympy-20590.candidate_spool.query.sqlite")
+        self.assertEqual(
+            _candidate_query_index_path(spool).name,
+            "sympy__sympy-20590.candidate_spool.jsonl.query.sqlite",
+        )
+
+    def test_provider_visible_query_specs_do_not_leak_hidden_gold_file(self) -> None:
+        task = {
+            "task": "sympy.Symbol('s').__dict__ changed but __slots__ should prevent it.",
+            "gold_files": ["sympy/core/_print_helpers.py"],
+            "gold_symbols": ["Printable", "Symbol", "__dict__", "__slots__"],
+        }
+
+        specs = _provider_visible_query_specs(task)
+        terms = {spec["term"] for spec in specs}
+
+        self.assertIn("Symbol", terms)
+        self.assertIn("__dict__", terms)
+        self.assertIn("__slots__", terms)
+        self.assertNotIn("_print_helpers", terms)
+        self.assertNotIn("Printable", terms)
+        self.assertTrue(all(spec["allowed"] for spec in specs))
+
+    def test_context_gold_diagnostic_is_diagnostic_only(self) -> None:
+        task = {
+            "gold_files": ["sympy/core/_print_helpers.py"],
+            "gold_symbols": ["Printable"],
+        }
+
+        diagnostic = _context_gold_diagnostic(
+            task,
+            ["sympy/core/_print_helpers.py"],
+            "class Printable: pass",
+        )
+
+        self.assertTrue(diagnostic["gold_diagnostic_only"])
+        self.assertTrue(diagnostic["gold_not_passed_to_provider"])
+        self.assertTrue(diagnostic["gold_returned_to_agent"])
+        self.assertEqual(diagnostic["gold_file_hits_in_files"], ["sympy/core/_print_helpers.py"])
+
+    def test_phase_gates_do_not_mark_codegraph_unmeasured_run_ready(self) -> None:
+        mode_results = {
+            "baseline": {"agent": {"status": "ok"}, "swebench": {"status": "completed"}},
+            "codegraph_exact_text": {
+                "context_valid_for_attribution": False,
+                "agent": {"status": "skipped_invalid_context"},
+                "swebench": {"status": "not_run"},
+            },
+        }
+
+        gates = _phase_gates(["baseline", "codegraph_exact_text"], mode_results, {"count": 0, "commands": []})
+
+        self.assertFalse(gates["phase_gate_ready"])
+        self.assertTrue(gates["external_agent_working"])
+        self.assertTrue(gates["swebench_eval_working"])
+        self.assertFalse(gates["codegraph_patch_quality_measured"])
+        self.assertIn("codegraph_patch_quality_not_measured", gates["phase_gate_blockers"])
+
+    def test_gold_miss_classifies_extracted_file_missing_from_spool(self) -> None:
+        context = {
+            "gold_files": ["sympy/core/_print_helpers.py"],
+            "gold_returned_to_agent": False,
+        }
+        spool = {
+            "gold_extraction_diagnostic": {
+                "completed_gold_files": ["sympy/core/_print_helpers.py"],
+            },
+            "gold_files_in_spool_text": [],
+            "gold_files_in_query_index": [],
+        }
+
+        classification = _classify_codegraph_gold_miss(
+            prebuild={"status": "blocked_index_timeout"},
+            spool_diagnostic=spool,
+            context_gold_diagnostic=context,
+        )
+
+        self.assertEqual(classification, "extracted_gold_not_published_to_spool_before_timeout")
 
     def test_index_progress_summary_preserves_last_profile_file(self) -> None:
         stderr = "\n".join(

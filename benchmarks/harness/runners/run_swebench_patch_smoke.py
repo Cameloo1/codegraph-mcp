@@ -8,6 +8,7 @@ import shutil
 import time
 from pathlib import Path
 from typing import Any
+import sqlite3
 
 from benchmarks.harness.resource_guard import (
     ResourceLimits,
@@ -29,7 +30,12 @@ MAX_CONTEXT_BYTES = 120_000
 MAX_TIME_S = 1800
 CODEGRAPH_CONTEXT_TIMEOUT_S = 240
 DEFAULT_AGENT_TIMEOUT_S = MAX_TIME_S + 180
+DEFAULT_EVAL_TIMEOUT_S = 1800
 MAX_TOOL_CALLS = 80
+PATCH_SMOKE_CANDIDATE_SPOOL_MAX_MIB = 4
+PATCH_SMOKE_CANDIDATE_SPOOL_MAX_RECORDS = 4096
+PATCH_SMOKE_CANDIDATE_SPOOL_PER_DIR_SOFT_CAP = 768
+PATCH_SMOKE_MAX_ARTIFACTS_MIB = 64
 DEFAULT_TASK_FIXTURE = ROOT / fixture_path("swebench_lite", "swebench_lite_sympy_20590.json")
 LEGACY_TASK_CACHE = (
     ROOT
@@ -58,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-agent", action="store_true")
     parser.add_argument("--codegraph-context-timeout-s", type=int, default=CODEGRAPH_CONTEXT_TIMEOUT_S)
     parser.add_argument("--agent-timeout-s", type=int, default=DEFAULT_AGENT_TIMEOUT_S)
+    parser.add_argument("--eval-timeout-s", type=int, default=DEFAULT_EVAL_TIMEOUT_S)
     parser.add_argument("--task-fixture", default=str(DEFAULT_TASK_FIXTURE))
     add_resource_guard_arguments(parser)
     args = parser.parse_args(argv)
@@ -74,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
         skip_agent=args.skip_agent,
         codegraph_context_timeout_s=args.codegraph_context_timeout_s,
         agent_timeout_s=args.agent_timeout_s,
+        eval_timeout_s=args.eval_timeout_s,
         task_fixture=resolve_benchmark_path(args.task_fixture).resolve() if args.task_fixture else None,
         resource_limits=resource_limits_from_args(args),
     )
@@ -95,6 +103,7 @@ class PatchSmokeRunner:
         skip_agent: bool,
         codegraph_context_timeout_s: int,
         agent_timeout_s: int,
+        eval_timeout_s: int = DEFAULT_EVAL_TIMEOUT_S,
         task_fixture: Path | None,
         resource_limits: ResourceLimits | None = None,
     ) -> None:
@@ -107,6 +116,7 @@ class PatchSmokeRunner:
         self.skip_agent = skip_agent
         self.codegraph_context_timeout_s = codegraph_context_timeout_s
         self.agent_timeout_s = agent_timeout_s
+        self.eval_timeout_s = eval_timeout_s
         self.task_fixture = task_fixture
         self.resource_limits = resource_limits or resource_limits_from_env()
         self.logs_dir = self.output_dir / "logs"
@@ -148,10 +158,13 @@ class PatchSmokeRunner:
             self._annotate_clean_patch_quality(result, task)
 
         after_dot_codegraph = (ROOT / ".codegraph").exists()
+        resource_limit_failures = summarize_resource_limit_failures(_load_jsonl(self.commands_jsonl))
+        gates = _phase_gates(self.modes, mode_results, resource_limit_failures)
         summary = {
             "schema_version": "swebench_patch_smoke_v1",
             "status": "complete",
-            "ready_to_move_on": True,
+            "ready_to_move_on": gates["phase_gate_ready"],
+            "phase_gates": gates,
             "run_id": self.output_dir.name,
             "task_id": self.instance_id,
             "modes": self.modes,
@@ -168,7 +181,7 @@ class PatchSmokeRunner:
             else None,
             "codegraph_prebuild_status": codegraph_prebuild.get("status") if codegraph_prebuild else None,
             "resource_guard": self.resource_limits.to_dict(),
-            "resource_limit_failures": summarize_resource_limit_failures(_load_jsonl(self.commands_jsonl)),
+            "resource_limit_failures": resource_limit_failures,
         }
         self._write_json(self.output_dir / "summary.json", summary)
         self._write_summary_md(summary)
@@ -261,6 +274,10 @@ class PatchSmokeRunner:
             "repo_path": str(repo),
             "context_valid_for_attribution": False,
             "context_failure": context.get("context_failure", "invalid_context"),
+            "gold_diagnostic": context.get("gold_diagnostic"),
+            "candidate_spool_gold_diagnostic": context.get("candidate_spool_gold_diagnostic"),
+            "provider_visible_queries": context.get("provider_visible_queries"),
+            "codegraph_gold_miss_classification": context.get("codegraph_gold_miss_classification"),
             "context_bytes": context["raw_context_bytes"],
             "estimated_context_tokens": context["estimated_context_tokens"],
             "tool_calls": context["tool_calls"],
@@ -412,9 +429,11 @@ class PatchSmokeRunner:
     def _prebuild_codegraph_context(self, task: dict[str, Any]) -> dict[str, Any]:
         codegraph = ROOT / "target" / "release" / "codegraph-mcp.exe"
         repo = self._prepare_repo("codegraph_context")
-        db = self.output_dir / "db" / "codegraph_shared" / f"{self.instance_id}.sqlite"
-        vector = self.output_dir / "db" / "codegraph_shared" / f"{self.instance_id}.vectors.json"
-        spool = self.output_dir / "db" / "codegraph_shared" / f"{self.instance_id}.candidate_spool.jsonl"
+        # Keep Windows paths short: SQLite may create journal/WAL siblings that
+        # cross legacy MAX_PATH even when the primary file path barely fits.
+        db = self.output_dir / "db" / "cg" / "cg.sqlite"
+        vector = self.output_dir / "db" / "cg" / "vectors.json"
+        spool = self.output_dir / "db" / "cg" / "spool.jsonl"
         query_index = _candidate_query_index_path(spool)
         build_vector = "codegraph_full" in self.modes
         db.parent.mkdir(parents=True, exist_ok=True)
@@ -431,8 +450,16 @@ class PatchSmokeRunner:
             str(spool),
             "--candidate-spool-policy",
             "bounded",
+            "--candidate-spool-max-mib",
+            str(PATCH_SMOKE_CANDIDATE_SPOOL_MAX_MIB),
+            "--candidate-spool-max-records",
+            str(PATCH_SMOKE_CANDIDATE_SPOOL_MAX_RECORDS),
+            "--candidate-spool-per-dir-soft-cap",
+            str(PATCH_SMOKE_CANDIDATE_SPOOL_PER_DIR_SOFT_CAP),
             "--candidate-spool-query-index",
             "yes",
+            "--max-artifacts-mib",
+            str(PATCH_SMOKE_MAX_ARTIFACTS_MIB),
         ]
         if build_vector:
             index.extend(["--build-vector-index", str(vector)])
@@ -440,6 +467,7 @@ class PatchSmokeRunner:
         status_record = self._run_command([str(codegraph), "--repo", str(repo), "--db", str(db), "status", "--json"], "codegraph_prebuild_status", timeout_s=120)
         progress = _index_progress_summary(index_record.get("stderr", ""))
         status_json = _parse_json_loose(status_record.get("stdout", ""))
+        gold_extraction = _index_gold_file_events(index_record.get("stderr", ""), task.get("gold_files") or [])
         manifest = {
             "schema_version": "swebench_codegraph_prebuild_v1",
             "task_id": self.instance_id,
@@ -449,6 +477,12 @@ class PatchSmokeRunner:
             "candidate_spool_path": str(spool),
             "candidate_spool_query_index_path": str(query_index),
             "build_vector": build_vector,
+            "candidate_spool_runner_caps": {
+                "max_mib": PATCH_SMOKE_CANDIDATE_SPOOL_MAX_MIB,
+                "max_records": PATCH_SMOKE_CANDIDATE_SPOOL_MAX_RECORDS,
+                "per_dir_soft_cap": PATCH_SMOKE_CANDIDATE_SPOOL_PER_DIR_SOFT_CAP,
+                "max_artifacts_mib": PATCH_SMOKE_MAX_ARTIFACTS_MIB,
+            },
             "status": _prebuild_status(index_record, db),
             "index_command": _command_brief(index_record),
             "status_command": _command_brief(status_record),
@@ -461,6 +495,7 @@ class PatchSmokeRunner:
             "candidate_spool_query_index_exists": query_index.exists(),
             "candidate_spool_query_index_bytes": query_index.stat().st_size if query_index.exists() else 0,
             "index_progress": progress,
+            "gold_extraction_diagnostic": gold_extraction,
             "status_json": status_json,
         }
         if manifest["status"] != "complete" and manifest["candidate_spool_exists"]:
@@ -530,7 +565,10 @@ class PatchSmokeRunner:
         if full and vector:
             context_cmd.extend(["--enable-vector-candidates", "--vector-index", str(vector), "--enable-nuance-rescue-candidates"])
         records.append(self._run_command(context_cmd, f"{mode}_context_pack", timeout_s=300))
-        for kind, query in (("text", "__dict__"), ("text", "__slots__"), ("symbols", "Symbol"), ("symbols", "Printable"), ("files", "_print_helpers")):
+        query_specs = _provider_visible_query_specs(task)
+        for spec in query_specs:
+            kind = spec["kind"]
+            query = spec["term"]
             records.append(
                 self._run_command(
                     [str(codegraph), "--repo", str(repo), "--db", str(db), "query", kind, query, "--agent-json", "--limit", "8"],
@@ -546,6 +584,7 @@ class PatchSmokeRunner:
                     files.append(path)
         failed = [record for record in records if record["exit_code"] != 0]
         text = _trim_context(records[1:], MAX_CONTEXT_BYTES)
+        gold_diagnostic = _context_gold_diagnostic(task, files, text)
         return self._context_packet(
             mode,
             text=text,
@@ -559,6 +598,8 @@ class PatchSmokeRunner:
             db_path=str(db),
             vector_index=str(vector) if full and vector else None,
             codegraph_prebuild=prebuild,
+            provider_visible_queries=query_specs,
+            gold_diagnostic=gold_diagnostic,
         )
 
     def _staged_candidate_context(self, task: dict[str, Any], repo: Path, mode: str, prebuild: dict[str, Any]) -> dict[str, Any]:
@@ -602,7 +643,10 @@ class PatchSmokeRunner:
                 timeout_s=120,
             )
         ]
-        for kind, query in (("files", "_print_helpers"), ("symbols", "Printable"), ("symbols", "Symbol"), ("text", "__dict__"), ("text", "__slots__")):
+        query_specs = _provider_visible_query_specs(task)
+        for spec in query_specs:
+            kind = spec["kind"]
+            query = spec["term"]
             records.append(
                 self._run_command(
                     [
@@ -634,8 +678,17 @@ class PatchSmokeRunner:
         text = _trim_context(records, MAX_CONTEXT_BYTES)
         useful = _candidate_context_has_gold_hit(task, files, text)
         failed = [record for record in records if record["exit_code"] != 0]
+        gold_diagnostic = _context_gold_diagnostic(task, files, text)
+        spool_diagnostic = _candidate_spool_gold_diagnostic(task, spool, prebuild)
+        miss_classification = _classify_codegraph_gold_miss(
+            prebuild=prebuild,
+            spool_diagnostic=spool_diagnostic,
+            context_gold_diagnostic=gold_diagnostic,
+        )
         if not useful:
             failure = f"{prebuild.get('status', 'prebuild_failed')}; candidate_spool_present_but_no_gold_hit"
+            if miss_classification:
+                failure += f"; {miss_classification}"
             if failed:
                 failure += "; " + "; ".join(record["failure_kind"] for record in failed)
         else:
@@ -659,6 +712,10 @@ class PatchSmokeRunner:
             candidate_spool_path=str(spool),
             candidate_only=True,
             codegraph_prebuild=prebuild,
+            provider_visible_queries=query_specs,
+            gold_diagnostic=gold_diagnostic,
+            candidate_spool_gold_diagnostic=spool_diagnostic,
+            codegraph_gold_miss_classification=miss_classification,
         )
 
     def _context_packet(self, mode: str, *, text: str, files: list[str], tool_calls: int, wall_time_ms: int, rg_calls: int = 0, codegraph_calls: int = 0, context_valid_for_attribution: bool = True, context_failure: str = "", claimability: dict[str, Any] | None = None, **extra: Any) -> dict[str, Any]:
@@ -756,12 +813,25 @@ class PatchSmokeRunner:
     def _run_swebench_eval(self, prediction_paths: dict[str, Path]) -> dict[str, Any]:
         if not prediction_paths:
             return {}
+        swebench_checkout = self._swebench_checkout_path()
+        if not swebench_checkout:
+            return {
+                mode: {
+                    "status": "blocked_missing_swebench_upstream",
+                    "blocked_reason": (
+                        "Populate benchmarks/tracks/swebench_lite/upstream/SWE-bench "
+                        "or benchmarks/upstream/SWE-bench with the pinned SWE-bench checkout."
+                    ),
+                }
+                for mode in prediction_paths
+            }
+        swebench_checkout_container = "/work/" + swebench_checkout.relative_to(ROOT).as_posix()
         script_lines = [
             "set -u",
             "cd /work",
             "apt-get update >/dev/null",
             "DEBIAN_FRONTEND=noninteractive apt-get install -y python3-pip python3-venv git >/dev/null",
-            "python3 -m pip install --break-system-packages -e /work/benchmarks/upstream/SWE-bench >/dev/null",
+            f"python3 -m pip install --break-system-packages -e {swebench_checkout_container} >/dev/null",
         ]
         for mode, pred in prediction_paths.items():
             mode_dir = self.eval_dir / mode
@@ -805,12 +875,25 @@ class PatchSmokeRunner:
                 docker_script,
             ],
             "swebench_eval_all_modes",
-            timeout_s=max(2400, MAX_TIME_S * max(1, len(prediction_paths))),
+            timeout_s=self.eval_timeout_s,
         )
         results: dict[str, Any] = {}
         for mode in prediction_paths:
             results[mode] = self._load_eval_result(mode, record)
         return results
+
+    def _swebench_checkout_path(self) -> Path | None:
+        for candidate in (
+            ROOT / "benchmarks" / "tracks" / "swebench_lite" / "upstream" / "SWE-bench",
+            ROOT / "benchmarks" / "upstream" / "SWE-bench",
+        ):
+            if (candidate / "swebench").is_dir() and (
+                (candidate / "setup.py").exists()
+                or (candidate / "pyproject.toml").exists()
+                or (candidate / "swebench.egg-info").is_dir()
+            ):
+                return candidate
+        return None
 
     def _load_eval_result(self, mode: str, docker_record: dict[str, Any]) -> dict[str, Any]:
         mode_dir = self.eval_dir / mode
@@ -967,6 +1050,23 @@ class PatchSmokeRunner:
         return candidates[-1]
 
     def _default_source_repo(self) -> Path:
+        cached_candidates = sorted(
+            [
+                candidate
+                for summary_dir in (ROOT / "benchmarks" / "results" / "summaries").glob("swebench_*")
+                for candidate in (
+                    summary_dir / "repos" / "cg_context",
+                    summary_dir / "repos" / "rg",
+                    summary_dir / "repos" / "sympy-source",
+                    summary_dir / "repos" / f"{self.instance_id}_rg_strong",
+                )
+                if (candidate / ".git").exists()
+            ],
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        if cached_candidates:
+            return cached_candidates[0]
         prior = ROOT / "benchmarks" / "results" / "summaries" / "swebench_focused_20260521_163620" / "repos" / "sympy-source"
         if not prior.exists():
             prior = ROOT / "benchmarks" / "results" / "summaries" / "swebench_focused_20260521_163620" / "repos" / f"{self.instance_id}_rg_strong"
@@ -989,8 +1089,13 @@ class PatchSmokeRunner:
                 "max_time_s": MAX_TIME_S,
                 "codegraph_context_timeout_s": self.codegraph_context_timeout_s,
                 "agent_timeout_s": self.agent_timeout_s,
+                "eval_timeout_s": self.eval_timeout_s,
                 "max_tool_calls": MAX_TOOL_CALLS,
                 "max_context_bytes": MAX_CONTEXT_BYTES,
+                "candidate_spool_max_mib": PATCH_SMOKE_CANDIDATE_SPOOL_MAX_MIB,
+                "candidate_spool_max_records": PATCH_SMOKE_CANDIDATE_SPOOL_MAX_RECORDS,
+                "candidate_spool_per_dir_soft_cap": PATCH_SMOKE_CANDIDATE_SPOOL_PER_DIR_SOFT_CAP,
+                "max_artifacts_mib": PATCH_SMOKE_MAX_ARTIFACTS_MIB,
             },
             "resource_guard": self.resource_limits.to_dict(),
             "claim_boundary": "local diagnostic only; no official SWE-bench score claim",
@@ -1006,9 +1111,36 @@ class PatchSmokeRunner:
             "",
             "Local one-task diagnostic only. This is not an official SWE-bench score or public benchmark claim.",
             "",
+            "## Phase Gates",
+            "",
+        ]
+        gates = summary.get("phase_gates") or {}
+        for key in (
+            "harness_run_complete",
+            "external_agent_working",
+            "swebench_eval_working",
+            "codegraph_context_attributable",
+            "codegraph_patch_quality_measured",
+            "phase_gate_ready",
+        ):
+            if key in gates:
+                lines.append(f"- `{key}`: {gates[key]}")
+        blockers = gates.get("phase_gate_blockers") or []
+        if blockers:
+            lines.append(f"- `phase_gate_blockers`: {', '.join(blockers)}")
+        lines.extend(
+            [
+                "",
+                "## Results",
+                "",
+            ]
+        )
+        lines.extend(
+            [
             "| Mode | Patch | Resolved | Wrong-file edits | Context bytes | Context valid |",
             "| --- | ---: | ---: | ---: | ---: | ---: |",
-        ]
+            ]
+        )
         for mode, result in summary["results_by_mode"].items():
             swe = result.get("swebench", {})
             lines.append(
@@ -1055,7 +1187,272 @@ def _mode_repo_slug(mode: str) -> str:
 
 
 def _candidate_query_index_path(spool: Path) -> Path:
-    return spool.with_suffix(".query.sqlite")
+    return spool.with_name(f"{spool.name}.query.sqlite")
+
+
+def _provider_visible_query_specs(task: dict[str, Any]) -> list[dict[str, Any]]:
+    task_text = str(task.get("task") or task.get("problem_statement") or "")
+    specs: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(kind: str, term: str, source: str) -> None:
+        term = term.strip()
+        if not term or len(term) > 160:
+            return
+        key = (kind, term.lower())
+        if key in seen:
+            return
+        seen.add(key)
+        specs.append(
+            {
+                "kind": kind,
+                "term": term,
+                "source": source,
+                "visible_in_prompt": term in task_text,
+                "gold_overlap": _term_overlaps_gold(term, task),
+                "allowed": True,
+            }
+        )
+
+    for match in re.finditer(r"\b[\w./-]+\.py\b", task_text):
+        add("files", match.group(0), "prompt_file_hint")
+    for match in re.finditer(r"__[_A-Za-z0-9]+__", task_text):
+        add("text", match.group(0), "prompt_identifier")
+    for match in re.finditer(r"\bsympy\.([A-Za-z_][A-Za-z0-9_]*)\b", task_text):
+        add("symbols", match.group(1), "prompt_symbol_reference")
+    visible_symbol_stopwords = {
+        "AttributeError",
+        "Error",
+        "Given",
+        "In",
+        "Python",
+        "Since",
+        "This",
+        "Traceback",
+        "Version",
+    }
+    for token in re.findall(r"\b[A-Z][A-Za-z0-9_]{2,}\b", task_text):
+        if token in visible_symbol_stopwords:
+            continue
+        add("symbols", token, "prompt_identifier")
+
+    return specs[:8]
+
+
+def _term_overlaps_gold(term: str, task: dict[str, Any]) -> bool:
+    normalized = term.replace("\\", "/").lower()
+    gold_files = [str(path).replace("\\", "/").lower() for path in task.get("gold_files") or []]
+    gold_symbols = [str(symbol).lower() for symbol in task.get("gold_symbols") or []]
+    if normalized in gold_symbols:
+        return True
+    return any(normalized == path or normalized == Path(path).name.lower() for path in gold_files)
+
+
+def _context_gold_diagnostic(task: dict[str, Any], files: list[str], text: str) -> dict[str, Any]:
+    normalized_files = {path.replace("\\", "/").lstrip("./") for path in files}
+    normalized_text = text.replace("\\", "/")
+    gold_files = [str(path).replace("\\", "/").lstrip("./") for path in task.get("gold_files") or []]
+    gold_symbols = [str(symbol) for symbol in task.get("gold_symbols") or []]
+    file_hits_in_files = [gold for gold in gold_files if gold in normalized_files]
+    file_hits_in_text = [gold for gold in gold_files if gold in normalized_text]
+    symbol_hits_in_text = [symbol for symbol in gold_symbols if symbol and symbol in text]
+    return {
+        "gold_diagnostic_only": True,
+        "gold_not_passed_to_provider": True,
+        "gold_files": gold_files,
+        "gold_symbols": gold_symbols,
+        "gold_file_hits_in_files": file_hits_in_files,
+        "gold_file_hits_in_text": file_hits_in_text,
+        "gold_symbol_hits_in_text": symbol_hits_in_text,
+        "gold_returned_to_agent": bool(file_hits_in_files or file_hits_in_text),
+    }
+
+
+def _candidate_spool_gold_diagnostic(
+    task: dict[str, Any],
+    spool: Path,
+    prebuild: dict[str, Any] | None,
+) -> dict[str, Any]:
+    query_index = _candidate_query_index_path(spool)
+    gold_files = [str(path).replace("\\", "/").lstrip("./") for path in task.get("gold_files") or []]
+    gold_symbols = [str(symbol) for symbol in task.get("gold_symbols") or []]
+    spool_text_hits = _scan_text_file_for_terms(spool, gold_files + gold_symbols)
+    query_index_hits = _scan_candidate_query_index_for_gold(query_index, gold_files, gold_symbols)
+    extraction = (prebuild or {}).get("gold_extraction_diagnostic") or {}
+    return {
+        "gold_diagnostic_only": True,
+        "gold_not_passed_to_provider": True,
+        "candidate_spool_path": str(spool),
+        "candidate_spool_exists": spool.exists(),
+        "candidate_spool_bytes": spool.stat().st_size if spool.exists() else 0,
+        "candidate_spool_query_index_path": str(query_index),
+        "candidate_spool_query_index_exists": query_index.exists(),
+        "gold_files_in_spool_text": [term for term in gold_files if spool_text_hits.get(term)],
+        "gold_symbols_in_spool_text": [term for term in gold_symbols if spool_text_hits.get(term)],
+        "gold_files_in_query_index": query_index_hits["gold_files"],
+        "gold_symbols_in_query_index": query_index_hits["gold_symbols"],
+        "gold_extraction_diagnostic": extraction,
+    }
+
+
+def _scan_text_file_for_terms(path: Path, terms: list[str]) -> dict[str, bool]:
+    hits = {term: False for term in terms}
+    if not path.exists():
+        return hits
+    lowered_terms = {term: term.lower() for term in terms}
+    with path.open("r", encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            lowered = line.lower()
+            for term, lowered_term in lowered_terms.items():
+                if not hits[term] and lowered_term in lowered:
+                    hits[term] = True
+            if all(hits.values()):
+                break
+    return hits
+
+
+def _scan_candidate_query_index_for_gold(
+    query_index: Path,
+    gold_files: list[str],
+    gold_symbols: list[str],
+) -> dict[str, list[str]]:
+    hits = {"gold_files": [], "gold_symbols": []}
+    if not query_index.exists():
+        return hits
+    try:
+        connection = sqlite3.connect(query_index)
+        for gold_file in gold_files:
+            filename = Path(gold_file).name.lower()
+            row = connection.execute(
+                """
+                SELECT 1 FROM candidate_spool_records
+                WHERE normalized_path = ?1 OR filename = ?2 OR path LIKE ?3
+                LIMIT 1
+                """,
+                (gold_file.lower(), filename, f"%{gold_file}%"),
+            ).fetchone()
+            if row:
+                hits["gold_files"].append(gold_file)
+        for symbol in gold_symbols:
+            row = connection.execute(
+                """
+                SELECT 1 FROM candidate_spool_records
+                WHERE normalized_symbol = ?1
+                LIMIT 1
+                """,
+                (symbol.lower(),),
+            ).fetchone()
+            if row:
+                hits["gold_symbols"].append(symbol)
+        connection.close()
+    except sqlite3.Error:
+        return hits
+    return hits
+
+
+def _classify_codegraph_gold_miss(
+    *,
+    prebuild: dict[str, Any],
+    spool_diagnostic: dict[str, Any],
+    context_gold_diagnostic: dict[str, Any],
+) -> str:
+    if context_gold_diagnostic.get("gold_returned_to_agent"):
+        return ""
+    extraction = spool_diagnostic.get("gold_extraction_diagnostic") or {}
+    extracted = extraction.get("completed_gold_files") or []
+    gold_files = context_gold_diagnostic.get("gold_files") or []
+    missing_from_spool = [
+        gold for gold in gold_files if gold in extracted and gold not in spool_diagnostic.get("gold_files_in_spool_text", [])
+    ]
+    if missing_from_spool:
+        return "extracted_gold_not_published_to_spool_before_timeout"
+    if gold_files and not extracted:
+        return "prebuild_timeout_before_gold_file"
+    if spool_diagnostic.get("gold_files_in_spool_text") and not spool_diagnostic.get("gold_files_in_query_index"):
+        return "candidate_spool_query_index_miss"
+    if spool_diagnostic.get("gold_files_in_query_index"):
+        return "candidate_spool_query_miss"
+    if prebuild.get("status"):
+        return "gold_not_returned_to_agent"
+    return "unknown_gold_miss"
+
+
+def _index_gold_file_events(stderr: str, gold_files: list[str]) -> dict[str, Any]:
+    gold = [str(path).replace("\\", "/").lstrip("./") for path in gold_files]
+    events: dict[str, list[dict[str, Any]]] = {path: [] for path in gold}
+    for line_number, line in enumerate(stderr.splitlines(), 1):
+        event = _parse_json_loose(line.strip())
+        if not isinstance(event, dict):
+            continue
+        path = str(event.get("repo_relative_path") or event.get("file") or event.get("path") or "").replace("\\", "/").lstrip("./")
+        if path not in events:
+            continue
+        events[path].append(
+            {
+                "line": line_number,
+                "event": event.get("event"),
+                "status": event.get("status"),
+                "reason": event.get("reason"),
+            }
+        )
+    completed = [
+        path
+        for path, path_events in events.items()
+        if any(item.get("event") == "file_extract_completed" and item.get("status") == "ok" for item in path_events)
+    ]
+    started = [
+        path
+        for path, path_events in events.items()
+        if any(item.get("event") == "file_extract_started" for item in path_events)
+    ]
+    return {
+        "gold_diagnostic_only": True,
+        "gold_files": gold,
+        "started_gold_files": started,
+        "completed_gold_files": completed,
+        "events_by_gold_file": events,
+    }
+
+
+def _phase_gates(
+    modes: list[str],
+    mode_results: dict[str, dict[str, Any]],
+    resource_limit_failures: list[dict[str, Any]],
+) -> dict[str, Any]:
+    codegraph_modes = [mode for mode in modes if mode.startswith("codegraph_")]
+    agent_modes = [result for result in mode_results.values() if result.get("agent", {}).get("status") == "ok"]
+    eval_modes = [result for result in mode_results.values() if result.get("swebench", {}).get("status") == "completed"]
+    codegraph_measured = [
+        result
+        for mode, result in mode_results.items()
+        if mode.startswith("codegraph_")
+        and result.get("context_valid_for_attribution") is True
+        and result.get("agent", {}).get("status") == "ok"
+        and result.get("swebench", {}).get("status") == "completed"
+    ]
+    blockers: list[str] = []
+    if not agent_modes:
+        blockers.append("external_agent_not_working")
+    if not eval_modes:
+        blockers.append("swebench_eval_not_working")
+    if codegraph_modes and not codegraph_measured:
+        blockers.append("codegraph_patch_quality_not_measured")
+    resource_failure_count = (
+        resource_limit_failures.get("count", 0)
+        if isinstance(resource_limit_failures, dict)
+        else len(resource_limit_failures)
+    )
+    if resource_failure_count:
+        blockers.append("resource_limit_failures")
+    return {
+        "harness_run_complete": True,
+        "external_agent_working": bool(agent_modes),
+        "swebench_eval_working": bool(eval_modes),
+        "codegraph_context_attributable": bool(codegraph_measured),
+        "codegraph_patch_quality_measured": bool(codegraph_measured),
+        "phase_gate_ready": not blockers,
+        "phase_gate_blockers": blockers,
+    }
 
 
 def _prebuild_status(index_record: dict[str, Any], db: Path) -> str:

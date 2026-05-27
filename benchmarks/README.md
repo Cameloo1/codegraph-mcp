@@ -114,9 +114,10 @@ kept as thin compatibility aliases/wrappers for one migration window.
   `run_patch_eval` reports setup `ready` when
   `CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND` is set. The Codex sandbox identity
   still cannot access Docker named pipes, so Docker-backed checks must run from
-  a normal user/elevated shell or an approved unsandboxed command. The first
-  local one-task external-agent smoke has run for `baseline` and `rg_only`, but
-  it is still local diagnostic evidence only.
+  a normal user/elevated shell or an approved unsandboxed command. The current
+  one-task E2E path has generated real external-agent patches and run Docker
+  evaluation for `baseline` and `rg_only`; CodeGraph patch-quality remains
+  unmeasured because CodeGraph context was not valid for attribution.
 
 ## Setup Commands
 
@@ -180,7 +181,7 @@ quality score or SWE-bench score is claimed.
 
 Latest one-task patch-quality smoke:
 
-- Run id: `swebench_official_compatible_smoke_20260523_174023`
+- Earlier run id: `swebench_official_compatible_smoke_20260523_174023`
 - Task: `sympy__sympy-20590`
 - Modes: `baseline`, `rg_only`
 - Result: both modes generated real external-agent patches and resolved under
@@ -190,9 +191,25 @@ Latest one-task patch-quality smoke:
 - Claim boundary: local one-task diagnostic only; no public SWE-bench score,
   no CodeGraph attribution, and no CodeGraph-over-rg claim.
 
+Latest E2E diagnostic:
+
+- Run id: `swebench_lite_e2e_20260523_192718`
+- Task: `sympy__sympy-20590`
+- Modes requested: `baseline`, `rg_only`, `codegraph_exact_text`,
+  `codegraph_full`
+- Result: `baseline` and `rg_only` generated real external-agent patches,
+  completed Docker evaluation, and resolved.
+- Clean-source-patch gate: both measured modes failed because each patch also
+  edited `sympy/core/tests/test_symbol.py`.
+- CodeGraph modes: skipped before agent execution because context was invalid
+  for attribution: `blocked_index_timeout;
+  candidate_spool_present_but_no_gold_hit`.
+- Claim boundary: local one-task diagnostic only; no public SWE-bench score,
+  no CodeGraph patch-quality result, and no CodeGraph-over-rg claim.
+
 CodeGraph patch modes remain gated: a CodeGraph agent run counts only when the
 context packet is valid for attribution. Current SymPy CodeGraph context prep
-still blocks on cold index timeout, and staged candidate context must find
+still blocks on a 240 s index timeout, and staged candidate context must find
 gold-relevant evidence before an agent run is attributed to CodeGraph.
 
 The wrapper reads benchmark JSON from stdin, runs `codex exec`
@@ -201,6 +218,62 @@ stdout. Raw Codex logs and prompts are written under ignored benchmark
 workspaces. `-ValidateOnly` checks command resolution without making a model
 call. Local runs open the Windows agent station by default; use `-StationMode
 never` for noninteractive execution.
+
+The Windows station is a PowerShell-native cockpit over stable status/log
+files: `agent_status.json`, `codex_stdout.jsonl`, `codex_stderr.txt`,
+`codex_last_message.txt`, `prompt.md`, and `station_launch_command.txt`. Keep
+that file contract stable; a future richer `benchstation` Bubble Tea TUI should
+read the same JSON/event surface rather than changing patch-capture behavior.
+
+### Recreate The Current One-Task E2E Smoke
+
+Run from the benchmark lab worktree in a normal user PowerShell. Docker-backed
+SWE-bench commands may fail from the Codex sandbox identity because Docker
+Desktop named pipes are not reachable there.
+
+```powershell
+cargo build --release --bin codegraph-mcp
+
+$env:CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND = "powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/scripts/run_codex_external_patch_agent.ps1 -StationMode always"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/scripts/run_codex_external_patch_agent.ps1 -ValidateOnly -StationMode never
+
+$runId = Get-Date -Format "yyyyMMdd_HHmmss"
+
+python -m benchmarks.harness.runners.run_swebench_patch_smoke `
+  --output-dir "benchmarks/results/summaries/swebench_lite_e2e_$runId" `
+  --task-fixture benchmarks/tracks/swebench_lite/fixtures/swebench_lite_sympy_20590.json `
+  --modes baseline rg_only codegraph_exact_text codegraph_full `
+  --codegraph-context-timeout-s 240 `
+  --agent-timeout-s 900 `
+  --eval-timeout-s 1200 `
+  --max-process-tree-rss-mib 12288 `
+  --min-system-available-mib 3072
+```
+
+For a cheaper CodeGraph context-only probe, skip the model and Docker evaluator:
+
+```powershell
+$runId = Get-Date -Format "yyyyMMdd_HHmmss"
+
+python -m benchmarks.harness.runners.run_swebench_patch_smoke `
+  --output-dir "benchmarks/results/summaries/swebench_context_probe_$runId" `
+  --task-fixture benchmarks/tracks/swebench_lite/fixtures/swebench_lite_sympy_20590.json `
+  --modes codegraph_exact_text codegraph_full `
+  --skip-agent `
+  --skip-eval `
+  --codegraph-context-timeout-s 240
+```
+
+Important outputs:
+
+- `summary.json` / `summary.md` - run verdict, phase gates, per-mode results.
+- `commands.jsonl` - exact argv, timings, exit codes, and resource guard data.
+- `patches/` and `predictions/` - generated patches and SWE-bench prediction
+  JSONL for measured agent modes.
+- `swebench_eval/` - Docker evaluation summaries and per-task reports.
+- `external_patch_agent_logs/` - Codex wrapper prompts, status files, stdout
+  JSONL, stderr, and station launch data.
 
 ## Timing and Claim Boundaries
 

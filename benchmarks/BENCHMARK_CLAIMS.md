@@ -147,10 +147,34 @@ SWE-bench boundaries:
   patches for `baseline` and `rg_only`, but both failed the clean-source-patch
   gate due an extra test-file edit. This is local diagnostic evidence only, not
   an official SWE-bench score and not CodeGraph attribution.
+- The later one-task E2E diagnostic
+  `swebench_lite_e2e_20260523_192718` confirmed real external-agent patch
+  generation and Docker evaluation for `baseline` and `rg_only`. Both measured
+  modes resolved but failed the clean-source-patch gate due the same extra
+  test-file edit. `codegraph_exact_text` and `codegraph_full` were skipped
+  before agent execution because context was invalid for attribution:
+  `blocked_index_timeout; candidate_spool_present_but_no_gold_hit`. This is
+  local diagnostic evidence only, not an official SWE-bench score and not
+  CodeGraph patch-quality evidence.
 - Mock-agent runs are scaffold-only and never count as model quality.
 - No SWE-bench score or real-agent patch-quality claim exists unless actual
   external-agent predictions are evaluated through the official-compatible
   harness and skipped/failed tasks are reported.
+
+Safe current wording:
+
+```text
+The local one-task SWE-bench Lite E2E path can generate real Codex patches and
+evaluate them through Docker for baseline and rg_only.
+```
+
+Unsafe current wording:
+
+```text
+CodeGraph improves SWE-bench patch quality.
+CodeGraph solved SWE-bench.
+The CodeGraph SWE-bench readiness gate is complete.
+```
 
 Timing boundaries:
 
