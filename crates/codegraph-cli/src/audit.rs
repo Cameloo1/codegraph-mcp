@@ -1150,7 +1150,7 @@ fn run_index_scope_command(args: &[String]) -> Result<Value, String> {
 
     let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
     let files_included = aggregate.files_would_be_parsed + aggregate.files_text_evidence_candidates;
-    let report = json!({
+    let mut report = json!({
         "schema_version": 1,
         "status": "ok",
         "audit": "index_scope",
@@ -1231,6 +1231,38 @@ fn run_index_scope_command(args: &[String]) -> Result<Value, String> {
         "json_output": options.json_path.as_ref().map(path_string),
         "markdown_output": options.markdown_path.as_ref().map(path_string),
     });
+    if let Some(object) = report.as_object_mut() {
+        object.insert(
+            "scope_policy_kind".to_string(),
+            json!(scope::SCOPE_POLICY_KIND_DEFAULT_WITH_OVERRIDES),
+        );
+        object.insert(
+            "include_semantics".to_string(),
+            json!(scope::INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES),
+        );
+        object.insert("include_is_restrictive".to_string(), json!(false));
+        object.insert("include_is_override".to_string(), json!(true));
+        object.insert(
+            "scope_truth_status".to_string(),
+            json!(scope::SCOPE_TRUTH_STATUS_OVERRIDE_ONLY),
+        );
+        if let Some(options_object) = object.get_mut("options").and_then(Value::as_object_mut) {
+            options_object.insert(
+                "scope_policy_kind".to_string(),
+                json!(scope::SCOPE_POLICY_KIND_DEFAULT_WITH_OVERRIDES),
+            );
+            options_object.insert(
+                "include_semantics".to_string(),
+                json!(scope::INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES),
+            );
+            options_object.insert("include_is_restrictive".to_string(), json!(false));
+            options_object.insert("include_is_override".to_string(), json!(true));
+            options_object.insert(
+                "scope_truth_status".to_string(),
+                json!(scope::SCOPE_TRUTH_STATUS_OVERRIDE_ONLY),
+            );
+        }
+    }
     let markdown = render_index_scope_markdown(&report);
     write_optional_outputs(
         &report,
@@ -1508,6 +1540,7 @@ Diagnostic-only release CLI dry run. No index DB is created and no source parse/
 - Files skipped: `{}`\n\
 - Directory prunes: `{}`\n\
 - Warnings: `{}`\n\
+- Include semantics: `{}`\n\
 - Normal `.codegraph` created: `{}`\n\n\
 ## Visibility\n\n\
 - Makefile visible: `{}`; text evidence candidates: `{}`; graph parsed: `{}`\n\
@@ -1524,6 +1557,7 @@ This report is diagnostic-only local evidence. It is not a public benchmark, not
         counts["files_skipped"].as_u64().unwrap_or_default(),
         counts["directory_pruned_count"].as_u64().unwrap_or_default(),
         counts["warnings"].as_u64().unwrap_or_default(),
+        report["include_semantics"].as_str().unwrap_or("unknown"),
         report["normal_codegraph_db_created"].as_bool().unwrap_or(false),
         visibility["makefile"]["visible"].as_bool().unwrap_or(false),
         visibility["makefile"]["text_evidence_candidates"].as_u64().unwrap_or_default(),
@@ -1558,6 +1592,11 @@ fn index_scope_stdout_summary(report: &Value) -> Value {
         "dry_run": report["dry_run"].clone(),
         "db_created": report["db_created"].clone(),
         "normal_codegraph_db_created": report["normal_codegraph_db_created"].clone(),
+        "scope_policy_kind": report["scope_policy_kind"].clone(),
+        "include_semantics": report["include_semantics"].clone(),
+        "include_is_restrictive": report["include_is_restrictive"].clone(),
+        "include_is_override": report["include_is_override"].clone(),
+        "scope_truth_status": report["scope_truth_status"].clone(),
         "counts": report["counts"].clone(),
         "visibility": compact_visibility_summary(&report["visibility"]),
         "hard_excluded_directory_hits": hard_hits,
@@ -3481,7 +3520,7 @@ fn parse_index_scope_options(args: &[String]) -> Result<IndexScopeAuditOptions, 
 }
 
 fn index_scope_usage() -> String {
-    "Usage: codegraph-mcp audit index-scope <repo> [--json [path]] [--markdown <path>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore true|false] [--explain-scope] [--print-included] [--print-excluded] [--limit-examples <n>]".to_string()
+    "Usage: codegraph-mcp audit index-scope <repo> [--json [path]] [--markdown <path>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore true|false] [--explain-scope] [--print-included] [--print-excluded] [--limit-examples <n>]\nScope: default repo scope plus explicit include overrides; --include is not a restrictive only-these-globs filter.".to_string()
 }
 
 fn parse_vector_chunks_options(args: &[String]) -> Result<VectorChunksOptions, String> {

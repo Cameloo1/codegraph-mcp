@@ -5,6 +5,7 @@
 //! is introduced.
 
 #![forbid(unsafe_code)]
+#![recursion_limit = "256"]
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -38,7 +39,7 @@ pub use codegraph_index::{
     default_db_path, graph_fact_hash, index_repo, index_repo_to_db_with_options,
     index_repo_with_options, inspect_db_lifecycle_preflight,
     inspect_db_lifecycle_surface_preflight, inspect_repo_db_passport, load_vector_chunk_index_json,
-    parse_extract_pending_files, query_candidate_spool_index_for_repo,
+    normalize_changed_path, parse_extract_pending_files, query_candidate_spool_index_for_repo,
     rebuild_candidate_spool_query_index_for_repo, require_reusable_db_passport, scope_policy_hash,
     should_ignore_path, should_start_new_index_batch, update_changed_files,
     update_changed_files_to_db, update_changed_files_with_cache,
@@ -50,7 +51,9 @@ pub use codegraph_index::{
     IndexBuildMode, IndexError, IndexIssue, IndexOptions, IndexProfile, IndexScopeOptions,
     IndexSummary, LocalFactBundle, PendingIndexFile, StorageMode, VectorChunkArtifactFormat,
     VectorChunkIndexArtifactOptions, VectorChunkIndexBuildOptions, DEFAULT_INDEX_BATCH_MAX_FILES,
-    DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY, UNBOUNDED_STORE_READ_LIMIT,
+    DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY,
+    INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES, SCOPE_POLICY_KIND_DEFAULT_WITH_OVERRIDES,
+    SCOPE_TRUTH_STATUS_OVERRIDE_ONLY, UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::{
     content_hash, detect_language, extract_entities_and_relations, language_frontends,
@@ -81,9 +84,24 @@ mod storage_budget;
 
 pub const BIN_NAME: &str = "codegraph-mcp";
 pub const PHASE: &str = "30";
+pub const PRODUCTION_AGENT_USE_PROFILE_NAME: &str = "production-agent-use";
+const PRODUCTION_AGENT_USE_DELTA_STATE_FILE_NAME: &str = "production-agent-use.delta-state.json";
 pub const BUNDLE_SCHEMA_VERSION: u32 = 2;
 const GLOBAL_REPO_SOURCE_ENV: &str = "CODEGRAPH_REPO_SOURCE";
 const GLOBAL_DB_SOURCE_ENV: &str = "CODEGRAPH_DB_SOURCE";
+const AGENT_USE_DATA_ROOT_ENV: &str = "CODEGRAPH_AGENT_USE_DATA_ROOT";
+const AGENT_USE_BOUNDED_READ_PATH_ENV: &str = "CODEGRAPH_AGENT_USE_BOUNDED_READ_PATH";
+const WRITE_PATH_CHAOS_FAILPOINT_ENV: &str = "CODEGRAPH_WRITE_PATH_FAILPOINT";
+const AGENT_USE_PROFILE_PARENT_PERMISSION_DENIED_FAILPOINT: &str =
+    "agent_use_profile_parent_permission_denied";
+const AGENT_USE_PROFILE_PARENT_FILESYSTEM_INACCESSIBLE_FAILPOINT: &str =
+    "agent_use_profile_parent_filesystem_inaccessible";
+const AGENT_USE_WATCH_AFTER_DELTA_COMMIT_BEFORE_STATE_CLEAR_FAILPOINT: &str =
+    "agent_use_watch_after_delta_commit_before_state_clear";
+const AGENT_USE_WATCH_DEFAULT_DEBOUNCE_MS: u64 = 250;
+const AGENT_USE_WATCH_DEFAULT_LOCK_RETRIES: usize = 3;
+const AGENT_USE_WATCH_DEFAULT_LOCK_RETRY_MS: u64 = 100;
+const AGENT_USE_WATCH_DEFAULT_MAX_BATCH_PATHS: usize = 256;
 const DEFAULT_UI_NODE_CAP: usize = 80;
 const MAX_UI_NODE_CAP: usize = 250;
 const SYMBOL_SEARCH_MIN_FTS_CANDIDATES: usize = 128;
@@ -100,6 +118,11 @@ const MAX_QUERY_RESULT_LIMIT: usize = 500;
 const QUERY_FILE_SNIPPET_MAX_BYTES: usize = 512;
 const QUERY_FILE_PREVIEW_MAX_BYTES: usize = 64 * 1024;
 const RETRIEVAL_CANDIDATE_SNIPPET_MAX_BYTES: usize = 240;
+const AGENT_USE_DISK_FALLBACK_MAX_FILES: usize = 0;
+const AGENT_USE_STATUS_MAX_SOURCE_FILE_LOADS: usize = 0;
+const AGENT_USE_QUERY_MAX_SOURCE_FILE_LOADS: usize = 0;
+const AGENT_USE_CONTEXT_MAX_SOURCE_FILES: usize = 64;
+const AGENT_USE_CONTEXT_MAX_SOURCE_BYTES: usize = 256 * 1024;
 const CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT: usize = CONTEXT_PLANNING_PACKET_EVIDENCE_LIMIT;
 const AGENT_JSON_SCHEMA_VERSION: u32 = 1;
 const INDEX_CONCISE_JSON_SIZE_TARGET_BYTES: usize = 8 * 1024;
@@ -131,6 +154,27 @@ const CONTEXT_PACK_VECTOR_CANDIDATE_TOP_K: usize = 16;
 const CONTEXT_PACK_NUANCE_RESCUE_CANDIDATE_LIMIT: usize = 8;
 const CONTEXT_PACK_NUANCE_RESCUE_TOKEN_LIMIT: usize = 32;
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AgentUseProfile {
+    pub profile_name: String,
+    pub repo_root: PathBuf,
+    pub repo_identity_label: String,
+    pub repo_identity_hash: String,
+    pub profile_root: PathBuf,
+    pub db_path: PathBuf,
+    pub candidate_spool_path: PathBuf,
+    pub candidate_spool_query_index_path: PathBuf,
+    pub vector_runtime_path: PathBuf,
+    pub vector_audit_path: PathBuf,
+    pub lock_or_publish_state_path: PathBuf,
+    pub delta_state_path: PathBuf,
+    pub lifecycle_expectations: Vec<String>,
+    pub recovery_commands: Vec<String>,
+    pub mcp_args: Vec<String>,
+    pub binary_profile: String,
+    pub scope_policy: IndexScopeOptions,
+}
+
 const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "init",
@@ -140,7 +184,12 @@ const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "index",
         usage: "codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--build-vector-index <runtime_path>|--vector-runtime-sidecar <runtime_path>] [--vector-audit-artifact <audit_path>] [--no-vector-audit] [--vector-artifact-format compact_json|pretty_json] [--candidate-spool <path>] [--candidate-spool-policy off|bounded|audit] [--candidate-spool-max-mib <n>] [--candidate-spool-max-bytes <n>] [--candidate-spool-max-records <n>] [--candidate-spool-required] [--candidate-spool-query-index yes|no] [--candidate-spool-per-file-max-records <n>] [--candidate-spool-per-dir-soft-cap <n>] [--candidate-spool-max-snippet-bytes <n>] [--candidate-spool-max-snippets-per-file <n>] [--candidate-spool-max-symbols-per-file <n>] [--early-candidates] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]",
-        description: "Index a repository into the local graph store.",
+        description: "Index a repository into the local graph store; scope is default repo scope plus explicit include overrides.",
+    },
+    CommandSpec {
+        name: "agent-use",
+        usage: "codegraph-mcp agent-use <status|index|query|context-pack|mcp-config|watch> --repo <repo> --json\n  codegraph-mcp agent-use status --repo <repo> --json\n  codegraph-mcp agent-use index --repo <repo> [--fresh|--rebuild|--incremental] [--json]\n  codegraph-mcp agent-use query symbols|text|files <query> --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use context-pack --repo <repo> --task <task> --agent-json\n  codegraph-mcp agent-use mcp-config --repo <repo> --json\n  codegraph-mcp agent-use watch --repo <repo> --json [--debounce-ms <ms>]\n  codegraph-mcp agent-use watch --repo <repo> --once --changed <path> [--changed <path>] --json",
+        description: "Use the production agent profile outside the source tree.",
     },
     CommandSpec {
         name: "status",
@@ -728,7 +777,7 @@ where
     if globals.json
         && matches!(
             command.name,
-            "index" | "query" | "doctor" | "languages" | "config" | "status"
+            "index" | "agent-use" | "query" | "doctor" | "languages" | "config" | "status"
         )
         && !command_args.iter().any(|arg| arg == "--json")
     {
@@ -788,6 +837,7 @@ where
     match command.name {
         "init" => run_json_command("init_failed", run_init_command(&command_args)),
         "index" => run_json_command("index_failed", run_index_command(&command_args)),
+        "agent-use" => run_json_command("agent_use_failed", run_agent_use_command(&command_args)),
         "status" => run_json_command("status_failed", run_status_command(&command_args)),
         "query" => run_json_command("query_failed", run_query_command(&command_args)),
         "impact" => run_json_command("impact_failed", run_impact_command(&command_args)),
@@ -1272,6 +1322,3662 @@ fn run_index_command(args: &[String]) -> Result<Value, String> {
     Ok(value)
 }
 
+fn run_agent_use_command(args: &[String]) -> Result<Value, String> {
+    let Some(subcommand) = args.first() else {
+        return Err(
+            "Usage: codegraph-mcp agent-use <status|index|query|context-pack|mcp-config|watch> --repo <repo> --json"
+                .to_string(),
+        );
+    };
+    match subcommand.as_str() {
+        "status" => run_agent_use_status_command(&args[1..]),
+        "index" => run_agent_use_index_command(&args[1..]),
+        "query" => run_agent_use_query_command(&args[1..]),
+        "context-pack" | "context" => run_agent_use_context_pack_command(&args[1..]),
+        "mcp-config" | "mcp_config" => run_agent_use_mcp_config_command(&args[1..]),
+        "watch" => run_agent_use_watch_command(&args[1..]),
+        other => Err(format!(
+            "unknown agent-use command: {other}; expected status, index, query, context-pack, mcp-config, or watch"
+        )),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AgentUseBasicOptions {
+    repo: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct AgentUseIndexOptions {
+    repo: PathBuf,
+    passthrough_index_args: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AgentUseWatchOptions {
+    repo: PathBuf,
+    once: bool,
+    changed_paths: Vec<PathBuf>,
+    test_events: Vec<PathBuf>,
+    debounce: Duration,
+    max_updates: Option<usize>,
+    idle_timeout: Option<Duration>,
+    lock_retries: usize,
+    lock_retry: Duration,
+    max_batch_paths: usize,
+}
+
+#[derive(Debug, Clone)]
+struct AgentUseForwardOptions {
+    repo: PathBuf,
+    forwarded_args: Vec<String>,
+}
+
+fn parse_agent_use_basic_args(
+    args: &[String],
+    subcommand: &str,
+) -> Result<AgentUseBasicOptions, String> {
+    let mut repo = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {}
+            "--repo" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--repo requires a path".to_string());
+                };
+                repo = Some(PathBuf::from(value));
+            }
+            "--db" => {
+                return Err(format!(
+                    "agent-use {subcommand} owns DB resolution through the production profile; --db is not accepted"
+                ));
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("unknown agent-use {subcommand} option: {value}"));
+            }
+            value => {
+                if repo.is_some() {
+                    return Err(format!(
+                        "Usage: codegraph-mcp agent-use {subcommand} --repo <repo> --json"
+                    ));
+                }
+                repo = Some(PathBuf::from(value));
+            }
+        }
+        index += 1;
+    }
+    Ok(AgentUseBasicOptions {
+        repo: repo.unwrap_or_else(|| PathBuf::from(".")),
+    })
+}
+
+fn parse_agent_use_index_args(args: &[String]) -> Result<AgentUseIndexOptions, String> {
+    let mut repo = None;
+    let mut passthrough_index_args = Vec::new();
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {}
+            "--repo" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--repo requires a path".to_string());
+                };
+                repo = Some(PathBuf::from(value));
+            }
+            "--db" => {
+                return Err(
+                    "agent-use index owns DB resolution through the production profile; --db is not accepted"
+                        .to_string(),
+                );
+            }
+            "--fresh"
+            | "--rebuild"
+            | "--incremental"
+            | "--fail-on-db-problem"
+            | "--allow-stale-reuse"
+            | "--profile" => {
+                passthrough_index_args.push(args[index].clone());
+            }
+            "--workers"
+            | "--storage-mode"
+            | "--build-mode"
+            | "--max-db-mib"
+            | "--max-artifacts-mib"
+            | "--min-free-disk-gib" => {
+                let flag = args[index].clone();
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(format!("{flag} requires a value"));
+                };
+                passthrough_index_args.push(flag);
+                passthrough_index_args.push(value.clone());
+            }
+            value if value.starts_with('-') => {
+                return Err(format!(
+                    "unknown agent-use index option: {value}; use plain index with explicit --db for advanced sidecar/scope flags"
+                ));
+            }
+            value => {
+                if repo.is_some() {
+                    return Err(
+                        "Usage: codegraph-mcp agent-use index --repo <repo> [--fresh|--rebuild|--incremental] [--json]".to_string(),
+                    );
+                }
+                repo = Some(PathBuf::from(value));
+            }
+        }
+        index += 1;
+    }
+    Ok(AgentUseIndexOptions {
+        repo: repo.unwrap_or_else(|| PathBuf::from(".")),
+        passthrough_index_args,
+    })
+}
+
+fn parse_agent_use_watch_args(args: &[String]) -> Result<AgentUseWatchOptions, String> {
+    let mut repo = None;
+    let mut once = false;
+    let mut changed_paths = Vec::new();
+    let mut test_events = Vec::new();
+    let mut debounce = Duration::from_millis(AGENT_USE_WATCH_DEFAULT_DEBOUNCE_MS);
+    let mut max_updates = None;
+    let mut idle_timeout = None;
+    let mut lock_retries = AGENT_USE_WATCH_DEFAULT_LOCK_RETRIES;
+    let mut lock_retry = Duration::from_millis(AGENT_USE_WATCH_DEFAULT_LOCK_RETRY_MS);
+    let mut max_batch_paths = AGENT_USE_WATCH_DEFAULT_MAX_BATCH_PATHS;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" | "--agent-json" | "--agent_json" => {}
+            "--repo" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--repo requires a path".to_string());
+                };
+                repo = Some(PathBuf::from(value));
+            }
+            "--db" => {
+                return Err(
+                    "agent-use watch owns DB resolution through the production profile; --db is not accepted"
+                        .to_string(),
+                );
+            }
+            "--once" => once = true,
+            "--changed" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--changed requires a path".to_string());
+                };
+                changed_paths.push(PathBuf::from(value));
+            }
+            "--test-event" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--test-event requires a path".to_string());
+                };
+                test_events.push(PathBuf::from(value));
+            }
+            "--debounce-ms" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--debounce-ms requires a value".to_string());
+                };
+                debounce = Duration::from_millis(parse_u64_arg("--debounce-ms", value)?);
+            }
+            "--max-updates" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--max-updates requires a value".to_string());
+                };
+                max_updates = Some(parse_usize_arg("--max-updates", value)?);
+            }
+            "--idle-timeout-ms" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--idle-timeout-ms requires a value".to_string());
+                };
+                idle_timeout = Some(Duration::from_millis(parse_u64_arg(
+                    "--idle-timeout-ms",
+                    value,
+                )?));
+            }
+            "--lock-retries" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--lock-retries requires a value".to_string());
+                };
+                lock_retries = parse_usize_arg("--lock-retries", value)?;
+            }
+            "--lock-retry-ms" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--lock-retry-ms requires a value".to_string());
+                };
+                lock_retry = Duration::from_millis(parse_u64_arg("--lock-retry-ms", value)?);
+            }
+            "--max-batch-paths" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--max-batch-paths requires a value".to_string());
+                };
+                max_batch_paths = parse_usize_arg("--max-batch-paths", value)?;
+            }
+            value if value.starts_with('-') => {
+                return Err(format!(
+                    "unknown agent-use watch option: {value}; supported shapes are `agent-use watch --repo <repo> --json` and `agent-use watch --repo <repo> --once --changed <path> [--changed <path>] --json`"
+                ));
+            }
+            value => {
+                if repo.is_some() {
+                    return Err(
+                        "Usage: codegraph-mcp agent-use watch --repo <repo> --json [--debounce-ms <ms>] or codegraph-mcp agent-use watch --repo <repo> --once --changed <path> [--changed <path>] --json"
+                            .to_string(),
+                    );
+                }
+                repo = Some(PathBuf::from(value));
+            }
+        }
+        index += 1;
+    }
+    Ok(AgentUseWatchOptions {
+        repo: repo.unwrap_or_else(|| PathBuf::from(".")),
+        once,
+        changed_paths,
+        test_events,
+        debounce,
+        max_updates,
+        idle_timeout,
+        lock_retries,
+        lock_retry,
+        max_batch_paths,
+    })
+}
+
+fn parse_u64_arg(flag: &str, value: &str) -> Result<u64, String> {
+    value
+        .parse::<u64>()
+        .map_err(|error| format!("{flag} must be an integer: {error}"))
+}
+
+fn parse_usize_arg(flag: &str, value: &str) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .map_err(|error| format!("{flag} must be an integer: {error}"))
+}
+
+fn parse_agent_use_forward_args(
+    args: &[String],
+    subcommand: &str,
+) -> Result<AgentUseForwardOptions, String> {
+    let mut repo = None;
+    let mut forwarded_args = Vec::new();
+    let mut literal_args = false;
+    let mut index = 0usize;
+    while index < args.len() {
+        if literal_args {
+            forwarded_args.push(args[index].clone());
+            index += 1;
+            continue;
+        }
+        match args[index].as_str() {
+            "--" => {
+                literal_args = true;
+                forwarded_args.push(args[index].clone());
+            }
+            "--repo" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--repo requires a path".to_string());
+                };
+                repo = Some(PathBuf::from(value));
+            }
+            "--db" => {
+                return Err(format!(
+                    "agent-use {subcommand} owns DB resolution through the production profile; --db is not accepted"
+                ));
+            }
+            value => forwarded_args.push(value.to_string()),
+        }
+        index += 1;
+    }
+    Ok(AgentUseForwardOptions {
+        repo: repo.unwrap_or_else(|| PathBuf::from(".")),
+        forwarded_args,
+    })
+}
+
+fn query_args_request_agent_json(args: &[String]) -> bool {
+    args.iter()
+        .any(|arg| matches!(arg.as_str(), "--agent-json" | "--agent_json" | "--concise"))
+}
+
+fn context_args_request_agent_json(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--agent-json" | "--agent_json" | "--concise" | "--audit-json" | "--audit_json"
+        )
+    })
+}
+
+fn context_args_have_vector_controls(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--enable-vector-candidates"
+                | "--enable_vector_candidates"
+                | "--vector-index"
+                | "--vector-index-path"
+                | "--vector_index"
+                | "--vector_index_path"
+                | "--vector-runtime-sidecar"
+                | "--vector_runtime_sidecar"
+        )
+    })
+}
+
+fn agent_use_index_args_have_lifecycle_policy(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--fresh"
+                | "--rebuild"
+                | "--incremental"
+                | "--fail-on-db-problem"
+                | "--allow-stale-reuse"
+        )
+    })
+}
+
+fn agent_use_index_should_auto_fresh_rebuild(preflight: &DbLifecyclePreflight) -> bool {
+    if preflight.safe || preflight.path_access_status == "db_missing" {
+        return false;
+    }
+    if preflight
+        .blockers
+        .iter()
+        .any(|blocker| blocker.contains("previous run did not complete"))
+    {
+        return true;
+    }
+    matches!(
+        preflight.db_problem_kind.as_deref(),
+        Some(
+            "schema_mismatch"
+                | "repo_head_mismatch"
+                | "passport_missing"
+                | "scope_mismatch"
+                | "storage_mismatch"
+        )
+    )
+}
+
+fn cli_write_path_chaos_failpoint_enabled(name: &str) -> bool {
+    std::env::var(WRITE_PATH_CHAOS_FAILPOINT_ENV)
+        .ok()
+        .is_some_and(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .any(|value| value == name || value == "agent_use_profile_all")
+        })
+}
+
+fn run_agent_use_query_command(args: &[String]) -> Result<Value, String> {
+    let options = parse_agent_use_forward_args(args, "query")?;
+    let Some(query_kind) = options.forwarded_args.first().cloned() else {
+        return Err(
+            "Usage: codegraph-mcp agent-use query <symbols|text|files> <query> --repo <repo> --limit <n> --agent-json"
+                .to_string(),
+        );
+    };
+    if !matches!(query_kind.as_str(), "symbols" | "text" | "files") {
+        return Err(format!(
+            "agent-use query supports symbols, text, or files; got {query_kind}"
+        ));
+    }
+    let profile = resolve_agent_use_profile(&options.repo)?;
+    let normal_dot_codegraph = profile.repo_root.join(".codegraph");
+    let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
+    let preflight = inspect_read_db_lifecycle_preflight(
+        &profile.repo_root,
+        &profile.db_path,
+        Some(profile.scope_policy.clone()),
+    )?;
+    if !preflight.safe {
+        return Ok(agent_use_unavailable_json(
+            &profile,
+            &preflight,
+            "query",
+            Some(query_kind.as_str()),
+            None,
+            normal_dot_codegraph_existed_before,
+        ));
+    }
+
+    let mut forwarded_args = options.forwarded_args;
+    if !query_args_request_agent_json(&forwarded_args) {
+        forwarded_args.push("--agent-json".to_string());
+    }
+    let mut value =
+        with_agent_use_profile_context(&profile, || run_query_command(&forwarded_args))?;
+    annotate_agent_use_output(
+        &mut value,
+        &profile,
+        "query",
+        normal_dot_codegraph_existed_before,
+    );
+    add_agent_use_db_lifecycle_read(&mut value, &preflight);
+    add_agent_use_durability_labels(&mut value, &profile, &preflight, None);
+    add_agent_use_query_read_path_metrics(&mut value, query_kind.as_str());
+    Ok(value)
+}
+
+fn run_agent_use_context_pack_command(args: &[String]) -> Result<Value, String> {
+    let options = parse_agent_use_forward_args(args, "context-pack")?;
+    let profile = resolve_agent_use_profile(&options.repo)?;
+    let normal_dot_codegraph = profile.repo_root.join(".codegraph");
+    let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
+    let preflight = inspect_read_db_lifecycle_preflight(
+        &profile.repo_root,
+        &profile.db_path,
+        Some(profile.scope_policy.clone()),
+    )?;
+    let mut forwarded_args = options.forwarded_args;
+    if !context_args_request_agent_json(&forwarded_args) {
+        forwarded_args.push("--agent-json".to_string());
+    }
+    if preflight.safe {
+        if profile.vector_runtime_path.exists()
+            && !context_args_have_vector_controls(&forwarded_args)
+        {
+            forwarded_args.push("--enable-vector-candidates".to_string());
+            forwarded_args.push("--vector-runtime-sidecar".to_string());
+            forwarded_args.push(path_string(&profile.vector_runtime_path));
+        }
+        let mut value =
+            with_agent_use_profile_context(&profile, || run_context_pack_command(&forwarded_args))?;
+        annotate_agent_use_output(
+            &mut value,
+            &profile,
+            "context-pack",
+            normal_dot_codegraph_existed_before,
+        );
+        add_agent_use_db_lifecycle_read(&mut value, &preflight);
+        add_agent_use_staged_availability(&mut value, &profile, &preflight);
+        let staged_availability = value
+            .get("staged_availability")
+            .cloned()
+            .unwrap_or_else(|| {
+                staged_availability_for_cli(
+                    &profile.repo_root,
+                    &profile.db_path,
+                    Some(&preflight),
+                    Some(&profile.candidate_spool_path),
+                    Some(&profile.vector_runtime_path),
+                    Some(&profile.vector_audit_path),
+                    None,
+                )
+            });
+        add_agent_use_rtds_freshness_fields(&mut value, &profile, &preflight, &staged_availability);
+        add_agent_use_durability_labels(&mut value, &profile, &preflight, None);
+        add_agent_use_context_pack_read_path_metrics(&mut value);
+        return Ok(value);
+    }
+
+    if preflight.path_access_status == "db_missing" && profile.candidate_spool_path.exists() {
+        if !forwarded_args.iter().any(|arg| {
+            matches!(
+                arg.as_str(),
+                "--candidate-spool"
+                    | "--candidate_spool"
+                    | "--early-candidates"
+                    | "--early_candidates"
+            )
+        }) {
+            forwarded_args.push("--candidate-spool".to_string());
+            forwarded_args.push(path_string(&profile.candidate_spool_path));
+            forwarded_args.push("--early-candidates".to_string());
+        }
+        return match with_agent_use_profile_context(&profile, || {
+            run_context_pack_command(&forwarded_args)
+        }) {
+            Ok(mut value) => {
+                annotate_agent_use_output(
+                    &mut value,
+                    &profile,
+                    "context-pack",
+                    normal_dot_codegraph_existed_before,
+                );
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "db_lifecycle_read".to_string(),
+                        db_lifecycle_preflight_json(&preflight, true, false, false),
+                    );
+                }
+                add_agent_use_durability_labels(&mut value, &profile, &preflight, None);
+                let staged_availability =
+                    value
+                        .get("staged_availability")
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            staged_availability_for_cli(
+                                &profile.repo_root,
+                                &profile.db_path,
+                                Some(&preflight),
+                                Some(&profile.candidate_spool_path),
+                                Some(&profile.vector_runtime_path),
+                                Some(&profile.vector_audit_path),
+                                None,
+                            )
+                        });
+                add_agent_use_rtds_freshness_fields(
+                    &mut value,
+                    &profile,
+                    &preflight,
+                    &staged_availability,
+                );
+                add_agent_use_context_pack_read_path_metrics(&mut value);
+                Ok(value)
+            }
+            Err(error) => Ok(agent_use_unavailable_json(
+                &profile,
+                &preflight,
+                "context-pack",
+                None,
+                Some(error),
+                normal_dot_codegraph_existed_before,
+            )),
+        };
+    }
+
+    Ok(agent_use_unavailable_json(
+        &profile,
+        &preflight,
+        "context-pack",
+        None,
+        None,
+        normal_dot_codegraph_existed_before,
+    ))
+}
+
+fn run_agent_use_mcp_config_command(args: &[String]) -> Result<Value, String> {
+    let options = parse_agent_use_basic_args(args, "mcp-config")?;
+    let profile = resolve_agent_use_profile(&options.repo)?;
+    let normal_dot_codegraph = profile.repo_root.join(".codegraph");
+    let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
+    let preflight = inspect_read_db_lifecycle_preflight(
+        &profile.repo_root,
+        &profile.db_path,
+        Some(profile.scope_policy.clone()),
+    )?;
+    let sqlite_sidecars =
+        sqlite_sidecars_status_from_health(&profile.db_path, &preflight.db_health);
+    let lifecycle = db_lifecycle_preflight_json(&preflight, true, false, false);
+    let safety_labels = agent_use_safety_labels(&profile, &preflight, Some(&sqlite_sidecars));
+    let publish_state = agent_use_publish_state_json(&profile);
+    let status = if preflight.safe {
+        "ok"
+    } else if preflight.path_access_status == "db_missing" {
+        "not_indexed"
+    } else {
+        preflight.db_problem_kind.as_deref().unwrap_or("db_problem")
+    };
+    let binary = discover_agent_use_binary_path(&profile.repo_root);
+    let server = json!({
+        "command": binary,
+        "args": profile.mcp_args.clone(),
+        "cwd": path_string(&profile.repo_root),
+        "env": {
+            "CODEGRAPH_DB_PATH": path_string(&profile.db_path),
+            "CODEGRAPH_DB_SOURCE": "agent-use profile",
+            "CODEGRAPH_REPO_SOURCE": "agent-use --repo",
+            "CODEGRAPH_AGENT_USE_PROFILE": profile.profile_name.clone(),
+        },
+    });
+    Ok(json!({
+        "status": status,
+        "command": "mcp-config",
+        "command_namespace": "agent-use",
+        "profile_name": profile.profile_name.clone(),
+        "repo": path_string(&profile.repo_root),
+        "repo_root": path_string(&profile.repo_root),
+        "db": path_string(&profile.db_path),
+        "db_path": path_string(&profile.db_path),
+        "db_source": "agent-use profile",
+        "external_db_used": true,
+        "canonical_production_profile": true,
+        "mcp_startup_auto_index": false,
+        "mcp_no_dot_codegraph_fallback": true,
+        "claimable": preflight.safe,
+        "diagnostic_only": !preflight.safe,
+        "db_lifecycle_read": lifecycle,
+        "publish_state": publish_state,
+        "publishing": agent_use_publish_state_active(&profile),
+        "safety_labels": safety_labels,
+        "sqlite_sidecars": sqlite_sidecars.clone(),
+        "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
+        "sidecar_only_change": sqlite_sidecars["sidecar_only_change"].clone(),
+        "sidecar_change_classification": sqlite_sidecars["sidecar_change_classification"].clone(),
+        "mcp_config": {
+            "mcpServers": {
+                "codegraph-mcp": server.clone()
+            }
+        },
+        "codex_mcp_servers": {
+            "codegraph-mcp": server
+        },
+        "recommended_commands": agent_use_recovery_json(&profile),
+        "warnings": if preflight.safe { Vec::<String>::new() } else { preflight.blockers.clone() },
+        "normal_dot_codegraph_path": path_string(&normal_dot_codegraph),
+        "normal_dot_codegraph_created": !normal_dot_codegraph_existed_before && normal_dot_codegraph.exists(),
+        "normal_dot_codegraph_mutated": normal_dot_codegraph_existed_before != normal_dot_codegraph.exists(),
+        "writes_files": false,
+        "public_claim": false,
+    }))
+}
+
+fn run_agent_use_status_command(args: &[String]) -> Result<Value, String> {
+    let started = Instant::now();
+    let options = parse_agent_use_basic_args(args, "status")?;
+    let profile = resolve_agent_use_profile(&options.repo)?;
+    let profile_parent_existed_before = profile.profile_root.exists();
+    let db_existed_before = profile.db_path.exists();
+    let normal_dot_codegraph = profile.repo_root.join(".codegraph");
+    let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
+
+    let preflight = inspect_read_db_lifecycle_preflight(
+        &profile.repo_root,
+        &profile.db_path,
+        Some(profile.scope_policy.clone()),
+    )?;
+    let sqlite_sidecars =
+        sqlite_sidecars_status_from_health(&profile.db_path, &preflight.db_health);
+    let staged_availability = staged_availability_for_cli(
+        &profile.repo_root,
+        &profile.db_path,
+        Some(&preflight),
+        Some(&profile.candidate_spool_path),
+        Some(&profile.vector_runtime_path),
+        Some(&profile.vector_audit_path),
+        None,
+    );
+    let staged_fields = staged_availability_top_level_fields(&staged_availability);
+    let lifecycle = db_lifecycle_preflight_json(&preflight, true, false, false);
+    let db_exists = profile.db_path.exists();
+    let status = if preflight.safe {
+        "ok".to_string()
+    } else if preflight.path_access_status == "db_missing" {
+        "not_indexed".to_string()
+    } else {
+        preflight
+            .db_problem_kind
+            .clone()
+            .unwrap_or_else(|| "db_problem".to_string())
+    };
+    let mut value = agent_use_status_base_json(
+        &profile,
+        &preflight,
+        &sqlite_sidecars,
+        &lifecycle,
+        &status,
+        started.elapsed().as_secs_f64() * 1000.0,
+    );
+
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "db_schema_version".to_string(),
+            preflight
+                .db_health
+                .schema_version
+                .map(Value::from)
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "files".to_string(),
+            preflight
+                .db_health
+                .passport
+                .as_ref()
+                .map(|passport| json!(passport.files_indexed))
+                .unwrap_or(Value::Null),
+        );
+        object.insert("entities".to_string(), Value::Null);
+        object.insert("relation_facts".to_string(), Value::Null);
+        object.insert("source_span_facts".to_string(), Value::Null);
+        object.insert("edges".to_string(), Value::Null);
+        object.insert("source_spans".to_string(), Value::Null);
+        object.insert("relation_counts".to_string(), Value::Null);
+        object.insert("storage_accounting".to_string(), Value::Null);
+        object.insert("languages".to_string(), Value::Null);
+        object.insert(
+            "status_detail_source".to_string(),
+            json!("db_lifecycle_preflight_and_passport_only"),
+        );
+        object.insert("db_exists".to_string(), json!(db_exists));
+        object.insert(
+            "profile_parent_exists".to_string(),
+            json!(profile.profile_root.exists()),
+        );
+        object.insert(
+            "profile_parent_created".to_string(),
+            json!(!profile_parent_existed_before && profile.profile_root.exists()),
+        );
+        object.insert(
+            "db_created".to_string(),
+            json!(!db_existed_before && profile.db_path.exists()),
+        );
+        object.insert(
+            "normal_dot_codegraph_path".to_string(),
+            json!(path_string(&normal_dot_codegraph)),
+        );
+        object.insert(
+            "normal_dot_codegraph_created".to_string(),
+            json!(!normal_dot_codegraph_existed_before && normal_dot_codegraph.exists()),
+        );
+        object.insert(
+            "normal_dot_codegraph_mutated".to_string(),
+            json!(normal_dot_codegraph_existed_before != normal_dot_codegraph.exists()),
+        );
+    }
+    merge_json_object(&mut value, staged_fields);
+    add_agent_use_rtds_freshness_fields(&mut value, &profile, &preflight, &staged_availability);
+    Ok(value)
+}
+
+fn run_agent_use_index_command(args: &[String]) -> Result<Value, String> {
+    let options = parse_agent_use_index_args(args)?;
+    let profile = resolve_agent_use_profile(&options.repo)?;
+    let profile_parent_existed_before = profile.profile_root.exists();
+    let normal_dot_codegraph = profile.repo_root.join(".codegraph");
+    let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
+
+    if cli_write_path_chaos_failpoint_enabled(AGENT_USE_PROFILE_PARENT_PERMISSION_DENIED_FAILPOINT)
+    {
+        return Err(agent_use_profile_parent_create_error_json(
+            &profile,
+            "permission_denied",
+            &format!("chaos_failpoint:{AGENT_USE_PROFILE_PARENT_PERMISSION_DENIED_FAILPOINT}"),
+            normal_dot_codegraph_existed_before,
+        )?);
+    }
+    if cli_write_path_chaos_failpoint_enabled(
+        AGENT_USE_PROFILE_PARENT_FILESYSTEM_INACCESSIBLE_FAILPOINT,
+    ) {
+        return Err(agent_use_profile_parent_create_error_json(
+            &profile,
+            "filesystem_inaccessible",
+            &format!(
+                "chaos_failpoint:{AGENT_USE_PROFILE_PARENT_FILESYSTEM_INACCESSIBLE_FAILPOINT}"
+            ),
+            normal_dot_codegraph_existed_before,
+        )?);
+    }
+
+    if let Err(error) = fs::create_dir_all(&profile.profile_root) {
+        let problem_kind = if error.kind() == std::io::ErrorKind::PermissionDenied {
+            "permission_denied"
+        } else {
+            "filesystem_inaccessible"
+        };
+        return Err(agent_use_profile_parent_create_error_json(
+            &profile,
+            problem_kind,
+            &format!("agent-use profile parent could not be created: {error}"),
+            normal_dot_codegraph_existed_before,
+        )?);
+    }
+
+    let mut passthrough_index_args = options.passthrough_index_args;
+    let auto_fresh_rebuild = if agent_use_index_args_have_lifecycle_policy(&passthrough_index_args)
+    {
+        false
+    } else {
+        let preflight = inspect_read_db_lifecycle_preflight(
+            &profile.repo_root,
+            &profile.db_path,
+            Some(profile.scope_policy.clone()),
+        )?;
+        if agent_use_index_should_auto_fresh_rebuild(&preflight) {
+            passthrough_index_args.push("--fresh".to_string());
+            true
+        } else {
+            false
+        }
+    };
+
+    let mut index_args = vec![
+        path_string(&profile.repo_root),
+        "--db".to_string(),
+        path_string(&profile.db_path),
+        "--json".to_string(),
+        "--candidate-spool".to_string(),
+        path_string(&profile.candidate_spool_path),
+        "--candidate-spool-policy".to_string(),
+        "bounded".to_string(),
+        "--candidate-spool-query-index".to_string(),
+        "yes".to_string(),
+        "--vector-runtime-sidecar".to_string(),
+        path_string(&profile.vector_runtime_path),
+        "--no-vector-audit".to_string(),
+    ];
+    index_args.extend(passthrough_index_args);
+    write_agent_use_publish_state(&profile, "publishing", None)?;
+    let mut value = match run_index_command(&index_args) {
+        Ok(value) => {
+            clear_agent_use_publish_state(&profile)?;
+            value
+        }
+        Err(error) => {
+            if let Err(state_error) =
+                write_agent_use_publish_state(&profile, "interrupted", Some(&error))
+            {
+                return Err(format!(
+                    "{error}; publish_state_update_failed: {state_error}"
+                ));
+            }
+            return Err(error);
+        }
+    };
+    let post_preflight = inspect_read_db_lifecycle_preflight(
+        &profile.repo_root,
+        &profile.db_path,
+        Some(profile.scope_policy.clone()),
+    )?;
+    let staged_availability = staged_availability_for_cli(
+        &profile.repo_root,
+        &profile.db_path,
+        Some(&post_preflight),
+        Some(&profile.candidate_spool_path),
+        Some(&profile.vector_runtime_path),
+        Some(&profile.vector_audit_path),
+        None,
+    );
+    let profile_parent_created = !profile_parent_existed_before && profile.profile_root.exists();
+    let normal_dot_codegraph_created =
+        !normal_dot_codegraph_existed_before && normal_dot_codegraph.exists();
+    let warm_unchanged_reuse = value
+        .get("files_indexed")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        == 0
+        && value
+            .get("files_metadata_unchanged")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 0;
+    let cold_build = value
+        .get("lifecycle")
+        .and_then(|lifecycle| lifecycle.get("old_db_used"))
+        .and_then(Value::as_bool)
+        .map(|old_db_used| !old_db_used)
+        .unwrap_or(!warm_unchanged_reuse);
+    let candidate_spool_layer = staged_availability
+        .pointer("/layer_readiness/candidate_spool")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let vector_runtime_layer = staged_availability
+        .pointer("/layer_readiness/vector_runtime")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let vector_audit_layer = staged_availability
+        .pointer("/layer_readiness/vector_audit")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let candidate_spool_bytes = fs::metadata(&profile.candidate_spool_path)
+        .map(|metadata| metadata.len())
+        .ok();
+    let candidate_spool_query_index_bytes = fs::metadata(&profile.candidate_spool_query_index_path)
+        .map(|metadata| metadata.len())
+        .ok();
+    let vector_runtime_bytes = fs::metadata(&profile.vector_runtime_path)
+        .map(|metadata| metadata.len())
+        .ok();
+    let vector_audit_bytes = fs::metadata(&profile.vector_audit_path)
+        .map(|metadata| metadata.len())
+        .ok();
+    let artifact_warnings = staged_warning_values(&staged_availability);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("command_namespace".to_string(), json!("agent-use"));
+        object.insert(
+            "profile_name".to_string(),
+            json!(profile.profile_name.clone()),
+        );
+        object.insert("profile".to_string(), agent_use_profile_json(&profile));
+        object.insert(
+            "agent_use_profile".to_string(),
+            agent_use_profile_json(&profile),
+        );
+        object.insert("repo".to_string(), json!(path_string(&profile.repo_root)));
+        object.insert(
+            "repo_root".to_string(),
+            json!(path_string(&profile.repo_root)),
+        );
+        object.insert("db".to_string(), json!(path_string(&profile.db_path)));
+        object.insert("db_path".to_string(), json!(path_string(&profile.db_path)));
+        object.insert("external_db_used".to_string(), json!(true));
+        object.insert(
+            "profile_parent_created".to_string(),
+            json!(profile_parent_created),
+        );
+        object.insert(
+            "profile_parent_exists".to_string(),
+            json!(profile.profile_root.exists()),
+        );
+        object.insert(
+            "normal_dot_codegraph_path".to_string(),
+            json!(path_string(&normal_dot_codegraph)),
+        );
+        object.insert(
+            "normal_dot_codegraph_created".to_string(),
+            json!(normal_dot_codegraph_created),
+        );
+        object.insert(
+            "normal_dot_codegraph_mutated".to_string(),
+            json!(normal_dot_codegraph_existed_before != normal_dot_codegraph.exists()),
+        );
+        object.insert(
+            "warm_unchanged_reuse".to_string(),
+            json!(warm_unchanged_reuse),
+        );
+        object.insert("cold_build".to_string(), json!(cold_build));
+        object.insert(
+            "agent_use_auto_fresh_rebuild".to_string(),
+            json!(auto_fresh_rebuild),
+        );
+        object.insert(
+            "publish_state".to_string(),
+            agent_use_publish_state_json(&profile),
+        );
+        object.insert(
+            "publishing".to_string(),
+            json!(agent_use_publish_state_active(&profile)),
+        );
+        object.insert(
+            "safety_labels".to_string(),
+            json!(agent_use_safety_labels(&profile, &post_preflight, None)),
+        );
+        object.insert("candidate_spool_requested".to_string(), json!(true));
+        object.insert(
+            "candidate_spool_created".to_string(),
+            json!(profile.candidate_spool_path.exists()),
+        );
+        object.insert(
+            "candidate_spool_profile_path".to_string(),
+            json!(path_string(&profile.candidate_spool_path)),
+        );
+        object.insert(
+            "candidate_spool_profile_query_index_path".to_string(),
+            json!(path_string(&profile.candidate_spool_query_index_path)),
+        );
+        object.insert(
+            "candidate_spool_profile_status".to_string(),
+            candidate_spool_layer
+                .get("status")
+                .cloned()
+                .unwrap_or_else(|| json!("unknown")),
+        );
+        object.insert(
+            "candidate_spool_query_index_status".to_string(),
+            candidate_spool_layer
+                .get("query_index_status")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "candidate_spool_query_index_created".to_string(),
+            json!(profile.candidate_spool_query_index_path.exists()),
+        );
+        object.insert(
+            "candidate_spool_artifact_lifecycle".to_string(),
+            candidate_spool_layer.clone(),
+        );
+        object.insert("vector_runtime_requested".to_string(), json!(true));
+        object.insert(
+            "vector_runtime_created".to_string(),
+            json!(profile.vector_runtime_path.exists()),
+        );
+        object.insert(
+            "vector_runtime_profile_path".to_string(),
+            json!(path_string(&profile.vector_runtime_path)),
+        );
+        object.insert(
+            "vector_runtime_profile_status".to_string(),
+            vector_runtime_layer
+                .get("status")
+                .cloned()
+                .unwrap_or_else(|| json!("unknown")),
+        );
+        object.insert(
+            "vector_runtime_artifact_lifecycle".to_string(),
+            vector_runtime_layer.clone(),
+        );
+        object.insert("vector_audit_requested".to_string(), json!(false));
+        object.insert(
+            "vector_audit_created".to_string(),
+            json!(profile.vector_audit_path.exists()),
+        );
+        object.insert(
+            "vector_audit_profile_path".to_string(),
+            json!(path_string(&profile.vector_audit_path)),
+        );
+        object.insert(
+            "vector_audit_profile_status".to_string(),
+            vector_audit_layer
+                .get("status")
+                .cloned()
+                .unwrap_or_else(|| json!("missing")),
+        );
+        object.insert(
+            "vector_audit_artifact_lifecycle".to_string(),
+            vector_audit_layer.clone(),
+        );
+        object.insert(
+            "artifact_paths".to_string(),
+            json!({
+                "db_path": path_string(&profile.db_path),
+                "candidate_spool_path": path_string(&profile.candidate_spool_path),
+                "candidate_spool_query_index_path": path_string(&profile.candidate_spool_query_index_path),
+                "vector_runtime_path": path_string(&profile.vector_runtime_path),
+                "vector_audit_path": path_string(&profile.vector_audit_path),
+            }),
+        );
+        object.insert(
+            "artifact_sizes".to_string(),
+            json!({
+                "candidate_spool_bytes": candidate_spool_bytes,
+                "candidate_spool_query_index_bytes": candidate_spool_query_index_bytes,
+                "vector_runtime_bytes": vector_runtime_bytes,
+                "vector_audit_bytes": vector_audit_bytes,
+            }),
+        );
+        object.insert(
+            "artifact_lifecycle_binding".to_string(),
+            json!({
+                "repo_root": path_string(&profile.repo_root),
+                "db_path": path_string(&profile.db_path),
+                "profile_name": profile.profile_name.clone(),
+                "candidate_spool": candidate_spool_layer,
+                "vector_runtime": vector_runtime_layer,
+                "vector_audit": vector_audit_layer,
+            }),
+        );
+        object.insert("artifact_warnings".to_string(), artifact_warnings);
+        object.insert(
+            "staged_availability".to_string(),
+            staged_availability.clone(),
+        );
+        object.insert("recovery".to_string(), agent_use_recovery_json(&profile));
+        object.insert("public_claim".to_string(), json!(false));
+    }
+    merge_json_object(
+        &mut value,
+        staged_availability_top_level_fields(&staged_availability),
+    );
+    add_agent_use_rtds_freshness_fields(
+        &mut value,
+        &profile,
+        &post_preflight,
+        &staged_availability,
+    );
+    Ok(value)
+}
+
+fn run_agent_use_watch_command(args: &[String]) -> Result<Value, String> {
+    let options = parse_agent_use_watch_args(args)?;
+    if options.once {
+        if options.changed_paths.is_empty() {
+            return Err(
+                "agent-use watch --once requires at least one --changed <path>".to_string(),
+            );
+        }
+        let profile = resolve_agent_use_profile(&options.repo)?;
+        let normal_dot_codegraph = profile.repo_root.join(".codegraph");
+        let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
+        return run_agent_use_watch_once_delta(
+            &profile,
+            options.changed_paths,
+            normal_dot_codegraph_existed_before,
+        );
+    }
+    if !options.changed_paths.is_empty() {
+        return Err(
+            "agent-use persistent watch gathers filesystem events itself; use --once with --changed for deterministic one-shot updates"
+                .to_string(),
+        );
+    }
+    run_agent_use_persistent_watch_command(options)
+}
+
+fn run_agent_use_watch_once_delta(
+    profile: &AgentUseProfile,
+    changed_paths: Vec<PathBuf>,
+    normal_dot_codegraph_existed_before: bool,
+) -> Result<Value, String> {
+    let normal_dot_codegraph = profile.repo_root.join(".codegraph");
+    let requested_changed_paths =
+        agent_use_report_changed_paths(&profile.repo_root, &changed_paths);
+    let preflight = inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
+        repo_root: profile.repo_root.clone(),
+        db_path: profile.db_path.clone(),
+        surface_name: "agent-use.watch.once".to_string(),
+        operation_kind: DbLifecycleOperationKind::WriteUpdate,
+        allow_stale_read: false,
+        allow_foreign_repo: false,
+        required_storage_mode: None,
+        expected_scope: Some(profile.scope_policy.clone()),
+    })
+    .map_err(|error| error.to_string())?;
+
+    if !preflight.safe_to_write {
+        return Ok(agent_use_watch_unavailable_json(
+            &profile,
+            &preflight,
+            normal_dot_codegraph_existed_before,
+            &changed_paths,
+        ));
+    }
+    let path_preflight = agent_use_watch_path_preflight(&profile.repo_root, &changed_paths);
+    if !path_preflight.rejected_paths.is_empty() {
+        return Ok(agent_use_watch_rejected_paths_json(
+            &profile,
+            &preflight,
+            normal_dot_codegraph_existed_before,
+            &path_preflight,
+        ));
+    }
+
+    let old_fact_counts =
+        agent_use_delta_fact_counts(&profile.db_path, &requested_changed_paths).unwrap_or_default();
+    write_agent_use_publish_state(&profile, "updating", None)?;
+    let summary = match update_changed_files_to_db(
+        &profile.repo_root,
+        &changed_paths,
+        &profile.db_path,
+    ) {
+        Ok(summary) => {
+            if cli_write_path_chaos_failpoint_enabled(
+                AGENT_USE_WATCH_AFTER_DELTA_COMMIT_BEFORE_STATE_CLEAR_FAILPOINT,
+            ) {
+                let message = format!(
+                        "chaos_failpoint:{AGENT_USE_WATCH_AFTER_DELTA_COMMIT_BEFORE_STATE_CLEAR_FAILPOINT}"
+                    );
+                if let Err(state_error) =
+                    write_agent_use_publish_state(&profile, "interrupted", Some(&message))
+                {
+                    return Err(format!(
+                        "{message}; publish_state_update_failed: {state_error}"
+                    ));
+                }
+                return Err(message);
+            }
+            clear_agent_use_publish_state(&profile)?;
+            summary
+        }
+        Err(error) => {
+            let message = error.to_string();
+            if let Err(state_error) =
+                write_agent_use_publish_state(&profile, "interrupted", Some(&message))
+            {
+                return Err(format!(
+                    "{message}; publish_state_update_failed: {state_error}"
+                ));
+            }
+            return Err(message);
+        }
+    };
+    let mut value = serde_json::to_value(&summary).map_err(|error| error.to_string())?;
+
+    let lifecycle = watch_update_lifecycle_metadata(
+        &profile.repo_root,
+        &profile.db_path,
+        "agent-use.watch.once",
+        true,
+        Some(profile.scope_policy.clone()),
+    )
+    .map_err(|error| error.to_string())?;
+    let post_preflight = inspect_read_db_lifecycle_preflight(
+        &profile.repo_root,
+        &profile.db_path,
+        Some(profile.scope_policy.clone()),
+    )?;
+    let staged_availability = staged_availability_for_cli(
+        &profile.repo_root,
+        &profile.db_path,
+        Some(&post_preflight),
+        Some(&profile.candidate_spool_path),
+        Some(&profile.vector_runtime_path),
+        Some(&profile.vector_audit_path),
+        None,
+    );
+    let changed_paths_requested = changed_paths
+        .iter()
+        .map(|path| path_string(path))
+        .collect::<Vec<_>>();
+    let changed_paths_normalized = if summary.changed_files.is_empty() {
+        requested_changed_paths.clone()
+    } else {
+        summary.changed_files.clone()
+    };
+    let new_fact_counts = agent_use_delta_fact_counts(&profile.db_path, &changed_paths_normalized)
+        .unwrap_or_default();
+    annotate_agent_use_output(
+        &mut value,
+        &profile,
+        "watch",
+        normal_dot_codegraph_existed_before,
+    );
+    add_agent_use_durability_labels(&mut value, &profile, &post_preflight, None);
+    if let Some(object) = value.as_object_mut() {
+        let no_op_paths = agent_use_watch_no_op_paths(&summary);
+        let status = agent_use_watch_status(&summary, &no_op_paths);
+        let delta_state = agent_use_watch_delta_state(&summary, &no_op_paths);
+        object.insert("command".to_string(), json!("watch"));
+        object.insert("subcommand".to_string(), json!("once"));
+        object.insert("watch_mode".to_string(), json!("once_changed"));
+        object.insert("status".to_string(), json!(status));
+        object.insert("agent_use_watch_available".to_string(), json!(true));
+        object.insert(
+            "agent_use_watch_status".to_string(),
+            json!("implemented_once_changed"),
+        );
+        object.insert(
+            "delta_sync_phase".to_string(),
+            json!("real_time_delta_sync"),
+        );
+        object.insert("delta_sync_state".to_string(), json!(delta_state));
+        object.insert("delta_state".to_string(), json!(delta_state));
+        object.insert(
+            "reason".to_string(),
+            json!(agent_use_watch_reason(&summary, &no_op_paths)),
+        );
+        object.insert("auto_index_enabled".to_string(), json!(false));
+        object.insert("changed_paths".to_string(), json!(changed_paths_normalized));
+        object.insert("rejected_paths".to_string(), json!([]));
+        object.insert("no_op_paths".to_string(), json!(no_op_paths));
+        object.insert(
+            "changed_paths_requested".to_string(),
+            json!(changed_paths_requested),
+        );
+        object.insert("watch_db".to_string(), lifecycle);
+        object.insert(
+            "staged_availability".to_string(),
+            staged_availability.clone(),
+        );
+        object.insert(
+            "publish_safety".to_string(),
+            json!({
+                "strategy": "sqlite_transaction_delta_update",
+                "old_good_read_visibility": "readers see the previously committed DB state until the delta transaction commits",
+                "partial_update_claimability": "non_claimable_if_publish_state_interrupted",
+                "temp_db_claimability": "not_applicable_for_once_delta_update",
+                "temp_db_claimable": false,
+                "auto_index_on_start": false,
+            }),
+        );
+        object.insert(
+            "freshness".to_string(),
+            agent_use_watch_freshness_json(&summary, &staged_availability),
+        );
+        object.insert(
+            "old_graph_valid".to_string(),
+            json!(preflight.safe_to_write),
+        );
+        object.insert("new_graph_valid".to_string(), json!(post_preflight.safe));
+        object.insert("old_db_preserved".to_string(), json!(true));
+        object.insert("temp_db_claimable".to_string(), json!(false));
+        object.insert("claimable".to_string(), json!(post_preflight.safe));
+        object.insert(
+            "claimability".to_string(),
+            staged_availability
+                .get("claimability")
+                .cloned()
+                .unwrap_or_else(|| {
+                    json!({
+                        "claimable": post_preflight.safe,
+                        "diagnostic_only": !post_preflight.safe,
+                        "candidate_only": false,
+                        "graph_proof_available": post_preflight.safe,
+                    })
+                }),
+        );
+        object.insert(
+            "facts_deleted".to_string(),
+            json!(
+                summary.deleted_fact_files
+                    + summary.deleted_file_facts_removed
+                    + summary.stale_facts_deleted_for_ignored_paths
+            ),
+        );
+        object.insert(
+            "facts_deleted_measurement".to_string(),
+            json!("file_fact_sets_plus_deleted_file_records"),
+        );
+        object.insert(
+            "facts_inserted".to_string(),
+            json!(
+                summary.files_indexed
+                    + summary.entities
+                    + summary.edges
+                    + summary.dirty_path_evidence_count
+            ),
+        );
+        object.insert(
+            "facts_inserted_measurement".to_string(),
+            json!("files_plus_entities_plus_edges_plus_path_evidence_rows"),
+        );
+        object.insert(
+            "entities_added".to_string(),
+            json!(new_fact_counts.entities),
+        );
+        object.insert(
+            "entities_removed".to_string(),
+            json!(old_fact_counts.entities),
+        );
+        object.insert("entities_changed".to_string(), json!(summary.entities));
+        object.insert("edges_added".to_string(), json!(new_fact_counts.edges));
+        object.insert("edges_removed".to_string(), json!(old_fact_counts.edges));
+        object.insert("edges_changed".to_string(), json!(summary.edges));
+        object.insert(
+            "source_spans_added".to_string(),
+            json!(new_fact_counts.source_spans),
+        );
+        object.insert(
+            "source_spans_removed".to_string(),
+            json!(old_fact_counts.source_spans),
+        );
+        object.insert(
+            "source_spans_changed".to_string(),
+            json!(new_fact_counts.source_spans + old_fact_counts.source_spans),
+        );
+        object.insert(
+            "text_evidence_changed".to_string(),
+            json!(summary.files_indexed > 0 && summary.files_read > 0),
+        );
+        object.insert(
+            "path_evidence_invalidated".to_string(),
+            json!({
+                "action": agent_use_path_evidence_delta_action(&summary),
+                "dirty_path_evidence_count": summary.dirty_path_evidence_count,
+            }),
+        );
+        object.insert(
+            "candidate_spool_invalidated_or_rebuilt".to_string(),
+            json!(agent_use_layer_delta_action(
+                staged_availability
+                    .get("candidate_spool_status")
+                    .and_then(Value::as_str),
+            )),
+        );
+        object.insert(
+            "candidate_query_index_invalidated_or_rebuilt".to_string(),
+            json!(agent_use_layer_delta_action(
+                staged_availability
+                    .pointer("/layer_readiness/candidate_spool/query_index_status")
+                    .and_then(Value::as_str),
+            )),
+        );
+        object.insert(
+            "vector_chunks_invalidated_or_rebuilt".to_string(),
+            json!(agent_use_layer_delta_action(
+                staged_availability
+                    .get("vector_runtime_status")
+                    .and_then(Value::as_str),
+            )),
+        );
+        object.insert(
+            "routing_handles_invalidated".to_string(),
+            json!({
+                "action": if summary.files_indexed > 0 || summary.files_deleted > 0 || summary.files_renamed > 0 {
+                    "dirty_file_cleanup"
+                } else {
+                    "unchanged"
+                },
+                "scope": "sparse_sidecar_handles",
+            }),
+        );
+        object.insert(
+            "closure_files_considered".to_string(),
+            json!(summary.dependency_closure.closure_files_considered.clone()),
+        );
+        object.insert(
+            "closure_files_updated".to_string(),
+            json!(summary.dependency_closure.closure_files_updated.clone()),
+        );
+        object.insert(
+            "closure_edges_inspected".to_string(),
+            json!(summary.dependency_closure.closure_edges_inspected),
+        );
+        object.insert(
+            "closure_relation_classes".to_string(),
+            json!(summary.dependency_closure.closure_relation_classes.clone()),
+        );
+        object.insert(
+            "closure_budget_hit".to_string(),
+            json!(summary.dependency_closure.closure_budget_hit),
+        );
+        object.insert(
+            "degraded_relation_classes".to_string(),
+            json!(summary.dependency_closure.degraded_relation_classes.clone()),
+        );
+        object.insert(
+            "skipped_relation_classes".to_string(),
+            json!(summary.dependency_closure.skipped_relation_classes.clone()),
+        );
+        object.insert(
+            "closure_unknowns".to_string(),
+            json!(summary.dependency_closure.closure_unknowns.clone()),
+        );
+        object.insert(
+            "dependency_closure".to_string(),
+            json!(summary.dependency_closure.clone()),
+        );
+        object.insert(
+            "no_full_repo_fallback".to_string(),
+            json!(summary.dependency_closure.full_repo_fallback_avoided),
+        );
+        object.insert(
+            "full_repo_fallback_avoided_reason".to_string(),
+            json!(summary.dependency_closure.fallback_avoided_reason.clone()),
+        );
+        object.insert(
+            "manual_full_index_recommendation".to_string(),
+            json!(summary
+                .dependency_closure
+                .manual_full_index_recommendation
+                .clone()),
+        );
+        object.insert(
+            "timings".to_string(),
+            json!({
+                "total_wall_ms": summary.profile.as_ref().map(|profile| profile.total_wall_ms),
+                "file_read_ms": profile_span_ms(summary.profile.as_ref(), "file_read"),
+                "file_hash_ms": profile_span_ms(summary.profile.as_ref(), "file_hash"),
+                "parse_ms": profile_span_ms(summary.profile.as_ref(), "parse"),
+                "stale_delete_ms": profile_span_ms(summary.profile.as_ref(), "stale_fact_delete"),
+                "transaction_commit_ms": profile_span_ms(summary.profile.as_ref(), "transaction_commit"),
+                "path_evidence_regeneration_ms": profile_span_ms(summary.profile.as_ref(), "refresh_path_evidence"),
+            }),
+        );
+        object.insert(
+            "normal_dot_codegraph_created".to_string(),
+            json!(!normal_dot_codegraph_existed_before && normal_dot_codegraph.exists()),
+        );
+        object.insert(
+            "normal_dot_codegraph_mutated".to_string(),
+            json!(normal_dot_codegraph_existed_before != normal_dot_codegraph.exists()),
+        );
+        let recovery = agent_use_recovery_json(&profile);
+        object.insert(
+            "recovery_commands".to_string(),
+            recovery
+                .get("commands")
+                .cloned()
+                .unwrap_or_else(|| json!(profile.recovery_commands.clone())),
+        );
+        object.insert("recovery".to_string(), recovery);
+    }
+    merge_json_object(
+        &mut value,
+        staged_availability_top_level_fields(&staged_availability),
+    );
+    add_agent_use_rtds_freshness_fields(&mut value, profile, &post_preflight, &staged_availability);
+    persist_agent_use_last_delta_state(&mut value, profile, "agent-use.watch.once");
+    Ok(value)
+}
+
+fn run_agent_use_persistent_watch_command(options: AgentUseWatchOptions) -> Result<Value, String> {
+    let profile = resolve_agent_use_profile(&options.repo)?;
+    let normal_dot_codegraph = profile.repo_root.join(".codegraph");
+    let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
+    let started = Instant::now();
+    let mut last_activity = started;
+    let mut preflight_lock_retries = 0usize;
+    let preflight = loop {
+        let preflight =
+            inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
+                repo_root: profile.repo_root.clone(),
+                db_path: profile.db_path.clone(),
+                surface_name: "agent-use.watch.persistent".to_string(),
+                operation_kind: DbLifecycleOperationKind::WriteUpdate,
+                allow_stale_read: false,
+                allow_foreign_repo: false,
+                required_storage_mode: None,
+                expected_scope: Some(profile.scope_policy.clone()),
+            })
+            .map_err(|error| error.to_string())?;
+        if preflight.safe_to_write
+            || !agent_use_preflight_is_transient_lock(&preflight)
+            || preflight_lock_retries >= options.lock_retries
+        {
+            break preflight;
+        }
+        preflight_lock_retries += 1;
+        std::thread::sleep(options.lock_retry);
+    };
+
+    if !preflight.safe_to_write {
+        return Ok(agent_use_persistent_watch_unavailable_json(
+            &profile,
+            &preflight,
+            normal_dot_codegraph_existed_before,
+            &options,
+            started,
+            preflight_lock_retries,
+        ));
+    }
+
+    let use_synthetic_events = !options.test_events.is_empty();
+    let (sender, receiver) = mpsc::channel();
+    let _watcher_guard = if use_synthetic_events {
+        None
+    } else {
+        let mut watcher = notify::recommended_watcher(move |result| {
+            let _ = sender.send(result);
+        })
+        .map_err(|error| format!("watcher init failed: {error}"))?;
+        watcher
+            .watch(&profile.repo_root, RecursiveMode::Recursive)
+            .map_err(|error| format!("watcher start failed: {error}"))?;
+        Some(watcher)
+    };
+
+    let mut debouncer = WatchDebouncer::new(options.debounce);
+    if use_synthetic_events {
+        let now = Instant::now();
+        for path in &options.test_events {
+            debouncer.push(path.clone(), now);
+        }
+        last_activity = now;
+    }
+    let tick = if options.debounce.is_zero() {
+        Duration::from_millis(50)
+    } else {
+        std::cmp::min(options.debounce, Duration::from_millis(250))
+    };
+    let mut batches_processed = 0usize;
+    let mut updates_attempted = 0usize;
+    let mut updates_succeeded = 0usize;
+    let mut lock_retry_count = preflight_lock_retries;
+    let mut last_update_summary = Value::Null;
+    let mut last_error = Value::Null;
+    let mut last_update_state = "ready".to_string();
+    let mut last_successful_update_time = Value::Null;
+
+    let stop_reason = loop {
+        if !use_synthetic_events {
+            match receiver.recv_timeout(tick) {
+                Ok(Ok(event)) => {
+                    enqueue_event_paths(&mut debouncer, event, Instant::now());
+                    last_activity = Instant::now();
+                }
+                Ok(Err(error)) => {
+                    last_error = json!({
+                        "status": "watcher_error",
+                        "message": error.to_string(),
+                        "retryable": true,
+                    });
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    last_error = json!({
+                        "status": "watcher_error",
+                        "message": "watcher event channel disconnected",
+                        "retryable": false,
+                    });
+                    break "event_channel_disconnected".to_string();
+                }
+            }
+        } else {
+            std::thread::sleep(tick);
+        }
+
+        let ready = debouncer.ready(Instant::now());
+        if !ready.is_empty() {
+            batches_processed += 1;
+            updates_attempted += 1;
+            last_activity = Instant::now();
+            if ready.len() > options.max_batch_paths {
+                let degraded =
+                    agent_use_persistent_watch_many_changes_json(&profile, &ready, &options);
+                last_update_state = "degraded".to_string();
+                last_error = degraded.clone();
+                last_update_summary = degraded;
+            } else {
+                match agent_use_watch_once_delta_with_lock_retry(
+                    &profile,
+                    ready,
+                    normal_dot_codegraph_existed_before,
+                    options.lock_retries,
+                    options.lock_retry,
+                ) {
+                    Ok((value, retries)) => {
+                        lock_retry_count += retries;
+                        last_update_state = value
+                            .get("delta_state")
+                            .and_then(Value::as_str)
+                            .or_else(|| value.get("status").and_then(Value::as_str))
+                            .unwrap_or("updated")
+                            .to_string();
+                        updates_succeeded += 1;
+                        last_successful_update_time = json!(unix_time_ms());
+                        last_error = Value::Null;
+                        last_update_summary = value;
+                    }
+                    Err(error) => {
+                        let retryable_lock = agent_use_watch_error_is_transient_lock(&error);
+                        last_update_state = if retryable_lock {
+                            "locked".to_string()
+                        } else {
+                            "blocked".to_string()
+                        };
+                        last_error = json!({
+                            "status": if retryable_lock { "db_locked" } else { "error" },
+                            "message": error,
+                            "retryable": retryable_lock,
+                        });
+                        last_update_summary = Value::Null;
+                    }
+                }
+            }
+        }
+
+        if options
+            .max_updates
+            .is_some_and(|max_updates| updates_attempted >= max_updates)
+        {
+            break "max_updates_reached".to_string();
+        }
+        if let Some(idle_timeout) = options.idle_timeout {
+            let idle_elapsed = Instant::now()
+                .checked_duration_since(last_activity)
+                .unwrap_or_default();
+            if debouncer.pending_len() == 0 && idle_elapsed >= idle_timeout {
+                break "idle_timeout".to_string();
+            }
+        }
+    };
+
+    Ok(agent_use_persistent_watch_status_json(
+        &profile,
+        &options,
+        normal_dot_codegraph_existed_before,
+        started,
+        debouncer.pending_len(),
+        debouncer.pending_paths(),
+        debouncer.events_seen(),
+        debouncer.coalesced_count(),
+        batches_processed,
+        updates_attempted,
+        updates_succeeded,
+        lock_retry_count,
+        last_update_state,
+        last_update_summary,
+        last_successful_update_time,
+        last_error,
+        stop_reason,
+    ))
+}
+
+fn agent_use_watch_once_delta_with_lock_retry(
+    profile: &AgentUseProfile,
+    changed_paths: Vec<PathBuf>,
+    normal_dot_codegraph_existed_before: bool,
+    lock_retries: usize,
+    lock_retry: Duration,
+) -> Result<(Value, usize), String> {
+    agent_use_retry_transient_lock(lock_retries, lock_retry, || {
+        run_agent_use_watch_once_delta(
+            profile,
+            changed_paths.clone(),
+            normal_dot_codegraph_existed_before,
+        )
+    })
+}
+
+fn agent_use_retry_transient_lock<T, F>(
+    lock_retries: usize,
+    lock_retry: Duration,
+    mut operation: F,
+) -> Result<(T, usize), String>
+where
+    F: FnMut() -> Result<T, String>,
+{
+    let mut retries = 0usize;
+    loop {
+        match operation() {
+            Ok(value) => return Ok((value, retries)),
+            Err(error)
+                if agent_use_watch_error_is_transient_lock(&error) && retries < lock_retries =>
+            {
+                retries += 1;
+                std::thread::sleep(lock_retry);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn agent_use_watch_error_is_transient_lock(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("database is locked")
+        || lower.contains("database table is locked")
+        || lower.contains("db_locked")
+        || lower.contains("sqlite_busy")
+}
+
+fn agent_use_preflight_is_transient_lock(preflight: &DbLifecycleSurfacePreflight) -> bool {
+    preflight
+        .blockers
+        .iter()
+        .chain(preflight.warnings.iter())
+        .any(|message| agent_use_watch_error_is_transient_lock(message))
+}
+
+fn agent_use_persistent_watch_many_changes_json(
+    profile: &AgentUseProfile,
+    changed_paths: &[PathBuf],
+    options: &AgentUseWatchOptions,
+) -> Value {
+    let normalized = agent_use_report_changed_paths(&profile.repo_root, changed_paths);
+    json!({
+        "status": "degraded",
+        "delta_state": "degraded",
+        "reason": "too_many_changes_branch_switch_suspected",
+        "changed_paths": normalized,
+        "changed_path_count": changed_paths.len(),
+        "max_batch_paths": options.max_batch_paths,
+        "no_full_repo_fallback": true,
+        "manual_full_index_recommendation": format!("{BIN_NAME} agent-use index --repo \"{}\" --json", path_string(&profile.repo_root)),
+        "claimable": false,
+        "diagnostic_only": true,
+        "auto_index_enabled": false,
+        "old_db_preserved": true,
+        "temp_db_claimable": false,
+    })
+}
+
+fn agent_use_persistent_watch_unavailable_json(
+    profile: &AgentUseProfile,
+    preflight: &DbLifecycleSurfacePreflight,
+    normal_dot_codegraph_existed_before: bool,
+    options: &AgentUseWatchOptions,
+    started: Instant,
+    lock_retry_count: usize,
+) -> Value {
+    let lifecycle = watch_lifecycle_status_json(preflight, &profile.db_path, false);
+    let status = agent_use_blocked_status_from_preflight(preflight);
+    let last_error = json!({
+        "status": status,
+        "message": watch_lifecycle_error(preflight),
+        "blockers": preflight.blockers.clone(),
+        "retryable": status == "db_locked",
+    });
+    agent_use_persistent_watch_status_json(
+        profile,
+        options,
+        normal_dot_codegraph_existed_before,
+        started,
+        0,
+        Vec::new(),
+        0,
+        0,
+        0,
+        lock_retry_count,
+        0,
+        0,
+        "blocked".to_string(),
+        lifecycle,
+        Value::Null,
+        last_error,
+        status.to_string(),
+    )
+}
+
+fn agent_use_blocked_status_from_preflight(preflight: &DbLifecycleSurfacePreflight) -> &str {
+    if preflight.artifact_freshness.as_deref() == Some("missing")
+        || preflight.passport_status == "missing"
+    {
+        "not_indexed"
+    } else if preflight.schema_status != "ok" {
+        "schema_mismatch"
+    } else if !preflight.repo_match {
+        "repo_mismatch"
+    } else if preflight
+        .blockers
+        .iter()
+        .any(|blocker| blocker.to_ascii_lowercase().contains("locked"))
+    {
+        "db_locked"
+    } else {
+        "blocked"
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn agent_use_persistent_watch_status_json(
+    profile: &AgentUseProfile,
+    options: &AgentUseWatchOptions,
+    normal_dot_codegraph_existed_before: bool,
+    started: Instant,
+    queue_depth: usize,
+    pending_paths: Vec<PathBuf>,
+    events_seen: usize,
+    coalesced_count: usize,
+    batches_processed: usize,
+    updates_attempted: usize,
+    updates_succeeded: usize,
+    lock_retry_count: usize,
+    last_update_state: String,
+    last_update_summary: Value,
+    last_successful_update_time: Value,
+    last_error: Value,
+    stop_reason: String,
+) -> Value {
+    let normal_dot_codegraph = profile.repo_root.join(".codegraph");
+    let pending_paths = agent_use_report_changed_paths(&profile.repo_root, &pending_paths);
+    let claimability = last_update_summary
+        .get("claimability")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "claimable": last_error.is_null(),
+                "diagnostic_only": !last_error.is_null(),
+                "candidate_only": false,
+                "graph_proof_available": last_error.is_null(),
+            })
+        });
+    json!({
+        "status": if last_error.is_null() { "stopped" } else { last_error.get("status").and_then(Value::as_str).unwrap_or("blocked") },
+        "command": "watch",
+        "subcommand": "persistent",
+        "command_namespace": "agent-use",
+        "agent_use_command": "agent-use watch",
+        "watch_mode": "persistent",
+        "agent_use_watch_available": true,
+        "agent_use_watch_status": "implemented_persistent_scheduler",
+        "persistent_watch_scheduler": true,
+        "uses_once_delta_engine": true,
+        "filesystem_watcher": if options.test_events.is_empty() { "notify" } else { "synthetic_test_event_source" },
+        "test_event_count": options.test_events.len(),
+        "writer_queue_serialized": true,
+        "max_concurrent_writers": 1,
+        "auto_index_enabled": false,
+        "repo": path_string(&profile.repo_root),
+        "repo_root": path_string(&profile.repo_root),
+        "db": path_string(&profile.db_path),
+        "db_path": path_string(&profile.db_path),
+        "resolved_db": path_string(&profile.db_path),
+        "db_source": "agent-use profile",
+        "external_db_used": true,
+        "profile_name": profile.profile_name.clone(),
+        "debounce_ms": options.debounce.as_millis() as u64,
+        "lock_retries": options.lock_retries,
+        "lock_retry_ms": options.lock_retry.as_millis() as u64,
+        "lock_retry_count": lock_retry_count,
+        "max_batch_paths": options.max_batch_paths,
+        "queue_depth": queue_depth,
+        "pending_paths": pending_paths,
+        "coalesced_count": coalesced_count,
+        "events_seen": events_seen,
+        "batches_processed": batches_processed,
+        "updates_attempted": updates_attempted,
+        "updates_succeeded": updates_succeeded,
+        "last_update_state": last_update_state,
+        "last_update_summary": last_update_summary,
+        "last_successful_update_time_unix_ms": last_successful_update_time,
+        "last_error": last_error,
+        "recovery_commands": profile.recovery_commands.clone(),
+        "recovery": agent_use_recovery_json(profile),
+        "claimability": claimability,
+        "old_db_preserved": true,
+        "temp_db_claimable": false,
+        "pause_state": "not_paused",
+        "resume_supported": false,
+        "stop_reason": stop_reason,
+        "elapsed_ms": started.elapsed().as_millis() as u64,
+        "normal_dot_codegraph_path": path_string(&normal_dot_codegraph),
+        "normal_dot_codegraph_created": !normal_dot_codegraph_existed_before && normal_dot_codegraph.exists(),
+        "normal_dot_codegraph_mutated": normal_dot_codegraph_existed_before != normal_dot_codegraph.exists(),
+        "public_claim": false,
+    })
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct AgentUseDeltaFactCounts {
+    entities: u64,
+    edges: u64,
+    source_spans: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AgentUseWatchPathPreflight {
+    accepted_paths: Vec<String>,
+    rejected_paths: Vec<Value>,
+    requested_paths: Vec<String>,
+}
+
+fn agent_use_report_changed_paths(repo_root: &Path, changed_paths: &[PathBuf]) -> Vec<String> {
+    let mut normalized = changed_paths
+        .iter()
+        .map(|path| agent_use_report_changed_path(repo_root, path))
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    normalized
+}
+
+fn agent_use_report_changed_path(repo_root: &Path, changed_path: &Path) -> String {
+    let repo_root_canonical =
+        fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+    let candidate = if changed_path.is_absolute() {
+        changed_path.to_path_buf()
+    } else {
+        repo_root.join(changed_path)
+    };
+    let candidate_canonical = fs::canonicalize(&candidate).unwrap_or(candidate);
+    if let Ok(relative) = candidate_canonical.strip_prefix(&repo_root_canonical) {
+        return path_to_graph_report_string(relative);
+    }
+    if let Ok(relative) = candidate_canonical.strip_prefix(repo_root) {
+        return path_to_graph_report_string(relative);
+    }
+    path_to_graph_report_string(changed_path)
+}
+
+fn path_to_graph_report_string(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_string()
+}
+
+fn agent_use_watch_path_preflight(
+    repo_root: &Path,
+    changed_paths: &[PathBuf],
+) -> AgentUseWatchPathPreflight {
+    let mut preflight = AgentUseWatchPathPreflight::default();
+    for changed_path in changed_paths {
+        let requested = path_to_graph_report_string(changed_path);
+        preflight.requested_paths.push(requested.clone());
+        match normalize_changed_path(repo_root, changed_path) {
+            Ok((_, repo_relative_path)) => {
+                if !preflight.accepted_paths.contains(&repo_relative_path) {
+                    preflight.accepted_paths.push(repo_relative_path);
+                }
+            }
+            Err(error) => {
+                preflight.rejected_paths.push(json!({
+                    "path": requested,
+                    "reason": "path_outside_repo",
+                    "status": "rejected",
+                    "read": false,
+                    "indexed": false,
+                    "error": error.to_string(),
+                }));
+            }
+        }
+    }
+    preflight.accepted_paths.sort();
+    preflight.accepted_paths.dedup();
+    preflight
+}
+
+fn agent_use_watch_rejected_paths_json(
+    profile: &AgentUseProfile,
+    preflight: &DbLifecycleSurfacePreflight,
+    normal_dot_codegraph_existed_before: bool,
+    path_preflight: &AgentUseWatchPathPreflight,
+) -> Value {
+    let normal_dot_codegraph = profile.repo_root.join(".codegraph");
+    let lifecycle = watch_lifecycle_status_json(preflight, &profile.db_path, false);
+    let db_lifecycle_read =
+        db_lifecycle_preflight_json(&preflight.lifecycle_preflight, true, false, false);
+    let staged_availability = staged_availability_for_cli(
+        &profile.repo_root,
+        &profile.db_path,
+        Some(&preflight.lifecycle_preflight),
+        Some(&profile.candidate_spool_path),
+        Some(&profile.vector_runtime_path),
+        Some(&profile.vector_audit_path),
+        None,
+    );
+    let mut value = json!({
+        "status": "rejected",
+        "command": "watch",
+        "subcommand": "once",
+        "command_namespace": "agent-use",
+        "agent_use_command": "agent-use watch",
+        "profile_name": profile.profile_name.clone(),
+        "repo": path_string(&profile.repo_root),
+        "repo_root": path_string(&profile.repo_root),
+        "db": path_string(&profile.db_path),
+        "db_path": path_string(&profile.db_path),
+        "resolved_db": path_string(&profile.db_path),
+        "db_source": "agent-use profile",
+        "external_db_used": true,
+        "claimable": false,
+        "diagnostic_only": true,
+        "reason": "one_or_more_changed_paths_are_outside_repo",
+        "path_access_status": preflight.path_access_status.clone(),
+        "path_access_error": preflight.path_access_error.clone(),
+        "db_problem_kind": preflight.db_problem_kind.clone(),
+        "watch_mode": "once_changed",
+        "watch_db": lifecycle.clone(),
+        "db_lifecycle_read": db_lifecycle_read,
+        "lifecycle": lifecycle,
+        "agent_use_watch_available": true,
+        "agent_use_watch_status": "implemented_once_changed",
+        "delta_sync_phase": "real_time_delta_sync",
+        "delta_sync_state": "blocked",
+        "delta_state": "blocked",
+        "auto_index_enabled": false,
+        "changed_paths": path_preflight.accepted_paths.clone(),
+        "rejected_paths": path_preflight.rejected_paths.clone(),
+        "no_op_paths": [],
+        "changed_paths_requested": path_preflight.requested_paths.clone(),
+        "old_graph_valid": preflight.safe_to_write,
+        "new_graph_valid": preflight.safe_to_write,
+        "old_db_preserved": true,
+        "temp_db_claimable": false,
+        "files_walked": 0,
+        "files_read": 0,
+        "files_hashed": 0,
+        "files_parsed": 0,
+        "facts_deleted": 0,
+        "facts_inserted": 0,
+        "entities_added": 0,
+        "entities_removed": 0,
+        "entities_changed": 0,
+        "edges_added": 0,
+        "edges_removed": 0,
+        "edges_changed": 0,
+        "source_spans_added": 0,
+        "source_spans_removed": 0,
+        "source_spans_changed": 0,
+        "text_evidence_changed": false,
+        "freshness": {
+            "graph_db": "current",
+            "files_facts": "not_applicable",
+            "text_evidence": "not_applicable",
+            "path_evidence": "not_applicable",
+            "candidate_spool": "not_checked",
+            "candidate_spool_query_index": "not_checked",
+            "vector_runtime_sidecar": "not_checked",
+            "routing_context_handles": "not_applicable",
+        },
+        "path_evidence_invalidated": {
+            "action": "unchanged",
+            "dirty_path_evidence_count": 0,
+        },
+        "candidate_spool_invalidated_or_rebuilt": {
+            "action": "unchanged",
+            "status": "not_checked",
+            "graph_proof": false,
+        },
+        "candidate_query_index_invalidated_or_rebuilt": {
+            "action": "unchanged",
+            "status": "not_checked",
+            "graph_proof": false,
+        },
+        "vector_chunks_invalidated_or_rebuilt": {
+            "action": "unchanged",
+            "status": "not_checked",
+            "graph_proof": false,
+        },
+        "routing_handles_invalidated": {
+            "action": "unchanged",
+            "scope": "none",
+        },
+        "closure_files_considered": [],
+        "closure_budget_hit": false,
+        "degraded_relation_classes": [],
+        "timings": {},
+        "claimability": {
+            "claimable": false,
+            "diagnostic_only": true,
+            "candidate_only": false,
+            "graph_proof_available": false,
+        },
+        "publish_state": agent_use_publish_state_json(profile),
+        "publishing": agent_use_publish_state_active(profile),
+        "safety_labels": agent_use_safety_labels(profile, &preflight.lifecycle_preflight, None),
+        "staged_availability": staged_availability.clone(),
+        "recovery": agent_use_recovery_json(profile),
+        "recovery_commands": profile.recovery_commands.clone(),
+        "errors": path_preflight.rejected_paths.clone(),
+        "warnings": preflight.warnings.clone(),
+        "normal_dot_codegraph_path": path_string(&normal_dot_codegraph),
+        "normal_dot_codegraph_created": !normal_dot_codegraph_existed_before && normal_dot_codegraph.exists(),
+        "normal_dot_codegraph_mutated": normal_dot_codegraph_existed_before != normal_dot_codegraph.exists(),
+        "public_claim": false,
+        "publish_safety": {
+            "strategy": "no_update_when_changed_path_is_outside_repo",
+            "old_good_read_visibility": "no delta transaction started",
+            "partial_update_claimability": "not_applicable",
+            "temp_db_claimability": "not_applicable_for_once_delta_update",
+            "temp_db_claimable": false,
+            "auto_index_on_start": false,
+        },
+    });
+    merge_json_object(
+        &mut value,
+        staged_availability_top_level_fields(&staged_availability),
+    );
+    add_agent_use_rtds_freshness_fields(
+        &mut value,
+        profile,
+        &preflight.lifecycle_preflight,
+        &staged_availability,
+    );
+    value
+}
+
+fn agent_use_delta_fact_counts(
+    db_path: &Path,
+    changed_paths: &[String],
+) -> Result<AgentUseDeltaFactCounts, String> {
+    let connection = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| {
+            format!(
+                "agent-use delta fact count failed to open {}: {error}",
+                db_path.display()
+            )
+        })?;
+    let mut counts = AgentUseDeltaFactCounts::default();
+    for path in changed_paths {
+        counts.entities += query_count_for_path(
+            &connection,
+            "SELECT COUNT(*) FROM entities e JOIN path_dict p ON p.id = e.path_id WHERE p.value = ?1",
+            path,
+        )?;
+        counts.edges += query_count_for_path(
+            &connection,
+            "SELECT COUNT(*) FROM edges e JOIN path_dict p ON p.id = e.span_path_id WHERE p.value = ?1",
+            path,
+        )?;
+        counts.source_spans += query_count_for_path(
+            &connection,
+            "SELECT COUNT(*) FROM entities e JOIN path_dict p ON p.id = COALESCE(e.span_path_id, e.path_id) WHERE p.value = ?1 AND e.start_line IS NOT NULL AND e.end_line IS NOT NULL",
+            path,
+        )?;
+        counts.source_spans += query_count_for_path(
+            &connection,
+            "SELECT COUNT(*) FROM edges e JOIN path_dict p ON p.id = e.span_path_id WHERE p.value = ?1",
+            path,
+        )?;
+    }
+    Ok(counts)
+}
+
+fn query_count_for_path(connection: &Connection, sql: &str, path: &str) -> Result<u64, String> {
+    connection
+        .query_row(sql, params![path], |row| row.get::<_, u64>(0))
+        .map_err(|error| format!("agent-use delta fact count query failed for {path}: {error}"))
+}
+
+fn agent_use_watch_no_op_paths(summary: &IncrementalIndexSummary) -> Vec<String> {
+    if !agent_use_watch_summary_has_fact_changes(summary)
+        && (summary.files_metadata_unchanged > 0
+            || summary.files_ignored > 0
+            || summary.files_skipped > 0
+            || summary.files_seen > 0)
+    {
+        summary.changed_files.clone()
+    } else {
+        Vec::new()
+    }
+}
+
+fn agent_use_watch_summary_has_fact_changes(summary: &IncrementalIndexSummary) -> bool {
+    summary.files_indexed > 0
+        || summary.files_deleted > 0
+        || summary.files_renamed > 0
+        || summary.deleted_fact_files > 0
+        || summary.deleted_file_facts_removed > 0
+        || summary.stale_facts_deleted_for_ignored_paths > 0
+        || summary.entities > 0
+        || summary.edges > 0
+        || summary.dirty_path_evidence_count > 0
+}
+
+fn agent_use_watch_status(
+    summary: &IncrementalIndexSummary,
+    no_op_paths: &[String],
+) -> &'static str {
+    if agent_use_watch_dependency_closure_degraded(summary) {
+        "degraded"
+    } else if !no_op_paths.is_empty() && !agent_use_watch_summary_has_fact_changes(summary) {
+        "no_op"
+    } else {
+        "updated"
+    }
+}
+
+fn agent_use_watch_delta_state(
+    summary: &IncrementalIndexSummary,
+    no_op_paths: &[String],
+) -> &'static str {
+    if agent_use_watch_dependency_closure_degraded(summary) {
+        "degraded"
+    } else if !no_op_paths.is_empty() && !agent_use_watch_summary_has_fact_changes(summary) {
+        "ready"
+    } else {
+        "updated"
+    }
+}
+
+fn agent_use_watch_dependency_closure_degraded(summary: &IncrementalIndexSummary) -> bool {
+    summary.dependency_closure.closure_budget_hit || summary.dependency_closure.status == "degraded"
+}
+
+fn agent_use_watch_reason(
+    summary: &IncrementalIndexSummary,
+    no_op_paths: &[String],
+) -> &'static str {
+    if !no_op_paths.is_empty() && summary.files_ignored > 0 {
+        "ignored_path_no_graph_changes"
+    } else if agent_use_watch_dependency_closure_degraded(summary) {
+        "dependency_closure_degraded"
+    } else if !no_op_paths.is_empty() && summary.files_skipped > 0 {
+        "skipped_path_no_graph_changes"
+    } else if !no_op_paths.is_empty() {
+        "metadata_or_content_unchanged"
+    } else if summary.files_deleted > 0 && summary.files_indexed > 0 {
+        "file_lifecycle_update_applied"
+    } else if summary.files_deleted > 0 {
+        "stale_facts_removed"
+    } else {
+        "changed_paths_updated"
+    }
+}
+
+fn agent_use_watch_freshness_json(
+    summary: &IncrementalIndexSummary,
+    staged_availability: &Value,
+) -> Value {
+    let graph_changed = agent_use_watch_summary_has_fact_changes(summary);
+    json!({
+        "graph_db": "current",
+        "files_facts": if graph_changed { "rebuilt" } else { "current" },
+        "entities_edges_source_spans": if summary.files_parsed > 0 || summary.files_deleted > 0 || summary.files_renamed > 0 { "rebuilt" } else { "current" },
+        "text_evidence": if summary.files_read > 0 || summary.files_deleted > 0 || summary.files_ignored > 0 { "rebuilt" } else { "current" },
+        "path_evidence": if summary.dirty_path_evidence_count > 0 { "rebuilt" } else { "current" },
+        "candidate_spool": staged_availability.get("candidate_spool_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "candidate_spool_query_index": staged_availability.pointer("/layer_readiness/candidate_spool/query_index_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "vector_runtime_sidecar": staged_availability.get("vector_runtime_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "vector_audit_artifact": staged_availability.get("vector_audit_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "routing_context_handles": if summary.files_indexed > 0 || summary.files_deleted > 0 || summary.files_renamed > 0 { "rebuilt" } else { "current" },
+    })
+}
+
+fn agent_use_layer_delta_action(status: Option<&str>) -> Value {
+    let status = status.unwrap_or("unknown");
+    let action = match status {
+        "ready" | "superseded_by_graph_db" => "status_checked",
+        "stale" => "invalidated",
+        "missing" | "no_spool" | "query_index_missing" => "absent",
+        "rebuilt" => "rebuilt",
+        "corrupt" | "query_index_corrupt" => "error",
+        "permission_denied" | "filesystem_inaccessible" | "sidecar_unavailable" => "error",
+        _ => "status_checked",
+    };
+    json!({
+        "action": action,
+        "status": status,
+        "graph_proof": false,
+    })
+}
+
+fn agent_use_path_evidence_delta_action(summary: &IncrementalIndexSummary) -> &'static str {
+    if summary.dirty_path_evidence_count > 0 {
+        "refreshed"
+    } else if summary.files_indexed > 0
+        || summary.files_deleted > 0
+        || summary.files_renamed > 0
+        || summary.deleted_fact_files > 0
+        || summary.deleted_file_facts_removed > 0
+        || summary.stale_facts_deleted_for_ignored_paths > 0
+    {
+        "invalidated"
+    } else {
+        "unchanged"
+    }
+}
+
+fn agent_use_status_base_json(
+    profile: &AgentUseProfile,
+    preflight: &DbLifecyclePreflight,
+    sqlite_sidecars: &Value,
+    lifecycle: &Value,
+    status: &str,
+    wall_ms: f64,
+) -> Value {
+    let safety_labels = agent_use_safety_labels(profile, preflight, Some(sqlite_sidecars));
+    json!({
+        "schema_version": AGENT_JSON_SCHEMA_VERSION,
+        "status": status,
+        "command": "status",
+        "command_namespace": "agent-use",
+        "profile_name": profile.profile_name.clone(),
+        "repo": path_string(&profile.repo_root),
+        "repo_root": path_string(&profile.repo_root),
+        "db": path_string(&profile.db_path),
+        "db_path": path_string(&profile.db_path),
+        "external_db_used": true,
+        "db_path_outside_workspace": preflight.db_path_outside_workspace,
+        "outside_workspace_note": preflight.outside_workspace_note.clone(),
+        "path_access_status": preflight.path_access_status.clone(),
+        "path_access_error": preflight.path_access_error.clone(),
+        "db_problem_kind": preflight.db_problem_kind.clone(),
+        "db_health": preflight.db_health.clone(),
+        "sqlite_sidecars": sqlite_sidecars.clone(),
+        "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
+        "sidecar_only_change": sqlite_sidecars["sidecar_only_change"].clone(),
+        "sidecar_change_classification": sqlite_sidecars["sidecar_change_classification"].clone(),
+        "lifecycle": lifecycle.clone(),
+        "db_lifecycle_read": lifecycle.clone(),
+        "publish_state": agent_use_publish_state_json(profile),
+        "publishing": agent_use_publish_state_active(profile),
+        "safety_labels": safety_labels,
+        "claimable": preflight.safe,
+        "diagnostic_only": !preflight.safe,
+        "profile": agent_use_profile_json(profile),
+        "agent_use_profile": agent_use_profile_json(profile),
+        "recovery": agent_use_recovery_json(profile),
+        "telemetry": runtime_telemetry_unknown_json(),
+        "truncation": {
+            "returned_count": 1,
+            "limit_applied": false,
+            "omitted_count": 0,
+            "total_available_unknown": false,
+        },
+        "result_count": 1,
+        "limit": 1,
+        "omitted_count": 0,
+        "timings": agent_timings_from_wall_ms(wall_ms),
+        "read_path_metrics": agent_use_status_read_path_metrics_json(wall_ms),
+        "warnings": preflight.warnings.clone(),
+        "errors": if preflight.safe { Vec::<String>::new() } else { preflight.blockers.clone() },
+        "public_claim": false,
+    })
+}
+
+fn agent_use_profile_json(profile: &AgentUseProfile) -> Value {
+    json!({
+        "profile_name": profile.profile_name.clone(),
+        "repo_root": path_string(&profile.repo_root),
+        "repo_identity_label": profile.repo_identity_label.clone(),
+        "repo_identity_hash": profile.repo_identity_hash.clone(),
+        "profile_root": path_string(&profile.profile_root),
+        "db_path": path_string(&profile.db_path),
+        "candidate_spool_path": path_string(&profile.candidate_spool_path),
+        "candidate_spool_query_index_path": path_string(&profile.candidate_spool_query_index_path),
+        "vector_runtime_path": path_string(&profile.vector_runtime_path),
+        "vector_audit_path": path_string(&profile.vector_audit_path),
+        "lock_or_publish_state_path": path_string(&profile.lock_or_publish_state_path),
+        "delta_state_path": path_string(&profile.delta_state_path),
+        "lifecycle_expectations": profile.lifecycle_expectations.clone(),
+        "binary_profile": profile.binary_profile.clone(),
+        "scope_policy": {
+            "scope_policy_kind": SCOPE_POLICY_KIND_DEFAULT_WITH_OVERRIDES,
+            "include_semantics": INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES,
+            "include_is_restrictive": false,
+            "include_is_override": true,
+            "scope_truth_status": SCOPE_TRUTH_STATUS_OVERRIDE_ONLY,
+        },
+        "mcp_args": profile.mcp_args.clone(),
+        "recovery_commands": profile.recovery_commands.clone(),
+    })
+}
+
+fn agent_use_recovery_json(profile: &AgentUseProfile) -> Value {
+    let repo = path_string(&profile.repo_root);
+    json!({
+        "agent_use_index_command": format!("{BIN_NAME} agent-use index --repo \"{repo}\" --json"),
+        "agent_use_status_command": format!("{BIN_NAME} agent-use status --repo \"{repo}\" --json"),
+        "agent_use_mcp_config_command": format!("{BIN_NAME} agent-use mcp-config --repo \"{repo}\" --json"),
+        "agent_use_mcp_config_available": true,
+        "agent_use_mcp_config_status": "implemented",
+        "agent_use_query_symbols_command": format!("{BIN_NAME} agent-use query symbols <symbol> --repo \"{repo}\" --limit 5 --agent-json"),
+        "agent_use_query_text_command": format!("{BIN_NAME} agent-use query text \"<text>\" --repo \"{repo}\" --limit 5 --agent-json"),
+        "agent_use_query_files_command": format!("{BIN_NAME} agent-use query files <path-or-text> --repo \"{repo}\" --limit 5 --agent-json"),
+        "agent_use_context_pack_command": format!("{BIN_NAME} agent-use context-pack --repo \"{repo}\" --task \"<task>\" --agent-json"),
+        "agent_use_watch_once_command": format!("{BIN_NAME} agent-use watch --repo \"{repo}\" --once --changed <path> --json"),
+        "agent_use_query_available": true,
+        "agent_use_query_status": "implemented",
+        "agent_use_watch_available": true,
+        "agent_use_watch_status": "implemented_once_changed",
+        "commands": profile.recovery_commands.clone(),
+    })
+}
+
+fn agent_use_profile_parent_create_error_json(
+    profile: &AgentUseProfile,
+    problem_kind: &str,
+    message: &str,
+    normal_dot_codegraph_existed_before: bool,
+) -> Result<String, String> {
+    let normal_dot_codegraph = profile.repo_root.join(".codegraph");
+    let safety_labels = [problem_kind.to_string(), "diagnostic_only".to_string()]
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    serde_json::to_string(&json!({
+        "status": problem_kind,
+        "error": problem_kind,
+        "message": message,
+        "command": "index",
+        "command_namespace": "agent-use",
+        "profile_name": profile.profile_name.clone(),
+        "repo": path_string(&profile.repo_root),
+        "repo_root": path_string(&profile.repo_root),
+        "db": path_string(&profile.db_path),
+        "db_path": path_string(&profile.db_path),
+        "profile_root": path_string(&profile.profile_root),
+        "external_db_used": true,
+        "path_access_status": problem_kind,
+        "db_problem_kind": problem_kind,
+        "claimable": false,
+        "diagnostic_only": true,
+        "safety_labels": safety_labels,
+        "publish_state": agent_use_publish_state_json(profile),
+        "publishing": agent_use_publish_state_active(profile),
+        "recovery": agent_use_recovery_json(profile),
+        "normal_dot_codegraph_created": !normal_dot_codegraph_existed_before && normal_dot_codegraph.exists(),
+        "normal_dot_codegraph_mutated": normal_dot_codegraph_existed_before != normal_dot_codegraph.exists(),
+        "public_claim": false,
+    }))
+    .map_err(|error| error.to_string())
+}
+
+fn write_agent_use_publish_state(
+    profile: &AgentUseProfile,
+    status: &str,
+    error: Option<&str>,
+) -> Result<(), String> {
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let state = json!({
+        "profile_name": profile.profile_name.clone(),
+        "repo_root": path_string(&profile.repo_root),
+        "db_path": path_string(&profile.db_path),
+        "status": status,
+        "updated_unix_ms": timestamp_ms,
+        "visible_db_mutation_claim": "old_good_db_still_visible_until_atomic_publish",
+        "temp_db_claimability": "never_claimable",
+        "recovery": agent_use_recovery_json(profile),
+        "error": error,
+        "public_claim": false,
+    });
+    let bytes = serde_json::to_vec_pretty(&state).map_err(|error| error.to_string())?;
+    fs::write(&profile.lock_or_publish_state_path, bytes).map_err(|write_error| {
+        format!(
+            "agent-use publish state could not be written at {}: {write_error}",
+            profile.lock_or_publish_state_path.display()
+        )
+    })
+}
+
+fn clear_agent_use_publish_state(profile: &AgentUseProfile) -> Result<(), String> {
+    match fs::remove_file(&profile.lock_or_publish_state_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "agent-use publish state could not be cleared at {}: {error}",
+            profile.lock_or_publish_state_path.display()
+        )),
+    }
+}
+
+fn agent_use_publish_state_json(profile: &AgentUseProfile) -> Value {
+    let path = &profile.lock_or_publish_state_path;
+    if !path.exists() {
+        return json!({
+            "status": "absent",
+            "path": path_string(path),
+            "active": false,
+            "updating": false,
+            "publishing": false,
+            "claimability_effect": "none",
+            "temp_db_claimability": "never_claimable",
+        });
+    }
+    let parsed = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    let status = parsed
+        .as_ref()
+        .and_then(|value| value.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("publishing");
+    json!({
+        "status": status,
+        "path": path_string(path),
+        "active": true,
+        "updating": status == "updating",
+        "publishing": true,
+        "state_readable": parsed.is_some(),
+        "state": parsed.unwrap_or(Value::Null),
+        "claimability_effect": "old valid DB may remain readable; temp DB is never claimable",
+        "temp_db_claimability": "never_claimable",
+    })
+}
+
+fn agent_use_publish_state_status(profile: &AgentUseProfile) -> Option<String> {
+    let path = &profile.lock_or_publish_state_path;
+    if !path.exists() {
+        return None;
+    }
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|value| {
+            value
+                .get("status")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .or_else(|| Some("publishing".to_string()))
+}
+
+fn agent_use_publish_state_active(profile: &AgentUseProfile) -> bool {
+    profile.lock_or_publish_state_path.exists()
+}
+
+fn agent_use_last_delta_state_json(profile: &AgentUseProfile) -> Value {
+    let path = &profile.delta_state_path;
+    if !path.exists() {
+        return json!({
+            "status": "absent",
+            "path": path_string(path),
+            "state_readable": false,
+            "last_delta_update_summary": Value::Null,
+            "public_claim": false,
+        });
+    }
+    match fs::read_to_string(path)
+        .map_err(|error| error.to_string())
+        .and_then(|text| serde_json::from_str::<Value>(&text).map_err(|error| error.to_string()))
+    {
+        Ok(mut value) => {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("path".to_string(), json!(path_string(path)));
+                object.insert("state_readable".to_string(), json!(true));
+            }
+            value
+        }
+        Err(error) => json!({
+            "status": "error",
+            "path": path_string(path),
+            "state_readable": false,
+            "error": error,
+            "last_delta_update_summary": Value::Null,
+            "public_claim": false,
+        }),
+    }
+}
+
+fn persist_agent_use_last_delta_state(value: &mut Value, profile: &AgentUseProfile, source: &str) {
+    let state = agent_use_delta_state_record(profile, value, source);
+    let result = (|| -> Result<(), String> {
+        if let Some(parent) = profile.delta_state_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "agent-use delta state parent could not be created at {}: {error}",
+                    parent.display()
+                )
+            })?;
+        }
+        let bytes = serde_json::to_vec_pretty(&state).map_err(|error| error.to_string())?;
+        fs::write(&profile.delta_state_path, bytes).map_err(|error| {
+            format!(
+                "agent-use delta state could not be written at {}: {error}",
+                profile.delta_state_path.display()
+            )
+        })
+    })();
+    if let Some(object) = value.as_object_mut() {
+        match result {
+            Ok(()) => {
+                object.insert("last_delta_state_persisted".to_string(), json!(true));
+                object.insert(
+                    "last_delta_state_path".to_string(),
+                    json!(path_string(&profile.delta_state_path)),
+                );
+                object.insert("last_delta_state".to_string(), state.clone());
+                object.insert(
+                    "last_delta_update_summary".to_string(),
+                    state
+                        .get("last_delta_update_summary")
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                );
+            }
+            Err(error) => {
+                object.insert("last_delta_state_persisted".to_string(), json!(false));
+                object.insert("last_delta_state_error".to_string(), json!(error.clone()));
+                let warning = format!("last_delta_state_persist_failed: {error}");
+                match object.get_mut("warnings") {
+                    Some(Value::Array(warnings)) => warnings.push(json!(warning)),
+                    _ => {
+                        object.insert("warnings".to_string(), json!([warning]));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn agent_use_delta_state_record(profile: &AgentUseProfile, value: &Value, source: &str) -> Value {
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let summary = agent_use_compact_delta_summary(value);
+    json!({
+        "schema_version": 1,
+        "status": "recorded",
+        "source": source,
+        "profile_name": profile.profile_name.clone(),
+        "repo_root": path_string(&profile.repo_root),
+        "db_path": path_string(&profile.db_path),
+        "updated_unix_ms": timestamp_ms,
+        "delta_state": value.get("delta_state").cloned().unwrap_or_else(|| json!("unknown")),
+        "graph_freshness": value.pointer("/freshness/graph_db").cloned().unwrap_or_else(|| json!("unknown")),
+        "candidate_only_available": value.get("candidate_only_available").cloned().unwrap_or_else(|| json!(false)),
+        "graph_proof_available": value.get("graph_proof_available").cloned().unwrap_or_else(|| json!(false)),
+        "stale_candidate_layers": agent_use_stale_candidate_layers(value.get("staged_availability").unwrap_or(&Value::Null)),
+        "claimability": value.get("claimability").cloned().unwrap_or(Value::Null),
+        "freshness": value.get("freshness").cloned().unwrap_or(Value::Null),
+        "last_delta_update_summary": summary,
+        "recovery_commands": profile.recovery_commands.clone(),
+        "public_claim": false,
+    })
+}
+
+fn agent_use_compact_delta_summary(value: &Value) -> Value {
+    let mut object = serde_json::Map::new();
+    for key in [
+        "status",
+        "delta_state",
+        "watch_mode",
+        "changed_paths",
+        "rejected_paths",
+        "no_op_paths",
+        "files_walked",
+        "files_read",
+        "files_hashed",
+        "files_parsed",
+        "facts_deleted",
+        "facts_inserted",
+        "entities_added",
+        "entities_removed",
+        "entities_changed",
+        "edges_added",
+        "edges_removed",
+        "edges_changed",
+        "source_spans_added",
+        "source_spans_removed",
+        "source_spans_changed",
+        "text_evidence_changed",
+        "path_evidence_invalidated",
+        "candidate_spool_invalidated_or_rebuilt",
+        "candidate_query_index_invalidated_or_rebuilt",
+        "vector_chunks_invalidated_or_rebuilt",
+        "routing_handles_invalidated",
+        "closure_files_considered",
+        "closure_files_updated",
+        "closure_edges_inspected",
+        "closure_relation_classes",
+        "closure_budget_hit",
+        "degraded_relation_classes",
+        "timings",
+        "old_graph_valid",
+        "new_graph_valid",
+        "old_db_preserved",
+        "temp_db_claimable",
+        "claimability",
+        "warnings",
+        "recovery_commands",
+    ] {
+        if let Some(field) = value.get(key) {
+            object.insert(key.to_string(), field.clone());
+        }
+    }
+    Value::Object(object)
+}
+
+fn add_agent_use_rtds_freshness_fields(
+    value: &mut Value,
+    profile: &AgentUseProfile,
+    preflight: &DbLifecyclePreflight,
+    staged_availability: &Value,
+) {
+    let rtds = agent_use_rtds_freshness_json(profile, preflight, staged_availability);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("rtds_freshness".to_string(), rtds.clone());
+        object.insert(
+            "graph_freshness".to_string(),
+            rtds.get("graph_freshness").cloned().unwrap_or(Value::Null),
+        );
+        object
+            .entry("delta_state".to_string())
+            .or_insert_with(|| rtds.get("delta_state").cloned().unwrap_or(Value::Null));
+        object.insert(
+            "dirty_state".to_string(),
+            rtds.get("dirty_state").cloned().unwrap_or(Value::Null),
+        );
+        object.insert(
+            "stale_candidate_layers".to_string(),
+            rtds.get("stale_candidate_layers")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        );
+        object.insert(
+            "last_delta_update_summary".to_string(),
+            rtds.get("last_delta_update_summary")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "blocked_labels".to_string(),
+            rtds.get("blocked_labels")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        );
+        object.insert(
+            "retryable_labels".to_string(),
+            rtds.get("retryable_labels")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        );
+        object.insert(
+            "recovery_commands".to_string(),
+            rtds.get("recovery_commands")
+                .cloned()
+                .unwrap_or_else(|| json!(profile.recovery_commands.clone())),
+        );
+        object.insert(
+            "candidate_only_available".to_string(),
+            staged_availability
+                .get("candidate_only_available")
+                .cloned()
+                .unwrap_or_else(|| json!(false)),
+        );
+        object.insert(
+            "graph_proof_available".to_string(),
+            staged_availability
+                .get("graph_proof_available")
+                .cloned()
+                .unwrap_or_else(|| json!(false)),
+        );
+    }
+}
+
+fn agent_use_rtds_freshness_json(
+    profile: &AgentUseProfile,
+    preflight: &DbLifecyclePreflight,
+    staged_availability: &Value,
+) -> Value {
+    let publish_state = agent_use_publish_state_json(profile);
+    let publish_active = publish_state
+        .get("active")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let publish_status = publish_state
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("absent");
+    let last_delta = agent_use_last_delta_state_json(profile);
+    let last_summary = last_delta
+        .get("last_delta_update_summary")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let graph_freshness = if preflight.safe {
+        "current".to_string()
+    } else if preflight.path_access_status == "db_missing" {
+        "absent".to_string()
+    } else {
+        preflight
+            .db_problem_kind
+            .clone()
+            .unwrap_or_else(|| "unavailable".to_string())
+    };
+    let dirty_state = if publish_active {
+        publish_status.to_string()
+    } else if !preflight.safe {
+        graph_freshness.clone()
+    } else {
+        "ready".to_string()
+    };
+    let delta_state = if publish_active {
+        publish_status.to_string()
+    } else {
+        last_delta
+            .get("delta_state")
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .unwrap_or_else(|| dirty_state.clone())
+    };
+    let mut blocked_labels = BTreeSet::new();
+    for blocker in &preflight.blockers {
+        blocked_labels.insert(blocker.clone());
+    }
+    if let Some(blockers) = staged_availability
+        .get("blockers")
+        .and_then(Value::as_array)
+    {
+        for blocker in blockers {
+            if let Some(blocker) = blocker.as_str() {
+                blocked_labels.insert(blocker.to_string());
+            }
+        }
+    }
+    let mut retryable_labels = BTreeSet::new();
+    if publish_active && matches!(publish_status, "updating" | "publishing") {
+        retryable_labels.insert("wait_for_current_update".to_string());
+    }
+    if blocked_labels
+        .iter()
+        .any(|label| label.to_ascii_lowercase().contains("locked"))
+    {
+        retryable_labels.insert("db_locked".to_string());
+    }
+    let stale_candidate_layers = agent_use_stale_candidate_layers(staged_availability);
+    json!({
+        "schema_version": 1,
+        "profile_name": profile.profile_name.clone(),
+        "repo_root": path_string(&profile.repo_root),
+        "db_path": path_string(&profile.db_path),
+        "graph_freshness": graph_freshness,
+        "dirty_state": dirty_state,
+        "delta_state": delta_state,
+        "publish_state": publish_state,
+        "last_delta_state": last_delta,
+        "last_delta_update_summary": last_summary,
+        "stale_candidate_layers": stale_candidate_layers,
+        "candidate_only_available": staged_availability.get("candidate_only_available").cloned().unwrap_or_else(|| json!(false)),
+        "graph_proof_available": staged_availability.get("graph_proof_available").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_context_available": staged_availability.get("candidate_context_available").cloned().unwrap_or_else(|| json!(false)),
+        "blocked_labels": blocked_labels.into_iter().collect::<Vec<_>>(),
+        "retryable_labels": retryable_labels.into_iter().collect::<Vec<_>>(),
+        "recovery_commands": profile.recovery_commands.clone(),
+        "context_pack_graph_proof_policy": "refuse_unsafe_graph_proof",
+        "candidate_context_policy": "candidate_only_only_when_current_source_bound",
+        "startup_auto_index": false,
+        "dot_codegraph_fallback": false,
+        "public_claim": false,
+    })
+}
+
+fn agent_use_stale_candidate_layers(staged_availability: &Value) -> Vec<Value> {
+    let mut layers = Vec::new();
+    for layer_name in ["candidate_spool", "vector_runtime", "vector_audit"] {
+        let layer = staged_availability
+            .pointer(&format!("/layer_readiness/{layer_name}"))
+            .unwrap_or(&Value::Null);
+        let status = layer
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        if agent_use_candidate_layer_status_is_stale(status) {
+            layers.push(json!({
+                "layer": layer_name,
+                "status": status,
+                "path": layer.get("path").cloned().unwrap_or(Value::Null),
+                "reason": layer.get("reason").cloned().unwrap_or(Value::Null),
+                "graph_proof": false,
+            }));
+        }
+        if layer_name == "candidate_spool" {
+            let query_status = layer
+                .get("query_index_status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            if agent_use_candidate_layer_status_is_stale(query_status) {
+                layers.push(json!({
+                    "layer": "candidate_spool_query_index",
+                    "status": query_status,
+                    "path": layer.get("query_index_path").cloned().unwrap_or(Value::Null),
+                    "reason": layer.get("reason").cloned().unwrap_or(Value::Null),
+                    "graph_proof": false,
+                }));
+            }
+        }
+    }
+    layers
+}
+
+fn agent_use_candidate_layer_status_is_stale(status: &str) -> bool {
+    matches!(
+        status,
+        "stale"
+            | "corrupt"
+            | "query_index_corrupt"
+            | "permission_denied"
+            | "filesystem_inaccessible"
+            | "sidecar_unavailable"
+            | "blocked_by_graph_db"
+    )
+}
+
+fn plain_status_agent_use_guidance_json(repo_root: &Path) -> Value {
+    match resolve_agent_use_profile(repo_root) {
+        Ok(profile) => {
+            let repo = path_string(&profile.repo_root);
+            json!({
+                "agent_use_available": true,
+                "agent_use_status_command": format!("{BIN_NAME} agent-use status --repo \"{repo}\" --json"),
+                "agent_use_index_command": format!("{BIN_NAME} agent-use index --repo \"{repo}\" --json"),
+                "agent_use_profile_name": profile.profile_name.clone(),
+                "agent_use_profile_db_path": path_string(&profile.db_path),
+                "agent_use_note": "plain status remains local .codegraph mode and did not redirect",
+            })
+        }
+        Err(error) => json!({
+            "agent_use_available": false,
+            "agent_use_status_command": Value::Null,
+            "agent_use_index_command": Value::Null,
+            "agent_use_profile_error": error,
+            "agent_use_note": "plain status remains local .codegraph mode and did not redirect",
+        }),
+    }
+}
+
+fn with_agent_use_profile_context<F>(
+    profile: &AgentUseProfile,
+    operation: F,
+) -> Result<Value, String>
+where
+    F: FnOnce() -> Result<Value, String>,
+{
+    let old_cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+    let old_db = std::env::var_os("CODEGRAPH_DB_PATH");
+    let old_db_source = std::env::var_os(GLOBAL_DB_SOURCE_ENV);
+    let old_repo_source = std::env::var_os(GLOBAL_REPO_SOURCE_ENV);
+    let old_bounded_read_path = std::env::var_os(AGENT_USE_BOUNDED_READ_PATH_ENV);
+    std::env::set_current_dir(&profile.repo_root).map_err(|error| error.to_string())?;
+    std::env::set_var("CODEGRAPH_DB_PATH", &profile.db_path);
+    std::env::set_var(GLOBAL_DB_SOURCE_ENV, "agent-use profile");
+    std::env::set_var(GLOBAL_REPO_SOURCE_ENV, "agent-use --repo");
+    std::env::set_var(AGENT_USE_BOUNDED_READ_PATH_ENV, "1");
+    let result = operation();
+    if let Some(old_db) = old_db {
+        std::env::set_var("CODEGRAPH_DB_PATH", old_db);
+    } else {
+        std::env::remove_var("CODEGRAPH_DB_PATH");
+    }
+    if let Some(old_db_source) = old_db_source {
+        std::env::set_var(GLOBAL_DB_SOURCE_ENV, old_db_source);
+    } else {
+        std::env::remove_var(GLOBAL_DB_SOURCE_ENV);
+    }
+    if let Some(old_repo_source) = old_repo_source {
+        std::env::set_var(GLOBAL_REPO_SOURCE_ENV, old_repo_source);
+    } else {
+        std::env::remove_var(GLOBAL_REPO_SOURCE_ENV);
+    }
+    if let Some(old_bounded_read_path) = old_bounded_read_path {
+        std::env::set_var(AGENT_USE_BOUNDED_READ_PATH_ENV, old_bounded_read_path);
+    } else {
+        std::env::remove_var(AGENT_USE_BOUNDED_READ_PATH_ENV);
+    }
+    std::env::set_current_dir(old_cwd).map_err(|error| error.to_string())?;
+    result
+}
+
+fn agent_use_bounded_read_path_enabled() -> bool {
+    std::env::var_os(AGENT_USE_BOUNDED_READ_PATH_ENV).is_some()
+}
+
+fn agent_use_read_path_limits_json(limit: usize) -> Value {
+    json!({
+        "max_files_inspected": limit,
+        "max_entities_hydrated": limit,
+        "max_edges_visited": limit,
+        "max_source_bytes_loaded": AGENT_USE_CONTEXT_MAX_SOURCE_BYTES,
+        "max_snippets_loaded": limit,
+        "max_disk_fallback_files": AGENT_USE_DISK_FALLBACK_MAX_FILES,
+        "timeout_ms": Value::Null,
+    })
+}
+
+fn agent_use_status_read_path_metrics_json(wall_ms: f64) -> Value {
+    json!({
+        "schema_version": 1,
+        "surface": "agent-use status",
+        "lookup_strategy": "db_lifecycle_preflight_and_passport_summary",
+        "indexed_lookup_count": 1,
+        "fts_lookup_count": 0,
+        "path_dictionary_lookup_count": 0,
+        "symbol_dictionary_lookup_count": 0,
+        "full_scan_count": 0,
+        "entity_edge_million_row_load": false,
+        "source_file_load_count": AGENT_USE_STATUS_MAX_SOURCE_FILE_LOADS,
+        "entities_hydrated": 0,
+        "edges_hydrated": 0,
+        "source_bytes_loaded": 0,
+        "snippets_loaded": 0,
+        "disk_fallback_used": false,
+        "disk_fallback_files": 0,
+        "debug_broad_scan": false,
+        "diagnostic_only": false,
+        "limits_apply_before_hydration": true,
+        "budget_hit": false,
+        "elapsed_ms": wall_ms,
+        "p50_ms": Value::Null,
+        "p95_ms": Value::Null,
+        "latency_window": "single_command; aggregate p50/p95 is emitted by the release smoke",
+        "limits": agent_use_read_path_limits_json(0),
+    })
+}
+
+fn agent_use_query_read_path_metrics_json(kind: &str, value: &Value) -> Value {
+    let limit = value
+        .get("limit")
+        .and_then(Value::as_u64)
+        .and_then(|limit| usize::try_from(limit).ok())
+        .unwrap_or(DEFAULT_QUERY_AGENT_JSON_LIMIT);
+    let result_count = value
+        .get("result_count")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .unwrap_or_default();
+    let omitted_count = value
+        .get("truncation")
+        .and_then(|truncation| truncation.get("omitted_count"))
+        .or_else(|| value.get("omitted_count"))
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let (
+        lookup_strategy,
+        fts_lookup_count,
+        path_dictionary_lookup_count,
+        symbol_dictionary_lookup_count,
+        entities_hydrated,
+    ) = match kind {
+        "symbols" => (
+            "symbol_dict_exact_lookup_plus_bounded_stage0_fts",
+            1,
+            0,
+            1,
+            result_count,
+        ),
+        "text" => ("stage0_fts_bounded_lookup", 1, 0, 0, 0),
+        "files" => ("stage0_fts_file_path_title_lookup", 1, 1, 0, 0),
+        _ => ("bounded_indexed_lookup", 1, 0, 0, 0),
+    };
+    let hydrated_limit = match kind {
+        "symbols" => limit
+            .max(1)
+            .saturating_mul(SYMBOL_SEARCH_FTS_CANDIDATE_FACTOR)
+            .clamp(
+                SYMBOL_SEARCH_MIN_FTS_CANDIDATES,
+                SYMBOL_SEARCH_MAX_FTS_CANDIDATES,
+            ),
+        _ => limit.saturating_add(1).min(MAX_QUERY_RESULT_LIMIT + 1),
+    };
+    json!({
+        "schema_version": 1,
+        "surface": format!("agent-use query {kind}"),
+        "lookup_strategy": lookup_strategy,
+        "indexed_lookup_count": 1,
+        "fts_lookup_count": fts_lookup_count,
+        "path_dictionary_lookup_count": path_dictionary_lookup_count,
+        "symbol_dictionary_lookup_count": symbol_dictionary_lookup_count,
+        "full_scan_count": 0,
+        "entity_edge_million_row_load": false,
+        "source_file_load_count": AGENT_USE_QUERY_MAX_SOURCE_FILE_LOADS,
+        "entities_hydrated": entities_hydrated,
+        "edges_hydrated": 0,
+        "source_bytes_loaded": 0,
+        "snippets_loaded": 0,
+        "disk_fallback_used": false,
+        "disk_fallback_files": 0,
+        "debug_broad_scan": false,
+        "diagnostic_only": false,
+        "limits_apply_before_hydration": true,
+        "budget_hit": omitted_count > 0,
+        "elapsed_ms": value
+            .get("timings")
+            .and_then(|timings| timings.get("wall_ms"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "p50_ms": Value::Null,
+        "p95_ms": Value::Null,
+        "latency_window": "single_command; aggregate p50/p95 is emitted by the release smoke",
+        "limits": json!({
+            "max_files_inspected": if kind == "files" { limit.saturating_add(1).min(MAX_QUERY_RESULT_LIMIT + 1) } else { 0 },
+            "max_entities_hydrated": hydrated_limit,
+            "max_edges_visited": 0,
+            "max_source_bytes_loaded": 0,
+            "max_snippets_loaded": 0,
+            "max_disk_fallback_files": AGENT_USE_DISK_FALLBACK_MAX_FILES,
+            "timeout_ms": Value::Null,
+        }),
+    })
+}
+
+fn add_agent_use_query_read_path_metrics(value: &mut Value, kind: &str) {
+    let metrics = agent_use_query_read_path_metrics_json(kind, value);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("read_path_metrics".to_string(), metrics);
+    }
+}
+
+fn add_agent_use_context_pack_read_path_metrics(value: &mut Value) {
+    let path_telemetry = value
+        .get("path_evidence_telemetry")
+        .cloned()
+        .or_else(|| {
+            value
+                .get("retrieval_explain")
+                .and_then(|explain| explain.get("path_evidence_telemetry"))
+                .cloned()
+        })
+        .unwrap_or(Value::Null);
+    let source_telemetry_available = path_telemetry.is_object()
+        && path_telemetry.get("status").and_then(Value::as_str) != Some("unavailable");
+    let source_file_load_count = path_telemetry
+        .get("snippet_source_files_loaded")
+        .or_else(|| path_telemetry.get("source_files_loaded"))
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let source_bytes_loaded = path_telemetry
+        .get("snippet_source_bytes_read")
+        .or_else(|| path_telemetry.get("source_span_bytes_read"))
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let retained_snippet_files = context_pack_retained_snippet_files(value);
+    let retained_snippet_bytes = context_pack_retained_snippet_bytes(value);
+    let source_file_load_count = if source_file_load_count == 0 && retained_snippet_bytes > 0 {
+        retained_snippet_files.len() as u64
+    } else {
+        source_file_load_count
+    };
+    let source_bytes_loaded = if source_bytes_loaded == 0 && retained_snippet_bytes > 0 {
+        retained_snippet_bytes as u64
+    } else {
+        source_bytes_loaded
+    };
+    let snippets_loaded = value
+        .get("snippets")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default()
+        + value
+            .get("fallback_snippets")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default();
+    let edge_limit = value
+        .get("limits")
+        .and_then(|limits| limits.get("paths"))
+        .and_then(Value::as_u64)
+        .and_then(|limit| usize::try_from(limit).ok())
+        .unwrap_or(DEFAULT_CONTEXT_AGENT_PATH_LIMIT)
+        .saturating_mul(4)
+        .max(16);
+    let budget_hit = value
+        .get("truncation")
+        .and_then(|truncation| truncation.get("limit_applied"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || value
+            .get("omitted_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            > 0;
+    let metrics = json!({
+        "schema_version": 1,
+        "surface": "agent-use context-pack",
+        "lookup_strategy": "stored_path_evidence_then_bounded_seed_edge_and_stage0_fts_fallback",
+        "indexed_lookup_count": 3,
+        "fts_lookup_count": if value.get("fallback_evidence_count").and_then(Value::as_u64).unwrap_or_default() > 0 { 1 } else { 0 },
+        "path_dictionary_lookup_count": 1,
+        "symbol_dictionary_lookup_count": 1,
+        "full_scan_count": 0,
+        "entity_edge_million_row_load": false,
+        "source_file_load_count": source_file_load_count,
+        "entities_hydrated": value
+            .get("critical_symbols")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default(),
+        "edges_hydrated": value
+            .get("proof_paths")
+            .or_else(|| value.get("paths"))
+            .and_then(Value::as_array)
+            .map(|paths| {
+                paths.iter()
+                    .filter_map(|path| path.get("edges").and_then(Value::as_array))
+                    .map(Vec::len)
+                    .sum::<usize>()
+            })
+            .unwrap_or_default(),
+        "source_bytes_loaded": source_bytes_loaded,
+        "source_file_load_count_measurement": if source_telemetry_available { "measured" } else { "retained_snippet_lower_bound" },
+        "source_bytes_loaded_measurement": if source_telemetry_available { "measured" } else { "retained_snippet_lower_bound" },
+        "snippets_loaded": snippets_loaded,
+        "disk_fallback_used": false,
+        "disk_fallback_files": 0,
+        "debug_broad_scan": false,
+        "diagnostic_only": false,
+        "limits_apply_before_hydration": true,
+        "budget_hit": budget_hit,
+        "elapsed_ms": value
+            .get("timings")
+            .and_then(|timings| timings.get("wall_ms"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "p50_ms": Value::Null,
+        "p95_ms": Value::Null,
+        "latency_window": "single_command; aggregate p50/p95 is emitted by the release smoke",
+        "limits": json!({
+            "max_files_inspected": AGENT_USE_CONTEXT_MAX_SOURCE_FILES,
+            "max_entities_hydrated": DEFAULT_CONTEXT_AGENT_PATH_LIMIT.saturating_mul(16).max(16),
+            "max_edges_visited": edge_limit,
+            "max_source_bytes_loaded": AGENT_USE_CONTEXT_MAX_SOURCE_BYTES,
+            "max_snippets_loaded": value
+                .get("limits")
+                .and_then(|limits| limits.get("snippets"))
+                .and_then(Value::as_u64)
+                .unwrap_or(DEFAULT_CONTEXT_AGENT_SNIPPET_LIMIT as u64),
+            "max_disk_fallback_files": AGENT_USE_DISK_FALLBACK_MAX_FILES,
+            "timeout_ms": Value::Null,
+        }),
+    });
+    if let Some(object) = value.as_object_mut() {
+        object.insert("read_path_metrics".to_string(), metrics);
+    }
+}
+
+fn context_pack_retained_snippet_files(value: &Value) -> BTreeSet<String> {
+    let mut files = BTreeSet::new();
+    for key in ["snippets", "fallback_snippets"] {
+        if let Some(snippets) = value.get(key).and_then(Value::as_array) {
+            for snippet in snippets {
+                if let Some(file) = snippet.get("file").and_then(Value::as_str) {
+                    files.insert(file.to_string());
+                }
+            }
+        }
+    }
+    files
+}
+
+fn context_pack_retained_snippet_bytes(value: &Value) -> usize {
+    let mut bytes = 0usize;
+    for key in ["snippets", "fallback_snippets"] {
+        if let Some(snippets) = value.get(key).and_then(Value::as_array) {
+            for snippet in snippets {
+                if let Some(text) = snippet.get("text").and_then(Value::as_str) {
+                    bytes = bytes.saturating_add(text.len());
+                }
+            }
+        }
+    }
+    bytes
+}
+
+fn annotate_agent_use_output(
+    value: &mut Value,
+    profile: &AgentUseProfile,
+    command: &str,
+    normal_dot_codegraph_existed_before: bool,
+) {
+    let normal_dot_codegraph = profile.repo_root.join(".codegraph");
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    object.insert("command_namespace".to_string(), json!("agent-use"));
+    object.insert(
+        "agent_use_command".to_string(),
+        json!(format!("agent-use {command}")),
+    );
+    object.insert(
+        "profile_name".to_string(),
+        json!(profile.profile_name.clone()),
+    );
+    object.insert(
+        "agent_use_profile_name".to_string(),
+        json!(profile.profile_name.clone()),
+    );
+    object.insert("repo".to_string(), json!(path_string(&profile.repo_root)));
+    object.insert(
+        "repo_root".to_string(),
+        json!(path_string(&profile.repo_root)),
+    );
+    object.insert("db".to_string(), json!(path_string(&profile.db_path)));
+    object.insert("db_path".to_string(), json!(path_string(&profile.db_path)));
+    object.insert(
+        "resolved_db".to_string(),
+        json!(path_string(&profile.db_path)),
+    );
+    object.insert("db_source".to_string(), json!("agent-use profile"));
+    object.insert("external_db_used".to_string(), json!(true));
+    object.insert(
+        "agent_use_profile_root".to_string(),
+        json!(path_string(&profile.profile_root)),
+    );
+    object.insert(
+        "publish_state".to_string(),
+        agent_use_publish_state_json(profile),
+    );
+    object.insert(
+        "publishing".to_string(),
+        json!(agent_use_publish_state_active(profile)),
+    );
+    object.insert(
+        "normal_dot_codegraph_path".to_string(),
+        json!(path_string(&normal_dot_codegraph)),
+    );
+    object.insert(
+        "normal_dot_codegraph_created".to_string(),
+        json!(!normal_dot_codegraph_existed_before && normal_dot_codegraph.exists()),
+    );
+    object.insert(
+        "normal_dot_codegraph_mutated".to_string(),
+        json!(normal_dot_codegraph_existed_before != normal_dot_codegraph.exists()),
+    );
+    object.insert("public_claim".to_string(), json!(false));
+}
+
+fn add_agent_use_staged_availability(
+    value: &mut Value,
+    profile: &AgentUseProfile,
+    preflight: &DbLifecyclePreflight,
+) {
+    let staged_availability = staged_availability_for_cli(
+        &profile.repo_root,
+        &profile.db_path,
+        Some(preflight),
+        Some(&profile.candidate_spool_path),
+        Some(&profile.vector_runtime_path),
+        Some(&profile.vector_audit_path),
+        None,
+    );
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "staged_availability".to_string(),
+            staged_availability.clone(),
+        );
+    }
+    merge_json_object(
+        value,
+        staged_availability_top_level_fields(&staged_availability),
+    );
+}
+
+fn add_agent_use_db_lifecycle_read(value: &mut Value, preflight: &DbLifecyclePreflight) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    object
+        .entry("db_lifecycle_read".to_string())
+        .or_insert_with(|| db_lifecycle_preflight_json(preflight, true, false, false));
+}
+
+fn add_agent_use_durability_labels(
+    value: &mut Value,
+    profile: &AgentUseProfile,
+    preflight: &DbLifecyclePreflight,
+    sqlite_sidecars: Option<&Value>,
+) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    object.insert(
+        "safety_labels".to_string(),
+        json!(agent_use_safety_labels(profile, preflight, sqlite_sidecars)),
+    );
+    object.insert(
+        "publish_state".to_string(),
+        agent_use_publish_state_json(profile),
+    );
+    object.insert(
+        "publishing".to_string(),
+        json!(agent_use_publish_state_active(profile)),
+    );
+}
+
+fn agent_use_unavailable_json(
+    profile: &AgentUseProfile,
+    preflight: &DbLifecyclePreflight,
+    command: &str,
+    subcommand: Option<&str>,
+    extra_error: Option<String>,
+    normal_dot_codegraph_existed_before: bool,
+) -> Value {
+    let normal_dot_codegraph = profile.repo_root.join(".codegraph");
+    let sqlite_sidecars =
+        sqlite_sidecars_status_from_health(&profile.db_path, &preflight.db_health);
+    let lifecycle = db_lifecycle_preflight_json(preflight, true, false, false);
+    let staged_availability = staged_availability_for_cli(
+        &profile.repo_root,
+        &profile.db_path,
+        Some(preflight),
+        Some(&profile.candidate_spool_path),
+        Some(&profile.vector_runtime_path),
+        Some(&profile.vector_audit_path),
+        None,
+    );
+    let mut errors = preflight.blockers.clone();
+    if let Some(extra_error) = extra_error {
+        errors.push(extra_error);
+    }
+    let status = if preflight.path_access_status == "db_missing" {
+        "not_indexed"
+    } else {
+        preflight
+            .db_problem_kind
+            .as_deref()
+            .unwrap_or("unavailable")
+    };
+    let mut value = json!({
+        "status": status,
+        "command": command,
+        "subcommand": subcommand,
+        "command_namespace": "agent-use",
+        "profile_name": profile.profile_name.clone(),
+        "repo": path_string(&profile.repo_root),
+        "repo_root": path_string(&profile.repo_root),
+        "db": path_string(&profile.db_path),
+        "db_path": path_string(&profile.db_path),
+        "resolved_db": path_string(&profile.db_path),
+        "db_source": "agent-use profile",
+        "external_db_used": true,
+        "claimable": false,
+        "diagnostic_only": true,
+        "db_problem_kind": preflight.db_problem_kind.clone(),
+        "path_access_status": preflight.path_access_status.clone(),
+        "path_access_error": preflight.path_access_error.clone(),
+        "db_lifecycle_read": lifecycle.clone(),
+        "lifecycle": lifecycle,
+        "publish_state": agent_use_publish_state_json(profile),
+        "publishing": agent_use_publish_state_active(profile),
+        "safety_labels": agent_use_safety_labels(profile, preflight, Some(&sqlite_sidecars)),
+        "sqlite_sidecars": sqlite_sidecars.clone(),
+        "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
+        "sidecar_only_change": sqlite_sidecars["sidecar_only_change"].clone(),
+        "sidecar_change_classification": sqlite_sidecars["sidecar_change_classification"].clone(),
+        "staged_availability": staged_availability.clone(),
+        "recovery": agent_use_recovery_json(profile),
+        "warnings": preflight.warnings.clone(),
+        "errors": errors,
+        "normal_dot_codegraph_path": path_string(&normal_dot_codegraph),
+        "normal_dot_codegraph_created": !normal_dot_codegraph_existed_before && normal_dot_codegraph.exists(),
+        "normal_dot_codegraph_mutated": normal_dot_codegraph_existed_before != normal_dot_codegraph.exists(),
+        "public_claim": false,
+    });
+    merge_json_object(
+        &mut value,
+        staged_availability_top_level_fields(&staged_availability),
+    );
+    value
+}
+
+fn agent_use_watch_unavailable_json(
+    profile: &AgentUseProfile,
+    preflight: &DbLifecycleSurfacePreflight,
+    normal_dot_codegraph_existed_before: bool,
+    changed_paths: &[PathBuf],
+) -> Value {
+    let normal_dot_codegraph = profile.repo_root.join(".codegraph");
+    let lifecycle = watch_lifecycle_status_json(preflight, &profile.db_path, false);
+    let db_lifecycle_read =
+        db_lifecycle_preflight_json(&preflight.lifecycle_preflight, true, false, false);
+    let changed_paths_requested = changed_paths
+        .iter()
+        .map(|path| path_string(path))
+        .collect::<Vec<_>>();
+    let status = if preflight.path_access_status == "db_missing" {
+        "not_indexed"
+    } else {
+        preflight
+            .db_problem_kind
+            .as_deref()
+            .unwrap_or("unavailable")
+    };
+    json!({
+        "status": status,
+        "command": "watch",
+        "subcommand": "once",
+        "command_namespace": "agent-use",
+        "agent_use_command": "agent-use watch",
+        "profile_name": profile.profile_name.clone(),
+        "repo": path_string(&profile.repo_root),
+        "repo_root": path_string(&profile.repo_root),
+        "db": path_string(&profile.db_path),
+        "db_path": path_string(&profile.db_path),
+        "resolved_db": path_string(&profile.db_path),
+        "db_source": "agent-use profile",
+        "external_db_used": true,
+        "claimable": false,
+        "diagnostic_only": true,
+        "path_access_status": preflight.path_access_status.clone(),
+        "path_access_error": preflight.path_access_error.clone(),
+        "db_problem_kind": preflight.db_problem_kind.clone(),
+        "watch_mode": "once_changed",
+        "watch_db": lifecycle.clone(),
+        "db_lifecycle_read": db_lifecycle_read,
+        "lifecycle": lifecycle,
+        "agent_use_watch_available": true,
+        "agent_use_watch_status": "implemented_once_changed",
+        "delta_sync_phase": "real_time_delta_sync",
+        "delta_sync_state": "blocked",
+        "delta_state": "blocked",
+        "auto_index_enabled": false,
+        "changed_paths": changed_paths_requested,
+        "rejected_paths": [],
+        "no_op_paths": [],
+        "changed_paths_requested": changed_paths_requested,
+        "old_graph_valid": false,
+        "new_graph_valid": false,
+        "old_db_preserved": true,
+        "temp_db_claimable": false,
+        "files_walked": 0,
+        "files_read": 0,
+        "files_hashed": 0,
+        "files_parsed": 0,
+        "facts_deleted": 0,
+        "facts_inserted": 0,
+        "entities_added": 0,
+        "entities_removed": 0,
+        "entities_changed": 0,
+        "edges_added": 0,
+        "edges_removed": 0,
+        "edges_changed": 0,
+        "source_spans_added": 0,
+        "source_spans_removed": 0,
+        "source_spans_changed": 0,
+        "text_evidence_changed": false,
+        "path_evidence_invalidated": {
+            "action": "unchanged",
+            "dirty_path_evidence_count": 0,
+        },
+        "candidate_spool_invalidated_or_rebuilt": {
+            "action": "unchanged",
+            "status": "not_checked",
+            "graph_proof": false,
+        },
+        "candidate_query_index_invalidated_or_rebuilt": {
+            "action": "unchanged",
+            "status": "not_checked",
+            "graph_proof": false,
+        },
+        "vector_chunks_invalidated_or_rebuilt": {
+            "action": "unchanged",
+            "status": "not_checked",
+            "graph_proof": false,
+        },
+        "routing_handles_invalidated": {
+            "action": "unchanged",
+            "scope": "none",
+        },
+        "closure_files_considered": [],
+        "closure_budget_hit": false,
+        "degraded_relation_classes": [],
+        "timings": {},
+        "claimability": {
+            "claimable": false,
+            "diagnostic_only": true,
+            "candidate_only": false,
+            "graph_proof_available": false,
+        },
+        "publish_state": agent_use_publish_state_json(profile),
+        "publishing": agent_use_publish_state_active(profile),
+        "safety_labels": agent_use_safety_labels(profile, &preflight.lifecycle_preflight, None),
+        "recovery": agent_use_recovery_json(profile),
+        "recovery_commands": profile.recovery_commands.clone(),
+        "errors": preflight.blockers.clone(),
+        "warnings": preflight.warnings.clone(),
+        "normal_dot_codegraph_path": path_string(&normal_dot_codegraph),
+        "normal_dot_codegraph_created": !normal_dot_codegraph_existed_before && normal_dot_codegraph.exists(),
+        "normal_dot_codegraph_mutated": normal_dot_codegraph_existed_before != normal_dot_codegraph.exists(),
+        "public_claim": false,
+        "publish_safety": {
+            "strategy": "no_update_when_profile_db_is_not_safe_to_write",
+            "old_good_read_visibility": "no delta transaction started",
+            "partial_update_claimability": "not_applicable",
+            "temp_db_claimability": "not_applicable_for_once_delta_update",
+            "temp_db_claimable": false,
+            "auto_index_on_start": false,
+        },
+    })
+}
+
+fn discover_agent_use_binary_path(repo_root: &Path) -> String {
+    if let Ok(current_exe) = std::env::current_exe() {
+        if current_exe
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .is_some_and(|stem| stem == "codegraph-mcp")
+        {
+            return path_string(&current_exe);
+        }
+    }
+    let release_binary = repo_root
+        .join("target")
+        .join("release")
+        .join(if cfg!(windows) {
+            "codegraph-mcp.exe"
+        } else {
+            "codegraph-mcp"
+        });
+    if release_binary.exists() {
+        path_string(&release_binary)
+    } else {
+        BIN_NAME.to_string()
+    }
+}
+
 fn run_status_command(args: &[String]) -> Result<Value, String> {
     let status_options = parse_status_args(args)?;
     let repo = status_options.repo;
@@ -1302,9 +5008,11 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
             "sqlite_sidecars": sqlite_sidecars.clone(),
             "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
             "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true, false, false),
+            "telemetry": runtime_telemetry_unknown_json(),
             "next_command": "codegraph-mcp index .",
         });
         merge_json_object(&mut value, staged_fields);
+        merge_json_object(&mut value, plain_status_agent_use_guidance_json(&repo_root));
         return Ok(value);
     }
 
@@ -1322,9 +5030,11 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
             "sqlite_sidecars": sqlite_sidecars.clone(),
             "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
             "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true, false, false),
+            "telemetry": runtime_telemetry_unknown_json(),
             "next_command": "codegraph-mcp index . --fresh",
         });
         merge_json_object(&mut value, staged_fields);
+        merge_json_object(&mut value, plain_status_agent_use_guidance_json(&repo_root));
         return Ok(value);
     }
 
@@ -1386,6 +5096,7 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
         "sqlite_sidecars": sqlite_sidecars.clone(),
         "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
         "db_lifecycle_read": db_lifecycle_preflight_json(&preflight, true, false, false),
+        "telemetry": runtime_telemetry_unknown_json(),
         "schema_version": status_read!(store.schema_version(), "schema_version"),
         "files": status_read!(store.count_files(), "count_files"),
         "entities": status_read!(store.count_entities(), "count_entities"),
@@ -1431,6 +5142,7 @@ fn status_db_read_blocker_json(
         "sqlite_sidecars": sqlite_sidecars.clone(),
         "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
         "db_lifecycle_read": db_lifecycle_preflight_json(preflight, true, false, false),
+        "telemetry": runtime_telemetry_unknown_json(),
         "read_only_mode_used": true,
         "immutable_mode_used": !sqlite_sidecar_path(db_path, "wal").exists()
             && !sqlite_sidecar_path(db_path, "shm").exists()
@@ -1614,6 +5326,7 @@ fn run_doctor_command(args: &[String]) -> Result<Value, String> {
         "sqlite_sidecars": sqlite_sidecars.clone(),
         "sidecar_status": sqlite_sidecars["sidecar_status"].clone(),
         "db_lifecycle_read": lifecycle_evidence,
+        "telemetry": runtime_telemetry_unknown_json(),
         "checks": checks,
         "warnings": warnings,
         "warning_count": warnings,
@@ -1659,6 +5372,14 @@ fn sqlite_sidecars_status_for_path(db_path: &Path) -> Value {
     } else {
         "normal"
     };
+    let sidecar_only_change = main_exists && !sidecars.is_empty();
+    let sidecar_change_classification = if sidecar_status == "orphan_without_main_db" {
+        "orphan_without_main_db"
+    } else if sidecar_only_change {
+        "sidecar_only_change"
+    } else {
+        "none"
+    };
     let orphan_sidecars = if sidecar_status == "orphan_without_main_db" {
         sidecars.clone()
     } else {
@@ -1675,6 +5396,9 @@ fn sqlite_sidecars_status_for_path(db_path: &Path) -> Value {
         "shm_exists": shm_exists,
         "shm_bytes": shm_bytes,
         "sqlite_sidecars": sidecars,
+        "sidecar_only_change": sidecar_only_change,
+        "sidecar_change_classification": sidecar_change_classification,
+        "main_db_mutation_claim": if sidecar_only_change { "sidecar_presence_not_counted_as_main_db_mutation" } else { "no_sidecar_only_change" },
         "orphan_sidecars": orphan_sidecars,
         "orphan_sidecars_deprecated": true,
     })
@@ -1700,6 +5424,17 @@ fn sqlite_sidecars_status_from_health(db_path: &Path, health: &DbPreflightReport
             json!(health.orphan_sidecars.clone()),
         );
         object.insert("orphan_sidecars_deprecated".to_string(), json!(true));
+        if health.sidecar_status == "orphan_without_main_db" {
+            object.insert(
+                "sidecar_change_classification".to_string(),
+                json!("orphan_without_main_db"),
+            );
+            object.insert("sidecar_only_change".to_string(), json!(false));
+            object.insert(
+                "main_db_mutation_claim".to_string(),
+                json!("orphan_sidecars_without_main_db"),
+            );
+        }
     }
     status
 }
@@ -2267,7 +6002,7 @@ struct CandidateSpoolLoad {
 }
 
 fn default_candidate_spool_path(repo_root: &Path) -> PathBuf {
-    default_db_path(repo_root)
+    resolved_db_path_for_repo(repo_root)
         .parent()
         .map(|parent| parent.join("codegraph-candidate-spool.jsonl"))
         .unwrap_or_else(|| PathBuf::from("codegraph-candidate-spool.jsonl"))
@@ -2842,7 +6577,7 @@ fn staged_availability_for_spool_index_only(
         "reason": db_error.unwrap_or("Graph DB is still building or unavailable."),
     });
     let spool_layer = candidate_spool_layer_from_index_load(spool_path, spool);
-    let db_path = default_db_path(repo_root);
+    let db_path = resolved_db_path_for_repo(repo_root);
     let runtime =
         vector_runtime_layer_status_not_requested(&default_vector_runtime_sidecar_path(&db_path));
     let audit = vector_audit_layer_status(
@@ -2950,6 +6685,9 @@ fn candidate_spool_layer_from_index_load(
     let lifecycle = candidate_spool_index_lifecycle_json(spool);
     let status = match spool.query_index_status.as_str() {
         "index_missing" => "query_index_missing",
+        "permission_denied" => "permission_denied",
+        "filesystem_inaccessible" => "filesystem_inaccessible",
+        "sidecar_unavailable" => "sidecar_unavailable",
         "corrupt" => "query_index_corrupt",
         "stale" => "stale",
         _ => lifecycle
@@ -2983,6 +6721,7 @@ fn candidate_spool_layer_from_index_load(
         "stale": spool.stale,
         "reason": spool.reason.clone(),
         "query_index_status": spool.query_index_status.clone(),
+        "query_index_problem_kind": spool.query_index_status.as_str(),
         "query_index_kind": spool.query_index_kind.clone(),
         "query_index_path": path_string(&spool.query_index_path),
         "query_index_bytes": spool.query_index_bytes,
@@ -3348,6 +7087,9 @@ fn staged_availability_from_layers(
                 | "stale"
                 | "query_index_missing"
                 | "query_index_corrupt"
+                | "permission_denied"
+                | "filesystem_inaccessible"
+                | "sidecar_unavailable"
                 | "disabled_budget_exceeded"
         ) {
             missing_layers.push((*name).to_string());
@@ -3508,6 +7250,11 @@ fn staged_availability_top_level_fields(staged: &Value) -> Value {
         "staged_availability": staged,
         "graph_db_status": staged.get("graph_db_status").cloned().unwrap_or(Value::Null),
         "candidate_spool_status": staged.get("candidate_spool_status").cloned().unwrap_or(Value::Null),
+        "candidate_spool_query_index_status": staged.pointer("/layer_readiness/candidate_spool/query_index_status").cloned().unwrap_or(Value::Null),
+        "candidate_spool_query_index_kind": staged.pointer("/layer_readiness/candidate_spool/query_index_kind").cloned().unwrap_or(Value::Null),
+        "candidate_spool_query_index_path": staged.pointer("/layer_readiness/candidate_spool/query_index_path").cloned().unwrap_or(Value::Null),
+        "candidate_spool_query_index_bytes": staged.pointer("/layer_readiness/candidate_spool/query_index_bytes").cloned().unwrap_or(Value::Null),
+        "candidate_spool_query_index_record_count": staged.pointer("/layer_readiness/candidate_spool/query_index_record_count").cloned().unwrap_or(Value::Null),
         "vector_runtime_status": staged.get("vector_runtime_status").cloned().unwrap_or(Value::Null),
         "vector_audit_status": staged.get("vector_audit_status").cloned().unwrap_or(Value::Null),
         "active_candidate_sources": staged.get("active_candidate_sources").cloned().unwrap_or_else(|| json!([])),
@@ -3526,6 +7273,8 @@ fn staged_availability_compact_top_level_fields(staged: &Value) -> Value {
     json!({
         "graph_db_status": staged.get("graph_db_status").cloned().unwrap_or(Value::Null),
         "candidate_spool_status": staged.get("candidate_spool_status").cloned().unwrap_or(Value::Null),
+        "candidate_spool_query_index_status": staged.pointer("/layer_readiness/candidate_spool/query_index_status").cloned().unwrap_or(Value::Null),
+        "candidate_spool_query_index_kind": staged.pointer("/layer_readiness/candidate_spool/query_index_kind").cloned().unwrap_or(Value::Null),
         "vector_runtime_status": staged.get("vector_runtime_status").cloned().unwrap_or(Value::Null),
         "vector_audit_status": staged.get("vector_audit_status").cloned().unwrap_or(Value::Null),
         "active_candidate_sources": staged.get("active_candidate_sources").cloned().unwrap_or_else(|| json!([])),
@@ -3956,7 +7705,7 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
     let repo_root = current_repo_root()?;
     let total_start = Instant::now();
     let mut profile_spans = Vec::new();
-    let db_path = default_db_path(&repo_root);
+    let db_path = resolved_db_path_for_repo(&repo_root);
     let db_lifecycle_read = match read_db_lifecycle_guard(
         &repo_root,
         &db_path,
@@ -4074,8 +7823,26 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
             .then_with(|| left.end_line.cmp(&right.end_line))
     });
     candidate_spans.dedup();
-    let (sources, _, source_bytes, source_files_loaded) =
-        load_context_sources_and_snippets(&repo_root, &candidate_spans, 0)?;
+    let context_max_source_files = if agent_use_bounded_read_path_enabled() {
+        AGENT_USE_CONTEXT_MAX_SOURCE_FILES
+    } else {
+        usize::MAX
+    };
+    let context_max_source_bytes = if agent_use_bounded_read_path_enabled() {
+        budgets
+            .max_hydration_bytes
+            .min(AGENT_USE_CONTEXT_MAX_SOURCE_BYTES)
+    } else {
+        usize::MAX
+    };
+    let (sources, _, source_bytes, source_files_loaded, source_budget_hit) =
+        load_context_sources_and_snippets_capped(
+            &repo_root,
+            &candidate_spans,
+            0,
+            context_max_source_files,
+            context_max_source_bytes,
+        )?;
     profile_spans.push(profile_span_json(
         "source_loading",
         source_load_start.elapsed(),
@@ -4085,6 +7852,7 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
             "source_files_loaded": source_files_loaded,
             "source_bytes_loaded": source_bytes,
             "candidate_spans": candidate_spans.len(),
+            "source_budget_hit": source_budget_hit,
             "snippets_returned": 0,
             "policy": "load source files referenced by candidate proof/source spans for fallback graph verification; snippets are loaded after evidence-role filtering"
         }),
@@ -4099,6 +7867,10 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
             json!(candidate_spans.len()),
         );
         object.insert("source_span_bytes_read".to_string(), json!(source_bytes));
+        object.insert(
+            "source_span_budget_hit".to_string(),
+            json!(source_budget_hit),
+        );
     }
 
     let context_start = Instant::now();
@@ -4184,8 +7956,14 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
     ));
     let snippet_load_start = Instant::now();
     let requested_spans = context_source_spans_for_paths(&stored_paths);
-    let (_, mut snippets, snippet_source_bytes, snippet_source_files_loaded) =
-        load_context_sources_and_snippets(&repo_root, &requested_spans, budgets.max_snippets)?;
+    let (_, mut snippets, snippet_source_bytes, snippet_source_files_loaded, snippet_budget_hit) =
+        load_context_sources_and_snippets_capped(
+            &repo_root,
+            &requested_spans,
+            budgets.max_snippets,
+            context_max_source_files,
+            context_max_source_bytes,
+        )?;
     let fallback_snippet_budget = budgets.max_snippets.saturating_sub(snippets.len());
     let fallback_snippets =
         load_context_fallback_snippets(&repo_root, &fallback_evidence, fallback_snippet_budget)?;
@@ -4202,6 +7980,7 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
             "requested_spans": requested_spans.len(),
             "snippets_returned": snippets.len(),
             "fallback_evidence_count": fallback_evidence.len(),
+            "source_budget_hit": snippet_budget_hit,
             "policy": "load snippets only for evidence-role-filtered proof/source spans"
         }),
     ));
@@ -4219,6 +7998,10 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
             json!(snippet_source_files_loaded),
         );
         object.insert("snippets_returned".to_string(), json!(snippets.len()));
+        object.insert(
+            "snippet_source_budget_hit".to_string(),
+            json!(snippet_budget_hit),
+        );
         object.insert(
             "source_snippet_omitted_count".to_string(),
             json!(requested_span_count.saturating_sub(snippets.len())),
@@ -6116,7 +9899,7 @@ fn run_impact_command(args: &[String]) -> Result<Value, String> {
         return Err("Usage: codegraph-mcp impact <file-or-symbol> [scope flags]".to_string());
     }
     let repo_root = current_repo_root()?;
-    let db_path = default_db_path(&repo_root);
+    let db_path = resolved_db_path_for_repo(&repo_root);
     let db_lifecycle_read = read_db_lifecycle_guard(
         &repo_root,
         &db_path,
@@ -8169,6 +11952,9 @@ fn inspect_existing_comprehensive_proof_artifact(
         storage_policy: StorageMode::Proof.storage_policy().to_string(),
         issue_counts: BTreeMap::new(),
         issues: Vec::new(),
+        graph_output_budgets: codegraph_index::GraphOutputBudgetSummary::new(
+            codegraph_index::GraphOutputBudgets::default(),
+        ),
         scope: None,
         candidate_spool: None,
         profile: Some(IndexProfile {
@@ -8184,6 +11970,11 @@ fn inspect_existing_comprehensive_proof_artifact(
             entities_per_sec: 0.0,
             edges_per_sec: 0.0,
             memory_bytes: None,
+            memory_measured: false,
+            memory_status: "unknown".to_string(),
+            memory_measurement_kind: "not_measured".to_string(),
+            db_write_measurement: "unknown".to_string(),
+            fts_search_index_measurement: "unknown".to_string(),
             worker_count: options.workers.unwrap_or(1),
             skipped_unchanged_files: 0,
             spans: Vec::new(),
@@ -8453,6 +12244,14 @@ fn default_artifact_metadata_path(db_path: &Path) -> PathBuf {
     PathBuf::from(format!("{}.metadata.json", db_path.to_string_lossy()))
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelectedDbPath {
+    path: PathBuf,
+    source: String,
+    explicit: bool,
+}
+
 fn absolutize_path(path: &Path) -> Result<PathBuf, String> {
     if path.is_absolute() {
         Ok(path.to_path_buf())
@@ -8471,8 +12270,251 @@ fn normalize_db_path_for_repo(repo_root: &Path, db_path: &Path) -> PathBuf {
     }
 }
 
+fn selected_db_path_for_repo(repo_root: &Path) -> SelectedDbPath {
+    if let Some(raw) = std::env::var_os("CODEGRAPH_DB_PATH") {
+        let raw_path = PathBuf::from(raw);
+        return SelectedDbPath {
+            path: normalize_db_path_for_repo(repo_root, &raw_path),
+            source: db_source_label(),
+            explicit: true,
+        };
+    }
+
+    SelectedDbPath {
+        path: repo_root.join(".codegraph").join("codegraph.sqlite"),
+        source: "default .codegraph".to_string(),
+        explicit: false,
+    }
+}
+
+pub fn resolve_agent_use_profile(repo: impl AsRef<Path>) -> Result<AgentUseProfile, String> {
+    let repo_root = resolve_repo_root(repo.as_ref())?;
+    let data_root = agent_use_profile_data_root()?;
+    resolve_agent_use_profile_with_data_root(&repo_root, &data_root)
+}
+
+fn resolve_agent_use_profile_with_data_root(
+    repo_root: &Path,
+    data_root: &Path,
+) -> Result<AgentUseProfile, String> {
+    let repo_root = resolve_repo_root(repo_root)?;
+    let repo_identity_label = safe_repo_identity_label(&repo_root);
+    let identity_material = agent_use_repo_identity_material(&repo_root);
+    let repo_identity_hash = stable_agent_use_identity_hash(identity_material.as_bytes());
+    let profile_root = data_root.join(format!("{repo_identity_label}-{repo_identity_hash}"));
+    let db_path = profile_root.join("production-agent-use.sqlite");
+    let candidate_spool_path = profile_root.join("codegraph-candidate-spool.jsonl");
+    let candidate_spool_query_index_path = candidate_spool_query_index_path(&candidate_spool_path);
+    let vector_runtime_path = profile_root.join(CONTEXT_PACK_VECTOR_INDEX_FILE_NAME);
+    let vector_audit_path = profile_root.join(CONTEXT_PACK_VECTOR_AUDIT_FILE_NAME);
+    let lock_or_publish_state_path = profile_root.join("production-agent-use.publish-state.json");
+    let delta_state_path = profile_root.join(PRODUCTION_AGENT_USE_DELTA_STATE_FILE_NAME);
+    let repo_string = path_string(&repo_root);
+    let db_string = path_string(&db_path);
+    let mcp_args = vec![
+        "--repo".to_string(),
+        repo_string.clone(),
+        "--db".to_string(),
+        db_string.clone(),
+        "serve-mcp".to_string(),
+    ];
+    let recovery_commands = vec![
+        format!(
+            "{BIN_NAME} agent-use status --repo \"{repo}\" --json",
+            repo = repo_string.as_str()
+        ),
+        format!(
+            "{BIN_NAME} agent-use index --repo \"{repo}\" --json",
+            repo = repo_string.as_str()
+        ),
+        format!(
+            "{BIN_NAME} agent-use mcp-config --repo \"{repo}\" --json",
+            repo = repo_string.as_str()
+        ),
+        format!(
+            "{BIN_NAME} agent-use query symbols <symbol> --repo \"{repo}\" --limit 5 --agent-json",
+            repo = repo_string.as_str()
+        ),
+        format!(
+            "{BIN_NAME} agent-use query text \"<text>\" --repo \"{repo}\" --limit 5 --agent-json",
+            repo = repo_string.as_str()
+        ),
+        format!(
+            "{BIN_NAME} agent-use query files <path-or-text> --repo \"{repo}\" --limit 5 --agent-json",
+            repo = repo_string.as_str()
+        ),
+        format!(
+            "{BIN_NAME} agent-use context-pack --repo \"{repo}\" --task \"<task>\" --agent-json",
+            repo = repo_string.as_str()
+        ),
+        format!(
+            "{BIN_NAME} agent-use watch --repo \"{repo}\" --once --changed <path> --json",
+            repo = repo_string.as_str()
+        ),
+    ];
+    Ok(AgentUseProfile {
+        profile_name: PRODUCTION_AGENT_USE_PROFILE_NAME.to_string(),
+        repo_root,
+        repo_identity_label,
+        repo_identity_hash,
+        profile_root,
+        db_path,
+        candidate_spool_path,
+        candidate_spool_query_index_path,
+        vector_runtime_path,
+        vector_audit_path,
+        lock_or_publish_state_path,
+        delta_state_path,
+        lifecycle_expectations: vec![
+            "status is read-only".to_string(),
+            "index is the first mutating command".to_string(),
+            "watch --once updates the production profile DB only after an existing graph DB is safe to write".to_string(),
+            "explicit profile DB never falls back to repo-local .codegraph".to_string(),
+            "candidate and vector artifacts are candidate-only unless graph/source verification proves a graph path".to_string(),
+        ],
+        recovery_commands,
+        mcp_args,
+        binary_profile: "release".to_string(),
+        scope_policy: IndexScopeOptions::default(),
+    })
+}
+
+fn agent_use_profile_data_root() -> Result<PathBuf, String> {
+    if let Some(root) = std::env::var_os(AGENT_USE_DATA_ROOT_ENV) {
+        let root = PathBuf::from(root);
+        return absolutize_path(&root).or(Ok(root));
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(root) = std::env::var_os("LOCALAPPDATA") {
+            return Ok(PathBuf::from(root)
+                .join("CodeGraphMCP")
+                .join("agent-indexes"));
+        }
+        return Err("LOCALAPPDATA is required for production agent-use profile paths".to_string());
+    }
+
+    #[cfg(not(windows))]
+    {
+        if let Some(root) = std::env::var_os("XDG_DATA_HOME") {
+            return Ok(PathBuf::from(root)
+                .join("CodeGraphMCP")
+                .join("agent-indexes"));
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return Ok(PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("CodeGraphMCP")
+                .join("agent-indexes"));
+        }
+        Err("HOME or XDG_DATA_HOME is required for production agent-use profile paths".to_string())
+    }
+}
+
+fn safe_repo_identity_label(repo_root: &Path) -> String {
+    let raw = repo_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("repo");
+    let mut label = String::new();
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+            label.push(ch);
+        } else {
+            label.push('_');
+        }
+        if label.len() >= 64 {
+            break;
+        }
+    }
+    let label = label.trim_matches('_');
+    if label.is_empty() {
+        "repo".to_string()
+    } else {
+        label.to_string()
+    }
+}
+
+fn agent_use_repo_identity_material(repo_root: &Path) -> String {
+    if let Some(remote) = git_remote_url(repo_root) {
+        let remote = remote.trim();
+        if !remote.is_empty() {
+            return format!("remote:{remote}");
+        }
+    }
+    format!(
+        "path:{}",
+        normalize_agent_use_identity_path(&path_string(repo_root))
+    )
+}
+
+fn git_remote_url(repo_root: &Path) -> Option<String> {
+    let worktree_root = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()
+        .and_then(|output| {
+            output
+                .status
+                .success()
+                .then(|| PathBuf::from(String::from_utf8_lossy(&output.stdout).trim().to_string()))
+        })?;
+    let worktree_root =
+        absolutize_path(&worktree_root).unwrap_or_else(|_| worktree_root.to_path_buf());
+    let repo_root = fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+    if normalize_agent_use_identity_path(&path_string(&worktree_root))
+        != normalize_agent_use_identity_path(&path_string(&repo_root))
+    {
+        return None;
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["config", "--get", "remote.origin.url"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let remote = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!remote.is_empty()).then_some(remote)
+}
+
+fn normalize_agent_use_identity_path(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let normalized = normalized.strip_prefix("//?/").unwrap_or(&normalized);
+    #[cfg(windows)]
+    {
+        normalized.to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        normalized.to_string()
+    }
+}
+
+fn stable_agent_use_identity_hash(bytes: &[u8]) -> String {
+    let high = fnv64_with_seed(bytes, 0xcbf2_9ce4_8422_2325);
+    let low = fnv64_with_seed(bytes, 0x9e37_79b1_85eb_ca87);
+    format!("{high:016x}{low:016x}")
+}
+
+fn fnv64_with_seed(bytes: &[u8], seed: u64) -> u64 {
+    let mut hash = seed;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 fn resolved_db_path_for_repo(repo_root: &Path) -> PathBuf {
-    normalize_db_path_for_repo(repo_root, &default_db_path(repo_root))
+    selected_db_path_for_repo(repo_root).path
 }
 
 fn repo_source_label() -> String {
@@ -12625,6 +16667,7 @@ fn run_watch_command(args: &[String]) -> CliOutput {
                         &requested_db_path,
                         "cli.watch.once",
                         true,
+                        None,
                     )?;
                     let mut value = serde_json::to_value(summary)
                         .map_err(|error| IndexError::Message(error.to_string()))?;
@@ -12762,6 +16805,7 @@ fn watch_update_lifecycle_metadata(
     requested_db_path: &Path,
     surface_name: &str,
     safe_to_write: bool,
+    expected_scope: Option<IndexScopeOptions>,
 ) -> Result<Value, IndexError> {
     let preflight = inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
         repo_root: repo_root.to_path_buf(),
@@ -12771,7 +16815,7 @@ fn watch_update_lifecycle_metadata(
         allow_stale_read: false,
         allow_foreign_repo: false,
         required_storage_mode: None,
-        expected_scope: None,
+        expected_scope,
     })
     .map_err(|error| IndexError::Message(error.to_string()))?;
     let mut value = watch_lifecycle_status_json(&preflight, requested_db_path, false);
@@ -12808,6 +16852,38 @@ fn watch_lifecycle_status_json(
         "operation_kind": preflight.operation_kind.as_str(),
         "surface_name": preflight.surface_name.clone(),
     })
+}
+
+fn read_lifecycle_artifact_freshness(preflight: &DbLifecyclePreflight) -> Option<String> {
+    if preflight
+        .db_health
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("main DB does not exist"))
+    {
+        return Some("missing".to_string());
+    }
+    let Some(passport) = preflight.db_health.passport.as_ref() else {
+        return Some("passport_missing".to_string());
+    };
+    if passport.last_run_status != "completed" {
+        return Some(format!("incomplete:{}", passport.last_run_status));
+    }
+    if passport.integrity_gate_result != "ok" {
+        return Some(format!(
+            "integrity_not_ok:{}",
+            passport.integrity_gate_result
+        ));
+    }
+    if preflight
+        .db_health
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("repo head mismatch"))
+    {
+        return Some("repo_head_mismatch".to_string());
+    }
+    Some("fresh".to_string())
 }
 
 fn watch_lifecycle_error(preflight: &DbLifecycleSurfacePreflight) -> String {
@@ -13669,6 +17745,8 @@ fn is_local_host(host: &str) -> bool {
 struct WatchDebouncer {
     delay: Duration,
     pending: BTreeMap<PathBuf, Instant>,
+    events_seen: usize,
+    coalesced_count: usize,
 }
 
 impl WatchDebouncer {
@@ -13676,11 +17754,16 @@ impl WatchDebouncer {
         Self {
             delay,
             pending: BTreeMap::new(),
+            events_seen: 0,
+            coalesced_count: 0,
         }
     }
 
     fn push(&mut self, path: PathBuf, now: Instant) {
-        self.pending.insert(path, now);
+        self.events_seen += 1;
+        if self.pending.insert(path, now).is_some() {
+            self.coalesced_count += 1;
+        }
     }
 
     fn ready(&mut self, now: Instant) -> Vec<PathBuf> {
@@ -13700,6 +17783,22 @@ impl WatchDebouncer {
         }
 
         ready_paths
+    }
+
+    fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
+    fn pending_paths(&self) -> Vec<PathBuf> {
+        self.pending.keys().cloned().collect()
+    }
+
+    fn coalesced_count(&self) -> usize {
+        self.coalesced_count
+    }
+
+    fn events_seen(&self) -> usize {
+        self.events_seen
     }
 }
 
@@ -14467,7 +18566,7 @@ fn symbol_search_candidate_entities(
         }
     }
 
-    if entities.len() < limit {
+    if entities.len() < limit && !agent_use_bounded_read_path_enabled() {
         let query_lc = query.to_ascii_lowercase();
         let query_aliases = split_symbol_query_aliases(query);
         for entity in store
@@ -14548,7 +18647,7 @@ fn query_text_with_options(
         .into_iter()
         .map(text_search_hit_json)
         .collect::<Vec<_>>();
-    if hits.len() < options.fetch_limit() {
+    if hits.len() < options.fetch_limit() && !agent_use_bounded_read_path_enabled() {
         hits.extend(source_scan_text_hits(
             repo_root,
             &store,
@@ -14677,27 +18776,34 @@ fn query_files_with_options(
             hits.push(value);
         }
     }
-    for file in store
-        .list_files(UNBOUNDED_STORE_READ_LIMIT)
-        .map_err(|error| error.to_string())?
-    {
-        if hits.len() >= options.fetch_limit() {
-            break;
-        }
-        if file_record_matches_file_query(&file, &query_lc, &query_aliases)
-            && seen.insert(file.repo_relative_path.clone())
+    if !agent_use_bounded_read_path_enabled() {
+        for file in store
+            .list_files(UNBOUNDED_STORE_READ_LIMIT)
+            .map_err(|error| error.to_string())?
         {
-            let mut hit = json!({
-                "kind": "file",
-                "id": file.repo_relative_path.clone(),
-                "repo_relative_path": file.repo_relative_path.clone(),
-                "line": null,
-                "title": file.repo_relative_path.clone(),
-                "score": 0.0,
-                "match": "path_contains",
-            });
-            enrich_file_hit_with_text_evidence_preview(repo_root, &file, &options.query, &mut hit)?;
-            hits.push(hit);
+            if hits.len() >= options.fetch_limit() {
+                break;
+            }
+            if file_record_matches_file_query(&file, &query_lc, &query_aliases)
+                && seen.insert(file.repo_relative_path.clone())
+            {
+                let mut hit = json!({
+                    "kind": "file",
+                    "id": file.repo_relative_path.clone(),
+                    "repo_relative_path": file.repo_relative_path.clone(),
+                    "line": null,
+                    "title": file.repo_relative_path.clone(),
+                    "score": 0.0,
+                    "match": "path_contains",
+                });
+                enrich_file_hit_with_text_evidence_preview(
+                    repo_root,
+                    &file,
+                    &options.query,
+                    &mut hit,
+                )?;
+                hits.push(hit);
+            }
         }
     }
 
@@ -14828,6 +18934,9 @@ fn enrich_file_hit_with_text_evidence_preview(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let preview = if existing_text.trim().is_empty() {
+        if agent_use_bounded_read_path_enabled() {
+            return Ok(());
+        }
         read_bounded_query_file_preview(&repo_root.join(&file.repo_relative_path))?
             .and_then(|text| query_snippet_from_text(&text, query))
     } else {
@@ -17274,7 +21383,7 @@ fn parse_index_command_options(
     }
     Ok((
         repo.ok_or_else(|| {
-            "Usage: codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--build-vector-index <runtime_path>|--vector-runtime-sidecar <runtime_path>] [--vector-audit-artifact <audit_path>] [--no-vector-audit] [--vector-artifact-format compact_json|pretty_json] [--candidate-spool <path>] [--candidate-spool-policy off|bounded|audit] [--candidate-spool-max-mib <n>] [--candidate-spool-max-bytes <n>] [--candidate-spool-max-records <n>] [--candidate-spool-required] [--candidate-spool-query-index yes|no] [--early-candidates] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]".to_string()
+            "Usage: codegraph-mcp index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--build-vector-index <runtime_path>|--vector-runtime-sidecar <runtime_path>] [--vector-audit-artifact <audit_path>] [--no-vector-audit] [--vector-artifact-format compact_json|pretty_json] [--candidate-spool <path>] [--candidate-spool-policy off|bounded|audit] [--candidate-spool-max-mib <n>] [--candidate-spool-max-bytes <n>] [--candidate-spool-max-records <n>] [--candidate-spool-required] [--candidate-spool-query-index yes|no] [--early-candidates] [--profile] [--json|--agent-json|--audit-json] [--verbose] [--workers <n>] [--storage-mode <proof|audit|debug>] [--build-mode <proof-build-only|proof-build-plus-validation>] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus <name>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore <true|false>] [--explain-scope] [--print-included] [--print-excluded]\nScope: default repo scope plus explicit include overrides; --include is not a restrictive only-these-globs filter.".to_string()
         })?,
         db,
         options,
@@ -18915,6 +23024,7 @@ fn db_lifecycle_preflight_json(
         "sidecar_status": preflight.db_health.sidecar_status.clone(),
         "orphan_sidecars": preflight.db_health.orphan_sidecars.clone(),
         "orphan_sidecars_deprecated": true,
+        "safety_labels": db_lifecycle_safety_labels(preflight, None),
         "blockers": preflight.blockers.clone(),
         "warnings": preflight.warnings.clone(),
         "exact_db_path_checked": preflight.exact_db_path_checked.clone(),
@@ -18924,6 +23034,7 @@ fn db_lifecycle_preflight_json(
         "repo_root_status": preflight.repo_root_status.clone(),
         "schema_status": preflight.schema_status.clone(),
         "storage_mode_status": preflight.storage_mode_status.clone(),
+        "artifact_freshness": read_lifecycle_artifact_freshness(preflight),
         "scope_status": preflight.scope_status.clone(),
         "scope_source": preflight.scope_source.clone(),
         "passport_scope_hash": preflight.passport_scope_hash.clone(),
@@ -18932,6 +23043,146 @@ fn db_lifecycle_preflight_json(
         "passport_scope_policy": preflight.passport_scope_policy.clone(),
         "explicit_scope_policy": preflight.explicit_scope_policy.clone(),
     })
+}
+
+fn db_lifecycle_safety_labels(
+    preflight: &DbLifecyclePreflight,
+    sqlite_sidecars: Option<&Value>,
+) -> Vec<String> {
+    let mut labels = BTreeSet::new();
+    if let Some(kind) = preflight.db_problem_kind.as_deref() {
+        labels.insert(kind.to_string());
+        match kind {
+            "repo_root_mismatch" => {
+                labels.insert("repo_mismatch".to_string());
+                labels.insert("foreign".to_string());
+            }
+            "repo_head_mismatch" | "scope_mismatch" | "storage_mismatch" => {
+                labels.insert("stale".to_string());
+            }
+            "db_missing" => {
+                labels.insert("not_indexed".to_string());
+            }
+            _ => {}
+        }
+    }
+    match preflight.path_access_status.as_str() {
+        "db_missing" => {
+            labels.insert("not_indexed".to_string());
+        }
+        "permission_denied" => {
+            labels.insert("permission_denied".to_string());
+        }
+        "filesystem_inaccessible" => {
+            labels.insert("filesystem_inaccessible".to_string());
+        }
+        _ => {}
+    }
+    match preflight.db_health.passport_status.as_str() {
+        "missing" => {
+            labels.insert("passport_missing".to_string());
+        }
+        "corrupt" => {
+            labels.insert("passport_corrupt".to_string());
+        }
+        "locked" => {
+            labels.insert("db_locked".to_string());
+        }
+        _ => {}
+    }
+    if read_lifecycle_artifact_freshness(preflight)
+        .as_deref()
+        .is_some_and(|freshness| freshness.starts_with("incomplete:"))
+    {
+        labels.insert("stale".to_string());
+    }
+    for blocker in &preflight.blockers {
+        if lifecycle_blocker_is_foreign_repo(blocker) {
+            labels.insert("repo_mismatch".to_string());
+            labels.insert("foreign".to_string());
+        }
+        if lifecycle_blocker_is_stale_or_missing_passport(blocker) {
+            labels.insert("stale".to_string());
+        }
+        if blocker.contains("permission denied") {
+            labels.insert("permission_denied".to_string());
+        }
+        if blocker.contains("filesystem") {
+            labels.insert("filesystem_inaccessible".to_string());
+        }
+        if blocker.contains("locked") || blocker.contains("database is busy") {
+            labels.insert("db_locked".to_string());
+        }
+    }
+    if preflight.db_health.sidecar_status == "orphan_without_main_db" {
+        labels.insert("orphan_without_main_db".to_string());
+    }
+    if preflight.db_health.sidecar_status == "stale_cleanup_candidate" {
+        labels.insert("sidecar_only_change".to_string());
+    }
+    if let Some(sqlite_sidecars) = sqlite_sidecars {
+        for key in ["sidecar_status", "sidecar_change_classification", "status"] {
+            if let Some(value) = sqlite_sidecars.get(key).and_then(Value::as_str) {
+                match value {
+                    "orphan_without_main_db" => {
+                        labels.insert("orphan_without_main_db".to_string());
+                    }
+                    "sidecar_only_change" => {
+                        labels.insert("sidecar_only_change".to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if sqlite_sidecars
+            .get("sidecar_only_change")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            labels.insert("sidecar_only_change".to_string());
+        }
+    }
+    if !preflight.safe {
+        labels.insert("diagnostic_only".to_string());
+        labels.insert("blocked".to_string());
+    }
+    labels.into_iter().collect()
+}
+
+fn agent_use_safety_labels(
+    profile: &AgentUseProfile,
+    preflight: &DbLifecyclePreflight,
+    sqlite_sidecars: Option<&Value>,
+) -> Vec<String> {
+    let mut labels = db_lifecycle_safety_labels(preflight, sqlite_sidecars)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    if let Some(publish_status) = agent_use_publish_state_status(profile) {
+        match publish_status.as_str() {
+            "updating" => {
+                labels.insert("updating".to_string());
+            }
+            "publishing" => {
+                labels.insert("publishing".to_string());
+            }
+            "interrupted" => {
+                labels.insert("interrupted".to_string());
+                if preflight.safe {
+                    labels.insert("recovered".to_string());
+                } else {
+                    labels.insert("blocked".to_string());
+                }
+            }
+            other if !other.is_empty() => {
+                labels.insert(other.to_string());
+            }
+            _ => {}
+        }
+    }
+    if agent_use_publish_state_active(profile) {
+        labels.insert("publishing".to_string());
+    }
+    labels.into_iter().collect()
 }
 
 fn query_engine(store: &SqliteGraphStore) -> Result<ExactGraphQueryEngine, String> {
@@ -27077,6 +31328,7 @@ fn context_pack_agent_json_response(
         "task": packet.task,
         "mode": packet.mode,
         "lifecycle": lifecycle,
+        "db_lifecycle_read": db_lifecycle_read,
         "claimable": lifecycle_claimable,
         "diagnostic_only": db_lifecycle_read.get("diagnostic_only").and_then(Value::as_bool).unwrap_or_else(|| {
             !lifecycle_claimable
@@ -29091,6 +33343,33 @@ fn load_context_sources_and_snippets(
     spans: &[SourceSpan],
     max_snippets: usize,
 ) -> Result<(BTreeMap<String, String>, Vec<ContextSnippet>, usize, usize), String> {
+    let (sources, snippets, source_bytes, source_files_loaded, _) =
+        load_context_sources_and_snippets_capped(
+            repo_root,
+            spans,
+            max_snippets,
+            usize::MAX,
+            usize::MAX,
+        )?;
+    Ok((sources, snippets, source_bytes, source_files_loaded))
+}
+
+fn load_context_sources_and_snippets_capped(
+    repo_root: &Path,
+    spans: &[SourceSpan],
+    max_snippets: usize,
+    max_source_files: usize,
+    max_source_bytes: usize,
+) -> Result<
+    (
+        BTreeMap<String, String>,
+        Vec<ContextSnippet>,
+        usize,
+        usize,
+        bool,
+    ),
+    String,
+> {
     let mut file_ids = spans
         .iter()
         .map(|span| span.repo_relative_path.clone())
@@ -29100,10 +33379,19 @@ fn load_context_sources_and_snippets(
 
     let mut sources = BTreeMap::new();
     let mut source_bytes = 0usize;
+    let mut budget_hit = false;
     for file_id in file_ids {
+        if sources.len() >= max_source_files {
+            budget_hit = true;
+            break;
+        }
         let path = repo_root.join(&file_id);
         if path.exists() {
             let source = fs::read_to_string(path).map_err(|error| error.to_string())?;
+            if source_bytes.saturating_add(source.len()) > max_source_bytes {
+                budget_hit = true;
+                continue;
+            }
             source_bytes += source.len();
             sources.insert(file_id, source);
         }
@@ -29141,7 +33429,13 @@ fn load_context_sources_and_snippets(
         });
     }
     let source_files_loaded = sources.len();
-    Ok((sources, snippets, source_bytes, source_files_loaded))
+    Ok((
+        sources,
+        snippets,
+        source_bytes,
+        source_files_loaded,
+        budget_hit,
+    ))
 }
 
 fn context_source_spans_for_paths(paths: &[PathEvidence]) -> Vec<SourceSpan> {
@@ -29966,6 +34260,14 @@ fn index_summary_json(summary: &IndexSummary) -> Result<Value, String> {
         return Err("failed to encode index summary".to_string());
     };
     object.insert("status".to_string(), json!("indexed"));
+    object.insert(
+        "telemetry".to_string(),
+        index_runtime_telemetry_json(summary),
+    );
+    object.insert(
+        "indexing_durability".to_string(),
+        index_batch_durability_json(summary),
+    );
     Ok(value)
 }
 
@@ -29985,6 +34287,8 @@ fn index_summary_concise_json(summary: &IndexSummary, wall_ms: f64) -> Result<Va
         "build_mode": summary.build_mode,
         "storage_policy": summary.storage_policy,
         "files_seen": summary.files_seen,
+        "files_read": summary.files_read,
+        "files_hashed": summary.files_hashed,
         "files_indexed": summary.files_indexed,
         "files_parsed": summary.files_parsed,
         "files_skipped": summary.files_skipped,
@@ -30001,6 +34305,9 @@ fn index_summary_concise_json(summary: &IndexSummary, wall_ms: f64) -> Result<Va
             }
         },
         "timing": index_timing_summary_json(summary, wall_ms),
+        "telemetry": index_runtime_telemetry_json(summary),
+        "indexing_durability": index_batch_durability_json(summary),
+        "graph_output_budgets": &summary.graph_output_budgets,
         "warnings_count": index_warning_count(summary),
         "issue_counts": summary.issue_counts,
         "issues_count": summary.issues.len(),
@@ -30059,7 +34366,7 @@ fn index_summary_agent_json(summary: &IndexSummary, wall_ms: f64) -> Result<Valu
         "warnings_count".to_string(),
         json!(index_warning_count(summary)),
     );
-    summary_object.insert("scope".to_string(), index_scope_summary_json(summary));
+    summary_object.insert("scope".to_string(), index_scope_summary_agent_json(summary));
     summary_object.insert(
         "candidate_spool".to_string(),
         serde_json::to_value(summary.candidate_spool.clone()).map_err(|error| error.to_string())?,
@@ -30077,6 +34384,14 @@ fn index_summary_agent_json(summary: &IndexSummary, wall_ms: f64) -> Result<Valu
     summary_object.insert(
         "artifact_freshness".to_string(),
         index_artifact_freshness_json(summary),
+    );
+    summary_object.insert(
+        "indexing_durability".to_string(),
+        index_batch_durability_json(summary),
+    );
+    summary_object.insert(
+        "graph_output_budgets".to_string(),
+        json!(&summary.graph_output_budgets),
     );
 
     Ok(json!({
@@ -30101,6 +34416,8 @@ fn index_summary_agent_json(summary: &IndexSummary, wall_ms: f64) -> Result<Valu
         "limit": 1,
         "omitted_count": 0,
         "timings": agent_timings_from_wall_ms(wall_ms),
+        "indexing_durability": index_batch_durability_json(summary),
+        "graph_output_budgets": &summary.graph_output_budgets,
         "warnings": warnings,
         "errors": [],
         "limits": {
@@ -30219,6 +34536,12 @@ fn index_timing_summary_json(summary: &IndexSummary, wall_ms: f64) -> Value {
         "profile_available".to_string(),
         json!(summary.profile.is_some()),
     );
+    object.insert("build_profile".to_string(), json!(build_profile()));
+    object.insert("binary_profile".to_string(), json!(build_profile()));
+    object.insert(
+        "debug_assertions".to_string(),
+        json!(cfg!(debug_assertions)),
+    );
     if let Some(profile) = summary.profile.as_ref() {
         object.insert("total_wall_ms".to_string(), json!(profile.total_wall_ms));
         object.insert(
@@ -30228,9 +34551,255 @@ fn index_timing_summary_json(summary: &IndexSummary, wall_ms: f64) -> Value {
         object.insert("parse_ms".to_string(), json!(profile.parse_ms));
         object.insert("extraction_ms".to_string(), json!(profile.extraction_ms));
         object.insert("db_write_ms".to_string(), json!(profile.db_write_ms));
+        object.insert(
+            "db_write_measurement".to_string(),
+            json!(profile.db_write_measurement),
+        );
+        object.insert(
+            "fts_search_index_ms".to_string(),
+            json!(profile.fts_search_index_ms),
+        );
+        object.insert(
+            "fts_search_index_measurement".to_string(),
+            json!(profile.fts_search_index_measurement),
+        );
         object.insert("worker_count".to_string(), json!(profile.worker_count));
     }
+    object.insert(
+        "memory".to_string(),
+        json!(summary
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.memory_bytes)
+            .map(|bytes| bytes.to_string())
+            .unwrap_or_else(|| "unknown".to_string())),
+    );
+    object.insert(
+        "memory_bytes".to_string(),
+        summary
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.memory_bytes)
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+    );
+    object.insert(
+        "memory_measured".to_string(),
+        json!(summary
+            .profile
+            .as_ref()
+            .map(|profile| profile.memory_measured)
+            .unwrap_or(false)),
+    );
+    object.insert(
+        "memory_status".to_string(),
+        json!(summary
+            .profile
+            .as_ref()
+            .map(|profile| profile.memory_status.as_str())
+            .unwrap_or("unknown")),
+    );
+    object.insert(
+        "memory_measurement_kind".to_string(),
+        json!(summary
+            .profile
+            .as_ref()
+            .map(|profile| profile.memory_measurement_kind.as_str())
+            .unwrap_or("not_measured")),
+    );
+    if summary.profile.is_some() {
+        object.insert(
+            "timing_fields".to_string(),
+            index_profile_timing_fields_json(summary),
+        );
+    }
     Value::Object(object)
+}
+
+fn index_runtime_telemetry_json(summary: &IndexSummary) -> Value {
+    let mut object = serde_json::Map::new();
+    object.insert("build_profile".to_string(), json!(build_profile()));
+    object.insert("binary_profile".to_string(), json!(build_profile()));
+    object.insert(
+        "debug_assertions".to_string(),
+        json!(cfg!(debug_assertions)),
+    );
+    object.insert(
+        "profile_available".to_string(),
+        json!(summary.profile.is_some()),
+    );
+    object.insert(
+        "memory".to_string(),
+        json!(summary
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.memory_bytes)
+            .map(|bytes| bytes.to_string())
+            .unwrap_or_else(|| "unknown".to_string())),
+    );
+    object.insert(
+        "memory_bytes".to_string(),
+        summary
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.memory_bytes)
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+    );
+    object.insert(
+        "memory_measured".to_string(),
+        json!(summary
+            .profile
+            .as_ref()
+            .map(|profile| profile.memory_measured)
+            .unwrap_or(false)),
+    );
+    object.insert(
+        "memory_status".to_string(),
+        json!(summary
+            .profile
+            .as_ref()
+            .map(|profile| profile.memory_status.as_str())
+            .unwrap_or("unknown")),
+    );
+    object.insert(
+        "memory_measurement_kind".to_string(),
+        json!(summary
+            .profile
+            .as_ref()
+            .map(|profile| profile.memory_measurement_kind.as_str())
+            .unwrap_or("not_measured")),
+    );
+    object.insert(
+        "timing_truth_status".to_string(),
+        json!(if summary.profile.is_some() {
+            "measured_or_explicit_unknown"
+        } else {
+            "profile_not_requested"
+        }),
+    );
+    if summary.profile.is_some() {
+        object.insert(
+            "timing_fields".to_string(),
+            index_profile_timing_fields_json(summary),
+        );
+    }
+    Value::Object(object)
+}
+
+fn runtime_telemetry_unknown_json() -> Value {
+    json!({
+        "build_profile": build_profile(),
+        "binary_profile": build_profile(),
+        "debug_assertions": cfg!(debug_assertions),
+        "profile_available": false,
+        "memory": "unknown",
+        "memory_bytes": Value::Null,
+        "memory_measured": false,
+        "memory_status": "unknown",
+        "memory_measurement_kind": "not_measured",
+        "timing_truth_status": "not_applicable",
+    })
+}
+
+fn index_profile_timing_fields_json(summary: &IndexSummary) -> Value {
+    let profile = summary.profile.as_ref();
+    json!({
+        "db_write": timing_field_from_profile_total(
+            profile,
+            profile.map(|profile| profile.db_write_ms as f64),
+            profile
+                .map(|profile| profile.db_write_measurement.as_str())
+                .unwrap_or("profile_not_requested"),
+            "measured aggregate of SQL write spans; not FTS build or commit"
+        ),
+        "fts_build": timing_field_from_profile_total(
+            profile,
+            profile.map(|profile| profile.fts_search_index_ms as f64),
+            profile
+                .map(|profile| profile.fts_search_index_measurement.as_str())
+                .unwrap_or("profile_not_requested"),
+            "measured from fts_build span when present"
+        ),
+        "transaction_commit": timing_field_from_span(profile, "transaction_commit", "measured commit span"),
+        "reducer": timing_field_from_span(profile, "reducer", "measured reducer span"),
+        "edge_insert": timing_field_from_span(profile, "edge_insert", "measured local edge insert span"),
+        "proof_edge_insert": timing_field_from_span(profile, "proof_edge_insert", "measured SQLite edge insert span"),
+        "dictionary_lookup_insert": timing_field_from_span(profile, "dictionary_lookup_insert", "measured shared dictionary lookup/insert span"),
+        "candidate_spool_build": timing_field_unknown(profile, "not measured as a separate profile substage"),
+        "vector_sidecar_build": timing_field_unknown(profile, "not measured as an index profile substage"),
+        "profile_total": timing_field_from_profile_total(
+            profile,
+            profile.map(|profile| profile.total_wall_ms as f64),
+            if profile.is_some() { "measured_wall_clock" } else { "profile_not_requested" },
+            "index profile total wall clock"
+        ),
+    })
+}
+
+fn timing_field_from_profile_total(
+    profile: Option<&IndexProfile>,
+    elapsed_ms: Option<f64>,
+    measurement: &str,
+    note: &str,
+) -> Value {
+    match (profile, elapsed_ms) {
+        (Some(_), Some(elapsed_ms)) => json!({
+            "status": "measured",
+            "elapsed_ms": elapsed_ms,
+            "measurement": measurement,
+            "note": note,
+        }),
+        (Some(_), None) => json!({
+            "status": "unknown",
+            "elapsed_ms": Value::Null,
+            "measurement": measurement,
+            "note": note,
+        }),
+        (None, _) => json!({
+            "status": "profile_not_requested",
+            "elapsed_ms": Value::Null,
+            "measurement": "profile_not_requested",
+            "note": note,
+        }),
+    }
+}
+
+fn timing_field_from_span(profile: Option<&IndexProfile>, span_name: &str, note: &str) -> Value {
+    if profile.is_none() {
+        return json!({
+            "status": "profile_not_requested",
+            "elapsed_ms": Value::Null,
+            "measurement": "profile_not_requested",
+            "note": note,
+        });
+    }
+    let elapsed_ms = profile_span_ms(profile, span_name);
+    let count = profile_span_count(profile, span_name);
+    if count == 0 {
+        return json!({
+            "status": "unknown_or_not_run",
+            "elapsed_ms": Value::Null,
+            "measurement": span_name,
+            "note": note,
+        });
+    }
+    json!({
+        "status": "measured",
+        "elapsed_ms": elapsed_ms,
+        "count": count,
+        "measurement": span_name,
+        "note": note,
+    })
+}
+
+fn timing_field_unknown(profile: Option<&IndexProfile>, note: &str) -> Value {
+    json!({
+        "status": if profile.is_some() { "unknown" } else { "profile_not_requested" },
+        "elapsed_ms": Value::Null,
+        "measurement": if profile.is_some() { "not_split_yet" } else { "profile_not_requested" },
+        "note": note,
+    })
 }
 
 fn index_warning_count(summary: &IndexSummary) -> usize {
@@ -30284,11 +34853,21 @@ fn index_scope_summary_json(summary: &IndexSummary) -> Value {
     let Some(scope) = summary.scope.as_ref() else {
         return json!({
             "available": false,
+            "scope_policy_kind": SCOPE_POLICY_KIND_DEFAULT_WITH_OVERRIDES,
+            "include_semantics": INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES,
+            "include_is_restrictive": false,
+            "include_is_override": true,
+            "scope_truth_status": SCOPE_TRUTH_STATUS_OVERRIDE_ONLY,
             "examples_included": false,
         });
     };
     json!({
         "available": true,
+        "scope_policy_kind": scope.scope_policy_kind,
+        "include_semantics": scope.include_semantics,
+        "include_is_restrictive": scope.include_is_restrictive,
+        "include_is_override": scope.include_is_override,
+        "scope_truth_status": scope.scope_truth_status,
         "default_excludes_enabled": scope.default_excludes_enabled,
         "include_ignored": scope.include_ignored,
         "no_default_excludes": scope.no_default_excludes,
@@ -30304,6 +34883,24 @@ fn index_scope_summary_json(summary: &IndexSummary) -> Value {
         "excluded_examples_count": scope.excluded_examples.len(),
         "warning_examples_count": scope.warning_examples.len(),
         "directory_prune_decisions_count": scope.directory_prune_decisions.len(),
+        "examples_included": false,
+    })
+}
+
+fn index_scope_summary_agent_json(summary: &IndexSummary) -> Value {
+    let Some(scope) = summary.scope.as_ref() else {
+        return json!({
+            "available": false,
+            "include_is_restrictive": false,
+            "include_is_override": true,
+            "examples_included": false,
+        });
+    };
+    json!({
+        "available": true,
+        "include_is_restrictive": scope.include_is_restrictive,
+        "include_is_override": scope.include_is_override,
+        "warnings": scope.warnings,
         "examples_included": false,
     })
 }
@@ -30330,6 +34927,42 @@ fn index_artifact_freshness_json(summary: &IndexSummary) -> Value {
         "old_db_used": lifecycle.old_db_used,
         "old_db_replaced": lifecycle.old_db_replaced,
         "explicit_db_path": lifecycle.explicit_db_path,
+    })
+}
+
+fn index_batch_durability_json(summary: &IndexSummary) -> Value {
+    let lifecycle = summary.db_lifecycle.as_ref();
+    let fresh_temp_db_path = lifecycle.and_then(|lifecycle| lifecycle.fresh_temp_db_path.clone());
+    let atomic_temp_publish_used = fresh_temp_db_path.is_some();
+    let visible_db_exists = Path::new(&summary.db_path).exists();
+    json!({
+        "batch_progress_vocabulary": {
+            "processed": "parser/reducer/DB write work for a batch finished, but this does not mean visible production DB durability",
+            "staged": "facts are staged in memory or an open transaction",
+            "committed": "SQLite transaction commit completed for the current DB file",
+            "published": "validated temp DB was atomically renamed into the visible production DB path"
+        },
+        "batches_processed": summary.batches_completed,
+        "batches_completed_legacy_alias_for": "batches_processed",
+        "batch_progress_status": "processed_not_durably_committed_until_transaction_commit",
+        "atomic_temp_publish_used": atomic_temp_publish_used,
+        "visible_db_old_good_until_publish": atomic_temp_publish_used,
+        "temp_db_never_claimable": true,
+        "temp_db_path": fresh_temp_db_path,
+        "visible_db_path": summary.db_path,
+        "visible_db_exists": visible_db_exists,
+        "old_db_replaced": lifecycle
+            .map(|lifecycle| lifecycle.old_db_replaced)
+            .unwrap_or(false),
+        "publish_status": if atomic_temp_publish_used && visible_db_exists {
+            "published"
+        } else if atomic_temp_publish_used
+        {
+            "not_published"
+        } else {
+            "not_atomic_temp_publish"
+        },
+        "visible_db_mutation_claim": "visible DB changes are claimed only after commit or atomic publish events",
     })
 }
 
@@ -31587,10 +36220,12 @@ fn not_implemented_json(command: &CommandSpec, args: &[String]) -> String {
 mod tests {
     use std::{
         collections::BTreeSet,
+        ffi::OsString,
         fs,
         io::{ErrorKind, Read, Write},
         net::{SocketAddr, TcpListener, TcpStream},
         path::{Path, PathBuf},
+        process::Command,
         sync::{
             atomic::{AtomicU64, Ordering},
             mpsc, Mutex,
@@ -31626,6 +36261,7 @@ mod tests {
 
     static TEMP_REPO_COUNTER: AtomicU64 = AtomicU64::new(0);
     static BUNDLE_TEST_LOCK: Mutex<()> = Mutex::new(());
+    static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn top_level_help_lists_required_commands() {
@@ -31768,6 +36404,40 @@ mod tests {
             .as_str()
             .unwrap_or("")
             .contains("candidate_spool_query_index"));
+    }
+
+    #[test]
+    fn candidate_spool_query_index_access_error_is_not_labeled_corrupt() {
+        let repo = temp_repo();
+        let spool = repo.join("codegraph-candidate-spool.jsonl");
+        let load = super::CandidateSpoolIndexLoad {
+            path: spool.clone(),
+            query_index_path: super::candidate_spool_query_index_path(&spool),
+            metadata: json!({
+                "candidate_spool_status": "bounded_ready",
+                "candidate_spool_truncated": false,
+                "incomplete": false,
+            }),
+            stale: true,
+            reason: Some("candidate_spool_query_index_open_failed: filesystem_inaccessible: unable to open database file".to_string()),
+            query_index_status: "filesystem_inaccessible".to_string(),
+            query_index_kind: "sqlite".to_string(),
+            query_index_bytes: 0,
+            query_index_record_count: 0,
+            query_index_version: "candidate_spool_query_index_v1".to_string(),
+            query_index_bound_manifest_hash: None,
+            query_index_source_binding_count: 0,
+        };
+        let status = super::candidate_spool_layer_from_index_load(&spool, &load);
+        assert_eq!(status["status"].as_str(), Some("filesystem_inaccessible"));
+        assert_eq!(
+            status["query_index_problem_kind"].as_str(),
+            Some("filesystem_inaccessible")
+        );
+        assert_eq!(status["ready"].as_bool(), Some(false));
+        assert_eq!(status["candidate_spool_unavailable"].as_bool(), Some(true));
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
     }
 
     #[test]
@@ -32344,6 +37014,45 @@ mod tests {
     }
 
     #[test]
+    fn persistent_watch_debouncer_coalesces_rapid_save_and_atomic_paths() {
+        let mut debouncer = WatchDebouncer::new(Duration::from_millis(25));
+        let now = Instant::now();
+        let source = PathBuf::from("src/service.ts");
+        let temp = PathBuf::from("src/.service.ts.tmp");
+
+        debouncer.push(source.clone(), now);
+        debouncer.push(source.clone(), now + Duration::from_millis(5));
+        debouncer.push(temp.clone(), now + Duration::from_millis(6));
+        debouncer.push(source.clone(), now + Duration::from_millis(7));
+
+        assert_eq!(debouncer.events_seen(), 4);
+        assert_eq!(debouncer.coalesced_count(), 2);
+        assert_eq!(debouncer.pending_len(), 2);
+        assert!(debouncer.ready(now + Duration::from_millis(20)).is_empty());
+        let ready = debouncer.ready(now + Duration::from_millis(40));
+        assert_eq!(ready, vec![temp, source]);
+        assert_eq!(debouncer.pending_len(), 0);
+    }
+
+    #[test]
+    fn persistent_watch_retry_helper_retries_transient_locks() {
+        let mut attempts = 0usize;
+        let (value, retries) = super::agent_use_retry_transient_lock(3, Duration::ZERO, || {
+            attempts += 1;
+            if attempts < 3 {
+                Err("database is locked".to_string())
+            } else {
+                Ok(json!({"status": "updated"}))
+            }
+        })
+        .expect("retry should eventually succeed");
+
+        assert_eq!(attempts, 3);
+        assert_eq!(retries, 2);
+        assert_eq!(value["status"].as_str(), Some("updated"));
+    }
+
+    #[test]
     fn ignore_patterns_cover_repo_noise() {
         let root = Path::new("/repo");
 
@@ -32415,6 +37124,19 @@ mod tests {
         assert_eq!(value["scope"]["examples_included"].as_bool(), Some(false));
         assert!(value["scope"]["included_examples"].is_null());
         assert!(value["scope"]["excluded_examples"].is_null());
+        assert_eq!(
+            value["scope"]["include_semantics"].as_str(),
+            Some(super::INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES)
+        );
+        assert_eq!(
+            value["scope"]["include_is_restrictive"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(value["scope"]["include_is_override"].as_bool(), Some(true));
+        assert_eq!(
+            value["scope"]["scope_truth_status"].as_str(),
+            Some(super::SCOPE_TRUTH_STATUS_OVERRIDE_ONLY)
+        );
         assert!(value["db_lifecycle"]["decision"].as_str().is_some());
         assert!(value["db_lifecycle"]["preflight"].is_null());
         assert!(value["lifecycle"]["claimable"].as_bool().is_some());
@@ -32423,6 +37145,8 @@ mod tests {
         assert!(value["counts"]["graph"]["edges"].as_u64().is_some());
         assert!(value["counts"]["graph"]["source_spans"].as_u64().is_some());
         assert!(value["timing"]["wall_ms"].as_f64().is_some());
+        assert_eq!(value["telemetry"]["memory_measured"].as_bool(), Some(false));
+        assert_eq!(value["telemetry"]["memory"].as_str(), Some("unknown"));
         assert!(
             serde_json::to_vec(&value).expect("serialize").len()
                 < super::INDEX_CONCISE_JSON_SIZE_TARGET_BYTES,
@@ -32531,6 +37255,42 @@ mod tests {
         assert!(
             bytes < super::INDEX_CONCISE_JSON_SIZE_TARGET_BYTES,
             "warm no-op concise JSON was {bytes} bytes: {warm}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn index_profile_json_labels_unknown_memory_and_timing_truth() {
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+        let value = run_index_output_json(&repo, &db, &["--fresh", "--json", "--profile"]);
+
+        assert_eq!(value["telemetry"]["memory"].as_str(), Some("unknown"));
+        assert_eq!(value["telemetry"]["memory_measured"].as_bool(), Some(false));
+        assert_eq!(
+            value["telemetry"]["memory_measurement_kind"].as_str(),
+            Some("not_measured")
+        );
+        let timing_fields = &value["telemetry"]["timing_fields"];
+        assert_eq!(
+            timing_fields["db_write"]["measurement"].as_str(),
+            Some("measured_sql_write_aggregate")
+        );
+        assert!(timing_fields["transaction_commit"]["status"]
+            .as_str()
+            .is_some());
+        assert!(
+            timing_fields["reducer"]["status"].as_str().is_some(),
+            "{timing_fields}"
+        );
+        assert_eq!(
+            timing_fields["candidate_spool_build"]["status"].as_str(),
+            Some("unknown")
+        );
+        assert_eq!(
+            timing_fields["vector_sidecar_build"]["measurement"].as_str(),
+            Some("not_split_yet")
         );
 
         fs::remove_dir_all(repo).expect("cleanup");
@@ -33158,11 +37918,47 @@ mod tests {
             },
         )
         .expect("cold index");
+        let cold_full_json = super::index_summary_json(&cold).expect("full profile json");
+        assert_eq!(
+            cold_full_json["indexing_durability"]["temp_db_never_claimable"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            cold_full_json["indexing_durability"]["publish_status"].as_str(),
+            Some("published")
+        );
+        assert!(
+            cold_full_json["graph_output_budgets"]["worker_dispatch_source_clone_policy"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("without cloning")
+        );
         let cold_profile = cold.profile.expect("cold profile");
         assert_eq!(cold.files_indexed, 1);
-        assert_eq!(cold_profile.semantic_resolver_ms, 0);
+        assert!(cold_profile.semantic_resolver_ms <= cold_profile.total_wall_ms);
+        assert_eq!(cold_profile.memory_measured, false);
+        assert_eq!(cold_profile.memory_status, "unknown");
+        assert_eq!(cold_profile.memory_measurement_kind, "not_measured");
+        assert_eq!(cold_profile.memory_bytes, None);
+        assert_eq!(
+            cold_profile.db_write_measurement,
+            "measured_sql_write_aggregate"
+        );
+        assert_ne!(
+            cold_profile.fts_search_index_measurement,
+            "legacy_db_write_bucket"
+        );
         assert!(cold_profile.worker_count >= 1);
         assert!(cold_profile.files_per_sec >= 0.0);
+        assert_eq!(
+            cold.graph_output_budgets
+                .worker_dispatch_source_clone_policy,
+            "pending source buffers are moved into worker chunks without cloning"
+        );
+        assert_eq!(
+            cold.graph_output_budgets.claimability_label,
+            "full_graph_output_with_no_budget_degradation"
+        );
 
         let warm = index_repo_with_options(
             &repo,
@@ -33175,7 +37971,11 @@ mod tests {
         .expect("warm index");
         let warm_profile = warm.profile.expect("warm profile");
         assert_eq!(warm.files_indexed, 0);
+        assert_eq!(warm.files_read, 0);
+        assert_eq!(warm.files_parsed, 0);
         assert!(warm_profile.skipped_unchanged_files >= 1);
+        assert_eq!(warm_profile.memory_measured, false);
+        assert_eq!(warm_profile.memory_status, "unknown");
 
         fs::remove_dir_all(repo).expect("cleanup");
     }
@@ -33517,6 +38317,11 @@ mod tests {
         assert_eq!(doctor_json["db_problem_kind"].as_str(), Some("db_missing"));
         assert!(doctor_json["db_lifecycle_read"].is_object());
         assert!(doctor_json["sqlite_sidecars"].is_object());
+        assert_eq!(doctor_json["telemetry"]["memory"].as_str(), Some("unknown"));
+        assert_eq!(
+            doctor_json["telemetry"]["memory_measured"].as_bool(),
+            Some(false)
+        );
 
         let metadata = run([BIN_NAME, "config", "release-metadata", "--json"]);
         assert_eq!(metadata.exit_code, 0, "stderr={}", metadata.stderr);
@@ -33558,6 +38363,3616 @@ mod tests {
             .as_str()
             .expect("message")
             .contains("--db is a global flag"));
+    }
+
+    #[test]
+    fn agent_use_profile_resolver_is_collision_safe_and_stable() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let parent = temp_repo();
+        let repo_a = parent.join("left").join("app");
+        let repo_b = parent.join("right").join("app");
+        fs::create_dir_all(&repo_a).expect("create repo a");
+        fs::create_dir_all(&repo_b).expect("create repo b");
+        add_git_remote_for_test(&parent, "https://example.invalid/acme/parent.git");
+
+        let profile_a = super::resolve_agent_use_profile_with_data_root(&repo_a, &data_root)
+            .expect("profile a");
+        let profile_a_again = super::resolve_agent_use_profile_with_data_root(&repo_a, &data_root)
+            .expect("profile a again");
+        let profile_b = super::resolve_agent_use_profile_with_data_root(&repo_b, &data_root)
+            .expect("profile b");
+
+        assert_eq!(
+            profile_a.profile_name,
+            super::PRODUCTION_AGENT_USE_PROFILE_NAME
+        );
+        assert_eq!(profile_a.db_path, profile_a_again.db_path);
+        assert_ne!(profile_a.db_path, profile_b.db_path);
+        assert_ne!(profile_a.repo_identity_hash, profile_b.repo_identity_hash);
+        assert!(profile_a.db_path.starts_with(&data_root));
+        assert!(!profile_a.db_path.starts_with(repo_a.join(".codegraph")));
+        assert_eq!(
+            profile_a
+                .db_path
+                .file_name()
+                .and_then(|value| value.to_str()),
+            Some("production-agent-use.sqlite")
+        );
+        assert_eq!(
+            profile_a.candidate_spool_query_index_path,
+            super::candidate_spool_query_index_path(&profile_a.candidate_spool_path)
+        );
+        assert_eq!(
+            profile_a
+                .delta_state_path
+                .file_name()
+                .and_then(|value| value.to_str()),
+            Some(super::PRODUCTION_AGENT_USE_DELTA_STATE_FILE_NAME)
+        );
+        assert_eq!(
+            profile_a.mcp_args,
+            vec![
+                "--repo".to_string(),
+                path_string(&profile_a.repo_root),
+                "--db".to_string(),
+                path_string(&profile_a.db_path),
+                "serve-mcp".to_string()
+            ]
+        );
+
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+        fs::remove_dir_all(parent).expect("cleanup parent");
+    }
+
+    #[test]
+    fn agent_use_profile_resolver_handles_remote_path_spaces_unicode_and_case() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let (spaces_parent, spaces_repo) = temp_repo_named("repo with spaces");
+        let (unicode_parent, unicode_repo) = temp_repo_named("unicode-repo-é");
+        let (remote_parent, remote_repo) = temp_repo_named("remote-app");
+        add_git_remote_for_test(&remote_repo, "https://example.invalid/acme/remote-app.git");
+
+        let spaces = super::resolve_agent_use_profile_with_data_root(&spaces_repo, &data_root)
+            .expect("spaces profile");
+        let unicode = super::resolve_agent_use_profile_with_data_root(&unicode_repo, &data_root)
+            .expect("unicode profile");
+        let remote = super::resolve_agent_use_profile_with_data_root(&remote_repo, &data_root)
+            .expect("remote profile");
+        let remote_again =
+            super::resolve_agent_use_profile_with_data_root(&remote_repo, &data_root)
+                .expect("remote profile again");
+
+        assert!(spaces.db_path.starts_with(&data_root));
+        assert!(unicode.db_path.starts_with(&data_root));
+        assert!(remote.db_path.starts_with(&data_root));
+        assert_eq!(remote.db_path, remote_again.db_path);
+        assert_ne!(spaces.repo_identity_hash, unicode.repo_identity_hash);
+        assert_ne!(remote.repo_identity_hash, spaces.repo_identity_hash);
+        assert!(
+            !spaces.db_path.to_string_lossy().contains(".codegraph"),
+            "{spaces:?}"
+        );
+        assert!(
+            !unicode.db_path.to_string_lossy().contains(".codegraph"),
+            "{unicode:?}"
+        );
+
+        #[cfg(windows)]
+        {
+            let upper = PathBuf::from(path_string(&spaces_repo).to_ascii_uppercase());
+            if upper.exists() {
+                let upper_profile =
+                    super::resolve_agent_use_profile_with_data_root(&upper, &data_root)
+                        .expect("upper-case profile");
+                assert_eq!(spaces.db_path, upper_profile.db_path);
+            }
+        }
+
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+        fs::remove_dir_all(spaces_parent).expect("cleanup spaces");
+        fs::remove_dir_all(unicode_parent).expect("cleanup unicode");
+        fs::remove_dir_all(remote_parent).expect("cleanup remote");
+    }
+
+    #[test]
+    fn context_pack_status_query_and_doctor_share_explicit_external_db() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let repo = temp_repo();
+        let db_root = temp_repo();
+        let db_path = db_root.join("external").join("production-agent-use.sqlite");
+        write_agent_use_context_fixture(&repo);
+        index_repo_to_db_with_options(&repo, &db_path, IndexOptions::default())
+            .expect("index external DB");
+        assert_no_dot_codegraph_sqlite(&repo);
+        let db_string = path_string(&db_path);
+
+        let status = super::with_repo_db_context(&repo, &db_path, || {
+            run_status_command(&[path_string(&repo)])
+        })
+        .expect("status");
+        let doctor = super::with_repo_db_context(&repo, &db_path, || {
+            run_doctor_command(&[path_string(&repo), "--json".to_string()])
+        })
+        .expect("doctor");
+        let query = super::with_repo_db_context(&repo, &db_path, || {
+            super::run_query_command(&[
+                "symbols".to_string(),
+                "agentUseTarget".to_string(),
+                "--limit".to_string(),
+                "5".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("query");
+        let context = super::with_repo_db_context(&repo, &db_path, || {
+            super::run_context_pack_command(&[
+                "--task".to_string(),
+                "Find agentUseTarget in the fixture repo".to_string(),
+                "--seed".to_string(),
+                "agentUseTarget".to_string(),
+                "--mode".to_string(),
+                "production".to_string(),
+                "--limit-paths".to_string(),
+                "5".to_string(),
+                "--limit-snippets".to_string(),
+                "5".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("context-pack");
+
+        assert_eq!(status["db_path"].as_str(), Some(db_string.as_str()));
+        assert_eq!(
+            status["db_lifecycle_read"]["exact_db_path_checked"].as_str(),
+            Some(db_string.as_str())
+        );
+        assert_eq!(doctor["db_path"].as_str(), Some(db_string.as_str()));
+        assert_eq!(
+            doctor["db_lifecycle_read"]["exact_db_path_checked"].as_str(),
+            Some(db_string.as_str())
+        );
+        assert_eq!(query["db"].as_str(), Some(db_string.as_str()));
+        assert_eq!(query["resolved_db"].as_str(), Some(db_string.as_str()));
+        assert_eq!(context["db"].as_str(), Some(db_string.as_str()));
+        assert_eq!(
+            context["db_lifecycle_read"]["exact_db_path_checked"].as_str(),
+            Some(db_string.as_str())
+        );
+        assert_eq!(
+            context["lifecycle"]["decision"].as_str(),
+            Some("read_reuse")
+        );
+        assert_eq!(context["status"].as_str(), Some("ok"));
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(db_root).expect("cleanup db root");
+    }
+
+    #[test]
+    fn context_pack_missing_external_db_reports_missing_without_dot_codegraph_fallback() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let repo = temp_repo();
+        let db_root = temp_repo();
+        let db_path = db_root.join("missing").join("production-agent-use.sqlite");
+        write_agent_use_context_fixture(&repo);
+
+        let error = super::with_repo_db_context(&repo, &db_path, || {
+            super::run_context_pack_command(&[
+                "--task".to_string(),
+                "Find agentUseTarget in the fixture repo".to_string(),
+                "--seed".to_string(),
+                "agentUseTarget".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect_err("missing external DB should fail");
+
+        assert!(error.contains("db_missing"), "{error}");
+        assert!(error.contains(&path_string(&db_path)), "{error}");
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(db_root).expect("cleanup db root");
+    }
+
+    #[test]
+    fn context_pack_stale_external_db_is_diagnostic_and_nonclaimable() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let repo = temp_repo();
+        let db_root = temp_repo();
+        let db_path = db_root.join("stale").join("production-agent-use.sqlite");
+        write_agent_use_context_fixture(&repo);
+        index_repo_to_db_with_options(&repo, &db_path, IndexOptions::default())
+            .expect("index external DB");
+        {
+            let connection = Connection::open(&db_path).expect("open external DB");
+            connection
+                .execute(
+                    "UPDATE codegraph_db_passport SET last_run_status = 'interrupted' WHERE id = 1",
+                    [],
+                )
+                .expect("mark DB stale");
+        }
+
+        let context = super::with_repo_db_context(&repo, &db_path, || {
+            super::run_context_pack_command(&[
+                "--task".to_string(),
+                "Find agentUseTarget in the fixture repo".to_string(),
+                "--seed".to_string(),
+                "agentUseTarget".to_string(),
+                "--allow-stale-read".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("diagnostic stale context-pack");
+
+        assert_eq!(context["claimable"].as_bool(), Some(false));
+        assert_eq!(context["diagnostic_only"].as_bool(), Some(true));
+        assert_eq!(
+            context["db_lifecycle_read"]["claimable"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            context["db_lifecycle_read"]["artifact_freshness"].as_str(),
+            Some("incomplete:interrupted")
+        );
+        assert_eq!(
+            context["db_lifecycle_read"]["exact_db_path_checked"].as_str(),
+            Some(path_string(&db_path).as_str())
+        );
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(db_root).expect("cleanup db root");
+    }
+
+    #[test]
+    fn agent_use_status_missing_db_is_readonly() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+        write_cli_fixture_file(
+            &repo,
+            "src/service.ts",
+            "export function agentUseTarget() {\n  return \"stale-service-token\";\n}\n",
+        );
+        write_cli_fixture_file(
+            &repo,
+            "src/main.ts",
+            "import { agentUseTarget } from './service';\n\nexport function callAgentUseTarget() {\n  return agentUseTarget();\n}\n",
+        );
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+        assert!(!profile.profile_root.exists());
+
+        let status = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "status".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use status");
+
+        assert_eq!(status["status"].as_str(), Some("not_indexed"));
+        assert_eq!(status["claimable"].as_bool(), Some(false));
+        assert_eq!(status["external_db_used"].as_bool(), Some(true));
+        assert_eq!(
+            status["db_path"].as_str(),
+            Some(path_string(&profile.db_path).as_str())
+        );
+        assert_eq!(status["db_exists"].as_bool(), Some(false));
+        assert_eq!(status["profile_parent_created"].as_bool(), Some(false));
+        assert!(!profile.profile_root.exists());
+        assert!(!profile.db_path.exists());
+        assert_eq!(
+            status["recovery"]["agent_use_mcp_config_available"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            status["recovery"]["agent_use_query_available"].as_bool(),
+            Some(true)
+        );
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_rejects_db_override() {
+        let status_error = super::run_agent_use_command(&[
+            "status".to_string(),
+            "--repo".to_string(),
+            ".".to_string(),
+            "--db".to_string(),
+            "elsewhere.sqlite".to_string(),
+            "--json".to_string(),
+        ])
+        .expect_err("status --db must be rejected");
+        assert!(status_error.contains("--db is not accepted"));
+
+        let index_error = super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            ".".to_string(),
+            "--db".to_string(),
+            "elsewhere.sqlite".to_string(),
+            "--json".to_string(),
+        ])
+        .expect_err("index --db must be rejected");
+        assert!(index_error.contains("--db is not accepted"));
+
+        let watch_error = super::run_agent_use_command(&[
+            "watch".to_string(),
+            "--repo".to_string(),
+            ".".to_string(),
+            "--db".to_string(),
+            "elsewhere.sqlite".to_string(),
+            "--once".to_string(),
+            "--changed".to_string(),
+            "src/service.ts".to_string(),
+            "--json".to_string(),
+        ])
+        .expect_err("watch --db must be rejected");
+        assert!(watch_error.contains("--db is not accepted"));
+    }
+
+    #[test]
+    fn agent_use_index_and_status_use_external_profile_db() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+        write_cli_fixture_file(
+            &repo,
+            "src/service.ts",
+            "export function agentUseTarget() {\n  return \"obsoletezz\";\n}\n",
+        );
+        write_cli_fixture_file(
+            &repo,
+            "src/main.ts",
+            "import { agentUseTarget } from './service';\n\nexport function callAgentUseTarget() {\n  return agentUseTarget();\n}\n",
+        );
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+
+        let cold = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use index");
+        assert_eq!(cold["status"].as_str(), Some("indexed"));
+        assert_eq!(cold["output_mode"].as_str(), Some("concise"));
+        assert_eq!(cold["external_db_used"].as_bool(), Some(true));
+        assert_eq!(
+            cold["db_path"].as_str(),
+            Some(path_string(&profile.db_path).as_str())
+        );
+        assert_eq!(cold["normal_dot_codegraph_mutated"].as_bool(), Some(false));
+        assert_eq!(cold["candidate_spool_requested"].as_bool(), Some(true));
+        assert_eq!(cold["candidate_spool_created"].as_bool(), Some(true));
+        assert_eq!(
+            cold["candidate_spool_query_index_status"].as_str(),
+            Some("ready")
+        );
+        assert_eq!(cold["vector_runtime_requested"].as_bool(), Some(true));
+        assert_eq!(cold["vector_runtime_created"].as_bool(), Some(true));
+        assert_eq!(cold["vector_runtime_status"].as_str(), Some("ready"));
+        assert_eq!(cold["vector_audit_requested"].as_bool(), Some(false));
+        assert_eq!(cold["vector_audit_created"].as_bool(), Some(false));
+        assert_eq!(cold["vector_audit_status"].as_str(), Some("missing"));
+        assert_eq!(
+            cold["indexing_durability"]["temp_db_never_claimable"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            cold["indexing_durability"]["batch_progress_status"].as_str(),
+            Some("processed_not_durably_committed_until_transaction_commit")
+        );
+        assert_eq!(
+            cold["indexing_durability"]["publish_status"].as_str(),
+            Some("published")
+        );
+        assert_eq!(
+            cold["graph_output_budgets"]["worker_dispatch_source_clone_policy"].as_str(),
+            Some("pending source buffers are moved into worker chunks without cloning")
+        );
+        assert_eq!(
+            cold["graph_output_budgets"]["claimability_label"].as_str(),
+            Some("full_graph_output_with_no_budget_degradation")
+        );
+        assert_eq!(
+            cold["scope"]["include_semantics"].as_str(),
+            Some(super::INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES)
+        );
+        assert_eq!(
+            cold["scope"]["include_is_restrictive"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(cold["telemetry"]["memory"].as_str(), Some("unknown"));
+        assert_eq!(cold["telemetry"]["memory_measured"].as_bool(), Some(false));
+        assert!(profile.db_path.exists());
+        assert!(profile.candidate_spool_path.exists());
+        assert!(profile.candidate_spool_query_index_path.exists());
+        assert!(profile.vector_runtime_path.exists());
+        assert!(!profile.vector_audit_path.exists());
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        let wal_before = PathBuf::from(format!("{}-wal", profile.db_path.to_string_lossy()));
+        let shm_before = PathBuf::from(format!("{}-shm", profile.db_path.to_string_lossy()));
+        let wal_existed_before_status = wal_before.exists();
+        let shm_existed_before_status = shm_before.exists();
+        let status = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "status".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use status");
+        assert_eq!(status["status"].as_str(), Some("ok"));
+        assert_eq!(status["claimable"].as_bool(), Some(true));
+        assert_eq!(wal_before.exists(), wal_existed_before_status);
+        assert_eq!(shm_before.exists(), shm_existed_before_status);
+        assert_eq!(
+            status["db_lifecycle_read"]["exact_db_path_checked"].as_str(),
+            Some(path_string(&profile.db_path).as_str())
+        );
+        assert_eq!(status["graph_db_status"].as_str(), Some("ready"));
+        assert_eq!(
+            status["candidate_spool_query_index_status"].as_str(),
+            Some("ready")
+        );
+        assert_eq!(status["vector_runtime_status"].as_str(), Some("ready"));
+        assert_eq!(status["vector_audit_status"].as_str(), Some("missing"));
+        assert_eq!(status["graph_proof_available"].as_bool(), Some(true));
+        assert_eq!(status["candidate_only_available"].as_bool(), Some(true));
+        assert_eq!(
+            status["db_schema_version"].as_u64(),
+            Some(SCHEMA_VERSION as u64)
+        );
+        assert_eq!(
+            status["status_detail_source"].as_str(),
+            Some("db_lifecycle_preflight_and_passport_only")
+        );
+        assert_eq!(
+            status["read_path_metrics"]["full_scan_count"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            status["read_path_metrics"]["source_file_load_count"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            status["read_path_metrics"]["entities_hydrated"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            status["read_path_metrics"]["edges_hydrated"].as_u64(),
+            Some(0)
+        );
+        assert!(status["storage_accounting"].is_null());
+        assert!(status["relation_counts"].is_null());
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        let warm = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("warm agent-use index");
+        assert_eq!(warm["external_db_used"].as_bool(), Some(true));
+        assert_eq!(warm["warm_unchanged_reuse"].as_bool(), Some(true));
+        assert_eq!(warm["candidate_spool_requested"].as_bool(), Some(true));
+        assert_eq!(warm["vector_runtime_requested"].as_bool(), Some(true));
+        assert_eq!(warm["telemetry"]["memory"].as_str(), Some("unknown"));
+        assert_eq!(warm["telemetry"]["memory_measured"].as_bool(), Some(false));
+        assert_eq!(warm["files_read"].as_u64(), Some(0));
+        assert_eq!(warm["files_parsed"].as_u64(), Some(0));
+        assert_eq!(
+            warm["indexing_durability"]["temp_db_never_claimable"].as_bool(),
+            Some(true)
+        );
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_watch_once_updates_external_profile_db_without_dot_codegraph() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+        write_cli_fixture_file(
+            &repo,
+            "src/service.js",
+            "export function oldAgentUseTarget() {\n  return \"agent-use-old-text\";\n}\n\nexport function callOldAgentUseTarget() {\n  return oldAgentUseTarget();\n}\n",
+        );
+        write_cli_fixture_file(
+            &repo,
+            "src/unchanged.js",
+            "export function untouchedAgentUseHelper() {\n  return \"still-here\";\n}\n",
+        );
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use index");
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        let old_before = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "symbols".to_string(),
+                "oldAgentUseTarget".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--limit".to_string(),
+                "5".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("query old symbol before update");
+        assert!(
+            old_before["result_count"].as_u64().unwrap_or_default() > 0,
+            "{old_before:?}"
+        );
+
+        write_cli_fixture_file(
+            &repo,
+            "src/service.js",
+            "export function newAgentUseTarget() {\n  return \"delta-ok\";\n}\n",
+        );
+
+        let watch = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "watch".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--once".to_string(),
+                "--changed".to_string(),
+                "src/service.js".to_string(),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use watch once");
+        assert_eq!(watch["status"].as_str(), Some("updated"));
+        assert_eq!(watch["command_namespace"].as_str(), Some("agent-use"));
+        assert_eq!(watch["agent_use_command"].as_str(), Some("agent-use watch"));
+        assert_eq!(watch["command"].as_str(), Some("watch"));
+        assert_eq!(watch["subcommand"].as_str(), Some("once"));
+        assert_eq!(watch["watch_mode"].as_str(), Some("once_changed"));
+        assert_eq!(
+            watch["delta_sync_phase"].as_str(),
+            Some("real_time_delta_sync")
+        );
+        assert_eq!(watch["delta_sync_state"].as_str(), Some("updated"));
+        assert_eq!(watch["delta_state"].as_str(), Some("updated"));
+        assert_eq!(watch["external_db_used"].as_bool(), Some(true));
+        assert_eq!(watch["auto_index_enabled"].as_bool(), Some(false));
+        assert_eq!(watch["changed_paths"][0].as_str(), Some("src/service.js"));
+        assert_eq!(watch["rejected_paths"].as_array().map(Vec::len), Some(0));
+        assert_eq!(watch["no_op_paths"].as_array().map(Vec::len), Some(0));
+        assert_eq!(watch["files_walked"].as_u64(), Some(1));
+        assert_eq!(watch["files_read"].as_u64(), Some(1));
+        assert_eq!(watch["files_hashed"].as_u64(), Some(1));
+        assert_eq!(watch["files_parsed"].as_u64(), Some(1));
+        assert_eq!(watch["files_indexed"].as_u64(), Some(1));
+        assert_eq!(
+            watch["files_metadata_unchanged"].as_u64(),
+            Some(0),
+            "only the changed file should be considered in this once update"
+        );
+        assert!(
+            watch["facts_deleted"].as_u64().unwrap_or_default() > 0,
+            "{watch:?}"
+        );
+        assert!(
+            watch["facts_inserted"].as_u64().unwrap_or_default() > 0,
+            "{watch:?}"
+        );
+        assert!(
+            watch["entities_added"].as_u64().unwrap_or_default() > 0,
+            "{watch:?}"
+        );
+        assert!(
+            watch["source_spans_added"].as_u64().unwrap_or_default() > 0,
+            "{watch:?}"
+        );
+        assert_eq!(watch["old_graph_valid"].as_bool(), Some(true));
+        assert_eq!(watch["new_graph_valid"].as_bool(), Some(true));
+        assert_eq!(watch["old_db_preserved"].as_bool(), Some(true));
+        assert_eq!(watch["temp_db_claimable"].as_bool(), Some(false));
+        assert_eq!(
+            watch["publish_safety"]["temp_db_claimable"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(watch["claimability"]["claimable"].as_bool(), Some(true));
+        assert_eq!(watch["text_evidence_changed"].as_bool(), Some(true));
+        assert_eq!(
+            watch["routing_handles_invalidated"]["action"].as_str(),
+            Some("dirty_file_cleanup")
+        );
+        assert!(watch["timings"].is_object());
+        assert!(watch["recovery_commands"].is_array());
+        assert_eq!(
+            watch["db_path"].as_str(),
+            Some(path_string(&profile.db_path).as_str())
+        );
+        assert_eq!(
+            watch["watch_db"]["actual_db_path_opened"].as_str(),
+            Some(path_string(&profile.db_path).as_str())
+        );
+        assert_eq!(
+            watch["watch_db"]["lifecycle_status"].as_str(),
+            Some("safe_to_write")
+        );
+        assert_eq!(
+            watch["watch_db"]["operation_kind"].as_str(),
+            Some("write_update")
+        );
+        assert_eq!(
+            watch["watch_db"]["surface_name"].as_str(),
+            Some("agent-use.watch.once")
+        );
+        assert_eq!(
+            watch["publish_safety"]["strategy"].as_str(),
+            Some("sqlite_transaction_delta_update")
+        );
+        assert!(watch["staged_availability"].is_object());
+        assert!(watch["candidate_spool_status"].is_string());
+        assert_eq!(watch["normal_dot_codegraph_mutated"].as_bool(), Some(false));
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        let store = SqliteGraphStore::open_read_only(&profile.db_path).expect("open profile DB");
+        let service_entities = store
+            .list_entities_by_file("src/service.js")
+            .expect("list service entities");
+        assert!(
+            service_entities
+                .iter()
+                .any(|entity| entity.source_span.is_some()),
+            "updated service entities must preserve source spans: {service_entities:?}"
+        );
+        drop(store);
+
+        let query = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "symbols".to_string(),
+                "newAgentUseTarget".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--limit".to_string(),
+                "5".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("query updated symbol");
+        assert_eq!(query["status"].as_str(), Some("ok"));
+        assert!(
+            query["result_count"].as_u64().unwrap_or_default() > 0,
+            "{query:?}"
+        );
+        assert_eq!(
+            query["db"].as_str(),
+            Some(path_string(&profile.db_path).as_str())
+        );
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        let old_after = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "symbols".to_string(),
+                "oldAgentUseTarget".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--limit".to_string(),
+                "5".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("query old symbol after update");
+        assert_eq!(
+            old_after["result_count"].as_u64(),
+            Some(0),
+            "old symbol must be removed after changed-file update: {old_after:?}"
+        );
+
+        let new_text = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "text".to_string(),
+                "newAgentUseTarget".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--limit".to_string(),
+                "5".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("query new text");
+        assert!(
+            new_text["result_count"].as_u64().unwrap_or_default() > 0,
+            "{new_text:?}"
+        );
+        let old_text = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "text".to_string(),
+                "oldAgentUseTarget".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--limit".to_string(),
+                "5".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("query old text");
+        assert_eq!(
+            old_text["result_count"].as_u64(),
+            Some(0),
+            "old text evidence must be removed after update: {old_text:?}"
+        );
+
+        let unchanged = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "symbols".to_string(),
+                "untouchedAgentUseHelper".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--limit".to_string(),
+                "5".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("query unchanged symbol");
+        assert!(
+            unchanged["result_count"].as_u64().unwrap_or_default() > 0,
+            "unchanged file facts should remain available: {unchanged:?}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_persistent_watch_synthetic_events_use_once_delta_contract() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_agent_use_context_fixture(&repo);
+
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use index");
+
+        write_cli_fixture_file(
+            &repo,
+            "src/service.ts",
+            "export function persistentWatchNewSymbol() {\n  return \"persistent-ok\";\n}\n",
+        );
+        let watch = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "watch".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+                "--debounce-ms".to_string(),
+                "0".to_string(),
+                "--max-updates".to_string(),
+                "1".to_string(),
+                "--test-event".to_string(),
+                "src/service.ts".to_string(),
+                "--test-event".to_string(),
+                "src/service.ts".to_string(),
+            ])
+        })
+        .expect("persistent watch synthetic event");
+
+        assert_eq!(watch["status"].as_str(), Some("stopped"));
+        assert_eq!(watch["watch_mode"].as_str(), Some("persistent"));
+        assert_eq!(watch["uses_once_delta_engine"].as_bool(), Some(true));
+        assert_eq!(watch["writer_queue_serialized"].as_bool(), Some(true));
+        assert_eq!(watch["queue_depth"].as_u64(), Some(0));
+        assert_eq!(watch["events_seen"].as_u64(), Some(2));
+        assert_eq!(watch["coalesced_count"].as_u64(), Some(1));
+        assert_eq!(watch["updates_attempted"].as_u64(), Some(1));
+        assert_eq!(watch["updates_succeeded"].as_u64(), Some(1));
+        assert_eq!(watch["last_update_state"].as_str(), Some("updated"));
+        assert_eq!(
+            watch["last_update_summary"]["watch_mode"].as_str(),
+            Some("once_changed")
+        );
+        assert_eq!(watch["last_update_summary"]["files_read"].as_u64(), Some(1));
+        assert_eq!(
+            watch["last_update_summary"]["files_parsed"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            watch["last_update_summary"]["external_db_used"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            watch["last_update_summary"]["temp_db_claimable"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(watch["normal_dot_codegraph_mutated"].as_bool(), Some(false));
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        assert!(
+            agent_use_query_count(&data_root, &repo, "symbols", "persistentWatchNewSymbol") > 0
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_persistent_watch_missing_and_stale_db_do_not_auto_index() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let missing_repo = temp_repo();
+        write_agent_use_context_fixture(&missing_repo);
+        let missing_profile =
+            super::resolve_agent_use_profile_with_data_root(&missing_repo, &data_root)
+                .expect("missing profile");
+
+        let missing = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "watch".to_string(),
+                "--repo".to_string(),
+                path_string(&missing_repo),
+                "--json".to_string(),
+                "--max-updates".to_string(),
+                "1".to_string(),
+            ])
+        })
+        .expect("missing persistent watch");
+        assert_eq!(missing["status"].as_str(), Some("not_indexed"));
+        assert_eq!(missing["auto_index_enabled"].as_bool(), Some(false));
+        assert_eq!(missing["queue_depth"].as_u64(), Some(0));
+        assert_eq!(missing["updates_attempted"].as_u64(), Some(0));
+        assert!(!missing_profile.profile_root.exists());
+        assert_no_dot_codegraph_sqlite(&missing_repo);
+
+        let stale_repo = temp_repo();
+        write_agent_use_context_fixture(&stale_repo);
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&stale_repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("index stale repo");
+        let stale_profile =
+            super::resolve_agent_use_profile_with_data_root(&stale_repo, &data_root)
+                .expect("stale profile");
+        {
+            let connection = Connection::open(&stale_profile.db_path).expect("open stale DB");
+            connection
+                .execute(
+                    "UPDATE codegraph_db_passport SET last_run_status = 'interrupted' WHERE id = 1",
+                    [],
+                )
+                .expect("mark stale");
+        }
+        let stale = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "watch".to_string(),
+                "--repo".to_string(),
+                path_string(&stale_repo),
+                "--json".to_string(),
+                "--max-updates".to_string(),
+                "1".to_string(),
+            ])
+        })
+        .expect("stale persistent watch");
+        assert_eq!(stale["auto_index_enabled"].as_bool(), Some(false));
+        assert_eq!(stale["queue_depth"].as_u64(), Some(0));
+        assert_eq!(stale["updates_attempted"].as_u64(), Some(0));
+        assert_eq!(stale["last_update_state"].as_str(), Some("blocked"));
+        assert_ne!(stale["status"].as_str(), Some("stopped"));
+        assert_no_dot_codegraph_sqlite(&stale_repo);
+
+        fs::remove_dir_all(missing_repo).expect("cleanup missing repo");
+        fs::remove_dir_all(stale_repo).expect("cleanup stale repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_persistent_watch_ignored_and_many_change_events_are_safe() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_cli_fixture_file(&repo, ".gitignore", "generated/\n");
+        write_agent_use_context_fixture(&repo);
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use index");
+
+        write_cli_fixture_file(
+            &repo,
+            "generated/ignored.ts",
+            "export function ignoredPersistentWatchSymbol() { return 'ignored'; }\n",
+        );
+        let ignored = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "watch".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+                "--debounce-ms".to_string(),
+                "0".to_string(),
+                "--max-updates".to_string(),
+                "1".to_string(),
+                "--test-event".to_string(),
+                "generated/ignored.ts".to_string(),
+            ])
+        })
+        .expect("ignored persistent event");
+        assert_eq!(ignored["status"].as_str(), Some("stopped"));
+        assert_eq!(ignored["last_update_state"].as_str(), Some("ready"));
+        assert_eq!(
+            ignored["last_update_summary"]["status"].as_str(),
+            Some("no_op")
+        );
+        assert_eq!(
+            ignored["last_update_summary"]["reason"].as_str(),
+            Some("ignored_path_no_graph_changes")
+        );
+        assert_eq!(
+            agent_use_query_count(&data_root, &repo, "symbols", "ignoredPersistentWatchSymbol"),
+            0
+        );
+
+        write_cli_fixture_file(
+            &repo,
+            "src/service.ts",
+            "export function branchSwitchA() { return 'a'; }\n",
+        );
+        write_cli_fixture_file(
+            &repo,
+            "src/main.ts",
+            "export function branchSwitchB() { return 'b'; }\n",
+        );
+        let many = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "watch".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+                "--debounce-ms".to_string(),
+                "0".to_string(),
+                "--max-updates".to_string(),
+                "1".to_string(),
+                "--max-batch-paths".to_string(),
+                "1".to_string(),
+                "--test-event".to_string(),
+                "src/service.ts".to_string(),
+                "--test-event".to_string(),
+                "src/main.ts".to_string(),
+            ])
+        })
+        .expect("many-change persistent event");
+        assert_eq!(many["status"].as_str(), Some("degraded"));
+        assert_eq!(many["last_update_state"].as_str(), Some("degraded"));
+        assert_eq!(
+            many["last_update_summary"]["reason"].as_str(),
+            Some("too_many_changes_branch_switch_suspected")
+        );
+        assert_eq!(
+            many["last_update_summary"]["no_full_repo_fallback"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(many["updates_succeeded"].as_u64(), Some(0));
+        assert_eq!(many["normal_dot_codegraph_mutated"].as_bool(), Some(false));
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_watch_once_over_budget_dependency_closure_reports_degraded() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_cli_fixture_file(
+            &repo,
+            "src/service.js",
+            "export function targetForBudget() {\n  return \"old\";\n}\n",
+        );
+        for index in 0..3 {
+            write_cli_fixture_file(
+                &repo,
+                &format!("src/consumer{index}.js"),
+                "import { targetForBudget } from './service';\n\
+                 export function run() {\n  return targetForBudget();\n}\n",
+            );
+        }
+
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use index");
+
+        write_cli_fixture_file(
+            &repo,
+            "src/service.js",
+            "export function targetForBudget() {\n  return \"new\";\n}\n",
+        );
+        let watch = with_process_env_var("CODEGRAPH_RTDS_CLOSURE_MAX_DIRTY_FILES", "1", || {
+            with_agent_use_data_root(&data_root, || {
+                super::run_agent_use_command(&[
+                    "watch".to_string(),
+                    "--repo".to_string(),
+                    path_string(&repo),
+                    "--once".to_string(),
+                    "--changed".to_string(),
+                    "src/service.js".to_string(),
+                    "--json".to_string(),
+                ])
+            })
+        })
+        .expect("agent-use over-budget watch");
+
+        assert_eq!(watch["status"].as_str(), Some("degraded"));
+        assert_eq!(watch["delta_state"].as_str(), Some("degraded"));
+        assert_eq!(watch["closure_budget_hit"].as_bool(), Some(true));
+        assert_eq!(watch["no_full_repo_fallback"].as_bool(), Some(true));
+        assert_eq!(watch["files_walked"].as_u64(), Some(1));
+        assert!(watch["degraded_relation_classes"]
+            .as_array()
+            .is_some_and(|classes| !classes.is_empty()));
+        assert!(watch["manual_full_index_recommendation"]
+            .as_str()
+            .is_some_and(|recommendation| recommendation.contains("agent-use index --fresh")));
+        assert_eq!(watch["normal_dot_codegraph_mutated"].as_bool(), Some(false));
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_watch_once_missing_db_reports_unavailable_without_fallback() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_agent_use_context_fixture(&repo);
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+
+        let watch = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "watch".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--once".to_string(),
+                "--changed".to_string(),
+                "src/service.ts".to_string(),
+                "--json".to_string(),
+            ])
+        })
+        .expect("missing DB watch once");
+        assert_eq!(watch["status"].as_str(), Some("not_indexed"));
+        assert_eq!(watch["claimable"].as_bool(), Some(false));
+        assert_eq!(watch["diagnostic_only"].as_bool(), Some(true));
+        assert_eq!(watch["delta_sync_state"].as_str(), Some("blocked"));
+        assert_eq!(watch["delta_state"].as_str(), Some("blocked"));
+        assert_eq!(watch["external_db_used"].as_bool(), Some(true));
+        assert_eq!(watch["auto_index_enabled"].as_bool(), Some(false));
+        assert_eq!(watch["changed_paths"][0].as_str(), Some("src/service.ts"));
+        assert_eq!(watch["old_graph_valid"].as_bool(), Some(false));
+        assert_eq!(watch["new_graph_valid"].as_bool(), Some(false));
+        assert_eq!(watch["old_db_preserved"].as_bool(), Some(true));
+        assert_eq!(watch["temp_db_claimable"].as_bool(), Some(false));
+        assert_eq!(watch["claimability"]["claimable"].as_bool(), Some(false));
+        assert_eq!(watch["files_read"].as_u64(), Some(0));
+        assert_eq!(watch["facts_inserted"].as_u64(), Some(0));
+        assert!(watch["recovery_commands"].is_array());
+        assert_eq!(
+            watch["watch_db"]["requested_db_path"].as_str(),
+            Some(path_string(&profile.db_path).as_str())
+        );
+        assert_eq!(watch["watch_db"]["safe_to_write"].as_bool(), Some(false));
+        assert_eq!(
+            watch["watch_db"]["surface_name"].as_str(),
+            Some("agent-use.watch.once")
+        );
+        assert!(
+            !profile.profile_root.exists(),
+            "missing watch preflight must not create the production profile parent"
+        );
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_watch_once_rejects_stale_and_foreign_profile_dbs() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let stale_repo = temp_repo();
+        write_agent_use_context_fixture(&stale_repo);
+        let stale_profile =
+            super::resolve_agent_use_profile_with_data_root(&stale_repo, &data_root)
+                .expect("stale profile");
+
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&stale_repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use index stale repo");
+        let valid_foreign_source_db = data_root.join("valid-foreign-source.sqlite");
+        fs::copy(&stale_profile.db_path, &valid_foreign_source_db)
+            .expect("copy valid foreign source DB");
+        {
+            let connection = Connection::open(&stale_profile.db_path).expect("open stale DB");
+            connection
+                .execute(
+                    "UPDATE codegraph_db_passport SET last_run_status = 'interrupted' WHERE id = 1",
+                    [],
+                )
+                .expect("mark stale");
+        }
+        write_cli_fixture_file(
+            &stale_repo,
+            "src/service.ts",
+            "export function staleWatchChange() { return 'blocked'; }\n",
+        );
+        let stale_watch = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "watch".to_string(),
+                "--repo".to_string(),
+                path_string(&stale_repo),
+                "--once".to_string(),
+                "--changed".to_string(),
+                "src/service.ts".to_string(),
+                "--json".to_string(),
+            ])
+        })
+        .expect("stale watch");
+        assert_eq!(stale_watch["claimable"].as_bool(), Some(false));
+        assert_eq!(stale_watch["diagnostic_only"].as_bool(), Some(true));
+        assert_eq!(stale_watch["delta_state"].as_str(), Some("blocked"));
+        assert_eq!(stale_watch["auto_index_enabled"].as_bool(), Some(false));
+        assert_eq!(stale_watch["temp_db_claimable"].as_bool(), Some(false));
+        assert_no_dot_codegraph_sqlite(&stale_repo);
+
+        let foreign_repo = temp_repo();
+        write_agent_use_context_fixture(&foreign_repo);
+        let foreign_profile =
+            super::resolve_agent_use_profile_with_data_root(&foreign_repo, &data_root)
+                .expect("foreign profile");
+        fs::create_dir_all(&foreign_profile.profile_root).expect("create foreign profile parent");
+        fs::copy(&valid_foreign_source_db, &foreign_profile.db_path).expect("copy foreign DB");
+        let foreign_watch = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "watch".to_string(),
+                "--repo".to_string(),
+                path_string(&foreign_repo),
+                "--once".to_string(),
+                "--changed".to_string(),
+                "src/service.ts".to_string(),
+                "--json".to_string(),
+            ])
+        })
+        .expect("foreign watch");
+        assert_eq!(foreign_watch["claimable"].as_bool(), Some(false));
+        assert_eq!(foreign_watch["diagnostic_only"].as_bool(), Some(true));
+        assert_eq!(foreign_watch["delta_state"].as_str(), Some("blocked"));
+        assert_eq!(foreign_watch["auto_index_enabled"].as_bool(), Some(false));
+        assert_eq!(foreign_watch["temp_db_claimable"].as_bool(), Some(false));
+        assert_eq!(
+            foreign_watch["db_problem_kind"].as_str(),
+            Some("repo_root_mismatch")
+        );
+        assert_no_dot_codegraph_sqlite(&foreign_repo);
+
+        fs::remove_dir_all(stale_repo).expect("cleanup stale repo");
+        fs::remove_dir_all(foreign_repo).expect("cleanup foreign repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_watch_once_failpoint_preserves_old_good_db_and_recovery_state() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+        write_cli_fixture_file(
+            &repo,
+            "src/service.js",
+            "export function oldFailpointSymbol() {\n  return \"old\";\n}\n",
+        );
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use index");
+        assert!(db_has_symbol(&profile.db_path, "oldFailpointSymbol"));
+
+        write_cli_fixture_file(
+            &repo,
+            "src/service.js",
+            "export function newFailpointSymbol() {\n  return \"new\";\n}\n",
+        );
+        let failpoint = BundleFailpointEnvGuard::set("incremental_during_entity_insert");
+        let error = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "watch".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--once".to_string(),
+                "--changed".to_string(),
+                "src/service.js".to_string(),
+                "--json".to_string(),
+            ])
+        })
+        .expect_err("failpoint should abort once update");
+        drop(failpoint);
+        assert!(
+            error.contains("incremental_during_entity_insert"),
+            "{error}"
+        );
+
+        let store = SqliteGraphStore::open_read_only(&profile.db_path).expect("open old DB");
+        store
+            .full_integrity_gate()
+            .expect("old DB remains valid after failed watch");
+        drop(store);
+        assert!(db_has_symbol(&profile.db_path, "oldFailpointSymbol"));
+        assert!(!db_has_symbol(&profile.db_path, "newFailpointSymbol"));
+        let publish_state = super::agent_use_publish_state_json(&profile);
+        assert_eq!(publish_state["status"].as_str(), Some("interrupted"));
+        assert_eq!(
+            publish_state["temp_db_claimability"].as_str(),
+            Some("never_claimable")
+        );
+        assert_eq!(
+            publish_state["state"]["temp_db_claimability"].as_str(),
+            Some("never_claimable")
+        );
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_watch_once_post_commit_interrupt_reports_recovered_complete_db() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+        write_cli_fixture_file(
+            &repo,
+            "src/service.js",
+            "export function oldPostCommitSymbol() {\n  return \"old\";\n}\n",
+        );
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use index");
+
+        write_cli_fixture_file(
+            &repo,
+            "src/service.js",
+            "export function newPostCommitSymbol() {\n  return \"new\";\n}\n",
+        );
+        let failpoint = BundleFailpointEnvGuard::set(
+            super::AGENT_USE_WATCH_AFTER_DELTA_COMMIT_BEFORE_STATE_CLEAR_FAILPOINT,
+        );
+        let error = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "watch".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--once".to_string(),
+                "--changed".to_string(),
+                "src/service.js".to_string(),
+                "--json".to_string(),
+            ])
+        })
+        .expect_err("post-commit failpoint should leave inspectable interrupted state");
+        drop(failpoint);
+        assert!(
+            error.contains(super::AGENT_USE_WATCH_AFTER_DELTA_COMMIT_BEFORE_STATE_CLEAR_FAILPOINT),
+            "{error}"
+        );
+
+        let store = SqliteGraphStore::open_read_only(&profile.db_path).expect("open DB");
+        store
+            .full_integrity_gate()
+            .expect("post-commit DB remains valid");
+        drop(store);
+        assert!(!db_has_symbol(&profile.db_path, "oldPostCommitSymbol"));
+        assert!(db_has_symbol(&profile.db_path, "newPostCommitSymbol"));
+
+        let status = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "status".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("status after post-commit interrupt");
+        assert_eq!(status["claimable"].as_bool(), Some(true));
+        assert_eq!(
+            status["publish_state"]["status"].as_str(),
+            Some("interrupted")
+        );
+        assert_json_array_contains(&status, "safety_labels", "interrupted");
+        assert_json_array_contains(&status, "safety_labels", "recovered");
+        assert_json_array_contains(&status, "safety_labels", "publishing");
+        assert_eq!(
+            status["normal_dot_codegraph_mutated"].as_bool(),
+            Some(false)
+        );
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_watch_once_file_lifecycle_cases_use_external_profile_db() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+        write_cli_fixture_file(&repo, ".gitignore", "generated/\n");
+        write_cli_fixture_file(
+            &repo,
+            "src/delete_me.js",
+            "export function deletedLifecycleSymbol() {\n  return \"delete\";\n}\n",
+        );
+        write_cli_fixture_file(
+            &repo,
+            "src/rename_old.js",
+            "export function renamedLifecycleSymbol() {\n  return \"rename\";\n}\n",
+        );
+        write_cli_fixture_file(
+            &repo,
+            "src/rename_edit_old.js",
+            "export function renameEditOldLifecycleSymbol() {\n  return \"rename-edit-old\";\n}\n",
+        );
+        write_cli_fixture_file(
+            &repo,
+            "src/duplicate_a.js",
+            "export function duplicateLifecycleSymbol() {\n  return \"same\";\n}\n",
+        );
+        write_cli_fixture_file(
+            &repo,
+            "src/casefile.js",
+            "export function oldCaseLifecycleSymbol() {\n  return \"old-case\";\n}\n",
+        );
+        write_cli_fixture_file(
+            &repo,
+            "src/atomic.js",
+            "export function oldAtomicLifecycleSymbol() {\n  return \"old-atomic\";\n}\n",
+        );
+        write_cli_fixture_file(
+            &repo,
+            "docs/delete_me.md",
+            "deletedMarkdownLifecycleUniqueToken\n",
+        );
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+        run_agent_use_test_command(
+            &data_root,
+            &["index", "--repo", path_string(&repo).as_str(), "--json"],
+        )
+        .expect("agent-use index");
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        write_cli_fixture_file(
+            &repo,
+            "src/added.js",
+            "export function addedLifecycleSymbol() {\n  return \"added\";\n}\n",
+        );
+        let added = run_agent_use_test_command(
+            &data_root,
+            &[
+                "watch",
+                "--repo",
+                path_string(&repo).as_str(),
+                "--once",
+                "--changed",
+                "src/added.js",
+                "--json",
+            ],
+        )
+        .expect("watch added source");
+        assert_eq!(added["status"].as_str(), Some("updated"));
+        assert_eq!(added["files_parsed"].as_u64(), Some(1));
+        assert_eq!(added["files_read"].as_u64(), Some(1));
+        assert_eq!(added["changed_paths"][0].as_str(), Some("src/added.js"));
+        assert_eq!(added["normal_dot_codegraph_mutated"].as_bool(), Some(false));
+        assert!(agent_use_query_count(&data_root, &repo, "symbols", "addedLifecycleSymbol") > 0);
+        {
+            let store = SqliteGraphStore::open_read_only(&profile.db_path).expect("open DB");
+            let added_entities = store
+                .list_entities_by_file("src/added.js")
+                .expect("added entities");
+            assert!(!added_entities.is_empty());
+            assert!(added_entities.iter().any(|entity| {
+                let role = super::classify_entity_source_role(entity);
+                !role.role.as_str().is_empty()
+                    && !role.reason.is_empty()
+                    && !role.classification_source.is_empty()
+            }));
+        }
+
+        write_cli_fixture_file(
+            &repo,
+            "docs/lifecycle.md",
+            "added markdown lifecycle evidence token\n",
+        );
+        let added_text = run_agent_use_test_command(
+            &data_root,
+            &[
+                "watch",
+                "--repo",
+                path_string(&repo).as_str(),
+                "--once",
+                "--changed",
+                "docs/lifecycle.md",
+                "--json",
+            ],
+        )
+        .expect("watch added text evidence");
+        assert_eq!(added_text["status"].as_str(), Some("updated"));
+        assert_eq!(added_text["files_parsed"].as_u64(), Some(0));
+        assert_eq!(added_text["files_read"].as_u64(), Some(1));
+        assert!(
+            agent_use_query_count(&data_root, &repo, "text", "markdown lifecycle evidence") > 0
+        );
+
+        fs::remove_file(repo.join("src").join("delete_me.js")).expect("delete source");
+        let deleted = run_agent_use_test_command(
+            &data_root,
+            &[
+                "watch",
+                "--repo",
+                path_string(&repo).as_str(),
+                "--once",
+                "--changed",
+                "src/delete_me.js",
+                "--json",
+            ],
+        )
+        .expect("watch deleted source");
+        assert_eq!(deleted["status"].as_str(), Some("updated"));
+        assert!(deleted["files_deleted"].as_u64().unwrap_or_default() > 0);
+        assert_eq!(
+            agent_use_query_count(&data_root, &repo, "symbols", "deletedLifecycleSymbol"),
+            0
+        );
+        assert!(
+            !agent_use_query_result_paths(&data_root, &repo, "files", "src/delete_me.js")
+                .contains("src/delete_me.js")
+        );
+        {
+            let store = SqliteGraphStore::open_read_only(&profile.db_path).expect("open DB");
+            assert!(store
+                .get_file("src/delete_me.js")
+                .expect("deleted file lookup")
+                .is_none());
+            assert!(store
+                .list_entities_by_file("src/delete_me.js")
+                .expect("deleted entities")
+                .is_empty());
+        }
+        let deleted_context = run_agent_use_test_command(
+            &data_root,
+            &[
+                "context-pack",
+                "--repo",
+                path_string(&repo).as_str(),
+                "--task",
+                "Find deletedLifecycleSymbol",
+                "--agent-json",
+            ],
+        )
+        .expect("context deleted source");
+        assert_eq!(deleted_context["status"].as_str(), Some("ok"));
+        assert_eq!(
+            deleted_context["fallback_evidence_count"].as_u64(),
+            Some(0),
+            "deleted file must not be returned as fresh fallback evidence: {deleted_context:?}"
+        );
+        assert_eq!(
+            deleted_context["proof_path_count"].as_u64(),
+            Some(0),
+            "deleted file must not be returned through graph proof paths: {deleted_context:?}"
+        );
+
+        fs::remove_file(repo.join("docs").join("delete_me.md")).expect("delete markdown");
+        let deleted_text = run_agent_use_test_command(
+            &data_root,
+            &[
+                "watch",
+                "--repo",
+                path_string(&repo).as_str(),
+                "--once",
+                "--changed",
+                "docs/delete_me.md",
+                "--json",
+            ],
+        )
+        .expect("watch deleted text evidence");
+        assert_eq!(deleted_text["status"].as_str(), Some("updated"));
+        assert!(deleted_text["files_deleted"].as_u64().unwrap_or_default() > 0);
+        assert_eq!(
+            agent_use_query_count(
+                &data_root,
+                &repo,
+                "text",
+                "deletedMarkdownLifecycleUniqueToken"
+            ),
+            0
+        );
+
+        fs::rename(
+            repo.join("src").join("rename_old.js"),
+            repo.join("src").join("rename_new.js"),
+        )
+        .expect("rename source");
+        let renamed = run_agent_use_test_command(
+            &data_root,
+            &[
+                "watch",
+                "--repo",
+                path_string(&repo).as_str(),
+                "--once",
+                "--changed",
+                "src/rename_new.js",
+                "--json",
+            ],
+        )
+        .expect("watch renamed source");
+        assert_eq!(renamed["status"].as_str(), Some("updated"));
+        assert!(renamed["files_renamed"].as_u64().unwrap_or_default() > 0);
+        assert!(
+            !agent_use_query_result_paths(&data_root, &repo, "files", "rename_old")
+                .contains("src/rename_old.js")
+        );
+        assert!(agent_use_query_count(&data_root, &repo, "files", "rename_new") > 0);
+        assert!(agent_use_query_count(&data_root, &repo, "symbols", "renamedLifecycleSymbol") > 0);
+
+        fs::rename(
+            repo.join("src").join("rename_edit_old.js"),
+            repo.join("src").join("rename_edit_new.js"),
+        )
+        .expect("rename edited source");
+        write_cli_fixture_file(
+            &repo,
+            "src/rename_edit_new.js",
+            "export function renameEditNewLifecycleSymbol() {\n  return \"rename-edit-new\";\n}\n",
+        );
+        let renamed_edit = run_agent_use_test_command(
+            &data_root,
+            &[
+                "watch",
+                "--repo",
+                path_string(&repo).as_str(),
+                "--once",
+                "--changed",
+                "src/rename_edit_new.js",
+                "--json",
+            ],
+        )
+        .expect("watch edited rename source");
+        assert_eq!(renamed_edit["status"].as_str(), Some("updated"));
+        assert!(
+            renamed_edit["files_deleted"].as_u64().unwrap_or_default() > 0,
+            "rename plus edit should prune the missing old path: {renamed_edit:?}"
+        );
+        assert_eq!(
+            agent_use_query_count(&data_root, &repo, "symbols", "renameEditOldLifecycleSymbol"),
+            0
+        );
+        assert!(
+            agent_use_query_count(&data_root, &repo, "symbols", "renameEditNewLifecycleSymbol") > 0
+        );
+        assert!(
+            !agent_use_query_result_paths(&data_root, &repo, "files", "rename_edit_old")
+                .contains("src/rename_edit_old.js")
+        );
+
+        write_cli_fixture_file(
+            &repo,
+            "src/duplicate_b.js",
+            "export function duplicateLifecycleSymbol() {\n  return \"same\";\n}\n",
+        );
+        let duplicate = run_agent_use_test_command(
+            &data_root,
+            &[
+                "watch",
+                "--repo",
+                path_string(&repo).as_str(),
+                "--once",
+                "--changed",
+                "src/duplicate_b.js",
+                "--json",
+            ],
+        )
+        .expect("watch duplicate content");
+        assert_eq!(duplicate["status"].as_str(), Some("updated"));
+        {
+            let store = SqliteGraphStore::open_read_only(&profile.db_path).expect("open DB");
+            assert!(store
+                .get_file("src/duplicate_a.js")
+                .expect("duplicate A")
+                .is_some());
+            assert!(store
+                .get_file("src/duplicate_b.js")
+                .expect("duplicate B")
+                .is_some());
+            assert!(!store
+                .list_entities_by_file("src/duplicate_a.js")
+                .expect("duplicate A entities")
+                .is_empty());
+            assert!(!store
+                .list_entities_by_file("src/duplicate_b.js")
+                .expect("duplicate B entities")
+                .is_empty());
+        }
+
+        write_cli_fixture_file(
+            &repo,
+            "generated/ignored.js",
+            "export function ignoredGeneratedLifecycleSymbol() {\n  return \"ignored\";\n}\n",
+        );
+        let ignored = run_agent_use_test_command(
+            &data_root,
+            &[
+                "watch",
+                "--repo",
+                path_string(&repo).as_str(),
+                "--once",
+                "--changed",
+                "generated/ignored.js",
+                "--json",
+            ],
+        )
+        .expect("watch ignored generated file");
+        assert_eq!(ignored["status"].as_str(), Some("no_op"));
+        assert_eq!(ignored["delta_state"].as_str(), Some("ready"));
+        assert_eq!(
+            ignored["reason"].as_str(),
+            Some("ignored_path_no_graph_changes")
+        );
+        assert_eq!(
+            ignored["no_op_paths"][0].as_str(),
+            Some("generated/ignored.js")
+        );
+        assert_eq!(
+            agent_use_query_count(
+                &data_root,
+                &repo,
+                "symbols",
+                "ignoredGeneratedLifecycleSymbol"
+            ),
+            0
+        );
+
+        write_cli_fixture_file(
+            &repo,
+            "src/casefile.js",
+            "export function newCaseLifecycleSymbol() {\n  return \"new-case\";\n}\n",
+        );
+        let case_changed_arg = if cfg!(windows) {
+            "SRC/CASEFILE.JS"
+        } else {
+            "src/casefile.js"
+        };
+        let case_update = run_agent_use_test_command(
+            &data_root,
+            &[
+                "watch",
+                "--repo",
+                path_string(&repo).as_str(),
+                "--once",
+                "--changed",
+                case_changed_arg,
+                "--json",
+            ],
+        )
+        .expect("watch case-normalized source");
+        assert_eq!(case_update["status"].as_str(), Some("updated"));
+        assert_eq!(
+            case_update["changed_paths"][0].as_str(),
+            Some("src/casefile.js")
+        );
+        assert_eq!(
+            agent_use_query_count(&data_root, &repo, "symbols", "oldCaseLifecycleSymbol"),
+            0
+        );
+        assert!(agent_use_query_count(&data_root, &repo, "symbols", "newCaseLifecycleSymbol") > 0);
+        {
+            let store = SqliteGraphStore::open_read_only(&profile.db_path).expect("open DB");
+            let matching_files = store
+                .list_files(super::UNBOUNDED_STORE_READ_LIMIT)
+                .expect("list files")
+                .into_iter()
+                .filter(|file| {
+                    file.repo_relative_path
+                        .eq_ignore_ascii_case("src/casefile.js")
+                })
+                .count();
+            assert_eq!(
+                matching_files, 1,
+                "case-equivalent paths must not duplicate"
+            );
+        }
+
+        write_cli_fixture_file(
+            &repo,
+            "src/.atomic.js.tmp",
+            "export function tempAtomicLifecycleSymbol() {\n  return \"temp\";\n}\n",
+        );
+        let temp = run_agent_use_test_command(
+            &data_root,
+            &[
+                "watch",
+                "--repo",
+                path_string(&repo).as_str(),
+                "--once",
+                "--changed",
+                "src/.atomic.js.tmp",
+                "--json",
+            ],
+        )
+        .expect("watch atomic temp");
+        assert_eq!(temp["status"].as_str(), Some("no_op"));
+        assert_eq!(
+            agent_use_query_count(&data_root, &repo, "symbols", "tempAtomicLifecycleSymbol"),
+            0
+        );
+        fs::remove_file(repo.join("src").join("atomic.js")).expect("remove old atomic");
+        fs::rename(
+            repo.join("src").join(".atomic.js.tmp"),
+            repo.join("src").join("atomic.js"),
+        )
+        .expect("atomic rename into place");
+        write_cli_fixture_file(
+            &repo,
+            "src/atomic.js",
+            "export function newAtomicLifecycleSymbol() {\n  return \"new-atomic\";\n}\n",
+        );
+        let atomic = run_agent_use_test_command(
+            &data_root,
+            &[
+                "watch",
+                "--repo",
+                path_string(&repo).as_str(),
+                "--once",
+                "--changed",
+                "src/atomic.js",
+                "--json",
+            ],
+        )
+        .expect("watch atomic final");
+        assert_eq!(atomic["status"].as_str(), Some("updated"));
+        assert_eq!(
+            agent_use_query_count(&data_root, &repo, "symbols", "oldAtomicLifecycleSymbol"),
+            0
+        );
+        assert!(
+            agent_use_query_count(&data_root, &repo, "symbols", "newAtomicLifecycleSymbol") > 0
+        );
+        assert_eq!(
+            agent_use_query_count(&data_root, &repo, "files", ".atomic.js.tmp"),
+            0
+        );
+
+        let outside = data_root.join("outside.js");
+        fs::write(
+            &outside,
+            "export function outsideRepoLifecycleSymbol() { return 1; }\n",
+        )
+        .expect("write outside");
+        let before_db = fs::read(&profile.db_path).expect("read DB before outside reject");
+        let outside_reject = run_agent_use_test_command(
+            &data_root,
+            &[
+                "watch",
+                "--repo",
+                path_string(&repo).as_str(),
+                "--once",
+                "--changed",
+                path_string(&outside).as_str(),
+                "--json",
+            ],
+        )
+        .expect("watch outside path");
+        let after_db = fs::read(&profile.db_path).expect("read DB after outside reject");
+        assert_eq!(outside_reject["status"].as_str(), Some("rejected"));
+        assert_eq!(outside_reject["delta_state"].as_str(), Some("blocked"));
+        assert_eq!(
+            outside_reject["rejected_paths"][0]["reason"].as_str(),
+            Some("path_outside_repo")
+        );
+        assert_eq!(outside_reject["files_read"].as_u64(), Some(0));
+        assert_eq!(
+            before_db, after_db,
+            "outside path rejection must not mutate DB bytes"
+        );
+        assert_eq!(
+            agent_use_query_count(&data_root, &repo, "symbols", "outsideRepoLifecycleSymbol"),
+            0
+        );
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_query_uses_external_profile_db() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_agent_use_context_fixture(&repo);
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use index");
+
+        let symbols = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "symbols".to_string(),
+                "agentUseTarget".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--limit".to_string(),
+                "1".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("agent-use query symbols");
+        assert_eq!(symbols["status"].as_str(), Some("ok"));
+        assert_eq!(
+            symbols["profile_name"].as_str(),
+            Some(super::PRODUCTION_AGENT_USE_PROFILE_NAME)
+        );
+        assert_eq!(symbols["db_source"].as_str(), Some("agent-use profile"));
+        assert_eq!(
+            symbols["db_lifecycle_read"]["exact_db_path_checked"].as_str(),
+            Some(path_string(&profile.db_path).as_str())
+        );
+        assert_eq!(symbols["limit"].as_u64(), Some(1));
+        assert!(
+            symbols["result_count"].as_u64().unwrap_or(0) <= 1,
+            "{symbols:?}"
+        );
+        assert_eq!(
+            symbols["read_path_metrics"]["lookup_strategy"].as_str(),
+            Some("symbol_dict_exact_lookup_plus_bounded_stage0_fts")
+        );
+        assert_eq!(
+            symbols["read_path_metrics"]["full_scan_count"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            symbols["read_path_metrics"]["disk_fallback_used"].as_bool(),
+            Some(false)
+        );
+
+        let text = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "text".to_string(),
+                "agent-use-ok".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--limit".to_string(),
+                "5".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("agent-use query text");
+        assert_eq!(text["status"].as_str(), Some("ok"));
+        assert_eq!(
+            text["db"].as_str(),
+            Some(path_string(&profile.db_path).as_str())
+        );
+        assert_eq!(text["external_db_used"].as_bool(), Some(true));
+        assert_eq!(
+            text["read_path_metrics"]["lookup_strategy"].as_str(),
+            Some("stage0_fts_bounded_lookup")
+        );
+        assert_eq!(
+            text["read_path_metrics"]["full_scan_count"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            text["read_path_metrics"]["source_file_load_count"].as_u64(),
+            Some(0)
+        );
+
+        let files = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "files".to_string(),
+                "service".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--limit".to_string(),
+                "5".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("agent-use query files");
+        assert_eq!(files["status"].as_str(), Some("ok"));
+        assert_eq!(
+            files["db"].as_str(),
+            Some(path_string(&profile.db_path).as_str())
+        );
+        assert_eq!(
+            files["read_path_metrics"]["lookup_strategy"].as_str(),
+            Some("stage0_fts_file_path_title_lookup")
+        );
+        assert_eq!(
+            files["read_path_metrics"]["full_scan_count"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            files["read_path_metrics"]["disk_fallback_used"].as_bool(),
+            Some(false)
+        );
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_query_reports_unsafe_profile_db_without_fallback() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_agent_use_context_fixture(&repo);
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+
+        let missing = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "symbols".to_string(),
+                "agentUseTarget".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("missing query");
+        assert_eq!(missing["status"].as_str(), Some("not_indexed"));
+        assert_eq!(missing["claimable"].as_bool(), Some(false));
+        assert!(missing["recovery"]["agent_use_index_command"].is_string());
+        assert!(!profile.profile_root.exists());
+
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use index");
+        {
+            let connection = Connection::open(&profile.db_path).expect("open profile DB");
+            connection
+                .execute(
+                    "UPDATE codegraph_db_passport SET last_run_status = 'interrupted' WHERE id = 1",
+                    [],
+                )
+                .expect("mark stale");
+        }
+        let stale = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "symbols".to_string(),
+                "agentUseTarget".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("stale query");
+        assert_eq!(stale["claimable"].as_bool(), Some(false));
+        assert_eq!(
+            stale["db_lifecycle_read"]["artifact_freshness"].as_str(),
+            Some("incomplete:interrupted")
+        );
+
+        let repo_foreign = temp_repo();
+        write_agent_use_context_fixture(&repo_foreign);
+        let profile_foreign =
+            super::resolve_agent_use_profile_with_data_root(&repo_foreign, &data_root)
+                .expect("foreign profile");
+        fs::create_dir_all(&profile_foreign.profile_root).expect("create foreign profile parent");
+        fs::copy(&profile.db_path, &profile_foreign.db_path).expect("copy foreign DB");
+        let foreign = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "symbols".to_string(),
+                "agentUseTarget".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_foreign),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("foreign query");
+        assert_eq!(foreign["claimable"].as_bool(), Some(false));
+        assert_eq!(
+            foreign["db_problem_kind"].as_str(),
+            Some("repo_root_mismatch")
+        );
+
+        let repo_old = temp_repo();
+        write_agent_use_context_fixture(&repo_old);
+        let profile_old = super::resolve_agent_use_profile_with_data_root(&repo_old, &data_root)
+            .expect("old profile");
+        fs::create_dir_all(&profile_old.profile_root).expect("create old parent");
+        {
+            let connection = Connection::open(&profile_old.db_path).expect("open old DB");
+            connection
+                .execute_batch("PRAGMA user_version = 1; CREATE TABLE legacy_only(id INTEGER);")
+                .expect("old schema");
+        }
+        let old = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "symbols".to_string(),
+                "agentUseTarget".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_old),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("old schema query");
+        assert_eq!(old["claimable"].as_bool(), Some(false));
+        assert_eq!(old["db_problem_kind"].as_str(), Some("schema_mismatch"));
+        assert_no_dot_codegraph_sqlite(&repo);
+        assert_no_dot_codegraph_sqlite(&repo_foreign);
+        assert_no_dot_codegraph_sqlite(&repo_old);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(repo_foreign).expect("cleanup foreign repo");
+        fs::remove_dir_all(repo_old).expect("cleanup old repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_context_pack_uses_graph_or_candidate_profile_context() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_agent_use_context_fixture(&repo);
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use index");
+
+        let graph = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "context-pack".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--task".to_string(),
+                "Find agentUseTarget".to_string(),
+                "--seed".to_string(),
+                "agentUseTarget".to_string(),
+                "--limit-paths".to_string(),
+                "5".to_string(),
+                "--limit-snippets".to_string(),
+                "5".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("agent-use context graph");
+        assert_eq!(graph["status"].as_str(), Some("ok"));
+        assert_eq!(
+            graph["profile_name"].as_str(),
+            Some(super::PRODUCTION_AGENT_USE_PROFILE_NAME)
+        );
+        assert_eq!(
+            graph["db"].as_str(),
+            Some(path_string(&profile.db_path).as_str())
+        );
+        assert_eq!(graph["external_db_used"].as_bool(), Some(true));
+        assert!(graph["staged_availability"].is_object());
+        assert_eq!(
+            graph["read_path_metrics"]["full_scan_count"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            graph["read_path_metrics"]["disk_fallback_used"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            graph["read_path_metrics"]["limits_apply_before_hydration"].as_bool(),
+            Some(true)
+        );
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        let spool_repo = temp_repo();
+        let source_spool = write_candidate_spool_cli_fixture(&spool_repo);
+        let spool_profile =
+            super::resolve_agent_use_profile_with_data_root(&spool_repo, &data_root)
+                .expect("spool profile");
+        fs::create_dir_all(&spool_profile.profile_root).expect("create spool profile parent");
+        fs::copy(&source_spool, &spool_profile.candidate_spool_path).expect("copy profile spool");
+        let candidate = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "context-pack".to_string(),
+                "--repo".to_string(),
+                path_string(&spool_repo),
+                "--task".to_string(),
+                "spool_target".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("agent-use context spool");
+        assert_eq!(candidate["status"].as_str(), Some("ok"));
+        assert_eq!(candidate["graph_proof"].as_bool(), Some(false));
+        assert_eq!(candidate["candidate_only"].as_bool(), Some(true));
+        assert_eq!(
+            candidate["read_path_metrics"]["full_scan_count"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            candidate["db_lifecycle_read"]["path_access_status"].as_str(),
+            Some("db_missing")
+        );
+
+        write_cli_fixture_file(&spool_repo, "src/lib.rs", "pub fn changed() {}\n");
+        let stale = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "context-pack".to_string(),
+                "--repo".to_string(),
+                path_string(&spool_repo),
+                "--task".to_string(),
+                "spool_target".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("stale spool context");
+        assert_eq!(stale["claimable"].as_bool(), Some(false));
+        assert!(stale["errors"]
+            .as_array()
+            .expect("errors")
+            .iter()
+            .any(|error| error
+                .as_str()
+                .unwrap_or("")
+                .contains("candidate_spool_stale")));
+        assert_no_dot_codegraph_sqlite(&spool_repo);
+
+        let missing_repo = temp_repo();
+        write_agent_use_context_fixture(&missing_repo);
+        let missing = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "context-pack".to_string(),
+                "--repo".to_string(),
+                path_string(&missing_repo),
+                "--task".to_string(),
+                "agentUseTarget".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("missing context");
+        assert_eq!(missing["status"].as_str(), Some("not_indexed"));
+        assert_eq!(missing["claimable"].as_bool(), Some(false));
+        assert_no_dot_codegraph_sqlite(&missing_repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(spool_repo).expect("cleanup spool repo");
+        fs::remove_dir_all(missing_repo).expect("cleanup missing repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_staged_warm_start_artifacts_are_candidate_only_and_source_bound() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_agent_use_context_fixture(&repo);
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+
+        let missing = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "status".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use status missing");
+        assert_eq!(missing["status"].as_str(), Some("not_indexed"));
+        assert_eq!(missing["graph_db_status"].as_str(), Some("no_index"));
+        assert_eq!(missing["candidate_spool_status"].as_str(), Some("no_spool"));
+        assert_eq!(missing["vector_runtime_status"].as_str(), Some("missing"));
+        assert_eq!(missing["vector_audit_status"].as_str(), Some("missing"));
+        assert!(!profile.profile_root.exists());
+
+        let indexed = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use staged index");
+        assert_eq!(indexed["candidate_spool_requested"].as_bool(), Some(true));
+        assert_eq!(indexed["candidate_spool_created"].as_bool(), Some(true));
+        assert_eq!(
+            indexed["candidate_spool_query_index_status"].as_str(),
+            Some("ready")
+        );
+        assert_eq!(indexed["vector_runtime_requested"].as_bool(), Some(true));
+        assert_eq!(indexed["vector_runtime_created"].as_bool(), Some(true));
+        assert_eq!(indexed["vector_runtime_status"].as_str(), Some("ready"));
+        assert_eq!(indexed["vector_audit_requested"].as_bool(), Some(false));
+        assert_eq!(indexed["vector_audit_created"].as_bool(), Some(false));
+        assert_eq!(indexed["vector_audit_status"].as_str(), Some("missing"));
+        assert!(profile.candidate_spool_path.exists());
+        assert!(profile.candidate_spool_query_index_path.exists());
+        assert!(profile.vector_runtime_path.exists());
+        assert!(!profile.vector_audit_path.exists());
+
+        let graph_context = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "context-pack".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--task".to_string(),
+                "Find agentUseTarget".to_string(),
+                "--agent-json".to_string(),
+                "--explain".to_string(),
+            ])
+        })
+        .expect("graph context with staged artifacts");
+        assert_eq!(graph_context["status"].as_str(), Some("ok"));
+        assert_eq!(graph_context["graph_proof_available"].as_bool(), Some(true));
+        assert_eq!(
+            graph_context["vector_runtime_status"].as_str(),
+            Some("ready")
+        );
+        assert!(graph_context["active_candidate_sources"]
+            .as_array()
+            .expect("active sources")
+            .iter()
+            .any(|source| source.as_str() == Some("vector_semantic")));
+        assert_eq!(
+            graph_context["staged_availability"]["layer_readiness"]["vector_runtime"]
+                ["graph_proof"]
+                .as_bool(),
+            Some(false)
+        );
+
+        let audit_index = super::run_index_command(&[
+            path_string(&repo),
+            "--db".to_string(),
+            path_string(&profile.db_path),
+            "--fresh".to_string(),
+            "--json".to_string(),
+            "--build-vector-index".to_string(),
+            path_string(&profile.vector_runtime_path),
+            "--vector-audit-artifact".to_string(),
+            path_string(&profile.vector_audit_path),
+        ])
+        .expect("build audit artifact through existing index surface");
+        assert_eq!(audit_index["status"].as_str(), Some("indexed"));
+        assert!(profile.vector_audit_path.exists());
+        let audit_status = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "status".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use status with audit artifact");
+        assert_eq!(audit_status["vector_audit_status"].as_str(), Some("ready"));
+        assert_eq!(
+            audit_status["staged_availability"]["layer_readiness"]["vector_audit"]
+                ["diagnostic_only"]
+                .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            audit_status["staged_availability"]["layer_readiness"]["vector_audit"]
+                ["runtime_dependency"]
+                .as_bool(),
+            Some(false)
+        );
+
+        fs::remove_file(repo.join("src").join("service.ts")).expect("delete source");
+        let stale_vector = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "context-pack".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--task".to_string(),
+                "Find agentUseTarget".to_string(),
+                "--agent-json".to_string(),
+                "--explain".to_string(),
+            ])
+        })
+        .expect("context with stale runtime vector sidecar");
+        assert_eq!(
+            stale_vector["vector_runtime_status"].as_str(),
+            Some("stale")
+        );
+        assert_eq!(stale_vector["graph_proof_available"].as_bool(), Some(true));
+        assert!(!stale_vector["active_candidate_sources"]
+            .as_array()
+            .expect("active sources")
+            .iter()
+            .any(|source| source.as_str() == Some("vector_semantic")));
+        assert!(stale_vector["warnings"]
+            .as_array()
+            .expect("warnings")
+            .iter()
+            .any(|warning| warning
+                .as_str()
+                .unwrap_or_default()
+                .contains("Vector runtime sidecar is stale")));
+
+        let candidate_repo = temp_repo();
+        write_agent_use_context_fixture(&candidate_repo);
+        let candidate_profile =
+            super::resolve_agent_use_profile_with_data_root(&candidate_repo, &data_root)
+                .expect("candidate profile");
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&candidate_repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use index for candidate-only fallback");
+        super::remove_sqlite_file_family(&candidate_profile.db_path)
+            .expect("remove graph DB family for candidate-only fallback");
+        let candidate_only = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "context-pack".to_string(),
+                "--repo".to_string(),
+                path_string(&candidate_repo),
+                "--task".to_string(),
+                "agentUseTarget".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("candidate-only context");
+        assert_eq!(candidate_only["status"].as_str(), Some("ok"));
+        assert_eq!(candidate_only["candidate_only"].as_bool(), Some(true));
+        assert_eq!(candidate_only["graph_proof"].as_bool(), Some(false));
+        assert_eq!(
+            candidate_only["candidate_spool_query_index_status"].as_str(),
+            Some("ready")
+        );
+        assert_eq!(
+            candidate_only["db_lifecycle_read"]["path_access_status"].as_str(),
+            Some("db_missing")
+        );
+
+        write_cli_fixture_file(
+            &candidate_repo,
+            "src/service.ts",
+            "export function changedAfterSpool() { return \"stale\"; }\n",
+        );
+        let stale_spool = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "context-pack".to_string(),
+                "--repo".to_string(),
+                path_string(&candidate_repo),
+                "--task".to_string(),
+                "agentUseTarget".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("stale candidate spool context");
+        assert_eq!(stale_spool["claimable"].as_bool(), Some(false));
+        assert_eq!(
+            stale_spool["candidate_spool_status"].as_str(),
+            Some("stale")
+        );
+        assert_eq!(
+            stale_spool["candidate_only_available"].as_bool(),
+            Some(false)
+        );
+        assert!(stale_spool["errors"]
+            .as_array()
+            .expect("errors")
+            .iter()
+            .any(|error| error
+                .as_str()
+                .unwrap_or_default()
+                .contains("candidate_spool_stale")));
+
+        assert_no_dot_codegraph_sqlite(&repo);
+        assert_no_dot_codegraph_sqlite(&candidate_repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(candidate_repo).expect("cleanup candidate repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_watch_once_dirty_sidecars_do_not_masquerade_as_fresh_context() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_agent_use_context_fixture(&repo);
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+
+        run_agent_use_test_command(
+            &data_root,
+            &["index", "--repo", path_string(&repo).as_str(), "--json"],
+        )
+        .expect("agent-use index");
+        assert!(profile.candidate_spool_path.exists());
+        assert!(profile.candidate_spool_query_index_path.exists());
+        assert!(profile.vector_runtime_path.exists());
+        assert!(
+            path_evidence_total_count(&profile.db_path) > 0,
+            "fixture should persist stored PathEvidence before the delta"
+        );
+
+        write_cli_fixture_file(
+            &repo,
+            "src/service.ts",
+            "export function agentUseTarget() {\n  return \"freshzz\";\n}\n\nexport function dirtyEvidenceFreshSymbol() {\n  return agentUseTarget();\n}\n",
+        );
+        let changed = run_agent_use_test_command(
+            &data_root,
+            &[
+                "watch",
+                "--repo",
+                path_string(&repo).as_str(),
+                "--once",
+                "--changed",
+                "src/service.ts",
+                "--json",
+            ],
+        )
+        .expect("watch changed source");
+        assert_eq!(changed["status"].as_str(), Some("updated"));
+        assert_eq!(changed["delta_state"].as_str(), Some("updated"));
+        assert_eq!(changed["new_graph_valid"].as_bool(), Some(true));
+        assert_eq!(changed["freshness"]["graph_db"].as_str(), Some("current"));
+        assert!(matches!(
+            changed["path_evidence_invalidated"]["action"].as_str(),
+            Some("refreshed") | Some("invalidated")
+        ));
+        assert_eq!(
+            changed["candidate_spool_invalidated_or_rebuilt"]["action"].as_str(),
+            Some("invalidated")
+        );
+        assert_eq!(
+            changed["candidate_query_index_invalidated_or_rebuilt"]["action"].as_str(),
+            Some("invalidated")
+        );
+        assert_eq!(
+            changed["vector_chunks_invalidated_or_rebuilt"]["action"].as_str(),
+            Some("invalidated")
+        );
+        assert_eq!(
+            changed["candidate_spool_invalidated_or_rebuilt"]["graph_proof"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            changed["staged_availability"]["layer_readiness"]["candidate_spool"]["graph_proof"]
+                .as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            changed["staged_availability"]["layer_readiness"]["vector_runtime"]["graph_proof"]
+                .as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            changed["staged_availability"]["layer_readiness"]["candidate_spool"]["status"].as_str(),
+            Some("stale")
+        );
+        assert_eq!(
+            changed["staged_availability"]["layer_readiness"]["candidate_spool"]
+                ["query_index_status"]
+                .as_str(),
+            Some("stale")
+        );
+        assert_eq!(
+            changed["staged_availability"]["layer_readiness"]["vector_runtime"]["status"].as_str(),
+            Some("stale")
+        );
+        assert!(
+            path_evidence_total_count(&profile.db_path) > 0,
+            "fresh PathEvidence should remain source-bound to the changed file"
+        );
+        assert!(agent_use_query_count(&data_root, &repo, "symbols", "agentUseTarget") > 0);
+        assert!(
+            agent_use_query_count(&data_root, &repo, "symbols", "dirtyEvidenceFreshSymbol") > 0
+        );
+        assert_eq!(
+            agent_use_query_count(&data_root, &repo, "text", "obsoletezz"),
+            0
+        );
+        assert!(agent_use_query_count(&data_root, &repo, "text", "freshzz") > 0);
+        assert!(profile.delta_state_path.exists());
+
+        let status_after_delta = run_agent_use_test_command(
+            &data_root,
+            &["status", "--repo", path_string(&repo).as_str(), "--json"],
+        )
+        .expect("status after delta");
+        assert_eq!(
+            status_after_delta["graph_freshness"].as_str(),
+            Some("current")
+        );
+        assert_eq!(status_after_delta["dirty_state"].as_str(), Some("ready"));
+        assert_eq!(
+            status_after_delta["last_delta_update_summary"]["status"].as_str(),
+            Some("updated")
+        );
+        assert_eq!(
+            status_after_delta["rtds_freshness"]["startup_auto_index"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            status_after_delta["rtds_freshness"]["dot_codegraph_fallback"].as_bool(),
+            Some(false)
+        );
+        assert!(status_after_delta["stale_candidate_layers"]
+            .as_array()
+            .expect("stale candidate layers")
+            .iter()
+            .any(|layer| layer["layer"].as_str() == Some("candidate_spool")));
+
+        let context = run_agent_use_test_command(
+            &data_root,
+            &[
+                "context-pack",
+                "--repo",
+                path_string(&repo).as_str(),
+                "--task",
+                "Find dirtyEvidenceFreshSymbol",
+                "--agent-json",
+                "--explain",
+            ],
+        )
+        .expect("context after dirty sidecar invalidation");
+        assert_eq!(context["status"].as_str(), Some("ok"));
+        assert_eq!(context["graph_proof_available"].as_bool(), Some(true));
+        assert_eq!(context["graph_freshness"].as_str(), Some("current"));
+        assert_eq!(
+            context["last_delta_update_summary"]["status"].as_str(),
+            Some("updated")
+        );
+        assert_eq!(
+            context["rtds_freshness"]["candidate_context_policy"].as_str(),
+            Some("candidate_only_only_when_current_source_bound")
+        );
+        assert_eq!(context["candidate_spool_status"].as_str(), Some("stale"));
+        assert_eq!(context["vector_runtime_status"].as_str(), Some("stale"));
+        assert!(!context["active_candidate_sources"]
+            .as_array()
+            .expect("active sources")
+            .iter()
+            .any(|source| source.as_str() == Some("candidate_spool")
+                || source.as_str() == Some("vector_semantic")));
+
+        fs::remove_file(repo.join("src").join("service.ts")).expect("delete source");
+        let deleted = run_agent_use_test_command(
+            &data_root,
+            &[
+                "watch",
+                "--repo",
+                path_string(&repo).as_str(),
+                "--once",
+                "--changed",
+                "src/service.ts",
+                "--json",
+            ],
+        )
+        .expect("watch deleted source");
+        assert_eq!(deleted["status"].as_str(), Some("updated"));
+        assert_eq!(
+            deleted["path_evidence_invalidated"]["action"].as_str(),
+            Some("invalidated")
+        );
+        assert_eq!(
+            path_evidence_total_count(&profile.db_path),
+            0,
+            "delete must remove PathEvidence references to the deleted file"
+        );
+        assert_eq!(
+            agent_use_query_count(&data_root, &repo, "symbols", "dirtyEvidenceFreshSymbol"),
+            0
+        );
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_mcp_config_is_readonly_and_matches_status_path() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let parent = temp_repo();
+        let repo_a = parent.join("left").join("app");
+        let repo_b = parent.join("right").join("app");
+        let unicode_repo = parent.join("repo with spaces é");
+        fs::create_dir_all(&repo_a).expect("repo a");
+        fs::create_dir_all(&repo_b).expect("repo b");
+        fs::create_dir_all(&unicode_repo).expect("unicode repo");
+        write_agent_use_context_fixture(&repo_a);
+        write_agent_use_context_fixture(&repo_b);
+        write_agent_use_context_fixture(&unicode_repo);
+
+        let status = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "status".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_a),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use status");
+        let config = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "mcp-config".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_a),
+                "--json".to_string(),
+            ])
+        })
+        .expect("mcp config");
+        assert_eq!(config["status"].as_str(), Some("not_indexed"));
+        assert_eq!(
+            config["profile_name"].as_str(),
+            Some(super::PRODUCTION_AGENT_USE_PROFILE_NAME)
+        );
+        assert_eq!(config["writes_files"].as_bool(), Some(false));
+        assert_eq!(config["db_path"].as_str(), status["db_path"].as_str());
+        assert_eq!(
+            config["mcp_config"]["mcpServers"]["codegraph-mcp"]["args"][0].as_str(),
+            Some("--repo")
+        );
+        assert_eq!(
+            config["mcp_config"]["mcpServers"]["codegraph-mcp"]["env"]["CODEGRAPH_DB_PATH"],
+            config["db_path"]
+        );
+        assert_eq!(
+            config["mcp_config"]["mcpServers"]["codegraph-mcp"]["env"]
+                ["CODEGRAPH_AGENT_USE_PROFILE"]
+                .as_str(),
+            Some(super::PRODUCTION_AGENT_USE_PROFILE_NAME)
+        );
+        assert_eq!(config["mcp_startup_auto_index"].as_bool(), Some(false));
+        assert_eq!(
+            config["mcp_no_dot_codegraph_fallback"].as_bool(),
+            Some(true)
+        );
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo_a, &data_root).expect("profile");
+        assert!(!profile.profile_root.exists());
+
+        let config_a = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "mcp-config".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_a),
+                "--json".to_string(),
+            ])
+        })
+        .expect("config a");
+        let config_b = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "mcp-config".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_b),
+                "--json".to_string(),
+            ])
+        })
+        .expect("config b");
+        let config_unicode = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "mcp-config".to_string(),
+                "--repo".to_string(),
+                path_string(&unicode_repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("unicode config");
+        assert_ne!(config_a["db_path"], config_b["db_path"]);
+        assert!(config_unicode["repo_root"]
+            .as_str()
+            .expect("unicode repo root")
+            .contains("repo with spaces"));
+        assert_no_dot_codegraph_sqlite(&repo_a);
+        assert_no_dot_codegraph_sqlite(&repo_b);
+        assert_no_dot_codegraph_sqlite(&unicode_repo);
+
+        fs::remove_dir_all(parent).expect("cleanup parent");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_status_reports_unsafe_dbs_without_migration() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo_a = temp_repo();
+        let repo_b = temp_repo();
+        write_agent_use_context_fixture(&repo_a);
+        write_agent_use_context_fixture(&repo_b);
+        let profile_a = super::resolve_agent_use_profile_with_data_root(&repo_a, &data_root)
+            .expect("profile a");
+        let profile_b = super::resolve_agent_use_profile_with_data_root(&repo_b, &data_root)
+            .expect("profile b");
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_a),
+                "--json".to_string(),
+            ])
+        })
+        .expect("index repo a");
+        fs::create_dir_all(&profile_b.profile_root).expect("create profile b parent");
+        fs::copy(&profile_a.db_path, &profile_b.db_path).expect("copy foreign DB");
+
+        let foreign = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "status".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_b),
+                "--json".to_string(),
+            ])
+        })
+        .expect("foreign status");
+        assert_eq!(foreign["claimable"].as_bool(), Some(false));
+        assert_eq!(
+            foreign["db_problem_kind"].as_str(),
+            Some("repo_root_mismatch")
+        );
+
+        let repo_old = temp_repo();
+        write_agent_use_context_fixture(&repo_old);
+        let profile_old = super::resolve_agent_use_profile_with_data_root(&repo_old, &data_root)
+            .expect("old profile");
+        fs::create_dir_all(&profile_old.profile_root).expect("create old profile parent");
+        {
+            let connection = Connection::open(&profile_old.db_path).expect("open old schema");
+            connection
+                .execute_batch(
+                    "
+                    PRAGMA user_version = 1;
+                    CREATE TABLE legacy_only(id INTEGER PRIMARY KEY);
+                    INSERT INTO legacy_only(id) VALUES (1);
+                    ",
+                )
+                .expect("create old schema");
+        }
+        let before_bytes = fs::read(&profile_old.db_path).expect("read old DB");
+        let old = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "status".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_old),
+                "--json".to_string(),
+            ])
+        })
+        .expect("old status");
+        let after_bytes = fs::read(&profile_old.db_path).expect("read old DB after");
+        assert_eq!(old["claimable"].as_bool(), Some(false));
+        assert_eq!(old["db_problem_kind"].as_str(), Some("schema_mismatch"));
+        assert_eq!(before_bytes, after_bytes);
+        let replaced_old = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_old),
+                "--json".to_string(),
+            ])
+        })
+        .expect("replace old schema through agent-use index");
+        assert_eq!(replaced_old["status"].as_str(), Some("indexed"));
+        assert_eq!(replaced_old["claimable"].as_bool(), Some(true));
+        assert_eq!(replaced_old["external_db_used"].as_bool(), Some(true));
+
+        let repo_stale = temp_repo();
+        write_agent_use_context_fixture(&repo_stale);
+        let profile_stale =
+            super::resolve_agent_use_profile_with_data_root(&repo_stale, &data_root)
+                .expect("stale profile");
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_stale),
+                "--json".to_string(),
+            ])
+        })
+        .expect("index stale repo");
+        {
+            let connection = Connection::open(&profile_stale.db_path).expect("open stale DB");
+            connection
+                .execute(
+                    "UPDATE codegraph_db_passport SET last_run_status = 'interrupted' WHERE id = 1",
+                    [],
+                )
+                .expect("mark stale");
+        }
+        let stale_status = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "status".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_stale),
+                "--json".to_string(),
+            ])
+        })
+        .expect("stale status");
+        assert_eq!(stale_status["claimable"].as_bool(), Some(false));
+        assert_eq!(
+            stale_status["db_lifecycle_read"]["artifact_freshness"].as_str(),
+            Some("incomplete:interrupted")
+        );
+        let rebuilt_stale = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_stale),
+                "--json".to_string(),
+            ])
+        })
+        .expect("rebuild stale profile");
+        assert_eq!(rebuilt_stale["claimable"].as_bool(), Some(true));
+        assert_no_dot_codegraph_sqlite(&repo_a);
+        assert_no_dot_codegraph_sqlite(&repo_b);
+        assert_no_dot_codegraph_sqlite(&repo_old);
+        assert_no_dot_codegraph_sqlite(&repo_stale);
+
+        fs::remove_dir_all(repo_a).expect("cleanup repo a");
+        fs::remove_dir_all(repo_b).expect("cleanup repo b");
+        fs::remove_dir_all(repo_old).expect("cleanup old repo");
+        fs::remove_dir_all(repo_stale).expect("cleanup stale repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_profile_durability_labels_lock_sidecars_permission_and_publish_state() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_agent_use_context_fixture(&repo);
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+
+        let missing_status = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "status".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("missing status");
+        assert_eq!(missing_status["status"].as_str(), Some("not_indexed"));
+        assert_json_array_contains(&missing_status, "safety_labels", "not_indexed");
+        assert_json_array_contains(&missing_status, "safety_labels", "diagnostic_only");
+
+        let missing_config = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "mcp-config".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("missing mcp-config");
+        assert_eq!(missing_config["status"].as_str(), Some("not_indexed"));
+        assert_json_array_contains(&missing_config, "safety_labels", "not_indexed");
+        assert!(!profile.profile_root.exists());
+
+        let permission_repo = temp_repo();
+        write_agent_use_context_fixture(&permission_repo);
+        let permission_profile =
+            super::resolve_agent_use_profile_with_data_root(&permission_repo, &data_root)
+                .expect("permission profile");
+        let permission_error = {
+            let _failpoint = BundleFailpointEnvGuard::set(
+                super::AGENT_USE_PROFILE_PARENT_PERMISSION_DENIED_FAILPOINT,
+            );
+            with_agent_use_data_root(&data_root, || {
+                super::run_agent_use_command(&[
+                    "index".to_string(),
+                    "--repo".to_string(),
+                    path_string(&permission_repo),
+                    "--json".to_string(),
+                ])
+            })
+        }
+        .expect_err("permission failpoint must block profile parent creation");
+        let permission: Value =
+            serde_json::from_str(&permission_error).expect("permission error JSON");
+        assert_eq!(permission["status"].as_str(), Some("permission_denied"));
+        assert_json_array_contains(&permission, "safety_labels", "permission_denied");
+        assert!(!permission_profile.profile_root.exists());
+
+        let filesystem_repo = temp_repo();
+        write_agent_use_context_fixture(&filesystem_repo);
+        let filesystem_profile =
+            super::resolve_agent_use_profile_with_data_root(&filesystem_repo, &data_root)
+                .expect("filesystem profile");
+        let filesystem_error = {
+            let _failpoint = BundleFailpointEnvGuard::set(
+                super::AGENT_USE_PROFILE_PARENT_FILESYSTEM_INACCESSIBLE_FAILPOINT,
+            );
+            with_agent_use_data_root(&data_root, || {
+                super::run_agent_use_command(&[
+                    "index".to_string(),
+                    "--repo".to_string(),
+                    path_string(&filesystem_repo),
+                    "--json".to_string(),
+                ])
+            })
+        }
+        .expect_err("filesystem failpoint must block profile parent creation");
+        let filesystem: Value =
+            serde_json::from_str(&filesystem_error).expect("filesystem error JSON");
+        assert_eq!(
+            filesystem["status"].as_str(),
+            Some("filesystem_inaccessible")
+        );
+        assert_json_array_contains(&filesystem, "safety_labels", "filesystem_inaccessible");
+        assert!(!filesystem_profile.profile_root.exists());
+
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use index");
+
+        let wal_connection = keep_wal_sidecars_for_test(&profile.db_path);
+        let sidecar_status = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "status".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("status with sidecars");
+        assert_eq!(sidecar_status["claimable"].as_bool(), Some(true));
+        assert_eq!(sidecar_status["sidecar_status"].as_str(), Some("normal"));
+        assert_eq!(sidecar_status["sidecar_only_change"].as_bool(), Some(true));
+        assert_eq!(
+            sidecar_status["sidecar_change_classification"].as_str(),
+            Some("sidecar_only_change")
+        );
+        assert_json_array_contains(&sidecar_status, "safety_labels", "sidecar_only_change");
+        drop(wal_connection);
+
+        fs::write(
+            &profile.lock_or_publish_state_path,
+            serde_json::to_vec(&json!({
+                "status": "publishing",
+                "temp_db_claimability": "never_claimable"
+            }))
+            .expect("publish state JSON"),
+        )
+        .expect("write publish state");
+        let publishing_query = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "symbols".to_string(),
+                "agentUseTarget".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("query while publish state exists");
+        assert_eq!(publishing_query["claimable"].as_bool(), Some(true));
+        assert_eq!(publishing_query["publishing"].as_bool(), Some(true));
+        assert_json_array_contains(&publishing_query, "safety_labels", "publishing");
+        let publishing_context = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "context-pack".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--task".to_string(),
+                "Find agentUseTarget".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("context while publish state exists");
+        assert_eq!(publishing_context["claimable"].as_bool(), Some(true));
+        assert_json_array_contains(&publishing_context, "safety_labels", "publishing");
+        fs::remove_file(&profile.lock_or_publish_state_path).expect("clear publish state");
+
+        let lock = Connection::open(&profile.db_path).expect("open lock connection");
+        lock.busy_timeout(Duration::from_millis(0))
+            .expect("set busy timeout");
+        let _: String = lock
+            .query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))
+            .expect("switch to rollback journal");
+        lock.execute_batch(
+            "
+            PRAGMA locking_mode=EXCLUSIVE;
+            BEGIN EXCLUSIVE;
+            CREATE TABLE IF NOT EXISTS lock_marker(id INTEGER PRIMARY KEY);
+            INSERT INTO lock_marker(id) VALUES (1);
+            ",
+        )
+        .expect("hold exclusive write lock");
+
+        let locked_status = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "status".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("locked status");
+        assert_eq!(locked_status["status"].as_str(), Some("db_locked"));
+        assert_json_array_contains(&locked_status, "safety_labels", "db_locked");
+        assert_json_array_contains(&locked_status, "safety_labels", "diagnostic_only");
+
+        let locked_query = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "symbols".to_string(),
+                "agentUseTarget".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("locked query");
+        assert_eq!(locked_query["claimable"].as_bool(), Some(false));
+        assert_json_array_contains(&locked_query, "safety_labels", "db_locked");
+
+        let locked_context = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "context-pack".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--task".to_string(),
+                "Find agentUseTarget".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("locked context-pack");
+        assert_eq!(locked_context["claimable"].as_bool(), Some(false));
+        assert_json_array_contains(&locked_context, "safety_labels", "db_locked");
+
+        let locked_index = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect_err("locked DB must block agent-use index");
+        assert!(
+            locked_index.contains("db_locked") || locked_index.contains("locked"),
+            "{locked_index}"
+        );
+        lock.execute_batch("ROLLBACK").expect("release lock");
+        drop(lock);
+
+        assert_no_dot_codegraph_sqlite(&repo);
+        assert_no_dot_codegraph_sqlite(&permission_repo);
+        assert_no_dot_codegraph_sqlite(&filesystem_repo);
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(permission_repo).expect("cleanup permission repo");
+        fs::remove_dir_all(filesystem_repo).expect("cleanup filesystem repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_readers_see_old_good_db_during_uncommitted_delta_update() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_agent_use_context_fixture(&repo);
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use index");
+
+        let writer = SqliteGraphStore::open(&profile.db_path).expect("open writer");
+        writer
+            .begin_write_transaction()
+            .expect("begin uncommitted update transaction");
+        writer
+            .delete_facts_for_file("src/service.ts")
+            .expect("delete facts inside uncommitted transaction");
+        super::write_agent_use_publish_state(&profile, "updating", None)
+            .expect("write updating state");
+
+        let query_during_update = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "symbols".to_string(),
+                "agentUseTarget".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--limit".to_string(),
+                "5".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("query during uncommitted update");
+        assert_eq!(query_during_update["claimable"].as_bool(), Some(true));
+        assert_eq!(
+            query_during_update["publish_state"]["status"].as_str(),
+            Some("updating")
+        );
+        assert_eq!(
+            query_during_update["publish_state"]["updating"].as_bool(),
+            Some(true)
+        );
+        assert_json_array_contains(&query_during_update, "safety_labels", "updating");
+        assert_json_array_contains(&query_during_update, "safety_labels", "publishing");
+        assert!(
+            query_during_update["result_count"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0,
+            "reader must see old committed graph facts, not the uncommitted deletion: {query_during_update:?}"
+        );
+
+        let context_during_update = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "context-pack".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--task".to_string(),
+                "Find agentUseTarget".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("context-pack during uncommitted update");
+        assert_eq!(context_during_update["claimable"].as_bool(), Some(true));
+        assert_eq!(
+            context_during_update["publish_state"]["status"].as_str(),
+            Some("updating")
+        );
+        assert_json_array_contains(&context_during_update, "safety_labels", "updating");
+        assert_json_array_contains(&context_during_update, "safety_labels", "publishing");
+
+        let status_during_update = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "status".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("status during uncommitted update");
+        assert_eq!(status_during_update["claimable"].as_bool(), Some(true));
+        assert_eq!(
+            status_during_update["publish_state"]["status"].as_str(),
+            Some("updating")
+        );
+        assert_json_array_contains(&status_during_update, "safety_labels", "updating");
+        assert_json_array_contains(&status_during_update, "safety_labels", "publishing");
+
+        writer
+            .rollback_write_transaction()
+            .expect("rollback uncommitted update transaction");
+        drop(writer);
+        super::clear_agent_use_publish_state(&profile).expect("clear updating state");
+
+        let query_after_rollback = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "symbols".to_string(),
+                "agentUseTarget".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--limit".to_string(),
+                "5".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("query after rollback");
+        assert!(
+            query_after_rollback["result_count"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0,
+            "rollback must preserve old-good facts: {query_after_rollback:?}"
+        );
+        assert_eq!(
+            query_after_rollback["publish_state"]["status"].as_str(),
+            Some("absent")
+        );
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_context_pack_refuses_unsafe_profile_db_without_fallback() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+
+        let repo_stale = temp_repo();
+        write_agent_use_context_fixture(&repo_stale);
+        let profile_stale =
+            super::resolve_agent_use_profile_with_data_root(&repo_stale, &data_root)
+                .expect("stale profile");
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_stale),
+                "--json".to_string(),
+            ])
+        })
+        .expect("index stale repo");
+        Connection::open(&profile_stale.db_path)
+            .expect("open stale DB")
+            .execute(
+                "UPDATE codegraph_db_passport SET last_run_status = 'interrupted' WHERE id = 1",
+                [],
+            )
+            .expect("mark stale");
+        let stale = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "context-pack".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_stale),
+                "--task".to_string(),
+                "Find agentUseTarget".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("stale context blocked");
+        assert_eq!(stale["claimable"].as_bool(), Some(false));
+        assert_json_array_contains(&stale, "safety_labels", "stale");
+
+        let repo_valid = temp_repo();
+        let repo_foreign = temp_repo();
+        write_agent_use_context_fixture(&repo_valid);
+        write_agent_use_context_fixture(&repo_foreign);
+        let profile_valid =
+            super::resolve_agent_use_profile_with_data_root(&repo_valid, &data_root)
+                .expect("valid profile");
+        let profile_foreign =
+            super::resolve_agent_use_profile_with_data_root(&repo_foreign, &data_root)
+                .expect("foreign profile");
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_valid),
+                "--json".to_string(),
+            ])
+        })
+        .expect("index valid repo");
+        fs::create_dir_all(&profile_foreign.profile_root).expect("create foreign parent");
+        fs::copy(&profile_valid.db_path, &profile_foreign.db_path).expect("copy foreign DB");
+        let foreign = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "context-pack".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_foreign),
+                "--task".to_string(),
+                "Find agentUseTarget".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("foreign context blocked");
+        assert_eq!(foreign["claimable"].as_bool(), Some(false));
+        assert_json_array_contains(&foreign, "safety_labels", "repo_mismatch");
+        assert_json_array_contains(&foreign, "safety_labels", "foreign");
+
+        let repo_old = temp_repo();
+        write_agent_use_context_fixture(&repo_old);
+        let profile_old = super::resolve_agent_use_profile_with_data_root(&repo_old, &data_root)
+            .expect("old profile");
+        fs::create_dir_all(&profile_old.profile_root).expect("create old parent");
+        Connection::open(&profile_old.db_path)
+            .expect("open old DB")
+            .execute_batch("PRAGMA user_version = 1; CREATE TABLE legacy_only(id INTEGER);")
+            .expect("old schema");
+        let old = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "context-pack".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_old),
+                "--task".to_string(),
+                "Find agentUseTarget".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("old schema context blocked");
+        assert_eq!(old["claimable"].as_bool(), Some(false));
+        assert_json_array_contains(&old, "safety_labels", "schema_mismatch");
+
+        let repo_corrupt = temp_repo();
+        write_agent_use_context_fixture(&repo_corrupt);
+        let profile_corrupt =
+            super::resolve_agent_use_profile_with_data_root(&repo_corrupt, &data_root)
+                .expect("corrupt passport profile");
+        fs::create_dir_all(&profile_corrupt.profile_root).expect("create corrupt parent");
+        drop(SqliteGraphStore::open(&profile_corrupt.db_path).expect("initialize corrupt DB"));
+        Connection::open(&profile_corrupt.db_path)
+            .expect("open corrupt passport DB")
+            .execute(
+                "INSERT INTO codegraph_db_passport (
+                    id, passport_version, codegraph_schema_version, storage_mode,
+                    index_scope_policy_hash, scope_policy_json, canonical_repo_root,
+                    source_discovery_policy_version, last_run_status, integrity_gate_result,
+                    files_seen, files_indexed, created_at_unix_ms, updated_at_unix_ms
+                ) VALUES (1, ?1, ?2, 'proof', 'scope-hash', '{}', 'repo',
+                    'scope-v1', 'completed', 'ok', -1, 0, 1, 1)",
+                rusqlite::params![super::DB_PASSPORT_VERSION, super::SCHEMA_VERSION],
+            )
+            .expect("insert corrupt passport row");
+        let corrupt = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "status".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_corrupt),
+                "--json".to_string(),
+            ])
+        })
+        .expect("corrupt passport status");
+        assert_eq!(corrupt["claimable"].as_bool(), Some(false));
+        assert_json_array_contains(&corrupt, "safety_labels", "passport_corrupt");
+
+        assert_no_dot_codegraph_sqlite(&repo_stale);
+        assert_no_dot_codegraph_sqlite(&repo_valid);
+        assert_no_dot_codegraph_sqlite(&repo_foreign);
+        assert_no_dot_codegraph_sqlite(&repo_old);
+        assert_no_dot_codegraph_sqlite(&repo_corrupt);
+        fs::remove_dir_all(repo_stale).expect("cleanup stale repo");
+        fs::remove_dir_all(repo_valid).expect("cleanup valid repo");
+        fs::remove_dir_all(repo_foreign).expect("cleanup foreign repo");
+        fs::remove_dir_all(repo_old).expect("cleanup old repo");
+        fs::remove_dir_all(repo_corrupt).expect("cleanup corrupt repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_interrupted_index_keeps_old_profile_db_claimable() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_agent_use_context_fixture(&repo);
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("initial index");
+
+        let interrupt_error = {
+            let _failpoint = BundleFailpointEnvGuard::set("cold_after_validation_before_publish");
+            with_agent_use_data_root(&data_root, || {
+                super::run_agent_use_command(&[
+                    "index".to_string(),
+                    "--repo".to_string(),
+                    path_string(&repo),
+                    "--fresh".to_string(),
+                    "--json".to_string(),
+                ])
+            })
+        }
+        .expect_err("publish failpoint must interrupt index");
+        assert!(
+            interrupt_error.contains("cold_after_validation_before_publish"),
+            "{interrupt_error}"
+        );
+        assert!(profile.lock_or_publish_state_path.exists());
+
+        let status = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "status".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("status after interrupted index");
+        assert_eq!(status["status"].as_str(), Some("ok"));
+        assert_eq!(status["claimable"].as_bool(), Some(true));
+        assert_eq!(
+            status["publish_state"]["status"].as_str(),
+            Some("interrupted")
+        );
+        assert_json_array_contains(&status, "safety_labels", "publishing");
+        assert_json_array_contains(&status, "safety_labels", "interrupted");
+        assert_json_array_contains(&status, "safety_labels", "recovered");
+
+        let query = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "symbols".to_string(),
+                "agentUseTarget".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("query after interrupted index");
+        assert_eq!(query["claimable"].as_bool(), Some(true));
+        assert_json_array_contains(&query, "safety_labels", "publishing");
+        assert_json_array_contains(&query, "safety_labels", "interrupted");
+        assert_json_array_contains(&query, "safety_labels", "recovered");
+
+        let context = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "context-pack".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--task".to_string(),
+                "Find agentUseTarget".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("context after interrupted index");
+        assert_eq!(context["claimable"].as_bool(), Some(true));
+        assert_json_array_contains(&context, "safety_labels", "publishing");
+        assert_json_array_contains(&context, "safety_labels", "interrupted");
+        assert_json_array_contains(&context, "safety_labels", "recovered");
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
+    }
+
+    #[test]
+    fn plain_status_missing_db_guides_to_agent_use_without_redirect() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_agent_use_context_fixture(&repo);
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+
+        let status =
+            with_agent_use_data_root(&data_root, || run_status_command(&[path_string(&repo)]))
+                .expect("plain status");
+        let repo_root = fs::canonicalize(&repo).expect("canonical repo");
+
+        assert_eq!(status["status"].as_str(), Some("not_indexed"));
+        assert_eq!(
+            status["db_path"].as_str(),
+            Some(path_string(&default_db_path(&repo_root)).as_str())
+        );
+        assert_eq!(status["agent_use_available"].as_bool(), Some(true));
+        assert!(status["agent_use_status_command"]
+            .as_str()
+            .expect("status command")
+            .contains("agent-use status"));
+        assert!(status["agent_use_index_command"]
+            .as_str()
+            .expect("index command")
+            .contains("agent-use index"));
+        assert_eq!(
+            status["agent_use_profile_db_path"].as_str(),
+            Some(path_string(&profile.db_path).as_str())
+        );
+        assert!(!profile.profile_root.exists());
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(data_root).expect("cleanup data root");
     }
 
     #[test]
@@ -33662,6 +42077,16 @@ mod tests {
         assert_eq!(status["vector_runtime_status"].as_str(), Some("missing"));
         assert_eq!(status["sidecar_status"].as_str(), Some("normal"));
         assert_eq!(doctor["sidecar_status"].as_str(), Some("normal"));
+        assert_eq!(status["telemetry"]["memory"].as_str(), Some("unknown"));
+        assert_eq!(
+            status["telemetry"]["memory_measured"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(doctor["telemetry"]["memory"].as_str(), Some("unknown"));
+        assert_eq!(
+            doctor["telemetry"]["memory_measured"].as_bool(),
+            Some(false)
+        );
         assert_eq!(
             status["sqlite_sidecars"]["sidecar_status"].as_str(),
             Some("normal")
@@ -35620,7 +44045,10 @@ mod tests {
         assert_eq!(result["diagnostic_only"].as_bool(), Some(false));
         assert_eq!(result["lifecycle"]["claimable"].as_bool(), Some(true));
         assert!(result.get("retrieval_explain").is_none());
-        assert!(result.get("db_lifecycle_read").is_none());
+        assert_eq!(
+            result["db_lifecycle_read"]["decision"].as_str(),
+            Some("read_reuse")
+        );
         assert!(result.get("profile").is_none());
 
         let paths = result["paths"].as_array().expect("paths");
@@ -40365,6 +48793,17 @@ mod tests {
         }
     }
 
+    fn assert_json_array_contains(value: &Value, key: &str, expected: &str) {
+        let items = value
+            .get(key)
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("{key} is not an array in {value:?}"));
+        assert!(
+            items.iter().any(|item| item.as_str() == Some(expected)),
+            "{key} did not contain {expected}: {items:?}"
+        );
+    }
+
     fn assert_agent_json_contract(
         value: &Value,
         schema_name: &str,
@@ -40589,12 +49028,188 @@ mod tests {
         path
     }
 
+    fn temp_repo_named(name: &str) -> (PathBuf, PathBuf) {
+        let parent = temp_repo();
+        let repo = parent.join(name);
+        fs::create_dir_all(&repo).expect("create named temp repo");
+        (parent, repo)
+    }
+
     fn write_cli_fixture_file(root: &Path, relative: &str, source: &str) {
         let path = root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).expect("create fixture parent");
         }
         fs::write(path, source).expect("write fixture source");
+    }
+
+    fn write_agent_use_context_fixture(root: &Path) {
+        write_cli_fixture_file(root, "package.json", "{\n  \"type\": \"module\"\n}\n");
+        write_cli_fixture_file(
+            root,
+            "src/service.ts",
+            "export function agentUseTarget() {\n  return \"agent-use-ok\";\n}\n\nexport function callAgentUseTarget() {\n  return agentUseTarget();\n}\n",
+        );
+    }
+
+    fn assert_no_dot_codegraph_sqlite(root: &Path) {
+        let dot_codegraph = root.join(".codegraph");
+        assert!(
+            !dot_codegraph.exists(),
+            "repo-local .codegraph should not exist: {}",
+            dot_codegraph.display()
+        );
+        if dot_codegraph.exists() {
+            let entries = fs::read_dir(&dot_codegraph)
+                .expect("read .codegraph")
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>();
+            assert!(
+                entries.iter().all(|path| {
+                    let name = path
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or_default();
+                    !(name.ends_with(".sqlite")
+                        || name.ends_with(".sqlite-wal")
+                        || name.ends_with(".sqlite-shm"))
+                }),
+                "repo-local SQLite artifacts found: {entries:?}"
+            );
+        }
+    }
+
+    fn add_git_remote_for_test(repo: &Path, remote: &str) {
+        let init = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["init", "-q"])
+            .status()
+            .expect("run git init");
+        assert!(init.success(), "git init failed with {init}");
+        let add = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["remote", "add", "origin", remote])
+            .status()
+            .expect("run git remote add");
+        assert!(add.success(), "git remote add failed with {add}");
+    }
+
+    fn with_agent_use_data_root<F, R>(data_root: &Path, operation: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let old = std::env::var_os(super::AGENT_USE_DATA_ROOT_ENV);
+        std::env::set_var(super::AGENT_USE_DATA_ROOT_ENV, data_root);
+        let result = operation();
+        if let Some(old) = old {
+            std::env::set_var(super::AGENT_USE_DATA_ROOT_ENV, old);
+        } else {
+            std::env::remove_var(super::AGENT_USE_DATA_ROOT_ENV);
+        }
+        result
+    }
+
+    struct ProcessEnvGuard {
+        name: String,
+        old: Option<OsString>,
+    }
+
+    impl Drop for ProcessEnvGuard {
+        fn drop(&mut self) {
+            if let Some(old) = self.old.take() {
+                std::env::set_var(&self.name, old);
+            } else {
+                std::env::remove_var(&self.name);
+            }
+        }
+    }
+
+    fn with_process_env_var<F, R>(name: &str, value: &str, operation: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let guard = ProcessEnvGuard {
+            name: name.to_string(),
+            old: std::env::var_os(name),
+        };
+        std::env::set_var(name, value);
+        let result = operation();
+        drop(guard);
+        result
+    }
+
+    fn run_agent_use_test_command(data_root: &Path, args: &[&str]) -> Result<Value, String> {
+        let owned = args
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect::<Vec<_>>();
+        with_agent_use_data_root(data_root, || super::run_agent_use_command(&owned))
+    }
+
+    fn agent_use_query_count(data_root: &Path, repo: &Path, kind: &str, query: &str) -> u64 {
+        let value = run_agent_use_test_command(
+            data_root,
+            &[
+                "query",
+                kind,
+                query,
+                "--repo",
+                path_string(repo).as_str(),
+                "--limit",
+                "10",
+                "--agent-json",
+            ],
+        )
+        .expect("agent-use query");
+        assert_eq!(value["status"].as_str(), Some("ok"), "{value:?}");
+        value["result_count"].as_u64().unwrap_or_default()
+    }
+
+    fn agent_use_query_result_paths(
+        data_root: &Path,
+        repo: &Path,
+        kind: &str,
+        query: &str,
+    ) -> BTreeSet<String> {
+        let value = run_agent_use_test_command(
+            data_root,
+            &[
+                "query",
+                kind,
+                query,
+                "--repo",
+                path_string(repo).as_str(),
+                "--limit",
+                "10",
+                "--agent-json",
+            ],
+        )
+        .expect("agent-use query");
+        assert_eq!(value["status"].as_str(), Some("ok"), "{value:?}");
+        value
+            .get("results")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|result| {
+                result
+                    .get("repo_relative_path")
+                    .or_else(|| result.get("file"))
+                    .or_else(|| result.get("path"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    fn path_evidence_total_count(db_path: &Path) -> u64 {
+        SqliteGraphStore::open_read_only(db_path)
+            .expect("open path evidence DB")
+            .count_path_evidence()
+            .expect("count path evidence")
     }
 
     fn write_candidate_spool_cli_fixture(root: &Path) -> PathBuf {

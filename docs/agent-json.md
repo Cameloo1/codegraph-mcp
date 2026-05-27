@@ -37,6 +37,9 @@ the truncation/lifecycle/evidence rules requires a version bump.
 
 Unknown optional fields are omitted, not set to `null`. Required fields use
 explicit booleans, empty arrays, or bounded strings instead of `null`.
+Telemetry fields that look measured must be labeled as measured, aggregated,
+or unknown. For example, unmeasured memory is reported as `memory: "unknown"`
+with `memory_measured: false`, not as a fake zero-byte measurement.
 
 Examples:
 

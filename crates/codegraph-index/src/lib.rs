@@ -38,8 +38,9 @@ use codegraph_query::{
     is_proof_path_relation, ExactGraphQueryEngine, GraphPath, TraversalDirection, TraversalStep,
 };
 use codegraph_store::{
-    inspect_db_preflight, DbPassport, DbPreflightReport, ExpectedDbPassport, GraphStore,
-    SqliteGraphStore, StoreError, DB_PASSPORT_VERSION, SCHEMA_VERSION,
+    classify_sqlite_access_problem, inspect_db_preflight, DbPassport, DbPreflightReport,
+    ExpectedDbPassport, GraphStore, SqliteGraphStore, StoreError, DB_PASSPORT_VERSION,
+    SCHEMA_VERSION,
 };
 use codegraph_store::{reset_sqlite_profile, take_sqlite_profile};
 use codegraph_vector::{
@@ -51,8 +52,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub mod scope;
-pub use scope::IndexScopeOptions;
 use scope::{IndexScope, IndexScopeRuntimeReport, ScopeAction, ScopePathKind};
+pub use scope::{
+    IndexScopeOptions, INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES,
+    SCOPE_POLICY_KIND_DEFAULT_WITH_OVERRIDES, SCOPE_TRUTH_STATUS_OVERRIDE_ONLY,
+};
 
 pub const UNBOUNDED_STORE_READ_LIMIT: usize = 1_000_000;
 const DERIVED_MUTATION_CLOSURE_MAX_OUTPUT_EDGES: usize = 100_000;
@@ -61,6 +65,12 @@ const DERIVED_DATAFLOW_CLOSURE_MAX_OUTPUT_EDGES: usize = 100_000;
 const DERIVED_DATAFLOW_CLOSURE_MAX_HOPS_PER_NODE: usize = 64;
 pub const DEFAULT_INDEX_BATCH_MAX_FILES: usize = 128;
 pub const DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES: usize = 32 * 1024 * 1024;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_LOCAL_FACTS_PER_FILE: usize = 20_000;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_RELATION_FANOUT_PER_FILE: usize = 4_096;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_DERIVED_EDGES_PER_FILE: usize = 20_000;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_SOURCE_SPANS_PER_FILE: usize = 20_000;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_EDGES_PER_STAGE: usize = 100_000;
+const GRAPH_OUTPUT_BUDGET_REPORTED_HIT_LIMIT: usize = 16;
 pub const DEFAULT_STORAGE_POLICY: &str = "proof:compact-proof-graph";
 pub const FILE_LIFECYCLE_STATE_KEY: &str = "file_lifecycle_state";
 pub const FILE_LIFECYCLE_STATE_CURRENT: &str = "current";
@@ -97,9 +107,19 @@ pub const CANDIDATE_SPOOL_DEFAULT_MAX_SYMBOLS_PER_FILE_PACKET: usize = 8;
 const CANDIDATE_SPOOL_QUERY_INDEX_SAFE_REBUILD_MAX_BYTES: u64 = 16 * 1024 * 1024;
 const CANDIDATE_SPOOL_QUERY_INDEX_SAFE_REBUILD_MAX_RECORDS: usize =
     CANDIDATE_SPOOL_DEFAULT_MAX_RECORDS;
+const RTDS_CLOSURE_FAILPOINT_ENV: &str = "CODEGRAPH_RTDS_CLOSURE_FAILPOINT";
+const DEFAULT_RTDS_CLOSURE_MAX_DIRTY_FILES: usize = 64;
+const DEFAULT_RTDS_CLOSURE_MAX_EDGES_INSPECTED: usize = 4_096;
+const DEFAULT_RTDS_CLOSURE_MAX_RELATION_CLASSES: usize = 6;
+const DEFAULT_RTDS_CLOSURE_MAX_WALL_MS: u64 = 250;
+const DEFAULT_RTDS_CLOSURE_MAX_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
+const DEFAULT_RTDS_CLOSURE_MAX_DB_ROWS_HYDRATED: usize = 8_192;
+const DEFAULT_RTDS_CLOSURE_MAX_PER_RELATION: usize = 1_024;
 
 thread_local! {
     static WRITE_PATH_CHAOS_FAILPOINT_OVERRIDE: RefCell<Option<String>> = RefCell::new(None);
+    static RTDS_CLOSURE_FAILPOINT_OVERRIDE: RefCell<Option<String>> = RefCell::new(None);
+    static RTDS_CLOSURE_BUDGET_OVERRIDE: RefCell<Option<RtdsDependencyClosureBudget>> = RefCell::new(None);
 }
 
 #[derive(Debug)]
@@ -190,6 +210,32 @@ fn write_path_chaos_store_failpoint(name: &str) -> Result<(), StoreError> {
     }
 }
 
+fn env_usize_or(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+fn env_u64_or(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+fn rtds_closure_failpoint_enabled(name: &str) -> bool {
+    if RTDS_CLOSURE_FAILPOINT_OVERRIDE.with(|override_cell| {
+        override_cell
+            .borrow()
+            .as_deref()
+            .is_some_and(|raw| raw == name)
+    }) {
+        return true;
+    }
+    std::env::var(RTDS_CLOSURE_FAILPOINT_ENV).ok().as_deref() == Some(name)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IndexSummary {
     pub repo_root: String,
@@ -220,9 +266,148 @@ pub struct IndexSummary {
     pub storage_policy: String,
     pub issue_counts: BTreeMap<String, usize>,
     pub issues: Vec<IndexIssue>,
+    pub graph_output_budgets: GraphOutputBudgetSummary,
     pub scope: Option<IndexScopeRuntimeReport>,
     pub candidate_spool: Option<CandidateSpoolSummary>,
     pub profile: Option<IndexProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphOutputBudgets {
+    pub max_local_facts_per_file: usize,
+    pub max_relation_fanout_per_file: usize,
+    pub max_derived_edges_per_file: usize,
+    pub max_source_spans_per_file: usize,
+    pub max_reducer_edges_per_stage: usize,
+}
+
+impl Default for GraphOutputBudgets {
+    fn default() -> Self {
+        Self {
+            max_local_facts_per_file: DEFAULT_GRAPH_OUTPUT_MAX_LOCAL_FACTS_PER_FILE,
+            max_relation_fanout_per_file: DEFAULT_GRAPH_OUTPUT_MAX_RELATION_FANOUT_PER_FILE,
+            max_derived_edges_per_file: DEFAULT_GRAPH_OUTPUT_MAX_DERIVED_EDGES_PER_FILE,
+            max_source_spans_per_file: DEFAULT_GRAPH_OUTPUT_MAX_SOURCE_SPANS_PER_FILE,
+            max_reducer_edges_per_stage: DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_EDGES_PER_STAGE,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphOutputBudgetHit {
+    pub repo_relative_path: String,
+    pub stage: String,
+    pub kind: String,
+    pub before: usize,
+    pub after: usize,
+    pub budget: usize,
+    pub omitted: usize,
+    pub claimability_label: String,
+}
+
+impl GraphOutputBudgetHit {
+    fn message(&self) -> String {
+        format!(
+            "{} hit {} budget at stage {}; omitted {} fact(s), before={}, after={}, budget={}",
+            self.repo_relative_path,
+            self.kind,
+            self.stage,
+            self.omitted,
+            self.before,
+            self.after,
+            self.budget
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphOutputBudgetSummary {
+    pub configured: GraphOutputBudgets,
+    pub source_batching_policy: String,
+    pub worker_dispatch_source_clone_policy: String,
+    pub files_degraded: usize,
+    pub local_fact_budget_hits: usize,
+    pub relation_fanout_budget_hits: usize,
+    pub derived_edge_budget_hits: usize,
+    pub source_span_budget_hits: usize,
+    pub reducer_edge_budget_hits: usize,
+    pub omitted_local_facts: usize,
+    pub omitted_relation_fanout_edges: usize,
+    pub omitted_derived_edges: usize,
+    pub omitted_source_span_facts: usize,
+    pub omitted_reducer_edges: usize,
+    pub claimability_label: String,
+    pub warnings: Vec<String>,
+    pub degraded_files: Vec<GraphOutputBudgetHit>,
+}
+
+impl GraphOutputBudgetSummary {
+    pub fn new(configured: GraphOutputBudgets) -> Self {
+        Self {
+            configured,
+            source_batching_policy: format!(
+                "bounded_batches:max_files={DEFAULT_INDEX_BATCH_MAX_FILES};max_source_bytes={DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES}"
+            ),
+            worker_dispatch_source_clone_policy:
+                "pending source buffers are moved into worker chunks without cloning".to_string(),
+            files_degraded: 0,
+            local_fact_budget_hits: 0,
+            relation_fanout_budget_hits: 0,
+            derived_edge_budget_hits: 0,
+            source_span_budget_hits: 0,
+            reducer_edge_budget_hits: 0,
+            omitted_local_facts: 0,
+            omitted_relation_fanout_edges: 0,
+            omitted_derived_edges: 0,
+            omitted_source_span_facts: 0,
+            omitted_reducer_edges: 0,
+            claimability_label: "full_graph_output_with_no_budget_degradation".to_string(),
+            warnings: Vec::new(),
+            degraded_files: Vec::new(),
+        }
+    }
+
+    fn record_hit(&mut self, hit: GraphOutputBudgetHit) {
+        match hit.kind.as_str() {
+            "local_facts_per_file" => {
+                self.local_fact_budget_hits += 1;
+                self.omitted_local_facts += hit.omitted;
+            }
+            "relation_fanout_per_file" => {
+                self.relation_fanout_budget_hits += 1;
+                self.omitted_relation_fanout_edges += hit.omitted;
+            }
+            "derived_edges_per_file" => {
+                self.derived_edge_budget_hits += 1;
+                self.omitted_derived_edges += hit.omitted;
+            }
+            "source_spans_per_file" => {
+                self.source_span_budget_hits += 1;
+                self.omitted_source_span_facts += hit.omitted;
+            }
+            "reducer_edges_per_stage" => {
+                self.reducer_edge_budget_hits += 1;
+                self.omitted_reducer_edges += hit.omitted;
+            }
+            _ => {}
+        }
+        if !self
+            .degraded_files
+            .iter()
+            .any(|existing| existing.repo_relative_path == hit.repo_relative_path)
+        {
+            self.files_degraded += 1;
+        }
+        self.claimability_label =
+            "graph_output_degraded_budget_hit_some_file_facts_nonclaimable".to_string();
+        let warning = hit.message();
+        if !self.warnings.contains(&warning) {
+            self.warnings.push(warning);
+        }
+        if self.degraded_files.len() < GRAPH_OUTPUT_BUDGET_REPORTED_HIT_LIMIT {
+            self.degraded_files.push(hit);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -602,6 +787,11 @@ pub struct IndexProfile {
     pub entities_per_sec: f64,
     pub edges_per_sec: f64,
     pub memory_bytes: Option<u64>,
+    pub memory_measured: bool,
+    pub memory_status: String,
+    pub memory_measurement_kind: String,
+    pub db_write_measurement: String,
+    pub fts_search_index_measurement: String,
     pub worker_count: usize,
     pub skipped_unchanged_files: usize,
     pub spans: Vec<PhaseTiming>,
@@ -718,6 +908,7 @@ pub struct IndexOptions {
     pub storage_mode: StorageMode,
     pub build_mode: IndexBuildMode,
     pub scope: IndexScopeOptions,
+    pub graph_output_budgets: GraphOutputBudgets,
     pub db_lifecycle: DbLifecycleOptions,
     pub candidate_spool_path: Option<PathBuf>,
     pub candidate_spool_policy: CandidateSpoolPolicy,
@@ -735,6 +926,7 @@ impl Default for IndexOptions {
             storage_mode: StorageMode::default(),
             build_mode: IndexBuildMode::default(),
             scope: IndexScopeOptions::default(),
+            graph_output_budgets: GraphOutputBudgets::default(),
             db_lifecycle: DbLifecycleOptions::default(),
             candidate_spool_path: None,
             candidate_spool_policy: CandidateSpoolPolicy::default(),
@@ -1644,6 +1836,26 @@ impl GlobalFactReductionPlan {
                 .contains(&normalize_graph_path(&edge.source_span.repo_relative_path))
         });
     }
+
+    fn apply_reducer_edge_budget(
+        &mut self,
+        stage: &str,
+        budget: usize,
+    ) -> Option<GraphOutputBudgetHit> {
+        let before = self.edges.len();
+        if before <= budget {
+            return None;
+        }
+        self.edges.truncate(budget);
+        Some(graph_budget_hit(
+            "<global>",
+            stage,
+            "reducer_edges_per_stage",
+            before,
+            self.edges.len(),
+            budget,
+        ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1838,6 +2050,235 @@ impl LocalFactBundle {
     }
 }
 
+fn apply_graph_output_budgets_to_extraction(
+    repo_relative_path: &str,
+    extraction: &mut BasicExtraction,
+    budgets: &GraphOutputBudgets,
+) -> Vec<GraphOutputBudgetHit> {
+    let mut hits = Vec::new();
+    apply_relation_fanout_budget(repo_relative_path, extraction, budgets, &mut hits);
+    apply_derived_edge_budget(repo_relative_path, extraction, budgets, &mut hits);
+    apply_local_fact_budget(repo_relative_path, extraction, budgets, &mut hits);
+    apply_source_span_budget(repo_relative_path, extraction, budgets, &mut hits);
+    if !hits.is_empty() {
+        annotate_graph_output_budget_hits(&mut extraction.file.metadata, budgets, &hits);
+    }
+    hits
+}
+
+fn graph_budget_hit(
+    repo_relative_path: &str,
+    stage: &str,
+    kind: &str,
+    before: usize,
+    after: usize,
+    budget: usize,
+) -> GraphOutputBudgetHit {
+    GraphOutputBudgetHit {
+        repo_relative_path: normalize_graph_path(repo_relative_path),
+        stage: stage.to_string(),
+        kind: kind.to_string(),
+        before,
+        after,
+        budget,
+        omitted: before.saturating_sub(after),
+        claimability_label: "degraded_file_nonclaimable_for_omitted_facts".to_string(),
+    }
+}
+
+fn apply_relation_fanout_budget(
+    repo_relative_path: &str,
+    extraction: &mut BasicExtraction,
+    budgets: &GraphOutputBudgets,
+    hits: &mut Vec<GraphOutputBudgetHit>,
+) {
+    let budget = budgets.max_relation_fanout_per_file;
+    if budget == 0 || extraction.edges.is_empty() {
+        return;
+    }
+    let before = extraction.edges.len();
+    let mut counts = BTreeMap::<String, usize>::new();
+    let mut retained = Vec::with_capacity(extraction.edges.len().min(budget));
+    for edge in std::mem::take(&mut extraction.edges) {
+        let key = format!("{}|{}", edge.head_id, edge.relation);
+        let count = counts.entry(key).or_default();
+        if *count < budget {
+            *count += 1;
+            retained.push(edge);
+        }
+    }
+    let after = retained.len();
+    extraction.edges = retained;
+    if after < before {
+        hits.push(graph_budget_hit(
+            repo_relative_path,
+            "local_extraction",
+            "relation_fanout_per_file",
+            before,
+            after,
+            budget,
+        ));
+    }
+}
+
+fn apply_derived_edge_budget(
+    repo_relative_path: &str,
+    extraction: &mut BasicExtraction,
+    budgets: &GraphOutputBudgets,
+    hits: &mut Vec<GraphOutputBudgetHit>,
+) {
+    let budget = budgets.max_derived_edges_per_file;
+    let before = extraction.edges.iter().filter(|edge| edge.derived).count();
+    if before <= budget {
+        return;
+    }
+    let mut retained_derived = 0usize;
+    extraction.edges.retain(|edge| {
+        if !edge.derived {
+            return true;
+        }
+        if retained_derived < budget {
+            retained_derived += 1;
+            true
+        } else {
+            false
+        }
+    });
+    hits.push(graph_budget_hit(
+        repo_relative_path,
+        "local_extraction",
+        "derived_edges_per_file",
+        before,
+        retained_derived,
+        budget,
+    ));
+}
+
+fn apply_local_fact_budget(
+    repo_relative_path: &str,
+    extraction: &mut BasicExtraction,
+    budgets: &GraphOutputBudgets,
+    hits: &mut Vec<GraphOutputBudgetHit>,
+) {
+    let budget = budgets.max_local_facts_per_file;
+    let before = extraction.entities.len() + extraction.edges.len();
+    if before <= budget {
+        return;
+    }
+    if extraction.entities.len() >= budget {
+        extraction.entities.truncate(budget);
+        extraction.edges.clear();
+    } else {
+        let allowed_edges = budget.saturating_sub(extraction.entities.len());
+        extraction.edges.truncate(allowed_edges);
+    }
+    retain_edges_with_present_entities(extraction);
+    let after = extraction.entities.len() + extraction.edges.len();
+    hits.push(graph_budget_hit(
+        repo_relative_path,
+        "local_extraction",
+        "local_facts_per_file",
+        before,
+        after,
+        budget,
+    ));
+}
+
+fn apply_source_span_budget(
+    repo_relative_path: &str,
+    extraction: &mut BasicExtraction,
+    budgets: &GraphOutputBudgets,
+    hits: &mut Vec<GraphOutputBudgetHit>,
+) {
+    let budget = budgets.max_source_spans_per_file;
+    let before = extraction_source_span_count(extraction);
+    if before <= budget {
+        return;
+    }
+    let mut seen = BTreeSet::<String>::new();
+    extraction.entities.retain(|entity| {
+        let Some(span) = &entity.source_span else {
+            return true;
+        };
+        let key = span.to_string();
+        if seen.contains(&key) || seen.len() < budget {
+            seen.insert(key);
+            true
+        } else {
+            false
+        }
+    });
+    retain_edges_with_present_entities(extraction);
+    extraction.edges.retain(|edge| {
+        let key = edge.source_span.to_string();
+        if seen.contains(&key) || seen.len() < budget {
+            seen.insert(key);
+            true
+        } else {
+            false
+        }
+    });
+    retain_edges_with_present_entities(extraction);
+    let after = extraction_source_span_count(extraction);
+    hits.push(graph_budget_hit(
+        repo_relative_path,
+        "local_extraction",
+        "source_spans_per_file",
+        before,
+        after,
+        budget,
+    ));
+}
+
+fn retain_edges_with_present_entities(extraction: &mut BasicExtraction) {
+    let entity_ids = extraction
+        .entities
+        .iter()
+        .map(|entity| entity.id.as_str())
+        .collect::<BTreeSet<_>>();
+    extraction.edges.retain(|edge| {
+        entity_ids.contains(edge.head_id.as_str()) && entity_ids.contains(edge.tail_id.as_str())
+    });
+}
+
+fn extraction_source_span_count(extraction: &BasicExtraction) -> usize {
+    let mut spans = BTreeSet::<String>::new();
+    for entity in &extraction.entities {
+        if let Some(span) = &entity.source_span {
+            spans.insert(span.to_string());
+        }
+    }
+    for edge in &extraction.edges {
+        spans.insert(edge.source_span.to_string());
+    }
+    spans.len()
+}
+
+fn annotate_graph_output_budget_hits(
+    metadata: &mut Metadata,
+    budgets: &GraphOutputBudgets,
+    hits: &[GraphOutputBudgetHit],
+) {
+    metadata.insert("graph_output_budget_hit".to_string(), json!(true));
+    metadata.insert(
+        "claim_state".to_string(),
+        json!("graph_output_degraded_budget_hit"),
+    );
+    metadata.insert(
+        "graph_output_claimability".to_string(),
+        json!("degraded_file_nonclaimable_for_omitted_facts"),
+    );
+    metadata.insert("graph_relation_claims".to_string(), json!("partial"));
+    metadata.insert(
+        "graph_output_budget_policy".to_string(),
+        serde_json::to_value(budgets).unwrap_or(Value::Null),
+    );
+    metadata.insert(
+        "graph_output_budget_hits".to_string(),
+        serde_json::to_value(hits).unwrap_or(Value::Null),
+    );
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PreliminarySymbolTable {
     pub by_id: BTreeMap<String, LocalFactSymbol>,
@@ -1893,6 +2334,7 @@ pub struct ParseExtractStat {
     pub syntax_error: bool,
     pub skipped: bool,
     pub message: Option<String>,
+    pub graph_output_budget_hits: Vec<GraphOutputBudgetHit>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1901,6 +2343,7 @@ pub struct IncrementalIndexSummary {
     pub repo_root: String,
     pub db_path: String,
     pub changed_files: Vec<String>,
+    pub dependency_closure: RtdsDependencyClosureSummary,
     pub files_seen: usize,
     pub files_walked: usize,
     pub files_metadata_unchanged: usize,
@@ -1930,6 +2373,99 @@ pub struct IncrementalIndexSummary {
     pub storage_audit_ran: bool,
     pub integrity_check_ran: bool,
     pub profile: Option<IndexProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RtdsDependencyClosureBudget {
+    pub max_dirty_files: usize,
+    pub max_edges_inspected: usize,
+    pub max_relation_classes: usize,
+    pub max_wall_ms: u64,
+    pub max_source_bytes: u64,
+    pub max_db_rows_hydrated: usize,
+    pub max_per_relation: usize,
+}
+
+impl Default for RtdsDependencyClosureBudget {
+    fn default() -> Self {
+        if let Some(budget) =
+            RTDS_CLOSURE_BUDGET_OVERRIDE.with(|override_cell| override_cell.borrow().clone())
+        {
+            return budget;
+        }
+        Self {
+            max_dirty_files: env_usize_or(
+                "CODEGRAPH_RTDS_CLOSURE_MAX_DIRTY_FILES",
+                DEFAULT_RTDS_CLOSURE_MAX_DIRTY_FILES,
+            ),
+            max_edges_inspected: env_usize_or(
+                "CODEGRAPH_RTDS_CLOSURE_MAX_EDGES_INSPECTED",
+                DEFAULT_RTDS_CLOSURE_MAX_EDGES_INSPECTED,
+            ),
+            max_relation_classes: env_usize_or(
+                "CODEGRAPH_RTDS_CLOSURE_MAX_RELATION_CLASSES",
+                DEFAULT_RTDS_CLOSURE_MAX_RELATION_CLASSES,
+            ),
+            max_wall_ms: env_u64_or(
+                "CODEGRAPH_RTDS_CLOSURE_MAX_WALL_MS",
+                DEFAULT_RTDS_CLOSURE_MAX_WALL_MS,
+            ),
+            max_source_bytes: env_u64_or(
+                "CODEGRAPH_RTDS_CLOSURE_MAX_SOURCE_BYTES",
+                DEFAULT_RTDS_CLOSURE_MAX_SOURCE_BYTES,
+            ),
+            max_db_rows_hydrated: env_usize_or(
+                "CODEGRAPH_RTDS_CLOSURE_MAX_DB_ROWS_HYDRATED",
+                DEFAULT_RTDS_CLOSURE_MAX_DB_ROWS_HYDRATED,
+            ),
+            max_per_relation: env_usize_or(
+                "CODEGRAPH_RTDS_CLOSURE_MAX_PER_RELATION",
+                DEFAULT_RTDS_CLOSURE_MAX_PER_RELATION,
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RtdsDependencyClosureSummary {
+    pub status: String,
+    pub scope_version: String,
+    pub requested_changed_files: Vec<String>,
+    pub closure_files_considered: Vec<String>,
+    pub closure_files_updated: Vec<String>,
+    pub closure_edges_inspected: usize,
+    pub closure_relation_classes: Vec<String>,
+    pub closure_budget_hit: bool,
+    pub degraded_relation_classes: Vec<String>,
+    pub skipped_relation_classes: Vec<String>,
+    pub closure_unknowns: Vec<String>,
+    pub budgets: RtdsDependencyClosureBudget,
+    pub full_repo_fallback_avoided: bool,
+    pub fallback_avoided_reason: String,
+    pub manual_full_index_recommendation: Option<String>,
+}
+
+impl Default for RtdsDependencyClosureSummary {
+    fn default() -> Self {
+        Self {
+            status: "not_run".to_string(),
+            scope_version: "rtds_dependency_closure_v1".to_string(),
+            requested_changed_files: Vec::new(),
+            closure_files_considered: Vec::new(),
+            closure_files_updated: Vec::new(),
+            closure_edges_inspected: 0,
+            closure_relation_classes: Vec::new(),
+            closure_budget_hit: false,
+            degraded_relation_classes: Vec::new(),
+            skipped_relation_classes: Vec::new(),
+            closure_unknowns: Vec::new(),
+            budgets: RtdsDependencyClosureBudget::default(),
+            full_repo_fallback_avoided: true,
+            fallback_avoided_reason: "bounded_dependency_closure_v1_does_not_silently_full_reindex"
+                .to_string(),
+            manual_full_index_recommendation: None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -2285,6 +2821,7 @@ fn index_repo_to_existing_db_with_options(
         storage_policy: options.storage_mode.storage_policy().to_string(),
         issue_counts: BTreeMap::new(),
         issues: Vec::new(),
+        graph_output_budgets: GraphOutputBudgetSummary::new(options.graph_output_budgets.clone()),
         scope: None,
         candidate_spool: None,
         profile: None,
@@ -2810,6 +3347,12 @@ fn index_repo_to_existing_db_with_options(
             let mut import_plan =
                 reduce_static_import_edges_from_workspace(repo_root, &resolver_workspace)?;
             import_plan.sort();
+            if let Some(hit) = import_plan.apply_reducer_edge_budget(
+                "reduce_static_import_edges",
+                options.graph_output_budgets.max_reducer_edges_per_stage,
+            ) {
+                record_graph_output_budget_hit(&mut summary, &options, hit);
+            }
             phase_profile.add_duration(
                 "reduce_static_import_edges",
                 stage_start.elapsed(),
@@ -2827,6 +3370,12 @@ fn index_repo_to_existing_db_with_options(
             let mut security_plan =
                 reduce_security_edges_from_workspace(repo_root, &resolver_workspace)?;
             security_plan.sort();
+            if let Some(hit) = security_plan.apply_reducer_edge_budget(
+                "reduce_security_edges",
+                options.graph_output_budgets.max_reducer_edges_per_stage,
+            ) {
+                record_graph_output_budget_hit(&mut summary, &options, hit);
+            }
             phase_profile.add_duration(
                 "reduce_security_edges",
                 stage_start.elapsed(),
@@ -2843,6 +3392,12 @@ fn index_repo_to_existing_db_with_options(
             emit_post_local_stage_started(&options, "reduce_test_edges");
             let mut test_plan = reduce_test_edges_from_workspace(repo_root, &resolver_workspace)?;
             test_plan.sort();
+            if let Some(hit) = test_plan.apply_reducer_edge_budget(
+                "reduce_test_edges",
+                options.graph_output_budgets.max_reducer_edges_per_stage,
+            ) {
+                record_graph_output_budget_hit(&mut summary, &options, hit);
+            }
             phase_profile.add_duration(
                 "reduce_test_edges",
                 stage_start.elapsed(),
@@ -2919,6 +3474,12 @@ fn index_repo_to_existing_db_with_options(
             emit_post_local_stage_started(&options, "reduce_derived_mutation_edges");
             let mut derived_plan = reduce_derived_mutation_edges_from_store(&store)?;
             derived_plan.sort();
+            if let Some(hit) = derived_plan.apply_reducer_edge_budget(
+                "reduce_derived_mutation_edges",
+                options.graph_output_budgets.max_reducer_edges_per_stage,
+            ) {
+                record_graph_output_budget_hit(&mut summary, &options, hit);
+            }
             phase_profile.add_duration(
                 "reduce_derived_mutation_edges",
                 stage_start.elapsed(),
@@ -2990,6 +3551,18 @@ fn index_repo_to_existing_db_with_options(
         })();
         match post_local_result {
             Ok(result) => {
+                emit_index_progress(
+                    &options,
+                    json!({
+                        "event": "transaction_commit_started",
+                        "durability_status": "commit_starting",
+                        "visible_db_mutation_claim": if bulk_durability == BulkIndexLoadDurability::HiddenAtomicColdTemp {
+                            "hidden_temp_db_commit_not_visible_until_publish"
+                        } else {
+                            "visible_db_transaction_commit_starting"
+                        },
+                    }),
+                );
                 let commit_start = Instant::now();
                 if let Err(error) = store.commit_bulk_index_transaction() {
                     let _ = store.rollback_bulk_index_transaction();
@@ -2997,6 +3570,23 @@ fn index_repo_to_existing_db_with_options(
                 }
                 phase_profile.add_duration("transaction_commit", commit_start.elapsed(), 1, 0);
                 db_write_ms += commit_start.elapsed().as_millis();
+                emit_index_progress(
+                    &options,
+                    json!({
+                        "event": "transaction_commit_completed",
+                        "elapsed_ms": commit_start.elapsed().as_millis(),
+                        "durability_status": if bulk_durability == BulkIndexLoadDurability::HiddenAtomicColdTemp {
+                            "committed_to_hidden_temp_db"
+                        } else {
+                            "committed_to_visible_db"
+                        },
+                        "visible_db_mutation_claim": if bulk_durability == BulkIndexLoadDurability::HiddenAtomicColdTemp {
+                            "not_visible_until_atomic_publish"
+                        } else {
+                            "visible_db_updated_by_committed_transaction"
+                        },
+                    }),
+                );
                 result
             }
             Err(error) => {
@@ -3008,10 +3598,37 @@ fn index_repo_to_existing_db_with_options(
         let stale_deleted = delete_indexed_files_by_path(&store, &stale_cleanup_paths)?;
         let mut import_plan = reduce_static_import_edges_from_store(repo_root, &store)?;
         import_plan.sort();
+        if let Some(hit) = import_plan.apply_reducer_edge_budget(
+            "reduce_static_import_edges",
+            options.graph_output_budgets.max_reducer_edges_per_stage,
+        ) {
+            record_graph_output_budget_hit(&mut summary, &options, hit);
+        }
         let mut security_plan = reduce_security_edges_from_store(repo_root, &store)?;
         security_plan.sort();
+        if let Some(hit) = security_plan.apply_reducer_edge_budget(
+            "reduce_security_edges",
+            options.graph_output_budgets.max_reducer_edges_per_stage,
+        ) {
+            record_graph_output_budget_hit(&mut summary, &options, hit);
+        }
         let mut test_plan = reduce_test_edges_from_store(repo_root, &store)?;
         test_plan.sort();
+        if let Some(hit) = test_plan.apply_reducer_edge_budget(
+            "reduce_test_edges",
+            options.graph_output_budgets.max_reducer_edges_per_stage,
+        ) {
+            record_graph_output_budget_hit(&mut summary, &options, hit);
+        }
+        emit_index_progress(
+            &options,
+            json!({
+                "event": "transaction_commit_started",
+                "durability_status": "commit_starting",
+                "visible_db_mutation_claim": "visible_db_transaction_commit_starting",
+            }),
+        );
+        let transaction_start = Instant::now();
         let (import_resolution, security_resolution, test_resolution, derived_resolution) =
             store.transaction(|tx| {
                 let import_resolution = apply_global_fact_reduction_plan_to_writer(
@@ -3035,6 +3652,12 @@ fn index_repo_to_existing_db_with_options(
                 let mut derived_plan = reduce_derived_mutation_edges_from_store(tx)
                     .map_err(index_error_as_store_error)?;
                 derived_plan.sort();
+                if let Some(hit) = derived_plan.apply_reducer_edge_budget(
+                    "reduce_derived_mutation_edges",
+                    options.graph_output_budgets.max_reducer_edges_per_stage,
+                ) {
+                    record_graph_output_budget_hit(&mut summary, &options, hit);
+                }
                 let derived_resolution = apply_global_fact_reduction_plan_to_writer(
                     tx,
                     &derived_plan,
@@ -3055,6 +3678,15 @@ fn index_repo_to_existing_db_with_options(
                     derived_resolution,
                 ))
             })?;
+        emit_index_progress(
+            &options,
+            json!({
+                "event": "transaction_commit_completed",
+                "elapsed_ms": transaction_start.elapsed().as_millis(),
+                "durability_status": "committed_to_visible_db",
+                "visible_db_mutation_claim": "visible_db_updated_by_committed_transaction",
+            }),
+        );
         (
             stale_deleted,
             import_resolution,
@@ -3081,6 +3713,14 @@ fn index_repo_to_existing_db_with_options(
 
     if bulk_index_load_started {
         let index_finish_start = Instant::now();
+        emit_index_progress(
+            &options,
+            json!({
+                "event": "fts_build_started",
+                "stage": "finish_bulk_index_load",
+                "durability_status": "post_commit_index_build_started",
+            }),
+        );
         // Recreate default indexes after all local and global facts are visible.
         // Production proof-build-only keeps publish-time maintenance light; the
         // validation build mode retains ANALYZE/checkpoint-heavy verification.
@@ -3091,6 +3731,18 @@ fn index_repo_to_existing_db_with_options(
         db_write_ms += index_finish_start.elapsed().as_millis();
         phase_profile.add_duration("index_creation", index_finish_start.elapsed(), 1, 0);
         phase_profile.add_duration("fts_build", index_finish_start.elapsed(), 1, 0);
+        emit_index_progress(
+            &options,
+            json!({
+                "event": "fts_built",
+                "elapsed_ms": index_finish_start.elapsed().as_millis(),
+                "durability_status": if bulk_durability == BulkIndexLoadDurability::HiddenAtomicColdTemp {
+                    "built_in_hidden_temp_db"
+                } else {
+                    "built_in_visible_db"
+                },
+            }),
+        );
 
         let reconciliation_start = Instant::now();
         summary.entities = usize::try_from(store.count_entities()?).unwrap_or(usize::MAX);
@@ -3105,20 +3757,47 @@ fn index_repo_to_existing_db_with_options(
 
     phase_profile.extend_sqlite_profile();
     if options.profile {
+        let legacy_db_write_bucket_ms = db_write_ms;
+        phase_profile.add_ms(
+            "legacy_db_write_aggregate",
+            legacy_db_write_bucket_ms as f64,
+            1,
+            0,
+        );
         let total_wall_ms = total_start.elapsed().as_millis();
+        let measured_db_write_ms = phase_profile.sum_spans_ms_u128(DB_WRITE_PROFILE_SPANS);
+        let measured_fts_search_index_ms = phase_profile.span_ms_u128("fts_build");
+        let memory_bytes = current_process_memory_bytes();
         summary.profile = Some(IndexProfile {
             file_discovery_ms,
             parse_ms,
             extraction_ms,
-            semantic_resolver_ms: 0,
-            db_write_ms,
-            fts_search_index_ms: db_write_ms,
+            semantic_resolver_ms: phase_profile.span_ms_u128("reducer"),
+            db_write_ms: measured_db_write_ms,
+            fts_search_index_ms: measured_fts_search_index_ms,
             vector_signature_ms: 0,
             total_wall_ms,
             files_per_sec: rate_per_second(summary.files_indexed, total_wall_ms),
             entities_per_sec: rate_per_second(summary.entities, total_wall_ms),
             edges_per_sec: rate_per_second(summary.edges, total_wall_ms),
-            memory_bytes: current_process_memory_bytes(),
+            memory_bytes,
+            memory_measured: memory_bytes.is_some(),
+            memory_status: if memory_bytes.is_some() {
+                "measured".to_string()
+            } else {
+                "unknown".to_string()
+            },
+            memory_measurement_kind: if memory_bytes.is_some() {
+                "process_snapshot_not_peak".to_string()
+            } else {
+                "not_measured".to_string()
+            },
+            db_write_measurement: "measured_sql_write_aggregate".to_string(),
+            fts_search_index_measurement: if measured_fts_search_index_ms > 0 {
+                "measured_fts_build_span".to_string()
+            } else {
+                "unknown_or_not_run".to_string()
+            },
             worker_count: max_worker_count,
             skipped_unchanged_files,
             spans: phase_profile.clone().into_spans(),
@@ -3199,6 +3878,16 @@ fn index_repo_to_atomic_cold_db(
             let finalize_result = (|| -> Result<(), IndexError> {
                 write_path_chaos_failpoint("cold_after_temp_db_write_before_validation")?;
                 let temp_finalize_start = Instant::now();
+                emit_index_progress(
+                    &spool_options,
+                    json!({
+                        "event": "temp_db_validation_started",
+                        "temp_db_path": path_string(&temp_db_path),
+                        "final_db_path": path_string(final_db_path),
+                        "durability_status": "hidden_temp_db_committed_not_published",
+                        "visible_db_mutation_claim": "old_good_db_still_visible_until_publish",
+                    }),
+                );
                 {
                     let temp_store = SqliteGraphStore::open(&temp_db_path)?;
                     let checkpoint_start = Instant::now();
@@ -3238,7 +3927,27 @@ fn index_repo_to_atomic_cold_db(
                     0,
                     "checkpoint and integrity gate on hidden temp DB before visible replacement",
                 );
+                emit_index_progress(
+                    &spool_options,
+                    json!({
+                        "event": "temp_db_validation_completed",
+                        "elapsed_ms": temp_finalize_start.elapsed().as_millis(),
+                        "temp_db_path": path_string(&temp_db_path),
+                        "durability_status": "hidden_temp_db_validated_not_published",
+                        "visible_db_mutation_claim": "old_good_db_still_visible_until_publish",
+                    }),
+                );
                 write_path_chaos_failpoint("cold_after_validation_before_publish")?;
+                emit_index_progress(
+                    &spool_options,
+                    json!({
+                        "event": "publish_started",
+                        "temp_db_path": path_string(&temp_db_path),
+                        "final_db_path": path_string(final_db_path),
+                        "durability_status": "atomic_publish_starting",
+                        "visible_db_mutation_claim": "old_good_db_visible_until_rename_succeeds",
+                    }),
+                );
                 let replace_start = Instant::now();
                 publish_atomic_sqlite_db(&temp_db_path, final_db_path)?;
                 published = true;
@@ -3257,6 +3966,26 @@ fn index_repo_to_atomic_cold_db(
                     1,
                     0,
                     "production artifact publish is the atomic DB replace step",
+                );
+                emit_index_progress(
+                    &spool_options,
+                    json!({
+                        "event": "temp_db_published",
+                        "elapsed_ms": replace_start.elapsed().as_millis(),
+                        "final_db_path": path_string(final_db_path),
+                        "durability_status": "published_to_visible_db",
+                        "visible_db_updated": true,
+                        "visible_db_mutation_claim": "visible_db_updated_after_atomic_publish",
+                    }),
+                );
+                emit_index_progress(
+                    &spool_options,
+                    json!({
+                        "event": "visible_db_updated",
+                        "final_db_path": path_string(final_db_path),
+                        "durability_status": "published_to_visible_db",
+                        "claimability": "pending_final_status_check",
+                    }),
                 );
                 write_path_chaos_failpoint("cold_after_publish_before_final_status")?;
                 let final_finalize_start = Instant::now();
@@ -3531,6 +4260,20 @@ impl IndexPhaseRecorder {
         }
     }
 
+    fn span_ms_u128(&self, name: &str) -> u128 {
+        self.spans
+            .get(name)
+            .map(|span| span.elapsed_ms as u128)
+            .unwrap_or(0)
+    }
+
+    fn sum_spans_ms_u128(&self, names: &[&str]) -> u128 {
+        names
+            .iter()
+            .map(|name| self.span_ms_u128(name))
+            .sum::<u128>()
+    }
+
     fn extend_sqlite_profile(&mut self) {
         for span in take_sqlite_profile() {
             match span.name.as_str() {
@@ -3743,6 +4486,31 @@ const REQUIRED_PROFILE_SPANS: &[&str] = &[
     "relation_sampler_skipped",
     "path_evidence_sampler_skipped",
     "cgc_comparison_skipped",
+];
+
+const DB_WRITE_PROFILE_SPANS: &[&str] = &[
+    "stale_fact_delete",
+    "file_manifest_upsert",
+    "text_evidence_upsert",
+    "entity_insert",
+    "proof_entity_insert",
+    "edge_insert",
+    "proof_edge_insert",
+    "source_span_insert",
+    "path_evidence_insert",
+    "path_evidence_edges_insert",
+    "path_evidence_symbols_insert",
+    "path_evidence_tests_insert",
+    "file_template_entity_mapping_inserts",
+    "template_entities_insert",
+    "template_edges_insert",
+    "symbol_dict_insert",
+    "qname_prefix_dict_insert",
+    "qualified_name_dict_insert",
+    "dictionary_lookup_insert",
+    "content_template_upsert",
+    "upsert_index_state",
+    "upsert_db_passport",
 ];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -5005,7 +5773,22 @@ fn process_index_batch(
         batch.files,
         worker_count,
         options.profile && options.json,
+        &options.graph_output_budgets,
     )?;
+    let files_parsed_count = stats
+        .iter()
+        .filter(|stat| !stat.parse_error && !stat.skipped)
+        .count();
+    emit_index_progress(
+        options,
+        json!({
+            "event": "files_parsed",
+            "batch_index": batch_index,
+            "files_parsed": files_parsed_count,
+            "parse_errors": stats.iter().filter(|stat| stat.parse_error).count(),
+            "syntax_errors": stats.iter().filter(|stat| stat.syntax_error).count(),
+        }),
+    );
     let mut spool_chunks = Vec::new();
     for bundle in &local_bundles {
         spool_chunks.extend(candidate_spool_chunks_for_local_bundle(bundle)?);
@@ -5020,11 +5803,23 @@ fn process_index_batch(
     );
     let reduce_start = Instant::now();
     let reduced_plan = reduce_local_fact_bundles(local_bundles);
-    profile.add_duration(
-        "reducer",
-        reduce_start.elapsed(),
-        1,
-        reduced_plan.bundles.len() as u64,
+    let bundles_reduced = reduced_plan.bundles.len();
+    let edges_staged = reduced_plan
+        .bundles
+        .iter()
+        .map(|bundle| bundle.extraction.edges.len())
+        .sum::<usize>()
+        + reduced_plan.global_facts.edges.len();
+    profile.add_duration("reducer", reduce_start.elapsed(), 1, bundles_reduced as u64);
+    emit_index_progress(
+        options,
+        json!({
+            "event": "bundles_reduced",
+            "batch_index": batch_index,
+            "bundles_reduced": bundles_reduced,
+            "edges_staged": edges_staged,
+            "durability_status": "staged_in_memory_not_durably_committed",
+        }),
     );
     let parse_ms = stats.iter().map(|stat| stat.parse_ms).sum::<u128>();
     let extraction_ms = stats.iter().map(|stat| stat.extraction_ms).sum::<u128>();
@@ -5054,6 +5849,10 @@ fn process_index_batch(
         .collect::<Vec<_>>();
 
     for stat in &stats {
+        for hit in &stat.graph_output_budget_hits {
+            record_graph_output_budget_hit(summary, options, hit.clone());
+        }
+
         if stat.parse_error {
             summary.parse_errors += 1;
             summary.files_skipped += 1;
@@ -5110,21 +5909,20 @@ fn process_index_batch(
     summary.batches_completed += 1;
     emit_index_progress(
         options,
-        json!({
-            "event": "index_batch_completed",
-            "batch_index": batch_index,
-            "files_indexed": persisted.files,
-            "entities": persisted.entities,
-            "edges": persisted.edges,
-            "duplicate_edges_upserted": persisted.duplicate_edges_upserted,
-            "parse_errors": stats.iter().filter(|stat| stat.parse_error).count(),
-            "syntax_errors": stats.iter().filter(|stat| stat.syntax_error).count(),
-            "db_write_ms": db_write_ms,
-            "parse_ms": parse_ms,
-            "extraction_ms": extraction_ms,
-            "bundle_ms": bundle_ms,
-            "worker_count": worker_count,
-        }),
+        index_batch_processed_progress_event(
+            batch_index,
+            &persisted,
+            stats.iter().filter(|stat| stat.parse_error).count(),
+            stats.iter().filter(|stat| stat.syntax_error).count(),
+            db_write_ms,
+            parse_ms,
+            extraction_ms,
+            bundle_ms,
+            worker_count,
+            files_parsed_count,
+            bundles_reduced,
+            edges_staged,
+        ),
     );
 
     Ok(IndexBatchProfile {
@@ -5133,6 +5931,44 @@ fn process_index_batch(
         bundle_ms,
         db_write_ms,
         worker_count,
+    })
+}
+
+fn index_batch_processed_progress_event(
+    batch_index: usize,
+    persisted: &PersistedBatchSummary,
+    parse_errors: usize,
+    syntax_errors: usize,
+    db_write_ms: u128,
+    parse_ms: u128,
+    extraction_ms: u128,
+    bundle_ms: u128,
+    worker_count: usize,
+    files_parsed: usize,
+    bundles_reduced: usize,
+    edges_staged: usize,
+) -> Value {
+    json!({
+        "event": "index_batch_processed",
+        "batch_progress_status": "processed_not_durably_committed",
+        "durability_status": "staged_in_open_transaction",
+        "visible_db_mutation_claim": "not_claimed_until_commit_or_publish",
+        "batch_index": batch_index,
+        "files_parsed": files_parsed,
+        "bundles_reduced": bundles_reduced,
+        "edges_staged": edges_staged,
+        "edges_inserted": persisted.edges,
+        "files_indexed": persisted.files,
+        "entities": persisted.entities,
+        "edges": persisted.edges,
+        "duplicate_edges_upserted": persisted.duplicate_edges_upserted,
+        "parse_errors": parse_errors,
+        "syntax_errors": syntax_errors,
+        "db_write_ms": db_write_ms,
+        "parse_ms": parse_ms,
+        "extraction_ms": extraction_ms,
+        "bundle_ms": bundle_ms,
+        "worker_count": worker_count,
     })
 }
 
@@ -5669,6 +6505,22 @@ fn record_index_issue(
     summary.issues.push(issue);
 }
 
+fn record_graph_output_budget_hit(
+    summary: &mut IndexSummary,
+    options: &IndexOptions,
+    hit: GraphOutputBudgetHit,
+) {
+    summary.graph_output_budgets.record_hit(hit.clone());
+    record_index_issue(
+        summary,
+        options,
+        hit.repo_relative_path.clone(),
+        "graph_output_budget_hit",
+        hit.message(),
+        "indexed_with_degraded_graph_output_budget",
+    );
+}
+
 fn emit_index_progress(options: &IndexOptions, event: Value) {
     if options.profile && options.json {
         eprintln!("{event}");
@@ -5735,13 +6587,19 @@ pub fn parse_extract_pending_files(
     pending: Vec<PendingIndexFile>,
     worker_count: usize,
 ) -> Result<(Vec<IndexedFileOutput>, Vec<ParseExtractStat>), IndexError> {
-    parse_extract_pending_files_with_progress(pending, worker_count, false)
+    parse_extract_pending_files_with_progress(
+        pending,
+        worker_count,
+        false,
+        &GraphOutputBudgets::default(),
+    )
 }
 
 fn parse_extract_pending_files_with_progress(
     mut pending: Vec<PendingIndexFile>,
     worker_count: usize,
     emit_profile_json: bool,
+    graph_output_budgets: &GraphOutputBudgets,
 ) -> Result<(Vec<IndexedFileOutput>, Vec<ParseExtractStat>), IndexError> {
     pending.sort_by(|left, right| left.repo_relative_path.cmp(&right.repo_relative_path));
     if pending.is_empty() {
@@ -5751,8 +6609,16 @@ fn parse_extract_pending_files_with_progress(
     let worker_count = worker_count.max(1).min(pending.len());
     let chunk_size = pending.len().div_ceil(worker_count);
     let mut handles = Vec::new();
-    for chunk in pending.chunks(chunk_size) {
-        let work = chunk.to_vec();
+    let mut worker_chunks = Vec::new();
+    for _ in 0..worker_count {
+        worker_chunks.push(Vec::new());
+    }
+    for (index, file) in pending.into_iter().enumerate() {
+        let worker_index = index / chunk_size;
+        worker_chunks[worker_index].push(file);
+    }
+    for work in worker_chunks.into_iter().filter(|chunk| !chunk.is_empty()) {
+        let graph_output_budgets = graph_output_budgets.clone();
         handles.push(thread::spawn(move || {
             let parser = TreeSitterParser;
             let mut outputs = Vec::new();
@@ -5818,6 +6684,7 @@ fn parse_extract_pending_files_with_progress(
                         syntax_error: false,
                         skipped: false,
                         message: None,
+                        graph_output_budget_hits: Vec::new(),
                     });
                     continue;
                 }
@@ -5884,6 +6751,7 @@ fn parse_extract_pending_files_with_progress(
                         syntax_error: false,
                         skipped: false,
                         message: Some("graph_extraction_skipped_budget".to_string()),
+                        graph_output_budget_hits: Vec::new(),
                     });
                     continue;
                 }
@@ -5899,6 +6767,11 @@ fn parse_extract_pending_files_with_progress(
                         extraction.file.metadata = file_manifest_metadata_with_parser_status(
                             file.modified_unix_nanos.clone(),
                             extraction.file.metadata.clone(),
+                        );
+                        let graph_output_budget_hits = apply_graph_output_budgets_to_extraction(
+                            &file.repo_relative_path,
+                            &mut extraction,
+                            &graph_output_budgets,
                         );
                         let extraction_ms = extraction_start.elapsed().as_millis();
                         let extracted_repo_relative_path = parsed.repo_relative_path.clone();
@@ -5939,6 +6812,7 @@ fn parse_extract_pending_files_with_progress(
                             syntax_error,
                             skipped: false,
                             message: None,
+                            graph_output_budget_hits,
                         });
                     }
                     Ok(None) => {
@@ -5967,6 +6841,7 @@ fn parse_extract_pending_files_with_progress(
                             syntax_error: false,
                             skipped: true,
                             message: Some("unsupported language after detection".to_string()),
+                            graph_output_budget_hits: Vec::new(),
                         });
                     }
                     Err(error) => {
@@ -6027,6 +6902,7 @@ fn parse_extract_pending_files_with_progress(
                             syntax_error: false,
                             skipped: false,
                             message: Some(error_message),
+                            graph_output_budget_hits: Vec::new(),
                         });
                     }
                 }
@@ -6160,6 +7036,46 @@ fn cleanup_facts_for_path(
     Ok(true)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn cleanup_missing_indexed_paths_to_writer(
+    store: &SqliteGraphStore,
+    cache: &IncrementalIndexCache,
+    repo_root: &Path,
+    changed_paths: &BTreeSet<String>,
+    summary: &mut IncrementalIndexSummary,
+    changed_fact_paths: &mut BTreeSet<String>,
+    removed_cache_entity_ids: &mut Vec<String>,
+    changed_static_resolver_inputs: &mut bool,
+    phase_profile: &mut IndexPhaseRecorder,
+) -> Result<usize, IndexError> {
+    let mut cleaned = 0usize;
+    for file in store.list_files(UNBOUNDED_STORE_READ_LIMIT)? {
+        let repo_relative_path = normalize_graph_path(&file.repo_relative_path);
+        if changed_paths.contains(&repo_relative_path) {
+            continue;
+        }
+        if repo_root.join(&repo_relative_path).exists() {
+            continue;
+        }
+        if cleanup_facts_for_path(
+            store,
+            cache,
+            &repo_relative_path,
+            PathCleanupReason::Deleted,
+            summary,
+            changed_fact_paths,
+            removed_cache_entity_ids,
+            changed_static_resolver_inputs,
+            phase_profile,
+        )? {
+            summary.deleted_file_facts_removed += 1;
+            summary.files_deleted += 1;
+            cleaned += 1;
+        }
+    }
+    Ok(cleaned)
+}
+
 pub fn update_changed_files(
     repo_path: &Path,
     changed_paths: &[PathBuf],
@@ -6224,6 +7140,7 @@ pub fn update_changed_files_with_cache_to_db(
         repo_root: path_string(&repo_root),
         db_path: path_string(&db_path),
         changed_files: Vec::new(),
+        dependency_closure: RtdsDependencyClosureSummary::default(),
         files_seen: 0,
         files_walked: 0,
         files_metadata_unchanged: 0,
@@ -6256,16 +7173,31 @@ pub fn update_changed_files_with_cache_to_db(
     };
 
     let metadata_start = Instant::now();
-    let mut normalized = changed_paths
-        .iter()
-        .map(|path| normalize_changed_path(&repo_root, path))
-        .collect::<Result<Vec<_>, _>>()?;
-    normalized.sort_by(|left, right| left.1.cmp(&right.1));
-    normalized.dedup_by(|left, right| left.1 == right.1);
+    let requested_normalized =
+        normalize_changed_paths_for_update(&repo_root, changed_paths, &store)?;
+    let mut dependency_closure =
+        rtds_dependency_closure_for_changed_paths(&repo_root, &store, &requested_normalized)?;
+    let mut expanded_changed_paths = changed_paths.to_vec();
+    for repo_relative_path in &dependency_closure.closure_files_considered {
+        if !dependency_closure
+            .requested_changed_files
+            .iter()
+            .any(|requested| {
+                platform_path_identity_key(requested)
+                    == platform_path_identity_key(repo_relative_path)
+            })
+        {
+            expanded_changed_paths.push(repo_root.join(repo_relative_path));
+        }
+    }
+    let normalized =
+        normalize_changed_paths_for_update(&repo_root, &expanded_changed_paths, &store)?;
     summary.changed_files = normalized
         .iter()
         .map(|(_, repo_relative_path)| repo_relative_path.clone())
         .collect();
+    dependency_closure.closure_files_updated = summary.changed_files.clone();
+    summary.dependency_closure = dependency_closure;
     phase_profile.add_ms("file_walk", 0.0, 1, normalized.len() as u64);
     phase_profile.add_duration(
         "metadata_diff",
@@ -6613,6 +7545,14 @@ pub fn update_changed_files_with_cache_to_db(
             let file_start = Instant::now();
             tx.upsert_file(&extraction.file)?;
             phase_profile.add_duration("file_manifest_upsert", file_start.elapsed(), 1, 1);
+            let source_text_start = Instant::now();
+            tx.insert_file_text_after_file_delete(repo_relative_path, &source)?;
+            phase_profile.add_duration(
+                "source_text_evidence_upsert",
+                source_text_start.elapsed(),
+                1,
+                source.len() as u64,
+            );
 
             let persisted_entity_ids = persisted_entity_ids(&extraction.entities, storage_mode);
             let mut entity_count = 0usize;
@@ -6676,6 +7616,29 @@ pub fn update_changed_files_with_cache_to_db(
             summary.edges += edge_count;
             summary.binary_signatures_updated += entity_count;
         }
+
+        let stale_missing_scan_start = Instant::now();
+        let changed_path_set = normalized
+            .iter()
+            .map(|(_, repo_relative_path)| normalize_graph_path(repo_relative_path))
+            .collect::<BTreeSet<_>>();
+        let stale_missing_deleted = cleanup_missing_indexed_paths_to_writer(
+            tx,
+            cache,
+            &repo_root,
+            &changed_path_set,
+            &mut summary,
+            &mut changed_fact_paths,
+            &mut removed_cache_entity_ids,
+            &mut changed_static_resolver_inputs,
+            &mut phase_profile,
+        )?;
+        phase_profile.add_duration(
+            "stale_missing_manifest_scan",
+            stale_missing_scan_start.elapsed(),
+            1,
+            stale_missing_deleted as u64,
+        );
 
         let (import_resolution, security_resolution, test_resolution, derived_resolution) =
             if changed_fact_paths.is_empty() || !changed_static_resolver_inputs {
@@ -6974,49 +7937,340 @@ pub fn update_changed_files_with_cache_to_db(
     phase_profile.add_duration("cache_refresh", cache_start.elapsed(), 1, 0);
     summary.adjacency_edges = cache.adjacency_edge_count();
     let total_wall_ms = total_start.elapsed().as_millis();
+    let measured_db_write_ms = phase_profile.sum_spans_ms_u128(DB_WRITE_PROFILE_SPANS);
+    let measured_fts_search_index_ms = phase_profile.span_ms_u128("fts_build");
+    let memory_bytes = current_process_memory_bytes();
     summary.profile = Some(IndexProfile {
         file_discovery_ms: 0,
-        parse_ms: phase_profile
-            .spans
-            .get("parse")
-            .map(|span| span.elapsed_ms as u128)
-            .unwrap_or(0),
-        extraction_ms: phase_profile
-            .spans
-            .get("extract_entities_and_relations")
-            .map(|span| span.elapsed_ms as u128)
-            .unwrap_or(0),
-        semantic_resolver_ms: phase_profile
-            .spans
-            .get("reducer")
-            .map(|span| span.elapsed_ms as u128)
-            .unwrap_or(0),
-        db_write_ms: phase_profile
-            .spans
-            .get("entity_insert")
-            .map(|span| span.elapsed_ms as u128)
-            .unwrap_or(0)
-            + phase_profile
-                .spans
-                .get("edge_insert")
-                .map(|span| span.elapsed_ms as u128)
-                .unwrap_or(0),
-        fts_search_index_ms: phase_profile
-            .spans
-            .get("snippet_loading")
-            .map(|span| span.elapsed_ms as u128)
-            .unwrap_or(0),
+        parse_ms: phase_profile.span_ms_u128("parse"),
+        extraction_ms: phase_profile.span_ms_u128("extract_entities_and_relations"),
+        semantic_resolver_ms: phase_profile.span_ms_u128("reducer"),
+        db_write_ms: measured_db_write_ms,
+        fts_search_index_ms: measured_fts_search_index_ms,
         vector_signature_ms: 0,
         total_wall_ms,
         files_per_sec: rate_per_second(summary.files_indexed, total_wall_ms),
         entities_per_sec: rate_per_second(summary.entities, total_wall_ms),
         edges_per_sec: rate_per_second(summary.edges, total_wall_ms),
-        memory_bytes: current_process_memory_bytes(),
+        memory_bytes,
+        memory_measured: memory_bytes.is_some(),
+        memory_status: if memory_bytes.is_some() {
+            "measured".to_string()
+        } else {
+            "unknown".to_string()
+        },
+        memory_measurement_kind: if memory_bytes.is_some() {
+            "process_snapshot_not_peak".to_string()
+        } else {
+            "not_measured".to_string()
+        },
+        db_write_measurement: "measured_sql_write_aggregate".to_string(),
+        fts_search_index_measurement: if measured_fts_search_index_ms > 0 {
+            "measured_fts_build_span".to_string()
+        } else {
+            "unknown_or_not_run".to_string()
+        },
         worker_count: 1,
         skipped_unchanged_files: summary.files_metadata_unchanged,
         spans: phase_profile.into_spans(),
     });
     Ok(summary)
+}
+
+fn rtds_dependency_closure_for_changed_paths(
+    repo_root: &Path,
+    store: &SqliteGraphStore,
+    requested: &[(PathBuf, String)],
+) -> Result<RtdsDependencyClosureSummary, IndexError> {
+    if rtds_closure_failpoint_enabled("before_update") {
+        return Err(IndexError::Message(
+            "rtds_dependency_closure_failpoint:before_update".to_string(),
+        ));
+    }
+
+    let start = Instant::now();
+    let budgets = RtdsDependencyClosureBudget::default();
+    let mut summary = RtdsDependencyClosureSummary {
+        status: "ready".to_string(),
+        requested_changed_files: requested
+            .iter()
+            .map(|(_, path)| normalize_graph_path(path))
+            .collect(),
+        closure_files_considered: requested
+            .iter()
+            .map(|(_, path)| normalize_graph_path(path))
+            .collect(),
+        budgets,
+        ..RtdsDependencyClosureSummary::default()
+    };
+    sort_dedup_strings(&mut summary.requested_changed_files);
+    sort_dedup_strings(&mut summary.closure_files_considered);
+
+    let requested_path_set = summary
+        .requested_changed_files
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut closure_path_set = requested_path_set.clone();
+    let mut changed_entity_ids = BTreeSet::<String>::new();
+    let mut rows_hydrated = 0usize;
+    let mut source_bytes_considered = 0u64;
+
+    for (_, repo_relative_path) in requested {
+        let repo_relative_path = normalize_graph_path(repo_relative_path);
+        if rtds_path_is_text_evidence_or_non_graph(store, &repo_relative_path)? {
+            summary
+                .skipped_relation_classes
+                .push("text_evidence:not_graph_dependency".to_string());
+        }
+
+        let entities = store.list_entities_by_file(&repo_relative_path)?;
+        rows_hydrated = rows_hydrated.saturating_add(entities.len());
+        if rows_hydrated > summary.budgets.max_db_rows_hydrated {
+            rtds_mark_closure_budget_hit(&mut summary, "db_rows_hydrated", "changed_file_entities");
+            break;
+        }
+        for entity in entities {
+            changed_entity_ids.insert(entity.id);
+        }
+    }
+
+    if changed_entity_ids.is_empty() {
+        rtds_finalize_dependency_closure_status(&mut summary);
+        return Ok(summary);
+    }
+
+    let edge_count = store.count_edges()? as usize;
+    if edge_count
+        > summary
+            .budgets
+            .max_db_rows_hydrated
+            .saturating_sub(rows_hydrated)
+    {
+        rtds_mark_closure_budget_hit(&mut summary, "db_rows_hydrated", "edge_scan");
+    }
+    let edge_limit = summary
+        .budgets
+        .max_edges_inspected
+        .min(
+            summary
+                .budgets
+                .max_db_rows_hydrated
+                .saturating_sub(rows_hydrated),
+        )
+        .max(1);
+    let edges = store.list_edges(edge_limit)?;
+    let mut relation_counts = BTreeMap::<String, usize>::new();
+    let mut relation_classes = BTreeSet::<String>::new();
+
+    for edge in edges {
+        if summary.closure_edges_inspected >= summary.budgets.max_edges_inspected {
+            rtds_mark_closure_budget_hit(&mut summary, "edges_inspected", "edge_scan");
+            break;
+        }
+        if start.elapsed() > Duration::from_millis(summary.budgets.max_wall_ms) {
+            rtds_mark_closure_budget_hit(&mut summary, "wall_time", "edge_scan");
+            break;
+        }
+
+        let head_changed = changed_entity_ids.contains(&edge.head_id);
+        let tail_changed = changed_entity_ids.contains(&edge.tail_id);
+        if !head_changed && !tail_changed {
+            continue;
+        }
+
+        summary.closure_edges_inspected += 1;
+        let Some(relation_class) =
+            rtds_dependency_closure_relation_class(&edge, head_changed, tail_changed)
+        else {
+            if rtds_relation_is_unknown_for_dependency_closure(edge.relation) {
+                summary
+                    .closure_unknowns
+                    .push(format!("unsupported_relation_class:{}", edge.relation));
+                summary
+                    .skipped_relation_classes
+                    .push(edge.relation.to_string());
+            }
+            continue;
+        };
+
+        let relation_count = relation_counts
+            .entry(relation_class.to_string())
+            .and_modify(|count| *count += 1)
+            .or_insert(1);
+        if *relation_count > summary.budgets.max_per_relation {
+            rtds_mark_closure_budget_hit(&mut summary, relation_class, "per_relation_limit");
+            continue;
+        }
+        if !relation_classes.contains(relation_class)
+            && relation_classes.len() >= summary.budgets.max_relation_classes
+        {
+            rtds_mark_closure_budget_hit(&mut summary, relation_class, "relation_class_limit");
+            continue;
+        }
+        relation_classes.insert(relation_class.to_string());
+
+        let dependent_path = normalize_graph_path(&edge.source_span.repo_relative_path);
+        if requested_path_set.contains(&dependent_path) {
+            continue;
+        }
+        if !repo_root.join(&dependent_path).exists() {
+            summary
+                .closure_unknowns
+                .push(format!("dependent_path_missing:{dependent_path}"));
+            continue;
+        }
+        if closure_path_set.contains(&dependent_path) {
+            continue;
+        }
+        if closure_path_set.len() >= summary.budgets.max_dirty_files {
+            rtds_mark_closure_budget_hit(&mut summary, relation_class, "dirty_file_limit");
+            summary
+                .closure_unknowns
+                .push(format!("closure_file_omitted_over_budget:{dependent_path}"));
+            continue;
+        }
+        let source_bytes = store
+            .get_file(&dependent_path)?
+            .map(|record| record.size_bytes)
+            .or_else(|| {
+                fs::metadata(repo_root.join(&dependent_path))
+                    .ok()
+                    .map(|metadata| metadata.len())
+            })
+            .unwrap_or(0);
+        if source_bytes_considered.saturating_add(source_bytes) > summary.budgets.max_source_bytes {
+            rtds_mark_closure_budget_hit(&mut summary, relation_class, "source_bytes_limit");
+            summary.closure_unknowns.push(format!(
+                "closure_file_omitted_source_bytes:{dependent_path}"
+            ));
+            continue;
+        }
+        source_bytes_considered = source_bytes_considered.saturating_add(source_bytes);
+        closure_path_set.insert(dependent_path);
+    }
+
+    summary.closure_files_considered = closure_path_set.into_iter().collect();
+    summary.closure_relation_classes = relation_classes.into_iter().collect();
+    sort_dedup_strings(&mut summary.degraded_relation_classes);
+    sort_dedup_strings(&mut summary.skipped_relation_classes);
+    sort_dedup_strings(&mut summary.closure_unknowns);
+    rtds_finalize_dependency_closure_status(&mut summary);
+    Ok(summary)
+}
+
+fn rtds_dependency_closure_relation_class(
+    edge: &Edge,
+    head_changed: bool,
+    tail_changed: bool,
+) -> Option<&'static str> {
+    if edge.derived || !rtds_edge_exactness_is_safe_for_dependency_closure(edge.exactness) {
+        return None;
+    }
+
+    match edge.relation {
+        RelationKind::Imports | RelationKind::Reexports => {
+            tail_changed.then_some("direct_static_importer")
+        }
+        RelationKind::AliasedBy => (head_changed || tail_changed).then_some("direct_import_alias"),
+        RelationKind::Calls => tail_changed.then_some("deleted_or_changed_callable_reference"),
+        RelationKind::Reads | RelationKind::Writes => {
+            tail_changed.then_some("direct_symbol_reference")
+        }
+        _ => None,
+    }
+}
+
+fn rtds_edge_exactness_is_safe_for_dependency_closure(exactness: Exactness) -> bool {
+    matches!(
+        exactness,
+        Exactness::Exact
+            | Exactness::CompilerVerified
+            | Exactness::LspVerified
+            | Exactness::ParserVerified
+    )
+}
+
+fn rtds_relation_is_unknown_for_dependency_closure(relation: RelationKind) -> bool {
+    is_proof_path_relation(relation)
+        && !matches!(
+            relation,
+            RelationKind::Contains
+                | RelationKind::DefinedIn
+                | RelationKind::Defines
+                | RelationKind::Declares
+                | RelationKind::Callee
+                | RelationKind::Argument0
+                | RelationKind::Argument1
+                | RelationKind::ArgumentN
+                | RelationKind::ReturnsTo
+        )
+}
+
+fn rtds_path_is_text_evidence_or_non_graph(
+    store: &SqliteGraphStore,
+    repo_relative_path: &str,
+) -> Result<bool, IndexError> {
+    if let Some(kind) = classify_scoped_text_evidence_path(repo_relative_path) {
+        if store
+            .get_file(repo_relative_path)?
+            .as_ref()
+            .is_some_and(|record| file_record_is_text_evidence_kind(record, kind))
+            || detect_language(Path::new(repo_relative_path)).is_none()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(store.get_file(repo_relative_path)?.is_some_and(|record| {
+        record.language.is_none()
+            && record.metadata.get("evidence_kind").and_then(Value::as_str)
+                == Some(TEXT_EVIDENCE_KIND)
+    }))
+}
+
+fn rtds_mark_closure_budget_hit(
+    summary: &mut RtdsDependencyClosureSummary,
+    relation_class: &str,
+    reason: &str,
+) {
+    summary.closure_budget_hit = true;
+    summary
+        .degraded_relation_classes
+        .push(relation_class.to_string());
+    summary
+        .closure_unknowns
+        .push(format!("closure_budget_hit:{relation_class}:{reason}"));
+    summary.manual_full_index_recommendation = Some(
+        "run agent-use index --fresh for full dependency freshness if this dirty closure matters"
+            .to_string(),
+    );
+}
+
+fn rtds_finalize_dependency_closure_status(summary: &mut RtdsDependencyClosureSummary) {
+    sort_dedup_strings(&mut summary.requested_changed_files);
+    sort_dedup_strings(&mut summary.closure_files_considered);
+    sort_dedup_strings(&mut summary.closure_relation_classes);
+    sort_dedup_strings(&mut summary.degraded_relation_classes);
+    sort_dedup_strings(&mut summary.skipped_relation_classes);
+    sort_dedup_strings(&mut summary.closure_unknowns);
+    summary.status = if summary.closure_budget_hit || !summary.closure_unknowns.is_empty() {
+        "degraded".to_string()
+    } else if summary.closure_files_considered.len() > summary.requested_changed_files.len() {
+        "ready_with_dependency_closure".to_string()
+    } else {
+        "ready".to_string()
+    };
+    if summary.closure_budget_hit && summary.manual_full_index_recommendation.is_none() {
+        summary.manual_full_index_recommendation = Some(
+            "run agent-use index --fresh for full dependency freshness if this dirty closure matters"
+                .to_string(),
+        );
+    }
+}
+
+fn sort_dedup_strings(values: &mut Vec<String>) {
+    values.sort();
+    values.dedup();
 }
 
 fn resolver_impact_paths_from_store(
@@ -8110,6 +9364,7 @@ fn derived_context_for_edges<'a>(edges: impl IntoIterator<Item = &'a Edge>) -> E
 fn parse_static_imports(repo_relative_path: &str, source: &str) -> Vec<StaticImportSpec> {
     let mut imports = Vec::new();
     for (line_index, line) in source.lines().enumerate() {
+        let line = strip_leading_utf8_bom(line);
         let trimmed = line.trim();
         if !trimmed.starts_with("import ") || !trimmed.contains(" from ") {
             continue;
@@ -8173,6 +9428,7 @@ fn parse_static_imports(repo_relative_path: &str, source: &str) -> Vec<StaticImp
 fn parse_static_reexports(repo_relative_path: &str, source: &str) -> Vec<StaticReexportSpec> {
     let mut exports = Vec::new();
     for (line_index, line) in source.lines().enumerate() {
+        let line = strip_leading_utf8_bom(line);
         let trimmed = line.trim();
         if !trimmed.starts_with("export ") || !trimmed.contains(" from ") {
             continue;
@@ -8228,6 +9484,7 @@ fn parse_static_reexports(repo_relative_path: &str, source: &str) -> Vec<StaticR
 fn parse_dynamic_imports(repo_relative_path: &str, source: &str) -> Vec<StaticDynamicImportSpec> {
     let mut imports = Vec::new();
     for (line_index, line) in source.lines().enumerate() {
+        let line = strip_leading_utf8_bom(line);
         let mut search_start = 0usize;
         while let Some(offset) = line[search_start..].find("import(") {
             let start = search_start + offset;
@@ -8260,6 +9517,10 @@ fn parse_dynamic_imports(repo_relative_path: &str, source: &str) -> Vec<StaticDy
         }
     }
     imports
+}
+
+fn strip_leading_utf8_bom(line: &str) -> &str {
+    line.strip_prefix('\u{feff}').unwrap_or(line)
 }
 
 fn matching_close_paren(line: &str, open_paren: usize) -> Option<usize> {
@@ -11225,7 +12486,8 @@ pub fn normalize_changed_path(root: &Path, path: &Path) -> Result<(PathBuf, Stri
         root.join(path)
     };
     let normalized = normalize_lexical_path(&absolute);
-    let repo_relative_path = repo_relative_path(root, &normalized)?;
+    let normalized = resolve_existing_changed_path_case(root, &normalized);
+    let repo_relative_path = repo_relative_path_for_changed_path(root, &normalized)?;
     Ok((normalized, repo_relative_path))
 }
 
@@ -11243,6 +12505,138 @@ fn normalize_lexical_path(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+fn normalize_changed_paths_for_update(
+    root: &Path,
+    changed_paths: &[PathBuf],
+    store: &SqliteGraphStore,
+) -> Result<Vec<(PathBuf, String)>, IndexError> {
+    let known_paths = if cfg!(windows) {
+        store
+            .list_files(UNBOUNDED_STORE_READ_LIMIT)?
+            .into_iter()
+            .map(|file| {
+                (
+                    platform_path_identity_key(&file.repo_relative_path),
+                    normalize_graph_path(file.repo_relative_path),
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+    } else {
+        BTreeMap::new()
+    };
+    let mut normalized = changed_paths
+        .iter()
+        .map(|path| {
+            let (mut absolute, mut repo_relative_path) = normalize_changed_path(root, path)?;
+            if cfg!(windows) {
+                if let Some(known_path) =
+                    known_paths.get(&platform_path_identity_key(&repo_relative_path))
+                {
+                    repo_relative_path = known_path.clone();
+                    absolute = root.join(known_path);
+                }
+            }
+            Ok((absolute, repo_relative_path))
+        })
+        .collect::<Result<Vec<_>, IndexError>>()?;
+    normalized.sort_by(|left, right| {
+        platform_path_identity_key(&left.1).cmp(&platform_path_identity_key(&right.1))
+    });
+    normalized.dedup_by(|left, right| {
+        platform_path_identity_key(&left.1) == platform_path_identity_key(&right.1)
+    });
+    Ok(normalized)
+}
+
+fn repo_relative_path_for_changed_path(root: &Path, path: &Path) -> Result<String, IndexError> {
+    if let Ok(relative) = path.strip_prefix(root) {
+        return Ok(path_to_repo_relative_string(relative));
+    }
+    if cfg!(windows) {
+        if let Some(relative) = strip_prefix_case_insensitive(root, path) {
+            return Ok(path_to_repo_relative_string(&relative));
+        }
+    }
+    Err(IndexError::PathStrip {
+        path: path.to_path_buf(),
+        root: root.to_path_buf(),
+    })
+}
+
+fn path_to_repo_relative_string(path: &Path) -> String {
+    normalize_graph_path(path.to_string_lossy().replace('\\', "/"))
+}
+
+fn strip_prefix_case_insensitive(root: &Path, path: &Path) -> Option<PathBuf> {
+    let root_components = comparable_path_components(root);
+    let path_components = comparable_path_components(path);
+    if path_components.len() < root_components.len() {
+        return None;
+    }
+    if !root_components
+        .iter()
+        .zip(path_components.iter())
+        .all(|(left, right)| left.eq_ignore_ascii_case(right))
+    {
+        return None;
+    }
+    let mut relative = PathBuf::new();
+    for component in path.components().skip(root_components.len()) {
+        relative.push(component.as_os_str());
+    }
+    Some(relative)
+}
+
+fn comparable_path_components(path: &Path) -> Vec<String> {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy().replace('\\', "/"))
+        .collect()
+}
+
+fn resolve_existing_changed_path_case(root: &Path, path: &Path) -> PathBuf {
+    if !cfg!(windows) || !path.exists() {
+        return path.to_path_buf();
+    }
+    let Ok(repo_relative_path) = repo_relative_path_for_changed_path(root, path) else {
+        return path.to_path_buf();
+    };
+    let mut cursor = root.to_path_buf();
+    let mut resolved = root.to_path_buf();
+    for component in repo_relative_path
+        .split('/')
+        .filter(|part| !part.is_empty())
+    {
+        let actual_name = fs::read_dir(&cursor).ok().and_then(|entries| {
+            entries.filter_map(Result::ok).find_map(|entry| {
+                let name = entry.file_name();
+                name.to_str()
+                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(component))
+                    .then_some(name)
+            })
+        });
+        match actual_name {
+            Some(name) => {
+                resolved.push(name);
+                cursor = resolved.clone();
+            }
+            None => {
+                resolved.push(component);
+                cursor = resolved.clone();
+            }
+        }
+    }
+    resolved
+}
+
+fn platform_path_identity_key(path: &str) -> String {
+    let normalized = normalize_graph_path(path);
+    if cfg!(windows) {
+        normalized.to_ascii_lowercase()
+    } else {
+        normalized
+    }
 }
 
 fn entity_binary_signature(
@@ -14662,6 +16056,23 @@ fn candidate_spool_index_load_from_parts(
     }
 }
 
+fn candidate_spool_query_index_open_failure_status(
+    error: &rusqlite::Error,
+) -> (&'static str, String) {
+    let message = error.to_string();
+    let status =
+        match classify_sqlite_access_problem(&message).map(|problem| problem.db_problem_kind) {
+            Some("sqlite_corrupt") => "corrupt",
+            Some("permission_denied") => "permission_denied",
+            Some("filesystem_inaccessible") => "filesystem_inaccessible",
+            Some(_) | None => "sidecar_unavailable",
+        };
+    (
+        status,
+        format!("candidate_spool_query_index_open_failed: {status}: {message}"),
+    )
+}
+
 pub fn candidate_spool_index_status_for_repo(
     repo_root: &Path,
     spool_path: &Path,
@@ -14714,12 +16125,13 @@ pub fn candidate_spool_index_status_for_repo(
     let connection = match Connection::open(&index_path) {
         Ok(connection) => connection,
         Err(error) => {
+            let (status, reason) = candidate_spool_query_index_open_failure_status(&error);
             return Ok(candidate_spool_index_load_from_parts(
                 spool_path,
                 &index_path,
                 metadata,
-                "corrupt",
-                Some(format!("candidate_spool_query_index_open_failed: {error}")),
+                status,
+                Some(reason),
                 true,
                 0,
                 0,
@@ -16234,6 +17646,119 @@ mod tests {
     }
 
     #[test]
+    fn batch_progress_event_uses_processed_not_durable_completed_language() {
+        let persisted = PersistedBatchSummary {
+            files: 1,
+            entities: 2,
+            edges: 3,
+            duplicate_edges_upserted: 0,
+        };
+        let event =
+            index_batch_processed_progress_event(0, &persisted, 0, 0, 5, 3, 2, 1, 1, 1, 1, 3);
+
+        assert_eq!(event["event"].as_str(), Some("index_batch_processed"));
+        assert_eq!(
+            event["batch_progress_status"].as_str(),
+            Some("processed_not_durably_committed")
+        );
+        assert_eq!(
+            event["visible_db_mutation_claim"].as_str(),
+            Some("not_claimed_until_commit_or_publish")
+        );
+        assert_eq!(event["edges_staged"].as_u64(), Some(3));
+        assert_eq!(event["edges_inserted"].as_u64(), Some(3));
+    }
+
+    #[test]
+    fn graph_output_budget_hits_label_degraded_file_claimability() {
+        let entities = (0..6)
+            .map(|index| {
+                test_entity(
+                    "src/fanout.ts",
+                    EntityKind::Function,
+                    &format!("target{index}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut edges = Vec::new();
+        for index in 1..6 {
+            edges.push(graph_budget_test_edge(
+                &entities[0].id,
+                RelationKind::Calls,
+                &entities[index].id,
+                index + 1,
+            ));
+        }
+        let mut extraction = BasicExtraction {
+            file: graph_budget_file_record("src/fanout.ts"),
+            entities,
+            edges,
+        };
+        let budgets = GraphOutputBudgets {
+            max_local_facts_per_file: 4,
+            max_relation_fanout_per_file: 2,
+            max_derived_edges_per_file: 100,
+            max_source_spans_per_file: 100,
+            max_reducer_edges_per_stage: 100,
+        };
+
+        let hits =
+            apply_graph_output_budgets_to_extraction("src/fanout.ts", &mut extraction, &budgets);
+
+        assert!(
+            hits.iter()
+                .any(|hit| hit.kind == "relation_fanout_per_file" && hit.omitted == 3),
+            "high fanout must be reported, not silently dropped: {hits:#?}"
+        );
+        assert!(
+            hits.iter()
+                .any(|hit| hit.kind == "local_facts_per_file" && hit.after <= 4),
+            "local fact cap must be reported, not silently dropped: {hits:#?}"
+        );
+        assert!(
+            extraction.entities.len() + extraction.edges.len() <= 4,
+            "local graph facts should be capped before persistence"
+        );
+        assert_eq!(
+            extraction.file.metadata["graph_output_budget_hit"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            extraction.file.metadata["graph_output_claimability"].as_str(),
+            Some("degraded_file_nonclaimable_for_omitted_facts")
+        );
+        assert_eq!(
+            extraction.file.metadata["graph_relation_claims"].as_str(),
+            Some("partial")
+        );
+    }
+
+    #[test]
+    fn reducer_edge_budget_truncates_and_reports_nonclaimable_omissions() {
+        let mut plan = GlobalFactReductionPlan::default();
+        for index in 0..5 {
+            plan.push_edge(graph_budget_test_edge(
+                "src/fanout.ts:head",
+                RelationKind::Calls,
+                &format!("src/fanout.ts:tail{index}"),
+                index + 1,
+            ));
+        }
+
+        let hit = plan
+            .apply_reducer_edge_budget("reduce_test_edges", 2)
+            .expect("reducer budget hit");
+
+        assert_eq!(plan.edges.len(), 2);
+        assert_eq!(hit.kind, "reducer_edges_per_stage");
+        assert_eq!(hit.omitted, 3);
+        assert_eq!(
+            hit.claimability_label,
+            "degraded_file_nonclaimable_for_omitted_facts"
+        );
+    }
+
+    #[test]
     fn proof_storage_routes_micro_entities_out_of_main_rows() {
         let expression = test_entity("src/main.py", EntityKind::Expression, "expr");
         let callsite = test_entity("src/main.py", EntityKind::CallSite, "call");
@@ -16598,6 +18123,34 @@ pub fn spool_target(value: i32) -> i32 {
             .chunks
             .iter()
             .all(|chunk| chunk.get("graph_proof").and_then(Value::as_bool) == Some(false)));
+    }
+
+    #[test]
+    fn candidate_spool_query_index_open_failure_is_not_corrupt_without_corruption_proof() {
+        let repo = candidate_spool_fixture_repo("candidate-spool-query-index-access");
+        let db = repo.join("artifacts").join("codegraph.sqlite");
+        let spool = repo.join("artifacts").join("candidate-spool.jsonl");
+        let mut options = fresh_rebuild_options();
+        options.candidate_spool_path = Some(spool.clone());
+        index_repo_to_db_with_options(&repo, &db, options).expect("index with spool");
+
+        let index_path = candidate_spool_query_index_path(&spool);
+        fs::remove_file(&index_path).expect("remove query index");
+        fs::create_dir(&index_path).expect("replace query index with directory");
+
+        let status = candidate_spool_index_status_for_repo(&repo, &spool, true)
+            .expect("diagnostic sidecar status");
+        assert_ne!(status.query_index_status, "corrupt");
+        assert!(matches!(
+            status.query_index_status.as_str(),
+            "filesystem_inaccessible" | "permission_denied" | "sidecar_unavailable"
+        ));
+        assert_eq!(status.stale, true);
+        assert!(status
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("candidate_spool_query_index_open_failed"));
     }
 
     #[test]
@@ -17397,6 +18950,38 @@ pub fn spool_target(value: i32) -> i32 {
             *override_cell.borrow_mut() = Some(failpoint.to_string());
         });
         let _guard = WritePathChaosFailpointGuard;
+        action()
+    }
+
+    struct RtdsClosureOverrideGuard;
+
+    impl Drop for RtdsClosureOverrideGuard {
+        fn drop(&mut self) {
+            RTDS_CLOSURE_FAILPOINT_OVERRIDE.with(|override_cell| {
+                *override_cell.borrow_mut() = None;
+            });
+            RTDS_CLOSURE_BUDGET_OVERRIDE.with(|override_cell| {
+                *override_cell.borrow_mut() = None;
+            });
+        }
+    }
+
+    fn with_rtds_closure_budget<T>(
+        budget: RtdsDependencyClosureBudget,
+        action: impl FnOnce() -> T,
+    ) -> T {
+        RTDS_CLOSURE_BUDGET_OVERRIDE.with(|override_cell| {
+            *override_cell.borrow_mut() = Some(budget);
+        });
+        let _guard = RtdsClosureOverrideGuard;
+        action()
+    }
+
+    fn with_rtds_closure_failpoint<T>(failpoint: &str, action: impl FnOnce() -> T) -> T {
+        RTDS_CLOSURE_FAILPOINT_OVERRIDE.with(|override_cell| {
+            *override_cell.borrow_mut() = Some(failpoint.to_string());
+        });
+        let _guard = RtdsClosureOverrideGuard;
         action()
     }
 
@@ -18450,6 +20035,30 @@ pub fn spool_target(value: i32) -> i32 {
         assert!(no_default.contains("target/debug/generated.ts"));
     }
 
+    #[test]
+    fn collect_repo_files_include_patterns_are_overrides_not_restrictive() {
+        let repo = temp_repo("scope-include-override-not-restrictive");
+        write_test_file(&repo, "src/main.ts", "export const main = 1;\n");
+        write_test_file(&repo, "src/other.ts", "export const other = 1;\n");
+        write_test_file(
+            &repo,
+            "target/debug/generated.ts",
+            "export const generated = 1;\n",
+        );
+
+        let files = collected_rel_paths(
+            &repo,
+            &IndexScopeOptions {
+                include_patterns: vec!["target/debug/generated.ts".to_string()],
+                ..IndexScopeOptions::default()
+            },
+        );
+
+        assert!(files.contains("src/main.ts"));
+        assert!(files.contains("src/other.ts"));
+        assert!(files.contains("target/debug/generated.ts"));
+    }
+
     fn assert_db_integrity(db: &Path) {
         let store = SqliteGraphStore::open(db).expect("open db");
         store.full_integrity_gate().expect("integrity gate");
@@ -18577,6 +20186,44 @@ pub fn spool_target(value: i32) -> i32 {
             file_hash: Some("hash".to_string()),
             created_from: "test".to_string(),
             confidence: 1.0,
+            metadata: Metadata::default(),
+        }
+    }
+
+    fn graph_budget_file_record(repo_relative_path: &str) -> FileRecord {
+        FileRecord {
+            repo_relative_path: repo_relative_path.to_string(),
+            file_hash: "hash".to_string(),
+            language: Some("typescript".to_string()),
+            size_bytes: 128,
+            indexed_at_unix_ms: None,
+            metadata: Metadata::default(),
+        }
+    }
+
+    fn graph_budget_test_edge(
+        head_id: &str,
+        relation: RelationKind,
+        tail_id: &str,
+        line: usize,
+    ) -> Edge {
+        let line = line as u32;
+        let span = SourceSpan::with_columns("src/fanout.ts", line, 1, line, 10);
+        Edge {
+            id: stable_edge_id(head_id, relation, tail_id, &span),
+            head_id: head_id.to_string(),
+            relation,
+            tail_id: tail_id.to_string(),
+            source_span: span,
+            repo_commit: None,
+            file_hash: Some("hash".to_string()),
+            extractor: "test".to_string(),
+            confidence: 1.0,
+            exactness: Exactness::ParserVerified,
+            edge_class: EdgeClass::BaseExact,
+            context: EdgeContext::Production,
+            derived: false,
+            provenance_edges: Vec::new(),
             metadata: Metadata::default(),
         }
     }
@@ -23098,6 +24745,80 @@ pub fn spool_target(value: i32) -> i32 {
     }
 
     #[test]
+    fn write_path_incremental_sidecar_invalidation_failure_rolls_back_dirty_evidence() {
+        let repo = temp_repo("write-path-incremental-sidecar-rollback");
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function oldLogin() { return 'old'; }\n",
+        );
+        let db = repo.join("target").join("sidecars-rollback.sqlite");
+        index_repo_to_db(&repo, &db).expect("initial index");
+        {
+            let store = SqliteGraphStore::open(&db).expect("store");
+            let old_login = entity_by_file_kind_and_name(
+                &store,
+                "src/auth.ts",
+                EntityKind::Function,
+                "oldLogin",
+            );
+            store
+                .insert_entity_feature(&EntityFeatureRow {
+                    entity_id: old_login.id.clone(),
+                    feature_kind: "ast_shape".to_string(),
+                    payload_version: 1,
+                    compact_payload: "{\"shape\":\"old\"}".to_string(),
+                    extraction_version: "test-sidecar-v1".to_string(),
+                    source_span_id: Some(old_login.id.clone()),
+                    claimability: "diagnostic_only".to_string(),
+                })
+                .expect("insert entity feature");
+            store
+                .insert_routing_packet_handle(&RoutingPacketHandleRow {
+                    handle_id: "handle-old-auth".to_string(),
+                    db_passport_hash: "passport-old".to_string(),
+                    task_intent_hash: "intent-old".to_string(),
+                    packet_kind: "routing_packet".to_string(),
+                    evidence_refs_json: format!("[\"{}\"]", old_login.id),
+                    expires_or_invalidates_on: "file_fact_cleanup".to_string(),
+                    payload_version: 1,
+                    claimability: "diagnostic_only".to_string(),
+                })
+                .expect("insert routing handle");
+        }
+
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function newLogin() { return 'new'; }\n",
+        );
+        let error = with_write_path_chaos_failpoint(
+            "incremental_after_stale_cleanup_before_insert",
+            || update_changed_files_to_db(&repo, &[PathBuf::from("src/auth.ts")], &db),
+        )
+        .expect_err("sidecar invalidation phase failpoint must fail");
+        assert!(error
+            .to_string()
+            .contains("incremental_after_stale_cleanup_before_insert"));
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        store
+            .full_integrity_gate()
+            .expect("rolled-back sidecar invalidation DB remains valid");
+        assert_eq!(
+            entities_by_kind_and_name(&store, EntityKind::Function, "oldLogin").len(),
+            1
+        );
+        assert!(entities_by_kind_and_name(&store, EntityKind::Function, "newLogin").is_empty());
+        let counts = store.sparse_sidecar_counts().expect("sidecar counts");
+        assert_eq!(counts.get("entity_features").copied(), Some(1));
+        assert_eq!(counts.get("routing_packet_handles").copied(), Some(1));
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
     fn audit_full_reindex_after_rename_deletes_old_path_and_indexes_new_path() {
         let repo = temp_repo("rename-cleanup");
         let old_path = repo.join("src").join("old_path.ts");
@@ -23306,6 +25027,405 @@ pub fn spool_target(value: i32) -> i32 {
             calls.iter().any(|edge| edge.tail_id == new_target.id),
             "CALLS should move to newTarget after the import alias changes"
         );
+    }
+
+    #[test]
+    fn rtds_dependency_closure_changed_export_considers_direct_importer_without_full_reparse() {
+        let repo = temp_repo("rtds-closure-export-importer");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function oldTarget() { return 'old'; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/consumer.ts",
+            "import { oldTarget } from './service';\n\
+             export function run() { return oldTarget(); }\n",
+        );
+        let db = repo.join("target").join("closure.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function newTarget() { return 'new'; }\n",
+        );
+        let summary = update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            .expect("delta update");
+
+        assert!(summary
+            .dependency_closure
+            .closure_files_considered
+            .contains(&"src/consumer.ts".to_string()));
+        assert!(summary
+            .dependency_closure
+            .closure_relation_classes
+            .iter()
+            .any(|class| class == "direct_static_importer"
+                || class == "deleted_or_changed_callable_reference"));
+        assert!(!summary.dependency_closure.closure_budget_hit);
+        assert!(summary.dependency_closure.full_repo_fallback_avoided);
+        assert_eq!(
+            summary.files_parsed, 1,
+            "unchanged importer is metadata-checked, not reparsed"
+        );
+        assert_eq!(summary.files_walked, 2);
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert!(entities_by_kind_and_name(&store, EntityKind::Function, "oldTarget").is_empty());
+        assert_eq!(
+            entities_by_kind_and_name(&store, EntityKind::Function, "newTarget").len(),
+            1
+        );
+        drop(store);
+        assert!(!repo.join(".codegraph").exists());
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn rtds_dependency_closure_handles_utf8_bom_static_imports() {
+        let repo = temp_repo("rtds-closure-bom-import");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function oldTarget() { return 'old'; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/consumer.ts",
+            "\u{feff}import { oldTarget } from './service';\n\
+             export function run() { return oldTarget(); }\n",
+        );
+        let db = repo.join("target").join("closure.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function newTarget() { return 'new'; }\n",
+        );
+        let summary = update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            .expect("delta update");
+
+        assert!(summary
+            .dependency_closure
+            .closure_files_considered
+            .contains(&"src/consumer.ts".to_string()));
+        assert!(summary
+            .dependency_closure
+            .closure_relation_classes
+            .contains(&"direct_static_importer".to_string()));
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn rtds_dependency_closure_changed_import_alias_reports_exact_alias_class() {
+        let repo = temp_repo("rtds-closure-alias-change");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function oldTarget() { return 'old'; }\n\
+             export function newTarget() { return 'new'; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/consumer.ts",
+            "import { oldTarget as target } from './service';\n\
+             export function run() { return target(); }\n",
+        );
+        let db = repo.join("target").join("closure.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        write_test_file(
+            &repo,
+            "src/consumer.ts",
+            "import { newTarget as target } from './service';\n\
+             export function run() { return target(); }\n",
+        );
+        let summary = update_changed_files_to_db(&repo, &[PathBuf::from("src/consumer.ts")], &db)
+            .expect("delta update");
+
+        assert!(summary
+            .dependency_closure
+            .closure_relation_classes
+            .contains(&"direct_import_alias".to_string()));
+        assert!(summary
+            .dependency_closure
+            .closure_files_considered
+            .contains(&"src/consumer.ts".to_string()));
+        assert!(!summary.dependency_closure.closure_budget_hit);
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let new_target = entity_by_file_kind_and_name(
+            &store,
+            "src/service.ts",
+            EntityKind::Function,
+            "newTarget",
+        );
+        let run =
+            entity_by_file_kind_and_name(&store, "src/consumer.ts", EntityKind::Function, "run");
+        let calls = store
+            .find_edges_by_head_relation(&run.id, RelationKind::Calls)
+            .expect("calls from run");
+        assert!(calls.iter().any(|edge| edge.tail_id == new_target.id));
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn rtds_dependency_closure_deleted_callable_considers_direct_reference() {
+        let repo = temp_repo("rtds-closure-deleted-callable");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function removedTarget() { return 'old'; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/consumer.ts",
+            "import { removedTarget } from './service';\n\
+             export function run() { return removedTarget(); }\n",
+        );
+        let db = repo.join("target").join("closure.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        fs::remove_file(repo.join("src").join("service.ts")).expect("delete service");
+        let summary = update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            .expect("delta update");
+
+        assert!(summary
+            .dependency_closure
+            .closure_files_considered
+            .contains(&"src/consumer.ts".to_string()));
+        assert!(summary
+            .dependency_closure
+            .closure_relation_classes
+            .contains(&"deleted_or_changed_callable_reference".to_string()));
+        assert_eq!(summary.files_deleted, 1);
+        assert_eq!(summary.files_walked, 2);
+        assert_eq!(summary.files_parsed, 0);
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert!(store.get_file("src/service.ts").expect("file").is_none());
+        assert!(
+            entities_by_kind_and_name(&store, EntityKind::Function, "removedTarget").is_empty()
+        );
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn rtds_dependency_closure_over_budget_degrades_without_full_repo_fallback() {
+        let repo = temp_repo("rtds-closure-over-budget");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function target() { return 'old'; }\n",
+        );
+        for index in 0..4 {
+            write_test_file(
+                &repo,
+                &format!("src/consumer{index}.ts"),
+                "import { target } from './service';\n\
+                 export function run() { return target(); }\n",
+            );
+        }
+        let db = repo.join("target").join("closure.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function target() { return 'new'; }\n",
+        );
+        let budget = RtdsDependencyClosureBudget {
+            max_dirty_files: 1,
+            max_edges_inspected: 64,
+            max_relation_classes: 6,
+            max_wall_ms: 250,
+            max_source_bytes: 4 * 1024 * 1024,
+            max_db_rows_hydrated: 512,
+            max_per_relation: 64,
+        };
+        let summary = with_rtds_closure_budget(budget, || {
+            update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+        })
+        .expect("delta update");
+
+        assert!(summary.dependency_closure.closure_budget_hit);
+        assert_eq!(
+            summary.dependency_closure.status, "degraded",
+            "over-budget closure must be explicit"
+        );
+        assert_eq!(
+            summary.dependency_closure.closure_files_considered,
+            vec!["src/service.ts".to_string()]
+        );
+        assert_eq!(
+            summary.files_walked, 1,
+            "must not silently full-repo fallback"
+        );
+        assert!(summary
+            .dependency_closure
+            .manual_full_index_recommendation
+            .as_deref()
+            .is_some_and(|recommendation| recommendation.contains("agent-use index --fresh")));
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn rtds_dependency_closure_unsupported_relation_is_unknown_not_proof() {
+        let repo = temp_repo("rtds-closure-unsupported-relation");
+        write_test_file(
+            &repo,
+            "src/policy.ts",
+            "export function policy() { return true; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/route.ts",
+            "export function route() { return 'ok'; }\n",
+        );
+        let db = repo.join("target").join("closure.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        {
+            let store = SqliteGraphStore::open(&db).expect("store");
+            let policy = entity_by_file_kind_and_name(
+                &store,
+                "src/policy.ts",
+                EntityKind::Function,
+                "policy",
+            );
+            let route =
+                entity_by_file_kind_and_name(&store, "src/route.ts", EntityKind::Function, "route");
+            let span = SourceSpan::new("src/route.ts", 1, 1);
+            store
+                .upsert_edge(&Edge {
+                    id: stable_edge_id(&route.id, RelationKind::Authorizes, &policy.id, &span),
+                    head_id: route.id,
+                    relation: RelationKind::Authorizes,
+                    tail_id: policy.id,
+                    source_span: span,
+                    repo_commit: None,
+                    file_hash: None,
+                    extractor: "test".to_string(),
+                    confidence: 1.0,
+                    exactness: Exactness::ParserVerified,
+                    edge_class: EdgeClass::BaseExact,
+                    context: EdgeContext::Production,
+                    derived: false,
+                    provenance_edges: Vec::new(),
+                    metadata: Metadata::new(),
+                })
+                .expect("insert unsupported proof relation");
+        }
+
+        write_test_file(
+            &repo,
+            "src/policy.ts",
+            "export function policy() { return false; }\n",
+        );
+        let summary = update_changed_files_to_db(&repo, &[PathBuf::from("src/policy.ts")], &db)
+            .expect("delta update");
+
+        assert!(summary
+            .dependency_closure
+            .closure_unknowns
+            .contains(&"unsupported_relation_class:AUTHORIZES".to_string()));
+        assert!(summary
+            .dependency_closure
+            .skipped_relation_classes
+            .contains(&"AUTHORIZES".to_string()));
+        assert_eq!(summary.dependency_closure.status, "degraded");
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn rtds_dependency_closure_keeps_same_name_symbols_file_scoped() {
+        let repo = temp_repo("rtds-closure-same-name");
+        write_test_file(
+            &repo,
+            "src/a.ts",
+            "export function chooseUser() { return 'a'; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/b.ts",
+            "export function chooseUser() { return 'b'; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/consumer.ts",
+            "import { chooseUser } from './a';\n\
+             export function run() { return chooseUser(); }\n",
+        );
+        let db = repo.join("target").join("closure.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        write_test_file(
+            &repo,
+            "src/a.ts",
+            "export function chooseUser() { return 'a2'; }\n",
+        );
+        let summary = update_changed_files_to_db(&repo, &[PathBuf::from("src/a.ts")], &db)
+            .expect("delta update");
+
+        assert!(summary
+            .dependency_closure
+            .closure_files_considered
+            .contains(&"src/consumer.ts".to_string()));
+        assert!(!summary
+            .dependency_closure
+            .closure_files_considered
+            .contains(&"src/b.ts".to_string()));
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn rtds_dependency_closure_failpoint_preserves_old_good_db() {
+        let repo = temp_repo("rtds-closure-failpoint-preserves-db");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function oldTarget() { return 'old'; }\n",
+        );
+        let db = repo.join("target").join("closure.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        let before_hash = semantic_graph_fact_hash(&db);
+
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function newTarget() { return 'new'; }\n",
+        );
+        let error = with_rtds_closure_failpoint("before_update", || {
+            update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+        })
+        .expect_err("closure failpoint must stop before update");
+        assert!(
+            error
+                .to_string()
+                .contains("rtds_dependency_closure_failpoint"),
+            "error={error}"
+        );
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        store.full_integrity_gate().expect("old DB valid");
+        assert_eq!(semantic_graph_fact_hash(&db), before_hash);
+        assert_eq!(
+            entities_by_kind_and_name(&store, EntityKind::Function, "oldTarget").len(),
+            1
+        );
+        assert!(entities_by_kind_and_name(&store, EntityKind::Function, "newTarget").is_empty());
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
     }
 
     #[test]

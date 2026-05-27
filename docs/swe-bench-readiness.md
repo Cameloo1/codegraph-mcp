@@ -39,7 +39,9 @@ are prerequisites, not quality scores.
 | SWE-bench Lite dataset access | verified |
 | Docker/Linux harness route | working |
 | Gold-validation smoke | passed for `sympy__sympy-20590` |
-| Patch-quality ablation | blocked until a real external agent command is configured |
+| External-agent wrapper | configured and validation-ready for local Codex runs |
+| One-task patch smoke | baseline and `rg_only` resolved the diagnostic task |
+| CodeGraph-attributed arms | pending reliable context prep before patch outcomes are claimed |
 | Mock-agent scaffold | available, non-quality only |
 | Official SWE-bench score | not claimed |
 
@@ -58,10 +60,17 @@ smoke for `sympy__sympy-20590`:
 This proves the local harness path can evaluate a known gold patch through the
 Linux container route. It does not prove CodeGraph improves agent patch quality.
 
+The first real one-task local patch smoke also ran for `sympy__sympy-20590`
+through the saved external-agent wrapper. The `baseline` and `rg_only` arms
+produced real patches and resolved the diagnostic task. That is still local
+diagnostic evidence only: CodeGraph-attributed arms were not claimed, and no
+official SWE-bench score was produced.
+
 ## What Is Still Missing
 
-Patch-quality scoring needs a real external agent/model command, configured
-explicitly, for example through:
+Patch-quality scoring now needs broader, same-agent A/B runs with reliable
+context prep for the CodeGraph-attributed arms. The external agent command is
+configured explicitly, for example through:
 
 ```powershell
 $env:CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND = "<fixed agent command>"
@@ -73,14 +82,14 @@ For this repository's Codex CLI path, use the saved wrapper:
 $env:CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND = "powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/scripts/run_codex_external_patch_agent.ps1"
 ```
 
-The wrapper resolves `codex.cmd` before the PowerShell shim, reads benchmark
+The saved wrapper resolves `codex.cmd` before the PowerShell shim, reads benchmark
 JSON from stdin, runs `codex exec` non-interactively in the task workspace, and
 prints only a `diff --git` patch to stdout. Use `-ValidateOnly` to check
 readiness without making a model call.
 
-Until that is configured, the benchmark layer can run setup checks and
-scaffold-only mock-agent flows, but it cannot claim model quality, solved task
-rate, or SWE-bench improvement.
+Until CodeGraph-attributed patch arms run successfully under the same pinned
+agent/model/task/evaluator setup, the benchmark layer cannot claim CodeGraph
+patch-quality improvement, solved-task lift, or an official SWE-bench score.
 
 ## Official-Compatible Requirements
 
@@ -102,13 +111,15 @@ Anything less is local diagnostic evidence.
 
 The intended path is deliberately incremental:
 
-1. Gold-validation smoke.
-2. One real external-agent SWE-bench Lite smoke.
-3. 10-task SWE-bench Lite diagnostic subset.
-4. 25-task and 50-task Lite diagnostic subsets.
-5. Full SWE-bench Lite diagnostic run when cost and runtime are understood.
-6. SWE-bench Verified only after Lite runs are boring and reproducible.
-7. SWE-bench-Live later for contamination-resistant current tasks.
+1. Gold-validation smoke. Completed locally for the pinned one-task diagnostic.
+2. One real external-agent SWE-bench Lite smoke. Completed locally for baseline
+   and `rg_only`.
+3. CodeGraph-attributed one-task arms once context prep is reliable.
+4. 10-task SWE-bench Lite diagnostic subset.
+5. 25-task and 50-task Lite diagnostic subsets.
+6. Full SWE-bench Lite diagnostic run when cost and runtime are understood.
+7. SWE-bench Verified only after Lite runs are boring and reproducible.
+8. SWE-bench-Live later for contamination-resistant current tasks.
 
 At each step, CodeGraph should be compared as an added reliability layer:
 
@@ -122,7 +133,8 @@ At each step, CodeGraph should be compared as an added reliability layer:
 Safe wording:
 
 ```text
-The SWE-bench Lite harness path is ready for gold validation.
+The SWE-bench Lite harness path is ready for local diagnostic patch-quality
+experiments.
 ```
 
 ```text

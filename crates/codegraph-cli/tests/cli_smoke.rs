@@ -2285,6 +2285,12 @@ fn audit_index_scope_dry_run_reports_scope_without_creating_db() {
     assert_eq!(value["dry_run"].as_bool(), Some(true));
     assert_eq!(value["db_created"].as_bool(), Some(false));
     assert_eq!(value["normal_codegraph_db_created"].as_bool(), Some(false));
+    assert_eq!(
+        value["include_semantics"].as_str(),
+        Some("default repo scope plus explicit include overrides")
+    );
+    assert_eq!(value["include_is_restrictive"].as_bool(), Some(false));
+    assert_eq!(value["include_is_override"].as_bool(), Some(true));
     assert!(!repo.join(".codegraph").exists());
     assert!(out_json.exists());
     assert!(out_md.exists());
@@ -2292,6 +2298,14 @@ fn audit_index_scope_dry_run_reports_scope_without_creating_db() {
     let report: Value = serde_json::from_str(&fs::read_to_string(&out_json).expect("scope JSON"))
         .expect("scope JSON validates");
     assert_eq!(report["status"].as_str(), Some("ok"));
+    assert_eq!(
+        report["options"]["include_semantics"].as_str(),
+        Some("default repo scope plus explicit include overrides")
+    );
+    assert_eq!(
+        report["options"]["include_is_restrictive"].as_bool(),
+        Some(false)
+    );
     assert!(
         report["counts"]["files_considered"]
             .as_u64()
@@ -2786,11 +2800,6 @@ fn profile_wrapper_prod_agent_status_missing_db_is_actionable() {
     let repo = empty_repo();
     let workspace = empty_repo();
     let local_app_data = workspace.join("localapp");
-    let db_path = local_app_data
-        .join("CodeGraphMCP")
-        .join("agent-indexes")
-        .join(repo.file_name().expect("repo name"))
-        .join("production-agent-use.sqlite");
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -2827,8 +2836,24 @@ fn profile_wrapper_prod_agent_status_missing_db_is_actionable() {
     let json_start = stdout.find('{').expect("JSON status in stdout");
     let status: Value = serde_json::from_str(&stdout[json_start..]).expect("status JSON");
     assert_eq!(status["status"].as_str(), Some("not_indexed"));
+    assert_eq!(status["command_namespace"].as_str(), Some("agent-use"));
+    assert_eq!(
+        status["profile_name"].as_str(),
+        Some("production-agent-use")
+    );
     assert_eq!(status["db_problem_kind"].as_str(), Some("db_missing"));
+    let db_path = PathBuf::from(status["db_path"].as_str().expect("agent-use db path"));
+    assert!(
+        db_path.starts_with(&local_app_data),
+        "agent-use wrapper must use native LocalAppData resolver: {} not under {}",
+        db_path.display(),
+        local_app_data.display()
+    );
     assert!(!db_path.exists(), "profile status must not create DB");
+    assert!(
+        !db_path.parent().expect("db parent").exists(),
+        "profile status must not create profile parent"
+    );
     assert!(
         !sqlite_sidecar_path(&db_path, "wal").exists()
             && !sqlite_sidecar_path(&db_path, "shm").exists(),
@@ -5316,6 +5341,16 @@ fn command_help_is_successful() {
         assert!(output.status.success(), "{command} --help failed");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("Usage:"), "{command} --help missing usage");
+        if command == "index" {
+            assert!(
+                stdout.contains("default repo scope plus explicit include overrides"),
+                "index --help must describe --include semantics truthfully: {stdout}"
+            );
+            assert!(
+                !stdout.contains("restrict indexing to only include globs"),
+                "index --help must not describe --include as restrictive: {stdout}"
+            );
+        }
     }
 }
 

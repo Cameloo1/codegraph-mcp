@@ -1,18 +1,13 @@
 # Guardrails
 
 The root `README.md` is the public project contract. This document records the
-operational rules that keep CodeGraph evidence useful instead of turning it
-into noisy benchmark or development residue.
+operational rules that keep CodeGraph evidence useful instead of turning it into
+noisy benchmark or development residue.
 
 ## Evidence Boundary
 
-Use stable summaries for current status:
-
-- `reports/final/comprehensive_benchmark_latest.md` / `.json`
-- `reports/final/intended_tool_quality_gate.md` / `.json`
-- `reports/final/lifecycle_quality_gate.md` / `.json`
-- `reports/final/manual_relation_precision.md` / `.json`
-- `reports/comparison/codegraph_vs_cgc_latest.md` / `.json`
+Use public docs for stable command contracts and promoted behavior. Use lab
+branch reports for evolving benchmark and OpenEvolve work.
 
 Do not infer current quality from old run payloads, raw logs, copied fixtures,
 temporary DBs, or local benchmark work directories. Unsupported, skipped,
@@ -50,10 +45,10 @@ fail unless the caller explicitly requests a fresh rebuild. Query, context,
 status, MCP, watch, doctor, bundle, and benchmark read paths should surface the
 passport/preflight decision instead of silently trusting an unsafe DB.
 
-## Benchmark Claims
+## Metrics And Claims
 
-Benchmark output must include enough metadata to decide whether a result is
-claimable:
+Any metric or report output must include enough metadata to decide whether a
+result is claimable:
 
 - exact command
 - binary profile and debug-assertion status
@@ -63,8 +58,9 @@ claimable:
 - artifact path and freshness classification
 
 Debug timing can be useful diagnosis, but it must not be used for production
-threshold verdicts. Partial competitor artifacts are not final storage
-artifacts and do not support superiority claims.
+threshold verdicts. Partial comparison artifacts are not final storage
+artifacts and do not support superiority claims. Benchmark and OpenEvolve
+details belong on `benchmark-and-openevolve-lab` unless explicitly promoted.
 
 ## Retrieval Contract
 

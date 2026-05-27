@@ -19,39 +19,49 @@ agent-reliability lab plan, and SWE-bench readiness plan, see
 
 There are two report classes:
 
-- **Stable public summaries** are durable Markdown/JSON files linked from the
-  README.
+- **Release-facing summaries** are compact docs or visuals that describe current
+  verified behavior with strict claim boundaries.
 - **Run artifacts** are DBs, WAL/SHM files, raw stdout/stderr, copied fixtures,
   and temporary benchmark payloads. Keep them ignored unless a small summary is
   explicitly promoted.
 
-## Stable Reports
+## Release-Facing Benchmark Surface
 
-Use these as the current public status surface:
+The root README is the public setup contract. It intentionally summarizes
+benchmark-lab evidence through compact, claim-bounded visuals instead of linking
+raw run outputs.
 
-- `reports/final/comprehensive_benchmark_latest.md` / `.json` - latest
-  preserved comprehensive gate.
-- `reports/final/intended_tool_quality_gate.md` / `.json` - Intended Tool
-  Quality Gate.
-- `reports/final/manual_relation_precision.md` / `.json` - manual sampled
-  precision boundary.
-- `reports/comparison/codegraph_vs_cgc_latest.md` / `.json` - CGC comparison
-  status.
+Current release-facing benchmark docs:
 
-Current stable status: Graph Truth and Context Packet gates pass, warm repeat
-and single-file update pass, DB integrity passes, and proof DB size is under the
-250 MiB target. The Intended Tool Quality Gate is still **FAIL** in the stable
-report because `proof_build_only_ms = 184,297 ms` is above `<=60,000 ms`. The
-CGC comparison is diagnostic/incomplete and does not support a superiority
-claim.
+- [Agent Benchmarking](agent-benchmarking.md) explains the v0/v0.5/v1 framing.
+- [Agent Reliability Benchmark Lab](agent-reliability-benchmark-lab.md) defines
+  the product benchmark shape: same agent with normal tools versus the same
+  agent with normal tools plus CodeGraph.
+- [Current Benchmark Findings](benchmark-findings.md) summarizes the latest
+  local diagnostic sweep without making public benchmark claims.
+- [SWE-bench Readiness](swe-bench-readiness.md) tracks local harness readiness
+  and what remains before CodeGraph-attributed patch outcomes can be claimed.
+
+Older preserved reports under `reports/final/` remain useful historical gates,
+but they are not the current README status surface unless a doc explicitly says
+so. Detailed benchmark harness code, raw run interpretation, OpenEvolve policy
+experiments, and evolving scorecards belong on the
+`benchmark-and-openevolve-lab` branch.
 
 ## Run
 
 Use the release binary for timing that might be compared to production
-thresholds:
+thresholds. For current benchmark-layer diagnostics, prefer the operator-grade
+suite:
 
 ```powershell
 cargo build --release --bin codegraph-mcp
+python -m benchmarks.harness.runners.run_benchmark_suite --suite full --output-dir benchmarks/results/summaries/<run_id>
+```
+
+Legacy in-binary bench commands still exist for targeted local diagnostics:
+
+```powershell
 .\target\release\codegraph-mcp.exe bench comprehensive --fresh --output-dir reports\final
 ```
 

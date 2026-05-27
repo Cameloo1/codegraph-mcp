@@ -15,12 +15,12 @@ v1 must measure rg-only agent vs rg + CodeGraph agent.
 
 Source report:
 
-- `reports/final/full_benchmark_sweep_latest.md`
-- `reports/final/full_benchmark_sweep_latest.json`
+- `reports/final/full_e2e_benchmark_three_run_latest.md`
+- `reports/final/full_e2e_benchmark_three_run_latest.json`
 
-The latest clean sweep ran smoke, full v0, v0.5 internal, v0.5 external, and a
-SWE-bench-focused suite alias after fixing an `rg`/Python output-flood
-regression. It recorded:
+The latest clean sweep is a three-run local diagnostic sweep. It ran smoke,
+full v0, v0.5 internal, v0.5 external, and a SWE-bench-focused suite alias. It
+recorded:
 
 - claimability violations: 0;
 - unsupported-claim violations: 0;
@@ -35,9 +35,9 @@ RepoBench-style, and CrossCodeEval-style tracks.
 
 | Provider | Recall@5 | MRR | Precision@5 | Context bytes | Warm ms/task |
 |---|---:|---:|---:|---:|---:|
-| `rg_only` | 0.531 | 0.490 | 0.261 | 132,259 | 195 |
-| `codegraph_full` | 0.460 | 0.356 | 0.217 | 52,496 | 1,418 |
-| `codegraph_exact_text` | 0.138 | 0.127 | 0.044 | 43,038 | 1,305 |
+| `rg_only` | 0.528 | 0.482 | 0.261 | 135,815 | 595 |
+| `codegraph_full` | 0.454 | 0.358 | 0.214 | 54,342 | 1,098 |
+| `codegraph_exact_text` | 0.138 | 0.127 | 0.044 | 44,689 | 1,018 |
 | `baseline` | 0.000 | 0.000 | 0.000 | 0 | 0 |
 
 Interpretation:
@@ -56,10 +56,10 @@ large-codebase planning.
 
 | Provider | Recall@5 | MRR | Precision@5 | Context bytes | Warm ms/task |
 |---|---:|---:|---:|---:|---:|
-| `rg_planned` | 0.758 | 0.925 | 0.400 | 43,903 | 433 |
-| `codegraph_current` | 0.483 | 0.588 | 0.200 | 62,877 | 2,521 |
-| `codegraph_planned` | 0.492 | 0.517 | 0.200 | 87,897 | 7,391 |
-| `rg_only` | 0.475 | 0.553 | 0.200 | 395,999 | 327 |
+| `rg_planned` | 0.692 | 0.828 | 0.360 | 44,250 | 758 |
+| `codegraph_current` | 0.483 | 0.577 | 0.200 | 65,276 | 1,622 |
+| `codegraph_planned` | 0.492 | 0.517 | 0.200 | 91,961 | 5,424 |
+| `rg_only` | 0.483 | 0.541 | 0.200 | 403,859 | 719 |
 
 Interpretation:
 
@@ -76,10 +76,10 @@ CrossCodeEval-style local diagnostic subsets after query-leakage hardening.
 
 | Provider | Recall@5 | MRR | Precision@5 | Context bytes | Warm ms/task |
 |---|---:|---:|---:|---:|---:|
-| `rg_planned` | 0.973 | 0.500 | 0.560 | 288 | 145 |
-| `codegraph_planned` | 0.573 | 0.611 | 0.310 | 59,078 | 3,684 |
-| `rg_only` | 0.539 | 0.571 | 0.310 | 2,956 | 125 |
-| `codegraph_current` | 0.466 | 0.362 | 0.250 | 47,489 | 986 |
+| `rg_planned` | 0.973 | 0.500 | 0.560 | 288 | 609 |
+| `codegraph_planned` | 0.573 | 0.611 | 0.310 | 60,785 | 3,508 |
+| `rg_only` | 0.539 | 0.558 | 0.310 | 2,956 | 536 |
+| `codegraph_current` | 0.466 | 0.362 | 0.250 | 48,927 | 888 |
 
 Interpretation:
 
@@ -97,8 +97,10 @@ the local Linux-container route in a normal user/approved unsandboxed process.
 That is harness readiness evidence only.
 
 Patch-quality scoring still requires actual external-agent predictions
-evaluated through the SWE-bench harness. Setup readiness, mock-agent runs, and
-gold-validation runs are not patch-quality scores.
+evaluated through the SWE-bench harness. A one-task local patch smoke has run
+for baseline and `rg_only`, but CodeGraph-attributed patch outcomes and
+official-compatible multi-task scores are not claimed. Setup readiness,
+mock-agent runs, and gold-validation runs are not patch-quality scores.
 
 ## What The Results Actually Say
 

@@ -9,6 +9,11 @@ use std::{fs, path::Path};
 use serde::{Deserialize, Serialize};
 
 pub const SCOPE_EXAMPLE_LIMIT: usize = 200;
+pub const SCOPE_POLICY_KIND_DEFAULT_WITH_OVERRIDES: &str =
+    "default_repo_scope_plus_explicit_overrides";
+pub const INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES: &str =
+    "default repo scope plus explicit include overrides";
+pub const SCOPE_TRUTH_STATUS_OVERRIDE_ONLY: &str = "include_is_override_only";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScopePathKind {
@@ -332,6 +337,11 @@ impl Default for IndexScope {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct IndexScopeRuntimeReport {
+    pub scope_policy_kind: String,
+    pub include_semantics: String,
+    pub include_is_restrictive: bool,
+    pub include_is_override: bool,
+    pub scope_truth_status: String,
     pub default_excludes_enabled: bool,
     pub include_ignored: bool,
     pub no_default_excludes: bool,
@@ -352,6 +362,11 @@ pub struct IndexScopeRuntimeReport {
 impl IndexScopeRuntimeReport {
     pub fn new(options: &IndexScopeOptions) -> Self {
         Self {
+            scope_policy_kind: SCOPE_POLICY_KIND_DEFAULT_WITH_OVERRIDES.to_string(),
+            include_semantics: INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES.to_string(),
+            include_is_restrictive: false,
+            include_is_override: true,
+            scope_truth_status: SCOPE_TRUTH_STATUS_OVERRIDE_ONLY.to_string(),
             default_excludes_enabled: !options.no_default_excludes,
             include_ignored: options.include_ignored,
             no_default_excludes: options.no_default_excludes,
@@ -451,7 +466,7 @@ struct GitIgnorePattern {
 
 impl GitIgnorePattern {
     fn parse(line: &str) -> Option<Self> {
-        let trimmed = line.trim();
+        let trimmed = line.trim().trim_start_matches('\u{feff}').trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             return None;
         }
@@ -1051,6 +1066,35 @@ mod tests {
     }
 
     #[test]
+    fn explicit_include_does_not_restrict_default_scope() {
+        let scope = IndexScope::new(IndexScopeOptions {
+            include_patterns: vec!["target/debug/app.rs".to_string()],
+            ..IndexScopeOptions::default()
+        });
+
+        let default_source = scope.evaluate_path("src/main.ts", ScopePathKind::File, false);
+        let explicit_source =
+            scope.evaluate_path("target/debug/app.rs", ScopePathKind::File, false);
+
+        assert_eq!(default_source.action, ScopeAction::WouldInclude);
+        assert_eq!(default_source.rule_kind, ScopeRuleKind::None);
+        assert_eq!(explicit_source.action, ScopeAction::WouldInclude);
+        assert_eq!(explicit_source.rule_kind, ScopeRuleKind::ExplicitInclude);
+    }
+
+    #[test]
+    fn runtime_report_labels_include_semantics_truthfully() {
+        let report = IndexScopeRuntimeReport::new(&IndexScopeOptions::default());
+        assert_eq!(
+            report.include_semantics,
+            INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES
+        );
+        assert!(!report.include_is_restrictive);
+        assert!(report.include_is_override);
+        assert_eq!(report.scope_truth_status, SCOPE_TRUTH_STATUS_OVERRIDE_ONLY);
+    }
+
+    #[test]
     fn explicit_exclude_wins_before_include() {
         let scope = IndexScope::new(IndexScopeOptions {
             include_patterns: vec!["src/app.ts".to_string()],
@@ -1127,5 +1171,15 @@ mod tests {
         assert!(matcher.is_ignored("dist/app.ts", ScopePathKind::File));
         assert!(!matcher.is_ignored("dist/keep.ts", ScopePathKind::File));
         assert!(matcher.is_ignored("nested/run.log", ScopePathKind::File));
+    }
+
+    #[test]
+    fn gitignore_matcher_strips_utf8_bom_from_first_pattern() {
+        let matcher = GitIgnoreMatcher {
+            patterns: vec![
+                GitIgnorePattern::parse("\u{feff}dist/").expect("BOM-prefixed dist pattern")
+            ],
+        };
+        assert!(matcher.is_ignored("dist/generated.ts", ScopePathKind::File));
     }
 }

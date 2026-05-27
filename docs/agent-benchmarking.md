@@ -160,3 +160,14 @@ python -m benchmarks.harness.runners.run_benchmark_suite --suite full --output-d
 
 Generated results, DBs, logs, upstream checkouts, patches, predictions, and raw
 payloads are local/ignored by default.
+
+## Related Docs
+
+- [Agent Reliability Benchmark Lab](agent-reliability-benchmark-lab.md)
+  defines the v1 agent A/B benchmark contract.
+- [Current Benchmark Findings](benchmark-findings.md) summarizes stable local
+  diagnostic findings without turning them into public benchmark claims.
+- [SWE-bench Readiness](swe-bench-readiness.md) explains current local
+  SWE-bench Lite harness readiness and claim boundaries.
+- [Benchmark Guide](benchmark-guide.md) covers setup, run hygiene, and report
+  interpretation for benchmark/lab contributors.

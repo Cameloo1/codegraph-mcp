@@ -26,8 +26,8 @@ Global flags are accepted before the command name:
 `CODEGRAPH_DB_PATH`, and global `--profile` enables index profiling for the
 `index` command. Global `--agent-json` and `--limit` are forwarded only to
 agent-use query/context-pack surfaces where the command supports them. For
-routine agent use, prefer a release-binary agent DB outside the source tree
-instead of reusing temporary development or benchmark DBs.
+routine agent use, prefer the `agent-use` namespace instead of reusing
+temporary development or lab DBs.
 
 Command-local flags remain after the command. Ambiguous global flags after
 query subcommands return targeted corrections instead of becoming query text.
@@ -41,15 +41,11 @@ Use `--agent-json` for tight coding-agent loops and `--limit <n>` to keep
 results bounded:
 
 ```powershell
-codegraph-mcp --repo <repo> --db <agent-db> query symbols <symbol> `
+codegraph-mcp agent-use query symbols <symbol> --repo <repo> `
   --limit 5 --agent-json
 
-codegraph-mcp --repo <repo> --db <agent-db> context-pack `
+codegraph-mcp agent-use context-pack --repo <repo> `
   --task "Trace the change impact" `
-  --seed <symbol> `
-  --mode production `
-  --limit-paths 5 `
-  --limit-snippets 5 `
   --agent-json
 ```
 
@@ -65,6 +61,56 @@ Supported compact modes:
 `index --json` is concise by default. It excludes full scope examples and audit
 payloads unless one of the explicit audit/scope flags is supplied.
 
+## Production Agent-Use Namespace
+
+Use the first-class namespace for routine coding-agent work:
+
+```powershell
+codegraph-mcp agent-use status --repo <repo> --json
+codegraph-mcp agent-use index --repo <repo> --json
+codegraph-mcp agent-use query symbols <symbol> --repo <repo> --limit 5 --agent-json
+codegraph-mcp agent-use query text "text" --repo <repo> --limit 5 --agent-json
+codegraph-mcp agent-use query files service --repo <repo> --limit 5 --agent-json
+codegraph-mcp agent-use context-pack --repo <repo> --task "Trace the change impact" --agent-json
+codegraph-mcp agent-use mcp-config --repo <repo> --json
+codegraph-mcp agent-use watch --repo <repo> --once --changed src\file.ts --json
+codegraph-mcp agent-use watch --repo <repo> --json
+```
+
+The namespace resolves the `production-agent-use` profile to an external DB
+under the platform data directory, such as LocalAppData on Windows. Repos with
+the same basename receive distinct profile paths. No `agent-use` command
+silently falls back to repo-local `.codegraph`.
+
+`agent-use status` is read-only and does not create the DB, profile parent, or
+SQLite sidecars. `agent-use index` is the first mutating command and writes the
+external profile DB plus bounded candidate/vector artifacts. `agent-use query`
+and `agent-use context-pack` read the same external DB. `agent-use mcp-config`
+emits config JSON only by default and must agree with `agent-use status` on the
+DB path. `agent-use watch --once --changed <path>` is the deterministic
+changed-file update primitive for that same profile DB. It requires an existing
+safe graph DB, rejects `--db`, does not auto-index, and reports staged sidecar
+freshness after the update. Persistent `agent-use watch --repo <repo> --json`
+debounces and coalesces filesystem events, serializes writer work, retries
+transient locks within bounds, and calls the same changed-file update contract
+rather than owning a second delta engine. It also refuses unsafe profile DB
+states instead of creating a new graph silently.
+
+`agent-use validate-edit` is deferred to MVP3. Do not treat the current RTDS
+surface as a compiler/test replacement or as a complete dangling-edge
+validation engine.
+
+Staged candidate spool and runtime vector sidecar output is candidate context,
+not graph proof. Optional audit artifacts are diagnostic-only. Missing, stale,
+foreign, schema-mismatched, locked, permission-denied, and publishing states are
+non-claimable unless explicitly labeled diagnostic-only. Plain `status --json`
+remains the local `.codegraph` status surface and may include guidance to
+agent-use without redirecting.
+
+Telemetry fields distinguish measured, unknown, and aggregated values. Memory
+is `memory: "unknown"` with `memory_measured: false` unless measured. Timing
+substage fields that cannot be separated are labeled unknown or aggregated.
+
 ## Commands
 
 `init [repo] [--dry-run] [--with-codex-config] [--with-agents] [--with-skills] [--with-hooks] [--with-templates] [--index]`
@@ -77,10 +123,14 @@ Detects repo tooling, creates `.codegraph/`, and can install Codex config,
 Indexes supported language frontends into `.codegraph/codegraph.sqlite`.
 Unchanged files are skipped by content hash. Changed files are parsed and
 extracted through a deterministic parallel worker pool, then written in a
-single batched SQLite transaction. `--profile --json` includes discovery,
-parse, extraction, semantic resolver, DB write, FTS/search index, signature,
-total wall time, throughput, worker count, unchanged skip count, and memory
-when measurable.
+single batched SQLite transaction. Scope starts with the default repo policy;
+`--include <pattern>` is an explicit include override for paths that policy
+would otherwise exclude, not a restrictive only-these-globs filter.
+`--profile --json` includes discovery, parse, extraction, semantic resolver,
+DB write, FTS/search index, signature, total wall time, throughput, worker
+count, unchanged skip count, and explicit measurement status for memory and
+timing substages. Unmeasured memory is reported as `memory: "unknown"` with
+`memory_measured: false`.
 
 `--build-vector-index <path>` writes an optional deterministic local vector
 chunk index for later candidate recall. The vector index is lifecycle-bound to
@@ -224,6 +274,12 @@ Watches or updates changed files only. Ignore rules cover `.git`,
 files, and minified JS. Persistent watch mode honors the configured DB path and
 runs lifecycle preflight before opening it.
 
+For production agent-use, prefer `agent-use watch --repo <repo> --once
+--changed <path> --json` for deterministic updates, or `agent-use watch --repo
+<repo> --json` for persistent scheduling over the same update primitive. That
+wrapper owns the external production profile DB resolver and will not mutate
+repo-local `.codegraph`.
+
 `serve-mcp`
 
 Starts the local stdio JSON-RPC MCP server.
@@ -253,9 +309,11 @@ availability, optional compiler/LSP resolver availability, exactness per
 extractor, and known limitations. Use `--json` for machine-readable capability
 metadata.
 
+## Developer / Diagnostic Commands
+
 `bench [--baseline <mode>]... [--format <json|markdown>] [--output <path>]`
 
-Runs the local benchmark suite. Baselines are `vanilla_no_retrieval`,
+Runs the local developer benchmark suite. Baselines are `vanilla_no_retrieval`,
 `grep_bm25`, `vector_only`, `graph_only`, `graph_binary_pq_funnel`,
 `graph_bayesian_ranker`, and `full_context_packet`.
 
@@ -279,8 +337,8 @@ Java. It includes pinned commits, task manifests, and an offline replay plan for
 
 `bench parity-report [--output-dir <dir>]`
 
-Writes parity summaries. Unknown/skipped fields remain explicit, and the report
-makes no SOTA claim without measured evidence.
+Writes parity summaries. Unknown/skipped fields remain explicit, and diagnostic
+outputs do not support superiority claims.
 
 `bench cgc-comparison [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>]`
 
@@ -317,9 +375,9 @@ paths, feature flags, build profile, and provenance/checksum expectations.
 ## SQLite Tuning
 
 The SQLite store enables `foreign_keys`, WAL mode for file-backed DBs,
-`synchronous = NORMAL`, and a 5000ms busy timeout. These are documented because
-they improve local indexing throughput without silently moving the database to
-an unsafe durability mode.
+`synchronous = FULL`, and a 5000ms busy timeout. These are documented because
+they preserve local durability expectations without silently moving the database
+to an unsafe mode.
 
 ## Installability
 

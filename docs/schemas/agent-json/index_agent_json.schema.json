@@ -72,6 +72,9 @@
     "timings": {
       "$ref": "common.schema.json#/$defs/timings"
     },
+    "telemetry": {
+      "$ref": "common.schema.json#/$defs/telemetry_truth"
+    },
     "summary": {
       "type": "object",
       "required": ["repo", "build_mode"],

@@ -1,7 +1,33 @@
 # Quickstart
 
-CodeGraph is Rust-first, local-first, exact graph first, vectors second, and
-single-agent only.
+Use this page for the first local run. For the product overview and docs map,
+start with the root [README](../README.md).
+
+CodeGraph is Rust-first, local-first, proof-first, and single-agent oriented.
+Normal developer tools such as `rg`, editing, and tests stay in the loop;
+CodeGraph adds lifecycle-checked graph context beside them.
+
+## For Your Coding Agent
+
+Use these instructions when setting up CodeGraph for a workspace:
+
+> You are installing CodeGraph MCP as a dedicated repo-context tool for this
+> project. Clone CodeGraph into a separate tools folder outside the project you
+> will inspect. Build the release binary. Verify
+> `codegraph-mcp --json --version`. Run
+> `codegraph-mcp agent-use status --repo <target-repo> --json`. Generate the MCP
+> config with
+> `codegraph-mcp agent-use mcp-config --repo <target-repo> --json`. Keep
+> CodeGraph's checkout, generated databases, logs, benchmark artifacts, and
+> temporary files separate from the target project. Do not create or mutate a
+> repo-local `.codegraph` unless explicitly asked. Do not index until the target
+> repo path and generated MCP config have been shown to the user.
+
+After the user approves the target repo and config, index explicitly:
+
+```powershell
+codegraph-mcp agent-use index --repo <target-repo> --json
+```
 
 ## Build
 
@@ -12,7 +38,7 @@ cargo test --workspace
 
 ## Initialize A Repo
 
-From a TypeScript or JavaScript repository:
+From a repository checkout:
 
 ```powershell
 codegraph-mcp init --with-templates --with-codex-config
@@ -20,8 +46,10 @@ codegraph-mcp index .
 codegraph-mcp status
 ```
 
-This creates `.codegraph/codegraph.sqlite`, optional Codex templates, and a
-local MCP config when requested.
+This creates `.codegraph/codegraph.sqlite` for the default local CLI profile,
+plus optional Codex templates and a local MCP config when requested. For routine
+coding-agent use, prefer the `agent-use` profile below because it keeps the DB
+outside the source tree.
 
 ## Query Evidence
 
@@ -36,23 +64,23 @@ codegraph-mcp context-pack --task "Trace profileRoute auth and mutation impact" 
 ```
 
 The CLI returns JSON with graph/source evidence, source spans, exactness, and
-confidence labels.
+confidence labels. Candidate/text/vector lanes can guide inspection, but graph
+relations are only proof when graph/source verification succeeds.
 
-For a coding-agent loop, use the release binary, an explicit DB path, and
-bounded agent JSON:
+For a coding-agent loop, use the release binary and the first-class
+`agent-use` profile. This keeps the agent DB outside the source tree and makes
+status checks read-only until you explicitly index:
 
 ```powershell
 cargo build --release --bin codegraph-mcp
-codegraph-mcp --repo <repo> --db <agent-db> index <repo> --json
-codegraph-mcp --repo <repo> --db <agent-db> query symbols profileRoute `
+codegraph-mcp agent-use status --repo <repo> --json
+codegraph-mcp agent-use index --repo <repo> --json
+codegraph-mcp agent-use query symbols profileRoute --repo <repo> `
   --limit 5 --agent-json
-codegraph-mcp --repo <repo> --db <agent-db> context-pack `
+codegraph-mcp agent-use context-pack --repo <repo> `
   --task "Trace profileRoute auth and mutation impact" `
-  --seed profileRoute `
-  --mode production `
-  --limit-paths 5 `
-  --limit-snippets 5 `
   --agent-json
+codegraph-mcp agent-use mcp-config --repo <repo> --json
 ```
 
 Use `--mode test-impact --agent-json` when the task intentionally needs
@@ -65,20 +93,23 @@ tasks, but they remain candidates until graph/source verification succeeds.
 ## Serve MCP
 
 ```powershell
-codegraph-mcp serve-mcp
+codegraph-mcp agent-use mcp-config --repo <repo> --json
 ```
 
-Generated Codex config points to this command. MCP tools are read-mostly and
-proof-oriented.
+Use the generated config in your agent client. MCP tools are read-mostly and
+proof-oriented; they read the same external production profile DB used by the
+`agent-use` CLI.
 
 ## Watch Changes
 
 ```powershell
-codegraph-mcp watch . --debounce-ms 250
+codegraph-mcp agent-use watch --repo <repo> --once --changed src\file.ts --json
+codegraph-mcp agent-use watch --repo <repo> --json
 ```
 
-Watcher mode re-indexes changed files only, prunes stale facts for those files,
-updates binary signatures, and refreshes local adjacency state.
+The one-shot command updates a changed file only after the existing profile DB
+passes lifecycle preflight. Persistent watch debounces editor save bursts and
+schedules the same changed-file update primitive.
 
 ## Proof-Path UI
 
@@ -92,16 +123,10 @@ neighborhood, impact, auth/security, event flow, test impact, and unresolved
 call views with exactness legends, source-span preview, graph JSON export, and
 truncation warnings for large graphs.
 
-## Benchmarks
+## Related Docs
 
-```powershell
-codegraph-mcp bench --output target\codegraph-benchmark-report.json
-codegraph-mcp bench --baseline graph-only --format markdown --output target\graph-only.md
-codegraph-mcp bench real-repo-corpus
-codegraph-mcp bench parity-report --output-dir target\parity
-```
-
-Benchmark reports are deterministic and machine-readable. They compare vanilla,
-BM25, vector-only, graph-only, graph+binary/PQ, graph+Bayesian, and full
-context-packet modes. The parity report keeps CodeGraphContext and real-repo
-results as skipped or unknown unless they were actually measured.
+- [Install And Release Notes](install.md) covers packaged install and release
+  template paths.
+- [CLI Reference](cli-reference.md) lists the full command and flag surface.
+- [Troubleshooting](troubleshooting.md) covers common lifecycle, flag-placement,
+  watch, and empty-packet issues.
