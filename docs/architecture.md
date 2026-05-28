@@ -377,10 +377,8 @@ depends on the indexed language frontend and extractor support.
 7. `codegraph-cli` provides local commands for indexing, status, querying,
    impact analysis, context packs, bundles, MCP serving, UI serving, Codex
    template installation, optional live watching, the local Proof-Path UI HTTP
-   server, local benchmark execution, hardened caller/callee/chain query
-   commands, diagnostics, shell completions, release metadata, and profiled
-   indexing-speed fixtures, real-repo corpus manifests, and final parity report
-   generation.
+   server, hardened caller/callee/chain query commands, diagnostics, shell
+   completions, release metadata, and profiled indexing-speed fixtures.
 8. `codegraph-bench` contains developer and lab harnesses for extraction,
    retrieval, path recall, security/auth, async/event flow, test-impact, and
    patch-outcome experiments. Lab outputs must stay diagnostic unless promoted
@@ -404,8 +402,7 @@ preserving the facts most likely to affect task success.
 ## Operational Profiles
 
 Use the profiles in [operational-profiles.md](operational-profiles.md) to keep
-temporary development or benchmark DBs separate from the graph used by a coding
-agent:
+temporary development/test DBs separate from the graph used by a coding agent:
 
 - The development profile uses local diagnostic DBs for testing CodeGraph
   changes.
@@ -419,18 +416,18 @@ agent:
   falling back to repo-local `.codegraph`.
 
 Agent-use reads should answer only after the DB lifecycle preflight says the DB
-is valid, matching, claimable, and not contaminated. Development and benchmark
-DBs are never superiority evidence by themselves.
+is valid, matching, claimable, and not contaminated. Development/test DBs are
+never superiority evidence by themselves.
 
 ## Current Evidence Boundary
 
 The public architecture contract is behavioral: graph/source verification is
 the only graph-proof path, and candidate layers remain labeled until verified.
 
-Raw DBs, WAL/SHM files, raw logs, diagnostic payloads, local benchmark outputs,
-and temporary comparison artifacts are evidence inputs for development. They
-are not public architecture claims unless a small summary is intentionally
-promoted and claim-reviewed.
+Raw DBs, WAL/SHM files, raw logs, diagnostic payloads, local run outputs, and
+temporary comparison artifacts are evidence inputs for development. They are
+not public architecture claims unless a small summary is intentionally promoted
+and claim-reviewed.
 
 ## Roadmap Boundary
 

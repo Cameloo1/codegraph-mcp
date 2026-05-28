@@ -2,16 +2,17 @@
 
 The root `README.md` is the public project contract. This document records the
 operational rules that keep CodeGraph evidence useful instead of turning it into
-noisy benchmark or development residue.
+noisy diagnostic or development residue.
 
 ## Evidence Boundary
 
-Use public docs for stable command contracts and promoted behavior. Use lab
-branch reports for evolving benchmark and OpenEvolve work.
+Use public docs for stable command contracts and promoted behavior. Keep
+evolving lab reports, optimizer experiments, and raw local diagnostics on lab
+branches unless a small summary is intentionally promoted.
 
 Do not infer current quality from old run payloads, raw logs, copied fixtures,
-temporary DBs, or local benchmark work directories. Unsupported, skipped,
-timed-out, debug-only, partial, or diagnostic data must stay labeled that way.
+temporary DBs, or local experiment directories. Unsupported, skipped, timed-out,
+debug-only, partial, or diagnostic data must stay labeled that way.
 
 ## Repository Hygiene
 
@@ -20,15 +21,15 @@ promoted:
 
 - SQLite DBs and sidecars: `*.sqlite`, `*.db`, `*.sqlite-wal`, `*.sqlite-shm`
 - build and dependency outputs: `target/`, `node_modules/`, `.venv/`, caches
-- raw benchmark and competitor payloads
-- final benchmark artifact directories
+- raw diagnostic and comparison payloads
+- final local-run artifact directories
 - audit scratch artifact directories
 - raw competitor payload directories
 - normalized task payload directories
 - timestamped local run directories
 
 Public docs should not contain machine-local absolute paths, private checkout
-paths, copied benchmark trees, or raw artifact inventories.
+paths, copied experiment trees, or raw artifact inventories.
 
 ## DB Lifecycle
 
@@ -42,7 +43,7 @@ Default indexing is safe-auto:
 
 Explicit `--db <path>` is more conservative. Invalid or mismatched named DBs
 fail unless the caller explicitly requests a fresh rebuild. Query, context,
-status, MCP, watch, doctor, bundle, and benchmark read paths should surface the
+status, MCP, watch, doctor, and bundle read paths should surface the
 passport/preflight decision instead of silently trusting an unsafe DB.
 
 ## Metrics And Claims
@@ -59,8 +60,8 @@ result is claimable:
 
 Debug timing can be useful diagnosis, but it must not be used for production
 threshold verdicts. Partial comparison artifacts are not final storage
-artifacts and do not support superiority claims. Benchmark and OpenEvolve
-details belong on `benchmark-and-openevolve-lab` unless explicitly promoted.
+artifacts and do not support superiority claims. Lab and optimizer details stay
+off release-facing docs unless explicitly promoted.
 
 ## Retrieval Contract
 

@@ -15,11 +15,7 @@ PUBLIC_DOCS = [
     "README.md",
     "CONTRIBUTING.md",
     "docs/agent-json.md",
-    "docs/agent-benchmarking.md",
-    "docs/agent-reliability-benchmark-lab.md",
     "docs/architecture.md",
-    "docs/benchmark-findings.md",
-    "docs/benchmark-guide.md",
     "docs/cli-reference.md",
     "docs/guardrails.md",
     "docs/install.md",
@@ -28,12 +24,10 @@ PUBLIC_DOCS = [
     "docs/operational-profiles.md",
     "docs/quality-gates.md",
     "docs/quickstart.md",
-    "docs/swe-bench-readiness.md",
     "docs/troubleshooting.md",
 ]
 
 STABLE_REPORT_PREFIXES = (
-    "reports/final/comprehensive_benchmark_latest.",
     "reports/final/intended_tool_quality_gate.",
     "reports/final/lifecycle_quality_gate.",
     "reports/final/manual_relation_precision.",

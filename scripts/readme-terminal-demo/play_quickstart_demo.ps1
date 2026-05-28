@@ -76,7 +76,7 @@ Invoke-DemoCommand `
     ) `
     -Summary @(
         "evidence: symbol `greet` found in fixture source",
-        "proof label: query evidence is source-spanned, not a benchmark claim"
+        "proof label: query evidence is source-spanned, not an external score claim"
     )
 
 Invoke-DemoCommand `

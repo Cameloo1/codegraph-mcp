@@ -59,6 +59,26 @@ fn stderr_json(output: &Output) -> Value {
     serde_json::from_slice(&output.stderr).expect("stderr JSON")
 }
 
+fn graph_truth_cases_or_skip() -> Option<(PathBuf, PathBuf)> {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root")
+        .to_path_buf();
+    let cases = workspace_root
+        .join("benchmarks")
+        .join("graph_truth")
+        .join("fixtures");
+    if !cases.exists() {
+        eprintln!(
+            "skipping graph-truth lab fixture smoke; cases path is absent: {}",
+            cases.display()
+        );
+        return None;
+    }
+    Some((workspace_root, cases))
+}
+
 fn write_context_pack_vector_test_index(db_path: &Path, index_path: &Path) {
     write_context_pack_vector_test_index_with_scope(
         db_path,
@@ -495,14 +515,9 @@ fn bench_command_outputs_machine_readable_report() {
 
 #[test]
 fn bench_graph_truth_gate_runs_adversarial_fixtures_and_writes_reports() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("workspace root");
-    let cases = workspace_root
-        .join("benchmarks")
-        .join("graph_truth")
-        .join("fixtures");
+    let Some((workspace_root, cases)) = graph_truth_cases_or_skip() else {
+        return;
+    };
     let output_dir = empty_repo().join("graph-truth-output");
     let out_json = output_dir.join("report.json");
     let out_md = output_dir.join("report.md");
@@ -579,14 +594,9 @@ fn bench_graph_truth_gate_runs_adversarial_fixtures_and_writes_reports() {
 
 #[test]
 fn bench_context_packet_gate_runs_adversarial_fixtures_and_writes_reports() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("workspace root");
-    let cases = workspace_root
-        .join("benchmarks")
-        .join("graph_truth")
-        .join("fixtures");
+    let Some((workspace_root, cases)) = graph_truth_cases_or_skip() else {
+        return;
+    };
     let output_dir = empty_repo().join("context-packet-output");
     let out_json = output_dir.join("report.json");
     let out_md = output_dir.join("report.md");
@@ -630,14 +640,9 @@ fn bench_context_packet_gate_runs_adversarial_fixtures_and_writes_reports() {
 
 #[test]
 fn bench_retrieval_ablation_reports_stage0_and_full_funnel_separately() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("workspace root");
-    let cases = workspace_root
-        .join("benchmarks")
-        .join("graph_truth")
-        .join("fixtures");
+    let Some((workspace_root, cases)) = graph_truth_cases_or_skip() else {
+        return;
+    };
     let output_dir = empty_repo().join("retrieval-ablation-output");
     let out_json = output_dir.join("report.json");
     let out_md = output_dir.join("report.md");

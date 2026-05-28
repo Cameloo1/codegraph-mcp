@@ -1,2 +1,0 @@
-"""Benchmark report generators."""
-

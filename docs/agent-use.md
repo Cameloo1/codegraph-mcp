@@ -217,8 +217,8 @@ output excludes them by default.
 ## Related Docs
 
 - [Operational Profiles](operational-profiles.md) explains the profile split
-  between default CLI, development/self-test, benchmark, and production
-  agent-use databases.
+  between default CLI, development/self-test, and production agent-use
+  databases.
 - [Agent JSON Contract](agent-json.md) documents the agent-facing schema and
   compatibility policy.
 - [MCP Reference](mcp-reference.md) covers the read-mostly MCP tools exposed to

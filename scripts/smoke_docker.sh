@@ -47,7 +47,7 @@ write_summary() {
     printf '  "requirements": {\n'
     printf '    "cgc_required": false,\n'
     printf '    "autoresearch_required": false,\n'
-    printf '    "external_benchmark_artifacts_required": false,\n'
+    printf '    "external_diagnostic_artifacts_required": false,\n'
     printf '    "network_required": "Docker base image plus normal Cargo dependency resolution"\n'
     printf '  },\n'
     printf '  "steps": [\n'

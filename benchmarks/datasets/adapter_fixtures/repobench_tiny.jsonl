@@ -1,2 +1,0 @@
-{"task_id":"repobench_fixture_1","prompt":"from helpers import normalize_user\n\nvalue = normalize_user(","crossfile_context":{"list":[{"filename":"helpers.py","retrieved_chunk":"def normalize_user(value):\n    return value.strip().lower()"}]}}
-{"task_id":"repobench_fixture_2","prompt":"from storage import open_profile\n\nprofile = open_profile(","crossfile_context":{"list":[{"filename":"storage.py","retrieved_chunk":"def open_profile(path):\n    return Profile(path)"}]}}

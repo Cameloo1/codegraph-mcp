@@ -125,7 +125,7 @@ function Write-Summary {
         requirements = @{
             cgc_required = $false
             autoresearch_required = $false
-            external_benchmark_artifacts_required = $false
+            external_diagnostic_artifacts_required = $false
             network_required = "only normal Cargo dependency resolution"
         }
         steps = @($steps)

@@ -39,7 +39,7 @@ been reviewed for:
 - current command syntax;
 - no machine-local paths;
 - no secrets;
-- no unsupported performance or benchmark claims;
+- no unsupported performance or external-score claims;
 - no normal `.codegraph` mutation.
 
 Only after review should the final SVG be copied to

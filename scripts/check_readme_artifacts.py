@@ -2,8 +2,7 @@
 """Validate README public assets and stable report references.
 
 The README should explain product behavior with stable public assets. It should
-keep benchmark/readiness visuals compact and claim-bounded. It should not link
-generated DBs, raw run directories, or diagnostic-only artifacts.
+not link generated DBs, raw run directories, or diagnostic-only artifacts.
 """
 
 from __future__ import annotations
@@ -19,9 +18,7 @@ README = REPO_ROOT / "README.md"
 REQUIRED_README_ASSETS = [
     "docs/assets/readme/title-pic.jpeg",
     "docs/assets/readme/agent_use_loop.svg",
-    "docs/assets/readme/mvp4_readiness_over_time.png",
-    "docs/assets/readme/retrieval_quality_by_track.png",
-    "docs/assets/readme/swebench_readiness_ladder.png",
+    "docs/assets/readme/codegraph_terminal.svg",
 ]
 
 DISALLOWED_README_TARGETS = [
@@ -109,7 +106,7 @@ def validate() -> int:
 
     for disallowed in DISALLOWED_README_TARGETS:
         if disallowed in text.replace("\\", "/"):
-            errors.append(f"README references old benchmark/readiness asset `{disallowed}`")
+            errors.append(f"README references retired public asset `{disallowed}`")
 
     for path in sorted(paths):
         if "/artifacts/" in path:

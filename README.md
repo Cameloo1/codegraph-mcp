@@ -24,7 +24,6 @@ is the only path to graph proof.
 | Build and run the first commands | [Quickstart](docs/quickstart.md) |
 | Use CodeGraph with a coding agent | [Agent Use](docs/agent-use.md) |
 | Understand the architecture and proof model | [Architecture Notes](docs/architecture.md) |
-| Understand benchmark and evidence boundaries | [Agent Benchmarking](docs/agent-benchmarking.md) |
 | Contribute safely | [Contributing](CONTRIBUTING.md) |
 
 ## Current Status
@@ -42,14 +41,6 @@ is the only path to graph proof.
 ## Product Shape
 
 ![CodeGraph Agent Use Loop](docs/assets/readme/agent_use_loop.svg)
-
-| Roadmap To MVP4 | Retrieval Quality | SWE-bench Readiness |
-|---|---|---|
-| ![Roadmap To MVP4 Agent Utility Readiness](docs/assets/readme/mvp4_readiness_over_time.png) | ![Retrieval Quality By Benchmark Track](docs/assets/readme/retrieval_quality_by_track.png) | ![SWE-bench Readiness Ladder](docs/assets/readme/swebench_readiness_ladder.png) |
-
-These visuals summarize local diagnostic readiness and benchmark-lab evidence
-only. They are not official SWE-bench, RepoBench, CrossCodeEval, CGC, or `rg`
-comparison results.
 
 CodeGraph is meant to improve agent reliability **on top of normal developer
 tools**. `rg`, file search, editing, and tests stay available. CodeGraph adds an
@@ -135,8 +126,6 @@ When reading any CodeGraph output, keep the proof boundary intact:
   prove typed graph relations.
 - Vector, binary, nuance, routing-packet, and candidate-spool lanes route
   attention only until graph/source verification succeeds.
-- Local diagnostic benchmark output is useful for development, but it is not a
-  public superiority claim.
 
 ## Language Support
 
@@ -206,9 +195,9 @@ is the mandatory CI-sized smoke. Full-repo indexing is an explicit opt-in check.
 
 Start with [CONTRIBUTING.md](CONTRIBUTING.md). The short version:
 
-- keep release/product work separate from benchmark/OpenEvolve lab work;
-- do not stage generated DBs, raw logs, benchmark payloads, patches,
-  predictions, WAL/SHM files, or local run directories;
+- keep release/product work separate from local experiments;
+- do not stage generated DBs, raw logs, patches, predictions, WAL/SHM files, or
+  local run directories;
 - preserve the evidence boundary in code, docs, reports, and examples;
 - update CLI/MCP docs when command contracts change.
 
@@ -235,38 +224,6 @@ Start with [CONTRIBUTING.md](CONTRIBUTING.md). The short version:
 - **Honest measurement.** Unsupported, skipped, unavailable, or diagnostic data
   stays `unknown`, `skipped`, or `diagnostic`. A timeout or partial run is never
   counted as a win.
-
-## Benchmark Lab
-
-Branch: `benchmark-and-openevolve-lab`.
-
-Docs: [Agent Benchmarking](docs/agent-benchmarking.md),
-[Benchmark Guide](docs/benchmark-guide.md), [Benchmark Claims](benchmarks/BENCHMARK_CLAIMS.md).
-
-Current lab tracks:
-
-- internal gold retrieval;
-- RepoBench smoke and small retrieval runs;
-- CrossCodeEval parser/load smoke and retrieval runs;
-- SWE-bench Lite gold validation and one-task patch-quality smoke.
-
-Current provider arms: `baseline`, `rg_only`, `codegraph_exact_text`, and
-`codegraph_full`.
-
-Patch-quality runs use an external agent command. The local Codex wrapper is
-`benchmarks/scripts/run_codex_external_patch_agent.ps1`, configured through
-`CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND`. It reads benchmark JSON from stdin,
-runs Codex in the task workspace, writes only a `diff --git` patch to stdout,
-and keeps prompts/logs under ignored benchmark paths.
-
-## OpenEvolve Lab
-
-OpenEvolve is an evolutionary coding loop: an LLM mutates code, an evaluator
-scores it, and the run keeps better variants.
-
-For CodeGraph, it is lab-only policy search for retrieval/ranking experiments
-on `benchmark-and-openevolve-lab`; outputs are not proof and are not merged
-automatically.
 
 ## References
 

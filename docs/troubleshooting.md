@@ -37,7 +37,7 @@ codegraph-mcp index . --fresh --json
 
 For an explicit `--db <path>`, CodeGraph is more conservative: invalid or
 mismatched named DBs fail unless you explicitly pass `--fresh`. This protects
-named benchmark artifacts from accidental replacement.
+named diagnostic artifacts from accidental replacement.
 
 For an agent-use profile, the DB should live outside the source tree. If a
 status or query command reports path access problems, treat that as filesystem

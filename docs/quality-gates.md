@@ -1,20 +1,19 @@
 # Quality Gates
 
 The root `README.md` is the public setup contract. These gates keep release
-work narrow, verifiable, and separate from local benchmark or OpenEvolve lab
-artifacts.
+work narrow, verifiable, and separate from local experiment artifacts.
 
 ## Release-Facing Gate Rules
 
 - Public docs describe current verified behavior and stable command surfaces.
-- Candidate, vector, text, source-navigation, benchmark, and optimizer output
+- Candidate, vector, text, source-navigation, diagnostic, and optimizer output
   must not be described as graph proof.
 - Generated DBs, logs, payloads, predictions, patches, run directories, and
   WAL/SHM files stay out of source commits unless explicitly promoted.
 - Missing, stale, foreign, schema-mismatched, locked, timed-out, skipped, and
   diagnostic states stay labeled.
-- Benchmark and OpenEvolve details belong on `benchmark-and-openevolve-lab`
-  unless a concise, claim-reviewed note is intentionally promoted.
+- Lab and optimizer details stay off release-facing docs unless a concise,
+  claim-reviewed note is intentionally promoted.
 
 ## Local Checks
 
@@ -59,10 +58,10 @@ release-dry-run directory.
 
 ## Smoke Scope
 
-The public smoke surface is intentionally smaller than the lab benchmark suite.
-It is designed to catch packaging, docs, command-contract, and integration
-regressions without requiring external corpora, competitor tools, model calls,
-or large generated artifacts.
+The public smoke surface is intentionally small. It is designed to catch
+packaging, docs, command-contract, and integration regressions without
+requiring external corpora, competitor tools, model calls, or large generated
+artifacts.
 
 Broader local checks cover DB lifecycle behavior, context-pack fixtures,
 watcher updates, bundle round trips, MCP schemas, release metadata, profile
