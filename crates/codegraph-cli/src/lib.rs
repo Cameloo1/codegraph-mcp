@@ -166,6 +166,7 @@ struct ProcessContextSnapshot {
     db_source: Option<OsString>,
     repo_source: Option<OsString>,
     bounded_read_path: Option<OsString>,
+    agent_use_data_root: Option<OsString>,
     restored: bool,
 }
 
@@ -177,6 +178,7 @@ impl ProcessContextSnapshot {
             db_source: std::env::var_os(GLOBAL_DB_SOURCE_ENV),
             repo_source: std::env::var_os(GLOBAL_REPO_SOURCE_ENV),
             bounded_read_path: std::env::var_os(AGENT_USE_BOUNDED_READ_PATH_ENV),
+            agent_use_data_root: std::env::var_os(AGENT_USE_DATA_ROOT_ENV),
             restored: false,
         })
     }
@@ -192,6 +194,7 @@ impl ProcessContextSnapshot {
             AGENT_USE_BOUNDED_READ_PATH_ENV,
             self.bounded_read_path.take(),
         );
+        restore_env_var(AGENT_USE_DATA_ROOT_ENV, self.agent_use_data_root.take());
         std::env::set_current_dir(&self.cwd).map_err(|error| error.to_string())?;
         self.restored = true;
         Ok(())
@@ -40740,6 +40743,11 @@ mod tests {
                 .expect("spool profile");
         fs::create_dir_all(&spool_profile.profile_root).expect("create spool profile parent");
         fs::copy(&source_spool, &spool_profile.candidate_spool_path).expect("copy profile spool");
+        super::rebuild_candidate_spool_query_index_for_repo(
+            &spool_repo,
+            &spool_profile.candidate_spool_path,
+        )
+        .expect("build profile spool query index");
         let candidate = with_agent_use_data_root(&data_root, || {
             super::run_agent_use_command(&[
                 "context-pack".to_string(),
@@ -49277,14 +49285,13 @@ mod tests {
         F: FnOnce() -> R,
     {
         super::with_process_context_lock(|| {
-            let old = std::env::var_os(super::AGENT_USE_DATA_ROOT_ENV);
+            let guard = ProcessEnvGuard {
+                name: super::AGENT_USE_DATA_ROOT_ENV.to_string(),
+                old: std::env::var_os(super::AGENT_USE_DATA_ROOT_ENV),
+            };
             std::env::set_var(super::AGENT_USE_DATA_ROOT_ENV, data_root);
             let result = operation();
-            if let Some(old) = old {
-                std::env::set_var(super::AGENT_USE_DATA_ROOT_ENV, old);
-            } else {
-                std::env::remove_var(super::AGENT_USE_DATA_ROOT_ENV);
-            }
+            drop(guard);
             result
         })
     }
@@ -49394,6 +49401,7 @@ mod tests {
     fn write_candidate_spool_cli_fixture(root: &Path) -> PathBuf {
         let source = "pub fn spool_target() {}\n";
         write_cli_fixture_file(root, "src/lib.rs", source);
+        let repo_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
         let source_hash = codegraph_parser::content_hash(source);
         let spool = root.join("candidate-spool.jsonl");
         let manifest = json!({
@@ -49401,7 +49409,7 @@ mod tests {
                 "metadata_version": "candidate_spool_v1",
                 "artifact_kind": "candidate_spool",
                 "artifact_format": "jsonl",
-                "repo_root": path_string(root),
+                "repo_root": path_string(&repo_root),
                 "candidate_spool_status": "partial_ready",
                 "lifecycle": "partial_spool",
                 "incomplete": true,
