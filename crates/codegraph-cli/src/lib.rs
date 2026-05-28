@@ -6301,15 +6301,23 @@ fn load_candidate_spool_for_repo(
 
 #[allow(dead_code)]
 fn paths_equivalent_string(left: &str, right: &str) -> bool {
-    let normalize = |value: &str| {
-        let normalized = value.replace('\\', "/");
-        normalized
-            .strip_prefix("//?/")
-            .unwrap_or(&normalized)
-            .trim_end_matches('/')
-            .to_ascii_lowercase()
-    };
-    normalize(left) == normalize(right)
+    normalize_path_identity_string(left) == normalize_path_identity_string(right)
+}
+
+fn normalize_path_identity_string(value: &str) -> String {
+    if let Ok(canonical) = fs::canonicalize(Path::new(value)) {
+        return normalize_path_identity_display(&path_string(&canonical));
+    }
+    normalize_path_identity_display(value)
+}
+
+fn normalize_path_identity_display(value: &str) -> String {
+    let normalized = value.replace('\\', "/");
+    normalized
+        .strip_prefix("//?/")
+        .unwrap_or(&normalized)
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
 }
 
 fn candidate_spool_index_lifecycle_json(load: &CandidateSpoolIndexLoad) -> Value {
@@ -36448,6 +36456,17 @@ mod tests {
         ] {
             assert!(output.stdout.contains(command), "missing {command}");
         }
+    }
+
+    #[test]
+    fn path_identity_accepts_raw_and_canonical_spellings() {
+        let repo = temp_repo();
+        let canonical = fs::canonicalize(&repo).expect("canonical repo");
+
+        assert!(
+            super::paths_equivalent_string(&path_string(&repo), &path_string(&canonical)),
+            "raw repo path and canonical repo path should identify the same directory"
+        );
     }
 
     #[test]
