@@ -8,13 +8,15 @@
 #![recursion_limit = "256"]
 
 use std::{
+    cell::Cell,
     collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
     fs,
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::Command,
-    sync::mpsc,
+    sync::{mpsc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -128,6 +130,87 @@ const AGENT_JSON_SCHEMA_VERSION: u32 = 1;
 const INDEX_CONCISE_JSON_SIZE_TARGET_BYTES: usize = 8 * 1024;
 const INDEX_AGENT_JSON_SIZE_TARGET_BYTES: usize = 4 * 1024;
 const CANDIDATE_SPOOL_MIN_USEFUL_BUDGET_BYTES: usize = 64 * 1024;
+
+static PROCESS_CONTEXT_LOCK: Mutex<()> = Mutex::new(());
+
+thread_local! {
+    static PROCESS_CONTEXT_LOCK_HELD: Cell<bool> = const { Cell::new(false) };
+}
+
+struct ProcessContextHeldGuard;
+
+impl Drop for ProcessContextHeldGuard {
+    fn drop(&mut self) {
+        PROCESS_CONTEXT_LOCK_HELD.with(|held| held.set(false));
+    }
+}
+
+fn with_process_context_lock<F, R>(operation: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    if PROCESS_CONTEXT_LOCK_HELD.with(|held| held.get()) {
+        return operation();
+    }
+    let _guard = PROCESS_CONTEXT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    PROCESS_CONTEXT_LOCK_HELD.with(|held| held.set(true));
+    let _held_guard = ProcessContextHeldGuard;
+    operation()
+}
+
+struct ProcessContextSnapshot {
+    cwd: PathBuf,
+    db_path: Option<OsString>,
+    db_source: Option<OsString>,
+    repo_source: Option<OsString>,
+    bounded_read_path: Option<OsString>,
+    restored: bool,
+}
+
+impl ProcessContextSnapshot {
+    fn capture() -> Result<Self, String> {
+        Ok(Self {
+            cwd: std::env::current_dir().map_err(|error| error.to_string())?,
+            db_path: std::env::var_os("CODEGRAPH_DB_PATH"),
+            db_source: std::env::var_os(GLOBAL_DB_SOURCE_ENV),
+            repo_source: std::env::var_os(GLOBAL_REPO_SOURCE_ENV),
+            bounded_read_path: std::env::var_os(AGENT_USE_BOUNDED_READ_PATH_ENV),
+            restored: false,
+        })
+    }
+
+    fn restore(&mut self) -> Result<(), String> {
+        if self.restored {
+            return Ok(());
+        }
+        restore_env_var("CODEGRAPH_DB_PATH", self.db_path.take());
+        restore_env_var(GLOBAL_DB_SOURCE_ENV, self.db_source.take());
+        restore_env_var(GLOBAL_REPO_SOURCE_ENV, self.repo_source.take());
+        restore_env_var(
+            AGENT_USE_BOUNDED_READ_PATH_ENV,
+            self.bounded_read_path.take(),
+        );
+        std::env::set_current_dir(&self.cwd).map_err(|error| error.to_string())?;
+        self.restored = true;
+        Ok(())
+    }
+}
+
+impl Drop for ProcessContextSnapshot {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
+}
+
+fn restore_env_var(name: &str, value: Option<OsString>) {
+    if let Some(value) = value {
+        std::env::set_var(name, value);
+    } else {
+        std::env::remove_var(name);
+    }
+}
 const CANDIDATE_SPOOL_SAFETY_RESERVE_BYTES: usize = 1024 * 1024;
 const CANDIDATE_SPOOL_QUERY_INDEX_STORAGE_FACTOR: usize = 4;
 const CANDIDATE_SPOOL_RUNTIME_RESERVE_BYTES: usize = 6 * 1024 * 1024;
@@ -709,6 +792,23 @@ where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
+    with_process_context_lock(|| run_unlocked(args))
+}
+
+fn run_unlocked<I, S>(args: I) -> CliOutput
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let _process_context = match ProcessContextSnapshot::capture() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return command_error(
+                "process_context_failed",
+                &format!("could not capture process context: {error}"),
+            );
+        }
+    };
     let mut args = args.into_iter().map(Into::into).collect::<Vec<_>>();
     if args.is_empty() {
         args.push(BIN_NAME.to_string());
@@ -1137,7 +1237,7 @@ fn run_index_command(args: &[String]) -> Result<Value, String> {
     let db_path = db
         .clone()
         .map(|path| normalize_db_path_for_repo(&repo_root, &path))
-        .unwrap_or_else(|| default_db_path(&repo_root));
+        .unwrap_or_else(|| selected_db_path_for_repo(&repo_root).path);
     let vector_index_path = vector_index_options.runtime_path.as_ref().map(|path| {
         if path.is_absolute() {
             path.clone()
@@ -1293,7 +1393,21 @@ fn run_index_command(args: &[String]) -> Result<Value, String> {
             object.insert("external_provider".to_string(), json!(false));
             object.insert("source_leaves_machine".to_string(), json!(false));
         }
-        object.insert("storage_budget".to_string(), budget.to_json());
+        if output_mode == IndexJsonOutputMode::Agent {
+            let budget_json = budget.to_json();
+            object.insert(
+                "storage_budget".to_string(),
+                json!({
+                    "budget_status": budget_json.get("budget_status").cloned().unwrap_or(Value::Null),
+                    "claimable": budget_json.get("claimable").cloned().unwrap_or(Value::Null),
+                    "db_bytes": budget_json.get("db_bytes").cloned().unwrap_or(Value::Null),
+                    "artifact_bytes": budget_json.get("artifact_bytes").cloned().unwrap_or(Value::Null),
+                    "refusal_reason": budget_json.get("refusal_reason").cloned().unwrap_or(Value::Null),
+                }),
+            );
+        } else {
+            object.insert("storage_budget".to_string(), budget.to_json());
+        }
         apply_candidate_spool_budget_json_fields(
             object,
             &summary,
@@ -1302,6 +1416,12 @@ fn run_index_command(args: &[String]) -> Result<Value, String> {
             index_summary_claimable(&summary),
             runtime_sidecar_ready,
         );
+        if output_mode == IndexJsonOutputMode::Agent {
+            object.remove("candidate_spool_budget");
+            if let Some(summary) = object.get_mut("summary").and_then(Value::as_object_mut) {
+                summary.remove("candidate_spool_budget");
+            }
+        }
     }
     if budget.is_refused() {
         if candidate_spool_budget_decision.required {
@@ -4297,39 +4417,15 @@ fn with_agent_use_profile_context<F>(
 where
     F: FnOnce() -> Result<Value, String>,
 {
-    let old_cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    let old_db = std::env::var_os("CODEGRAPH_DB_PATH");
-    let old_db_source = std::env::var_os(GLOBAL_DB_SOURCE_ENV);
-    let old_repo_source = std::env::var_os(GLOBAL_REPO_SOURCE_ENV);
-    let old_bounded_read_path = std::env::var_os(AGENT_USE_BOUNDED_READ_PATH_ENV);
-    std::env::set_current_dir(&profile.repo_root).map_err(|error| error.to_string())?;
-    std::env::set_var("CODEGRAPH_DB_PATH", &profile.db_path);
-    std::env::set_var(GLOBAL_DB_SOURCE_ENV, "agent-use profile");
-    std::env::set_var(GLOBAL_REPO_SOURCE_ENV, "agent-use --repo");
-    std::env::set_var(AGENT_USE_BOUNDED_READ_PATH_ENV, "1");
-    let result = operation();
-    if let Some(old_db) = old_db {
-        std::env::set_var("CODEGRAPH_DB_PATH", old_db);
-    } else {
-        std::env::remove_var("CODEGRAPH_DB_PATH");
-    }
-    if let Some(old_db_source) = old_db_source {
-        std::env::set_var(GLOBAL_DB_SOURCE_ENV, old_db_source);
-    } else {
-        std::env::remove_var(GLOBAL_DB_SOURCE_ENV);
-    }
-    if let Some(old_repo_source) = old_repo_source {
-        std::env::set_var(GLOBAL_REPO_SOURCE_ENV, old_repo_source);
-    } else {
-        std::env::remove_var(GLOBAL_REPO_SOURCE_ENV);
-    }
-    if let Some(old_bounded_read_path) = old_bounded_read_path {
-        std::env::set_var(AGENT_USE_BOUNDED_READ_PATH_ENV, old_bounded_read_path);
-    } else {
-        std::env::remove_var(AGENT_USE_BOUNDED_READ_PATH_ENV);
-    }
-    std::env::set_current_dir(old_cwd).map_err(|error| error.to_string())?;
-    result
+    with_process_context_lock(|| {
+        let _process_context = ProcessContextSnapshot::capture()?;
+        std::env::set_current_dir(&profile.repo_root).map_err(|error| error.to_string())?;
+        std::env::set_var("CODEGRAPH_DB_PATH", &profile.db_path);
+        std::env::set_var(GLOBAL_DB_SOURCE_ENV, "agent-use profile");
+        std::env::set_var(GLOBAL_REPO_SOURCE_ENV, "agent-use --repo");
+        std::env::set_var(AGENT_USE_BOUNDED_READ_PATH_ENV, "1");
+        operation()
+    })
 }
 
 fn agent_use_bounded_read_path_enabled() -> bool {
@@ -12271,20 +12367,22 @@ fn normalize_db_path_for_repo(repo_root: &Path, db_path: &Path) -> PathBuf {
 }
 
 fn selected_db_path_for_repo(repo_root: &Path) -> SelectedDbPath {
-    if let Some(raw) = std::env::var_os("CODEGRAPH_DB_PATH") {
-        let raw_path = PathBuf::from(raw);
-        return SelectedDbPath {
-            path: normalize_db_path_for_repo(repo_root, &raw_path),
-            source: db_source_label(),
-            explicit: true,
-        };
-    }
+    with_process_context_lock(|| {
+        if let Some(raw) = std::env::var_os("CODEGRAPH_DB_PATH") {
+            let raw_path = PathBuf::from(raw);
+            return SelectedDbPath {
+                path: normalize_db_path_for_repo(repo_root, &raw_path),
+                source: db_source_label(),
+                explicit: true,
+            };
+        }
 
-    SelectedDbPath {
-        path: repo_root.join(".codegraph").join("codegraph.sqlite"),
-        source: "default .codegraph".to_string(),
-        explicit: false,
-    }
+        SelectedDbPath {
+            path: repo_root.join(".codegraph").join("codegraph.sqlite"),
+            source: "default .codegraph".to_string(),
+            explicit: false,
+        }
+    })
 }
 
 pub fn resolve_agent_use_profile(repo: impl AsRef<Path>) -> Result<AgentUseProfile, String> {
@@ -12380,37 +12478,44 @@ fn resolve_agent_use_profile_with_data_root(
 }
 
 fn agent_use_profile_data_root() -> Result<PathBuf, String> {
-    if let Some(root) = std::env::var_os(AGENT_USE_DATA_ROOT_ENV) {
-        let root = PathBuf::from(root);
-        return absolutize_path(&root).or(Ok(root));
-    }
+    with_process_context_lock(|| {
+        if let Some(root) = std::env::var_os(AGENT_USE_DATA_ROOT_ENV) {
+            let root = PathBuf::from(root);
+            return absolutize_path(&root).or(Ok(root));
+        }
 
-    #[cfg(windows)]
-    {
-        if let Some(root) = std::env::var_os("LOCALAPPDATA") {
-            return Ok(PathBuf::from(root)
-                .join("CodeGraphMCP")
-                .join("agent-indexes"));
+        #[cfg(windows)]
+        {
+            if let Some(root) = std::env::var_os("LOCALAPPDATA") {
+                return Ok(PathBuf::from(root)
+                    .join("CodeGraphMCP")
+                    .join("agent-indexes"));
+            }
+            return Err(
+                "LOCALAPPDATA is required for production agent-use profile paths".to_string(),
+            );
         }
-        return Err("LOCALAPPDATA is required for production agent-use profile paths".to_string());
-    }
 
-    #[cfg(not(windows))]
-    {
-        if let Some(root) = std::env::var_os("XDG_DATA_HOME") {
-            return Ok(PathBuf::from(root)
-                .join("CodeGraphMCP")
-                .join("agent-indexes"));
+        #[cfg(not(windows))]
+        {
+            if let Some(root) = std::env::var_os("XDG_DATA_HOME") {
+                return Ok(PathBuf::from(root)
+                    .join("CodeGraphMCP")
+                    .join("agent-indexes"));
+            }
+            if let Some(home) = std::env::var_os("HOME") {
+                return Ok(PathBuf::from(home)
+                    .join(".local")
+                    .join("share")
+                    .join("CodeGraphMCP")
+                    .join("agent-indexes"));
+            }
+            Err(
+                "HOME or XDG_DATA_HOME is required for production agent-use profile paths"
+                    .to_string(),
+            )
         }
-        if let Some(home) = std::env::var_os("HOME") {
-            return Ok(PathBuf::from(home)
-                .join(".local")
-                .join("share")
-                .join("CodeGraphMCP")
-                .join("agent-indexes"));
-        }
-        Err("HOME or XDG_DATA_HOME is required for production agent-use profile paths".to_string())
-    }
+    })
 }
 
 fn safe_repo_identity_label(repo_root: &Path) -> String {
@@ -12518,16 +12623,20 @@ fn resolved_db_path_for_repo(repo_root: &Path) -> PathBuf {
 }
 
 fn repo_source_label() -> String {
-    std::env::var(GLOBAL_REPO_SOURCE_ENV).unwrap_or_else(|_| "current_directory".to_string())
+    with_process_context_lock(|| {
+        std::env::var(GLOBAL_REPO_SOURCE_ENV).unwrap_or_else(|_| "current_directory".to_string())
+    })
 }
 
 fn db_source_label() -> String {
-    std::env::var(GLOBAL_DB_SOURCE_ENV).unwrap_or_else(|_| {
-        if std::env::var_os("CODEGRAPH_DB_PATH").is_some() {
-            "env CODEGRAPH_DB_PATH".to_string()
-        } else {
-            "default_repo_db".to_string()
-        }
+    with_process_context_lock(|| {
+        std::env::var(GLOBAL_DB_SOURCE_ENV).unwrap_or_else(|_| {
+            if std::env::var_os("CODEGRAPH_DB_PATH").is_some() {
+                "env CODEGRAPH_DB_PATH".to_string()
+            } else {
+                "default_repo_db".to_string()
+            }
+        })
     })
 }
 
@@ -15189,18 +15298,14 @@ fn with_repo_db_context<F>(repo_root: &Path, db_path: &Path, operation: F) -> Re
 where
     F: FnOnce() -> Result<Value, String>,
 {
-    let old_cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    let old_db = std::env::var_os("CODEGRAPH_DB_PATH");
-    std::env::set_current_dir(repo_root).map_err(|error| error.to_string())?;
-    std::env::set_var("CODEGRAPH_DB_PATH", db_path);
-    let result = operation();
-    if let Some(old_db) = old_db {
-        std::env::set_var("CODEGRAPH_DB_PATH", old_db);
-    } else {
-        std::env::remove_var("CODEGRAPH_DB_PATH");
-    }
-    std::env::set_current_dir(old_cwd).map_err(|error| error.to_string())?;
-    result
+    with_process_context_lock(|| {
+        let _process_context = ProcessContextSnapshot::capture()?;
+        std::env::set_current_dir(repo_root).map_err(|error| error.to_string())?;
+        std::env::set_var("CODEGRAPH_DB_PATH", db_path);
+        std::env::set_var(GLOBAL_DB_SOURCE_ENV, "test explicit db");
+        std::env::set_var(GLOBAL_REPO_SOURCE_ENV, "test repo context");
+        operation()
+    })
 }
 
 fn percentile(samples: &[f64], quantile: f64) -> Option<f64> {
@@ -17900,7 +18005,7 @@ fn run_bundle_import(args: &[String]) -> Result<Value, String> {
         }));
     }
 
-    let db_path = default_db_path(&repo_root);
+    let db_path = selected_db_path_for_repo(&repo_root).path;
     let target_state = inspect_bundle_target_state(&db_path);
     if options.mode == BundleImportMode::Fresh
         && !matches!(
@@ -34387,11 +34492,11 @@ fn index_summary_agent_json(summary: &IndexSummary, wall_ms: f64) -> Result<Valu
     );
     summary_object.insert(
         "indexing_durability".to_string(),
-        index_batch_durability_json(summary),
+        index_batch_durability_agent_json(summary),
     );
     summary_object.insert(
         "graph_output_budgets".to_string(),
-        json!(&summary.graph_output_budgets),
+        index_graph_output_budgets_agent_json(summary),
     );
 
     Ok(json!({
@@ -34416,8 +34521,8 @@ fn index_summary_agent_json(summary: &IndexSummary, wall_ms: f64) -> Result<Valu
         "limit": 1,
         "omitted_count": 0,
         "timings": agent_timings_from_wall_ms(wall_ms),
-        "indexing_durability": index_batch_durability_json(summary),
-        "graph_output_budgets": &summary.graph_output_budgets,
+        "indexing_durability": index_batch_durability_agent_json(summary),
+        "graph_output_budgets": index_graph_output_budgets_agent_json(summary),
         "warnings": warnings,
         "errors": [],
         "limits": {
@@ -34963,6 +35068,45 @@ fn index_batch_durability_json(summary: &IndexSummary) -> Value {
             "not_atomic_temp_publish"
         },
         "visible_db_mutation_claim": "visible DB changes are claimed only after commit or atomic publish events",
+    })
+}
+
+fn index_batch_durability_agent_json(summary: &IndexSummary) -> Value {
+    let lifecycle = summary.db_lifecycle.as_ref();
+    let atomic_temp_publish_used = lifecycle
+        .and_then(|lifecycle| lifecycle.fresh_temp_db_path.as_ref())
+        .is_some();
+    let visible_db_exists = Path::new(&summary.db_path).exists();
+    json!({
+        "batches_processed": summary.batches_completed,
+        "batch_progress_status": "processed_not_durably_committed_until_transaction_commit",
+        "atomic_temp_publish_used": atomic_temp_publish_used,
+        "temp_db_never_claimable": true,
+        "old_db_replaced": lifecycle
+            .map(|lifecycle| lifecycle.old_db_replaced)
+            .unwrap_or(false),
+        "publish_status": if atomic_temp_publish_used && visible_db_exists {
+            "published"
+        } else if atomic_temp_publish_used {
+            "not_published"
+        } else {
+            "not_atomic_temp_publish"
+        },
+    })
+}
+
+fn index_graph_output_budgets_agent_json(summary: &IndexSummary) -> Value {
+    let budgets = &summary.graph_output_budgets;
+    json!({
+        "claimability_label": budgets.claimability_label.clone(),
+        "files_degraded": budgets.files_degraded,
+        "local_fact_budget_hits": budgets.local_fact_budget_hits,
+        "relation_fanout_budget_hits": budgets.relation_fanout_budget_hits,
+        "derived_edge_budget_hits": budgets.derived_edge_budget_hits,
+        "source_span_budget_hits": budgets.source_span_budget_hits,
+        "reducer_edge_budget_hits": budgets.reducer_edge_budget_hits,
+        "warnings_count": budgets.warnings.len(),
+        "degraded_files_count": budgets.degraded_files.len(),
     })
 }
 
@@ -36263,6 +36407,18 @@ mod tests {
     static BUNDLE_TEST_LOCK: Mutex<()> = Mutex::new(());
     static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    fn lock_bundle_test() -> std::sync::MutexGuard<'static, ()> {
+        BUNDLE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn lock_env_test() -> std::sync::MutexGuard<'static, ()> {
+        ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn top_level_help_lists_required_commands() {
         let output = run([BIN_NAME, "--help"]);
@@ -36437,7 +36593,7 @@ mod tests {
         assert_eq!(status["ready"].as_bool(), Some(false));
         assert_eq!(status["candidate_spool_unavailable"].as_bool(), Some(true));
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
     }
 
     #[test]
@@ -36571,7 +36727,7 @@ mod tests {
 
     #[test]
     fn bundle_import_fresh_succeeds_and_non_empty_default_fails() {
-        let _guard = BUNDLE_TEST_LOCK.lock().expect("bundle lock");
+        let _guard = lock_bundle_test();
         let repo = bundle_fixture_repo("bundle_fresh_symbol");
         let source_db = repo.join("source.sqlite");
         let target_db = repo.join("target.sqlite");
@@ -36598,12 +36754,12 @@ mod tests {
         .expect_err("non-empty import without replace must fail");
         assert!(error.contains("without --replace"), "{error}");
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
     }
 
     #[test]
     fn bundle_import_rejects_foreign_corrupt_schema_and_repo_head_mismatch() {
-        let _guard = BUNDLE_TEST_LOCK.lock().expect("bundle lock");
+        let _guard = lock_bundle_test();
         let repo_a = bundle_fixture_repo("bundle_origin_symbol");
         let repo_b = bundle_fixture_repo("bundle_foreign_target");
         let source_db = repo_a.join("source.sqlite");
@@ -36688,14 +36844,14 @@ mod tests {
             "{head_error}"
         );
 
-        fs::remove_dir_all(repo_a).expect("cleanup repo A");
-        fs::remove_dir_all(repo_b).expect("cleanup repo B");
-        fs::remove_dir_all(git_repo).expect("cleanup git repo");
+        remove_dir_all_with_retry(&repo_a, "cleanup repo A");
+        remove_dir_all_with_retry(&repo_b, "cleanup repo B");
+        remove_dir_all_with_retry(&git_repo, "cleanup git repo");
     }
 
     #[test]
     fn bundle_replace_failpoints_preserve_old_db_and_success_replaces_atomically() {
-        let _guard = BUNDLE_TEST_LOCK.lock().expect("bundle lock");
+        let _guard = lock_bundle_test();
         let repo = temp_repo();
         write_cli_fixture_file(
             &repo,
@@ -36756,7 +36912,7 @@ mod tests {
         assert!(db_has_symbol(&target_db, "bundle_new_symbol"));
         assert!(!db_has_symbol(&target_db, "bundle_old_symbol"));
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
     }
 
     #[test]
@@ -36832,8 +36988,8 @@ mod tests {
             "{lifecycle:?}"
         );
 
-        fs::remove_dir_all(repo_a).expect("cleanup repo A");
-        fs::remove_dir_all(repo_b).expect("cleanup repo B");
+        remove_dir_all_with_retry(&repo_a, "cleanup repo A");
+        remove_dir_all_with_retry(&repo_b, "cleanup repo B");
     }
 
     #[test]
@@ -36883,7 +37039,7 @@ mod tests {
             Some("index_repo_to_db_with_options")
         );
 
-        fs::remove_dir_all(workdir).expect("cleanup");
+        remove_dir_all_with_retry(&workdir, "cleanup");
     }
 
     #[test]
@@ -37153,7 +37309,7 @@ mod tests {
             "{value}"
         );
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -37205,7 +37361,7 @@ mod tests {
         assert!(audit["scope"]["included_examples"].is_array());
         assert!(audit["db_lifecycle"].is_object());
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -37238,7 +37394,7 @@ mod tests {
                 < super::INDEX_AGENT_JSON_SIZE_TARGET_BYTES
         );
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -37257,7 +37413,7 @@ mod tests {
             "warm no-op concise JSON was {bytes} bytes: {warm}"
         );
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -37293,7 +37449,7 @@ mod tests {
             Some("not_split_yet")
         );
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -37435,7 +37591,7 @@ mod tests {
         assert!(!spool.exists());
         assert!(db.exists());
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -37472,7 +37628,7 @@ mod tests {
         assert_eq!(error["graph_db_claimable"].as_bool(), Some(false));
         assert!(!spool.exists());
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -37596,7 +37752,7 @@ mod tests {
         );
         assert!(runtime_text.contains("\"artifact_kind\":\"vector_runtime_sidecar\""));
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -37654,7 +37810,7 @@ mod tests {
         assert!(runtime_text.contains("\"artifact_kind\":\"vector_runtime_sidecar\""));
         assert!(audit_text.contains("\"artifact_kind\": \"audit_artifact\""));
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -37672,7 +37828,7 @@ mod tests {
 
     #[test]
     fn context_pack_loads_compact_runtime_vector_sidecar() {
-        let _guard = BUNDLE_TEST_LOCK.lock().expect("context-pack vector lock");
+        let _guard = lock_bundle_test();
         let repo = index_output_fixture_repo();
         let db = repo.join("index-output.sqlite");
         let runtime = repo.join("vectors").join("runtime.json");
@@ -37733,14 +37889,12 @@ mod tests {
         );
         assert_eq!(metrics["audit_artifact_bytes"], Value::Null);
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
     fn context_pack_omits_runtime_vector_sidecar_after_source_file_delete() {
-        let _guard = BUNDLE_TEST_LOCK
-            .lock()
-            .expect("context-pack vector stale lock");
+        let _guard = lock_bundle_test();
         let repo = index_output_fixture_repo();
         let db = repo.join("index-output.sqlite");
         let runtime = repo.join("vectors").join("runtime.json");
@@ -37781,12 +37935,12 @@ mod tests {
             .contains("vector_source_binding_stale"));
         assert_eq!(value["graph_proof_available"].as_bool(), Some(true));
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
     fn context_pack_loads_legacy_pretty_vector_artifact() {
-        let _guard = BUNDLE_TEST_LOCK.lock().expect("context-pack vector lock");
+        let _guard = lock_bundle_test();
         let repo = index_output_fixture_repo();
         let db = repo.join("index-output.sqlite");
         let runtime = repo.join("vectors").join("runtime.json");
@@ -37849,7 +38003,7 @@ mod tests {
                 > 0
         );
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -37896,7 +38050,7 @@ mod tests {
         assert_eq!(summary.binary_signatures_updated, summary.entities);
         assert_ne!(before, after);
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -37977,7 +38131,7 @@ mod tests {
         assert_eq!(warm_profile.memory_measured, false);
         assert_eq!(warm_profile.memory_status, "unknown");
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -38037,7 +38191,7 @@ mod tests {
         );
         assert!(summary.profile.expect("profile").worker_count >= 1);
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -38082,7 +38236,7 @@ mod tests {
         assert!(store.get_file("src/bad.py").expect("get file").is_none());
         drop(store);
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -38120,7 +38274,7 @@ mod tests {
         .expect("index repo");
         assert_eq!(summary.files_indexed, 0);
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -38203,7 +38357,7 @@ mod tests {
             "long-running watch startup must not touch default DB when --db is supplied"
         );
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -38223,8 +38377,8 @@ mod tests {
         assert!(message.contains("not safe for watch updates"), "{message}");
         assert!(message.contains("repo root mismatch"), "{message}");
 
-        fs::remove_dir_all(repo_a).expect("cleanup repo A");
-        fs::remove_dir_all(repo_b).expect("cleanup repo B");
+        remove_dir_all_with_retry(&repo_a, "cleanup repo A");
+        remove_dir_all_with_retry(&repo_b, "cleanup repo B");
     }
 
     #[test]
@@ -38267,7 +38421,7 @@ mod tests {
             "missing default DB startup must not auto-create .codegraph"
         );
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -38291,7 +38445,7 @@ mod tests {
         assert!(summary.entities > 0);
         assert!(summary.profile.expect("profile").worker_count >= 1);
 
-        fs::remove_dir_all(output).expect("cleanup");
+        remove_dir_all_with_retry(&output, "cleanup");
     }
 
     #[test]
@@ -38349,7 +38503,7 @@ mod tests {
             .expect("script")
             .contains("Register-ArgumentCompleter"));
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -38367,7 +38521,7 @@ mod tests {
 
     #[test]
     fn agent_use_profile_resolver_is_collision_safe_and_stable() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let parent = temp_repo();
         let repo_a = parent.join("left").join("app");
@@ -38421,13 +38575,13 @@ mod tests {
             ]
         );
 
-        fs::remove_dir_all(data_root).expect("cleanup data root");
-        fs::remove_dir_all(parent).expect("cleanup parent");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
+        remove_dir_all_with_retry(&parent, "cleanup parent");
     }
 
     #[test]
     fn agent_use_profile_resolver_handles_remote_path_spaces_unicode_and_case() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let (spaces_parent, spaces_repo) = temp_repo_named("repo with spaces");
         let (unicode_parent, unicode_repo) = temp_repo_named("unicode-repo-é");
@@ -38470,15 +38624,15 @@ mod tests {
             }
         }
 
-        fs::remove_dir_all(data_root).expect("cleanup data root");
-        fs::remove_dir_all(spaces_parent).expect("cleanup spaces");
-        fs::remove_dir_all(unicode_parent).expect("cleanup unicode");
-        fs::remove_dir_all(remote_parent).expect("cleanup remote");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
+        remove_dir_all_with_retry(&spaces_parent, "cleanup spaces");
+        remove_dir_all_with_retry(&unicode_parent, "cleanup unicode");
+        remove_dir_all_with_retry(&remote_parent, "cleanup remote");
     }
 
     #[test]
     fn context_pack_status_query_and_doctor_share_explicit_external_db() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let repo = temp_repo();
         let db_root = temp_repo();
         let db_path = db_root.join("external").join("production-agent-use.sqlite");
@@ -38547,13 +38701,13 @@ mod tests {
         assert_eq!(context["status"].as_str(), Some("ok"));
         assert_no_dot_codegraph_sqlite(&repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(db_root).expect("cleanup db root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&db_root, "cleanup db root");
     }
 
     #[test]
     fn context_pack_missing_external_db_reports_missing_without_dot_codegraph_fallback() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let repo = temp_repo();
         let db_root = temp_repo();
         let db_path = db_root.join("missing").join("production-agent-use.sqlite");
@@ -38574,13 +38728,13 @@ mod tests {
         assert!(error.contains(&path_string(&db_path)), "{error}");
         assert_no_dot_codegraph_sqlite(&repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(db_root).expect("cleanup db root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&db_root, "cleanup db root");
     }
 
     #[test]
     fn context_pack_stale_external_db_is_diagnostic_and_nonclaimable() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let repo = temp_repo();
         let db_root = temp_repo();
         let db_path = db_root.join("stale").join("production-agent-use.sqlite");
@@ -38625,13 +38779,13 @@ mod tests {
         );
         assert_no_dot_codegraph_sqlite(&repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(db_root).expect("cleanup db root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&db_root, "cleanup db root");
     }
 
     #[test]
     fn agent_use_status_missing_db_is_readonly() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
@@ -38680,8 +38834,8 @@ mod tests {
         );
         assert_no_dot_codegraph_sqlite(&repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
@@ -38725,7 +38879,7 @@ mod tests {
 
     #[test]
     fn agent_use_index_and_status_use_external_profile_db() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
@@ -38889,13 +39043,13 @@ mod tests {
         );
         assert_no_dot_codegraph_sqlite(&repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_watch_once_updates_external_profile_db_without_dot_codegraph() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
@@ -39156,13 +39310,13 @@ mod tests {
             "unchanged file facts should remain available: {unchanged:?}"
         );
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_persistent_watch_synthetic_events_use_once_delta_contract() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_agent_use_context_fixture(&repo);
@@ -39234,13 +39388,13 @@ mod tests {
             agent_use_query_count(&data_root, &repo, "symbols", "persistentWatchNewSymbol") > 0
         );
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_persistent_watch_missing_and_stale_db_do_not_auto_index() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let missing_repo = temp_repo();
         write_agent_use_context_fixture(&missing_repo);
@@ -39307,14 +39461,14 @@ mod tests {
         assert_ne!(stale["status"].as_str(), Some("stopped"));
         assert_no_dot_codegraph_sqlite(&stale_repo);
 
-        fs::remove_dir_all(missing_repo).expect("cleanup missing repo");
-        fs::remove_dir_all(stale_repo).expect("cleanup stale repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&missing_repo, "cleanup missing repo");
+        remove_dir_all_with_retry(&stale_repo, "cleanup stale repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_persistent_watch_ignored_and_many_change_events_are_safe() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_cli_fixture_file(&repo, ".gitignore", "generated/\n");
@@ -39407,13 +39561,13 @@ mod tests {
         assert_eq!(many["normal_dot_codegraph_mutated"].as_bool(), Some(false));
         assert_no_dot_codegraph_sqlite(&repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_watch_once_over_budget_dependency_closure_reports_degraded() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_cli_fixture_file(
@@ -39474,13 +39628,13 @@ mod tests {
         assert_eq!(watch["normal_dot_codegraph_mutated"].as_bool(), Some(false));
         assert_no_dot_codegraph_sqlite(&repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_watch_once_missing_db_reports_unavailable_without_fallback() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_agent_use_context_fixture(&repo);
@@ -39530,13 +39684,13 @@ mod tests {
         );
         assert_no_dot_codegraph_sqlite(&repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_watch_once_rejects_stale_and_foreign_profile_dbs() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let stale_repo = temp_repo();
         write_agent_use_context_fixture(&stale_repo);
@@ -39619,14 +39773,14 @@ mod tests {
         );
         assert_no_dot_codegraph_sqlite(&foreign_repo);
 
-        fs::remove_dir_all(stale_repo).expect("cleanup stale repo");
-        fs::remove_dir_all(foreign_repo).expect("cleanup foreign repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&stale_repo, "cleanup stale repo");
+        remove_dir_all_with_retry(&foreign_repo, "cleanup foreign repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_watch_once_failpoint_preserves_old_good_db_and_recovery_state() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
@@ -39691,13 +39845,13 @@ mod tests {
         );
         assert_no_dot_codegraph_sqlite(&repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_watch_once_post_commit_interrupt_reports_recovered_complete_db() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
@@ -39775,13 +39929,13 @@ mod tests {
         );
         assert_no_dot_codegraph_sqlite(&repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_watch_once_file_lifecycle_cases_use_external_profile_db() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
@@ -40270,13 +40424,13 @@ mod tests {
         );
         assert_no_dot_codegraph_sqlite(&repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_query_uses_external_profile_db() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_agent_use_context_fixture(&repo);
@@ -40397,13 +40551,13 @@ mod tests {
         );
         assert_no_dot_codegraph_sqlite(&repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_query_reports_unsafe_profile_db_without_fallback() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_agent_use_context_fixture(&repo);
@@ -40513,15 +40667,15 @@ mod tests {
         assert_no_dot_codegraph_sqlite(&repo_foreign);
         assert_no_dot_codegraph_sqlite(&repo_old);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(repo_foreign).expect("cleanup foreign repo");
-        fs::remove_dir_all(repo_old).expect("cleanup old repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&repo_foreign, "cleanup foreign repo");
+        remove_dir_all_with_retry(&repo_old, "cleanup old repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_context_pack_uses_graph_or_candidate_profile_context() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_agent_use_context_fixture(&repo);
@@ -40649,15 +40803,15 @@ mod tests {
         assert_eq!(missing["claimable"].as_bool(), Some(false));
         assert_no_dot_codegraph_sqlite(&missing_repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(spool_repo).expect("cleanup spool repo");
-        fs::remove_dir_all(missing_repo).expect("cleanup missing repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&spool_repo, "cleanup spool repo");
+        remove_dir_all_with_retry(&missing_repo, "cleanup missing repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_staged_warm_start_artifacts_are_candidate_only_and_source_bound() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_agent_use_context_fixture(&repo);
@@ -40881,14 +41035,14 @@ mod tests {
         assert_no_dot_codegraph_sqlite(&repo);
         assert_no_dot_codegraph_sqlite(&candidate_repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(candidate_repo).expect("cleanup candidate repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&candidate_repo, "cleanup candidate repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_watch_once_dirty_sidecars_do_not_masquerade_as_fresh_context() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_agent_use_context_fixture(&repo);
@@ -41080,13 +41234,13 @@ mod tests {
         );
         assert_no_dot_codegraph_sqlite(&repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_mcp_config_is_readonly_and_matches_status_path() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let parent = temp_repo();
         let repo_a = parent.join("left").join("app");
@@ -41183,13 +41337,13 @@ mod tests {
         assert_no_dot_codegraph_sqlite(&repo_b);
         assert_no_dot_codegraph_sqlite(&unicode_repo);
 
-        fs::remove_dir_all(parent).expect("cleanup parent");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&parent, "cleanup parent");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_status_reports_unsafe_dbs_without_migration() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo_a = temp_repo();
         let repo_b = temp_repo();
@@ -41322,16 +41476,16 @@ mod tests {
         assert_no_dot_codegraph_sqlite(&repo_old);
         assert_no_dot_codegraph_sqlite(&repo_stale);
 
-        fs::remove_dir_all(repo_a).expect("cleanup repo a");
-        fs::remove_dir_all(repo_b).expect("cleanup repo b");
-        fs::remove_dir_all(repo_old).expect("cleanup old repo");
-        fs::remove_dir_all(repo_stale).expect("cleanup stale repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo_a, "cleanup repo a");
+        remove_dir_all_with_retry(&repo_b, "cleanup repo b");
+        remove_dir_all_with_retry(&repo_old, "cleanup old repo");
+        remove_dir_all_with_retry(&repo_stale, "cleanup stale repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_profile_durability_labels_lock_sidecars_permission_and_publish_state() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_agent_use_context_fixture(&repo);
@@ -41561,15 +41715,15 @@ mod tests {
         assert_no_dot_codegraph_sqlite(&repo);
         assert_no_dot_codegraph_sqlite(&permission_repo);
         assert_no_dot_codegraph_sqlite(&filesystem_repo);
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(permission_repo).expect("cleanup permission repo");
-        fs::remove_dir_all(filesystem_repo).expect("cleanup filesystem repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&permission_repo, "cleanup permission repo");
+        remove_dir_all_with_retry(&filesystem_repo, "cleanup filesystem repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_readers_see_old_good_db_during_uncommitted_delta_update() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_agent_use_context_fixture(&repo);
@@ -41695,13 +41849,13 @@ mod tests {
         );
         assert_no_dot_codegraph_sqlite(&repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_context_pack_refuses_unsafe_profile_db_without_fallback() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
 
         let repo_stale = temp_repo();
@@ -41835,17 +41989,17 @@ mod tests {
         assert_no_dot_codegraph_sqlite(&repo_foreign);
         assert_no_dot_codegraph_sqlite(&repo_old);
         assert_no_dot_codegraph_sqlite(&repo_corrupt);
-        fs::remove_dir_all(repo_stale).expect("cleanup stale repo");
-        fs::remove_dir_all(repo_valid).expect("cleanup valid repo");
-        fs::remove_dir_all(repo_foreign).expect("cleanup foreign repo");
-        fs::remove_dir_all(repo_old).expect("cleanup old repo");
-        fs::remove_dir_all(repo_corrupt).expect("cleanup corrupt repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo_stale, "cleanup stale repo");
+        remove_dir_all_with_retry(&repo_valid, "cleanup valid repo");
+        remove_dir_all_with_retry(&repo_foreign, "cleanup foreign repo");
+        remove_dir_all_with_retry(&repo_old, "cleanup old repo");
+        remove_dir_all_with_retry(&repo_corrupt, "cleanup corrupt repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn agent_use_interrupted_index_keeps_old_profile_db_claimable() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_agent_use_context_fixture(&repo);
@@ -41932,13 +42086,13 @@ mod tests {
         assert_json_array_contains(&context, "safety_labels", "recovered");
         assert_no_dot_codegraph_sqlite(&repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
     fn plain_status_missing_db_guides_to_agent_use_without_redirect() {
-        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let _guard = lock_env_test();
         let data_root = temp_repo();
         let repo = temp_repo();
         write_agent_use_context_fixture(&repo);
@@ -41971,8 +42125,8 @@ mod tests {
         assert!(!profile.profile_root.exists());
         assert_no_dot_codegraph_sqlite(&repo);
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_dir_all(data_root).expect("cleanup data root");
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
     #[test]
@@ -42006,7 +42160,7 @@ mod tests {
         );
         assert!(doctor["sqlite_sidecars"]["status"].is_string());
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -42053,7 +42207,7 @@ mod tests {
             after_metadata.modified().expect("mtime after")
         );
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -42112,7 +42266,7 @@ mod tests {
             .is_empty());
 
         drop(wal_connection);
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -42168,7 +42322,7 @@ mod tests {
 
         lock.execute_batch("ROLLBACK").expect("release lock");
         drop(lock);
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -42213,7 +42367,7 @@ mod tests {
             "{doctor:?}"
         );
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -42254,8 +42408,8 @@ mod tests {
             status["db_lifecycle_read"]["blockers"]
         );
 
-        fs::remove_dir_all(repo_a).expect("cleanup repo A");
-        fs::remove_dir_all(repo_b).expect("cleanup repo B");
+        remove_dir_all_with_retry(&repo_a, "cleanup repo A");
+        remove_dir_all_with_retry(&repo_b, "cleanup repo B");
     }
 
     #[test]
@@ -42293,7 +42447,7 @@ mod tests {
             "{doctor:?}"
         );
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -42326,7 +42480,7 @@ mod tests {
             "{doctor:?}"
         );
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -42353,7 +42507,7 @@ mod tests {
         assert_eq!(observed_version, 1);
         assert!(!passport_table_exists);
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -42377,7 +42531,7 @@ mod tests {
             .join()
             .expect("join UI server")
             .expect("UI server ok");
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -42410,7 +42564,7 @@ mod tests {
             Some(true)
         );
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -42430,7 +42584,7 @@ mod tests {
             .iter()
             .all(|edge| edge["relation"].as_str() == Some("CALLS")));
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -42449,7 +42603,7 @@ mod tests {
             .expect("warning")
             .contains("truncated"));
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -42484,7 +42638,7 @@ mod tests {
             .expect("resource")
             .starts_with("codegraph://source-span/"));
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -42508,8 +42662,8 @@ mod tests {
             "{body:?}"
         );
 
-        fs::remove_dir_all(repo_a).expect("cleanup repo A");
-        fs::remove_dir_all(repo_b).expect("cleanup repo B");
+        remove_dir_all_with_retry(&repo_a, "cleanup repo A");
+        remove_dir_all_with_retry(&repo_b, "cleanup repo B");
     }
 
     #[test]
@@ -42724,14 +42878,14 @@ mod tests {
             .expect("rerun suggestion")
             .contains("--entity-id"));
 
-        fs::remove_dir_all(watch_repo).expect("cleanup watch repo");
-        fs::remove_dir_all(ui_repo_a).expect("cleanup UI repo A");
-        fs::remove_dir_all(ui_repo_b).expect("cleanup UI repo B");
-        fs::remove_dir_all(doctor_repo).expect("cleanup doctor repo");
-        fs::remove_dir_all(benchmark_repo).expect("cleanup benchmark repo");
-        fs::remove_dir_all(sidecar_repo).expect("cleanup sidecar repo");
-        fs::remove_dir_all(orphan_repo).expect("cleanup orphan repo");
-        fs::remove_dir_all(call_fixture.repo).expect("cleanup caller fixture repo");
+        remove_dir_all_with_retry(&watch_repo, "cleanup watch repo");
+        remove_dir_all_with_retry(&ui_repo_a, "cleanup UI repo A");
+        remove_dir_all_with_retry(&ui_repo_b, "cleanup UI repo B");
+        remove_dir_all_with_retry(&doctor_repo, "cleanup doctor repo");
+        remove_dir_all_with_retry(&benchmark_repo, "cleanup benchmark repo");
+        remove_dir_all_with_retry(&sidecar_repo, "cleanup sidecar repo");
+        remove_dir_all_with_retry(&orphan_repo, "cleanup orphan repo");
+        remove_dir_all_with_retry(&call_fixture.repo, "cleanup caller fixture repo");
     }
 
     #[test]
@@ -42752,7 +42906,7 @@ mod tests {
             Some("Context packet preview uses local graph/source evidence.")
         );
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -42831,7 +42985,7 @@ mod tests {
             "{diagnostic_result}"
         );
 
-        fs::remove_dir_all(fixture.repo).expect("cleanup");
+        remove_dir_all_with_retry(&fixture.repo, "cleanup");
     }
 
     #[test]
@@ -42975,7 +43129,7 @@ mod tests {
         assert!(files["results"].as_array().expect("file results").len() <= 5);
         assert!(files["results"][0]["file"].as_str().is_some());
 
-        fs::remove_dir_all(fixture.repo).expect("cleanup");
+        remove_dir_all_with_retry(&fixture.repo, "cleanup");
     }
 
     #[test]
@@ -43056,7 +43210,7 @@ mod tests {
         assert_eq!(file_result["claimable_for_graph"].as_bool(), Some(false));
         assert_eq!(file_result["graph_proof"].as_bool(), Some(false));
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -43244,7 +43398,7 @@ mod tests {
             limited["omitted_count"].as_u64()
         );
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -43262,7 +43416,7 @@ mod tests {
         assert!(result["proof"].as_str().is_some());
         assert!(result["schema_name"].is_null());
 
-        fs::remove_dir_all(fixture.repo).expect("cleanup");
+        remove_dir_all_with_retry(&fixture.repo, "cleanup");
     }
 
     #[test]
@@ -43312,7 +43466,7 @@ mod tests {
             .is_some());
         assert!(result["results"][0]["edge"]["source_spans"].is_array());
 
-        fs::remove_dir_all(fixture.repo).expect("cleanup");
+        remove_dir_all_with_retry(&fixture.repo, "cleanup");
     }
 
     #[test]
@@ -43360,7 +43514,7 @@ mod tests {
             1
         );
 
-        fs::remove_dir_all(fixture.repo).expect("cleanup");
+        remove_dir_all_with_retry(&fixture.repo, "cleanup");
     }
 
     #[test]
@@ -43417,7 +43571,7 @@ mod tests {
             .expect("rerun suggestion")
             .contains("--entity-id"));
 
-        fs::remove_dir_all(fixture.repo).expect("cleanup");
+        remove_dir_all_with_retry(&fixture.repo, "cleanup");
     }
 
     #[test]
@@ -43451,7 +43605,7 @@ mod tests {
             Some(fixture.beta_caller_id.as_str())
         );
 
-        fs::remove_dir_all(fixture.repo).expect("cleanup");
+        remove_dir_all_with_retry(&fixture.repo, "cleanup");
     }
 
     #[test]
@@ -43497,7 +43651,7 @@ mod tests {
                 >= 2
         );
 
-        fs::remove_dir_all(fixture.repo).expect("cleanup");
+        remove_dir_all_with_retry(&fixture.repo, "cleanup");
     }
 
     #[test]
@@ -43665,7 +43819,7 @@ mod tests {
             .is_some_and(|reason| reason.contains("tests module")));
 
         drop(connection);
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -43802,7 +43956,7 @@ mod tests {
         );
 
         drop(connection);
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -43946,7 +44100,7 @@ mod tests {
             "{test_paths:?}"
         );
 
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -45199,7 +45353,7 @@ mod tests {
             "{verification_hints:?}"
         );
         drop(connection);
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -45262,7 +45416,7 @@ mod tests {
         );
 
         drop(connection);
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -45538,7 +45692,7 @@ mod tests {
             .all(|lane| lane.as_str() != Some("suggested_rg_probes")));
 
         drop(connection);
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -46149,7 +46303,7 @@ mod tests {
                 .as_array()
                 .expect("exact results")
                 .is_empty());
-            fs::remove_dir_all(fixture.repo).expect("cleanup");
+            remove_dir_all_with_retry(&fixture.repo, "cleanup");
             covered.insert("same_name_ambiguity");
         }
 
@@ -46357,7 +46511,7 @@ mod tests {
                     > 0
             );
             drop(connection);
-            fs::remove_dir_all(repo).expect("cleanup");
+            remove_dir_all_with_retry(&repo, "cleanup");
             covered.insert("text_only_buildroot_planning");
             covered.insert("text_evidence_reaches_fallback");
             covered.insert("no_proof_fallback_labeled");
@@ -46766,7 +46920,7 @@ mod tests {
             .any(|test| test.as_str() == Some("cargo test greet_works")));
 
         drop(connection);
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     #[test]
@@ -46867,7 +47021,7 @@ mod tests {
         );
 
         drop(connection);
-        fs::remove_dir_all(repo).expect("cleanup");
+        remove_dir_all_with_retry(&repo, "cleanup");
     }
 
     struct CallerCalleePrecisionFixture {
@@ -49028,6 +49182,27 @@ mod tests {
         path
     }
 
+    fn remove_dir_all_with_retry(path: &Path, label: &str) {
+        let mut last_error = None;
+        for attempt in 0..20 {
+            match fs::remove_dir_all(path) {
+                Ok(()) => return,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(error) => {
+                    last_error = Some(error);
+                    let backoff_ms = 25 * (attempt + 1).min(10);
+                    std::thread::sleep(Duration::from_millis(backoff_ms));
+                }
+            }
+        }
+        panic!(
+            "{label}: {}",
+            last_error
+                .map(|error| error.to_string())
+                .unwrap_or_else(|| "unknown cleanup failure".to_string())
+        );
+    }
+
     fn temp_repo_named(name: &str) -> (PathBuf, PathBuf) {
         let parent = temp_repo();
         let repo = parent.join(name);
@@ -49101,15 +49276,17 @@ mod tests {
     where
         F: FnOnce() -> R,
     {
-        let old = std::env::var_os(super::AGENT_USE_DATA_ROOT_ENV);
-        std::env::set_var(super::AGENT_USE_DATA_ROOT_ENV, data_root);
-        let result = operation();
-        if let Some(old) = old {
-            std::env::set_var(super::AGENT_USE_DATA_ROOT_ENV, old);
-        } else {
-            std::env::remove_var(super::AGENT_USE_DATA_ROOT_ENV);
-        }
-        result
+        super::with_process_context_lock(|| {
+            let old = std::env::var_os(super::AGENT_USE_DATA_ROOT_ENV);
+            std::env::set_var(super::AGENT_USE_DATA_ROOT_ENV, data_root);
+            let result = operation();
+            if let Some(old) = old {
+                std::env::set_var(super::AGENT_USE_DATA_ROOT_ENV, old);
+            } else {
+                std::env::remove_var(super::AGENT_USE_DATA_ROOT_ENV);
+            }
+            result
+        })
     }
 
     struct ProcessEnvGuard {
@@ -49131,14 +49308,16 @@ mod tests {
     where
         F: FnOnce() -> R,
     {
-        let guard = ProcessEnvGuard {
-            name: name.to_string(),
-            old: std::env::var_os(name),
-        };
-        std::env::set_var(name, value);
-        let result = operation();
-        drop(guard);
-        result
+        super::with_process_context_lock(|| {
+            let guard = ProcessEnvGuard {
+                name: name.to_string(),
+                old: std::env::var_os(name),
+            };
+            std::env::set_var(name, value);
+            let result = operation();
+            drop(guard);
+            result
+        })
     }
 
     fn run_agent_use_test_command(data_root: &Path, args: &[&str]) -> Result<Value, String> {

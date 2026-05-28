@@ -17427,9 +17427,7 @@ fn vector_chunk_token_count(text: &str) -> usize {
 }
 
 pub fn default_db_path(repo_root: &Path) -> PathBuf {
-    std::env::var_os("CODEGRAPH_DB_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| repo_root.join(".codegraph").join("codegraph.sqlite"))
+    repo_root.join(".codegraph").join("codegraph.sqlite")
 }
 
 fn normalize_db_path(repo_root: &Path, db_path: &Path) -> PathBuf {
