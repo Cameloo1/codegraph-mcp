@@ -15947,15 +15947,71 @@ fn mark_candidate_spool_superseded(
 }
 
 fn candidate_spool_paths_equivalent(left: &str, right: &str) -> bool {
-    let normalize = |value: &str| {
-        let normalized = value.replace('\\', "/");
-        normalized
-            .strip_prefix("//?/")
-            .unwrap_or(&normalized)
-            .trim_end_matches('/')
-            .to_ascii_lowercase()
+    let left = candidate_spool_normalize_path_identity(left);
+    let right = candidate_spool_normalize_path_identity(right);
+    left == right || windows_path_identity_strings_equivalent(&left, &right)
+}
+
+fn candidate_spool_normalize_path_identity(value: &str) -> String {
+    let mut normalized = value.replace('\\', "/");
+    if let Some(rest) = normalized.strip_prefix("//?/UNC/") {
+        normalized = format!("//{rest}");
+    } else if let Some(rest) = normalized.strip_prefix("//?/") {
+        normalized = rest.to_string();
+    }
+    normalized.trim_end_matches('/').to_ascii_lowercase()
+}
+
+#[cfg(windows)]
+fn windows_path_identity_strings_equivalent(left: &str, right: &str) -> bool {
+    let left_parts = left
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let right_parts = right
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    left_parts.len() == right_parts.len()
+        && left_parts
+            .iter()
+            .zip(right_parts.iter())
+            .all(|(left, right)| windows_path_component_equivalent(left, right))
+}
+
+#[cfg(not(windows))]
+fn windows_path_identity_strings_equivalent(_left: &str, _right: &str) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn windows_path_component_equivalent(left: &str, right: &str) -> bool {
+    left == right
+        || windows_short_alias_component_matches(left, right)
+        || windows_short_alias_component_matches(right, left)
+}
+
+#[cfg(windows)]
+fn windows_short_alias_component_matches(short: &str, long: &str) -> bool {
+    let Some((prefix, suffix)) = short.split_once('~') else {
+        return false;
     };
-    normalize(left) == normalize(right)
+    if prefix.len() < 3 {
+        return false;
+    }
+    let digit_count = suffix.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    if digit_count == 0 {
+        return false;
+    }
+    let suffix_tail = &suffix[digit_count..];
+    if !suffix_tail.is_empty() && !suffix_tail.starts_with('.') {
+        return false;
+    }
+    let long_compact = long
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>();
+    long_compact.starts_with(prefix)
 }
 
 fn read_candidate_spool_manifest(spool_path: &Path) -> Result<Value, IndexError> {
@@ -17869,6 +17925,19 @@ pub use spool_target as exported_spool_target;
             "Stage 0 text evidence fixture for spool_target source navigation.\n",
         );
         repo
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn candidate_spool_repo_binding_accepts_windows_short_home_alias() {
+        assert!(candidate_spool_paths_equivalent(
+            r"\\?\C:\Users\runneradmin\AppData\Local\Temp\codegraph-cli-unit-1",
+            r"C:\Users\RUNNER~1\AppData\Local\Temp\codegraph-cli-unit-1"
+        ));
+        assert!(!candidate_spool_paths_equivalent(
+            r"\\?\C:\Users\runneradmin\AppData\Local\Temp\codegraph-cli-unit-1",
+            r"C:\Users\RUNNER~1\AppData\Local\Temp\codegraph-cli-unit-2"
+        ));
     }
 
     #[test]
