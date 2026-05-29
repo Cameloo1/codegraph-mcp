@@ -311,6 +311,41 @@ metadata.
 
 ## Developer / Diagnostic Commands
 
+`bench [--baseline <mode>]... [--format <json|markdown>] [--output <path>]`
+
+Runs the local developer benchmark suite. Baselines are `vanilla_no_retrieval`,
+`grep_bm25`, `vector_only`, `graph_only`, `graph_binary_pq_funnel`,
+`graph_bayesian_ranker`, and `full_context_packet`.
+
+`bench synthetic-index --output-dir <dir> [--files <n>]`
+
+Generates a large deterministic TypeScript fixture repo and indexes it with
+profiling enabled. The command writes `synthetic-index-run.json` for indexing
+speed regression checks.
+
+`bench gaps [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>]`
+
+Writes a gap scoreboard with machine-readable win/loss/tie/unknown dimensions.
+If the competitor executable is unavailable, the report records `skipped` with
+a structured reason.
+
+`bench real-repo-corpus`
+
+Prints the real-repo maturity corpus for TypeScript, Python, Go, Rust, and
+Java. It includes pinned commits, task manifests, and an offline replay plan for
+`.codegraph-bench-cache/real-repos`.
+
+`bench parity-report [--output-dir <dir>]`
+
+Writes parity summaries. Unknown/skipped fields remain explicit, and diagnostic
+outputs do not support superiority claims.
+
+`bench cgc-comparison [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>]`
+
+Runs the optional external CodeGraphContext / CGC comparison harness. The
+subcommand skips CGC with a structured reason when `CGC_COMPETITOR_BIN`, `cgc`,
+and `codegraphcontext` are unavailable.
+
 `trace append|replay|validate ...`
 
 Appends replayable Agent/MCP JSONL trace events or replays/validates an
@@ -321,7 +356,7 @@ public claims unless summarized.
 
 Runs read-only audit inspections over DBs and manual-label artifacts. Audit
 outputs can support stable summaries, but raw audit DBs/logs are not final
-claim evidence by themselves.
+benchmark artifacts by themselves.
 
 `doctor [repo] [--json]`
 

@@ -12,7 +12,7 @@ codegraph-mcp serve-mcp
 
 For long-lived agent use, prefer the agent-use profile from
 [operational-profiles.md](operational-profiles.md). That profile uses a release
-binary and a DB outside the source tree, separate from development/test
+binary and a DB outside the source tree, separate from development and benchmark
 indexes.
 
 For CLI-driven agent loops, see [agent-use.md](agent-use.md). The CLI

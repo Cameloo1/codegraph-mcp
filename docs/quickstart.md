@@ -18,7 +18,7 @@ Use these instructions when setting up CodeGraph for a workspace:
 > `codegraph-mcp agent-use status --repo <target-repo> --json`. Generate the MCP
 > config with
 > `codegraph-mcp agent-use mcp-config --repo <target-repo> --json`. Keep
-> CodeGraph's checkout, generated databases, logs, diagnostic artifacts, and
+> CodeGraph's checkout, generated databases, logs, benchmark artifacts, and
 > temporary files separate from the target project. Do not create or mutate a
 > repo-local `.codegraph` unless explicitly asked. Do not index until the target
 > repo path and generated MCP config have been shown to the user.
