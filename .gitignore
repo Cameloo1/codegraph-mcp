@@ -93,6 +93,18 @@ codegraph-competitors/
 /reports/comparison/codegraph_vs_cgc_*.json
 !/reports/comparison/codegraph_vs_cgc_latest.md
 !/reports/comparison/codegraph_vs_cgc_latest.json
+/benchmarks/results/raw/**
+/benchmarks/results/official/**
+/benchmarks/results/ablations/**
+/benchmarks/results/summaries/**
+/benchmarks/workspaces/**
+/benchmarks/upstream/*/
+!/benchmarks/upstream/README.md
+!/benchmarks/upstream/pinned_sources.json
+!/benchmarks/upstream/.gitkeep
+/benchmarks/configs/*.local.toml
+*.predictions.jsonl
+*.patch
 /reports/audit/*.md
 /reports/audit/*.json
 !/reports/audit/README.md
@@ -118,6 +130,10 @@ codegraph-competitors/
 
 # Internal planning/status docs not intended for the public repo
 /MVP.md
+/MVP_2.md
+/MVP_2-new.md
+/MVP_3.md
+/MVP_4.md
 /TODO_PHASES.md
 /docs/mvp-acceptance.md
 /reports/audit/AUDIT_STATUS*.md

@@ -86,7 +86,7 @@ function Write-Summary {
         requirements = @{
             cgc_required = $false
             autoresearch_required = $false
-            external_benchmark_artifacts_required = $false
+            external_diagnostic_artifacts_required = $false
             network_required = "only normal Cargo dependency resolution"
         }
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $summaryPath -Encoding UTF8

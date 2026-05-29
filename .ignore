@@ -1,0 +1,12 @@
+# Keep developer/agent searches out of generated benchmark and audit payloads.
+# These paths can contain large DB sidecars, vector JSON, raw logs, predictions,
+# patches, and materialized external repositories. They are not source context.
+benchmarks/workspaces/**
+benchmarks/results/**
+benchmarks/tracks/*/workspaces/**
+benchmarks/tracks/*/results/**
+benchmarks/tracks/*/upstream/**
+reports/audit/artifacts/**
+reports/final/full_benchmark_sweep_charts/**
+reports/final/artifacts/**
+reports/final/*_artifacts/**

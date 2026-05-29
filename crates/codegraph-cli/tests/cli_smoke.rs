@@ -59,6 +59,26 @@ fn stderr_json(output: &Output) -> Value {
     serde_json::from_slice(&output.stderr).expect("stderr JSON")
 }
 
+fn graph_truth_cases_or_skip() -> Option<(PathBuf, PathBuf)> {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root")
+        .to_path_buf();
+    let cases = workspace_root
+        .join("benchmarks")
+        .join("graph_truth")
+        .join("fixtures");
+    if !cases.exists() {
+        eprintln!(
+            "skipping graph-truth lab fixture smoke; cases path is absent: {}",
+            cases.display()
+        );
+        return None;
+    }
+    Some((workspace_root, cases))
+}
+
 fn write_context_pack_vector_test_index(db_path: &Path, index_path: &Path) {
     write_context_pack_vector_test_index_with_scope(
         db_path,
@@ -495,14 +515,9 @@ fn bench_command_outputs_machine_readable_report() {
 
 #[test]
 fn bench_graph_truth_gate_runs_adversarial_fixtures_and_writes_reports() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("workspace root");
-    let cases = workspace_root
-        .join("benchmarks")
-        .join("graph_truth")
-        .join("fixtures");
+    let Some((workspace_root, cases)) = graph_truth_cases_or_skip() else {
+        return;
+    };
     let output_dir = empty_repo().join("graph-truth-output");
     let out_json = output_dir.join("report.json");
     let out_md = output_dir.join("report.md");
@@ -579,14 +594,9 @@ fn bench_graph_truth_gate_runs_adversarial_fixtures_and_writes_reports() {
 
 #[test]
 fn bench_context_packet_gate_runs_adversarial_fixtures_and_writes_reports() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("workspace root");
-    let cases = workspace_root
-        .join("benchmarks")
-        .join("graph_truth")
-        .join("fixtures");
+    let Some((workspace_root, cases)) = graph_truth_cases_or_skip() else {
+        return;
+    };
     let output_dir = empty_repo().join("context-packet-output");
     let out_json = output_dir.join("report.json");
     let out_md = output_dir.join("report.md");
@@ -630,14 +640,9 @@ fn bench_context_packet_gate_runs_adversarial_fixtures_and_writes_reports() {
 
 #[test]
 fn bench_retrieval_ablation_reports_stage0_and_full_funnel_separately() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("workspace root");
-    let cases = workspace_root
-        .join("benchmarks")
-        .join("graph_truth")
-        .join("fixtures");
+    let Some((workspace_root, cases)) = graph_truth_cases_or_skip() else {
+        return;
+    };
     let output_dir = empty_repo().join("retrieval-ablation-output");
     let out_json = output_dir.join("report.json");
     let out_md = output_dir.join("report.md");
@@ -2016,6 +2021,20 @@ fn index_status_and_query_commands_work_on_fixture_repo() {
     );
     assert!(status["db_size_bytes"].as_u64().unwrap_or_default() > 0);
     assert!(status["source_spans"].as_u64().unwrap_or_default() > 0);
+    assert_eq!(status["relation_facts"], status["edges"]);
+    assert_eq!(status["source_span_facts"], status["source_spans"]);
+    assert_eq!(
+        status["release_reported_relation_facts"],
+        status["relation_facts"]
+    );
+    assert_eq!(
+        status["release_reported_source_span_facts"],
+        status["source_span_facts"]
+    );
+    assert_eq!(
+        status["metric_label_notes"]["edges"].as_str(),
+        Some("Deprecated compatibility alias for relation_facts.")
+    );
     assert!(!status["storage_accounting"]
         .as_array()
         .expect("storage accounting")
@@ -2271,6 +2290,12 @@ fn audit_index_scope_dry_run_reports_scope_without_creating_db() {
     assert_eq!(value["dry_run"].as_bool(), Some(true));
     assert_eq!(value["db_created"].as_bool(), Some(false));
     assert_eq!(value["normal_codegraph_db_created"].as_bool(), Some(false));
+    assert_eq!(
+        value["include_semantics"].as_str(),
+        Some("default repo scope plus explicit include overrides")
+    );
+    assert_eq!(value["include_is_restrictive"].as_bool(), Some(false));
+    assert_eq!(value["include_is_override"].as_bool(), Some(true));
     assert!(!repo.join(".codegraph").exists());
     assert!(out_json.exists());
     assert!(out_md.exists());
@@ -2278,6 +2303,14 @@ fn audit_index_scope_dry_run_reports_scope_without_creating_db() {
     let report: Value = serde_json::from_str(&fs::read_to_string(&out_json).expect("scope JSON"))
         .expect("scope JSON validates");
     assert_eq!(report["status"].as_str(), Some("ok"));
+    assert_eq!(
+        report["options"]["include_semantics"].as_str(),
+        Some("default repo scope plus explicit include overrides")
+    );
+    assert_eq!(
+        report["options"]["include_is_restrictive"].as_bool(),
+        Some(false)
+    );
     assert!(
         report["counts"]["files_considered"]
             .as_u64()
@@ -2772,11 +2805,6 @@ fn profile_wrapper_prod_agent_status_missing_db_is_actionable() {
     let repo = empty_repo();
     let workspace = empty_repo();
     let local_app_data = workspace.join("localapp");
-    let db_path = local_app_data
-        .join("CodeGraphMCP")
-        .join("agent-indexes")
-        .join(repo.file_name().expect("repo name"))
-        .join("production-agent-use.sqlite");
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -2813,8 +2841,24 @@ fn profile_wrapper_prod_agent_status_missing_db_is_actionable() {
     let json_start = stdout.find('{').expect("JSON status in stdout");
     let status: Value = serde_json::from_str(&stdout[json_start..]).expect("status JSON");
     assert_eq!(status["status"].as_str(), Some("not_indexed"));
+    assert_eq!(status["command_namespace"].as_str(), Some("agent-use"));
+    assert_eq!(
+        status["profile_name"].as_str(),
+        Some("production-agent-use")
+    );
     assert_eq!(status["db_problem_kind"].as_str(), Some("db_missing"));
+    let db_path = PathBuf::from(status["db_path"].as_str().expect("agent-use db path"));
+    assert!(
+        db_path.starts_with(&local_app_data),
+        "agent-use wrapper must use native LocalAppData resolver: {} not under {}",
+        db_path.display(),
+        local_app_data.display()
+    );
     assert!(!db_path.exists(), "profile status must not create DB");
+    assert!(
+        !db_path.parent().expect("db parent").exists(),
+        "profile status must not create profile parent"
+    );
     assert!(
         !sqlite_sidecar_path(&db_path, "wal").exists()
             && !sqlite_sidecar_path(&db_path, "shm").exists(),
@@ -3572,6 +3616,9 @@ fn context_pack_vector_candidates_are_explicit_diagnostic_and_safe() {
         missing_trace["vector_index_status"].as_str(),
         Some("missing")
     );
+    assert_eq!(missing["graph_db_status"].as_str(), Some("ready"));
+    assert_eq!(missing["vector_runtime_status"].as_str(), Some("missing"));
+    assert_eq!(missing["graph_proof_available"].as_bool(), Some(true));
     assert_eq!(missing_trace["vector_candidate_count"].as_u64(), Some(0));
 
     let ready_index = external_db_dir.join("codegraph-vector-chunks.json");
@@ -3594,6 +3641,12 @@ fn context_pack_vector_candidates_are_explicit_diagnostic_and_safe() {
     ));
     let ready_trace = &ready["retrieval_explain"]["vector_trace"];
     assert_eq!(ready_trace["vector_index_status"].as_str(), Some("ready"));
+    assert_eq!(ready["vector_runtime_status"].as_str(), Some("ready"));
+    assert!(ready["active_candidate_sources"]
+        .as_array()
+        .expect("candidate sources")
+        .iter()
+        .any(|source| source.as_str() == Some("vector_semantic")));
     assert!(
         ready_trace["vector_candidate_count"].as_u64().unwrap_or(0) > 0,
         "{ready_trace:?}"
@@ -3621,6 +3674,8 @@ fn context_pack_vector_candidates_are_explicit_diagnostic_and_safe() {
     );
     let compact = stdout_json(&compact_output);
     assert_eq!(compact["status"].as_str(), Some("ok"));
+    assert_eq!(compact["vector_runtime_status"].as_str(), Some("ready"));
+    assert!(compact.get("staged_availability").is_none());
     assert!(compact.get("retrieval_explain").is_none());
     assert!(
         compact_output.stdout.len() < 16_384,
@@ -3649,6 +3704,11 @@ fn context_pack_vector_candidates_are_explicit_diagnostic_and_safe() {
     ));
     let stale_trace = &stale["retrieval_explain"]["vector_trace"];
     assert_eq!(stale_trace["vector_index_status"].as_str(), Some("stale"));
+    assert_eq!(stale["vector_runtime_status"].as_str(), Some("stale"));
+    assert_eq!(
+        stale["staged_availability"]["recommended_next_step"].as_str(),
+        Some("rebuild vector sidecar")
+    );
     assert_eq!(stale_trace["vector_candidate_count"].as_u64(), Some(0));
     assert!(stale_trace["stale_missing_vector_index_reason"]
         .as_str()
@@ -5286,6 +5346,16 @@ fn command_help_is_successful() {
         assert!(output.status.success(), "{command} --help failed");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("Usage:"), "{command} --help missing usage");
+        if command == "index" {
+            assert!(
+                stdout.contains("default repo scope plus explicit include overrides"),
+                "index --help must describe --include semantics truthfully: {stdout}"
+            );
+            assert!(
+                !stdout.contains("restrict indexing to only include globs"),
+                "index --help must not describe --include as restrictive: {stdout}"
+            );
+        }
     }
 }
 

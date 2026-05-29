@@ -33,6 +33,45 @@
         }
       }
     },
+    "telemetry_truth": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "build_profile": {
+          "type": "string"
+        },
+        "binary_profile": {
+          "type": "string"
+        },
+        "profile_available": {
+          "type": "boolean"
+        },
+        "memory": {
+          "type": "string"
+        },
+        "memory_bytes": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "memory_measured": {
+          "type": "boolean"
+        },
+        "memory_status": {
+          "type": "string",
+          "enum": ["measured", "unknown"]
+        },
+        "memory_measurement_kind": {
+          "type": "string"
+        },
+        "timing_truth_status": {
+          "type": "string"
+        },
+        "timing_fields": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
     "bounded_messages": {
       "type": "array",
       "maxItems": 8,

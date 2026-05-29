@@ -4,8 +4,10 @@ The root `README.md` is the public setup contract. CodeGraph stays Rust-first,
 exact graph first, and vectors second.
 
 Language frontends feed the same attributed graph without flattening all
-languages into text. Python, Go, and Rust currently expose conservative Tier 3
-caller/callee extraction while unresolved calls remain explicitly heuristic.
+languages into text. The current fixture matrix covers declarations/imports,
+calls, reads/writes, return-flow, test/mock/assertion evidence, async/event
+patterns, dynamic import boundaries, generated-source boundaries, same-name
+symbols, and macro/preprocessor blindness.
 
 ## Support Tiers
 
@@ -22,10 +24,18 @@ Use `codegraph-mcp languages` for the table view and `codegraph-mcp languages --
 
 ## Current Frontends
 
-- TypeScript/TSX and JavaScript/JSX keep the existing extractor behavior.
-- TypeScript/TSX advertise an optional TypeScript Compiler API resolver hook with `compiler_verified` exactness when available.
-- Python, Go, and Rust are Tier 3: syntax/entity/import-export facts plus conservative parser-level calls and caller/callee edges.
-- Java, C#, C, C++, Ruby, and PHP are Tier 1: syntax/entity extraction with explicit limitations.
+- TypeScript/TSX and JavaScript/JSX include syntax/entity/import/export
+  extraction, parser-backed direct calls, reads/writes where AST-scoped, test
+  blocks/assertions/mocks, route/event/security patterns where fixture-backed,
+  and explicit dynamic-boundary labels for computed imports/calls.
+- TypeScript/TSX advertise an optional TypeScript Compiler API resolver hook
+  with `compiler_verified` exactness when available.
+- Python, Go, and Rust include syntax/entity/import-export facts plus
+  conservative parser-level calls, caller/callee edges, reads/writes where
+  AST-scoped, and fixture-backed test/source-role boundaries where supported.
+- Java, C#, C, C++, Ruby, and PHP expose syntax/entity extraction and selected
+  conservative relations where the parser fixture proves them. Unsupported
+  dynamic or semantic behavior remains heuristic or unknown.
 
 ## Proof Rules
 
@@ -34,3 +44,12 @@ Use `codegraph-mcp languages` for the table view and `codegraph-mcp languages --
 - Future LSP facts must be `lsp_verified`.
 - Unresolved or best-effort fallback facts must be `static_heuristic`.
 - New language frontends must not claim dataflow, security, or test-impact support until fixture-backed extractors exist.
+- Macro expansion, C/C++ preprocessor branches, dependency injection,
+  monkeypatching, dynamic dispatch, computed callback targets, JavaScript
+  coercion behavior, prototype-pollution reachability, and type-shape mutation
+  must not be labeled exact unless a fixture-backed semantic pass proves them.
+- Generated/dependency/build artifacts should remain excluded by scope policy
+  unless explicitly included for a diagnostic run.
+
+The machine-readable language matrix schema lives at
+`docs/schemas/language_coverage_matrix.schema.json`.

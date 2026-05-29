@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="760" viewBox="0 0 1600 760" role="img" aria-labelledby="title desc">
+  <title id="title">How to use codegraph</title>
+  <desc id="desc">Use normal developer tools in a loop with codegraph agent-use, then use the combined context to reduce unsupported edits and improve validation.</desc>
+  <defs>
+    <style>
+      .bg { fill: #070d16; }
+      .bg-glow { filter: url(#bg-blur); opacity: 0.22; }
+      .bg-blue { fill: #59b5e6; }
+      .bg-green { fill: #63d083; }
+      .bg-yellow { fill: #f6d04c; }
+      .bg-pink { fill: #b879e8; }
+      .text { fill: #f7faff; font-family: Arial, Helvetica, sans-serif; }
+      .muted { fill: #e0e7f2; font-family: Arial, Helvetica, sans-serif; }
+      .soft { fill: #b9c5d7; font-family: Arial, Helvetica, sans-serif; }
+      .flow { fill: none; stroke: #8d9ab0; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+      .arrow { fill: #8d9ab0; }
+      .h1 { font-size: 52px; font-weight: 800; }
+      .h2 { font-size: 35px; font-weight: 700; }
+      .body { font-size: 26px; }
+      .small { font-size: 23px; }
+    </style>
+    <filter id="bg-blur" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="56" />
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="arrow" d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1600" height="760" />
+  <g class="bg-glow" aria-hidden="true">
+    <circle class="bg-blue" cx="130" cy="70" r="430" opacity="0.28" />
+    <circle class="bg-green" cx="1390" cy="95" r="420" opacity="0.24" />
+    <circle class="bg-yellow" cx="990" cy="760" r="480" opacity="0.19" />
+    <circle class="bg-pink" cx="1510" cy="690" r="430" opacity="0.20" />
+    <circle class="bg-blue" cx="600" cy="555" r="470" opacity="0.10" />
+  </g>
+
+  <text class="text h1" x="800" y="88" text-anchor="middle">How to use</text>
+  <text class="muted small" x="800" y="130" text-anchor="middle">Use codegraph and normal tools together as you develop.</text>
+
+  <g id="agent" text-anchor="middle">
+    <text class="text h2" x="245" y="270">Coding agent</text>
+    <text class="soft body" x="245" y="332">same model</text>
+    <text class="soft body" x="245" y="372">same task</text>
+    <text class="soft body" x="245" y="412">same budget</text>
+  </g>
+
+  <g id="normal-tools" text-anchor="middle">
+    <text class="text h2" x="680" y="220">Normal developer tools</text>
+    <text class="soft body" x="680" y="292">rg and file search</text>
+    <text class="soft body" x="680" y="332">edit files</text>
+    <text class="soft body" x="680" y="372">run tests</text>
+    <text class="soft small" x="680" y="438">Fast literal inspection stays in the loop.</text>
+  </g>
+
+  <g id="codegraph-agent-use" text-anchor="middle">
+    <text class="text h2" x="1210" y="220">codegraph agent-use</text>
+    <text class="soft body" x="1210" y="292">status and lifecycle gates</text>
+    <text class="soft body" x="1210" y="332">symbol, text, and file queries</text>
+    <text class="soft body" x="1210" y="372">context packs and watch updates</text>
+    <text class="soft small" x="1210" y="438">Proof labels, source spans, and explicit unknowns.</text>
+  </g>
+
+  <path class="flow" marker-end="url(#arrow)" d="M 345 300 C 395 300 440 300 500 300" />
+  <path class="flow" marker-end="url(#arrow)" d="M 875 278 C 925 278 985 278 1038 278" />
+  <path class="flow" marker-end="url(#arrow)" d="M 1038 406 C 985 406 925 406 875 406" />
+  <path class="flow" marker-end="url(#arrow)" d="M 945 470 C 945 520 865 548 815 585" />
+
+  <g id="goal" text-anchor="middle">
+    <text class="text h2" x="800" y="632">Goal</text>
+    <text class="muted body" x="800" y="688">fewer unsupported edits, better evidence alignment, less wasted context</text>
+    <text class="muted body" x="800" y="728">and clearer validation steps</text>
+  </g>
+</svg>

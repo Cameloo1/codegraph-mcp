@@ -18,14 +18,16 @@ error to stderr on failure.
 Global flags are accepted before the command name:
 
 ```text
---repo <path>  --db <path>  --json  --no-color  --verbose  --quiet  --profile
+--repo <path>  --db <path>  --json  --agent-json  --limit <n>
+--no-color  --verbose  --quiet  --profile
 ```
 
 `--repo` sets the working repository, `--db` overrides
 `CODEGRAPH_DB_PATH`, and global `--profile` enables index profiling for the
-`index` command. For routine agent use, prefer a release-binary agent DB
-outside the source tree instead of reusing temporary development or benchmark
-DBs.
+`index` command. Global `--agent-json` and `--limit` are forwarded only to
+agent-use query/context-pack surfaces where the command supports them. For
+routine agent use, prefer the `agent-use` namespace instead of reusing
+temporary development or lab DBs.
 
 Command-local flags remain after the command. Ambiguous global flags after
 query subcommands return targeted corrections instead of becoming query text.
@@ -39,15 +41,11 @@ Use `--agent-json` for tight coding-agent loops and `--limit <n>` to keep
 results bounded:
 
 ```powershell
-codegraph-mcp --repo <repo> --db <agent-db> query symbols <symbol> `
+codegraph-mcp agent-use query symbols <symbol> --repo <repo> `
   --limit 5 --agent-json
 
-codegraph-mcp --repo <repo> --db <agent-db> context-pack `
+codegraph-mcp agent-use context-pack --repo <repo> `
   --task "Trace the change impact" `
-  --seed <symbol> `
-  --mode production `
-  --limit-paths 5 `
-  --limit-snippets 5 `
   --agent-json
 ```
 
@@ -63,6 +61,56 @@ Supported compact modes:
 `index --json` is concise by default. It excludes full scope examples and audit
 payloads unless one of the explicit audit/scope flags is supplied.
 
+## Production Agent-Use Namespace
+
+Use the first-class namespace for routine coding-agent work:
+
+```powershell
+codegraph-mcp agent-use status --repo <repo> --json
+codegraph-mcp agent-use index --repo <repo> --json
+codegraph-mcp agent-use query symbols <symbol> --repo <repo> --limit 5 --agent-json
+codegraph-mcp agent-use query text "text" --repo <repo> --limit 5 --agent-json
+codegraph-mcp agent-use query files service --repo <repo> --limit 5 --agent-json
+codegraph-mcp agent-use context-pack --repo <repo> --task "Trace the change impact" --agent-json
+codegraph-mcp agent-use mcp-config --repo <repo> --json
+codegraph-mcp agent-use watch --repo <repo> --once --changed src\file.ts --json
+codegraph-mcp agent-use watch --repo <repo> --json
+```
+
+The namespace resolves the `production-agent-use` profile to an external DB
+under the platform data directory, such as LocalAppData on Windows. Repos with
+the same basename receive distinct profile paths. No `agent-use` command
+silently falls back to repo-local `.codegraph`.
+
+`agent-use status` is read-only and does not create the DB, profile parent, or
+SQLite sidecars. `agent-use index` is the first mutating command and writes the
+external profile DB plus bounded candidate/vector artifacts. `agent-use query`
+and `agent-use context-pack` read the same external DB. `agent-use mcp-config`
+emits config JSON only by default and must agree with `agent-use status` on the
+DB path. `agent-use watch --once --changed <path>` is the deterministic
+changed-file update primitive for that same profile DB. It requires an existing
+safe graph DB, rejects `--db`, does not auto-index, and reports staged sidecar
+freshness after the update. Persistent `agent-use watch --repo <repo> --json`
+debounces and coalesces filesystem events, serializes writer work, retries
+transient locks within bounds, and calls the same changed-file update contract
+rather than owning a second delta engine. It also refuses unsafe profile DB
+states instead of creating a new graph silently.
+
+`agent-use validate-edit` is deferred to MVP3. Do not treat the current RTDS
+surface as a compiler/test replacement or as a complete dangling-edge
+validation engine.
+
+Staged candidate spool and runtime vector sidecar output is candidate context,
+not graph proof. Optional audit artifacts are diagnostic-only. Missing, stale,
+foreign, schema-mismatched, locked, permission-denied, and publishing states are
+non-claimable unless explicitly labeled diagnostic-only. Plain `status --json`
+remains the local `.codegraph` status surface and may include guidance to
+agent-use without redirecting.
+
+Telemetry fields distinguish measured, unknown, and aggregated values. Memory
+is `memory: "unknown"` with `memory_measured: false` unless measured. Timing
+substage fields that cannot be separated are labeled unknown or aggregated.
+
 ## Commands
 
 `init [repo] [--dry-run] [--with-codex-config] [--with-agents] [--with-skills] [--with-hooks] [--with-templates] [--index]`
@@ -70,15 +118,24 @@ payloads unless one of the explicit audit/scope flags is supplied.
 Detects repo tooling, creates `.codegraph/`, and can install Codex config,
 `AGENTS.md`, skill templates, hook templates, and an initial index.
 
-`index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--profile] [--json|--agent-json|--concise|--audit-json] [--verbose]`
+`index <repo> [--db <path>] [--fresh|--rebuild] [--incremental] [--fail-on-db-problem] [--allow-stale-reuse] [--build-vector-index <path>] [--profile] [--json|--agent-json|--concise|--audit-json] [--verbose]`
 
 Indexes supported language frontends into `.codegraph/codegraph.sqlite`.
 Unchanged files are skipped by content hash. Changed files are parsed and
 extracted through a deterministic parallel worker pool, then written in a
-single batched SQLite transaction. `--profile --json` includes discovery,
-parse, extraction, semantic resolver, DB write, FTS/search index, signature,
-total wall time, throughput, worker count, unchanged skip count, and memory
-when measurable.
+single batched SQLite transaction. Scope starts with the default repo policy;
+`--include <pattern>` is an explicit include override for paths that policy
+would otherwise exclude, not a restrictive only-these-globs filter.
+`--profile --json` includes discovery, parse, extraction, semantic resolver,
+DB write, FTS/search index, signature, total wall time, throughput, worker
+count, unchanged skip count, and explicit measurement status for memory and
+timing substages. Unmeasured memory is reported as `memory: "unknown"` with
+`memory_measured: false`.
+
+`--build-vector-index <path>` writes an optional deterministic local vector
+chunk index for later candidate recall. The vector index is lifecycle-bound to
+the DB passport, provider metadata, scope, and extraction version. It is a
+candidate source only; it does not make vector results graph proof.
 
 DB lifecycle flags:
 
@@ -89,6 +146,10 @@ DB lifecycle flags:
 - `--fail-on-db-problem` fails instead of safe-auto rebuilding.
 - `--allow-stale-reuse` is diagnostic only; output must be labeled
   contaminated and not claimable.
+- Query, context, impact, and unresolved-call read paths also expose explicit
+  diagnostic read flags where supported: `--allow-stale-read` for stale or
+  passport diagnostic output, and `--allow-foreign-db` for foreign-repo
+  diagnostic output. These are not normal agent-use flags.
 
 Scope flags include `--include-ignored`, `--include <pattern>`,
 `--exclude <pattern>`, `--no-default-excludes`,
@@ -158,15 +219,33 @@ Runs exact graph path tracing with source spans and PathEvidence.
 Returns blast-radius sections for calls, mutations/dataflow, DB/schema,
 API/auth/security, events, and tests.
 
-`context-pack --task <task> [--budget <tokens>] [--mode <production|test-impact|debug|impact>] [--seed <symbol>] [--stage0-candidate <id>] [--agent-json|--concise] [--limit-paths <n>] [--limit-snippets <n>] [--max-output-bytes <n>]`
+`context-pack --task <task> [--budget <tokens>] [--mode <production|test-impact|debug|impact>] [--seed <symbol>] [--stage0-candidate <id>] [--enable-vector-candidates] [--vector-index <path>] [--enable-nuance-rescue-candidates] [--agent-json|--concise|--explain|--audit-json] [--limit-paths <n>] [--limit-snippets <n>] [--max-output-bytes <n>]`
 
 Builds a compact proof-oriented context packet from verified graph paths and
 source snippets.
+
+Optional candidate lanes:
+
+- `--enable-vector-candidates --vector-index <path>` loads a matching vector
+  chunk index built by `index --build-vector-index`.
+- `--enable-nuance-rescue-candidates` enables deterministic rare-token,
+  identifier, path/title, config, test-name, and no-extension-script candidate
+  rescue.
+
+These lanes add candidates to the union/ranking step. They remain
+`graph_proof=false` until graph/source verification finds a proof path.
+`--explain` exposes bounded funnel diagnostics; default agent JSON stays
+compact.
 
 Production mode excludes test, mock, mixed, and unknown evidence by default.
 `test-impact` mode intentionally includes test/mock evidence and labels it.
 Inline Rust `#[cfg(test)] mod tests` and `#[test]` functions are classified as
 test evidence even when they live in `src/lib.rs`.
+
+When no graph proof path is found, context-pack may still return bounded
+source-text fallback evidence labeled `no_proof_path_found`. Planning packets
+may include `follow_up_queries`; these are bounded query hints, not shell-ready
+commands and not internally executed `rg` probes.
 
 Read paths run the DB passport/preflight guard. If the configured DB is from a
 different repo, stale scope, incompatible storage mode, failed run, corrupt
@@ -194,6 +273,12 @@ Watches or updates changed files only. Ignore rules cover `.git`,
 `.codegraph`, dependency folders, build outputs, generated bundles, maps, lock
 files, and minified JS. Persistent watch mode honors the configured DB path and
 runs lifecycle preflight before opening it.
+
+For production agent-use, prefer `agent-use watch --repo <repo> --once
+--changed <path> --json` for deterministic updates, or `agent-use watch --repo
+<repo> --json` for persistent scheduling over the same update primitive. That
+wrapper owns the external production profile DB resolver and will not mutate
+repo-local `.codegraph`.
 
 `serve-mcp`
 
@@ -224,9 +309,11 @@ availability, optional compiler/LSP resolver availability, exactness per
 extractor, and known limitations. Use `--json` for machine-readable capability
 metadata.
 
+## Developer / Diagnostic Commands
+
 `bench [--baseline <mode>]... [--format <json|markdown>] [--output <path>]`
 
-Runs the local benchmark suite. Baselines are `vanilla_no_retrieval`,
+Runs the local developer benchmark suite. Baselines are `vanilla_no_retrieval`,
 `grep_bm25`, `vector_only`, `graph_only`, `graph_binary_pq_funnel`,
 `graph_bayesian_ranker`, and `full_context_packet`.
 
@@ -250,8 +337,8 @@ Java. It includes pinned commits, task manifests, and an offline replay plan for
 
 `bench parity-report [--output-dir <dir>]`
 
-Writes parity summaries. Unknown/skipped fields remain explicit, and the report
-makes no SOTA claim without measured evidence.
+Writes parity summaries. Unknown/skipped fields remain explicit, and diagnostic
+outputs do not support superiority claims.
 
 `bench cgc-comparison [--output-dir <dir>] [--timeout-ms <ms>] [--top-k <k>] [--competitor-bin <path>]`
 
@@ -288,9 +375,9 @@ paths, feature flags, build profile, and provenance/checksum expectations.
 ## SQLite Tuning
 
 The SQLite store enables `foreign_keys`, WAL mode for file-backed DBs,
-`synchronous = NORMAL`, and a 5000ms busy timeout. These are documented because
-they improve local indexing throughput without silently moving the database to
-an unsafe durability mode.
+`synchronous = FULL`, and a 5000ms busy timeout. These are documented because
+they preserve local durability expectations without silently moving the database
+to an unsafe mode.
 
 ## Installability
 

@@ -4119,6 +4119,13 @@ mod tests {
             .join("benchmarks")
             .join("graph_truth")
             .join("fixtures");
+        if !options.cases.exists() {
+            eprintln!(
+                "skipping context-packet lab fixture gate; cases path is absent: {}",
+                options.cases.display()
+            );
+            return;
+        }
         options.fixture_root = workspace_root.to_path_buf();
         options.out_json = unique_output_path("context-packet-gate-test", "json");
         options.out_md = unique_output_path("context-packet-gate-test", "md");

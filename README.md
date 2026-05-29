@@ -6,64 +6,63 @@
 [![MIT License](https://img.shields.io/github/license/Cameloo1/codegraph-mcp?style=flat-square&label=license)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-quickstart-informational?style=flat-square)](docs/quickstart.md)
 
-**Local proof-grounded context for AI coding agents on large repositories. Vectors suggest, the typed program graph proves, source spans verify.**
+Local, proof-grounded repo context for AI coding agents.
+
+An agent-native repo context layer, developed with AI assistance and built for
+developer-directed coding agents.
 
 codegraph-mcp indexes a repository into a deterministic typed program graph,
-verifies facts against source spans and provenance, and returns compact evidence
-packets that a coding agent can actually trust. Graph facts carry source spans,
-file hashes, extractors, provenance where available, and exactness labels from
-compiler-verified down to static-heuristic.
+checks graph reads against lifecycle state and source spans, and returns compact
+context packets that a coding agent can inspect instead of guessing. Retrieval
+lanes can suggest likely files or symbols, but typed graph/source verification
+is the only path to graph proof.
 
-- **Exact graph is the source of truth.** Embeddings route; the graph proves;
-  tests validate.
-- **5-stage compressed funnel built for large repos.** Exact seeds -> 1-bit
-  sieve -> compressed rerank -> typed-path verification -> minimal context
-  packet.
-- **Read-mostly, local-first.** SQLite under `.codegraph/`, no managed service,
-  no data leaves the machine.
+## Start Here
 
-```text
-repository
-  -> typed program graph (entities + typed relations + source spans + exactness)
-  -> compressed retrieval funnel (exact seeds -> binary sieve -> compressed rerank)
-  -> exact graph/path verification
-  -> compact evidence packet
-  -> grounded model edits
-```
+| Need | Go to |
+|---|---|
+| Build and run the first commands | [Quickstart](docs/quickstart.md) |
+| Use CodeGraph with a coding agent | [Agent Use](docs/agent-use.md) |
+| Understand the architecture and proof model | [Architecture Notes](docs/architecture.md) |
+| Understand benchmark and evidence boundaries | [Agent Benchmarking](docs/agent-benchmarking.md) |
+| Contribute safely | [Contributing](CONTRIBUTING.md) |
 
-## Agent-Impact Benchmarks
+## Current Status
 
-| Real-Repo Index Smoke | Evidence Reliability | Warm Agent Loop |
+| Surface | Current behavior |
+|---|---|
+| Production agent profile | `agent-use` resolves a release-binary profile with the DB outside the source tree. |
+| Status and recovery | `agent-use status` is read-only and returns lifecycle blockers plus recovery commands. |
+| Indexing | `agent-use index` is the first mutating production-profile command. |
+| Query and context | `agent-use query` and `agent-use context-pack` read the same external profile DB and emit bounded agent JSON. |
+| Change tracking | `agent-use watch --once --changed` updates an existing safe profile DB; persistent watch schedules the same update primitive. |
+| Evidence boundary | Candidate, vector, text, and source-navigation evidence remain non-proof unless graph/source verification proves the relation. |
+| MCP | `agent-use mcp-config` emits a read-mostly MCP config tied to the external profile DB. |
+
+## Product Shape
+
+![CodeGraph Agent Use Loop](docs/assets/readme/agent_use_loop.svg)
+
+| Roadmap To MVP4 | Retrieval Quality | SWE-bench Readiness |
 |---|---|---|
-| ![Real-Repo Index Smoke](docs/assets/readme/large_repo_improvement.png) | ![Evidence Reliability](docs/assets/readme/evidence_reliability.png) | ![Warm Agent Loop](docs/assets/readme/warm_agent_loop_latency.png) |
+| ![Roadmap To MVP4 Agent Utility Readiness](docs/assets/readme/mvp4_readiness_over_time.png) | ![Retrieval Quality By Benchmark Track](docs/assets/readme/retrieval_quality_by_track.png) | ![SWE-bench Readiness Ladder](docs/assets/readme/swebench_readiness_ladder.png) |
 
-Status: semantic-proof and context-packet gates are green; compact-proof storage
-is under 250 MiB; DB passport preflight blocks stale or mismatched reuse. The
-published Intended Tool Quality Gate is not a final green release verdict, and
-the CGC comparison remains diagnostic/incomplete with no superiority claim.
-Local 1-bit Nuance-Rescue gating passes 8 adversarial cases covering rare
-identifiers, short functions, near-duplicate names, Buildroot config tokens,
-auth/negation, route literals, test names, and no-extension support scripts.
+These visuals summarize local diagnostic readiness and benchmark-lab evidence
+only. They are not official SWE-bench, RepoBench, CrossCodeEval, CGC, or `rg`
+comparison results.
 
-See: [Intended Tool Quality Gate](reports/final/intended_tool_quality_gate.md)
-and [Manual Relation Precision](reports/final/manual_relation_precision.md).
+CodeGraph is meant to improve agent reliability **on top of normal developer
+tools**. `rg`, file search, editing, and tests stay available. CodeGraph adds an
+explicit repo map, lifecycle-checked graph reads, compact context packets,
+source spans, proof labels, candidate-only labels, and recovery commands.
 
-## Why It Exists
-
-Coding agents are strongest when they have current, compact, verifiable project
-memory. They are weakest when they have to infer APIs, schemas, call paths, data
-flow, tests, or security behavior from scattered text search results.
-
-Embeddings, BM25, binary signatures, and ranking help find candidates quickly.
-They do not prove correctness. Final context should come from graph facts,
-exactness labels, source spans, provenance, and stored path evidence, not from
-"top-k similar chunks."
+The product question is not whether CodeGraph replaces `rg`. It is whether the
+same coding agent, with the same task and budget, makes fewer wrong edits and
+better-supported plans when CodeGraph is available alongside normal tools.
 
 ## Quickstart
 
-<p align="center">
-  <img src="docs/assets/readme/codegraph_terminal.svg" alt="codegraph-mcp terminal demo" width="100%" />
-</p>
+<img src="docs/assets/readme/codegraph_terminal.svg" alt="codegraph terminal animation" width="100%" />
 
 Build:
 
@@ -91,358 +90,53 @@ If `codegraph-mcp` is on your `PATH`, drop the
 `cargo run --bin codegraph-mcp --` prefix. Full CLI surface:
 [docs/cli-reference.md](docs/cli-reference.md).
 
-Agent-use loop:
+For a coding-agent loop, use the production profile:
 
 ```bash
 cargo build --release --bin codegraph-mcp
-codegraph-mcp --repo <repo> --db <agent-db> index <repo> --json
-codegraph-mcp --repo <repo> --db <agent-db> query symbols <symbol> --limit 5 --agent-json
-codegraph-mcp --repo <repo> --db <agent-db> context-pack \
+codegraph-mcp agent-use status --repo <repo> --json
+codegraph-mcp agent-use index --repo <repo> --json
+codegraph-mcp agent-use watch --repo <repo> --once --changed src/file.ts --json
+codegraph-mcp agent-use query symbols <symbol> --repo <repo> --limit 5 --agent-json
+codegraph-mcp agent-use context-pack --repo <repo> \
     --task "Trace the change impact" \
-    --seed <symbol> \
-    --mode production \
     --agent-json
+codegraph-mcp agent-use mcp-config --repo <repo> --json
 ```
 
-Use `context-pack --mode test-impact --agent-json` when the agent explicitly
-needs test/mock evidence. Production context excludes test/mock/mixed/unknown
-evidence by default.
+The `agent-use` namespace is the production agent profile: status checks are
+read-only, indexing is explicit, and the profile DB is kept outside the source
+tree by default. Use `context-pack --mode test-impact --agent-json` when the
+agent explicitly needs test/mock evidence. Production context excludes
+test/mock/mixed/unknown evidence by default.
 
 For long-lived agent use, keep the agent-facing index separate from temporary
-benchmark and development databases. See
-[docs/agent-use.md](docs/agent-use.md) and
-[docs/operational-profiles.md](docs/operational-profiles.md).
+lab and development databases. See [Agent Use](docs/agent-use.md) and
+[Operational Profiles](docs/operational-profiles.md).
 
-## How It Works
+## Why It Exists
 
-CodeGraph is a 5-stage runtime funnel sitting on top of a typed program graph.
-Each stage does one specific job; downstream stages cannot fabricate facts not
-present upstream.
+Coding agents are strongest when they have current, compact, verifiable project
+memory. They are weakest when they have to infer APIs, schemas, call paths, data
+flow, tests, or security behavior from scattered text search results.
 
-The most important boundary is the candidate merge. It happens after independent
-candidate lanes have produced source-spanned candidates, and before graph/source
-verification turns any of them into claimable context. The merge is not part of
-Tree-sitter parsing and it is not a vector answer. It is the `context-pack`
-retrieval assembly step: candidates are unioned by stable path/span/entity keys,
-their `candidate_sources`, matched seeds, source labels, ranking features, and
-verification status are preserved, exact seeds are protected across caps, and
-mixed evidence stays role-labeled.
+Embeddings, BM25, binary signatures, and ranking help find candidates quickly.
+They do not prove correctness. Final context should come from graph facts,
+exactness labels, source spans, provenance, and stored path evidence, not from
+"top-k similar chunks."
 
-Candidate lanes are explicit: exact symbol/file/path seeds, Stage 0
-lexical/text-evidence matches, graph-neighborhood and PathEvidence candidates,
-vector semantic candidates when explicitly enabled, binary/1-bit candidates with
-deterministic overfetch/rerank, and nuance-rescue candidates for rare
-identifiers, config keys, route literals, test names, negation terms, and
-no-extension support scripts. None is graph proof by itself.
+## Evidence Boundary
 
-```text
-Index-time state
----------------
+When reading any CodeGraph output, keep the proof boundary intact:
 
-repository
-  |
-  v
-scope policy + DB lifecycle/passport preflight
-  |
-  +--> parser-backed files
-  |      |
-  |      v
-  |   Tree-sitter frontends
-  |      |
-  |      v
-  |   typed graph facts
-  |   entities + relations + source spans + exactness/provenance
-  |
-  +--> scoped non-parser text files
-         |
-         v
-      Stage 0 text evidence
-      path/title/tokens/snippets/FTS rows
-      evidence_role=text_evidence, graph_proof=false
-
-Both lanes publish into SQLite with passported repo/scope/storage identity.
-
-
-Query/context-pack flow
------------------------
-
-agent task + optional seed
-  |
-  v
-DB lifecycle read gate
-  |
-  v
-prompt intent + seed extraction
-  |
-  +--> exact symbol/file/path seeds
-  +--> Stage 0 lexical/FTS/text-evidence candidates
-  +--> graph-neighborhood/path-evidence candidates
-  +--> Stage 1 binary/1-bit candidates when available
-  +--> nuance-rescue candidates when enabled
-  +--> Stage 2 compressed-rerank candidates when available
-  |
-  v
-UNION / DEDUP / RANK
-stable key = path + span + entity when available
-preserve candidate_sources, matched_seeds, evidence_role, proof_status
-  |
-  v
-exact graph/source verification
-  |
-  +--> graph path found
-  |      -> PathEvidence with typed relations and source spans
-  |
-  +--> no graph path found
-         -> bounded source-text fallback with no_proof_path_found
-            text evidence is claimable as source text, not graph proof
-  |
-  v
-compact context packet
-proof paths + snippets + risks + recommended tests + omitted counts
-  |
-  v
-agent-safe output
---agent-json / --concise / explicit verbose-audit modes
-```
-
-### 1. Parse -> Typed Program Graph
-
-Tree-sitter parses 11 language families through 13 frontends: JavaScript, JSX,
-TypeScript, TSX, Python, Go, Rust, Java, C#, C, C++, Ruby, and PHP. Each AST
-construct becomes a typed entity such as `Function`, `Method`, `Class`,
-`Interface`, `Field`, `CallSite`, `ReturnSite`, `Route`, `Middleware`,
-`AuthPolicy`, `Migration`, `TestCase`, `Mock`, or `ConfigKey`.
-
-The graph model currently defines 55 entity kinds, 67 relation kinds, and 8
-exactness labels in [crates/codegraph-core/src/kinds.rs](crates/codegraph-core/src/kinds.rs).
-Relation coverage varies by language and extractor, and unsupported proof-mode
-relations do not receive precision claims.
-
-Relation groups include:
-
-- **Structural:** `CONTAINS`, `DEFINED_IN`, `IMPORTS`, `EXPORTS`,
-  `BELONGS_TO`, `CONFIGURES`
-- **Type/object:** `TYPE_OF`, `RETURNS`, `IMPLEMENTS`, `EXTENDS`,
-  `OVERRIDES`, `INSTANTIATES`, `INJECTS`
-- **Execution:** `CALLS`, `CALLED_BY`, `CALLEE`, `ARGUMENT_0`, `ARGUMENT_1`,
-  `ARGUMENT_N`, `RETURNS_TO`, `SPAWNS`, `AWAITS`, `LISTENS_TO`
-- **Data flow:** `READS`, `WRITES`, `MUTATES`, `FLOWS_TO`, `REACHING_DEF`,
-  `CONTROL_DEPENDS_ON`, `DATA_DEPENDS_ON`
-- **Security:** `AUTHORIZES`, `CHECKS_ROLE`, `CHECKS_PERMISSION`,
-  `SANITIZES`, `VALIDATES`, `EXPOSES`, `TRUST_BOUNDARY`, `SOURCE_OF_TAINT`,
-  `SINKS_TO`
-- **Async/event:** `PUBLISHES`, `EMITS`, `CONSUMES`, `SUBSCRIBES_TO`,
-  `HANDLES`
-- **Persistence:** `MIGRATES`, `READS_TABLE`, `WRITES_TABLE`,
-  `ALTERS_COLUMN`, `DEPENDS_ON_SCHEMA`
-- **Testing:** `TESTS`, `ASSERTS`, `MOCKS`, `STUBS`, `COVERS`,
-  `FIXTURES_FOR`
-- **Derived, with provenance:** `MAY_MUTATE`, `MAY_READ`, `API_REACHES`,
-  `ASYNC_REACHES`, `SCHEMA_IMPACT`
-
-Exactness labels include `exact`, `compiler_verified`, `lsp_verified`,
-`parser_verified`, `static_heuristic`, `dynamic_trace`, `inferred`, and
-`derived_from_verified_edges`.
-
-### 2. Stage 0 - Exact Seeds
-
-Before vector retrieval runs, exact signals are extracted and pinned: symbol
-names, file paths, stack-trace frames, failing test names, current open file,
-and BM25/FTS5 matches over source. For code tasks, false negatives at the
-retrieval layer are expensive, so exact seeds are unioned with candidate
-retrieval rather than intersected away.
-
-Stage 0 also includes scoped text evidence for important files that are not
-parser-backed graph proof, such as build/config/docs/support files. Those rows
-can make a file queryable and source-spanned, but they remain labeled as text
-evidence rather than typed graph relations.
-
-### 3. Stage 1 - 1-Bit Binary Sieve
-
-Each indexed entity can carry a deterministic bit-packed signature. Stage 1 is a
-candidate lane that reduces large candidate sets via Hamming distance:
-
-```text
-sim(x, y) = d - 2 * popcount(x XOR y)
-```
-
-This is a cheap narrowing pass: XOR, popcount, no floating point, no full-vector
-decompression. It suggests candidates only; graph/source verification still
-decides what is claimable.
-
-### 4. Stage 2 - Compressed Rerank
-
-Surviving candidates are rescored against the query in compressed forms:
-
-- **int8 scalar quantization:** compact vector storage with a scale factor.
-- **Product Quantization (PQ):** subvector codebooks with compact u8 codes.
-- **Matryoshka prefixes:** one embedding usable at multiple prefix dimensions.
-
-The reranker is deterministic: same query and same index commit produce the same
-ranking. Exact seeds, text scores, graph-neighborhood signals,
-compressed-vector scores, and uncertainty can be combined in the union/dedup/rank
-step, but the result is still only a candidate set.
-
-### 5. Stage 3 - Exact Graph Verification
-
-The top candidates are not treated as answers. Stage 3 walks the typed program
-graph between seed entities and candidates:
-
-- bounded BFS/DFS with relation filters
-- weighted path search over relation costs
-- k-shortest paths for multiple proof routes
-- relation-pattern queries for dataflow and impact questions
-- derived closure edges that retain provenance to base edges
-
-Every retained step carries source-span and exactness evidence. Heuristic edges
-can participate, but the packet labels the evidence accordingly. If no typed
-path exists, context-pack can still return bounded source-text fallback evidence
-with `no_proof_path_found`; that fallback is useful context, not relation proof.
-
-### 6. Stage 4 - Compact Context Packet
-
-Verified paths are assembled into a `PathEvidence` packet: the smallest useful
-set of source spans, relation paths, recommended tests, and risk notes that
-supports the agent's task. Redundant spans are deduplicated, packet size is
-budgeted, and heuristic-only evidence is labeled separately.
-
-A packet shape looks like:
-
-```json
-{
-  "task": "Change User.email normalization without breaking auth",
-  "verified_paths": [
-    {
-      "summary": "User.email flows into token subject during login",
-      "edges": [
-        ["User.email", "READS", "normalizeEmail"],
-        ["normalizeEmail", "CALLED_BY", "AuthService.login"],
-        ["AuthService.login", "WRITES", "TokenPayload.sub"],
-        ["TokenPayload.sub", "ASSERTED_BY", "auth.spec.ts"]
-      ],
-      "source_spans": [
-        "src/user.ts:37-45",
-        "src/auth.ts:82-101",
-        "tests/auth.spec.ts:44-61"
-      ],
-      "exactness": "verified_static_graph"
-    }
-  ],
-  "risks": ["Changing normalization can break token.sub assertion."],
-  "recommended_tests": ["npm test -- auth.spec.ts"]
-}
-```
-
-## Why Not Just Embeddings
-
-A pure vector pipeline (`text -> embedding -> cosine -> top-k`) works for
-single-hop similarity retrieval. It does not prove long chains, cross-cutting
-impact, auth behavior, data flow, or migration effects, because the answer is a
-typed path, not a similar chunk. Vectors produce plausible candidates; the graph
-stage refuses candidates that do not resolve to real evidence.
-
-The design is an information-bottleneck tradeoff: keep context small while
-preserving the facts most likely to affect task success.
-
-## What's Inside
-
-| Surface | Count / status | Reference |
-|---|---:|---|
-| Entity kinds | 55 | [crates/codegraph-core/src/kinds.rs](crates/codegraph-core/src/kinds.rs) |
-| Relation kinds | 67 | [crates/codegraph-core/src/kinds.rs](crates/codegraph-core/src/kinds.rs) |
-| Exactness labels | 8 | [crates/codegraph-core/src/kinds.rs](crates/codegraph-core/src/kinds.rs) |
-| Tree-sitter language families | 11 | [crates/codegraph-parser/Cargo.toml](crates/codegraph-parser/Cargo.toml) |
-| Frontends | 13 including JSX/TSX | [docs/language-frontends.md](docs/language-frontends.md) |
-| Compression formats | binary 1-bit, int8 SQ, PQ, Matryoshka prefixes | [crates/codegraph-vector/src/lib.rs](crates/codegraph-vector/src/lib.rs) |
-| Storage | SQLite under `.codegraph/` plus FTS5 | [crates/codegraph-store/src/sqlite.rs](crates/codegraph-store/src/sqlite.rs) |
-| Interfaces | CLI, MCP server, local Proof-Path UI | [docs/mcp-reference.md](docs/mcp-reference.md) |
-
-## Current Evidence
-
-The stable public reports preserve the evidence below. They are status reports,
-not a superiority claim.
-
-| Gate | Result | Status |
-|---|---:|---|
-| Graph Truth fixtures | 11 / 11 | pass |
-| Context Packet fixtures | 11 / 11 | pass |
-| DB integrity | ok | pass |
-| Proof source-span coverage | 100% | pass |
-| Forbidden edge/path hits | 0 | pass |
-| Derived facts without provenance | 0 | pass |
-| Test/mock production leakage | 0 | pass |
-| Repeat unchanged index | 1.674s | pass |
-| Single-file update | 336ms | pass |
-| context_pack p95 | 852ms | pass |
-| Unresolved-calls page p95 | 243ms | pass |
-| Proof DB size | 171.184 MiB vs 250 MiB target | pass |
-| Intended Tool Quality Gate | `FAIL` in stable report | open |
-| CodeGraphContext comparison | timeout/incomplete | diagnostic |
-
-The README does not claim final intended-performance readiness. Use the report
-links below for exact numbers and the current gate verdict.
-
-## CodeGraph vs CodeGraphContext
-
-A fair comparison requires comparable indexing and query artifacts from both
-systems.
-
-| Comparison item | Result |
-|---|---|
-| CGC available | yes, version 0.4.7 in the preserved diagnostic |
-| CGC completed current comparable run | no |
-| CGC timeout | yes |
-| CodeGraph vs CGC speed | unknown |
-| CodeGraph vs CGC storage | unknown |
-| CodeGraph vs CGC quality | unknown |
-| Verdict | incomplete |
-
-CGC timed out on the comparable indexing run, so speed, storage, and quality
-remain unknown. Timeouts, skipped runs, partial DBs, and fake-agent dry runs are
-not superiority evidence.
-
-## Architecture
-
-Three practical layers, one funnel:
-
-```text
-                         +----------------------+
-                         |       Codex/agent    |
-                         |  CLI / IDE / app UI  |
-                         +----------+-----------+
-                                    |
-                                    | MCP
-                                    v
-                         +----------------------+
-                         |   codegraph-mcp      |
-                         |  context_pack API    |
-                         +----------+-----------+
-        +---------------------------+---------------------------+
-        v                           v                           v
-+-----------------+       +---------------------+      +------------------+
-| Exact graph     |       | Compressed retrieval |      | Ranker           |
-| AST/CFG/DFG/    |       | binary/int8/PQ/MRL   |      | + uncertainty    |
-| types/auth/test |       |                      |      |                  |
-+--------+--------+       +----------+----------+      +--------+---------+
-         +---------------------------+---------------------------+
-                                     v
-                         +----------------------+
-                         |  Exact verification  |
-                         |  paths + spans       |
-                         +----------+-----------+
-                                    v
-                         +----------------------+
-                         |  Compact context     |
-                         |  proof packet        |
-                         +----------------------+
-```
-
-- **Extract and store:** parse source files, assign stable identities, record
-  source spans, and persist exact/heuristic facts in SQLite.
-- **Verify and rank:** use retrieval to suggest candidates, then verify graph
-  paths, exactness, provenance, and production/test/mock context.
-- **Package evidence:** return compact context packets with proof paths,
-  snippets, expected tests, and labels a coding agent can use.
+- Typed graph facts with source spans and a lifecycle-valid DB can support graph
+  proof.
+- Source-navigation and text evidence can guide inspection, but they do not
+  prove typed graph relations.
+- Vector, binary, nuance, routing-packet, and candidate-spool lanes route
+  attention only until graph/source verification succeeds.
+- Local diagnostic benchmark output is useful for development, but it is not a
+  public superiority claim.
 
 ## Language Support
 
@@ -450,19 +144,22 @@ Tree-sitter extraction covers JavaScript, JSX, TypeScript, TSX, Python, Go,
 Rust, Java, C#, C, C++, Ruby, and PHP. Support varies by language and extractor:
 JS/TS has the richest relation coverage, Python/Go/Rust have conservative
 caller/callee support, and several languages are syntax/entity-first. See
-[docs/language-frontends.md](docs/language-frontends.md) for the tiered support
-matrix, exactness labels, and known limitations.
+[Language Frontends](docs/language-frontends.md) for the tiered support matrix,
+exactness labels, and known limitations.
 
 ## Interfaces
 
 - `codegraph-mcp index` - build the local graph.
-- `codegraph-mcp query ...` - search symbols, text, relations, paths, callers,
-  callees, impact, and unresolved calls.
+- `codegraph-mcp query ...` - search symbols, text, files, references,
+  definitions, calls, chains, and relation paths.
+- `codegraph-mcp impact ...` - inspect impact for a file or symbol.
 - `codegraph-mcp context-pack ...` - emit agent-facing proof context.
 - `codegraph-mcp serve-mcp` - expose local read-mostly MCP tools.
 - `codegraph-mcp serve-ui` - open the local Proof-Path UI.
-- `codegraph-mcp bench comprehensive` - write the correctness/context/storage/
-  latency/update/comparison gate.
+- `codegraph-mcp agent-use ...` - use the production agent profile with an
+  external DB and bounded agent JSON.
+- `codegraph-mcp languages` - inspect supported language frontends and proof
+  limitations.
 
 Indexing uses DB passport preflight. Valid matching DBs can reuse
 incrementally; stale, mismatched, corrupt, or unknown default DBs are rebuilt
@@ -486,6 +183,7 @@ cargo build --workspace
 cargo test --workspace
 python scripts/check_readme_artifacts.py
 python scripts/check_markdown_links.py
+python scripts/check_docs_hygiene.py
 ```
 
 Smoke checks:
@@ -504,58 +202,32 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke_index.ps1
 The deterministic fixture at [fixtures/smoke/basic_repo](fixtures/smoke/basic_repo)
 is the mandatory CI-sized smoke. Full-repo indexing is an explicit opt-in check.
 
-## Reports
+## Contributor Guide
 
-Stable report summaries:
+Start with [CONTRIBUTING.md](CONTRIBUTING.md). The short version:
 
-- [comprehensive_benchmark_latest.md](reports/final/comprehensive_benchmark_latest.md) / [json](reports/final/comprehensive_benchmark_latest.json) - latest preserved comprehensive gate.
-- [intended_tool_quality_gate.md](reports/final/intended_tool_quality_gate.md) / [json](reports/final/intended_tool_quality_gate.json) - Intended Tool Quality Gate.
-- [lifecycle_quality_gate.md](reports/final/lifecycle_quality_gate.md) / [json](reports/final/lifecycle_quality_gate.json) - DB lifecycle hardening gate.
-- [manual_relation_precision.md](reports/final/manual_relation_precision.md) / [json](reports/final/manual_relation_precision.json) - manual sampled precision boundary.
-- [codegraph_vs_cgc_latest.md](reports/comparison/codegraph_vs_cgc_latest.md) / [json](reports/comparison/codegraph_vs_cgc_latest.json) - CGC comparison status.
-
-Reference docs:
-
-- [docs/architecture.md](docs/architecture.md)
-- [docs/agent-use.md](docs/agent-use.md)
-- [docs/agent-json.md](docs/agent-json.md)
-- [docs/benchmark-guide.md](docs/benchmark-guide.md)
-- [docs/mcp-reference.md](docs/mcp-reference.md)
-- [docs/operational-profiles.md](docs/operational-profiles.md)
-- [docs/guardrails.md](docs/guardrails.md)
-- [docs/cli-reference.md](docs/cli-reference.md)
-- [docs/quality-gates.md](docs/quality-gates.md)
-- [docs/install.md](docs/install.md)
-- [docs/troubleshooting.md](docs/troubleshooting.md)
-
-The README intentionally links only durable report summaries. Temporary run
-outputs and local evidence directories are excluded.
-
-## Manual Precision Status
-
-Manual precision is sampled precision only:
-
-- 320 labeled samples total.
-- Recall is unknown; there is no false-negative gold denominator.
-- No precision claim for absent proof-mode relations, including
-  `AUTHORIZES`, `CHECKS_ROLE`, `SANITIZES`, `EXPOSES`, `TESTS`, `ASSERTS`,
-  `MOCKS`, and `STUBS`.
+- keep release/product work separate from benchmark/OpenEvolve lab work;
+- do not stage generated DBs, raw logs, benchmark payloads, patches,
+  predictions, WAL/SHM files, or local run directories;
+- preserve the evidence boundary in code, docs, reports, and examples;
+- update CLI/MCP docs when command contracts change.
 
 ## Known Limitations
 
-- Intended Tool Quality Gate is not fully green in the stable report.
-- CGC comparison is diagnostic/incomplete; no CodeGraph superiority claim.
-- Manual precision is sampled precision only; recall is unknown.
+- Final intended-performance pass is not claimed.
 - Relation coverage varies by language and extractor.
 - macOS is coming soon; it is not tested or supported by this baseline.
 - Full-repo indexing is an explicit opt-in check, not a default CI smoke.
+- `agent-use validate-edit` is deferred to the validation roadmap; current
+  context packets and RTDS freshness are not compiler/test replacements.
 - Knowledge-graph embeddings such as TransE, RotatE, ComplEx, TuckER,
   hyperbolic relation embeddings, and tensor decomposition are offline research
   directions, not runtime requirements.
 
 ## Safety and Scope
 
-- **Local first.** Graph state is written under `.codegraph/`.
+- **Local first.** Default CLI graph state is local; production `agent-use`
+  graph state lives outside the source tree by default.
 - **Read-mostly MCP.** Source-editing and destructive tools are not exposed.
 - **Exact graph first.** Retrieval shortcuts cannot prove facts by themselves.
 - **Single-agent workflow.** Designed for one linear Codex-style coding agent,
@@ -564,7 +236,42 @@ Manual precision is sampled precision only:
   stays `unknown`, `skipped`, or `diagnostic`. A timeout or partial run is never
   counted as a win.
 
+## Benchmark Lab
+
+Branch: `benchmark-and-openevolve-lab`.
+
+Docs: [Agent Benchmarking](docs/agent-benchmarking.md),
+[Benchmark Guide](docs/benchmark-guide.md), [Benchmark Findings](docs/benchmark-findings.md).
+
+Current lab tracks:
+
+- internal gold retrieval;
+- RepoBench smoke and small retrieval runs;
+- CrossCodeEval parser/load smoke and retrieval runs;
+- SWE-bench Lite gold validation and one-task patch-quality smoke.
+
+Current provider arms: `baseline`, `rg_only`, `codegraph_exact_text`, and
+`codegraph_full`.
+
+Patch-quality runs use an external agent command. The local Codex wrapper is
+`benchmarks/scripts/run_codex_external_patch_agent.ps1`, configured through
+`CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND`. It reads benchmark JSON from stdin,
+runs Codex in the task workspace, writes only a `diff --git` patch to stdout,
+and keeps prompts/logs under ignored benchmark paths.
+
+## OpenEvolve Lab
+
+OpenEvolve is an evolutionary coding loop: an LLM mutates code, an evaluator
+scores it, and the run keeps better variants.
+
+For CodeGraph, it is lab-only policy search for retrieval/ranking experiments
+on `benchmark-and-openevolve-lab`; outputs are not proof and are not merged
+automatically.
+
 ## References
+
+<details>
+<summary>Research and design references</summary>
 
 The compression and retrieval design draws on published work; the typed-graph
 foundation is closer to program-analysis literature than to embedding-only
@@ -590,3 +297,5 @@ retrieval.
 - Tishby and Zaslavsky, *Deep Learning and the Information Bottleneck Principle*
   (ITW 2015) - context-packet sizing as a preserve-the-useful-information
   bottleneck.
+
+</details>

@@ -6,13 +6,18 @@
 //! no default full source/snippet/source-span FTS writes.
 
 #![forbid(unsafe_code)]
+#![recursion_limit = "256"]
 
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt, fs,
+    fs::OpenOptions,
+    io::{BufRead, BufReader, Write},
     path::{Component, Path, PathBuf},
     process::Command,
+    str::FromStr,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -33,24 +38,39 @@ use codegraph_query::{
     is_proof_path_relation, ExactGraphQueryEngine, GraphPath, TraversalDirection, TraversalStep,
 };
 use codegraph_store::{
-    inspect_db_preflight, DbPassport, DbPreflightReport, ExpectedDbPassport, GraphStore,
-    SqliteGraphStore, StoreError, DB_PASSPORT_VERSION, SCHEMA_VERSION,
+    classify_sqlite_access_problem, inspect_db_preflight, DbPassport, DbPreflightReport,
+    ExpectedDbPassport, GraphStore, SqliteGraphStore, StoreError, DB_PASSPORT_VERSION,
+    SCHEMA_VERSION,
 };
 use codegraph_store::{reset_sqlite_profile, take_sqlite_profile};
 use codegraph_vector::{
     BinarySignature, BinaryVectorIndex, EmbeddingProvider, EmbeddingProviderMetadata,
     InMemoryBinaryVectorIndex, TestEmbeddingVector,
 };
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub mod scope;
-pub use scope::IndexScopeOptions;
 use scope::{IndexScope, IndexScopeRuntimeReport, ScopeAction, ScopePathKind};
+pub use scope::{
+    IndexScopeOptions, INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES,
+    SCOPE_POLICY_KIND_DEFAULT_WITH_OVERRIDES, SCOPE_TRUTH_STATUS_OVERRIDE_ONLY,
+};
 
 pub const UNBOUNDED_STORE_READ_LIMIT: usize = 1_000_000;
+const DERIVED_MUTATION_CLOSURE_MAX_OUTPUT_EDGES: usize = 100_000;
+const DERIVED_MUTATION_CLOSURE_MAX_WRITES_PER_CALLEE: usize = 64;
+const DERIVED_DATAFLOW_CLOSURE_MAX_OUTPUT_EDGES: usize = 100_000;
+const DERIVED_DATAFLOW_CLOSURE_MAX_HOPS_PER_NODE: usize = 64;
 pub const DEFAULT_INDEX_BATCH_MAX_FILES: usize = 128;
 pub const DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES: usize = 32 * 1024 * 1024;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_LOCAL_FACTS_PER_FILE: usize = 20_000;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_RELATION_FANOUT_PER_FILE: usize = 4_096;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_DERIVED_EDGES_PER_FILE: usize = 20_000;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_SOURCE_SPANS_PER_FILE: usize = 20_000;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_EDGES_PER_STAGE: usize = 100_000;
+const GRAPH_OUTPUT_BUDGET_REPORTED_HIT_LIMIT: usize = 16;
 pub const DEFAULT_STORAGE_POLICY: &str = "proof:compact-proof-graph";
 pub const FILE_LIFECYCLE_STATE_KEY: &str = "file_lifecycle_state";
 pub const FILE_LIFECYCLE_STATE_CURRENT: &str = "current";
@@ -69,10 +89,38 @@ const TEXT_EVIDENCE_MAX_SNIPPET_BYTES: usize = 512;
 const TEXT_EVIDENCE_MAX_TOKENS_PER_FILE: usize = 96;
 const TEXT_EVIDENCE_KIND: &str = "text_evidence";
 const TEXT_EVIDENCE_PROOF_STATUS: &str = "not_graph_proof";
+const WRITE_PATH_CHAOS_FAILPOINT_ENV: &str = "CODEGRAPH_WRITE_PATH_FAILPOINT";
 pub const VECTOR_EMBEDDING_CHUNK_EXTRACTION_VERSION: &str = "vector_embedding_chunk_v1";
 pub const VECTOR_EMBEDDING_CHUNK_MAX_TEXT_BYTES: usize = 1024;
 pub const VECTOR_CHUNK_INDEX_METADATA_VERSION: &str = "vector_chunk_index_metadata_v1";
+pub const CANDIDATE_SPOOL_METADATA_VERSION: &str = "candidate_spool_v1";
+pub const CANDIDATE_SPOOL_RECORD_MODEL_VERSION: &str = "candidate_spool_packet_v1";
+pub const CANDIDATE_SPOOL_QUERY_INDEX_VERSION: &str = "candidate_spool_query_index_v1";
 pub const VECTOR_CHUNK_INDEX_DEFAULT_MAX_CHUNKS: usize = 4_096;
+pub const CANDIDATE_SPOOL_DEFAULT_MAX_BYTES: usize = 8 * 1024 * 1024;
+pub const CANDIDATE_SPOOL_DEFAULT_MAX_RECORDS: usize = 12_000;
+pub const CANDIDATE_SPOOL_DEFAULT_PER_FILE_MAX_RECORDS: usize = 12;
+pub const CANDIDATE_SPOOL_DEFAULT_PER_DIR_SOFT_CAP: usize = 1_500;
+pub const CANDIDATE_SPOOL_DEFAULT_MAX_SNIPPET_BYTES: usize = 384;
+pub const CANDIDATE_SPOOL_DEFAULT_MAX_SNIPPETS_PER_FILE_PACKET: usize = 3;
+pub const CANDIDATE_SPOOL_DEFAULT_MAX_SYMBOLS_PER_FILE_PACKET: usize = 8;
+const CANDIDATE_SPOOL_QUERY_INDEX_SAFE_REBUILD_MAX_BYTES: u64 = 16 * 1024 * 1024;
+const CANDIDATE_SPOOL_QUERY_INDEX_SAFE_REBUILD_MAX_RECORDS: usize =
+    CANDIDATE_SPOOL_DEFAULT_MAX_RECORDS;
+const RTDS_CLOSURE_FAILPOINT_ENV: &str = "CODEGRAPH_RTDS_CLOSURE_FAILPOINT";
+const DEFAULT_RTDS_CLOSURE_MAX_DIRTY_FILES: usize = 64;
+const DEFAULT_RTDS_CLOSURE_MAX_EDGES_INSPECTED: usize = 4_096;
+const DEFAULT_RTDS_CLOSURE_MAX_RELATION_CLASSES: usize = 6;
+const DEFAULT_RTDS_CLOSURE_MAX_WALL_MS: u64 = 250;
+const DEFAULT_RTDS_CLOSURE_MAX_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
+const DEFAULT_RTDS_CLOSURE_MAX_DB_ROWS_HYDRATED: usize = 8_192;
+const DEFAULT_RTDS_CLOSURE_MAX_PER_RELATION: usize = 1_024;
+
+thread_local! {
+    static WRITE_PATH_CHAOS_FAILPOINT_OVERRIDE: RefCell<Option<String>> = RefCell::new(None);
+    static RTDS_CLOSURE_FAILPOINT_OVERRIDE: RefCell<Option<String>> = RefCell::new(None);
+    static RTDS_CLOSURE_BUDGET_OVERRIDE: RefCell<Option<RtdsDependencyClosureBudget>> = RefCell::new(None);
+}
 
 #[derive(Debug)]
 pub enum IndexError {
@@ -126,6 +174,68 @@ impl From<codegraph_parser::ParseError> for IndexError {
     }
 }
 
+fn write_path_chaos_failpoint_matches(raw: &str, name: &str) -> bool {
+    raw.split(',')
+        .map(str::trim)
+        .any(|candidate| candidate == name)
+}
+
+fn write_path_chaos_failpoint_enabled(name: &str) -> bool {
+    if WRITE_PATH_CHAOS_FAILPOINT_OVERRIDE.with(|override_cell| {
+        override_cell
+            .borrow()
+            .as_deref()
+            .is_some_and(|raw| write_path_chaos_failpoint_matches(raw, name))
+    }) {
+        return true;
+    }
+    std::env::var(WRITE_PATH_CHAOS_FAILPOINT_ENV)
+        .ok()
+        .is_some_and(|raw| write_path_chaos_failpoint_matches(&raw, name))
+}
+
+fn write_path_chaos_failpoint(name: &str) -> Result<(), IndexError> {
+    if write_path_chaos_failpoint_enabled(name) {
+        Err(IndexError::Message(format!("chaos_failpoint:{name}")))
+    } else {
+        Ok(())
+    }
+}
+
+fn write_path_chaos_store_failpoint(name: &str) -> Result<(), StoreError> {
+    if write_path_chaos_failpoint_enabled(name) {
+        Err(StoreError::Message(format!("chaos_failpoint:{name}")))
+    } else {
+        Ok(())
+    }
+}
+
+fn env_usize_or(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+fn env_u64_or(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+fn rtds_closure_failpoint_enabled(name: &str) -> bool {
+    if RTDS_CLOSURE_FAILPOINT_OVERRIDE.with(|override_cell| {
+        override_cell
+            .borrow()
+            .as_deref()
+            .is_some_and(|raw| raw == name)
+    }) {
+        return true;
+    }
+    std::env::var(RTDS_CLOSURE_FAILPOINT_ENV).ok().as_deref() == Some(name)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IndexSummary {
     pub repo_root: String,
@@ -156,8 +266,348 @@ pub struct IndexSummary {
     pub storage_policy: String,
     pub issue_counts: BTreeMap<String, usize>,
     pub issues: Vec<IndexIssue>,
+    pub graph_output_budgets: GraphOutputBudgetSummary,
     pub scope: Option<IndexScopeRuntimeReport>,
+    pub candidate_spool: Option<CandidateSpoolSummary>,
     pub profile: Option<IndexProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphOutputBudgets {
+    pub max_local_facts_per_file: usize,
+    pub max_relation_fanout_per_file: usize,
+    pub max_derived_edges_per_file: usize,
+    pub max_source_spans_per_file: usize,
+    pub max_reducer_edges_per_stage: usize,
+}
+
+impl Default for GraphOutputBudgets {
+    fn default() -> Self {
+        Self {
+            max_local_facts_per_file: DEFAULT_GRAPH_OUTPUT_MAX_LOCAL_FACTS_PER_FILE,
+            max_relation_fanout_per_file: DEFAULT_GRAPH_OUTPUT_MAX_RELATION_FANOUT_PER_FILE,
+            max_derived_edges_per_file: DEFAULT_GRAPH_OUTPUT_MAX_DERIVED_EDGES_PER_FILE,
+            max_source_spans_per_file: DEFAULT_GRAPH_OUTPUT_MAX_SOURCE_SPANS_PER_FILE,
+            max_reducer_edges_per_stage: DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_EDGES_PER_STAGE,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphOutputBudgetHit {
+    pub repo_relative_path: String,
+    pub stage: String,
+    pub kind: String,
+    pub before: usize,
+    pub after: usize,
+    pub budget: usize,
+    pub omitted: usize,
+    pub claimability_label: String,
+}
+
+impl GraphOutputBudgetHit {
+    fn message(&self) -> String {
+        format!(
+            "{} hit {} budget at stage {}; omitted {} fact(s), before={}, after={}, budget={}",
+            self.repo_relative_path,
+            self.kind,
+            self.stage,
+            self.omitted,
+            self.before,
+            self.after,
+            self.budget
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphOutputBudgetSummary {
+    pub configured: GraphOutputBudgets,
+    pub source_batching_policy: String,
+    pub worker_dispatch_source_clone_policy: String,
+    pub files_degraded: usize,
+    pub local_fact_budget_hits: usize,
+    pub relation_fanout_budget_hits: usize,
+    pub derived_edge_budget_hits: usize,
+    pub source_span_budget_hits: usize,
+    pub reducer_edge_budget_hits: usize,
+    pub omitted_local_facts: usize,
+    pub omitted_relation_fanout_edges: usize,
+    pub omitted_derived_edges: usize,
+    pub omitted_source_span_facts: usize,
+    pub omitted_reducer_edges: usize,
+    pub claimability_label: String,
+    pub warnings: Vec<String>,
+    pub degraded_files: Vec<GraphOutputBudgetHit>,
+}
+
+impl GraphOutputBudgetSummary {
+    pub fn new(configured: GraphOutputBudgets) -> Self {
+        Self {
+            configured,
+            source_batching_policy: format!(
+                "bounded_batches:max_files={DEFAULT_INDEX_BATCH_MAX_FILES};max_source_bytes={DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES}"
+            ),
+            worker_dispatch_source_clone_policy:
+                "pending source buffers are moved into worker chunks without cloning".to_string(),
+            files_degraded: 0,
+            local_fact_budget_hits: 0,
+            relation_fanout_budget_hits: 0,
+            derived_edge_budget_hits: 0,
+            source_span_budget_hits: 0,
+            reducer_edge_budget_hits: 0,
+            omitted_local_facts: 0,
+            omitted_relation_fanout_edges: 0,
+            omitted_derived_edges: 0,
+            omitted_source_span_facts: 0,
+            omitted_reducer_edges: 0,
+            claimability_label: "full_graph_output_with_no_budget_degradation".to_string(),
+            warnings: Vec::new(),
+            degraded_files: Vec::new(),
+        }
+    }
+
+    fn record_hit(&mut self, hit: GraphOutputBudgetHit) {
+        match hit.kind.as_str() {
+            "local_facts_per_file" => {
+                self.local_fact_budget_hits += 1;
+                self.omitted_local_facts += hit.omitted;
+            }
+            "relation_fanout_per_file" => {
+                self.relation_fanout_budget_hits += 1;
+                self.omitted_relation_fanout_edges += hit.omitted;
+            }
+            "derived_edges_per_file" => {
+                self.derived_edge_budget_hits += 1;
+                self.omitted_derived_edges += hit.omitted;
+            }
+            "source_spans_per_file" => {
+                self.source_span_budget_hits += 1;
+                self.omitted_source_span_facts += hit.omitted;
+            }
+            "reducer_edges_per_stage" => {
+                self.reducer_edge_budget_hits += 1;
+                self.omitted_reducer_edges += hit.omitted;
+            }
+            _ => {}
+        }
+        if !self
+            .degraded_files
+            .iter()
+            .any(|existing| existing.repo_relative_path == hit.repo_relative_path)
+        {
+            self.files_degraded += 1;
+        }
+        self.claimability_label =
+            "graph_output_degraded_budget_hit_some_file_facts_nonclaimable".to_string();
+        let warning = hit.message();
+        if !self.warnings.contains(&warning) {
+            self.warnings.push(warning);
+        }
+        if self.degraded_files.len() < GRAPH_OUTPUT_BUDGET_REPORTED_HIT_LIMIT {
+            self.degraded_files.push(hit);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CandidateSpoolSummary {
+    pub status: String,
+    pub candidate_spool_status: String,
+    pub candidate_spool_path: String,
+    pub artifact_kind: String,
+    pub artifact_format: String,
+    pub lifecycle: String,
+    pub spooled_total_chunks: usize,
+    pub spooled_by_source_kind: BTreeMap<String, usize>,
+    pub spooled_by_chunk_kind: BTreeMap<String, usize>,
+    pub spooled_bytes: u64,
+    pub spooled_indexing_phase: String,
+    #[serde(default)]
+    pub candidate_spool_policy: String,
+    #[serde(default)]
+    pub candidate_spool_required: bool,
+    #[serde(default)]
+    pub candidate_spool_disabled_reason: Option<String>,
+    #[serde(default)]
+    pub candidate_spool_warning: Option<String>,
+    #[serde(default)]
+    pub artifact_budget_remaining_bytes: Option<u64>,
+    #[serde(default)]
+    pub artifact_budget_decision: Option<String>,
+    #[serde(default)]
+    pub record_model: String,
+    #[serde(default)]
+    pub generated_total_chunks: usize,
+    #[serde(default)]
+    pub normalized_total_chunks: usize,
+    #[serde(default)]
+    pub deduped_total_chunks: usize,
+    #[serde(default)]
+    pub selected_total_chunks: usize,
+    #[serde(default)]
+    pub persisted_total_chunks: usize,
+    #[serde(default)]
+    pub omitted_by_cap: usize,
+    #[serde(default)]
+    pub omitted_by_budget: usize,
+    #[serde(default)]
+    pub omitted_by_dedup: usize,
+    #[serde(default)]
+    pub omitted_low_signal: usize,
+    #[serde(default)]
+    pub omitted_by_file_limit: usize,
+    #[serde(default)]
+    pub omitted_by_dir_limit: usize,
+    #[serde(default)]
+    pub omitted_by_kind_limit: usize,
+    #[serde(default)]
+    pub candidate_spool_truncated: bool,
+    #[serde(default)]
+    pub candidate_spool_partial: bool,
+    #[serde(default)]
+    pub candidate_spool_budget_bytes: u64,
+    #[serde(default)]
+    pub query_index_status: String,
+    #[serde(default)]
+    pub query_index_kind: String,
+    #[serde(default)]
+    pub query_index_path: Option<String>,
+    #[serde(default)]
+    pub query_index_bytes: u64,
+    #[serde(default)]
+    pub query_index_record_count: usize,
+    #[serde(default)]
+    pub query_index_version: String,
+    #[serde(default)]
+    pub query_index_bound_manifest_hash: Option<String>,
+    pub candidate_only: bool,
+    pub graph_proof: bool,
+    pub incomplete: bool,
+    pub db_passport_hash: Option<String>,
+    pub db_passport_snapshot: Option<DbPassport>,
+    pub scope_hash: Option<String>,
+    pub repo_hash: Option<String>,
+    pub reason: Option<String>,
+    #[serde(skip)]
+    pub caps: CandidateSpoolCaps,
+    #[serde(skip)]
+    pub selected_candidate_ids: BTreeSet<String>,
+    #[serde(skip)]
+    pub selected_file_counts: BTreeMap<String, usize>,
+    #[serde(skip)]
+    pub selected_dir_counts: BTreeMap<String, usize>,
+    #[serde(skip)]
+    pub selected_kind_counts: BTreeMap<String, usize>,
+    #[serde(skip)]
+    pub selected_source_counts: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CandidateSpoolPolicy {
+    Off,
+    Bounded,
+    Audit,
+}
+
+impl Default for CandidateSpoolPolicy {
+    fn default() -> Self {
+        Self::Bounded
+    }
+}
+
+impl CandidateSpoolPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Bounded => "bounded",
+            Self::Audit => "audit",
+        }
+    }
+}
+
+impl FromStr for CandidateSpoolPolicy {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "disabled" => Ok(Self::Off),
+            "bounded" | "default" => Ok(Self::Bounded),
+            "audit" | "diagnostic" => Ok(Self::Audit),
+            other => Err(format!(
+                "invalid candidate spool policy {other}; expected off, bounded, or audit"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidateSpoolCaps {
+    pub global_max_bytes: usize,
+    pub global_max_records: usize,
+    pub per_file_max_records: usize,
+    pub per_top_level_dir_soft_cap: usize,
+    pub max_snippet_bytes: usize,
+    pub max_snippets_per_file_packet: usize,
+    pub max_symbols_per_file_packet: usize,
+    pub per_candidate_kind_cap: BTreeMap<String, usize>,
+    pub per_source_kind_cap: BTreeMap<String, usize>,
+}
+
+impl Default for CandidateSpoolCaps {
+    fn default() -> Self {
+        let mut per_candidate_kind_cap = BTreeMap::new();
+        per_candidate_kind_cap.insert("file_path_title".to_string(), 4_096);
+        per_candidate_kind_cap.insert("text_evidence_snippet".to_string(), 4_096);
+        per_candidate_kind_cap.insert("symbol_signature".to_string(), 6_000);
+        per_candidate_kind_cap.insert("import_export_source_navigation".to_string(), 3_000);
+        per_candidate_kind_cap.insert("parser_local_reference".to_string(), 3_000);
+        per_candidate_kind_cap.insert("relation_neighborhood_candidate".to_string(), 1_000);
+        per_candidate_kind_cap.insert("doc_comment_or_title".to_string(), 3_000);
+        per_candidate_kind_cap.insert("test_or_mock_candidate".to_string(), 1_500);
+        per_candidate_kind_cap.insert("unknown".to_string(), 500);
+
+        let mut per_source_kind_cap = BTreeMap::new();
+        per_source_kind_cap.insert("metadata".to_string(), 3_000);
+        per_source_kind_cap.insert("text_evidence".to_string(), 4_800);
+        per_source_kind_cap.insert("graph_entity".to_string(), 6_000);
+        per_source_kind_cap.insert("unknown".to_string(), 600);
+
+        Self {
+            global_max_bytes: CANDIDATE_SPOOL_DEFAULT_MAX_BYTES,
+            global_max_records: CANDIDATE_SPOOL_DEFAULT_MAX_RECORDS,
+            per_file_max_records: CANDIDATE_SPOOL_DEFAULT_PER_FILE_MAX_RECORDS,
+            per_top_level_dir_soft_cap: CANDIDATE_SPOOL_DEFAULT_PER_DIR_SOFT_CAP,
+            max_snippet_bytes: CANDIDATE_SPOOL_DEFAULT_MAX_SNIPPET_BYTES,
+            max_snippets_per_file_packet: CANDIDATE_SPOOL_DEFAULT_MAX_SNIPPETS_PER_FILE_PACKET,
+            max_symbols_per_file_packet: CANDIDATE_SPOOL_DEFAULT_MAX_SYMBOLS_PER_FILE_PACKET,
+            per_candidate_kind_cap,
+            per_source_kind_cap,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CandidateSpoolIndexLoad {
+    pub path: PathBuf,
+    pub query_index_path: PathBuf,
+    pub metadata: Value,
+    pub stale: bool,
+    pub reason: Option<String>,
+    pub query_index_status: String,
+    pub query_index_kind: String,
+    pub query_index_bytes: u64,
+    pub query_index_record_count: usize,
+    pub query_index_version: String,
+    pub query_index_bound_manifest_hash: Option<String>,
+    pub query_index_source_binding_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct CandidateSpoolIndexQueryResult {
+    pub load: CandidateSpoolIndexLoad,
+    pub chunks: Vec<Value>,
+    pub omitted_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -337,6 +787,11 @@ pub struct IndexProfile {
     pub entities_per_sec: f64,
     pub edges_per_sec: f64,
     pub memory_bytes: Option<u64>,
+    pub memory_measured: bool,
+    pub memory_status: String,
+    pub memory_measurement_kind: String,
+    pub db_write_measurement: String,
+    pub fts_search_index_measurement: String,
     pub worker_count: usize,
     pub skipped_unchanged_files: usize,
     pub spans: Vec<PhaseTiming>,
@@ -445,7 +900,7 @@ impl std::str::FromStr for IndexBuildMode {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexOptions {
     pub profile: bool,
     pub json: bool,
@@ -453,7 +908,33 @@ pub struct IndexOptions {
     pub storage_mode: StorageMode,
     pub build_mode: IndexBuildMode,
     pub scope: IndexScopeOptions,
+    pub graph_output_budgets: GraphOutputBudgets,
     pub db_lifecycle: DbLifecycleOptions,
+    pub candidate_spool_path: Option<PathBuf>,
+    pub candidate_spool_policy: CandidateSpoolPolicy,
+    pub candidate_spool_required: bool,
+    pub candidate_spool_query_index: bool,
+    pub candidate_spool_caps: CandidateSpoolCaps,
+}
+
+impl Default for IndexOptions {
+    fn default() -> Self {
+        Self {
+            profile: false,
+            json: false,
+            worker_count: None,
+            storage_mode: StorageMode::default(),
+            build_mode: IndexBuildMode::default(),
+            scope: IndexScopeOptions::default(),
+            graph_output_budgets: GraphOutputBudgets::default(),
+            db_lifecycle: DbLifecycleOptions::default(),
+            candidate_spool_path: None,
+            candidate_spool_policy: CandidateSpoolPolicy::default(),
+            candidate_spool_required: false,
+            candidate_spool_query_index: true,
+            candidate_spool_caps: CandidateSpoolCaps::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -474,6 +955,10 @@ pub struct PendingIndexBatch {
     pub files: Vec<PendingIndexFile>,
     pub source_bytes: usize,
 }
+
+const RUBI_GRAPH_EXTRACTION_SKIP_BYTES: usize = 8 * 1024;
+const LARGE_TEST_OR_GENERATED_GRAPH_EXTRACTION_SKIP_BYTES: usize = 64 * 1024;
+const LARGE_GENERATED_OR_TEST_GRAPH_EXTRACTION_SKIP_BYTES: usize = 384 * 1024;
 
 #[derive(Debug)]
 struct HashedIndexCandidate {
@@ -503,6 +988,7 @@ enum TextEvidenceFileKind {
     PythonSupportScript,
     TextLikeSupportScript,
     BuildrootPackageMetadata,
+    FixtureManifest,
 }
 
 impl TextEvidenceFileKind {
@@ -516,6 +1002,7 @@ impl TextEvidenceFileKind {
             Self::PythonSupportScript => "python_support_script",
             Self::TextLikeSupportScript => "text_like_support_script",
             Self::BuildrootPackageMetadata => "buildroot_package_metadata",
+            Self::FixtureManifest => "fixture_manifest",
         }
     }
 
@@ -529,6 +1016,7 @@ impl TextEvidenceFileKind {
             Self::PythonSupportScript => "Python support script",
             Self::TextLikeSupportScript => "text-like support script",
             Self::BuildrootPackageMetadata => "Buildroot package metadata",
+            Self::FixtureManifest => "fixture manifest",
         }
     }
 }
@@ -627,7 +1115,23 @@ pub struct VectorEmbeddingChunk {
     pub file_kind: Option<String>,
     pub lifecycle_binding: Option<RetrievalCandidateLifecycleBinding>,
     pub content_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_file_content_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_file_size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_file_modified_unix_nanos: Option<String>,
     pub extraction_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_bucket: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_level_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap_stage: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -683,6 +1187,8 @@ pub struct VectorChunkIndexPassportSnapshot {
     pub storage_mode: String,
     pub index_scope_policy_hash: String,
     pub canonical_repo_root: String,
+    #[serde(default)]
+    pub repo_head: Option<String>,
 }
 
 impl VectorChunkIndexPassportSnapshot {
@@ -694,6 +1200,7 @@ impl VectorChunkIndexPassportSnapshot {
             storage_mode: passport.storage_mode.clone(),
             index_scope_policy_hash: passport.index_scope_policy_hash.clone(),
             canonical_repo_root: passport.canonical_repo_root.clone(),
+            repo_head: passport.repo_head.clone(),
         }
     }
 
@@ -712,6 +1219,9 @@ impl VectorChunkIndexPassportSnapshot {
         }
         if self.canonical_repo_root != passport.canonical_repo_root {
             return Some("canonical_repo_root changed".to_string());
+        }
+        if self.repo_head != passport.repo_head {
+            return Some("repo_head changed".to_string());
         }
         if self.passport_fingerprint != db_passport_fingerprint(passport) {
             return Some("db_passport changed".to_string());
@@ -740,6 +1250,8 @@ impl VectorChunkIndexBuildOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VectorChunkIndexMetadata {
     pub metadata_version: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub artifact_kind: String,
     pub provider: VectorChunkIndexProviderSnapshot,
     pub passport: VectorChunkIndexPassportSnapshot,
     pub source_scope: String,
@@ -748,9 +1260,81 @@ pub struct VectorChunkIndexMetadata {
     pub max_chunks: usize,
     pub chunk_count: usize,
     pub omitted_chunks: usize,
+    #[serde(default)]
+    pub generated_total_chunks: usize,
+    #[serde(default)]
+    pub generated_text_evidence_chunks: usize,
+    #[serde(default)]
+    pub generated_graph_entity_chunks: usize,
+    #[serde(default)]
+    pub generated_file_path_title_chunks: usize,
+    #[serde(default)]
+    pub generated_metadata_chunks: usize,
+    #[serde(default)]
+    pub selected_total_chunks: usize,
+    #[serde(default)]
+    pub selected_text_evidence_chunks: usize,
+    #[serde(default)]
+    pub selected_graph_entity_chunks: usize,
+    #[serde(default)]
+    pub selected_file_path_title_chunks: usize,
+    #[serde(default)]
+    pub selected_metadata_chunks: usize,
+    #[serde(default)]
+    pub persisted_total_chunks: usize,
+    #[serde(default)]
+    pub persisted_text_evidence_chunks: usize,
+    #[serde(default)]
+    pub persisted_graph_entity_chunks: usize,
+    #[serde(default)]
+    pub persisted_file_path_title_chunks: usize,
+    #[serde(default)]
+    pub persisted_metadata_chunks: usize,
+    #[serde(default)]
+    pub chunk_cap: usize,
+    #[serde(default)]
+    pub chunk_cap_applied: bool,
+    #[serde(default)]
+    pub chunk_selection_strategy: String,
+    #[serde(default)]
+    pub input_order_cap: bool,
+    #[serde(default)]
+    pub persisted_chunks_by_top_level_dir: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub persisted_chunks_by_file_kind: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub persisted_chunks_by_source_kind: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub omitted_by_cap: usize,
+    #[serde(default)]
+    pub omitted_by_bucket_limit: usize,
+    #[serde(default)]
+    pub omitted_low_signal: usize,
+    #[serde(default)]
+    pub per_file_cap: usize,
+    #[serde(default)]
+    pub per_directory_soft_cap: usize,
     pub indexed_text_bytes: usize,
     pub estimated_vector_bytes_per_chunk: usize,
+    #[serde(default)]
+    pub estimated_f32_payload_bytes: usize,
+    #[serde(default)]
+    pub estimated_f32_payload_dim: usize,
+    #[serde(default)]
+    pub estimated_f32_payload_count: usize,
     pub estimated_vector_bytes: usize,
+    #[serde(default)]
+    pub estimated_vector_bytes_deprecated_alias_for: String,
+    #[serde(default)]
+    pub index_artifact_format: String,
+    #[serde(default)]
+    pub stores_chunk_text: bool,
+    #[serde(default)]
+    pub stores_chunk_metadata: bool,
+    #[serde(default)]
+    pub stores_full_source_body: bool,
+    #[serde(default)]
+    pub vector_payload_compression: String,
 }
 
 impl VectorChunkIndexMetadata {
@@ -816,7 +1400,86 @@ pub struct VectorChunkIndexUpdateSummary {
     pub omitted_chunks: usize,
     pub chunk_count: usize,
     pub indexed_text_bytes: usize,
+    pub estimated_f32_payload_bytes: usize,
     pub estimated_vector_bytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VectorChunkIndexBuildTimings {
+    #[serde(default)]
+    pub total_ms: f64,
+    #[serde(default)]
+    pub open_store_ms: f64,
+    #[serde(default)]
+    pub repo_resolution_ms: f64,
+    #[serde(default)]
+    pub load_passport_ms: f64,
+    #[serde(default)]
+    pub list_files_ms: f64,
+    #[serde(default)]
+    pub list_entities_ms: f64,
+    #[serde(default)]
+    pub filter_group_entities_ms: f64,
+    #[serde(default)]
+    pub chunk_generation_ms: f64,
+    #[serde(default)]
+    pub file_source_read_ms: f64,
+    #[serde(default)]
+    pub file_path_title_chunk_ms: f64,
+    #[serde(default)]
+    pub text_evidence_chunk_ms: f64,
+    #[serde(default)]
+    pub graph_entity_chunk_ms: f64,
+    #[serde(default)]
+    pub in_memory_index_ms: f64,
+    #[serde(default)]
+    pub input_collect_ms: f64,
+    #[serde(default)]
+    pub generated_count_ms: f64,
+    #[serde(default)]
+    pub selection_ms: f64,
+    #[serde(default)]
+    pub selected_count_ms: f64,
+    #[serde(default)]
+    pub embedding_ms: f64,
+    #[serde(default)]
+    pub metadata_build_ms: f64,
+    #[serde(default)]
+    pub write_json_ms: f64,
+    #[serde(default)]
+    pub artifact_metadata_ms: f64,
+}
+
+impl Default for VectorChunkIndexBuildTimings {
+    fn default() -> Self {
+        Self {
+            total_ms: 0.0,
+            open_store_ms: 0.0,
+            repo_resolution_ms: 0.0,
+            load_passport_ms: 0.0,
+            list_files_ms: 0.0,
+            list_entities_ms: 0.0,
+            filter_group_entities_ms: 0.0,
+            chunk_generation_ms: 0.0,
+            file_source_read_ms: 0.0,
+            file_path_title_chunk_ms: 0.0,
+            text_evidence_chunk_ms: 0.0,
+            graph_entity_chunk_ms: 0.0,
+            in_memory_index_ms: 0.0,
+            input_collect_ms: 0.0,
+            generated_count_ms: 0.0,
+            selection_ms: 0.0,
+            selected_count_ms: 0.0,
+            embedding_ms: 0.0,
+            metadata_build_ms: 0.0,
+            write_json_ms: 0.0,
+            artifact_metadata_ms: 0.0,
+        }
+    }
+}
+
+fn duration_ms(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1000.0
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -829,6 +1492,78 @@ pub struct InMemoryVectorChunkIndex {
 pub struct PersistedVectorChunkIndex {
     pub metadata: VectorChunkIndexMetadata,
     pub chunks: Vec<VectorEmbeddingChunk>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VectorChunkArtifactFormat {
+    CompactJson,
+    PrettyJson,
+}
+
+impl VectorChunkArtifactFormat {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CompactJson => "compact_json",
+            Self::PrettyJson => "pretty_json",
+        }
+    }
+
+    const fn pretty(self) -> bool {
+        matches!(self, Self::PrettyJson)
+    }
+}
+
+impl Default for VectorChunkArtifactFormat {
+    fn default() -> Self {
+        Self::CompactJson
+    }
+}
+
+impl FromStr for VectorChunkArtifactFormat {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().replace('-', "_").as_str() {
+            "compact_json" | "compact" | "runtime" => Ok(Self::CompactJson),
+            "pretty_json" | "pretty" | "legacy_pretty_json" => Ok(Self::PrettyJson),
+            "jsonl" | "binary" => Err(format!(
+                "vector artifact format {value} is reserved but not implemented; use compact_json or pretty_json"
+            )),
+            other => Err(format!(
+                "unknown vector artifact format: {other}; expected compact_json or pretty_json"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VectorChunkIndexArtifactOptions {
+    pub runtime_format: VectorChunkArtifactFormat,
+    pub audit_artifact_path: Option<PathBuf>,
+}
+
+impl Default for VectorChunkIndexArtifactOptions {
+    fn default() -> Self {
+        Self {
+            runtime_format: VectorChunkArtifactFormat::CompactJson,
+            audit_artifact_path: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VectorChunkSourceBindingValidation {
+    pub status: String,
+    pub checked_files: usize,
+    pub checked_chunks: usize,
+    pub unbound_chunks: usize,
+    pub stale_reasons: Vec<String>,
+}
+
+impl VectorChunkSourceBindingValidation {
+    pub fn is_valid(&self) -> bool {
+        self.stale_reasons.is_empty()
+    }
 }
 
 impl InMemoryVectorChunkIndex {
@@ -866,6 +1601,7 @@ impl InMemoryVectorChunkIndex {
             omitted_chunks: 0,
             chunk_count: self.metadata.chunk_count,
             indexed_text_bytes: self.metadata.indexed_text_bytes,
+            estimated_f32_payload_bytes: self.metadata.estimated_f32_payload_bytes,
             estimated_vector_bytes: self.metadata.estimated_vector_bytes,
         }
     }
@@ -929,6 +1665,7 @@ impl InMemoryVectorChunkIndex {
             omitted_chunks,
             chunk_count: self.metadata.chunk_count,
             indexed_text_bytes: self.metadata.indexed_text_bytes,
+            estimated_f32_payload_bytes: self.metadata.estimated_f32_payload_bytes,
             estimated_vector_bytes: self.metadata.estimated_vector_bytes,
         })
     }
@@ -995,15 +1732,39 @@ impl InMemoryVectorChunkIndex {
 
     fn refresh_size_metadata(&mut self) {
         self.metadata.chunk_count = self.entries.len();
+        let selected_counts =
+            VectorChunkKindCounts::from_chunks(self.entries.values().map(|entry| &entry.chunk));
+        self.metadata.selected_total_chunks = selected_counts.total;
+        self.metadata.selected_text_evidence_chunks = selected_counts.text_evidence;
+        self.metadata.selected_graph_entity_chunks = selected_counts.graph_entity;
+        self.metadata.selected_file_path_title_chunks = selected_counts.file_path_title;
+        self.metadata.selected_metadata_chunks = selected_counts.metadata;
+        self.metadata.persisted_total_chunks = selected_counts.total;
+        self.metadata.persisted_text_evidence_chunks = selected_counts.text_evidence;
+        self.metadata.persisted_graph_entity_chunks = selected_counts.graph_entity;
+        self.metadata.persisted_file_path_title_chunks = selected_counts.file_path_title;
+        self.metadata.persisted_metadata_chunks = selected_counts.metadata;
+        self.metadata.persisted_chunks_by_top_level_dir =
+            count_chunks_by_top_level_dir(self.entries.values().map(|entry| &entry.chunk));
+        self.metadata.persisted_chunks_by_file_kind =
+            count_chunks_by_file_kind(self.entries.values().map(|entry| &entry.chunk));
+        self.metadata.persisted_chunks_by_source_kind =
+            count_chunks_by_source_kind(self.entries.values().map(|entry| &entry.chunk));
+        self.metadata.chunk_cap = self.metadata.max_chunks;
+        self.metadata.chunk_cap_applied = self.metadata.omitted_chunks > 0
+            || self.metadata.generated_total_chunks > self.metadata.persisted_total_chunks;
         self.metadata.indexed_text_bytes = self
             .entries
             .values()
             .map(|entry| entry.chunk.byte_count)
             .sum();
-        self.metadata.estimated_vector_bytes = self
+        self.metadata.estimated_f32_payload_count = self.metadata.chunk_count;
+        self.metadata.estimated_f32_payload_dim = self.metadata.provider.dimension;
+        self.metadata.estimated_f32_payload_bytes = self
             .metadata
             .chunk_count
             .saturating_mul(self.metadata.estimated_vector_bytes_per_chunk);
+        self.metadata.estimated_vector_bytes = self.metadata.estimated_f32_payload_bytes;
     }
 }
 
@@ -1074,6 +1835,26 @@ impl GlobalFactReductionPlan {
             repo_relative_paths
                 .contains(&normalize_graph_path(&edge.source_span.repo_relative_path))
         });
+    }
+
+    fn apply_reducer_edge_budget(
+        &mut self,
+        stage: &str,
+        budget: usize,
+    ) -> Option<GraphOutputBudgetHit> {
+        let before = self.edges.len();
+        if before <= budget {
+            return None;
+        }
+        self.edges.truncate(budget);
+        Some(graph_budget_hit(
+            "<global>",
+            stage,
+            "reducer_edges_per_stage",
+            before,
+            self.edges.len(),
+            budget,
+        ))
     }
 }
 
@@ -1269,6 +2050,235 @@ impl LocalFactBundle {
     }
 }
 
+fn apply_graph_output_budgets_to_extraction(
+    repo_relative_path: &str,
+    extraction: &mut BasicExtraction,
+    budgets: &GraphOutputBudgets,
+) -> Vec<GraphOutputBudgetHit> {
+    let mut hits = Vec::new();
+    apply_relation_fanout_budget(repo_relative_path, extraction, budgets, &mut hits);
+    apply_derived_edge_budget(repo_relative_path, extraction, budgets, &mut hits);
+    apply_local_fact_budget(repo_relative_path, extraction, budgets, &mut hits);
+    apply_source_span_budget(repo_relative_path, extraction, budgets, &mut hits);
+    if !hits.is_empty() {
+        annotate_graph_output_budget_hits(&mut extraction.file.metadata, budgets, &hits);
+    }
+    hits
+}
+
+fn graph_budget_hit(
+    repo_relative_path: &str,
+    stage: &str,
+    kind: &str,
+    before: usize,
+    after: usize,
+    budget: usize,
+) -> GraphOutputBudgetHit {
+    GraphOutputBudgetHit {
+        repo_relative_path: normalize_graph_path(repo_relative_path),
+        stage: stage.to_string(),
+        kind: kind.to_string(),
+        before,
+        after,
+        budget,
+        omitted: before.saturating_sub(after),
+        claimability_label: "degraded_file_nonclaimable_for_omitted_facts".to_string(),
+    }
+}
+
+fn apply_relation_fanout_budget(
+    repo_relative_path: &str,
+    extraction: &mut BasicExtraction,
+    budgets: &GraphOutputBudgets,
+    hits: &mut Vec<GraphOutputBudgetHit>,
+) {
+    let budget = budgets.max_relation_fanout_per_file;
+    if budget == 0 || extraction.edges.is_empty() {
+        return;
+    }
+    let before = extraction.edges.len();
+    let mut counts = BTreeMap::<String, usize>::new();
+    let mut retained = Vec::with_capacity(extraction.edges.len().min(budget));
+    for edge in std::mem::take(&mut extraction.edges) {
+        let key = format!("{}|{}", edge.head_id, edge.relation);
+        let count = counts.entry(key).or_default();
+        if *count < budget {
+            *count += 1;
+            retained.push(edge);
+        }
+    }
+    let after = retained.len();
+    extraction.edges = retained;
+    if after < before {
+        hits.push(graph_budget_hit(
+            repo_relative_path,
+            "local_extraction",
+            "relation_fanout_per_file",
+            before,
+            after,
+            budget,
+        ));
+    }
+}
+
+fn apply_derived_edge_budget(
+    repo_relative_path: &str,
+    extraction: &mut BasicExtraction,
+    budgets: &GraphOutputBudgets,
+    hits: &mut Vec<GraphOutputBudgetHit>,
+) {
+    let budget = budgets.max_derived_edges_per_file;
+    let before = extraction.edges.iter().filter(|edge| edge.derived).count();
+    if before <= budget {
+        return;
+    }
+    let mut retained_derived = 0usize;
+    extraction.edges.retain(|edge| {
+        if !edge.derived {
+            return true;
+        }
+        if retained_derived < budget {
+            retained_derived += 1;
+            true
+        } else {
+            false
+        }
+    });
+    hits.push(graph_budget_hit(
+        repo_relative_path,
+        "local_extraction",
+        "derived_edges_per_file",
+        before,
+        retained_derived,
+        budget,
+    ));
+}
+
+fn apply_local_fact_budget(
+    repo_relative_path: &str,
+    extraction: &mut BasicExtraction,
+    budgets: &GraphOutputBudgets,
+    hits: &mut Vec<GraphOutputBudgetHit>,
+) {
+    let budget = budgets.max_local_facts_per_file;
+    let before = extraction.entities.len() + extraction.edges.len();
+    if before <= budget {
+        return;
+    }
+    if extraction.entities.len() >= budget {
+        extraction.entities.truncate(budget);
+        extraction.edges.clear();
+    } else {
+        let allowed_edges = budget.saturating_sub(extraction.entities.len());
+        extraction.edges.truncate(allowed_edges);
+    }
+    retain_edges_with_present_entities(extraction);
+    let after = extraction.entities.len() + extraction.edges.len();
+    hits.push(graph_budget_hit(
+        repo_relative_path,
+        "local_extraction",
+        "local_facts_per_file",
+        before,
+        after,
+        budget,
+    ));
+}
+
+fn apply_source_span_budget(
+    repo_relative_path: &str,
+    extraction: &mut BasicExtraction,
+    budgets: &GraphOutputBudgets,
+    hits: &mut Vec<GraphOutputBudgetHit>,
+) {
+    let budget = budgets.max_source_spans_per_file;
+    let before = extraction_source_span_count(extraction);
+    if before <= budget {
+        return;
+    }
+    let mut seen = BTreeSet::<String>::new();
+    extraction.entities.retain(|entity| {
+        let Some(span) = &entity.source_span else {
+            return true;
+        };
+        let key = span.to_string();
+        if seen.contains(&key) || seen.len() < budget {
+            seen.insert(key);
+            true
+        } else {
+            false
+        }
+    });
+    retain_edges_with_present_entities(extraction);
+    extraction.edges.retain(|edge| {
+        let key = edge.source_span.to_string();
+        if seen.contains(&key) || seen.len() < budget {
+            seen.insert(key);
+            true
+        } else {
+            false
+        }
+    });
+    retain_edges_with_present_entities(extraction);
+    let after = extraction_source_span_count(extraction);
+    hits.push(graph_budget_hit(
+        repo_relative_path,
+        "local_extraction",
+        "source_spans_per_file",
+        before,
+        after,
+        budget,
+    ));
+}
+
+fn retain_edges_with_present_entities(extraction: &mut BasicExtraction) {
+    let entity_ids = extraction
+        .entities
+        .iter()
+        .map(|entity| entity.id.as_str())
+        .collect::<BTreeSet<_>>();
+    extraction.edges.retain(|edge| {
+        entity_ids.contains(edge.head_id.as_str()) && entity_ids.contains(edge.tail_id.as_str())
+    });
+}
+
+fn extraction_source_span_count(extraction: &BasicExtraction) -> usize {
+    let mut spans = BTreeSet::<String>::new();
+    for entity in &extraction.entities {
+        if let Some(span) = &entity.source_span {
+            spans.insert(span.to_string());
+        }
+    }
+    for edge in &extraction.edges {
+        spans.insert(edge.source_span.to_string());
+    }
+    spans.len()
+}
+
+fn annotate_graph_output_budget_hits(
+    metadata: &mut Metadata,
+    budgets: &GraphOutputBudgets,
+    hits: &[GraphOutputBudgetHit],
+) {
+    metadata.insert("graph_output_budget_hit".to_string(), json!(true));
+    metadata.insert(
+        "claim_state".to_string(),
+        json!("graph_output_degraded_budget_hit"),
+    );
+    metadata.insert(
+        "graph_output_claimability".to_string(),
+        json!("degraded_file_nonclaimable_for_omitted_facts"),
+    );
+    metadata.insert("graph_relation_claims".to_string(), json!("partial"));
+    metadata.insert(
+        "graph_output_budget_policy".to_string(),
+        serde_json::to_value(budgets).unwrap_or(Value::Null),
+    );
+    metadata.insert(
+        "graph_output_budget_hits".to_string(),
+        serde_json::to_value(hits).unwrap_or(Value::Null),
+    );
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PreliminarySymbolTable {
     pub by_id: BTreeMap<String, LocalFactSymbol>,
@@ -1324,6 +2334,7 @@ pub struct ParseExtractStat {
     pub syntax_error: bool,
     pub skipped: bool,
     pub message: Option<String>,
+    pub graph_output_budget_hits: Vec<GraphOutputBudgetHit>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1332,6 +2343,7 @@ pub struct IncrementalIndexSummary {
     pub repo_root: String,
     pub db_path: String,
     pub changed_files: Vec<String>,
+    pub dependency_closure: RtdsDependencyClosureSummary,
     pub files_seen: usize,
     pub files_walked: usize,
     pub files_metadata_unchanged: usize,
@@ -1361,6 +2373,99 @@ pub struct IncrementalIndexSummary {
     pub storage_audit_ran: bool,
     pub integrity_check_ran: bool,
     pub profile: Option<IndexProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RtdsDependencyClosureBudget {
+    pub max_dirty_files: usize,
+    pub max_edges_inspected: usize,
+    pub max_relation_classes: usize,
+    pub max_wall_ms: u64,
+    pub max_source_bytes: u64,
+    pub max_db_rows_hydrated: usize,
+    pub max_per_relation: usize,
+}
+
+impl Default for RtdsDependencyClosureBudget {
+    fn default() -> Self {
+        if let Some(budget) =
+            RTDS_CLOSURE_BUDGET_OVERRIDE.with(|override_cell| override_cell.borrow().clone())
+        {
+            return budget;
+        }
+        Self {
+            max_dirty_files: env_usize_or(
+                "CODEGRAPH_RTDS_CLOSURE_MAX_DIRTY_FILES",
+                DEFAULT_RTDS_CLOSURE_MAX_DIRTY_FILES,
+            ),
+            max_edges_inspected: env_usize_or(
+                "CODEGRAPH_RTDS_CLOSURE_MAX_EDGES_INSPECTED",
+                DEFAULT_RTDS_CLOSURE_MAX_EDGES_INSPECTED,
+            ),
+            max_relation_classes: env_usize_or(
+                "CODEGRAPH_RTDS_CLOSURE_MAX_RELATION_CLASSES",
+                DEFAULT_RTDS_CLOSURE_MAX_RELATION_CLASSES,
+            ),
+            max_wall_ms: env_u64_or(
+                "CODEGRAPH_RTDS_CLOSURE_MAX_WALL_MS",
+                DEFAULT_RTDS_CLOSURE_MAX_WALL_MS,
+            ),
+            max_source_bytes: env_u64_or(
+                "CODEGRAPH_RTDS_CLOSURE_MAX_SOURCE_BYTES",
+                DEFAULT_RTDS_CLOSURE_MAX_SOURCE_BYTES,
+            ),
+            max_db_rows_hydrated: env_usize_or(
+                "CODEGRAPH_RTDS_CLOSURE_MAX_DB_ROWS_HYDRATED",
+                DEFAULT_RTDS_CLOSURE_MAX_DB_ROWS_HYDRATED,
+            ),
+            max_per_relation: env_usize_or(
+                "CODEGRAPH_RTDS_CLOSURE_MAX_PER_RELATION",
+                DEFAULT_RTDS_CLOSURE_MAX_PER_RELATION,
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RtdsDependencyClosureSummary {
+    pub status: String,
+    pub scope_version: String,
+    pub requested_changed_files: Vec<String>,
+    pub closure_files_considered: Vec<String>,
+    pub closure_files_updated: Vec<String>,
+    pub closure_edges_inspected: usize,
+    pub closure_relation_classes: Vec<String>,
+    pub closure_budget_hit: bool,
+    pub degraded_relation_classes: Vec<String>,
+    pub skipped_relation_classes: Vec<String>,
+    pub closure_unknowns: Vec<String>,
+    pub budgets: RtdsDependencyClosureBudget,
+    pub full_repo_fallback_avoided: bool,
+    pub fallback_avoided_reason: String,
+    pub manual_full_index_recommendation: Option<String>,
+}
+
+impl Default for RtdsDependencyClosureSummary {
+    fn default() -> Self {
+        Self {
+            status: "not_run".to_string(),
+            scope_version: "rtds_dependency_closure_v1".to_string(),
+            requested_changed_files: Vec::new(),
+            closure_files_considered: Vec::new(),
+            closure_files_updated: Vec::new(),
+            closure_edges_inspected: 0,
+            closure_relation_classes: Vec::new(),
+            closure_budget_hit: false,
+            degraded_relation_classes: Vec::new(),
+            skipped_relation_classes: Vec::new(),
+            closure_unknowns: Vec::new(),
+            budgets: RtdsDependencyClosureBudget::default(),
+            full_repo_fallback_avoided: true,
+            fallback_avoided_reason: "bounded_dependency_closure_v1_does_not_silently_full_reindex"
+                .to_string(),
+            manual_full_index_recommendation: None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1716,7 +2821,9 @@ fn index_repo_to_existing_db_with_options(
         storage_policy: options.storage_mode.storage_policy().to_string(),
         issue_counts: BTreeMap::new(),
         issues: Vec::new(),
+        graph_output_budgets: GraphOutputBudgetSummary::new(options.graph_output_budgets.clone()),
         scope: None,
+        candidate_spool: None,
         profile: None,
     };
 
@@ -1724,6 +2831,7 @@ fn index_repo_to_existing_db_with_options(
     let scoped_files = collect_repo_files_with_scope(&repo_root, &options.scope)?;
     let files = scoped_files.files;
     summary.scope = Some(scoped_files.scope_report);
+    initialize_candidate_spool(&mut summary, repo_root, db_path, &options)?;
     let file_discovery_ms = discovery_start.elapsed().as_millis();
     phase_profile.add_ms("file_walk", file_discovery_ms as f64, 1, files.len() as u64);
     let indexed_at = unix_time_ms();
@@ -1900,6 +3008,17 @@ fn index_repo_to_existing_db_with_options(
                     source.len() as u64,
                 );
                 summary.files_hashed += 1;
+                append_candidate_spool_chunks(
+                    &mut summary,
+                    candidate_spool_chunks_for_text_evidence(
+                        &candidate.repo_relative_path,
+                        &source,
+                        &hash,
+                        candidate.kind.as_str(),
+                        size_bytes,
+                        modified_unix_nanos(&file_metadata).as_deref(),
+                    )?,
+                )?;
 
                 if let Some(record) = existing_file
                     .as_ref()
@@ -2228,6 +3347,12 @@ fn index_repo_to_existing_db_with_options(
             let mut import_plan =
                 reduce_static_import_edges_from_workspace(repo_root, &resolver_workspace)?;
             import_plan.sort();
+            if let Some(hit) = import_plan.apply_reducer_edge_budget(
+                "reduce_static_import_edges",
+                options.graph_output_budgets.max_reducer_edges_per_stage,
+            ) {
+                record_graph_output_budget_hit(&mut summary, &options, hit);
+            }
             phase_profile.add_duration(
                 "reduce_static_import_edges",
                 stage_start.elapsed(),
@@ -2245,6 +3370,12 @@ fn index_repo_to_existing_db_with_options(
             let mut security_plan =
                 reduce_security_edges_from_workspace(repo_root, &resolver_workspace)?;
             security_plan.sort();
+            if let Some(hit) = security_plan.apply_reducer_edge_budget(
+                "reduce_security_edges",
+                options.graph_output_budgets.max_reducer_edges_per_stage,
+            ) {
+                record_graph_output_budget_hit(&mut summary, &options, hit);
+            }
             phase_profile.add_duration(
                 "reduce_security_edges",
                 stage_start.elapsed(),
@@ -2261,6 +3392,12 @@ fn index_repo_to_existing_db_with_options(
             emit_post_local_stage_started(&options, "reduce_test_edges");
             let mut test_plan = reduce_test_edges_from_workspace(repo_root, &resolver_workspace)?;
             test_plan.sort();
+            if let Some(hit) = test_plan.apply_reducer_edge_budget(
+                "reduce_test_edges",
+                options.graph_output_budgets.max_reducer_edges_per_stage,
+            ) {
+                record_graph_output_budget_hit(&mut summary, &options, hit);
+            }
             phase_profile.add_duration(
                 "reduce_test_edges",
                 stage_start.elapsed(),
@@ -2337,6 +3474,12 @@ fn index_repo_to_existing_db_with_options(
             emit_post_local_stage_started(&options, "reduce_derived_mutation_edges");
             let mut derived_plan = reduce_derived_mutation_edges_from_store(&store)?;
             derived_plan.sort();
+            if let Some(hit) = derived_plan.apply_reducer_edge_budget(
+                "reduce_derived_mutation_edges",
+                options.graph_output_budgets.max_reducer_edges_per_stage,
+            ) {
+                record_graph_output_budget_hit(&mut summary, &options, hit);
+            }
             phase_profile.add_duration(
                 "reduce_derived_mutation_edges",
                 stage_start.elapsed(),
@@ -2408,6 +3551,18 @@ fn index_repo_to_existing_db_with_options(
         })();
         match post_local_result {
             Ok(result) => {
+                emit_index_progress(
+                    &options,
+                    json!({
+                        "event": "transaction_commit_started",
+                        "durability_status": "commit_starting",
+                        "visible_db_mutation_claim": if bulk_durability == BulkIndexLoadDurability::HiddenAtomicColdTemp {
+                            "hidden_temp_db_commit_not_visible_until_publish"
+                        } else {
+                            "visible_db_transaction_commit_starting"
+                        },
+                    }),
+                );
                 let commit_start = Instant::now();
                 if let Err(error) = store.commit_bulk_index_transaction() {
                     let _ = store.rollback_bulk_index_transaction();
@@ -2415,6 +3570,23 @@ fn index_repo_to_existing_db_with_options(
                 }
                 phase_profile.add_duration("transaction_commit", commit_start.elapsed(), 1, 0);
                 db_write_ms += commit_start.elapsed().as_millis();
+                emit_index_progress(
+                    &options,
+                    json!({
+                        "event": "transaction_commit_completed",
+                        "elapsed_ms": commit_start.elapsed().as_millis(),
+                        "durability_status": if bulk_durability == BulkIndexLoadDurability::HiddenAtomicColdTemp {
+                            "committed_to_hidden_temp_db"
+                        } else {
+                            "committed_to_visible_db"
+                        },
+                        "visible_db_mutation_claim": if bulk_durability == BulkIndexLoadDurability::HiddenAtomicColdTemp {
+                            "not_visible_until_atomic_publish"
+                        } else {
+                            "visible_db_updated_by_committed_transaction"
+                        },
+                    }),
+                );
                 result
             }
             Err(error) => {
@@ -2426,10 +3598,37 @@ fn index_repo_to_existing_db_with_options(
         let stale_deleted = delete_indexed_files_by_path(&store, &stale_cleanup_paths)?;
         let mut import_plan = reduce_static_import_edges_from_store(repo_root, &store)?;
         import_plan.sort();
+        if let Some(hit) = import_plan.apply_reducer_edge_budget(
+            "reduce_static_import_edges",
+            options.graph_output_budgets.max_reducer_edges_per_stage,
+        ) {
+            record_graph_output_budget_hit(&mut summary, &options, hit);
+        }
         let mut security_plan = reduce_security_edges_from_store(repo_root, &store)?;
         security_plan.sort();
+        if let Some(hit) = security_plan.apply_reducer_edge_budget(
+            "reduce_security_edges",
+            options.graph_output_budgets.max_reducer_edges_per_stage,
+        ) {
+            record_graph_output_budget_hit(&mut summary, &options, hit);
+        }
         let mut test_plan = reduce_test_edges_from_store(repo_root, &store)?;
         test_plan.sort();
+        if let Some(hit) = test_plan.apply_reducer_edge_budget(
+            "reduce_test_edges",
+            options.graph_output_budgets.max_reducer_edges_per_stage,
+        ) {
+            record_graph_output_budget_hit(&mut summary, &options, hit);
+        }
+        emit_index_progress(
+            &options,
+            json!({
+                "event": "transaction_commit_started",
+                "durability_status": "commit_starting",
+                "visible_db_mutation_claim": "visible_db_transaction_commit_starting",
+            }),
+        );
+        let transaction_start = Instant::now();
         let (import_resolution, security_resolution, test_resolution, derived_resolution) =
             store.transaction(|tx| {
                 let import_resolution = apply_global_fact_reduction_plan_to_writer(
@@ -2453,6 +3652,12 @@ fn index_repo_to_existing_db_with_options(
                 let mut derived_plan = reduce_derived_mutation_edges_from_store(tx)
                     .map_err(index_error_as_store_error)?;
                 derived_plan.sort();
+                if let Some(hit) = derived_plan.apply_reducer_edge_budget(
+                    "reduce_derived_mutation_edges",
+                    options.graph_output_budgets.max_reducer_edges_per_stage,
+                ) {
+                    record_graph_output_budget_hit(&mut summary, &options, hit);
+                }
                 let derived_resolution = apply_global_fact_reduction_plan_to_writer(
                     tx,
                     &derived_plan,
@@ -2473,6 +3678,15 @@ fn index_repo_to_existing_db_with_options(
                     derived_resolution,
                 ))
             })?;
+        emit_index_progress(
+            &options,
+            json!({
+                "event": "transaction_commit_completed",
+                "elapsed_ms": transaction_start.elapsed().as_millis(),
+                "durability_status": "committed_to_visible_db",
+                "visible_db_mutation_claim": "visible_db_updated_by_committed_transaction",
+            }),
+        );
         (
             stale_deleted,
             import_resolution,
@@ -2499,6 +3713,14 @@ fn index_repo_to_existing_db_with_options(
 
     if bulk_index_load_started {
         let index_finish_start = Instant::now();
+        emit_index_progress(
+            &options,
+            json!({
+                "event": "fts_build_started",
+                "stage": "finish_bulk_index_load",
+                "durability_status": "post_commit_index_build_started",
+            }),
+        );
         // Recreate default indexes after all local and global facts are visible.
         // Production proof-build-only keeps publish-time maintenance light; the
         // validation build mode retains ANALYZE/checkpoint-heavy verification.
@@ -2509,6 +3731,18 @@ fn index_repo_to_existing_db_with_options(
         db_write_ms += index_finish_start.elapsed().as_millis();
         phase_profile.add_duration("index_creation", index_finish_start.elapsed(), 1, 0);
         phase_profile.add_duration("fts_build", index_finish_start.elapsed(), 1, 0);
+        emit_index_progress(
+            &options,
+            json!({
+                "event": "fts_built",
+                "elapsed_ms": index_finish_start.elapsed().as_millis(),
+                "durability_status": if bulk_durability == BulkIndexLoadDurability::HiddenAtomicColdTemp {
+                    "built_in_hidden_temp_db"
+                } else {
+                    "built_in_visible_db"
+                },
+            }),
+        );
 
         let reconciliation_start = Instant::now();
         summary.entities = usize::try_from(store.count_entities()?).unwrap_or(usize::MAX);
@@ -2523,20 +3757,47 @@ fn index_repo_to_existing_db_with_options(
 
     phase_profile.extend_sqlite_profile();
     if options.profile {
+        let legacy_db_write_bucket_ms = db_write_ms;
+        phase_profile.add_ms(
+            "legacy_db_write_aggregate",
+            legacy_db_write_bucket_ms as f64,
+            1,
+            0,
+        );
         let total_wall_ms = total_start.elapsed().as_millis();
+        let measured_db_write_ms = phase_profile.sum_spans_ms_u128(DB_WRITE_PROFILE_SPANS);
+        let measured_fts_search_index_ms = phase_profile.span_ms_u128("fts_build");
+        let memory_bytes = current_process_memory_bytes();
         summary.profile = Some(IndexProfile {
             file_discovery_ms,
             parse_ms,
             extraction_ms,
-            semantic_resolver_ms: 0,
-            db_write_ms,
-            fts_search_index_ms: db_write_ms,
+            semantic_resolver_ms: phase_profile.span_ms_u128("reducer"),
+            db_write_ms: measured_db_write_ms,
+            fts_search_index_ms: measured_fts_search_index_ms,
             vector_signature_ms: 0,
             total_wall_ms,
             files_per_sec: rate_per_second(summary.files_indexed, total_wall_ms),
             entities_per_sec: rate_per_second(summary.entities, total_wall_ms),
             edges_per_sec: rate_per_second(summary.edges, total_wall_ms),
-            memory_bytes: current_process_memory_bytes(),
+            memory_bytes,
+            memory_measured: memory_bytes.is_some(),
+            memory_status: if memory_bytes.is_some() {
+                "measured".to_string()
+            } else {
+                "unknown".to_string()
+            },
+            memory_measurement_kind: if memory_bytes.is_some() {
+                "process_snapshot_not_peak".to_string()
+            } else {
+                "not_measured".to_string()
+            },
+            db_write_measurement: "measured_sql_write_aggregate".to_string(),
+            fts_search_index_measurement: if measured_fts_search_index_ms > 0 {
+                "measured_fts_build_span".to_string()
+            } else {
+                "unknown_or_not_run".to_string()
+            },
             worker_count: max_worker_count,
             skipped_unchanged_files,
             spans: phase_profile.clone().into_spans(),
@@ -2561,6 +3822,11 @@ fn index_repo_to_existing_db_with_options(
     let passport = build_db_passport(&store, repo_root, &options, indexed_at, &summary, "ok")?;
     store.upsert_db_passport(&passport)?;
     phase_profile.add_duration("upsert_db_passport", passport_start.elapsed(), 1, 1);
+    if bulk_durability == BulkIndexLoadDurability::HiddenAtomicColdTemp {
+        mark_candidate_spool_final(&mut summary, repo_root, db_path, &options)?;
+    } else {
+        mark_candidate_spool_superseded(&mut summary, repo_root, db_path, &options, &passport)?;
+    }
 
     if options.profile {
         if let Some(profile) = &mut summary.profile {
@@ -2595,8 +3861,10 @@ fn index_repo_to_atomic_cold_db(
     let atomic_start = Instant::now();
     let temp_db_path = temp_db_path_override.unwrap_or_else(|| atomic_temp_db_path(final_db_path));
     remove_sqlite_file_family(&temp_db_path)?;
+    write_path_chaos_failpoint("cold_before_db_write")?;
     let build_mode = options.build_mode;
     let publish_check = options.build_mode.post_index_check();
+    let spool_options = options.clone();
     let result = index_repo_to_existing_db_with_options(
         repo_root,
         &temp_db_path,
@@ -2606,81 +3874,34 @@ fn index_repo_to_atomic_cold_db(
     );
     match result {
         Ok(mut summary) => {
-            let temp_finalize_start = Instant::now();
-            {
-                let temp_store = SqliteGraphStore::open(&temp_db_path)?;
-                let checkpoint_start = Instant::now();
-                temp_store.wal_checkpoint_truncate()?;
-                add_profile_span_to_summary(
-                    &mut summary,
-                    "wal_checkpoint",
-                    checkpoint_start.elapsed(),
-                    1,
-                    0,
-                    "atomic cold temp DB checkpoint before final integrity gate",
+            let mut published = false;
+            let finalize_result = (|| -> Result<(), IndexError> {
+                write_path_chaos_failpoint("cold_after_temp_db_write_before_validation")?;
+                let temp_finalize_start = Instant::now();
+                emit_index_progress(
+                    &spool_options,
+                    json!({
+                        "event": "temp_db_validation_started",
+                        "temp_db_path": path_string(&temp_db_path),
+                        "final_db_path": path_string(final_db_path),
+                        "durability_status": "hidden_temp_db_committed_not_published",
+                        "visible_db_mutation_claim": "old_good_db_still_visible_until_publish",
+                    }),
                 );
-                let publish_check_start = Instant::now();
-                run_post_index_check(&temp_store, publish_check)?;
-                add_profile_span_to_summary(
-                    &mut summary,
-                    post_index_check_span_name(publish_check),
-                    publish_check_start.elapsed(),
-                    1,
-                    0,
-                    match publish_check {
-                        PostIndexCheck::Full => {
-                            "atomic cold temp DB full integrity gate before replacement"
-                        }
-                        PostIndexCheck::Quick => {
-                            "atomic cold temp DB quick gate before replacement"
-                        }
-                        PostIndexCheck::None => "atomic cold temp DB publish gate skipped",
-                    },
-                );
-            }
-            add_profile_span_to_summary(
-                &mut summary,
-                "atomic_temp_db_finalize",
-                temp_finalize_start.elapsed(),
-                1,
-                0,
-                "checkpoint and integrity gate on hidden temp DB before visible replacement",
-            );
-            let replace_start = Instant::now();
-            publish_atomic_sqlite_db(&temp_db_path, final_db_path)?;
-            add_profile_span_to_summary(
-                &mut summary,
-                "atomic_db_replace",
-                replace_start.elapsed(),
-                1,
-                0,
-                "swap validated temp DB into place with old DB rollback on publish failure",
-            );
-            add_profile_span_to_summary(
-                &mut summary,
-                "artifact_publish_rename",
-                replace_start.elapsed(),
-                1,
-                0,
-                "production artifact publish is the atomic DB replace step",
-            );
-            let final_finalize_start = Instant::now();
-            {
-                let final_store = SqliteGraphStore::open(final_db_path)?;
-                if build_mode == IndexBuildMode::ProofBuildOnly
-                    && publish_check == PostIndexCheck::Quick
                 {
+                    let temp_store = SqliteGraphStore::open(&temp_db_path)?;
+                    let checkpoint_start = Instant::now();
+                    temp_store.wal_checkpoint_truncate()?;
                     add_profile_span_to_summary(
                         &mut summary,
-                        "post_index_check_skipped",
-                        Duration::ZERO,
+                        "wal_checkpoint",
+                        checkpoint_start.elapsed(),
                         1,
                         0,
-                        "final proof-build-only quick check skipped after atomic rename; hidden temp DB already passed quick_check before visible replacement",
+                        "atomic cold temp DB checkpoint before final integrity gate",
                     );
-                } else {
                     let publish_check_start = Instant::now();
-                    run_post_index_check(&final_store, publish_check)?;
+                    run_post_index_check(&temp_store, publish_check)?;
                     add_profile_span_to_summary(
                         &mut summary,
                         post_index_check_span_name(publish_check),
@@ -2689,34 +3910,154 @@ fn index_repo_to_atomic_cold_db(
                         0,
                         match publish_check {
                             PostIndexCheck::Full => {
-                                "atomic cold final DB full integrity gate after replacement"
+                                "atomic cold temp DB full integrity gate before replacement"
                             }
                             PostIndexCheck::Quick => {
-                                "atomic cold final DB quick gate after replacement"
+                                "atomic cold temp DB quick gate before replacement"
                             }
-                            PostIndexCheck::None => "atomic cold final DB publish gate skipped",
+                            PostIndexCheck::None => "atomic cold temp DB publish gate skipped",
                         },
                     );
                 }
-                let checkpoint_start = Instant::now();
-                final_store.wal_checkpoint_truncate()?;
                 add_profile_span_to_summary(
                     &mut summary,
-                    "wal_checkpoint",
-                    checkpoint_start.elapsed(),
+                    "atomic_temp_db_finalize",
+                    temp_finalize_start.elapsed(),
                     1,
                     0,
-                    "atomic cold final DB checkpoint after replacement",
+                    "checkpoint and integrity gate on hidden temp DB before visible replacement",
                 );
+                emit_index_progress(
+                    &spool_options,
+                    json!({
+                        "event": "temp_db_validation_completed",
+                        "elapsed_ms": temp_finalize_start.elapsed().as_millis(),
+                        "temp_db_path": path_string(&temp_db_path),
+                        "durability_status": "hidden_temp_db_validated_not_published",
+                        "visible_db_mutation_claim": "old_good_db_still_visible_until_publish",
+                    }),
+                );
+                write_path_chaos_failpoint("cold_after_validation_before_publish")?;
+                emit_index_progress(
+                    &spool_options,
+                    json!({
+                        "event": "publish_started",
+                        "temp_db_path": path_string(&temp_db_path),
+                        "final_db_path": path_string(final_db_path),
+                        "durability_status": "atomic_publish_starting",
+                        "visible_db_mutation_claim": "old_good_db_visible_until_rename_succeeds",
+                    }),
+                );
+                let replace_start = Instant::now();
+                publish_atomic_sqlite_db(&temp_db_path, final_db_path)?;
+                published = true;
+                add_profile_span_to_summary(
+                    &mut summary,
+                    "atomic_db_replace",
+                    replace_start.elapsed(),
+                    1,
+                    0,
+                    "swap validated temp DB into place with old DB rollback on publish failure",
+                );
+                add_profile_span_to_summary(
+                    &mut summary,
+                    "artifact_publish_rename",
+                    replace_start.elapsed(),
+                    1,
+                    0,
+                    "production artifact publish is the atomic DB replace step",
+                );
+                emit_index_progress(
+                    &spool_options,
+                    json!({
+                        "event": "temp_db_published",
+                        "elapsed_ms": replace_start.elapsed().as_millis(),
+                        "final_db_path": path_string(final_db_path),
+                        "durability_status": "published_to_visible_db",
+                        "visible_db_updated": true,
+                        "visible_db_mutation_claim": "visible_db_updated_after_atomic_publish",
+                    }),
+                );
+                emit_index_progress(
+                    &spool_options,
+                    json!({
+                        "event": "visible_db_updated",
+                        "final_db_path": path_string(final_db_path),
+                        "durability_status": "published_to_visible_db",
+                        "claimability": "pending_final_status_check",
+                    }),
+                );
+                write_path_chaos_failpoint("cold_after_publish_before_final_status")?;
+                let final_finalize_start = Instant::now();
+                {
+                    let final_store = SqliteGraphStore::open(final_db_path)?;
+                    if build_mode == IndexBuildMode::ProofBuildOnly
+                        && publish_check == PostIndexCheck::Quick
+                    {
+                        add_profile_span_to_summary(
+                            &mut summary,
+                            "post_index_check_skipped",
+                            Duration::ZERO,
+                            1,
+                            0,
+                            "final proof-build-only quick check skipped after atomic rename; hidden temp DB already passed quick_check before visible replacement",
+                        );
+                    } else {
+                        let publish_check_start = Instant::now();
+                        run_post_index_check(&final_store, publish_check)?;
+                        add_profile_span_to_summary(
+                            &mut summary,
+                            post_index_check_span_name(publish_check),
+                            publish_check_start.elapsed(),
+                            1,
+                            0,
+                            match publish_check {
+                                PostIndexCheck::Full => {
+                                    "atomic cold final DB full integrity gate after replacement"
+                                }
+                                PostIndexCheck::Quick => {
+                                    "atomic cold final DB quick gate after replacement"
+                                }
+                                PostIndexCheck::None => "atomic cold final DB publish gate skipped",
+                            },
+                        );
+                    }
+                    let checkpoint_start = Instant::now();
+                    final_store.wal_checkpoint_truncate()?;
+                    add_profile_span_to_summary(
+                        &mut summary,
+                        "wal_checkpoint",
+                        checkpoint_start.elapsed(),
+                        1,
+                        0,
+                        "atomic cold final DB checkpoint after replacement",
+                    );
+                    if let Some(passport) = final_store.get_db_passport()? {
+                        mark_candidate_spool_superseded(
+                            &mut summary,
+                            repo_root,
+                            final_db_path,
+                            &spool_options,
+                            &passport,
+                        )?;
+                    }
+                }
+                add_profile_span_to_summary(
+                    &mut summary,
+                    "atomic_final_db_validate",
+                    final_finalize_start.elapsed(),
+                    1,
+                    0,
+                    "open, configured publish gate, and checkpoint after visible replacement",
+                );
+                Ok(())
+            })();
+            if let Err(error) = finalize_result {
+                if !published {
+                    let _ = remove_sqlite_file_family(&temp_db_path);
+                }
+                return Err(error);
             }
-            add_profile_span_to_summary(
-                &mut summary,
-                "atomic_final_db_validate",
-                final_finalize_start.elapsed(),
-                1,
-                0,
-                "open, configured publish gate, and checkpoint after visible replacement",
-            );
             summary.db_path = path_string(final_db_path);
             if let Some(profile) = &mut summary.profile {
                 profile.total_wall_ms = atomic_start.elapsed().as_millis();
@@ -2776,6 +4117,12 @@ fn atomic_backup_db_path(final_db_path: &Path) -> PathBuf {
 fn publish_atomic_sqlite_db(temp_db_path: &Path, final_db_path: &Path) -> Result<(), IndexError> {
     let backup_db_path = atomic_backup_db_path(final_db_path);
     let had_old_db = final_db_path.exists();
+    if write_path_chaos_failpoint_enabled("cold_permission_denied_publish_dir") {
+        return Err(IndexError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "chaos_failpoint:cold_permission_denied_publish_dir",
+        )));
+    }
     if had_old_db {
         if let Err(error) = rename_sqlite_file_family(final_db_path, &backup_db_path) {
             let _ = rename_sqlite_file_family(&backup_db_path, final_db_path);
@@ -2783,6 +4130,12 @@ fn publish_atomic_sqlite_db(temp_db_path: &Path, final_db_path: &Path) -> Result
         }
     } else {
         remove_sqlite_sidecars(final_db_path)?;
+    }
+    if let Err(error) = write_path_chaos_failpoint("cold_during_publish") {
+        if had_old_db {
+            let _ = rename_sqlite_file_family(&backup_db_path, final_db_path);
+        }
+        return Err(error);
     }
 
     match fs::rename(temp_db_path, final_db_path) {
@@ -2905,6 +4258,20 @@ impl IndexPhaseRecorder {
         if !entry.notes.iter().any(|existing| existing == &note) {
             entry.notes.push(note);
         }
+    }
+
+    fn span_ms_u128(&self, name: &str) -> u128 {
+        self.spans
+            .get(name)
+            .map(|span| span.elapsed_ms as u128)
+            .unwrap_or(0)
+    }
+
+    fn sum_spans_ms_u128(&self, names: &[&str]) -> u128 {
+        names
+            .iter()
+            .map(|name| self.span_ms_u128(name))
+            .sum::<u128>()
     }
 
     fn extend_sqlite_profile(&mut self) {
@@ -3119,6 +4486,31 @@ const REQUIRED_PROFILE_SPANS: &[&str] = &[
     "relation_sampler_skipped",
     "path_evidence_sampler_skipped",
     "cgc_comparison_skipped",
+];
+
+const DB_WRITE_PROFILE_SPANS: &[&str] = &[
+    "stale_fact_delete",
+    "file_manifest_upsert",
+    "text_evidence_upsert",
+    "entity_insert",
+    "proof_entity_insert",
+    "edge_insert",
+    "proof_edge_insert",
+    "source_span_insert",
+    "path_evidence_insert",
+    "path_evidence_edges_insert",
+    "path_evidence_symbols_insert",
+    "path_evidence_tests_insert",
+    "file_template_entity_mapping_inserts",
+    "template_entities_insert",
+    "template_edges_insert",
+    "symbol_dict_insert",
+    "qname_prefix_dict_insert",
+    "qualified_name_dict_insert",
+    "dictionary_lookup_insert",
+    "content_template_upsert",
+    "upsert_index_state",
+    "upsert_db_passport",
 ];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -3643,6 +5035,7 @@ fn expected_db_passport(
         index_scope_policy_hash: scope_policy_hash(&options.scope)?,
         git_remote: git_remote(repo_root),
         worktree_root: git_worktree_root(repo_root).or_else(|| Some(path_string(repo_root))),
+        repo_head: git_head(repo_root),
     })
 }
 
@@ -3956,6 +5349,7 @@ fn reason_is_repo_identity_mismatch(reason: &str) -> bool {
 fn reason_is_stale_or_missing_passport(reason: &str) -> bool {
     reason.contains("previous run did not complete")
         || reason.contains("previous integrity gate was not ok")
+        || reason.contains("repo head mismatch")
         || reason.contains("codegraph_db_passport table is missing")
         || reason.contains("codegraph_db_passport row is missing")
         || reason.contains("passport scope_policy_json is missing")
@@ -3985,6 +5379,14 @@ fn db_artifact_freshness(preflight: &DbLifecyclePreflight) -> Option<String> {
             "integrity_not_ok:{}",
             passport.integrity_gate_result
         ));
+    }
+    if preflight
+        .db_health
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("repo head mismatch"))
+    {
+        return Some("repo_head_mismatch".to_string());
     }
     Some("fresh".to_string())
 }
@@ -4114,6 +5516,11 @@ fn lifecycle_db_problem_kind(
         blocker.contains("repo root mismatch") || blocker.contains("git remote mismatch")
     }) {
         Some("repo_root_mismatch".to_string())
+    } else if blockers
+        .iter()
+        .any(|blocker| blocker.contains("repo head mismatch"))
+    {
+        Some("repo_head_mismatch".to_string())
     } else if scope_status == "mismatched" {
         Some("scope_mismatch".to_string())
     } else if blockers.iter().any(|blocker| {
@@ -4234,6 +5641,41 @@ fn build_db_passport(
     })
 }
 
+fn build_incremental_db_passport(
+    repo_root: &Path,
+    scope: &IndexScopeOptions,
+    storage_mode: StorageMode,
+    indexed_at: u64,
+    files_seen: u64,
+    files_indexed: u64,
+    existing_passport: Option<&DbPassport>,
+) -> Result<DbPassport, IndexError> {
+    let now = unix_time_ms();
+    Ok(DbPassport {
+        passport_version: DB_PASSPORT_VERSION,
+        codegraph_schema_version: SCHEMA_VERSION,
+        storage_mode: storage_mode.as_str().to_string(),
+        index_scope_policy_hash: scope_policy_hash(scope)?,
+        scope_policy_json: scope_policy_json(scope)?,
+        canonical_repo_root: canonical_repo_root_string(repo_root)?,
+        git_remote: git_remote(repo_root),
+        worktree_root: git_worktree_root(repo_root).or_else(|| Some(path_string(repo_root))),
+        repo_head: git_head(repo_root),
+        source_discovery_policy_version: source_discovery_policy_version().to_string(),
+        codegraph_build_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        last_successful_index_timestamp: Some(indexed_at),
+        last_completed_run_id: Some(format!("incremental-{indexed_at}-{}", std::process::id())),
+        last_run_status: "completed".to_string(),
+        integrity_gate_result: "ok".to_string(),
+        files_seen,
+        files_indexed,
+        created_at_unix_ms: existing_passport
+            .map(|passport| passport.created_at_unix_ms)
+            .unwrap_or(now),
+        updated_at_unix_ms: now,
+    })
+}
+
 fn source_discovery_policy_version() -> &'static str {
     "scope-policy-v1"
 }
@@ -4253,6 +5695,17 @@ fn stable_hex_hash(bytes: &[u8]) -> String {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{hash:016x}")
+}
+
+fn sqlite_index_error(context: &str, error: rusqlite::Error) -> IndexError {
+    IndexError::Message(format!("{context}: {error}"))
+}
+
+pub fn candidate_spool_query_index_path(spool_path: &Path) -> PathBuf {
+    let Some(file_name) = spool_path.file_name().and_then(|name| name.to_str()) else {
+        return spool_path.with_extension("query.sqlite");
+    };
+    spool_path.with_file_name(format!("{file_name}.query.sqlite"))
 }
 
 fn canonical_repo_root_string(repo_root: &Path) -> Result<String, IndexError> {
@@ -4316,7 +5769,32 @@ fn process_index_batch(
 
     let worker_count = effective_worker_count(options, batch.files.len());
     let parse_extract_start = Instant::now();
-    let (local_bundles, stats) = parse_extract_pending_files(batch.files, worker_count)?;
+    let (local_bundles, stats) = parse_extract_pending_files_with_progress(
+        batch.files,
+        worker_count,
+        options.profile && options.json,
+        &options.graph_output_budgets,
+    )?;
+    let files_parsed_count = stats
+        .iter()
+        .filter(|stat| !stat.parse_error && !stat.skipped)
+        .count();
+    emit_index_progress(
+        options,
+        json!({
+            "event": "files_parsed",
+            "batch_index": batch_index,
+            "files_parsed": files_parsed_count,
+            "parse_errors": stats.iter().filter(|stat| stat.parse_error).count(),
+            "syntax_errors": stats.iter().filter(|stat| stat.syntax_error).count(),
+        }),
+    );
+    let mut spool_chunks = Vec::new();
+    for bundle in &local_bundles {
+        spool_chunks.extend(candidate_spool_chunks_for_local_bundle(bundle)?);
+    }
+    append_candidate_spool_chunks(summary, spool_chunks)?;
+    write_path_chaos_failpoint("candidate_spool_after_batch_before_db_write")?;
     profile.add_duration(
         "parse_extract_workers_wall",
         parse_extract_start.elapsed(),
@@ -4325,11 +5803,23 @@ fn process_index_batch(
     );
     let reduce_start = Instant::now();
     let reduced_plan = reduce_local_fact_bundles(local_bundles);
-    profile.add_duration(
-        "reducer",
-        reduce_start.elapsed(),
-        1,
-        reduced_plan.bundles.len() as u64,
+    let bundles_reduced = reduced_plan.bundles.len();
+    let edges_staged = reduced_plan
+        .bundles
+        .iter()
+        .map(|bundle| bundle.extraction.edges.len())
+        .sum::<usize>()
+        + reduced_plan.global_facts.edges.len();
+    profile.add_duration("reducer", reduce_start.elapsed(), 1, bundles_reduced as u64);
+    emit_index_progress(
+        options,
+        json!({
+            "event": "bundles_reduced",
+            "batch_index": batch_index,
+            "bundles_reduced": bundles_reduced,
+            "edges_staged": edges_staged,
+            "durability_status": "staged_in_memory_not_durably_committed",
+        }),
     );
     let parse_ms = stats.iter().map(|stat| stat.parse_ms).sum::<u128>();
     let extraction_ms = stats.iter().map(|stat| stat.extraction_ms).sum::<u128>();
@@ -4359,6 +5849,10 @@ fn process_index_batch(
         .collect::<Vec<_>>();
 
     for stat in &stats {
+        for hit in &stat.graph_output_budget_hits {
+            record_graph_output_budget_hit(summary, options, hit.clone());
+        }
+
         if stat.parse_error {
             summary.parse_errors += 1;
             summary.files_skipped += 1;
@@ -4415,21 +5909,20 @@ fn process_index_batch(
     summary.batches_completed += 1;
     emit_index_progress(
         options,
-        json!({
-            "event": "index_batch_completed",
-            "batch_index": batch_index,
-            "files_indexed": persisted.files,
-            "entities": persisted.entities,
-            "edges": persisted.edges,
-            "duplicate_edges_upserted": persisted.duplicate_edges_upserted,
-            "parse_errors": stats.iter().filter(|stat| stat.parse_error).count(),
-            "syntax_errors": stats.iter().filter(|stat| stat.syntax_error).count(),
-            "db_write_ms": db_write_ms,
-            "parse_ms": parse_ms,
-            "extraction_ms": extraction_ms,
-            "bundle_ms": bundle_ms,
-            "worker_count": worker_count,
-        }),
+        index_batch_processed_progress_event(
+            batch_index,
+            &persisted,
+            stats.iter().filter(|stat| stat.parse_error).count(),
+            stats.iter().filter(|stat| stat.syntax_error).count(),
+            db_write_ms,
+            parse_ms,
+            extraction_ms,
+            bundle_ms,
+            worker_count,
+            files_parsed_count,
+            bundles_reduced,
+            edges_staged,
+        ),
     );
 
     Ok(IndexBatchProfile {
@@ -4438,6 +5931,44 @@ fn process_index_batch(
         bundle_ms,
         db_write_ms,
         worker_count,
+    })
+}
+
+fn index_batch_processed_progress_event(
+    batch_index: usize,
+    persisted: &PersistedBatchSummary,
+    parse_errors: usize,
+    syntax_errors: usize,
+    db_write_ms: u128,
+    parse_ms: u128,
+    extraction_ms: u128,
+    bundle_ms: u128,
+    worker_count: usize,
+    files_parsed: usize,
+    bundles_reduced: usize,
+    edges_staged: usize,
+) -> Value {
+    json!({
+        "event": "index_batch_processed",
+        "batch_progress_status": "processed_not_durably_committed",
+        "durability_status": "staged_in_open_transaction",
+        "visible_db_mutation_claim": "not_claimed_until_commit_or_publish",
+        "batch_index": batch_index,
+        "files_parsed": files_parsed,
+        "bundles_reduced": bundles_reduced,
+        "edges_staged": edges_staged,
+        "edges_inserted": persisted.edges,
+        "files_indexed": persisted.files,
+        "entities": persisted.entities,
+        "edges": persisted.edges,
+        "duplicate_edges_upserted": persisted.duplicate_edges_upserted,
+        "parse_errors": parse_errors,
+        "syntax_errors": syntax_errors,
+        "db_write_ms": db_write_ms,
+        "parse_ms": parse_ms,
+        "extraction_ms": extraction_ms,
+        "bundle_ms": bundle_ms,
+        "worker_count": worker_count,
     })
 }
 
@@ -4750,6 +6281,8 @@ fn persist_local_fact_bundles(
         extraction.file.indexed_at_unix_ms = Some(indexed_at);
         let mut snippets = None;
         let file_start = Instant::now();
+        write_path_chaos_store_failpoint("cold_during_db_write")?;
+        write_path_chaos_store_failpoint("cold_disk_full_simulated")?;
         store.upsert_file(&extraction.file)?;
         profile.add_duration("file_manifest_upsert", file_start.elapsed(), 1, 1);
 
@@ -4771,13 +6304,13 @@ fn persist_local_fact_bundles(
             )?;
         }
 
-        let persisted_entity_ids = persisted_entity_ids(&extraction.entities);
+        let persisted_entity_ids = persisted_entity_ids(&extraction.entities, options.storage_mode);
         if indexed.template_required {
             let preparation_start = Instant::now();
             let template_entities = extraction
                 .entities
                 .iter()
-                .filter(|entity| should_persist_entity(entity))
+                .filter(|entity| should_persist_entity(entity, options.storage_mode))
                 .cloned()
                 .collect::<Vec<_>>();
             profile.add_duration(
@@ -4824,7 +6357,7 @@ fn persist_local_fact_bundles(
         let proof_entities = extraction
             .entities
             .iter()
-            .filter(|entity| should_persist_entity(entity))
+            .filter(|entity| should_persist_entity(entity, options.storage_mode))
             .collect::<Vec<_>>();
         profile.add_duration(
             "proof_entities_preparation",
@@ -4972,6 +6505,22 @@ fn record_index_issue(
     summary.issues.push(issue);
 }
 
+fn record_graph_output_budget_hit(
+    summary: &mut IndexSummary,
+    options: &IndexOptions,
+    hit: GraphOutputBudgetHit,
+) {
+    summary.graph_output_budgets.record_hit(hit.clone());
+    record_index_issue(
+        summary,
+        options,
+        hit.repo_relative_path.clone(),
+        "graph_output_budget_hit",
+        hit.message(),
+        "indexed_with_degraded_graph_output_budget",
+    );
+}
+
 fn emit_index_progress(options: &IndexOptions, event: Value) {
     if options.profile && options.json {
         eprintln!("{event}");
@@ -5035,8 +6584,22 @@ fn effective_worker_count(options: &IndexOptions, file_count: usize) -> usize {
 }
 
 pub fn parse_extract_pending_files(
+    pending: Vec<PendingIndexFile>,
+    worker_count: usize,
+) -> Result<(Vec<IndexedFileOutput>, Vec<ParseExtractStat>), IndexError> {
+    parse_extract_pending_files_with_progress(
+        pending,
+        worker_count,
+        false,
+        &GraphOutputBudgets::default(),
+    )
+}
+
+fn parse_extract_pending_files_with_progress(
     mut pending: Vec<PendingIndexFile>,
     worker_count: usize,
+    emit_profile_json: bool,
+    graph_output_budgets: &GraphOutputBudgets,
 ) -> Result<(Vec<IndexedFileOutput>, Vec<ParseExtractStat>), IndexError> {
     pending.sort_by(|left, right| left.repo_relative_path.cmp(&right.repo_relative_path));
     if pending.is_empty() {
@@ -5046,13 +6609,32 @@ pub fn parse_extract_pending_files(
     let worker_count = worker_count.max(1).min(pending.len());
     let chunk_size = pending.len().div_ceil(worker_count);
     let mut handles = Vec::new();
-    for chunk in pending.chunks(chunk_size) {
-        let work = chunk.to_vec();
+    let mut worker_chunks = Vec::new();
+    for _ in 0..worker_count {
+        worker_chunks.push(Vec::new());
+    }
+    for (index, file) in pending.into_iter().enumerate() {
+        let worker_index = index / chunk_size;
+        worker_chunks[worker_index].push(file);
+    }
+    for work in worker_chunks.into_iter().filter(|chunk| !chunk.is_empty()) {
+        let graph_output_budgets = graph_output_budgets.clone();
         handles.push(thread::spawn(move || {
             let parser = TreeSitterParser;
             let mut outputs = Vec::new();
             let mut stats = Vec::new();
             for file in work {
+                if emit_profile_json {
+                    eprintln!(
+                        "{}",
+                        json!({
+                            "event": "file_extract_started",
+                            "repo_relative_path": &file.repo_relative_path,
+                            "source_bytes": file.source.len(),
+                            "duplicate": file.duplicate_of.is_some(),
+                        })
+                    );
+                }
                 if file.duplicate_of.is_some() {
                     let repo_relative_path = file.repo_relative_path.clone();
                     let duplicate_of = file.duplicate_of.clone();
@@ -5078,6 +6660,21 @@ pub fn parse_extract_pending_files(
                         extraction,
                     ));
                     let bundle_ms = bundle_start.elapsed().as_millis();
+                    if emit_profile_json {
+                        eprintln!(
+                            "{}",
+                            json!({
+                                "event": "file_extract_completed",
+                                "repo_relative_path": &file.repo_relative_path,
+                                "status": "duplicate_template",
+                                "parse_ms": 0,
+                                "extraction_ms": 0,
+                                "bundle_ms": bundle_ms,
+                                "entities": 0,
+                                "edges": 0,
+                            })
+                        );
+                    }
                     stats.push(ParseExtractStat {
                         repo_relative_path: file.repo_relative_path,
                         parse_ms: 0,
@@ -5087,6 +6684,74 @@ pub fn parse_extract_pending_files(
                         syntax_error: false,
                         skipped: false,
                         message: None,
+                        graph_output_budget_hits: Vec::new(),
+                    });
+                    continue;
+                }
+                if should_skip_graph_extraction_for_large_generated_or_test_source(
+                    &file.repo_relative_path,
+                    file.source.len(),
+                ) {
+                    let mut metadata = file_manifest_metadata(file.modified_unix_nanos.clone());
+                    metadata.insert(
+                        "parser_status".to_string(),
+                        "graph_extraction_skipped_budget".into(),
+                    );
+                    metadata.insert("claim_state".to_string(), "source_navigation_only".into());
+                    metadata.insert("graph_extraction_skipped".to_string(), true.into());
+                    metadata.insert(
+                        "graph_extraction_skip_reason".to_string(),
+                        "large_generated_or_test_source_budget".into(),
+                    );
+                    metadata.insert("graph_relation_claims".to_string(), json!([]));
+                    let extraction = BasicExtraction {
+                        file: FileRecord {
+                            repo_relative_path: file.repo_relative_path.clone(),
+                            file_hash: file.file_hash.clone(),
+                            language: file.language.clone(),
+                            size_bytes: file.size_bytes,
+                            indexed_at_unix_ms: None,
+                            metadata,
+                        },
+                        entities: Vec::new(),
+                        edges: Vec::new(),
+                    };
+                    let bundle_start = Instant::now();
+                    outputs.push(LocalFactBundle::new(
+                        file.repo_relative_path.clone(),
+                        file.source,
+                        file.needs_delete,
+                        None,
+                        file.template_required,
+                        extraction,
+                    ));
+                    let bundle_ms = bundle_start.elapsed().as_millis();
+                    if emit_profile_json {
+                        eprintln!(
+                            "{}",
+                            json!({
+                                "event": "file_extract_completed",
+                                "repo_relative_path": &file.repo_relative_path,
+                                "status": "graph_extraction_skipped_budget",
+                                "reason": "large_generated_or_test_source_budget",
+                                "parse_ms": 0,
+                                "extraction_ms": 0,
+                                "bundle_ms": bundle_ms,
+                                "entities": 0,
+                                "edges": 0,
+                            })
+                        );
+                    }
+                    stats.push(ParseExtractStat {
+                        repo_relative_path: file.repo_relative_path,
+                        parse_ms: 0,
+                        extraction_ms: 0,
+                        bundle_ms,
+                        parse_error: false,
+                        syntax_error: false,
+                        skipped: false,
+                        message: Some("graph_extraction_skipped_budget".to_string()),
+                        graph_output_budget_hits: Vec::new(),
                     });
                     continue;
                 }
@@ -5103,7 +6768,15 @@ pub fn parse_extract_pending_files(
                             file.modified_unix_nanos.clone(),
                             extraction.file.metadata.clone(),
                         );
+                        let graph_output_budget_hits = apply_graph_output_budgets_to_extraction(
+                            &file.repo_relative_path,
+                            &mut extraction,
+                            &graph_output_budgets,
+                        );
                         let extraction_ms = extraction_start.elapsed().as_millis();
+                        let extracted_repo_relative_path = parsed.repo_relative_path.clone();
+                        let entity_count = extraction.entities.len();
+                        let edge_count = extraction.edges.len();
                         let bundle_start = Instant::now();
                         outputs.push(LocalFactBundle::new(
                             file.repo_relative_path,
@@ -5114,8 +6787,24 @@ pub fn parse_extract_pending_files(
                             extraction,
                         ));
                         let bundle_ms = bundle_start.elapsed().as_millis();
+                        if emit_profile_json {
+                            eprintln!(
+                                "{}",
+                                json!({
+                                    "event": "file_extract_completed",
+                                    "repo_relative_path": &extracted_repo_relative_path,
+                                    "status": "ok",
+                                    "parse_ms": parse_ms,
+                                    "extraction_ms": extraction_ms,
+                                    "bundle_ms": bundle_ms,
+                                    "entities": entity_count,
+                                    "edges": edge_count,
+                                    "syntax_error": syntax_error,
+                                })
+                            );
+                        }
                         stats.push(ParseExtractStat {
-                            repo_relative_path: parsed.repo_relative_path.clone(),
+                            repo_relative_path: extracted_repo_relative_path,
                             parse_ms,
                             extraction_ms,
                             bundle_ms,
@@ -5123,9 +6812,26 @@ pub fn parse_extract_pending_files(
                             syntax_error,
                             skipped: false,
                             message: None,
+                            graph_output_budget_hits,
                         });
                     }
                     Ok(None) => {
+                        if emit_profile_json {
+                            eprintln!(
+                                "{}",
+                                json!({
+                                    "event": "file_extract_completed",
+                                    "repo_relative_path": &file.repo_relative_path,
+                                    "status": "skipped",
+                                    "parse_ms": parse_ms,
+                                    "extraction_ms": 0,
+                                    "bundle_ms": 0,
+                                    "entities": 0,
+                                    "edges": 0,
+                                    "message": "unsupported language after detection",
+                                })
+                            );
+                        }
                         stats.push(ParseExtractStat {
                             repo_relative_path: file.repo_relative_path,
                             parse_ms,
@@ -5135,6 +6841,7 @@ pub fn parse_extract_pending_files(
                             syntax_error: false,
                             skipped: true,
                             message: Some("unsupported language after detection".to_string()),
+                            graph_output_budget_hits: Vec::new(),
                         });
                     }
                     Err(error) => {
@@ -5169,6 +6876,23 @@ pub fn parse_extract_pending_files(
                             extraction,
                         ));
                         let bundle_ms = bundle_start.elapsed().as_millis();
+                        if emit_profile_json {
+                            eprintln!(
+                                "{}",
+                                json!({
+                                    "event": "file_extract_completed",
+                                    "repo_relative_path": &file.repo_relative_path,
+                                    "status": "parse_error",
+                                    "language": &language,
+                                    "parse_ms": parse_ms,
+                                    "extraction_ms": 0,
+                                    "bundle_ms": bundle_ms,
+                                    "entities": 0,
+                                    "edges": 0,
+                                    "message": &error_message,
+                                })
+                            );
+                        }
                         stats.push(ParseExtractStat {
                             repo_relative_path: file.repo_relative_path,
                             parse_ms,
@@ -5178,6 +6902,7 @@ pub fn parse_extract_pending_files(
                             syntax_error: false,
                             skipped: false,
                             message: Some(error_message),
+                            graph_output_budget_hits: Vec::new(),
                         });
                     }
                 }
@@ -5311,6 +7036,46 @@ fn cleanup_facts_for_path(
     Ok(true)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn cleanup_missing_indexed_paths_to_writer(
+    store: &SqliteGraphStore,
+    cache: &IncrementalIndexCache,
+    repo_root: &Path,
+    changed_paths: &BTreeSet<String>,
+    summary: &mut IncrementalIndexSummary,
+    changed_fact_paths: &mut BTreeSet<String>,
+    removed_cache_entity_ids: &mut Vec<String>,
+    changed_static_resolver_inputs: &mut bool,
+    phase_profile: &mut IndexPhaseRecorder,
+) -> Result<usize, IndexError> {
+    let mut cleaned = 0usize;
+    for file in store.list_files(UNBOUNDED_STORE_READ_LIMIT)? {
+        let repo_relative_path = normalize_graph_path(&file.repo_relative_path);
+        if changed_paths.contains(&repo_relative_path) {
+            continue;
+        }
+        if repo_root.join(&repo_relative_path).exists() {
+            continue;
+        }
+        if cleanup_facts_for_path(
+            store,
+            cache,
+            &repo_relative_path,
+            PathCleanupReason::Deleted,
+            summary,
+            changed_fact_paths,
+            removed_cache_entity_ids,
+            changed_static_resolver_inputs,
+            phase_profile,
+        )? {
+            summary.deleted_file_facts_removed += 1;
+            summary.files_deleted += 1;
+            cleaned += 1;
+        }
+    }
+    Ok(cleaned)
+}
+
 pub fn update_changed_files(
     repo_path: &Path,
     changed_paths: &[PathBuf],
@@ -5358,6 +7123,13 @@ pub fn update_changed_files_with_cache_to_db(
         .effective_scope_policy
         .clone()
         .unwrap_or_else(IndexScopeOptions::default);
+    let storage_mode = db_preflight
+        .db_health
+        .passport
+        .as_ref()
+        .and_then(|passport| passport.storage_mode.parse::<StorageMode>().ok())
+        .unwrap_or_default();
+    let previous_passport = db_preflight.db_health.passport.clone();
     let open_start = Instant::now();
     let store = SqliteGraphStore::open(&db_path)?;
     phase_profile.add_duration("open_store", open_start.elapsed(), 1, 0);
@@ -5368,6 +7140,7 @@ pub fn update_changed_files_with_cache_to_db(
         repo_root: path_string(&repo_root),
         db_path: path_string(&db_path),
         changed_files: Vec::new(),
+        dependency_closure: RtdsDependencyClosureSummary::default(),
         files_seen: 0,
         files_walked: 0,
         files_metadata_unchanged: 0,
@@ -5400,16 +7173,31 @@ pub fn update_changed_files_with_cache_to_db(
     };
 
     let metadata_start = Instant::now();
-    let mut normalized = changed_paths
-        .iter()
-        .map(|path| normalize_changed_path(&repo_root, path))
-        .collect::<Result<Vec<_>, _>>()?;
-    normalized.sort_by(|left, right| left.1.cmp(&right.1));
-    normalized.dedup_by(|left, right| left.1 == right.1);
+    let requested_normalized =
+        normalize_changed_paths_for_update(&repo_root, changed_paths, &store)?;
+    let mut dependency_closure =
+        rtds_dependency_closure_for_changed_paths(&repo_root, &store, &requested_normalized)?;
+    let mut expanded_changed_paths = changed_paths.to_vec();
+    for repo_relative_path in &dependency_closure.closure_files_considered {
+        if !dependency_closure
+            .requested_changed_files
+            .iter()
+            .any(|requested| {
+                platform_path_identity_key(requested)
+                    == platform_path_identity_key(repo_relative_path)
+            })
+        {
+            expanded_changed_paths.push(repo_root.join(repo_relative_path));
+        }
+    }
+    let normalized =
+        normalize_changed_paths_for_update(&repo_root, &expanded_changed_paths, &store)?;
     summary.changed_files = normalized
         .iter()
         .map(|(_, repo_relative_path)| repo_relative_path.clone())
         .collect();
+    dependency_closure.closure_files_updated = summary.changed_files.clone();
+    summary.dependency_closure = dependency_closure;
     phase_profile.add_ms("file_walk", 0.0, 1, normalized.len() as u64);
     phase_profile.add_duration(
         "metadata_diff",
@@ -5429,6 +7217,7 @@ pub fn update_changed_files_with_cache_to_db(
     phase_profile.add_duration("transaction_begin", transaction_begin_start.elapsed(), 1, 0);
     let transaction_result = (|| -> Result<_, IndexError> {
         let tx = &store;
+        write_path_chaos_failpoint("incremental_before_stale_cleanup")?;
         for (file_path, repo_relative_path) in &normalized {
             summary.files_seen += 1;
             summary.files_walked += 1;
@@ -5706,6 +7495,7 @@ pub fn update_changed_files_with_cache_to_db(
                 &mut changed_static_resolver_inputs,
                 &mut phase_profile,
             )?;
+            write_path_chaos_failpoint("incremental_after_stale_cleanup_before_insert")?;
             summary.files_parsed += 1;
             let parse_start = Instant::now();
             let parsed = match parser.parse(repo_relative_path, &source) {
@@ -5755,17 +7545,26 @@ pub fn update_changed_files_with_cache_to_db(
             let file_start = Instant::now();
             tx.upsert_file(&extraction.file)?;
             phase_profile.add_duration("file_manifest_upsert", file_start.elapsed(), 1, 1);
+            let source_text_start = Instant::now();
+            tx.insert_file_text_after_file_delete(repo_relative_path, &source)?;
+            phase_profile.add_duration(
+                "source_text_evidence_upsert",
+                source_text_start.elapsed(),
+                1,
+                source.len() as u64,
+            );
 
-            let persisted_entity_ids = persisted_entity_ids(&extraction.entities);
+            let persisted_entity_ids = persisted_entity_ids(&extraction.entities, storage_mode);
             let mut entity_count = 0usize;
             let mut edge_count = 0usize;
 
             for entity in extraction
                 .entities
                 .iter()
-                .filter(|entity| should_persist_entity(entity))
+                .filter(|entity| should_persist_entity(entity, storage_mode))
             {
                 let entity_start = Instant::now();
+                write_path_chaos_failpoint("incremental_during_entity_insert")?;
                 if should_index_entity_text(entity) {
                     tx.insert_entity_after_file_delete(entity)?;
                 } else {
@@ -5801,6 +7600,7 @@ pub fn update_changed_files_with_cache_to_db(
             {
                 if should_store_edge_row(edge) {
                     let edge_start = Instant::now();
+                    write_path_chaos_failpoint("incremental_during_edge_insert")?;
                     tx.insert_edge_after_file_delete(edge)?;
                     phase_profile.add_duration("edge_insert", edge_start.elapsed(), 1, 1);
                     changed_cache_edges.push(edge.clone());
@@ -5816,6 +7616,29 @@ pub fn update_changed_files_with_cache_to_db(
             summary.edges += edge_count;
             summary.binary_signatures_updated += entity_count;
         }
+
+        let stale_missing_scan_start = Instant::now();
+        let changed_path_set = normalized
+            .iter()
+            .map(|(_, repo_relative_path)| normalize_graph_path(repo_relative_path))
+            .collect::<BTreeSet<_>>();
+        let stale_missing_deleted = cleanup_missing_indexed_paths_to_writer(
+            tx,
+            cache,
+            &repo_root,
+            &changed_path_set,
+            &mut summary,
+            &mut changed_fact_paths,
+            &mut removed_cache_entity_ids,
+            &mut changed_static_resolver_inputs,
+            &mut phase_profile,
+        )?;
+        phase_profile.add_duration(
+            "stale_missing_manifest_scan",
+            stale_missing_scan_start.elapsed(),
+            1,
+            stale_missing_deleted as u64,
+        );
 
         let (import_resolution, security_resolution, test_resolution, derived_resolution) =
             if changed_fact_paths.is_empty() || !changed_static_resolver_inputs {
@@ -5958,6 +7781,7 @@ pub fn update_changed_files_with_cache_to_db(
             };
 
         if !changed_fact_paths.is_empty() {
+            write_path_chaos_failpoint("incremental_before_path_evidence_refresh")?;
             summary.dirty_path_evidence_count = refresh_stored_path_evidence_for_edges_to_writer(
                 tx,
                 dirty_path_evidence_edges.clone(),
@@ -6037,6 +7861,25 @@ pub fn update_changed_files_with_cache_to_db(
             metadata: state_metadata,
         };
         tx.upsert_repo_index_state(&state)?;
+        if !changed_fact_paths.is_empty()
+            || summary.files_indexed > 0
+            || summary.files_deleted > 0
+            || summary.files_renamed > 0
+            || summary.stale_facts_deleted_for_ignored_paths > 0
+        {
+            let files_count = tx.count_files()?;
+            let passport = build_incremental_db_passport(
+                &repo_root,
+                &update_scope,
+                storage_mode,
+                indexed_at,
+                files_count,
+                files_count,
+                previous_passport.as_ref(),
+            )?;
+            tx.upsert_db_passport(&passport)?;
+        }
+        write_path_chaos_failpoint("incremental_after_insert_before_commit")?;
 
         Ok((
             import_resolution,
@@ -6049,6 +7892,10 @@ pub fn update_changed_files_with_cache_to_db(
         match transaction_result {
             Ok(result) => {
                 let commit_start = Instant::now();
+                if let Err(error) = write_path_chaos_failpoint("incremental_before_commit") {
+                    let _ = store.rollback_write_transaction();
+                    return Err(error);
+                }
                 if let Err(error) = store.commit_write_transaction() {
                     let _ = store.rollback_write_transaction();
                     return Err(error.into());
@@ -6090,49 +7937,340 @@ pub fn update_changed_files_with_cache_to_db(
     phase_profile.add_duration("cache_refresh", cache_start.elapsed(), 1, 0);
     summary.adjacency_edges = cache.adjacency_edge_count();
     let total_wall_ms = total_start.elapsed().as_millis();
+    let measured_db_write_ms = phase_profile.sum_spans_ms_u128(DB_WRITE_PROFILE_SPANS);
+    let measured_fts_search_index_ms = phase_profile.span_ms_u128("fts_build");
+    let memory_bytes = current_process_memory_bytes();
     summary.profile = Some(IndexProfile {
         file_discovery_ms: 0,
-        parse_ms: phase_profile
-            .spans
-            .get("parse")
-            .map(|span| span.elapsed_ms as u128)
-            .unwrap_or(0),
-        extraction_ms: phase_profile
-            .spans
-            .get("extract_entities_and_relations")
-            .map(|span| span.elapsed_ms as u128)
-            .unwrap_or(0),
-        semantic_resolver_ms: phase_profile
-            .spans
-            .get("reducer")
-            .map(|span| span.elapsed_ms as u128)
-            .unwrap_or(0),
-        db_write_ms: phase_profile
-            .spans
-            .get("entity_insert")
-            .map(|span| span.elapsed_ms as u128)
-            .unwrap_or(0)
-            + phase_profile
-                .spans
-                .get("edge_insert")
-                .map(|span| span.elapsed_ms as u128)
-                .unwrap_or(0),
-        fts_search_index_ms: phase_profile
-            .spans
-            .get("snippet_loading")
-            .map(|span| span.elapsed_ms as u128)
-            .unwrap_or(0),
+        parse_ms: phase_profile.span_ms_u128("parse"),
+        extraction_ms: phase_profile.span_ms_u128("extract_entities_and_relations"),
+        semantic_resolver_ms: phase_profile.span_ms_u128("reducer"),
+        db_write_ms: measured_db_write_ms,
+        fts_search_index_ms: measured_fts_search_index_ms,
         vector_signature_ms: 0,
         total_wall_ms,
         files_per_sec: rate_per_second(summary.files_indexed, total_wall_ms),
         entities_per_sec: rate_per_second(summary.entities, total_wall_ms),
         edges_per_sec: rate_per_second(summary.edges, total_wall_ms),
-        memory_bytes: current_process_memory_bytes(),
+        memory_bytes,
+        memory_measured: memory_bytes.is_some(),
+        memory_status: if memory_bytes.is_some() {
+            "measured".to_string()
+        } else {
+            "unknown".to_string()
+        },
+        memory_measurement_kind: if memory_bytes.is_some() {
+            "process_snapshot_not_peak".to_string()
+        } else {
+            "not_measured".to_string()
+        },
+        db_write_measurement: "measured_sql_write_aggregate".to_string(),
+        fts_search_index_measurement: if measured_fts_search_index_ms > 0 {
+            "measured_fts_build_span".to_string()
+        } else {
+            "unknown_or_not_run".to_string()
+        },
         worker_count: 1,
         skipped_unchanged_files: summary.files_metadata_unchanged,
         spans: phase_profile.into_spans(),
     });
     Ok(summary)
+}
+
+fn rtds_dependency_closure_for_changed_paths(
+    repo_root: &Path,
+    store: &SqliteGraphStore,
+    requested: &[(PathBuf, String)],
+) -> Result<RtdsDependencyClosureSummary, IndexError> {
+    if rtds_closure_failpoint_enabled("before_update") {
+        return Err(IndexError::Message(
+            "rtds_dependency_closure_failpoint:before_update".to_string(),
+        ));
+    }
+
+    let start = Instant::now();
+    let budgets = RtdsDependencyClosureBudget::default();
+    let mut summary = RtdsDependencyClosureSummary {
+        status: "ready".to_string(),
+        requested_changed_files: requested
+            .iter()
+            .map(|(_, path)| normalize_graph_path(path))
+            .collect(),
+        closure_files_considered: requested
+            .iter()
+            .map(|(_, path)| normalize_graph_path(path))
+            .collect(),
+        budgets,
+        ..RtdsDependencyClosureSummary::default()
+    };
+    sort_dedup_strings(&mut summary.requested_changed_files);
+    sort_dedup_strings(&mut summary.closure_files_considered);
+
+    let requested_path_set = summary
+        .requested_changed_files
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut closure_path_set = requested_path_set.clone();
+    let mut changed_entity_ids = BTreeSet::<String>::new();
+    let mut rows_hydrated = 0usize;
+    let mut source_bytes_considered = 0u64;
+
+    for (_, repo_relative_path) in requested {
+        let repo_relative_path = normalize_graph_path(repo_relative_path);
+        if rtds_path_is_text_evidence_or_non_graph(store, &repo_relative_path)? {
+            summary
+                .skipped_relation_classes
+                .push("text_evidence:not_graph_dependency".to_string());
+        }
+
+        let entities = store.list_entities_by_file(&repo_relative_path)?;
+        rows_hydrated = rows_hydrated.saturating_add(entities.len());
+        if rows_hydrated > summary.budgets.max_db_rows_hydrated {
+            rtds_mark_closure_budget_hit(&mut summary, "db_rows_hydrated", "changed_file_entities");
+            break;
+        }
+        for entity in entities {
+            changed_entity_ids.insert(entity.id);
+        }
+    }
+
+    if changed_entity_ids.is_empty() {
+        rtds_finalize_dependency_closure_status(&mut summary);
+        return Ok(summary);
+    }
+
+    let edge_count = store.count_edges()? as usize;
+    if edge_count
+        > summary
+            .budgets
+            .max_db_rows_hydrated
+            .saturating_sub(rows_hydrated)
+    {
+        rtds_mark_closure_budget_hit(&mut summary, "db_rows_hydrated", "edge_scan");
+    }
+    let edge_limit = summary
+        .budgets
+        .max_edges_inspected
+        .min(
+            summary
+                .budgets
+                .max_db_rows_hydrated
+                .saturating_sub(rows_hydrated),
+        )
+        .max(1);
+    let edges = store.list_edges(edge_limit)?;
+    let mut relation_counts = BTreeMap::<String, usize>::new();
+    let mut relation_classes = BTreeSet::<String>::new();
+
+    for edge in edges {
+        if summary.closure_edges_inspected >= summary.budgets.max_edges_inspected {
+            rtds_mark_closure_budget_hit(&mut summary, "edges_inspected", "edge_scan");
+            break;
+        }
+        if start.elapsed() > Duration::from_millis(summary.budgets.max_wall_ms) {
+            rtds_mark_closure_budget_hit(&mut summary, "wall_time", "edge_scan");
+            break;
+        }
+
+        let head_changed = changed_entity_ids.contains(&edge.head_id);
+        let tail_changed = changed_entity_ids.contains(&edge.tail_id);
+        if !head_changed && !tail_changed {
+            continue;
+        }
+
+        summary.closure_edges_inspected += 1;
+        let Some(relation_class) =
+            rtds_dependency_closure_relation_class(&edge, head_changed, tail_changed)
+        else {
+            if rtds_relation_is_unknown_for_dependency_closure(edge.relation) {
+                summary
+                    .closure_unknowns
+                    .push(format!("unsupported_relation_class:{}", edge.relation));
+                summary
+                    .skipped_relation_classes
+                    .push(edge.relation.to_string());
+            }
+            continue;
+        };
+
+        let relation_count = relation_counts
+            .entry(relation_class.to_string())
+            .and_modify(|count| *count += 1)
+            .or_insert(1);
+        if *relation_count > summary.budgets.max_per_relation {
+            rtds_mark_closure_budget_hit(&mut summary, relation_class, "per_relation_limit");
+            continue;
+        }
+        if !relation_classes.contains(relation_class)
+            && relation_classes.len() >= summary.budgets.max_relation_classes
+        {
+            rtds_mark_closure_budget_hit(&mut summary, relation_class, "relation_class_limit");
+            continue;
+        }
+        relation_classes.insert(relation_class.to_string());
+
+        let dependent_path = normalize_graph_path(&edge.source_span.repo_relative_path);
+        if requested_path_set.contains(&dependent_path) {
+            continue;
+        }
+        if !repo_root.join(&dependent_path).exists() {
+            summary
+                .closure_unknowns
+                .push(format!("dependent_path_missing:{dependent_path}"));
+            continue;
+        }
+        if closure_path_set.contains(&dependent_path) {
+            continue;
+        }
+        if closure_path_set.len() >= summary.budgets.max_dirty_files {
+            rtds_mark_closure_budget_hit(&mut summary, relation_class, "dirty_file_limit");
+            summary
+                .closure_unknowns
+                .push(format!("closure_file_omitted_over_budget:{dependent_path}"));
+            continue;
+        }
+        let source_bytes = store
+            .get_file(&dependent_path)?
+            .map(|record| record.size_bytes)
+            .or_else(|| {
+                fs::metadata(repo_root.join(&dependent_path))
+                    .ok()
+                    .map(|metadata| metadata.len())
+            })
+            .unwrap_or(0);
+        if source_bytes_considered.saturating_add(source_bytes) > summary.budgets.max_source_bytes {
+            rtds_mark_closure_budget_hit(&mut summary, relation_class, "source_bytes_limit");
+            summary.closure_unknowns.push(format!(
+                "closure_file_omitted_source_bytes:{dependent_path}"
+            ));
+            continue;
+        }
+        source_bytes_considered = source_bytes_considered.saturating_add(source_bytes);
+        closure_path_set.insert(dependent_path);
+    }
+
+    summary.closure_files_considered = closure_path_set.into_iter().collect();
+    summary.closure_relation_classes = relation_classes.into_iter().collect();
+    sort_dedup_strings(&mut summary.degraded_relation_classes);
+    sort_dedup_strings(&mut summary.skipped_relation_classes);
+    sort_dedup_strings(&mut summary.closure_unknowns);
+    rtds_finalize_dependency_closure_status(&mut summary);
+    Ok(summary)
+}
+
+fn rtds_dependency_closure_relation_class(
+    edge: &Edge,
+    head_changed: bool,
+    tail_changed: bool,
+) -> Option<&'static str> {
+    if edge.derived || !rtds_edge_exactness_is_safe_for_dependency_closure(edge.exactness) {
+        return None;
+    }
+
+    match edge.relation {
+        RelationKind::Imports | RelationKind::Reexports => {
+            tail_changed.then_some("direct_static_importer")
+        }
+        RelationKind::AliasedBy => (head_changed || tail_changed).then_some("direct_import_alias"),
+        RelationKind::Calls => tail_changed.then_some("deleted_or_changed_callable_reference"),
+        RelationKind::Reads | RelationKind::Writes => {
+            tail_changed.then_some("direct_symbol_reference")
+        }
+        _ => None,
+    }
+}
+
+fn rtds_edge_exactness_is_safe_for_dependency_closure(exactness: Exactness) -> bool {
+    matches!(
+        exactness,
+        Exactness::Exact
+            | Exactness::CompilerVerified
+            | Exactness::LspVerified
+            | Exactness::ParserVerified
+    )
+}
+
+fn rtds_relation_is_unknown_for_dependency_closure(relation: RelationKind) -> bool {
+    is_proof_path_relation(relation)
+        && !matches!(
+            relation,
+            RelationKind::Contains
+                | RelationKind::DefinedIn
+                | RelationKind::Defines
+                | RelationKind::Declares
+                | RelationKind::Callee
+                | RelationKind::Argument0
+                | RelationKind::Argument1
+                | RelationKind::ArgumentN
+                | RelationKind::ReturnsTo
+        )
+}
+
+fn rtds_path_is_text_evidence_or_non_graph(
+    store: &SqliteGraphStore,
+    repo_relative_path: &str,
+) -> Result<bool, IndexError> {
+    if let Some(kind) = classify_scoped_text_evidence_path(repo_relative_path) {
+        if store
+            .get_file(repo_relative_path)?
+            .as_ref()
+            .is_some_and(|record| file_record_is_text_evidence_kind(record, kind))
+            || detect_language(Path::new(repo_relative_path)).is_none()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(store.get_file(repo_relative_path)?.is_some_and(|record| {
+        record.language.is_none()
+            && record.metadata.get("evidence_kind").and_then(Value::as_str)
+                == Some(TEXT_EVIDENCE_KIND)
+    }))
+}
+
+fn rtds_mark_closure_budget_hit(
+    summary: &mut RtdsDependencyClosureSummary,
+    relation_class: &str,
+    reason: &str,
+) {
+    summary.closure_budget_hit = true;
+    summary
+        .degraded_relation_classes
+        .push(relation_class.to_string());
+    summary
+        .closure_unknowns
+        .push(format!("closure_budget_hit:{relation_class}:{reason}"));
+    summary.manual_full_index_recommendation = Some(
+        "run agent-use index --fresh for full dependency freshness if this dirty closure matters"
+            .to_string(),
+    );
+}
+
+fn rtds_finalize_dependency_closure_status(summary: &mut RtdsDependencyClosureSummary) {
+    sort_dedup_strings(&mut summary.requested_changed_files);
+    sort_dedup_strings(&mut summary.closure_files_considered);
+    sort_dedup_strings(&mut summary.closure_relation_classes);
+    sort_dedup_strings(&mut summary.degraded_relation_classes);
+    sort_dedup_strings(&mut summary.skipped_relation_classes);
+    sort_dedup_strings(&mut summary.closure_unknowns);
+    summary.status = if summary.closure_budget_hit || !summary.closure_unknowns.is_empty() {
+        "degraded".to_string()
+    } else if summary.closure_files_considered.len() > summary.requested_changed_files.len() {
+        "ready_with_dependency_closure".to_string()
+    } else {
+        "ready".to_string()
+    };
+    if summary.closure_budget_hit && summary.manual_full_index_recommendation.is_none() {
+        summary.manual_full_index_recommendation = Some(
+            "run agent-use index --fresh for full dependency freshness if this dirty closure matters"
+                .to_string(),
+        );
+    }
+}
+
+fn sort_dedup_strings(values: &mut Vec<String>) {
+    values.sort();
+    values.dedup();
 }
 
 fn resolver_impact_paths_from_store(
@@ -6965,13 +9103,26 @@ fn reduce_derived_mutation_edges_from_store(
     }
 
     let mut plan = GlobalFactReductionPlan::default();
-    for call in calls.iter().filter(|edge| !edge.derived) {
-        for write in writes_by_head
-            .get(call.tail_id.as_str())
-            .into_iter()
-            .flatten()
+    let mut derived_edge_ids = BTreeSet::<String>::new();
+    let mut mutation_edges = 0_usize;
+    'mutation_calls: for call in calls.iter().filter(|edge| !edge.derived) {
+        let Some(writes_for_callee) = writes_by_head.get(call.tail_id.as_str()) else {
+            continue;
+        };
+        for write in writes_for_callee
+            .iter()
+            .take(DERIVED_MUTATION_CLOSURE_MAX_WRITES_PER_CALLEE)
         {
-            plan.push_edge(derived_mutation_edge(call, write));
+            if mutation_edges >= DERIVED_MUTATION_CLOSURE_MAX_OUTPUT_EDGES {
+                break 'mutation_calls;
+            }
+            if push_unique_derived_edge(
+                &mut plan,
+                &mut derived_edge_ids,
+                derived_mutation_edge(call, write),
+            ) {
+                mutation_edges += 1;
+            }
         }
     }
     let flows =
@@ -6987,23 +9138,42 @@ fn reduce_derived_mutation_edges_from_store(
             .or_default()
             .push(*edge);
     }
-    for first in &base_flows {
+    let mut dataflow_edges = 0_usize;
+    'dataflow_sources: for first in &base_flows {
         let Some(second_hops) = flows_by_head.get(first.tail_id.as_str()) else {
             continue;
         };
-        for second in second_hops {
+        for second in second_hops
+            .iter()
+            .take(DERIVED_DATAFLOW_CLOSURE_MAX_HOPS_PER_NODE)
+        {
+            if dataflow_edges >= DERIVED_DATAFLOW_CLOSURE_MAX_OUTPUT_EDGES {
+                break 'dataflow_sources;
+            }
             if !chainable_dataflow_edges(first, second)
                 || first.head_id == second.tail_id
                 || first.id == second.id
             {
                 continue;
             }
-            plan.push_edge(derived_dataflow_edge(&[*first, *second]));
+            if push_unique_derived_edge(
+                &mut plan,
+                &mut derived_edge_ids,
+                derived_dataflow_edge(&[*first, *second]),
+            ) {
+                dataflow_edges += 1;
+            }
 
             let Some(third_hops) = flows_by_head.get(second.tail_id.as_str()) else {
                 continue;
             };
-            for third in third_hops {
+            for third in third_hops
+                .iter()
+                .take(DERIVED_DATAFLOW_CLOSURE_MAX_HOPS_PER_NODE)
+            {
+                if dataflow_edges >= DERIVED_DATAFLOW_CLOSURE_MAX_OUTPUT_EDGES {
+                    break 'dataflow_sources;
+                }
                 if !chainable_dataflow_edges(second, third)
                     || first.id == third.id
                     || second.id == third.id
@@ -7012,12 +9182,30 @@ fn reduce_derived_mutation_edges_from_store(
                 {
                     continue;
                 }
-                plan.push_edge(derived_dataflow_edge(&[*first, *second, *third]));
+                if push_unique_derived_edge(
+                    &mut plan,
+                    &mut derived_edge_ids,
+                    derived_dataflow_edge(&[*first, *second, *third]),
+                ) {
+                    dataflow_edges += 1;
+                }
             }
         }
     }
     plan.sort();
     Ok(plan)
+}
+
+fn push_unique_derived_edge(
+    plan: &mut GlobalFactReductionPlan,
+    derived_edge_ids: &mut BTreeSet<String>,
+    edge: Edge,
+) -> bool {
+    if !derived_edge_ids.insert(edge.id.clone()) {
+        return false;
+    }
+    plan.edges.push(edge);
+    true
 }
 
 fn derived_mutation_edge(call: &Edge, write: &Edge) -> Edge {
@@ -7176,6 +9364,7 @@ fn derived_context_for_edges<'a>(edges: impl IntoIterator<Item = &'a Edge>) -> E
 fn parse_static_imports(repo_relative_path: &str, source: &str) -> Vec<StaticImportSpec> {
     let mut imports = Vec::new();
     for (line_index, line) in source.lines().enumerate() {
+        let line = strip_leading_utf8_bom(line);
         let trimmed = line.trim();
         if !trimmed.starts_with("import ") || !trimmed.contains(" from ") {
             continue;
@@ -7239,6 +9428,7 @@ fn parse_static_imports(repo_relative_path: &str, source: &str) -> Vec<StaticImp
 fn parse_static_reexports(repo_relative_path: &str, source: &str) -> Vec<StaticReexportSpec> {
     let mut exports = Vec::new();
     for (line_index, line) in source.lines().enumerate() {
+        let line = strip_leading_utf8_bom(line);
         let trimmed = line.trim();
         if !trimmed.starts_with("export ") || !trimmed.contains(" from ") {
             continue;
@@ -7294,6 +9484,7 @@ fn parse_static_reexports(repo_relative_path: &str, source: &str) -> Vec<StaticR
 fn parse_dynamic_imports(repo_relative_path: &str, source: &str) -> Vec<StaticDynamicImportSpec> {
     let mut imports = Vec::new();
     for (line_index, line) in source.lines().enumerate() {
+        let line = strip_leading_utf8_bom(line);
         let mut search_start = 0usize;
         while let Some(offset) = line[search_start..].find("import(") {
             let start = search_start + offset;
@@ -7326,6 +9517,10 @@ fn parse_dynamic_imports(repo_relative_path: &str, source: &str) -> Vec<StaticDy
         }
     }
     imports
+}
+
+fn strip_leading_utf8_bom(line: &str) -> &str {
+    line.strip_prefix('\u{feff}').unwrap_or(line)
 }
 
 fn matching_close_paren(line: &str, open_paren: usize) -> Option<usize> {
@@ -9740,6 +11935,9 @@ fn classify_scoped_text_evidence_path(repo_relative_path: &str) -> Option<TextEv
     }
 
     let file_name = lower.rsplit('/').next().unwrap_or(lower.as_str());
+    if file_name == "expected_text_evidence.json" {
+        return Some(TextEvidenceFileKind::FixtureManifest);
+    }
     if lower.ends_with(".mk") {
         return Some(TextEvidenceFileKind::MakefileFragment);
     }
@@ -10222,6 +12420,30 @@ fn should_skip_file_with_scope(
     should_skip_file(path)
 }
 
+fn should_skip_graph_extraction_for_large_generated_or_test_source(
+    repo_relative_path: &str,
+    source_bytes: usize,
+) -> bool {
+    let normalized = repo_relative_path.replace('\\', "/").to_ascii_lowercase();
+    let is_rubi_symbolic_source =
+        normalized.contains("/rubi/") || normalized.contains("/rubi_tests/");
+    let is_test_or_generated_source = normalized.contains("/generated/")
+        || normalized.contains("/fixtures/")
+        || normalized.contains("/tests/")
+        || normalized.ends_with("_test.py")
+        || normalized.ends_with("_test.go")
+        || normalized.ends_with(".spec.ts")
+        || normalized.ends_with(".spec.tsx")
+        || normalized.ends_with(".test.ts")
+        || normalized.ends_with(".test.tsx");
+
+    (is_rubi_symbolic_source && source_bytes >= RUBI_GRAPH_EXTRACTION_SKIP_BYTES)
+        || (is_test_or_generated_source
+            && source_bytes >= LARGE_TEST_OR_GENERATED_GRAPH_EXTRACTION_SKIP_BYTES)
+        || ((is_rubi_symbolic_source || is_test_or_generated_source)
+            && source_bytes >= LARGE_GENERATED_OR_TEST_GRAPH_EXTRACTION_SKIP_BYTES)
+}
+
 fn emit_scope_decision(options: &IndexScopeOptions, decision: &scope::IndexScopeDecision) {
     if !options.has_print_or_explain() {
         return;
@@ -10264,7 +12486,8 @@ pub fn normalize_changed_path(root: &Path, path: &Path) -> Result<(PathBuf, Stri
         root.join(path)
     };
     let normalized = normalize_lexical_path(&absolute);
-    let repo_relative_path = repo_relative_path(root, &normalized)?;
+    let normalized = resolve_existing_changed_path_case(root, &normalized);
+    let repo_relative_path = repo_relative_path_for_changed_path(root, &normalized)?;
     Ok((normalized, repo_relative_path))
 }
 
@@ -10282,6 +12505,138 @@ fn normalize_lexical_path(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+fn normalize_changed_paths_for_update(
+    root: &Path,
+    changed_paths: &[PathBuf],
+    store: &SqliteGraphStore,
+) -> Result<Vec<(PathBuf, String)>, IndexError> {
+    let known_paths = if cfg!(windows) {
+        store
+            .list_files(UNBOUNDED_STORE_READ_LIMIT)?
+            .into_iter()
+            .map(|file| {
+                (
+                    platform_path_identity_key(&file.repo_relative_path),
+                    normalize_graph_path(file.repo_relative_path),
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+    } else {
+        BTreeMap::new()
+    };
+    let mut normalized = changed_paths
+        .iter()
+        .map(|path| {
+            let (mut absolute, mut repo_relative_path) = normalize_changed_path(root, path)?;
+            if cfg!(windows) {
+                if let Some(known_path) =
+                    known_paths.get(&platform_path_identity_key(&repo_relative_path))
+                {
+                    repo_relative_path = known_path.clone();
+                    absolute = root.join(known_path);
+                }
+            }
+            Ok((absolute, repo_relative_path))
+        })
+        .collect::<Result<Vec<_>, IndexError>>()?;
+    normalized.sort_by(|left, right| {
+        platform_path_identity_key(&left.1).cmp(&platform_path_identity_key(&right.1))
+    });
+    normalized.dedup_by(|left, right| {
+        platform_path_identity_key(&left.1) == platform_path_identity_key(&right.1)
+    });
+    Ok(normalized)
+}
+
+fn repo_relative_path_for_changed_path(root: &Path, path: &Path) -> Result<String, IndexError> {
+    if let Ok(relative) = path.strip_prefix(root) {
+        return Ok(path_to_repo_relative_string(relative));
+    }
+    if cfg!(windows) {
+        if let Some(relative) = strip_prefix_case_insensitive(root, path) {
+            return Ok(path_to_repo_relative_string(&relative));
+        }
+    }
+    Err(IndexError::PathStrip {
+        path: path.to_path_buf(),
+        root: root.to_path_buf(),
+    })
+}
+
+fn path_to_repo_relative_string(path: &Path) -> String {
+    normalize_graph_path(path.to_string_lossy().replace('\\', "/"))
+}
+
+fn strip_prefix_case_insensitive(root: &Path, path: &Path) -> Option<PathBuf> {
+    let root_components = comparable_path_components(root);
+    let path_components = comparable_path_components(path);
+    if path_components.len() < root_components.len() {
+        return None;
+    }
+    if !root_components
+        .iter()
+        .zip(path_components.iter())
+        .all(|(left, right)| left.eq_ignore_ascii_case(right))
+    {
+        return None;
+    }
+    let mut relative = PathBuf::new();
+    for component in path.components().skip(root_components.len()) {
+        relative.push(component.as_os_str());
+    }
+    Some(relative)
+}
+
+fn comparable_path_components(path: &Path) -> Vec<String> {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy().replace('\\', "/"))
+        .collect()
+}
+
+fn resolve_existing_changed_path_case(root: &Path, path: &Path) -> PathBuf {
+    if !cfg!(windows) || !path.exists() {
+        return path.to_path_buf();
+    }
+    let Ok(repo_relative_path) = repo_relative_path_for_changed_path(root, path) else {
+        return path.to_path_buf();
+    };
+    let mut cursor = root.to_path_buf();
+    let mut resolved = root.to_path_buf();
+    for component in repo_relative_path
+        .split('/')
+        .filter(|part| !part.is_empty())
+    {
+        let actual_name = fs::read_dir(&cursor).ok().and_then(|entries| {
+            entries.filter_map(Result::ok).find_map(|entry| {
+                let name = entry.file_name();
+                name.to_str()
+                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(component))
+                    .then_some(name)
+            })
+        });
+        match actual_name {
+            Some(name) => {
+                resolved.push(name);
+                cursor = resolved.clone();
+            }
+            None => {
+                resolved.push(component);
+                cursor = resolved.clone();
+            }
+        }
+    }
+    resolved
+}
+
+fn platform_path_identity_key(path: &str) -> String {
+    let normalized = normalize_graph_path(path);
+    if cfg!(windows) {
+        normalized.to_ascii_lowercase()
+    } else {
+        normalized
+    }
 }
 
 fn entity_binary_signature(
@@ -10463,18 +12818,41 @@ where
     P: EmbeddingProvider,
     I: IntoIterator<Item = VectorEmbeddingChunk>,
 {
+    build_in_memory_vector_chunk_index_with_timings(chunks, provider, passport, options)
+        .map(|(index, _timings)| index)
+}
+
+fn build_in_memory_vector_chunk_index_with_timings<P, I>(
+    chunks: I,
+    provider: &P,
+    passport: &DbPassport,
+    options: VectorChunkIndexBuildOptions,
+) -> Result<(InMemoryVectorChunkIndex, VectorChunkIndexBuildTimings), IndexError>
+where
+    P: EmbeddingProvider,
+    I: IntoIterator<Item = VectorEmbeddingChunk>,
+{
+    let total_start = Instant::now();
+    let collect_start = Instant::now();
+    let generated_chunks = chunks.into_iter().collect::<Vec<_>>();
+    let input_collect_ms = duration_ms(collect_start.elapsed());
+    let count_start = Instant::now();
+    let generated_counts = VectorChunkKindCounts::from_chunks(&generated_chunks);
+    let generated_count_ms = duration_ms(count_start.elapsed());
+    let selection_start = Instant::now();
+    let selection = select_vector_chunks_for_persistence(generated_chunks, options.max_chunks);
+    let selection_ms = duration_ms(selection_start.elapsed());
+    let selected_count_start = Instant::now();
+    let selected_counts = VectorChunkKindCounts::from_chunks(&selection.selected);
+    let persisted_chunks_by_top_level_dir = count_chunks_by_top_level_dir(&selection.selected);
+    let persisted_chunks_by_file_kind = count_chunks_by_file_kind(&selection.selected);
+    let persisted_chunks_by_source_kind = count_chunks_by_source_kind(&selection.selected);
+    let selected_count_ms = duration_ms(selected_count_start.elapsed());
     let mut entries = BTreeMap::new();
-    let mut omitted_chunks = 0usize;
     let mut indexed_text_bytes = 0usize;
 
-    for chunk in chunks {
-        if entries.contains_key(&chunk.chunk_id) {
-            continue;
-        }
-        if entries.len() >= options.max_chunks {
-            omitted_chunks += 1;
-            continue;
-        }
+    let embedding_start = Instant::now();
+    for chunk in selection.selected {
         let embedding = provider.embed(&chunk.text).map_err(|error| {
             IndexError::Message(format!(
                 "vector chunk embedding failed for {}: {error}",
@@ -10487,15 +12865,18 @@ where
             VectorChunkIndexEntry { chunk, embedding },
         );
     }
+    let embedding_ms = duration_ms(embedding_start.elapsed());
 
+    let metadata_start = Instant::now();
     let chunk_count = entries.len();
     let estimated_vector_bytes_per_chunk = provider
         .metadata()
         .dimension
         .saturating_mul(std::mem::size_of::<f32>());
-    let estimated_vector_bytes = chunk_count.saturating_mul(estimated_vector_bytes_per_chunk);
+    let estimated_f32_payload_bytes = chunk_count.saturating_mul(estimated_vector_bytes_per_chunk);
     let metadata = VectorChunkIndexMetadata {
         metadata_version: VECTOR_CHUNK_INDEX_METADATA_VERSION.to_string(),
+        artifact_kind: String::new(),
         provider: VectorChunkIndexProviderSnapshot::from_provider(provider.metadata()),
         passport: VectorChunkIndexPassportSnapshot::from_passport(passport),
         source_scope: options.source_scope,
@@ -10503,13 +12884,64 @@ where
         created_at_unix_ms: unix_time_ms(),
         max_chunks: options.max_chunks,
         chunk_count,
-        omitted_chunks,
+        omitted_chunks: selection
+            .omitted_by_cap
+            .saturating_add(selection.omitted_low_signal),
+        generated_total_chunks: generated_counts.total,
+        generated_text_evidence_chunks: generated_counts.text_evidence,
+        generated_graph_entity_chunks: generated_counts.graph_entity,
+        generated_file_path_title_chunks: generated_counts.file_path_title,
+        generated_metadata_chunks: generated_counts.metadata,
+        selected_total_chunks: selected_counts.total,
+        selected_text_evidence_chunks: selected_counts.text_evidence,
+        selected_graph_entity_chunks: selected_counts.graph_entity,
+        selected_file_path_title_chunks: selected_counts.file_path_title,
+        selected_metadata_chunks: selected_counts.metadata,
+        persisted_total_chunks: selected_counts.total,
+        persisted_text_evidence_chunks: selected_counts.text_evidence,
+        persisted_graph_entity_chunks: selected_counts.graph_entity,
+        persisted_file_path_title_chunks: selected_counts.file_path_title,
+        persisted_metadata_chunks: selected_counts.metadata,
+        chunk_cap: options.max_chunks,
+        chunk_cap_applied: selection.omitted_by_cap > 0 || selection.omitted_low_signal > 0,
+        chunk_selection_strategy: "diversity_ranked_v1".to_string(),
+        input_order_cap: false,
+        persisted_chunks_by_top_level_dir,
+        persisted_chunks_by_file_kind,
+        persisted_chunks_by_source_kind,
+        omitted_by_cap: selection.omitted_by_cap,
+        omitted_by_bucket_limit: selection.omitted_by_bucket_limit,
+        omitted_low_signal: selection.omitted_low_signal,
+        per_file_cap: selection.per_file_cap,
+        per_directory_soft_cap: selection.per_directory_soft_cap,
         indexed_text_bytes,
         estimated_vector_bytes_per_chunk,
-        estimated_vector_bytes,
+        estimated_f32_payload_bytes,
+        estimated_f32_payload_dim: provider.metadata().dimension,
+        estimated_f32_payload_count: chunk_count,
+        estimated_vector_bytes: estimated_f32_payload_bytes,
+        estimated_vector_bytes_deprecated_alias_for: "estimated_f32_payload_bytes".to_string(),
+        index_artifact_format: "pretty_json".to_string(),
+        stores_chunk_text: true,
+        stores_chunk_metadata: true,
+        stores_full_source_body: false,
+        vector_payload_compression: "none".to_string(),
     };
+    let metadata_build_ms = duration_ms(metadata_start.elapsed());
 
-    Ok(InMemoryVectorChunkIndex { metadata, entries })
+    let mut timings = VectorChunkIndexBuildTimings {
+        total_ms: duration_ms(total_start.elapsed()),
+        input_collect_ms,
+        generated_count_ms,
+        selection_ms,
+        selected_count_ms,
+        embedding_ms,
+        metadata_build_ms,
+        ..VectorChunkIndexBuildTimings::default()
+    };
+    timings.in_memory_index_ms = timings.total_ms;
+
+    Ok((InMemoryVectorChunkIndex { metadata, entries }, timings))
 }
 
 pub fn persisted_vector_chunk_index_from_index(
@@ -10524,19 +12956,384 @@ pub fn persisted_vector_chunk_index_from_index(
     }
 }
 
+fn vector_chunk_modified_unix_nanos(file: &FileRecord) -> Option<String> {
+    file.metadata
+        .get("modified_unix_nanos")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn bind_vector_chunk_to_source_file(
+    mut chunk: VectorEmbeddingChunk,
+    file: &FileRecord,
+) -> VectorEmbeddingChunk {
+    chunk.source_file_content_hash = Some(file.file_hash.clone());
+    chunk.source_file_size_bytes = Some(file.size_bytes);
+    chunk.source_file_modified_unix_nanos = vector_chunk_modified_unix_nanos(file);
+    chunk
+}
+
+fn bind_vector_chunks_to_source_file<I>(chunks: I, file: &FileRecord) -> Vec<VectorEmbeddingChunk>
+where
+    I: IntoIterator<Item = VectorEmbeddingChunk>,
+{
+    chunks
+        .into_iter()
+        .map(|chunk| bind_vector_chunk_to_source_file(chunk, file))
+        .collect()
+}
+
+pub fn validate_vector_chunk_source_bindings(
+    repo_root: &Path,
+    index: &InMemoryVectorChunkIndex,
+) -> Result<VectorChunkSourceBindingValidation, IndexError> {
+    let repo_root = fs::canonicalize(repo_root)?;
+    let mut by_path = BTreeMap::<String, (Option<String>, Option<u64>, usize)>::new();
+    let mut unbound_chunks = 0usize;
+
+    for entry in index.entries() {
+        if entry.chunk.source_file_content_hash.is_none()
+            && entry.chunk.source_file_size_bytes.is_none()
+        {
+            unbound_chunks += 1;
+            continue;
+        }
+        let binding = by_path.entry(entry.chunk.path.clone()).or_insert((
+            entry.chunk.source_file_content_hash.clone(),
+            entry.chunk.source_file_size_bytes,
+            0,
+        ));
+        binding.2 += 1;
+    }
+
+    let checked_files = by_path.len();
+    let mut stale_reasons = Vec::new();
+    let mut checked_chunks = 0usize;
+    for (repo_relative_path, (expected_hash, expected_size, chunk_count)) in by_path {
+        checked_chunks += chunk_count;
+        let source_path = repo_root.join(&repo_relative_path);
+        let metadata = match fs::metadata(&source_path) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            Ok(_) => {
+                stale_reasons.push(format!("not_file:{repo_relative_path}"));
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                stale_reasons.push(format!("deleted_file:{repo_relative_path}"));
+                continue;
+            }
+            Err(error) => {
+                stale_reasons.push(format!("metadata_failed:{repo_relative_path}:{error}"));
+                continue;
+            }
+        };
+        if let Some(expected_size) = expected_size {
+            if metadata.len() != expected_size {
+                stale_reasons.push(format!(
+                    "changed_file_size:{repo_relative_path}:expected={expected_size}:actual={}",
+                    metadata.len()
+                ));
+                continue;
+            }
+        }
+        if let Some(expected_hash) = expected_hash.as_deref() {
+            match fs::read_to_string(&source_path) {
+                Ok(source) => {
+                    let actual_hash = content_hash(&source);
+                    if actual_hash != expected_hash {
+                        stale_reasons.push(format!("changed_file_hash:{repo_relative_path}"));
+                    }
+                }
+                Err(error) => {
+                    stale_reasons.push(format!("source_read_failed:{repo_relative_path}:{error}"))
+                }
+            }
+        }
+    }
+
+    stale_reasons.sort();
+    stale_reasons.dedup();
+    Ok(VectorChunkSourceBindingValidation {
+        status: if stale_reasons.is_empty() {
+            "valid".to_string()
+        } else {
+            "stale".to_string()
+        },
+        checked_files,
+        checked_chunks,
+        unbound_chunks,
+        stale_reasons,
+    })
+}
+
 pub fn write_vector_chunk_index_json(
     path: &Path,
     index: &InMemoryVectorChunkIndex,
 ) -> Result<(), IndexError> {
+    write_vector_chunk_runtime_sidecar_json(path, index, VectorChunkArtifactFormat::CompactJson)
+        .map(|_| ())
+}
+
+pub fn write_vector_chunk_runtime_sidecar_json(
+    path: &Path,
+    index: &InMemoryVectorChunkIndex,
+    format: VectorChunkArtifactFormat,
+) -> Result<u64, IndexError> {
+    write_vector_chunk_artifact_json(path, index, "vector_runtime_sidecar", format, false)
+}
+
+pub fn write_vector_chunk_audit_artifact_json(
+    path: &Path,
+    index: &InMemoryVectorChunkIndex,
+) -> Result<u64, IndexError> {
+    write_vector_chunk_artifact_json(
+        path,
+        index,
+        "audit_artifact",
+        VectorChunkArtifactFormat::PrettyJson,
+        true,
+    )
+}
+
+fn write_vector_chunk_artifact_json(
+    path: &Path,
+    index: &InMemoryVectorChunkIndex,
+    artifact_kind: &str,
+    format: VectorChunkArtifactFormat,
+    include_verbose_metadata: bool,
+) -> Result<u64, IndexError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let persisted = persisted_vector_chunk_index_from_index(index);
-    let bytes = serde_json::to_vec_pretty(&persisted).map_err(|error| {
-        IndexError::Message(format!("failed to serialize vector chunk index: {error}"))
+    let value =
+        vector_chunk_artifact_value(index, artifact_kind, format, include_verbose_metadata)?;
+    let bytes = if format.pretty() {
+        serde_json::to_vec_pretty(&value)
+    } else {
+        serde_json::to_vec(&value)
+    }
+    .map_err(|error| {
+        IndexError::Message(format!(
+            "failed to serialize vector chunk artifact: {error}"
+        ))
     })?;
-    fs::write(path, bytes)?;
-    Ok(())
+    let byte_len = bytes.len() as u64;
+    write_vector_chunk_artifact_bytes_atomically(path, &bytes, artifact_kind)?;
+    Ok(byte_len)
+}
+
+fn write_vector_chunk_artifact_bytes_atomically(
+    path: &Path,
+    bytes: &[u8],
+    artifact_kind: &str,
+) -> Result<(), IndexError> {
+    let temp_path = atomic_temp_artifact_path(path);
+    if let Some(parent) = temp_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    {
+        let mut file = fs::File::create(&temp_path)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    serde_json::from_slice::<Value>(bytes).map_err(|error| {
+        let _ = remove_file_if_exists(&temp_path);
+        IndexError::Message(format!(
+            "serialized vector chunk artifact did not validate as JSON before publish: {error}"
+        ))
+    })?;
+
+    for failpoint in [
+        vector_artifact_failpoint_name(artifact_kind, "after_temp_write_before_publish"),
+        "vector_artifact_after_temp_write_before_publish",
+    ] {
+        if let Err(error) = write_path_chaos_failpoint(failpoint) {
+            let _ = remove_file_if_exists(&temp_path);
+            return Err(error);
+        }
+    }
+
+    match publish_atomic_regular_file(
+        &temp_path,
+        path,
+        vector_artifact_failpoint_name(artifact_kind, "during_publish"),
+    ) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = remove_file_if_exists(&temp_path);
+            Err(error)
+        }
+    }
+}
+
+fn vector_artifact_failpoint_name(artifact_kind: &str, suffix: &str) -> &'static str {
+    match (artifact_kind, suffix) {
+        ("audit_artifact", "after_temp_write_before_publish") => {
+            "vector_audit_after_temp_write_before_publish"
+        }
+        ("audit_artifact", "during_publish") => "vector_audit_during_publish",
+        (_, "after_temp_write_before_publish") => "vector_runtime_after_temp_write_before_publish",
+        (_, "during_publish") => "vector_runtime_during_publish",
+        _ => "vector_artifact_unknown_failpoint",
+    }
+}
+
+fn atomic_temp_artifact_path(final_path: &Path) -> PathBuf {
+    let parent = final_path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = final_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("codegraph-vector-artifact.json");
+    parent.join(format!(
+        ".{file_name}.tmp-{}-{}",
+        std::process::id(),
+        unix_time_ms()
+    ))
+}
+
+fn atomic_backup_artifact_path(final_path: &Path) -> PathBuf {
+    let parent = final_path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = final_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("codegraph-vector-artifact.json");
+    parent.join(format!(
+        ".{file_name}.backup-{}-{}",
+        std::process::id(),
+        unix_time_ms()
+    ))
+}
+
+fn publish_atomic_regular_file(
+    temp_path: &Path,
+    final_path: &Path,
+    during_publish_failpoint: &str,
+) -> Result<(), IndexError> {
+    let backup_path = atomic_backup_artifact_path(final_path);
+    let had_old_file = final_path.exists();
+    if had_old_file {
+        if let Err(error) = fs::rename(final_path, &backup_path) {
+            return Err(IndexError::Io(error));
+        }
+    }
+    if let Err(error) = write_path_chaos_failpoint(during_publish_failpoint) {
+        if had_old_file {
+            let _ = fs::rename(&backup_path, final_path);
+        }
+        return Err(error);
+    }
+    match fs::rename(temp_path, final_path) {
+        Ok(()) => {
+            if had_old_file {
+                remove_file_if_exists(&backup_path)?;
+            }
+            Ok(())
+        }
+        Err(error) => {
+            let _ = remove_file_if_exists(final_path);
+            if had_old_file {
+                let _ = fs::rename(&backup_path, final_path);
+            }
+            Err(IndexError::Io(error))
+        }
+    }
+}
+
+fn vector_chunk_artifact_value(
+    index: &InMemoryVectorChunkIndex,
+    artifact_kind: &str,
+    format: VectorChunkArtifactFormat,
+    include_verbose_metadata: bool,
+) -> Result<Value, IndexError> {
+    let mut metadata = serde_json::to_value(index.metadata()).map_err(|error| {
+        IndexError::Message(format!(
+            "failed to serialize vector chunk metadata: {error}"
+        ))
+    })?;
+    let chunk_count = index.len();
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("artifact_kind".to_string(), json!(artifact_kind));
+        object.insert("index_artifact_format".to_string(), json!(format.as_str()));
+        object.insert("vector_payload_compression".to_string(), json!("none"));
+        object.insert("stores_chunk_text".to_string(), json!(true));
+        object.insert("stores_chunk_metadata".to_string(), json!(true));
+        object.insert("stores_full_source_body".to_string(), json!(false));
+        object.insert("stores_embedding_vectors".to_string(), json!(false));
+        object.insert(
+            "embedding_reconstruction".to_string(),
+            json!("stored bounded chunk.text is the deterministic embedding input"),
+        );
+        object.insert("candidate_only".to_string(), json!(true));
+        object.insert("graph_proof".to_string(), json!(false));
+        object.insert("claimable_for_graph".to_string(), json!(false));
+        object.insert(
+            "requires_graph_verification".to_string(),
+            json!("entity_id vector hits require graph verification before proof"),
+        );
+        object.insert(
+            "runtime_total_chunks".to_string(),
+            json!(if artifact_kind == "vector_runtime_sidecar" {
+                chunk_count
+            } else {
+                0
+            }),
+        );
+        object.insert(
+            "audit_total_chunks".to_string(),
+            json!(if artifact_kind == "audit_artifact" {
+                chunk_count
+            } else {
+                0
+            }),
+        );
+        object.insert("runtime_selected_chunks".to_string(), json!(chunk_count));
+        object.insert(
+            "diagnostic_only".to_string(),
+            json!(artifact_kind == "audit_artifact"),
+        );
+        object.insert(
+            "verbose_selection_metadata".to_string(),
+            json!(include_verbose_metadata),
+        );
+        object.insert("public_claim".to_string(), json!(false));
+    }
+
+    let chunks = index
+        .entries()
+        .map(|entry| vector_chunk_artifact_chunk_value(&entry.chunk, include_verbose_metadata))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(json!({
+        "metadata": metadata,
+        "chunks": chunks,
+    }))
+}
+
+fn vector_chunk_artifact_chunk_value(
+    chunk: &VectorEmbeddingChunk,
+    include_verbose_metadata: bool,
+) -> Result<Value, IndexError> {
+    let mut chunk = chunk.clone();
+    if !include_verbose_metadata {
+        chunk.selection_reason = None;
+        chunk.top_level_dir = None;
+        chunk.cap_stage = None;
+    }
+    let requires_graph_verification = chunk.entity_id.is_some()
+        || chunk.source_kind == VectorEmbeddingChunkSourceKind::GraphEntity;
+    let mut value = serde_json::to_value(&chunk).map_err(|error| {
+        IndexError::Message(format!("failed to serialize vector chunk: {error}"))
+    })?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "requires_graph_verification".to_string(),
+            json!(requires_graph_verification),
+        );
+        object.insert(
+            "candidate_only".to_string(),
+            json!(!chunk.graph_proof && !chunk.claimable_for_graph),
+        );
+    }
+    Ok(value)
 }
 
 pub fn read_vector_chunk_index_json(path: &Path) -> Result<PersistedVectorChunkIndex, IndexError> {
@@ -10562,6 +13359,20 @@ pub fn load_vector_chunk_index_json<P: EmbeddingProvider>(
             VECTOR_CHUNK_INDEX_METADATA_VERSION, persisted.metadata.metadata_version
         )));
     }
+    match persisted.metadata.artifact_kind.as_str() {
+        "" | "vector_runtime_sidecar" | "legacy_pretty_json_vector_artifact" => {}
+        "audit_artifact" => {
+            return Err(IndexError::Message(
+                "vector audit artifact is diagnostic_only and cannot be loaded as the runtime vector sidecar"
+                    .to_string(),
+            ))
+        }
+        other => {
+            return Err(IndexError::Message(format!(
+                "unsupported vector artifact kind for runtime load: {other}"
+            )))
+        }
+    }
     if let Some(reason) =
         persisted
             .metadata
@@ -10576,20 +13387,72 @@ pub fn load_vector_chunk_index_json<P: EmbeddingProvider>(
             persisted.chunks.len()
         )));
     }
-    build_in_memory_vector_chunk_index(persisted.chunks, provider, passport, options)
+    let persisted_metadata = persisted.metadata.clone();
+    let mut index =
+        build_in_memory_vector_chunk_index(persisted.chunks, provider, passport, options)?;
+    index.metadata = persisted_metadata;
+    Ok(index)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct VectorChunkIndexBuildSummary {
     pub status: String,
     pub index_path: String,
+    pub runtime_sidecar_path: String,
+    pub build_timings: VectorChunkIndexBuildTimings,
     pub chunk_count: usize,
     pub omitted_chunks: usize,
+    pub generated_total_chunks: usize,
+    pub generated_text_evidence_chunks: usize,
+    pub generated_graph_entity_chunks: usize,
+    pub generated_file_path_title_chunks: usize,
+    pub generated_metadata_chunks: usize,
+    pub selected_total_chunks: usize,
+    pub selected_text_evidence_chunks: usize,
+    pub selected_graph_entity_chunks: usize,
+    pub selected_file_path_title_chunks: usize,
+    pub selected_metadata_chunks: usize,
+    pub persisted_total_chunks: usize,
+    pub persisted_text_evidence_chunks: usize,
+    pub persisted_graph_entity_chunks: usize,
+    pub persisted_file_path_title_chunks: usize,
+    pub persisted_metadata_chunks: usize,
+    pub chunk_cap: usize,
+    pub chunk_cap_applied: bool,
+    pub chunk_selection_strategy: String,
+    pub input_order_cap: bool,
+    pub persisted_chunks_by_top_level_dir: BTreeMap<String, usize>,
+    pub persisted_chunks_by_file_kind: BTreeMap<String, usize>,
+    pub persisted_chunks_by_source_kind: BTreeMap<String, usize>,
+    pub omitted_by_cap: usize,
+    pub omitted_by_bucket_limit: usize,
+    pub omitted_low_signal: usize,
+    pub per_file_cap: usize,
+    pub per_directory_soft_cap: usize,
     pub indexed_text_bytes: usize,
+    pub actual_index_file_bytes: u64,
+    pub runtime_sidecar_bytes: u64,
+    pub audit_artifact_path: Option<String>,
+    pub audit_artifact_bytes: Option<u64>,
+    pub pretty_json_overhead: Option<i64>,
+    pub index_artifact_format: String,
+    pub estimated_f32_payload_bytes: usize,
+    pub estimated_f32_payload_dim: usize,
+    pub estimated_f32_payload_count: usize,
+    pub index_file_to_f32_payload_ratio: f64,
+    pub stores_chunk_text: bool,
+    pub stores_chunk_metadata: bool,
+    pub stores_full_source_body: bool,
+    pub vector_payload_compression: String,
     pub estimated_vector_bytes: usize,
+    pub estimated_vector_bytes_deprecated_alias_for: String,
     pub graph_entity_chunks: usize,
     pub text_evidence_chunks: usize,
     pub file_path_title_chunks: usize,
+    pub runtime_total_chunks: usize,
+    pub audit_total_chunks: usize,
+    pub runtime_selected_chunks: usize,
+    pub audit_chunks: usize,
     pub provider_id: String,
     pub model_id: String,
     pub dimension: usize,
@@ -10606,12 +13469,38 @@ pub fn build_vector_chunk_index_json_for_repo<P: EmbeddingProvider>(
     provider: &P,
     options: VectorChunkIndexBuildOptions,
 ) -> Result<VectorChunkIndexBuildSummary, IndexError> {
+    build_vector_chunk_index_artifacts_for_repo(
+        repo_root,
+        db_path,
+        index_path,
+        provider,
+        options,
+        VectorChunkIndexArtifactOptions::default(),
+    )
+}
+
+pub fn build_vector_chunk_index_artifacts_for_repo<P: EmbeddingProvider>(
+    repo_root: &Path,
+    db_path: &Path,
+    index_path: &Path,
+    provider: &P,
+    options: VectorChunkIndexBuildOptions,
+    artifact_options: VectorChunkIndexArtifactOptions,
+) -> Result<VectorChunkIndexBuildSummary, IndexError> {
+    let total_start = Instant::now();
+    let mut timings = VectorChunkIndexBuildTimings::default();
+    let repo_resolution_start = Instant::now();
     let repo_root = resolve_repo_root_for_index(repo_root)?;
+    timings.repo_resolution_ms = duration_ms(repo_resolution_start.elapsed());
     let db_path = normalize_db_path(&repo_root, db_path);
+    let open_store_start = Instant::now();
     let store = SqliteGraphStore::open_read_only(&db_path)?;
+    timings.open_store_ms = duration_ms(open_store_start.elapsed());
+    let load_passport_start = Instant::now();
     let passport = store
         .get_db_passport()?
         .ok_or_else(|| IndexError::Message("db passport missing".to_string()))?;
+    timings.load_passport_ms = duration_ms(load_passport_start.elapsed());
     let lifecycle_binding = RetrievalCandidateLifecycleBinding {
         status: RetrievalCandidateLifecycleStatus::Fresh,
         db_passport_fingerprint: Some(db_passport_fingerprint(&passport)),
@@ -10621,13 +13510,33 @@ pub fn build_vector_chunk_index_json_for_repo<P: EmbeddingProvider>(
         embedding_profile: Some(provider.metadata().version.clone()),
         stale_reason: None,
     };
+    let list_files_start = Instant::now();
     let files = store.list_files(UNBOUNDED_STORE_READ_LIMIT)?;
+    timings.list_files_ms = duration_ms(list_files_start.elapsed());
+    let mut entities_by_file = BTreeMap::<String, Vec<Entity>>::new();
+    let list_entities_start = Instant::now();
+    let entities = store.list_entities(UNBOUNDED_STORE_READ_LIMIT)?;
+    timings.list_entities_ms = duration_ms(list_entities_start.elapsed());
+    let filter_group_start = Instant::now();
+    for entity in entities
+        .into_iter()
+        .filter(should_generate_vector_chunks_for_entity)
+    {
+        entities_by_file
+            .entry(normalize_graph_path(&entity.repo_relative_path))
+            .or_default()
+            .push(entity);
+    }
+    timings.filter_group_entities_ms = duration_ms(filter_group_start.elapsed());
     let mut chunks = Vec::new();
+    let chunk_generation_start = Instant::now();
 
     for file in files {
         let repo_relative_path = normalize_graph_path(&file.repo_relative_path);
         let source_path = repo_root.join(&repo_relative_path);
+        let source_read_start = Instant::now();
         let source = fs::read_to_string(&source_path).ok();
+        timings.file_source_read_ms += duration_ms(source_read_start.elapsed());
         let is_text_evidence = file.metadata.get("evidence_kind").and_then(Value::as_str)
             == Some(TEXT_EVIDENCE_KIND)
             && file.metadata.get("proof_status").and_then(Value::as_str)
@@ -10643,33 +13552,52 @@ pub fn build_vector_chunk_index_json_for_repo<P: EmbeddingProvider>(
             "production"
         };
 
-        chunks.push(extract_file_path_title_embedding_chunk_for_path(
-            &repo_relative_path,
-            evidence_role,
-            file_kind,
-            Some(lifecycle_binding.clone()),
+        let file_path_chunk_start = Instant::now();
+        chunks.push(bind_vector_chunk_to_source_file(
+            extract_file_path_title_embedding_chunk_for_path(
+                &repo_relative_path,
+                evidence_role,
+                file_kind,
+                Some(lifecycle_binding.clone()),
+            ),
+            &file,
         ));
+        timings.file_path_title_chunk_ms += duration_ms(file_path_chunk_start.elapsed());
 
         if is_text_evidence {
             if let Some(source) = source.as_deref() {
-                chunks.extend(extract_text_evidence_embedding_chunks_for_path(
-                    &repo_relative_path,
-                    source,
-                    Some(lifecycle_binding.clone()),
+                let text_evidence_start = Instant::now();
+                chunks.extend(bind_vector_chunks_to_source_file(
+                    extract_text_evidence_embedding_chunks_for_path(
+                        &repo_relative_path,
+                        source,
+                        Some(lifecycle_binding.clone()),
+                    ),
+                    &file,
                 ));
+                timings.text_evidence_chunk_ms += duration_ms(text_evidence_start.elapsed());
             }
             continue;
         }
 
-        for entity in store.list_entities_by_file(&repo_relative_path)? {
-            chunks.extend(extract_graph_entity_embedding_chunks(
-                &entity,
-                source.as_deref(),
-                file.language.as_deref(),
-                Some(lifecycle_binding.clone()),
+        for entity in entities_by_file
+            .remove(&repo_relative_path)
+            .unwrap_or_default()
+        {
+            let graph_entity_start = Instant::now();
+            chunks.extend(bind_vector_chunks_to_source_file(
+                extract_graph_entity_embedding_chunks(
+                    &entity,
+                    source.as_deref(),
+                    file.language.as_deref(),
+                    Some(lifecycle_binding.clone()),
+                ),
+                &file,
             ));
+            timings.graph_entity_chunk_ms += duration_ms(graph_entity_start.elapsed());
         }
     }
+    timings.chunk_generation_ms = duration_ms(chunk_generation_start.elapsed());
 
     let graph_entity_chunks = chunks
         .iter()
@@ -10683,19 +13611,118 @@ pub fn build_vector_chunk_index_json_for_repo<P: EmbeddingProvider>(
         .iter()
         .filter(|chunk| chunk.chunk_kind == VectorEmbeddingChunkKind::FilePathTitle)
         .count();
-    let index = build_in_memory_vector_chunk_index(chunks, provider, &passport, options.clone())?;
-    write_vector_chunk_index_json(index_path, &index)?;
+    let in_memory_start = Instant::now();
+    let (index, in_memory_timings) = build_in_memory_vector_chunk_index_with_timings(
+        chunks,
+        provider,
+        &passport,
+        options.clone(),
+    )?;
+    timings.in_memory_index_ms = duration_ms(in_memory_start.elapsed());
+    timings.input_collect_ms = in_memory_timings.input_collect_ms;
+    timings.generated_count_ms = in_memory_timings.generated_count_ms;
+    timings.selection_ms = in_memory_timings.selection_ms;
+    timings.selected_count_ms = in_memory_timings.selected_count_ms;
+    timings.embedding_ms = in_memory_timings.embedding_ms;
+    timings.metadata_build_ms = in_memory_timings.metadata_build_ms;
+    let write_json_start = Instant::now();
+    let runtime_sidecar_bytes = write_vector_chunk_runtime_sidecar_json(
+        index_path,
+        &index,
+        artifact_options.runtime_format,
+    )?;
+    let audit_artifact_bytes =
+        if let Some(audit_path) = artifact_options.audit_artifact_path.as_ref() {
+            Some(write_vector_chunk_audit_artifact_json(audit_path, &index)?)
+        } else {
+            None
+        };
+    timings.write_json_ms = duration_ms(write_json_start.elapsed());
+    let artifact_metadata_start = Instant::now();
+    let actual_index_file_bytes = fs::metadata(index_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(runtime_sidecar_bytes);
+    timings.artifact_metadata_ms = duration_ms(artifact_metadata_start.elapsed());
+    timings.total_ms = duration_ms(total_start.elapsed());
+    let estimated_f32_payload_bytes = index.metadata().estimated_f32_payload_bytes;
+    let index_file_to_f32_payload_ratio = if estimated_f32_payload_bytes == 0 {
+        0.0
+    } else {
+        actual_index_file_bytes as f64 / estimated_f32_payload_bytes as f64
+    };
 
     Ok(VectorChunkIndexBuildSummary {
         status: "ok".to_string(),
         index_path: index_path.to_string_lossy().to_string(),
+        runtime_sidecar_path: index_path.to_string_lossy().to_string(),
+        build_timings: timings,
         chunk_count: index.metadata().chunk_count,
         omitted_chunks: index.metadata().omitted_chunks,
+        generated_total_chunks: index.metadata().generated_total_chunks,
+        generated_text_evidence_chunks: index.metadata().generated_text_evidence_chunks,
+        generated_graph_entity_chunks: index.metadata().generated_graph_entity_chunks,
+        generated_file_path_title_chunks: index.metadata().generated_file_path_title_chunks,
+        generated_metadata_chunks: index.metadata().generated_metadata_chunks,
+        selected_total_chunks: index.metadata().selected_total_chunks,
+        selected_text_evidence_chunks: index.metadata().selected_text_evidence_chunks,
+        selected_graph_entity_chunks: index.metadata().selected_graph_entity_chunks,
+        selected_file_path_title_chunks: index.metadata().selected_file_path_title_chunks,
+        selected_metadata_chunks: index.metadata().selected_metadata_chunks,
+        persisted_total_chunks: index.metadata().persisted_total_chunks,
+        persisted_text_evidence_chunks: index.metadata().persisted_text_evidence_chunks,
+        persisted_graph_entity_chunks: index.metadata().persisted_graph_entity_chunks,
+        persisted_file_path_title_chunks: index.metadata().persisted_file_path_title_chunks,
+        persisted_metadata_chunks: index.metadata().persisted_metadata_chunks,
+        chunk_cap: index.metadata().chunk_cap,
+        chunk_cap_applied: index.metadata().chunk_cap_applied,
+        chunk_selection_strategy: index.metadata().chunk_selection_strategy.clone(),
+        input_order_cap: index.metadata().input_order_cap,
+        persisted_chunks_by_top_level_dir: index
+            .metadata()
+            .persisted_chunks_by_top_level_dir
+            .clone(),
+        persisted_chunks_by_file_kind: index.metadata().persisted_chunks_by_file_kind.clone(),
+        persisted_chunks_by_source_kind: index.metadata().persisted_chunks_by_source_kind.clone(),
+        omitted_by_cap: index.metadata().omitted_by_cap,
+        omitted_by_bucket_limit: index.metadata().omitted_by_bucket_limit,
+        omitted_low_signal: index.metadata().omitted_low_signal,
+        per_file_cap: index.metadata().per_file_cap,
+        per_directory_soft_cap: index.metadata().per_directory_soft_cap,
         indexed_text_bytes: index.metadata().indexed_text_bytes,
+        actual_index_file_bytes,
+        runtime_sidecar_bytes,
+        audit_artifact_path: artifact_options
+            .audit_artifact_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
+        audit_artifact_bytes,
+        pretty_json_overhead: audit_artifact_bytes
+            .map(|bytes| bytes as i64 - runtime_sidecar_bytes as i64),
+        index_artifact_format: artifact_options.runtime_format.as_str().to_string(),
+        estimated_f32_payload_bytes,
+        estimated_f32_payload_dim: index.metadata().estimated_f32_payload_dim,
+        estimated_f32_payload_count: index.metadata().estimated_f32_payload_count,
+        index_file_to_f32_payload_ratio,
+        stores_chunk_text: index.metadata().stores_chunk_text,
+        stores_chunk_metadata: index.metadata().stores_chunk_metadata,
+        stores_full_source_body: index.metadata().stores_full_source_body,
+        vector_payload_compression: index.metadata().vector_payload_compression.clone(),
         estimated_vector_bytes: index.metadata().estimated_vector_bytes,
+        estimated_vector_bytes_deprecated_alias_for: index
+            .metadata()
+            .estimated_vector_bytes_deprecated_alias_for
+            .clone(),
         graph_entity_chunks,
         text_evidence_chunks,
         file_path_title_chunks,
+        runtime_total_chunks: index.metadata().selected_total_chunks,
+        audit_total_chunks: audit_artifact_bytes
+            .map(|_| index.metadata().selected_total_chunks)
+            .unwrap_or(0),
+        runtime_selected_chunks: index.metadata().selected_total_chunks,
+        audit_chunks: audit_artifact_bytes
+            .map(|_| index.metadata().selected_total_chunks)
+            .unwrap_or(0),
         provider_id: index.metadata().provider.provider_id.clone(),
         model_id: index.metadata().provider.model_id.clone(),
         dimension: index.metadata().provider.dimension,
@@ -10877,6 +13904,7 @@ fn build_vector_embedding_chunk(input: VectorChunkBuildInput<'_>) -> VectorEmbed
     );
     let token_count = vector_chunk_token_count(&input.text);
     let byte_count = input.text.len();
+    let top_level_dir = vector_chunk_top_level_dir(&normalized_path);
     VectorEmbeddingChunk {
         chunk_id,
         chunk_kind: input.chunk_kind,
@@ -10897,8 +13925,3455 @@ fn build_vector_embedding_chunk(input: VectorChunkBuildInput<'_>) -> VectorEmbed
         file_kind: input.file_kind,
         lifecycle_binding: input.lifecycle_binding,
         content_hash,
+        source_file_content_hash: None,
+        source_file_size_bytes: None,
+        source_file_modified_unix_nanos: None,
         extraction_version: VECTOR_EMBEDDING_CHUNK_EXTRACTION_VERSION.to_string(),
+        selection_score: None,
+        selection_bucket: None,
+        selection_reason: None,
+        top_level_dir: Some(top_level_dir),
+        cap_stage: None,
     }
+}
+
+fn candidate_spool_scope_hash(options: &IndexOptions) -> Result<String, IndexError> {
+    scope_policy_hash(&options.scope)
+}
+
+fn candidate_spool_repo_hash(repo_root: &Path) -> Result<String, IndexError> {
+    Ok(stable_hex_hash(
+        canonical_repo_root_string(repo_root)?.as_bytes(),
+    ))
+}
+
+fn candidate_spool_query_index_binding_hash(spool: &CandidateSpoolSummary) -> String {
+    let material = json!({
+        "metadata_version": CANDIDATE_SPOOL_METADATA_VERSION,
+        "record_model": spool.record_model,
+        "repo_hash": spool.repo_hash,
+        "scope_hash": spool.scope_hash,
+        "db_passport_hash": spool.db_passport_hash,
+        "candidate_spool_status": spool.candidate_spool_status,
+        "lifecycle": spool.lifecycle,
+        "generated_total_chunks": spool.generated_total_chunks,
+        "selected_total_chunks": spool.selected_total_chunks,
+        "persisted_total_chunks": spool.persisted_total_chunks,
+        "spooled_total_chunks": spool.spooled_total_chunks,
+        "candidate_spool_truncated": spool.candidate_spool_truncated,
+        "candidate_spool_partial": spool.candidate_spool_partial,
+    });
+    stable_hex_hash(material.to_string().as_bytes())
+}
+
+fn candidate_spool_query_index_create_schema(connection: &Connection) -> Result<(), IndexError> {
+    connection
+        .execute_batch(
+            "
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            CREATE TABLE IF NOT EXISTS candidate_spool_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS candidate_spool_records (
+                chunk_id TEXT PRIMARY KEY,
+                candidate_kind TEXT NOT NULL,
+                packet_kind TEXT,
+                chunk_kind TEXT,
+                source_kind TEXT,
+                path TEXT,
+                normalized_path TEXT,
+                filename TEXT,
+                top_level_dir TEXT,
+                file_kind TEXT,
+                source_role TEXT,
+                evidence_role TEXT,
+                symbol_name TEXT,
+                normalized_symbol TEXT,
+                source_span_json TEXT,
+                entity_id TEXT,
+                text_preview TEXT,
+                selection_score REAL,
+                selection_bucket TEXT,
+                source_file_content_hash TEXT,
+                source_file_size_bytes INTEGER,
+                chunk_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS candidate_spool_terms (
+                term TEXT NOT NULL,
+                chunk_id TEXT NOT NULL,
+                field TEXT NOT NULL,
+                weight INTEGER NOT NULL,
+                PRIMARY KEY (term, chunk_id, field)
+            );
+            CREATE TABLE IF NOT EXISTS candidate_spool_source_bindings (
+                path TEXT PRIMARY KEY,
+                source_file_content_hash TEXT,
+                source_file_size_bytes INTEGER,
+                record_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_candidate_spool_path
+                ON candidate_spool_records(normalized_path);
+            CREATE INDEX IF NOT EXISTS idx_candidate_spool_filename
+                ON candidate_spool_records(filename);
+            CREATE INDEX IF NOT EXISTS idx_candidate_spool_symbol
+                ON candidate_spool_records(normalized_symbol);
+            CREATE INDEX IF NOT EXISTS idx_candidate_spool_kind
+                ON candidate_spool_records(candidate_kind);
+            CREATE INDEX IF NOT EXISTS idx_candidate_spool_source_kind
+                ON candidate_spool_records(source_kind);
+            CREATE INDEX IF NOT EXISTS idx_candidate_spool_dir
+                ON candidate_spool_records(top_level_dir);
+            CREATE INDEX IF NOT EXISTS idx_candidate_spool_file_kind
+                ON candidate_spool_records(file_kind);
+            CREATE INDEX IF NOT EXISTS idx_candidate_spool_role
+                ON candidate_spool_records(source_role, evidence_role);
+            CREATE INDEX IF NOT EXISTS idx_candidate_spool_terms_term
+                ON candidate_spool_terms(term);
+            CREATE INDEX IF NOT EXISTS idx_candidate_spool_terms_chunk
+                ON candidate_spool_terms(chunk_id);
+            CREATE INDEX IF NOT EXISTS idx_candidate_spool_source_bindings_hash
+                ON candidate_spool_source_bindings(source_file_content_hash);
+            ",
+        )
+        .map_err(|error| sqlite_index_error("candidate_spool_query_index_schema_failed", error))?;
+    Ok(())
+}
+
+fn candidate_spool_query_index_set_metadata(
+    connection: &Connection,
+    key: &str,
+    value: impl ToString,
+) -> Result<(), IndexError> {
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO candidate_spool_metadata(key, value) VALUES (?1, ?2)",
+            params![key, value.to_string()],
+        )
+        .map_err(|error| {
+            sqlite_index_error("candidate_spool_query_index_metadata_write_failed", error)
+        })?;
+    Ok(())
+}
+
+fn candidate_spool_query_index_metadata_value(
+    connection: &Connection,
+    key: &str,
+) -> Result<Option<String>, IndexError> {
+    let mut statement = connection
+        .prepare("SELECT value FROM candidate_spool_metadata WHERE key = ?1")
+        .map_err(|error| {
+            sqlite_index_error("candidate_spool_query_index_metadata_read_failed", error)
+        })?;
+    let mut rows = statement.query(params![key]).map_err(|error| {
+        sqlite_index_error("candidate_spool_query_index_metadata_read_failed", error)
+    })?;
+    match rows.next().map_err(|error| {
+        sqlite_index_error("candidate_spool_query_index_metadata_read_failed", error)
+    })? {
+        Some(row) => row.get::<_, String>(0).map(Some).map_err(|error| {
+            sqlite_index_error("candidate_spool_query_index_metadata_read_failed", error)
+        }),
+        None => Ok(None),
+    }
+}
+
+fn candidate_spool_query_index_record_count(connection: &Connection) -> Result<usize, IndexError> {
+    let count = connection
+        .query_row("SELECT COUNT(*) FROM candidate_spool_records", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|error| sqlite_index_error("candidate_spool_query_index_count_failed", error))?;
+    Ok(count.max(0) as usize)
+}
+
+fn candidate_spool_query_index_source_binding_count(
+    connection: &Connection,
+) -> Result<usize, IndexError> {
+    let count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM candidate_spool_source_bindings",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| {
+            sqlite_index_error(
+                "candidate_spool_query_index_source_binding_count_failed",
+                error,
+            )
+        })?;
+    Ok(count.max(0) as usize)
+}
+
+fn candidate_spool_query_index_source_binding_stale_reasons(
+    connection: &Connection,
+    repo_root: &Path,
+) -> Result<Vec<String>, IndexError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT path, source_file_content_hash, source_file_size_bytes
+             FROM candidate_spool_source_bindings
+             ORDER BY path",
+        )
+        .map_err(|error| {
+            sqlite_index_error(
+                "candidate_spool_query_index_source_bindings_prepare_failed",
+                error,
+            )
+        })?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<u64>>(2)?,
+            ))
+        })
+        .map_err(|error| {
+            sqlite_index_error(
+                "candidate_spool_query_index_source_bindings_read_failed",
+                error,
+            )
+        })?;
+    let mut stale_reasons = Vec::new();
+    for row in rows {
+        let (path, expected_hash, expected_size) = row.map_err(|error| {
+            sqlite_index_error(
+                "candidate_spool_query_index_source_binding_row_failed",
+                error,
+            )
+        })?;
+        let source_path = repo_root.join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if !source_path.exists() {
+            stale_reasons.push(format!("deleted_file: {path}"));
+            continue;
+        }
+        if let Some(expected_size) = expected_size {
+            let actual_size = fs::metadata(&source_path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            if actual_size != expected_size {
+                stale_reasons.push(format!(
+                    "changed_file_size: {path} expected={expected_size} actual={actual_size}"
+                ));
+                continue;
+            }
+        }
+        if let Some(expected_hash) = expected_hash {
+            match fs::read_to_string(&source_path) {
+                Ok(source) => {
+                    let actual_hash = content_hash(&source);
+                    if actual_hash != expected_hash {
+                        stale_reasons.push(format!("changed_file_hash: {path}"));
+                    }
+                }
+                Err(error) => stale_reasons.push(format!("read_failed: {path}: {error}")),
+            }
+        }
+    }
+    stale_reasons.sort();
+    stale_reasons.dedup();
+    Ok(stale_reasons)
+}
+
+fn refresh_candidate_spool_query_index_summary(
+    spool: &mut CandidateSpoolSummary,
+) -> Result<(), IndexError> {
+    if spool.query_index_status == "disabled" {
+        return Ok(());
+    }
+    let spool_path = PathBuf::from(&spool.candidate_spool_path);
+    let index_path = candidate_spool_query_index_path(&spool_path);
+    spool.query_index_path = Some(path_string(&index_path));
+    spool.query_index_kind = "sqlite".to_string();
+    spool.query_index_version = CANDIDATE_SPOOL_QUERY_INDEX_VERSION.to_string();
+    spool.query_index_bound_manifest_hash = Some(candidate_spool_query_index_binding_hash(spool));
+    if !index_path.exists() {
+        spool.query_index_status = "index_missing".to_string();
+        spool.query_index_bytes = 0;
+        spool.query_index_record_count = 0;
+        return Ok(());
+    }
+    let connection = Connection::open(&index_path)
+        .map_err(|error| sqlite_index_error("candidate_spool_query_index_open_failed", error))?;
+    candidate_spool_query_index_create_schema(&connection)?;
+    let count = candidate_spool_query_index_record_count(&connection)?;
+    let source_binding_count = candidate_spool_query_index_source_binding_count(&connection)?;
+    spool.query_index_status = "ready".to_string();
+    spool.query_index_bytes = fs::metadata(&index_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    spool.query_index_record_count = count;
+    candidate_spool_query_index_set_metadata(
+        &connection,
+        "query_index_version",
+        CANDIDATE_SPOOL_QUERY_INDEX_VERSION,
+    )?;
+    candidate_spool_query_index_set_metadata(&connection, "query_index_status", "ready")?;
+    candidate_spool_query_index_set_metadata(&connection, "query_index_kind", "sqlite")?;
+    candidate_spool_query_index_set_metadata(
+        &connection,
+        "query_index_record_count",
+        count.to_string(),
+    )?;
+    candidate_spool_query_index_set_metadata(
+        &connection,
+        "query_index_source_binding_count",
+        source_binding_count.to_string(),
+    )?;
+    candidate_spool_query_index_set_metadata(
+        &connection,
+        "query_index_bound_manifest_hash",
+        spool
+            .query_index_bound_manifest_hash
+            .as_deref()
+            .unwrap_or_default(),
+    )?;
+    candidate_spool_query_index_set_metadata(
+        &connection,
+        "candidate_spool_status",
+        &spool.candidate_spool_status,
+    )?;
+    candidate_spool_query_index_set_metadata(&connection, "lifecycle", &spool.lifecycle)?;
+    candidate_spool_query_index_set_metadata(
+        &connection,
+        "record_model",
+        if spool.record_model.is_empty() {
+            CANDIDATE_SPOOL_RECORD_MODEL_VERSION
+        } else {
+            &spool.record_model
+        },
+    )?;
+    candidate_spool_query_index_set_metadata(
+        &connection,
+        "spooled_total_chunks",
+        spool.spooled_total_chunks.to_string(),
+    )?;
+    candidate_spool_query_index_set_metadata(
+        &connection,
+        "persisted_total_chunks",
+        spool.persisted_total_chunks.to_string(),
+    )?;
+    if let Some(repo_hash) = spool.repo_hash.as_deref() {
+        candidate_spool_query_index_set_metadata(&connection, "repo_hash", repo_hash)?;
+    }
+    if let Some(scope_hash) = spool.scope_hash.as_deref() {
+        candidate_spool_query_index_set_metadata(&connection, "scope_hash", scope_hash)?;
+    }
+    if let Some(passport_hash) = spool.db_passport_hash.as_deref() {
+        candidate_spool_query_index_set_metadata(&connection, "db_passport_hash", passport_hash)?;
+    }
+    Ok(())
+}
+
+fn initialize_candidate_spool_query_index(
+    summary: &mut IndexSummary,
+    repo_root: &Path,
+    db_path: &Path,
+) -> Result<(), IndexError> {
+    let Some(spool) = summary.candidate_spool.as_mut() else {
+        return Ok(());
+    };
+    let spool_path = PathBuf::from(&spool.candidate_spool_path);
+    let index_path = candidate_spool_query_index_path(&spool_path);
+    if let Some(parent) = index_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    remove_file_if_exists(&index_path)?;
+    let connection = Connection::open(&index_path)
+        .map_err(|error| sqlite_index_error("candidate_spool_query_index_open_failed", error))?;
+    candidate_spool_query_index_create_schema(&connection)?;
+    candidate_spool_query_index_set_metadata(
+        &connection,
+        "metadata_version",
+        CANDIDATE_SPOOL_METADATA_VERSION,
+    )?;
+    candidate_spool_query_index_set_metadata(
+        &connection,
+        "query_index_version",
+        CANDIDATE_SPOOL_QUERY_INDEX_VERSION,
+    )?;
+    candidate_spool_query_index_set_metadata(&connection, "query_index_status", "ready")?;
+    candidate_spool_query_index_set_metadata(&connection, "query_index_kind", "sqlite")?;
+    candidate_spool_query_index_set_metadata(&connection, "artifact_kind", "candidate_spool")?;
+    candidate_spool_query_index_set_metadata(&connection, "spool_path", path_string(&spool_path))?;
+    candidate_spool_query_index_set_metadata(&connection, "repo_root", path_string(repo_root))?;
+    candidate_spool_query_index_set_metadata(&connection, "db_path", path_string(db_path))?;
+    drop(connection);
+    refresh_candidate_spool_query_index_summary(spool)?;
+    Ok(())
+}
+
+fn initialize_candidate_spool(
+    summary: &mut IndexSummary,
+    repo_root: &Path,
+    db_path: &Path,
+    options: &IndexOptions,
+) -> Result<(), IndexError> {
+    if options.candidate_spool_policy == CandidateSpoolPolicy::Off {
+        summary.candidate_spool = None;
+        return Ok(());
+    }
+    let Some(path) = options.candidate_spool_path.as_ref() else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    remove_file_if_exists(path)?;
+    let scope_hash = Some(candidate_spool_scope_hash(options)?);
+    let repo_hash = Some(candidate_spool_repo_hash(repo_root)?);
+    summary.candidate_spool = Some(CandidateSpoolSummary {
+        status: "building".to_string(),
+        candidate_spool_status: "building".to_string(),
+        candidate_spool_path: path_string(path),
+        artifact_kind: "candidate_spool".to_string(),
+        artifact_format: "jsonl".to_string(),
+        lifecycle: "indexing_in_progress".to_string(),
+        spooled_total_chunks: 0,
+        spooled_by_source_kind: BTreeMap::new(),
+        spooled_by_chunk_kind: BTreeMap::new(),
+        spooled_bytes: 0,
+        spooled_indexing_phase: "pre_graph_build".to_string(),
+        candidate_spool_policy: options.candidate_spool_policy.as_str().to_string(),
+        candidate_spool_required: options.candidate_spool_required,
+        candidate_spool_disabled_reason: None,
+        candidate_spool_warning: None,
+        artifact_budget_remaining_bytes: None,
+        artifact_budget_decision: None,
+        record_model: CANDIDATE_SPOOL_RECORD_MODEL_VERSION.to_string(),
+        generated_total_chunks: 0,
+        normalized_total_chunks: 0,
+        deduped_total_chunks: 0,
+        selected_total_chunks: 0,
+        persisted_total_chunks: 0,
+        omitted_by_cap: 0,
+        omitted_by_budget: 0,
+        omitted_by_dedup: 0,
+        omitted_low_signal: 0,
+        omitted_by_file_limit: 0,
+        omitted_by_dir_limit: 0,
+        omitted_by_kind_limit: 0,
+        candidate_spool_truncated: false,
+        candidate_spool_partial: false,
+        candidate_spool_budget_bytes: options.candidate_spool_caps.global_max_bytes as u64,
+        query_index_status: "not_started".to_string(),
+        query_index_kind: "none".to_string(),
+        query_index_path: None,
+        query_index_bytes: 0,
+        query_index_record_count: 0,
+        query_index_version: String::new(),
+        query_index_bound_manifest_hash: None,
+        candidate_only: true,
+        graph_proof: false,
+        incomplete: true,
+        db_passport_hash: None,
+        db_passport_snapshot: None,
+        scope_hash,
+        repo_hash,
+        reason: Some("spool initialized before graph DB proof publish".to_string()),
+        caps: options.candidate_spool_caps.clone(),
+        selected_candidate_ids: BTreeSet::new(),
+        selected_file_counts: BTreeMap::new(),
+        selected_dir_counts: BTreeMap::new(),
+        selected_kind_counts: BTreeMap::new(),
+        selected_source_counts: BTreeMap::new(),
+    });
+    if options.candidate_spool_query_index {
+        initialize_candidate_spool_query_index(summary, repo_root, db_path)?;
+    } else if let Some(spool) = summary.candidate_spool.as_mut() {
+        spool.query_index_status = "disabled".to_string();
+        spool.query_index_kind = "none".to_string();
+        spool.query_index_version = String::new();
+        spool.query_index_path = Some(path_string(&candidate_spool_query_index_path(path)));
+        spool.reason = Some(
+            "candidate spool query index disabled by --candidate-spool-query-index no".to_string(),
+        );
+    }
+    rewrite_candidate_spool_jsonl(summary, repo_root, db_path, options)?;
+    Ok(())
+}
+
+fn candidate_spool_manifest(
+    summary: &IndexSummary,
+    repo_root: &Path,
+    db_path: &Path,
+    options: &IndexOptions,
+) -> Result<Value, IndexError> {
+    let Some(spool) = summary.candidate_spool.as_ref() else {
+        return Err(IndexError::Message(
+            "candidate spool manifest requested before initialization".to_string(),
+        ));
+    };
+    let passport_snapshot = spool.db_passport_snapshot.as_ref().map(|passport| {
+        let mut value = serde_json::to_value(passport).unwrap_or_else(|_| json!({}));
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "passport_fingerprint".to_string(),
+                json!(db_passport_fingerprint(passport)),
+            );
+        }
+        value
+    });
+    let spool_count_value = if spool.incomplete && spool.spooled_total_chunks == 0 {
+        Value::Null
+    } else {
+        json!(spool.spooled_total_chunks)
+    };
+    Ok(json!({
+        "metadata_version": CANDIDATE_SPOOL_METADATA_VERSION,
+        "artifact_kind": "candidate_spool",
+        "artifact_format": "jsonl",
+        "record_model": spool.record_model.clone(),
+        "source_scope": "fast_candidate_spool",
+        "extraction_version": VECTOR_EMBEDDING_CHUNK_EXTRACTION_VERSION,
+        "created_by": "codegraph-mcp index --candidate-spool",
+        "repo_root": path_string(repo_root),
+        "repo_hash": spool.repo_hash.clone(),
+        "db_path": path_string(db_path),
+        "db_passport_hash": spool.db_passport_hash.clone(),
+        "passport": passport_snapshot,
+        "scope_hash": spool.scope_hash.clone(),
+        "lifecycle": spool.lifecycle.clone(),
+        "status": spool.status.clone(),
+        "candidate_spool_status": spool.candidate_spool_status.clone(),
+        "candidate_spool_policy": spool.candidate_spool_policy.clone(),
+        "candidate_spool_required": spool.candidate_spool_required,
+        "candidate_spool_disabled_reason": spool.candidate_spool_disabled_reason.clone(),
+        "candidate_spool_warning": spool.candidate_spool_warning.clone(),
+        "candidate_spool_truncated": spool.candidate_spool_truncated,
+        "candidate_spool_partial": spool.candidate_spool_partial,
+        "candidate_spool_budget_bytes": spool.candidate_spool_budget_bytes,
+        "candidate_spool_written_bytes": spool.spooled_bytes,
+        "artifact_budget_remaining_bytes": spool.artifact_budget_remaining_bytes,
+        "artifact_budget_decision": spool.artifact_budget_decision.clone(),
+        "candidate_spool_record_count": spool.persisted_total_chunks,
+        "candidate_spool_selected_count": spool.selected_total_chunks,
+        "candidate_spool_generated_count": spool.generated_total_chunks,
+        "incomplete": spool.incomplete,
+        "candidate_only": true,
+        "graph_proof": false,
+        "claimable_for_graph": false,
+        "creates_graph_relations": false,
+        "can_answer_graph_proof": false,
+        "requires_graph_verification": true,
+        "spooled_total_chunks": spool_count_value.clone(),
+        "generated_total_chunks": spool.generated_total_chunks,
+        "normalized_total_chunks": spool.normalized_total_chunks,
+        "deduped_total_chunks": spool.deduped_total_chunks,
+        "selected_total_chunks": spool.selected_total_chunks,
+        "persisted_total_chunks": spool.persisted_total_chunks,
+        "spooled_by_source_kind": spool.spooled_by_source_kind.clone(),
+        "spooled_by_chunk_kind": spool.spooled_by_chunk_kind.clone(),
+        "spooled_indexing_phase": spool.spooled_indexing_phase.clone(),
+        "spooled_bytes": spool.spooled_bytes,
+        "index_artifact_format": "jsonl",
+        "query_index_status": if spool.query_index_status.is_empty() { "not_started" } else { spool.query_index_status.as_str() },
+        "query_index_kind": if spool.query_index_kind.is_empty() { "none" } else { spool.query_index_kind.as_str() },
+        "query_index_path": spool.query_index_path.clone(),
+        "query_index_bytes": spool.query_index_bytes,
+        "query_index_record_count": spool.query_index_record_count,
+        "query_index_version": if spool.query_index_version.is_empty() { Value::Null } else { json!(spool.query_index_version.clone()) },
+        "query_index_bound_manifest_hash": spool.query_index_bound_manifest_hash.clone(),
+        "vector_payload_compression": "none",
+        "stores_embedding_vectors": false,
+        "stores_chunk_text": true,
+        "stores_chunk_metadata": true,
+        "stores_full_source_body": false,
+        "chunk_selection_strategy": "candidate_spool_bounded_packet_selector_v1",
+        "input_order_cap": false,
+        "omitted_by_cap": spool.omitted_by_cap,
+        "omitted_by_budget": spool.omitted_by_budget,
+        "omitted_low_signal": spool.omitted_low_signal,
+        "omitted_by_bucket_limit": spool.omitted_by_dir_limit + spool.omitted_by_file_limit + spool.omitted_by_kind_limit,
+        "omitted_by_dedup": spool.omitted_by_dedup,
+        "omitted_by_file_limit": spool.omitted_by_file_limit,
+        "omitted_by_dir_limit": spool.omitted_by_dir_limit,
+        "omitted_by_kind_limit": spool.omitted_by_kind_limit,
+        "caps": {
+            "global_max_bytes": options.candidate_spool_caps.global_max_bytes,
+            "global_max_records": options.candidate_spool_caps.global_max_records,
+            "per_file_max_records": options.candidate_spool_caps.per_file_max_records,
+            "per_top_level_dir_soft_cap": options.candidate_spool_caps.per_top_level_dir_soft_cap,
+            "max_snippet_bytes": options.candidate_spool_caps.max_snippet_bytes,
+            "max_snippets_per_file_packet": options.candidate_spool_caps.max_snippets_per_file_packet,
+            "max_symbols_per_file_packet": options.candidate_spool_caps.max_symbols_per_file_packet,
+            "per_candidate_kind_cap": options.candidate_spool_caps.per_candidate_kind_cap.clone(),
+            "per_source_kind_cap": options.candidate_spool_caps.per_source_kind_cap.clone()
+        },
+        "provider": {
+            "provider_id": null,
+            "model_id": null,
+            "dimension": 0,
+            "note": "candidate spool stores text candidates only; no embeddings are stored"
+        },
+        "lifecycle_binding": {
+            "status": "unknown",
+            "db_passport_fingerprint": spool.db_passport_hash.clone(),
+            "scope_policy_hash": spool.scope_hash.clone(),
+            "stale_reason": spool.reason.clone()
+        },
+        "contract": {
+            "file_path_title": "candidate_only",
+            "symbol_signature": "candidate_only",
+            "text_evidence": "source_text_existence_only",
+            "imports_exports": "source_navigation_only",
+            "graph_relations": "never_created_by_spool"
+        },
+        "index_options": {
+            "storage_mode": options.storage_mode.as_str(),
+            "build_mode": options.build_mode.as_str(),
+            "candidate_spool_query_index": options.candidate_spool_query_index
+        }
+    }))
+}
+
+fn rewrite_candidate_spool_jsonl(
+    summary: &mut IndexSummary,
+    repo_root: &Path,
+    db_path: &Path,
+    options: &IndexOptions,
+) -> Result<(), IndexError> {
+    let Some(spool) = summary.candidate_spool.as_ref() else {
+        return Ok(());
+    };
+    let path = PathBuf::from(&spool.candidate_spool_path);
+    let mut chunk_lines = Vec::new();
+    if path.exists() {
+        let existing = fs::read_to_string(&path)?;
+        for (index, line) in existing.lines().enumerate() {
+            if index == 0 {
+                continue;
+            }
+            if !line.trim().is_empty() {
+                chunk_lines.push(line.to_string());
+            }
+        }
+    }
+    let manifest = candidate_spool_manifest(summary, repo_root, db_path, options)?;
+    let tmp_path = PathBuf::from(format!("{}.tmp", path.display()));
+    if let Some(parent) = tmp_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    {
+        let mut file = fs::File::create(&tmp_path)?;
+        serde_json::to_writer(&mut file, &json!({ "metadata": manifest }))
+            .map_err(|error| IndexError::Message(error.to_string()))?;
+        file.write_all(b"\n")?;
+        for line in chunk_lines {
+            file.write_all(line.as_bytes())?;
+            file.write_all(b"\n")?;
+        }
+    }
+    remove_file_if_exists(&path)?;
+    fs::rename(tmp_path, &path)?;
+    if let Some(spool) = summary.candidate_spool.as_mut() {
+        spool.spooled_bytes = fs::metadata(&path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct CandidateSpoolInput {
+    stable_id: String,
+    candidate_kind: String,
+    source_kind: String,
+    path: String,
+    entity_id: Option<String>,
+    source_span: Value,
+    source_span_key: String,
+    symbol_name: String,
+    source_role: String,
+    evidence_role: String,
+    file_kind: String,
+    top_level_dir: String,
+    text: String,
+    source_file_content_hash: Option<String>,
+    source_file_size_bytes: Option<u64>,
+    source_file_modified_unix_nanos: Option<String>,
+    score: f64,
+}
+
+#[derive(Debug, Clone)]
+struct CandidateSpoolPacket {
+    packet_id: String,
+    candidate_kind: String,
+    source_kind: String,
+    path: String,
+    top_level_dir: String,
+    source_span_key: String,
+    symbol_name: String,
+    score: f64,
+    selection_bucket: String,
+    input_count: usize,
+    value: Value,
+    serialized_bytes: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CandidateSpoolSelectionResult {
+    generated_count: usize,
+    normalized_count: usize,
+    deduped_count: usize,
+    selected_count: usize,
+    persisted_count: usize,
+    omitted_by_cap: usize,
+    omitted_by_budget: usize,
+    omitted_by_dedup: usize,
+    omitted_low_signal: usize,
+    omitted_by_file_limit: usize,
+    omitted_by_dir_limit: usize,
+    omitted_by_kind_limit: usize,
+    selected: Vec<CandidateSpoolPacket>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CandidateSpoolFileGroup {
+    path_title: Vec<CandidateSpoolInput>,
+    snippets: Vec<CandidateSpoolInput>,
+    symbols: Vec<CandidateSpoolInput>,
+    navigation: Vec<CandidateSpoolInput>,
+    other: Vec<CandidateSpoolInput>,
+}
+
+fn select_candidate_spool_packets(
+    chunks: Vec<Value>,
+    caps: &CandidateSpoolCaps,
+    spool: &CandidateSpoolSummary,
+) -> CandidateSpoolSelectionResult {
+    let mut result = CandidateSpoolSelectionResult {
+        generated_count: chunks.len(),
+        ..CandidateSpoolSelectionResult::default()
+    };
+    if chunks.is_empty()
+        || caps.global_max_records == 0
+        || caps.global_max_bytes == 0
+        || spool.persisted_total_chunks >= caps.global_max_records
+    {
+        result.omitted_by_cap = chunks.len();
+        return result;
+    }
+
+    let mut normalized = Vec::new();
+    for chunk in chunks {
+        match normalize_candidate_spool_input(&chunk, caps) {
+            Some(input) => normalized.push(input),
+            None => result.omitted_low_signal += 1,
+        }
+    }
+    result.normalized_count = normalized.len();
+
+    let mut deduped = BTreeMap::new();
+    for input in normalized {
+        deduped.entry(input.stable_id.clone()).or_insert(input);
+    }
+    result.deduped_count = deduped.len();
+    result.omitted_by_dedup = result.normalized_count.saturating_sub(result.deduped_count);
+
+    let mut groups: BTreeMap<String, CandidateSpoolFileGroup> = BTreeMap::new();
+    for input in deduped.into_values() {
+        let group = groups.entry(input.path.clone()).or_default();
+        match input.candidate_kind.as_str() {
+            "file_path_title" => group.path_title.push(input),
+            "text_evidence_snippet" => group.snippets.push(input),
+            "symbol_signature" | "doc_comment_or_title" | "test_or_mock_candidate" => {
+                group.symbols.push(input)
+            }
+            "import_export_source_navigation"
+            | "parser_local_reference"
+            | "relation_neighborhood_candidate" => group.navigation.push(input),
+            _ => group.other.push(input),
+        }
+    }
+
+    let mut packets = Vec::new();
+    for (path, mut group) in groups {
+        sort_candidate_spool_inputs(&mut group.path_title);
+        sort_candidate_spool_inputs(&mut group.snippets);
+        sort_candidate_spool_inputs(&mut group.symbols);
+        sort_candidate_spool_inputs(&mut group.navigation);
+        sort_candidate_spool_inputs(&mut group.other);
+
+        if let Some(packet) = candidate_spool_file_packet(&path, &group, caps) {
+            packets.push(packet);
+        }
+        if let Some(packet) = candidate_spool_text_packet(&path, &group, caps) {
+            packets.push(packet);
+        }
+        if let Some(packet) = candidate_spool_navigation_packet(&path, &group, caps) {
+            packets.push(packet);
+        }
+        for input in group
+            .symbols
+            .iter()
+            .take(caps.max_symbols_per_file_packet.max(1))
+        {
+            packets.push(candidate_spool_symbol_packet(input, caps));
+        }
+    }
+
+    packets.sort_by(candidate_spool_packet_cmp);
+    let mut selected_ids = spool.selected_candidate_ids.clone();
+    let mut file_counts = spool.selected_file_counts.clone();
+    let mut dir_counts = spool.selected_dir_counts.clone();
+    let mut kind_counts = spool.selected_kind_counts.clone();
+    let mut source_counts = spool.selected_source_counts.clone();
+    let mut used_bytes = spool.spooled_bytes as usize;
+    let mut omitted_packet_ids = BTreeSet::new();
+
+    for kind in candidate_spool_kind_order() {
+        if result.selected.len() + spool.persisted_total_chunks >= caps.global_max_records {
+            break;
+        }
+        let Some(packet) = packets
+            .iter()
+            .find(|packet| {
+                packet.candidate_kind == kind && !selected_ids.contains(&packet.packet_id)
+            })
+            .cloned()
+        else {
+            continue;
+        };
+        try_select_candidate_spool_packet(
+            packet,
+            caps,
+            &mut result,
+            &mut selected_ids,
+            &mut file_counts,
+            &mut dir_counts,
+            &mut kind_counts,
+            &mut source_counts,
+            &mut used_bytes,
+            &mut omitted_packet_ids,
+        );
+    }
+
+    for packet in packets {
+        if result.selected.len() + spool.persisted_total_chunks >= caps.global_max_records {
+            if !selected_ids.contains(&packet.packet_id)
+                && omitted_packet_ids.insert(packet.packet_id)
+            {
+                result.omitted_by_cap += packet.input_count.max(1);
+            }
+            continue;
+        }
+        try_select_candidate_spool_packet(
+            packet,
+            caps,
+            &mut result,
+            &mut selected_ids,
+            &mut file_counts,
+            &mut dir_counts,
+            &mut kind_counts,
+            &mut source_counts,
+            &mut used_bytes,
+            &mut omitted_packet_ids,
+        );
+    }
+
+    result.selected.sort_by(|left, right| {
+        candidate_spool_packet_output_key(left).cmp(&candidate_spool_packet_output_key(right))
+    });
+    result.selected_count = result.selected.len();
+    result.persisted_count = result.selected.len();
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_select_candidate_spool_packet(
+    packet: CandidateSpoolPacket,
+    caps: &CandidateSpoolCaps,
+    result: &mut CandidateSpoolSelectionResult,
+    selected_ids: &mut BTreeSet<String>,
+    file_counts: &mut BTreeMap<String, usize>,
+    dir_counts: &mut BTreeMap<String, usize>,
+    kind_counts: &mut BTreeMap<String, usize>,
+    source_counts: &mut BTreeMap<String, usize>,
+    used_bytes: &mut usize,
+    omitted_packet_ids: &mut BTreeSet<String>,
+) {
+    if selected_ids.contains(&packet.packet_id) || omitted_packet_ids.contains(&packet.packet_id) {
+        return;
+    }
+    let input_count = packet.input_count.max(1);
+    let kind_cap = caps
+        .per_candidate_kind_cap
+        .get(&packet.candidate_kind)
+        .copied()
+        .unwrap_or(caps.global_max_records);
+    let source_cap = caps
+        .per_source_kind_cap
+        .get(&packet.source_kind)
+        .copied()
+        .unwrap_or(caps.global_max_records);
+    if kind_counts
+        .get(&packet.candidate_kind)
+        .copied()
+        .unwrap_or(0)
+        >= kind_cap
+    {
+        omitted_packet_ids.insert(packet.packet_id);
+        result.omitted_by_kind_limit += input_count;
+        return;
+    }
+    if source_counts.get(&packet.source_kind).copied().unwrap_or(0) >= source_cap {
+        omitted_packet_ids.insert(packet.packet_id);
+        result.omitted_by_kind_limit += input_count;
+        return;
+    }
+    if file_counts.get(&packet.path).copied().unwrap_or(0) >= caps.per_file_max_records {
+        omitted_packet_ids.insert(packet.packet_id);
+        result.omitted_by_file_limit += input_count;
+        return;
+    }
+    if dir_counts.get(&packet.top_level_dir).copied().unwrap_or(0)
+        >= caps.per_top_level_dir_soft_cap
+    {
+        omitted_packet_ids.insert(packet.packet_id);
+        result.omitted_by_dir_limit += input_count;
+        return;
+    }
+    if used_bytes.saturating_add(packet.serialized_bytes) > caps.global_max_bytes {
+        omitted_packet_ids.insert(packet.packet_id);
+        result.omitted_by_budget += input_count;
+        return;
+    }
+    selected_ids.insert(packet.packet_id.clone());
+    *file_counts.entry(packet.path.clone()).or_default() += 1;
+    *dir_counts.entry(packet.top_level_dir.clone()).or_default() += 1;
+    *kind_counts
+        .entry(packet.candidate_kind.clone())
+        .or_default() += 1;
+    *source_counts.entry(packet.source_kind.clone()).or_default() += 1;
+    *used_bytes += packet.serialized_bytes;
+    result.selected.push(packet);
+}
+
+fn normalize_candidate_spool_input(
+    chunk: &Value,
+    caps: &CandidateSpoolCaps,
+) -> Option<CandidateSpoolInput> {
+    let path = chunk
+        .get("path")
+        .and_then(Value::as_str)?
+        .replace('\\', "/");
+    let source_kind = chunk
+        .get("source_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    let chunk_kind = chunk
+        .get("chunk_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    let selection_bucket = chunk
+        .get("selection_bucket")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let source_role = chunk
+        .get("source_role")
+        .and_then(Value::as_str)
+        .unwrap_or("source_navigation")
+        .to_string();
+    let evidence_role = chunk
+        .get("evidence_role")
+        .and_then(Value::as_str)
+        .unwrap_or("source_navigation")
+        .to_string();
+    let candidate_kind =
+        candidate_spool_candidate_kind(&chunk_kind, &source_kind, selection_bucket, &source_role);
+    let raw_text = chunk
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or(&path)
+        .trim();
+    let text = bounded_text_prefix(raw_text, caps.max_snippet_bytes.max(32)).to_string();
+    if candidate_kind != "file_path_title" && candidate_spool_low_signal_text(&text) {
+        return None;
+    }
+    let source_span = chunk.get("source_span").cloned().unwrap_or(Value::Null);
+    let source_span_key = candidate_spool_source_span_key(&source_span);
+    let entity_id = chunk
+        .get("entity_id")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let file_kind = chunk
+        .get("file_kind")
+        .and_then(Value::as_str)
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_else(|| candidate_spool_file_kind_from_path(&path));
+    let top_level_dir = vector_chunk_top_level_dir(&path);
+    let symbol_name = candidate_spool_symbol_name(chunk, &text);
+    let stable_material = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        candidate_kind,
+        source_kind,
+        path,
+        entity_id.as_deref().unwrap_or("-"),
+        source_span_key,
+        symbol_name,
+        stable_hex_hash(text.as_bytes())
+    );
+    let score = candidate_spool_input_score(
+        &candidate_kind,
+        &source_kind,
+        &chunk_kind,
+        &path,
+        &file_kind,
+        &source_span,
+        &source_role,
+        &text,
+    );
+    Some(CandidateSpoolInput {
+        stable_id: format!(
+            "candidate-spool:input:{}",
+            stable_hex_hash(stable_material.as_bytes())
+        ),
+        candidate_kind,
+        source_kind,
+        path,
+        entity_id,
+        source_span,
+        source_span_key,
+        symbol_name,
+        source_role,
+        evidence_role,
+        file_kind,
+        top_level_dir,
+        text,
+        source_file_content_hash: chunk
+            .get("source_file_content_hash")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        source_file_size_bytes: chunk.get("source_file_size_bytes").and_then(Value::as_u64),
+        source_file_modified_unix_nanos: chunk
+            .get("source_file_modified_unix_nanos")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        score,
+    })
+}
+
+fn candidate_spool_file_packet(
+    path: &str,
+    group: &CandidateSpoolFileGroup,
+    caps: &CandidateSpoolCaps,
+) -> Option<CandidateSpoolPacket> {
+    let representative = group
+        .path_title
+        .first()
+        .or_else(|| group.snippets.first())
+        .or_else(|| group.symbols.first())
+        .or_else(|| group.navigation.first())
+        .or_else(|| group.other.first())?;
+    let snippets = group
+        .snippets
+        .iter()
+        .take(caps.max_snippets_per_file_packet)
+        .collect::<Vec<_>>();
+    let symbols = group
+        .symbols
+        .iter()
+        .take(caps.max_symbols_per_file_packet)
+        .collect::<Vec<_>>();
+    let mut text_parts = vec![format!("file {path}")];
+    if !symbols.is_empty() {
+        text_parts.push(format!(
+            "symbols {}",
+            symbols
+                .iter()
+                .map(|input| input.symbol_name.as_str())
+                .filter(|name| !name.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
+    if !snippets.is_empty() {
+        text_parts.push(format!(
+            "snippets {}",
+            snippets
+                .iter()
+                .map(|input| input.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
+    let text = bounded_text_prefix(
+        &text_parts.join("\n"),
+        caps.max_snippet_bytes.saturating_mul(4),
+    )
+    .to_string();
+    candidate_spool_packet_from_parts(
+        "file_candidate_packet",
+        "file_path_title",
+        "file_path_title",
+        "metadata",
+        representative,
+        text,
+        json!(snippets
+            .iter()
+            .map(|input| candidate_spool_snippet_json(input))
+            .collect::<Vec<_>>()),
+        json!(symbols
+            .iter()
+            .map(|input| candidate_spool_symbol_json(input))
+            .collect::<Vec<_>>()),
+        Value::Null,
+    )
+}
+
+fn candidate_spool_text_packet(
+    _path: &str,
+    group: &CandidateSpoolFileGroup,
+    caps: &CandidateSpoolCaps,
+) -> Option<CandidateSpoolPacket> {
+    let representative = group.snippets.first()?;
+    let snippets = group
+        .snippets
+        .iter()
+        .take(caps.max_snippets_per_file_packet)
+        .collect::<Vec<_>>();
+    let text = bounded_text_prefix(
+        &snippets
+            .iter()
+            .map(|input| input.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        caps.max_snippet_bytes
+            .saturating_mul(caps.max_snippets_per_file_packet.max(1)),
+    )
+    .to_string();
+    candidate_spool_packet_from_parts(
+        "text_evidence_candidate_packet",
+        "text_evidence_snippet",
+        "snippet",
+        "text_evidence",
+        representative,
+        text,
+        json!(snippets
+            .iter()
+            .map(|input| candidate_spool_snippet_json(input))
+            .collect::<Vec<_>>()),
+        Value::Null,
+        Value::Null,
+    )
+}
+
+fn candidate_spool_navigation_packet(
+    _path: &str,
+    group: &CandidateSpoolFileGroup,
+    caps: &CandidateSpoolCaps,
+) -> Option<CandidateSpoolPacket> {
+    let representative = group.navigation.first()?;
+    let navigation = group
+        .navigation
+        .iter()
+        .take(caps.max_symbols_per_file_packet)
+        .collect::<Vec<_>>();
+    let text = bounded_text_prefix(
+        &navigation
+            .iter()
+            .map(|input| input.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        caps.max_snippet_bytes.saturating_mul(2),
+    )
+    .to_string();
+    candidate_spool_packet_from_parts(
+        "source_navigation_candidate_packet",
+        "import_export_source_navigation",
+        "relation_neighborhood",
+        "metadata",
+        representative,
+        text,
+        Value::Null,
+        Value::Null,
+        json!(navigation
+            .iter()
+            .map(|input| candidate_spool_navigation_json(input))
+            .collect::<Vec<_>>()),
+    )
+}
+
+fn candidate_spool_symbol_packet(
+    input: &CandidateSpoolInput,
+    caps: &CandidateSpoolCaps,
+) -> CandidateSpoolPacket {
+    candidate_spool_packet_from_parts(
+        "symbol_candidate_packet",
+        "symbol_signature",
+        "signature",
+        "graph_entity",
+        input,
+        bounded_text_prefix(&input.text, caps.max_snippet_bytes).to_string(),
+        Value::Null,
+        json!([candidate_spool_symbol_json(input)]),
+        Value::Null,
+    )
+    .expect("symbol packet from input")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn candidate_spool_packet_from_parts(
+    packet_kind: &str,
+    candidate_kind: &str,
+    chunk_kind: &str,
+    source_kind: &str,
+    representative: &CandidateSpoolInput,
+    text: String,
+    snippets: Value,
+    symbols: Value,
+    source_navigation: Value,
+) -> Option<CandidateSpoolPacket> {
+    let packet_material = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        packet_kind,
+        candidate_kind,
+        representative.path,
+        representative.source_span_key,
+        representative.symbol_name,
+        representative
+            .source_file_content_hash
+            .as_deref()
+            .unwrap_or("-"),
+        stable_hex_hash(text.as_bytes())
+    );
+    let packet_id = format!(
+        "candidate-spool:packet:v1:{}:{}",
+        packet_kind,
+        stable_hex_hash(packet_material.as_bytes())
+    );
+    let selection_bucket = candidate_kind.to_string();
+    let source_span = representative.source_span.clone();
+    let entity_id = representative.entity_id.clone();
+    let text_bytes = text.len();
+    let value = json!({
+        "chunk_id": packet_id.clone(),
+        "packet_kind": packet_kind,
+        "candidate_kind": candidate_kind,
+        "chunk_kind": chunk_kind,
+        "source_kind": source_kind,
+        "path": representative.path.clone(),
+        "entity_id": entity_id.clone(),
+        "source_span": source_span,
+        "source_role": representative.source_role.clone(),
+        "evidence_role": representative.evidence_role.clone(),
+        "proof_status": "candidate_only",
+        "graph_proof": false,
+        "claimable_for_graph": false,
+        "candidate_only": true,
+        "requires_graph_verification": true,
+        "creates_graph_relations": false,
+        "can_answer_graph_proof": false,
+        "text": text,
+        "text_bytes": text_bytes,
+        "text_preview_truncated": text_bytes >= CANDIDATE_SPOOL_DEFAULT_MAX_SNIPPET_BYTES,
+        "file_kind": representative.file_kind.clone(),
+        "top_level_dir": representative.top_level_dir.clone(),
+        "selection_score": representative.score,
+        "selection_bucket": selection_bucket.clone(),
+        "lifecycle": "partial_spool",
+        "candidate_spool_lifecycle": "partial_spool",
+        "incomplete": true,
+        "source_file_content_hash": representative.source_file_content_hash.clone(),
+        "source_file_size_bytes": representative.source_file_size_bytes,
+        "source_file_modified_unix_nanos": representative.source_file_modified_unix_nanos.clone(),
+        "snippets": snippets,
+        "symbols": symbols,
+        "source_navigation": source_navigation
+    });
+    let serialized_bytes = serde_json::to_vec(&value).ok()?.len() + 1;
+    Some(CandidateSpoolPacket {
+        packet_id: value
+            .get("chunk_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        candidate_kind: candidate_kind.to_string(),
+        source_kind: source_kind.to_string(),
+        path: representative.path.clone(),
+        top_level_dir: representative.top_level_dir.clone(),
+        source_span_key: representative.source_span_key.clone(),
+        symbol_name: representative.symbol_name.clone(),
+        score: representative.score,
+        selection_bucket,
+        input_count: 1,
+        value,
+        serialized_bytes,
+    })
+}
+
+fn sort_candidate_spool_inputs(inputs: &mut [CandidateSpoolInput]) {
+    inputs.sort_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| candidate_spool_input_key(left).cmp(&candidate_spool_input_key(right)))
+    });
+}
+
+fn candidate_spool_input_key(input: &CandidateSpoolInput) -> String {
+    format!(
+        "{:02}|{}|{}|{}|{}|{}",
+        candidate_spool_kind_rank(&input.candidate_kind),
+        input.source_kind,
+        input.path,
+        input.source_span_key,
+        input.symbol_name,
+        input.stable_id
+    )
+}
+
+fn candidate_spool_packet_cmp(
+    left: &CandidateSpoolPacket,
+    right: &CandidateSpoolPacket,
+) -> std::cmp::Ordering {
+    right.score.total_cmp(&left.score).then_with(|| {
+        candidate_spool_packet_output_key(left).cmp(&candidate_spool_packet_output_key(right))
+    })
+}
+
+fn candidate_spool_packet_output_key(packet: &CandidateSpoolPacket) -> String {
+    format!(
+        "{:02}|{}|{}|{}|{}|{}|{}",
+        candidate_spool_kind_rank(&packet.candidate_kind),
+        packet.source_kind,
+        packet.path,
+        packet.source_span_key,
+        packet.symbol_name,
+        packet.selection_bucket,
+        packet.packet_id
+    )
+}
+
+fn candidate_spool_kind_order() -> [&'static str; 9] {
+    [
+        "file_path_title",
+        "symbol_signature",
+        "text_evidence_snippet",
+        "import_export_source_navigation",
+        "parser_local_reference",
+        "relation_neighborhood_candidate",
+        "doc_comment_or_title",
+        "test_or_mock_candidate",
+        "unknown",
+    ]
+}
+
+fn candidate_spool_kind_rank(kind: &str) -> usize {
+    candidate_spool_kind_order()
+        .iter()
+        .position(|candidate| *candidate == kind)
+        .unwrap_or(usize::MAX)
+}
+
+fn candidate_spool_candidate_kind(
+    chunk_kind: &str,
+    source_kind: &str,
+    selection_bucket: &str,
+    source_role: &str,
+) -> String {
+    let bucket = selection_bucket.to_ascii_lowercase();
+    let role = source_role.to_ascii_lowercase();
+    match chunk_kind {
+        "file_path_title" => "file_path_title",
+        "snippet" | "source_snippet" if source_kind == "text_evidence" => "text_evidence_snippet",
+        "function" | "method" | "type" | "module_file" | "signature" | "qname" => {
+            "symbol_signature"
+        }
+        "doc_comment" | "source_role" => "doc_comment_or_title",
+        "relation_neighborhood" if bucket.contains("import") || bucket.contains("export") => {
+            "import_export_source_navigation"
+        }
+        "relation_neighborhood" if role.contains("source_navigation") => {
+            "relation_neighborhood_candidate"
+        }
+        "relation_neighborhood" => "parser_local_reference",
+        _ if bucket.contains("test") || bucket.contains("mock") => "test_or_mock_candidate",
+        _ if source_kind == "text_evidence" => "text_evidence_snippet",
+        _ => "unknown",
+    }
+    .to_string()
+}
+
+fn candidate_spool_low_signal_text(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.len() < 4 || !trimmed.chars().any(|ch| ch.is_ascii_alphanumeric()) {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "none" | "null" | "true" | "false" | "todo" | "fixme"
+    )
+}
+
+fn candidate_spool_file_kind_from_path(path: &str) -> String {
+    let pseudo = VectorEmbeddingChunk {
+        chunk_id: String::new(),
+        chunk_kind: VectorEmbeddingChunkKind::FilePathTitle,
+        source_kind: VectorEmbeddingChunkSourceKind::Metadata,
+        file_id: path.to_string(),
+        path: path.to_string(),
+        entity_id: None,
+        source_span: None,
+        source_role: String::new(),
+        evidence_role: String::new(),
+        proof_status: "candidate_only".to_string(),
+        graph_proof: false,
+        claimable_for_graph: false,
+        text: String::new(),
+        token_count: 0,
+        byte_count: 0,
+        language: None,
+        file_kind: None,
+        lifecycle_binding: None,
+        content_hash: String::new(),
+        source_file_content_hash: None,
+        source_file_size_bytes: None,
+        source_file_modified_unix_nanos: None,
+        extraction_version: VECTOR_EMBEDDING_CHUNK_EXTRACTION_VERSION.to_string(),
+        selection_score: None,
+        selection_bucket: None,
+        selection_reason: None,
+        top_level_dir: None,
+        cap_stage: None,
+    };
+    vector_chunk_file_kind_label(&pseudo)
+}
+
+fn candidate_spool_source_span_key(span: &Value) -> String {
+    if span.is_null() {
+        return "no-span".to_string();
+    }
+    let start_line = span
+        .get("start_line")
+        .and_then(Value::as_u64)
+        .or_else(|| span.get("line").and_then(Value::as_u64))
+        .unwrap_or(0);
+    let start_col = span
+        .get("start_col")
+        .and_then(Value::as_u64)
+        .or_else(|| span.get("column").and_then(Value::as_u64))
+        .unwrap_or(0);
+    let end_line = span
+        .get("end_line")
+        .and_then(Value::as_u64)
+        .unwrap_or(start_line);
+    let end_col = span
+        .get("end_col")
+        .and_then(Value::as_u64)
+        .unwrap_or(start_col);
+    format!("{start_line}:{start_col}-{end_line}:{end_col}")
+}
+
+fn candidate_spool_symbol_name(chunk: &Value, text: &str) -> String {
+    if let Some(token) = text
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'))
+        .find(|part| {
+            part.len() >= 3
+                && part.chars().any(|ch| ch.is_ascii_alphabetic())
+                && (part.contains('_')
+                    || part
+                        .chars()
+                        .next()
+                        .is_some_and(|ch| ch.is_ascii_lowercase()))
+                && !matches!(*part, "Function" | "Method" | "Type" | "file")
+        })
+    {
+        return token.to_string();
+    }
+    if let Some(entity_id) = chunk.get("entity_id").and_then(Value::as_str) {
+        let display = reference_display_name(entity_id);
+        if !display.trim().is_empty() {
+            return display;
+        }
+    }
+    text.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'))
+        .find(|part| part.chars().any(|ch| ch.is_ascii_alphabetic()))
+        .unwrap_or("")
+        .to_string()
+}
+
+fn candidate_spool_input_score(
+    candidate_kind: &str,
+    source_kind: &str,
+    chunk_kind: &str,
+    path: &str,
+    file_kind: &str,
+    source_span: &Value,
+    source_role: &str,
+    text: &str,
+) -> f64 {
+    let mut score = match candidate_kind {
+        "file_path_title" => 700.0,
+        "symbol_signature" => 650.0,
+        "text_evidence_snippet" => 610.0,
+        "import_export_source_navigation" => 540.0,
+        "parser_local_reference" => 500.0,
+        "relation_neighborhood_candidate" => 460.0,
+        "doc_comment_or_title" => 430.0,
+        "test_or_mock_candidate" => 390.0,
+        _ => 200.0,
+    };
+    score += match source_kind {
+        "graph_entity" => 90.0,
+        "text_evidence" => 80.0,
+        "metadata" => 60.0,
+        _ => 10.0,
+    };
+    score += match chunk_kind {
+        "function" | "method" => 45.0,
+        "type" | "module_file" | "signature" => 35.0,
+        "snippet" | "source_snippet" => 25.0,
+        "relation_neighborhood" => 15.0,
+        _ => 5.0,
+    };
+    if !source_span.is_null() {
+        score += 35.0;
+    }
+    score += vector_path_priority(path);
+    score += match file_kind {
+        "mk" | "makefile" | "buildroot_package_metadata" => 35.0,
+        "kconfig" | "config" => 34.0,
+        "adoc" | "markdown" | "md" => 28.0,
+        "support_script" | "shell" | "no_extension_text" => 30.0,
+        "source" | "rust" | "python" | "go" | "c" | "cpp" | "typescript" | "javascript" => 24.0,
+        _ => 6.0,
+    };
+    let lower_path = path.to_ascii_lowercase();
+    if lower_path.contains("implementation_trace") || text.contains("implementation_trace") {
+        score += 30.0;
+    }
+    if lower_path.contains("test")
+        || lower_path.contains("mock")
+        || text.to_ascii_lowercase().contains("mock")
+    {
+        score += 12.0;
+    }
+    if source_role.contains("source_navigation") {
+        score += 10.0;
+    }
+    score + candidate_spool_rare_token_density(text)
+}
+
+fn candidate_spool_rare_token_density(text: &str) -> f64 {
+    let mut tokens = BTreeSet::new();
+    let mut total = 0usize;
+    for token in text.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_')) {
+        if token.len() < 3 {
+            continue;
+        }
+        total += 1;
+        if token.len() >= 8 || token.chars().any(|ch| ch == '_') {
+            tokens.insert(token.to_ascii_lowercase());
+        }
+    }
+    if total == 0 {
+        return 0.0;
+    }
+    ((tokens.len() as f64 / total as f64) * 40.0).min(40.0)
+}
+
+fn candidate_spool_snippet_json(input: &CandidateSpoolInput) -> Value {
+    json!({
+        "source_span": input.source_span.clone(),
+        "text": input.text.clone(),
+        "text_bytes": input.text.len()
+    })
+}
+
+fn candidate_spool_symbol_json(input: &CandidateSpoolInput) -> Value {
+    json!({
+        "symbol": input.symbol_name.clone(),
+        "signature": input.text.clone(),
+        "source_span": input.source_span.clone(),
+        "entity_id": input.entity_id.clone()
+    })
+}
+
+fn candidate_spool_navigation_json(input: &CandidateSpoolInput) -> Value {
+    json!({
+        "text": input.text.clone(),
+        "source_span": input.source_span.clone(),
+        "entity_id": input.entity_id.clone(),
+        "proof_status": "candidate_only",
+        "source_navigation_evidence": true,
+        "graph_proof": false
+    })
+}
+
+fn candidate_spool_index_string(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn candidate_spool_index_normalize(value: &str) -> String {
+    value.replace('\\', "/").trim().to_ascii_lowercase()
+}
+
+fn candidate_spool_index_filename(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path)
+        .to_ascii_lowercase()
+}
+
+fn candidate_spool_index_symbol_name(value: &Value) -> String {
+    if let Some(entity_id) = value.get("entity_id").and_then(Value::as_str) {
+        if let Some(tail) = entity_id
+            .rsplit([':', '/', '#', '.'])
+            .find(|part| !part.trim().is_empty())
+        {
+            return tail.trim().to_string();
+        }
+    }
+    if let Some(symbols) = value.get("symbols").and_then(Value::as_array) {
+        for symbol in symbols {
+            let text = symbol.get("text").and_then(Value::as_str).unwrap_or("");
+            if let Some(name) = candidate_spool_symbol_name_from_text(text) {
+                return name;
+            }
+        }
+    }
+    candidate_spool_symbol_name_from_text(
+        value
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    )
+    .unwrap_or_default()
+}
+
+fn candidate_spool_symbol_name_from_text(text: &str) -> Option<String> {
+    let mut previous = "";
+    for token in text
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '.'))
+        .filter(|token| !token.is_empty())
+    {
+        if matches!(
+            previous,
+            "fn" | "function" | "def" | "class" | "struct" | "enum"
+        ) && token
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+        {
+            return Some(token.trim_matches('.').to_string());
+        }
+        previous = token;
+    }
+    None
+}
+
+fn candidate_spool_index_terms_from_text(text: &str) -> BTreeSet<String> {
+    let mut terms = BTreeSet::new();
+    let normalized = candidate_spool_index_normalize(text);
+    if normalized.len() >= 2 && normalized.len() <= 256 {
+        terms.insert(normalized.clone());
+    }
+    for term in normalized
+        .split(|ch: char| {
+            !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '/' || ch == '.')
+        })
+        .filter(|term| term.len() >= 2)
+    {
+        terms.insert(term.trim_matches(['/', '.']).to_string());
+        for segment in term
+            .split(['/', '.', '-'])
+            .filter(|segment| segment.len() >= 2)
+        {
+            terms.insert(segment.to_string());
+        }
+    }
+    terms.retain(|term| term.len() >= 2 && term.len() <= 128);
+    terms
+}
+
+fn candidate_spool_index_collect_terms(value: &Value) -> BTreeMap<(String, String), i64> {
+    let mut terms: BTreeMap<(String, String), i64> = BTreeMap::new();
+    let mut add = |field: &str, text: &str, weight: i64| {
+        for term in candidate_spool_index_terms_from_text(text) {
+            terms
+                .entry((term, field.to_string()))
+                .and_modify(|current| *current = (*current).max(weight))
+                .or_insert(weight);
+        }
+    };
+    let path = candidate_spool_index_string(value, "path");
+    add("path", &path, 50);
+    add("filename", &candidate_spool_index_filename(&path), 60);
+    add(
+        "candidate_kind",
+        &candidate_spool_index_string(value, "candidate_kind"),
+        35,
+    );
+    add(
+        "chunk_kind",
+        &candidate_spool_index_string(value, "chunk_kind"),
+        25,
+    );
+    add(
+        "source_kind",
+        &candidate_spool_index_string(value, "source_kind"),
+        25,
+    );
+    add(
+        "source_role",
+        &candidate_spool_index_string(value, "source_role"),
+        20,
+    );
+    add(
+        "evidence_role",
+        &candidate_spool_index_string(value, "evidence_role"),
+        20,
+    );
+    add(
+        "file_kind",
+        &candidate_spool_index_string(value, "file_kind"),
+        20,
+    );
+    add(
+        "top_level_dir",
+        &candidate_spool_index_string(value, "top_level_dir"),
+        20,
+    );
+    add(
+        "entity_id",
+        &candidate_spool_index_string(value, "entity_id"),
+        35,
+    );
+    add(
+        "text",
+        value.get("text").and_then(Value::as_str).unwrap_or(""),
+        10,
+    );
+    add("symbol", &candidate_spool_index_symbol_name(value), 70);
+    for key in ["snippets", "symbols", "source_navigation"] {
+        if let Some(items) = value.get(key).and_then(Value::as_array) {
+            for item in items {
+                add(
+                    key,
+                    item.get("text").and_then(Value::as_str).unwrap_or(""),
+                    12,
+                );
+                add(
+                    key,
+                    item.get("entity_id").and_then(Value::as_str).unwrap_or(""),
+                    25,
+                );
+            }
+        }
+    }
+    terms
+}
+
+fn candidate_spool_query_index_insert_value(
+    connection: &Connection,
+    value: &Value,
+) -> Result<(), IndexError> {
+    let chunk_id = value
+        .get("chunk_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            IndexError::Message("candidate spool packet missing chunk_id".to_string())
+        })?;
+    let path = candidate_spool_index_string(value, "path");
+    let normalized_path = candidate_spool_index_normalize(&path);
+    let filename = candidate_spool_index_filename(&path);
+    let symbol_name = candidate_spool_index_symbol_name(value);
+    let normalized_symbol = candidate_spool_index_normalize(&symbol_name);
+    let source_span_json = serde_json::to_string(value.get("source_span").unwrap_or(&Value::Null))
+        .map_err(|error| IndexError::Message(error.to_string()))?;
+    let chunk_json =
+        serde_json::to_string(value).map_err(|error| IndexError::Message(error.to_string()))?;
+    let source_file_size_bytes = value
+        .get("source_file_size_bytes")
+        .and_then(Value::as_u64)
+        .and_then(|value| i64::try_from(value).ok());
+    let source_file_content_hash = value
+        .get("source_file_content_hash")
+        .and_then(Value::as_str);
+    connection
+        .execute(
+            "DELETE FROM candidate_spool_terms WHERE chunk_id = ?1",
+            params![chunk_id],
+        )
+        .map_err(|error| {
+            sqlite_index_error("candidate_spool_query_index_delete_terms_failed", error)
+        })?;
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO candidate_spool_records(
+                chunk_id, candidate_kind, packet_kind, chunk_kind, source_kind, path,
+                normalized_path, filename, top_level_dir, file_kind, source_role, evidence_role,
+                symbol_name, normalized_symbol, source_span_json, entity_id, text_preview,
+                selection_score, selection_bucket, source_file_content_hash,
+                source_file_size_bytes, chunk_json
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                ?16, ?17, ?18, ?19, ?20, ?21, ?22
+             )",
+            params![
+                chunk_id,
+                candidate_spool_index_string(value, "candidate_kind"),
+                candidate_spool_index_string(value, "packet_kind"),
+                candidate_spool_index_string(value, "chunk_kind"),
+                candidate_spool_index_string(value, "source_kind"),
+                path,
+                normalized_path,
+                filename,
+                candidate_spool_index_string(value, "top_level_dir"),
+                candidate_spool_index_string(value, "file_kind"),
+                candidate_spool_index_string(value, "source_role"),
+                candidate_spool_index_string(value, "evidence_role"),
+                symbol_name,
+                normalized_symbol,
+                source_span_json,
+                value.get("entity_id").and_then(Value::as_str),
+                value.get("text").and_then(Value::as_str).unwrap_or(""),
+                value
+                    .get("selection_score")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0),
+                candidate_spool_index_string(value, "selection_bucket"),
+                value
+                    .get("source_file_content_hash")
+                    .and_then(Value::as_str),
+                source_file_size_bytes,
+                chunk_json
+            ],
+        )
+        .map_err(|error| sqlite_index_error("candidate_spool_query_index_insert_failed", error))?;
+    if !path.is_empty() {
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO candidate_spool_source_bindings(
+                    path, source_file_content_hash, source_file_size_bytes, record_count
+                 ) VALUES (?1, ?2, ?3, 0)",
+                params![path, source_file_content_hash, source_file_size_bytes],
+            )
+            .map_err(|error| {
+                sqlite_index_error(
+                    "candidate_spool_query_index_source_binding_insert_failed",
+                    error,
+                )
+            })?;
+        connection
+            .execute(
+                "UPDATE candidate_spool_source_bindings
+                 SET source_file_content_hash = ?2,
+                     source_file_size_bytes = ?3,
+                     record_count = record_count + 1
+                 WHERE path = ?1",
+                params![path, source_file_content_hash, source_file_size_bytes],
+            )
+            .map_err(|error| {
+                sqlite_index_error(
+                    "candidate_spool_query_index_source_binding_update_failed",
+                    error,
+                )
+            })?;
+    }
+    for ((term, field), weight) in candidate_spool_index_collect_terms(value) {
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO candidate_spool_terms(term, chunk_id, field, weight)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![term, chunk_id, field, weight],
+            )
+            .map_err(|error| {
+                sqlite_index_error("candidate_spool_query_index_term_failed", error)
+            })?;
+    }
+    Ok(())
+}
+
+fn append_candidate_spool_query_index_packets(
+    spool: &mut CandidateSpoolSummary,
+    packets: &[CandidateSpoolPacket],
+) -> Result<(), IndexError> {
+    let spool_path = PathBuf::from(&spool.candidate_spool_path);
+    let index_path = candidate_spool_query_index_path(&spool_path);
+    if let Some(parent) = index_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let connection = Connection::open(&index_path)
+        .map_err(|error| sqlite_index_error("candidate_spool_query_index_open_failed", error))?;
+    candidate_spool_query_index_create_schema(&connection)?;
+    for packet in packets {
+        candidate_spool_query_index_insert_value(&connection, &packet.value)?;
+    }
+    refresh_candidate_spool_query_index_summary(spool)?;
+    Ok(())
+}
+
+fn append_candidate_spool_chunks(
+    summary: &mut IndexSummary,
+    chunks: Vec<Value>,
+) -> Result<(), IndexError> {
+    if chunks.is_empty() {
+        return Ok(());
+    }
+    let Some(spool) = summary.candidate_spool.as_mut() else {
+        return Ok(());
+    };
+    let caps = spool.caps.clone();
+    let selection = select_candidate_spool_packets(chunks, &caps, spool);
+    let path = PathBuf::from(&spool.candidate_spool_path);
+    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+    spool.generated_total_chunks += selection.generated_count;
+    spool.normalized_total_chunks += selection.normalized_count;
+    spool.deduped_total_chunks += selection.deduped_count;
+    spool.selected_total_chunks += selection.selected_count;
+    spool.persisted_total_chunks += selection.persisted_count;
+    spool.omitted_by_cap += selection.omitted_by_cap;
+    spool.omitted_by_budget += selection.omitted_by_budget;
+    spool.omitted_by_dedup += selection.omitted_by_dedup;
+    spool.omitted_low_signal += selection.omitted_low_signal;
+    spool.omitted_by_file_limit += selection.omitted_by_file_limit;
+    spool.omitted_by_dir_limit += selection.omitted_by_dir_limit;
+    spool.omitted_by_kind_limit += selection.omitted_by_kind_limit;
+    for packet in &selection.selected {
+        spool
+            .selected_candidate_ids
+            .insert(packet.packet_id.clone());
+        *spool
+            .selected_file_counts
+            .entry(packet.path.clone())
+            .or_default() += 1;
+        *spool
+            .selected_dir_counts
+            .entry(packet.top_level_dir.clone())
+            .or_default() += 1;
+        *spool
+            .selected_kind_counts
+            .entry(packet.candidate_kind.clone())
+            .or_default() += 1;
+        *spool
+            .selected_source_counts
+            .entry(packet.source_kind.clone())
+            .or_default() += 1;
+        if let Some(source_kind) = packet.value.get("source_kind").and_then(Value::as_str) {
+            *spool
+                .spooled_by_source_kind
+                .entry(source_kind.to_string())
+                .or_default() += 1;
+        }
+        if let Some(chunk_kind) = packet.value.get("chunk_kind").and_then(Value::as_str) {
+            *spool
+                .spooled_by_chunk_kind
+                .entry(chunk_kind.to_string())
+                .or_default() += 1;
+        }
+        serde_json::to_writer(&mut file, &packet.value)
+            .map_err(|error| IndexError::Message(error.to_string()))?;
+        file.write_all(b"\n")?;
+        spool.spooled_total_chunks += 1;
+    }
+    spool.status = "partial_ready".to_string();
+    spool.candidate_spool_status = "partial_ready".to_string();
+    spool.lifecycle = "partial_spool".to_string();
+    spool.incomplete = true;
+    spool.reason =
+        Some("candidate spool contains local evidence while indexing is in progress".to_string());
+    spool.spooled_bytes = fs::metadata(&path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    spool.candidate_spool_budget_bytes = caps.global_max_bytes as u64;
+    spool.candidate_spool_truncated = spool.omitted_by_budget > 0
+        || spool.omitted_by_cap > 0
+        || spool.omitted_by_file_limit > 0
+        || spool.omitted_by_dir_limit > 0
+        || spool.omitted_by_kind_limit > 0
+        || spool.spooled_bytes as usize >= caps.global_max_bytes;
+    spool.candidate_spool_partial = spool.candidate_spool_truncated || spool.incomplete;
+    if spool.query_index_status != "disabled" {
+        append_candidate_spool_query_index_packets(spool, &selection.selected)?;
+    }
+    Ok(())
+}
+
+fn mark_candidate_spool_final(
+    summary: &mut IndexSummary,
+    repo_root: &Path,
+    db_path: &Path,
+    options: &IndexOptions,
+) -> Result<(), IndexError> {
+    if let Some(spool) = summary.candidate_spool.as_mut() {
+        let ready_status = if spool.candidate_spool_truncated {
+            "truncated_ready"
+        } else {
+            "bounded_ready"
+        };
+        spool.status = ready_status.to_string();
+        spool.candidate_spool_status = ready_status.to_string();
+        spool.lifecycle = "final_spool".to_string();
+        spool.incomplete = false;
+        spool.candidate_spool_partial = spool.candidate_spool_truncated;
+        spool.reason = Some("all deterministic local candidate evidence for this index run was written; graph DB proof may still be unpublished".to_string());
+        refresh_candidate_spool_query_index_summary(spool)?;
+    }
+    rewrite_candidate_spool_jsonl(summary, repo_root, db_path, options)
+}
+
+fn mark_candidate_spool_superseded(
+    summary: &mut IndexSummary,
+    repo_root: &Path,
+    db_path: &Path,
+    options: &IndexOptions,
+    passport: &DbPassport,
+) -> Result<(), IndexError> {
+    if let Some(spool) = summary.candidate_spool.as_mut() {
+        spool.status = "superseded_by_graph_db".to_string();
+        spool.candidate_spool_status = "superseded_by_graph_db".to_string();
+        spool.lifecycle = "superseded_by_graph_db".to_string();
+        spool.incomplete = false;
+        spool.candidate_spool_partial = spool.candidate_spool_truncated;
+        spool.db_passport_hash = Some(db_passport_fingerprint(passport));
+        spool.db_passport_snapshot = Some(passport.clone());
+        spool.reason = Some("final graph DB passport is available; normal graph-proof surfaces must use DB verification, not the spool".to_string());
+        refresh_candidate_spool_query_index_summary(spool)?;
+    }
+    rewrite_candidate_spool_jsonl(summary, repo_root, db_path, options)
+}
+
+fn candidate_spool_paths_equivalent(left: &str, right: &str) -> bool {
+    let left = candidate_spool_normalize_path_identity(left);
+    let right = candidate_spool_normalize_path_identity(right);
+    left == right || windows_path_identity_strings_equivalent(&left, &right)
+}
+
+fn candidate_spool_normalize_path_identity(value: &str) -> String {
+    let mut normalized = value.replace('\\', "/");
+    if let Some(rest) = normalized.strip_prefix("//?/UNC/") {
+        normalized = format!("//{rest}");
+    } else if let Some(rest) = normalized.strip_prefix("//?/") {
+        normalized = rest.to_string();
+    }
+    normalized.trim_end_matches('/').to_ascii_lowercase()
+}
+
+#[cfg(windows)]
+fn windows_path_identity_strings_equivalent(left: &str, right: &str) -> bool {
+    let left_parts = left
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let right_parts = right
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    left_parts.len() == right_parts.len()
+        && left_parts
+            .iter()
+            .zip(right_parts.iter())
+            .all(|(left, right)| windows_path_component_equivalent(left, right))
+}
+
+#[cfg(not(windows))]
+fn windows_path_identity_strings_equivalent(_left: &str, _right: &str) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn windows_path_component_equivalent(left: &str, right: &str) -> bool {
+    left == right
+        || windows_short_alias_component_matches(left, right)
+        || windows_short_alias_component_matches(right, left)
+}
+
+#[cfg(windows)]
+fn windows_short_alias_component_matches(short: &str, long: &str) -> bool {
+    let Some((prefix, suffix)) = short.split_once('~') else {
+        return false;
+    };
+    if prefix.len() < 3 {
+        return false;
+    }
+    let digit_count = suffix.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    if digit_count == 0 {
+        return false;
+    }
+    let suffix_tail = &suffix[digit_count..];
+    if !suffix_tail.is_empty() && !suffix_tail.starts_with('.') {
+        return false;
+    }
+    let long_compact = long
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>();
+    long_compact.starts_with(prefix)
+}
+
+fn read_candidate_spool_manifest(spool_path: &Path) -> Result<Value, IndexError> {
+    if !spool_path.exists() {
+        return Err(IndexError::Message(format!(
+            "candidate_spool_missing: {} does not exist",
+            spool_path.display()
+        )));
+    }
+    let file = fs::File::open(spool_path)?;
+    let reader = BufReader::new(file);
+    for (line_index, line) in reader.lines().take(8).enumerate() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: Value = serde_json::from_str(trimmed).map_err(|error| {
+            IndexError::Message(format!(
+                "candidate_spool_corrupt line {}: {error}",
+                line_index + 1
+            ))
+        })?;
+        let metadata = value
+            .get("metadata")
+            .cloned()
+            .unwrap_or_else(|| value.clone());
+        if metadata.get("artifact_kind").is_some() {
+            return Ok(metadata);
+        }
+    }
+    Err(IndexError::Message(
+        "candidate_spool_corrupt: missing metadata header".to_string(),
+    ))
+}
+
+fn candidate_spool_manifest_count(metadata: &Value) -> usize {
+    [
+        "persisted_total_chunks",
+        "candidate_spool_record_count",
+        "spooled_total_chunks",
+        "selected_total_chunks",
+    ]
+    .iter()
+    .find_map(|key| metadata.get(*key).and_then(Value::as_u64))
+    .unwrap_or(0) as usize
+}
+
+fn candidate_spool_index_load_from_parts(
+    spool_path: &Path,
+    index_path: &Path,
+    metadata: Value,
+    status: &str,
+    reason: Option<String>,
+    stale: bool,
+    record_count: usize,
+    source_binding_count: usize,
+) -> CandidateSpoolIndexLoad {
+    let mut metadata = metadata;
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("query_index_status".to_string(), json!(status));
+        object.insert("query_index_kind".to_string(), json!("sqlite"));
+        object.insert(
+            "query_index_path".to_string(),
+            json!(path_string(index_path)),
+        );
+        object.insert(
+            "query_index_version".to_string(),
+            json!(CANDIDATE_SPOOL_QUERY_INDEX_VERSION),
+        );
+        object.insert("query_index_record_count".to_string(), json!(record_count));
+        object.insert(
+            "query_index_source_binding_count".to_string(),
+            json!(source_binding_count),
+        );
+        object.insert(
+            "query_index_bytes".to_string(),
+            json!(fs::metadata(index_path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0)),
+        );
+    }
+    CandidateSpoolIndexLoad {
+        path: spool_path.to_path_buf(),
+        query_index_path: index_path.to_path_buf(),
+        metadata,
+        stale,
+        reason,
+        query_index_status: status.to_string(),
+        query_index_kind: "sqlite".to_string(),
+        query_index_bytes: fs::metadata(index_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0),
+        query_index_record_count: record_count,
+        query_index_version: CANDIDATE_SPOOL_QUERY_INDEX_VERSION.to_string(),
+        query_index_bound_manifest_hash: None,
+        query_index_source_binding_count: source_binding_count,
+    }
+}
+
+fn candidate_spool_query_index_open_failure_status(
+    error: &rusqlite::Error,
+) -> (&'static str, String) {
+    let message = error.to_string();
+    let status =
+        match classify_sqlite_access_problem(&message).map(|problem| problem.db_problem_kind) {
+            Some("sqlite_corrupt") => "corrupt",
+            Some("permission_denied") => "permission_denied",
+            Some("filesystem_inaccessible") => "filesystem_inaccessible",
+            Some(_) | None => "sidecar_unavailable",
+        };
+    (
+        status,
+        format!("candidate_spool_query_index_open_failed: {status}: {message}"),
+    )
+}
+
+pub fn candidate_spool_index_status_for_repo(
+    repo_root: &Path,
+    spool_path: &Path,
+    allow_stale: bool,
+) -> Result<CandidateSpoolIndexLoad, IndexError> {
+    let mut metadata = read_candidate_spool_manifest(spool_path)?;
+    let kind = metadata
+        .get("artifact_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    if kind != "candidate_spool" {
+        return Err(IndexError::Message(format!(
+            "candidate_spool_wrong_kind: expected candidate_spool, got {kind}"
+        )));
+    }
+    let index_path = candidate_spool_query_index_path(spool_path);
+    let mut stale_reasons = Vec::new();
+    if let Some(recorded_repo) = metadata.get("repo_root").and_then(Value::as_str) {
+        let current_repo = path_string(repo_root);
+        if !candidate_spool_paths_equivalent(recorded_repo, &current_repo) {
+            stale_reasons.push(format!(
+                "foreign_repo: artifact repo_root={recorded_repo}, current_repo_root={current_repo}"
+            ));
+        }
+    }
+    if !index_path.exists() {
+        let stale = !stale_reasons.is_empty();
+        let reason = if stale {
+            Some(stale_reasons.join("; "))
+        } else {
+            Some("candidate spool query index is missing".to_string())
+        };
+        if stale && !allow_stale {
+            return Err(IndexError::Message(format!(
+                "candidate_spool_stale: {}",
+                reason.clone().unwrap_or_default()
+            )));
+        }
+        return Ok(candidate_spool_index_load_from_parts(
+            spool_path,
+            &index_path,
+            metadata,
+            "index_missing",
+            reason,
+            stale,
+            0,
+            0,
+        ));
+    }
+    let connection = match Connection::open(&index_path) {
+        Ok(connection) => connection,
+        Err(error) => {
+            let (status, reason) = candidate_spool_query_index_open_failure_status(&error);
+            return Ok(candidate_spool_index_load_from_parts(
+                spool_path,
+                &index_path,
+                metadata,
+                status,
+                Some(reason),
+                true,
+                0,
+                0,
+            ));
+        }
+    };
+    if let Err(error) = candidate_spool_query_index_create_schema(&connection) {
+        return Ok(candidate_spool_index_load_from_parts(
+            spool_path,
+            &index_path,
+            metadata,
+            "corrupt",
+            Some(error.to_string()),
+            true,
+            0,
+            0,
+        ));
+    }
+    let record_count = candidate_spool_query_index_record_count(&connection)?;
+    let source_binding_count = candidate_spool_query_index_source_binding_count(&connection)?;
+    let manifest_count = candidate_spool_manifest_count(&metadata);
+    if manifest_count > 0 && record_count != manifest_count {
+        stale_reasons.push(format!(
+            "query_index_record_count_mismatch: manifest={manifest_count} index={record_count}"
+        ));
+    }
+    if let Some(index_version) =
+        candidate_spool_query_index_metadata_value(&connection, "query_index_version")?
+    {
+        if index_version != CANDIDATE_SPOOL_QUERY_INDEX_VERSION {
+            stale_reasons.push(format!(
+                "query_index_version_mismatch: expected={} actual={index_version}",
+                CANDIDATE_SPOOL_QUERY_INDEX_VERSION
+            ));
+        }
+    } else {
+        return Ok(candidate_spool_index_load_from_parts(
+            spool_path,
+            &index_path,
+            metadata,
+            "corrupt",
+            Some("candidate_spool_query_index_missing_version".to_string()),
+            true,
+            record_count,
+            source_binding_count,
+        ));
+    }
+    if let Some(index_spool_path) =
+        candidate_spool_query_index_metadata_value(&connection, "spool_path")?
+    {
+        if !candidate_spool_paths_equivalent(&index_spool_path, &path_string(spool_path)) {
+            stale_reasons.push(format!(
+                "query_index_spool_path_mismatch: index={index_spool_path} spool={}",
+                path_string(spool_path)
+            ));
+        }
+    }
+    let binding_hash =
+        candidate_spool_query_index_metadata_value(&connection, "query_index_bound_manifest_hash")?;
+    let manifest_status = metadata
+        .get("candidate_spool_status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let manifest_incomplete = metadata
+        .get("incomplete")
+        .and_then(Value::as_bool)
+        .unwrap_or(matches!(manifest_status, "building" | "partial_ready"));
+    if !manifest_incomplete && !matches!(manifest_status, "building" | "partial_ready") {
+        if let (Some(index_binding_hash), Some(manifest_binding_hash)) = (
+            binding_hash.as_deref(),
+            metadata
+                .get("query_index_bound_manifest_hash")
+                .and_then(Value::as_str),
+        ) {
+            if index_binding_hash != manifest_binding_hash {
+                stale_reasons.push(format!(
+                    "query_index_manifest_binding_mismatch: manifest={manifest_binding_hash} index={index_binding_hash}"
+                ));
+            }
+        }
+    }
+    if let Some(index_spool_status) =
+        candidate_spool_query_index_metadata_value(&connection, "candidate_spool_status")?
+    {
+        let current_spool_status = metadata
+            .get("candidate_spool_status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        if current_spool_status == "building"
+            && matches!(
+                index_spool_status.as_str(),
+                "partial_ready" | "bounded_ready" | "truncated_ready"
+            )
+        {
+            if let Some(object) = metadata.as_object_mut() {
+                object.insert(
+                    "candidate_spool_status".to_string(),
+                    json!(index_spool_status.clone()),
+                );
+                object.insert("status".to_string(), json!(index_spool_status.clone()));
+                if index_spool_status == "partial_ready" {
+                    object.insert("lifecycle".to_string(), json!("partial_spool"));
+                    object.insert("incomplete".to_string(), json!(true));
+                }
+            }
+        }
+    }
+    stale_reasons.extend(candidate_spool_query_index_source_binding_stale_reasons(
+        &connection,
+        repo_root,
+    )?);
+    stale_reasons.sort();
+    stale_reasons.dedup();
+    let stale = !stale_reasons.is_empty();
+    if stale && !allow_stale {
+        return Err(IndexError::Message(format!(
+            "candidate_spool_stale: {}",
+            stale_reasons.join("; ")
+        )));
+    }
+    let status = if stale { "stale" } else { "ready" };
+    let mut load = candidate_spool_index_load_from_parts(
+        spool_path,
+        &index_path,
+        metadata,
+        status,
+        stale.then(|| stale_reasons.join("; ")),
+        stale,
+        record_count,
+        source_binding_count,
+    );
+    load.query_index_bound_manifest_hash = binding_hash;
+    Ok(load)
+}
+
+fn candidate_spool_jsonl_safe_to_rebuild(metadata: &Value, spool_path: &Path) -> bool {
+    let bytes = fs::metadata(spool_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(u64::MAX);
+    let count = candidate_spool_manifest_count(metadata);
+    let record_model = metadata
+        .get("record_model")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    record_model == CANDIDATE_SPOOL_RECORD_MODEL_VERSION
+        || (bytes <= CANDIDATE_SPOOL_QUERY_INDEX_SAFE_REBUILD_MAX_BYTES
+            && count <= CANDIDATE_SPOOL_QUERY_INDEX_SAFE_REBUILD_MAX_RECORDS)
+}
+
+pub fn rebuild_candidate_spool_query_index_for_repo(
+    repo_root: &Path,
+    spool_path: &Path,
+) -> Result<PathBuf, IndexError> {
+    let metadata = read_candidate_spool_manifest(spool_path)?;
+    if metadata
+        .get("artifact_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        != "candidate_spool"
+    {
+        return Err(IndexError::Message(
+            "candidate_spool_wrong_kind: expected candidate_spool".to_string(),
+        ));
+    }
+    if !candidate_spool_jsonl_safe_to_rebuild(&metadata, spool_path) {
+        return Err(IndexError::Message(
+            "candidate_spool_query_index_missing: legacy or oversized candidate spool requires explicit audit inspection, not hot-path scanning".to_string(),
+        ));
+    }
+    let index_path = candidate_spool_query_index_path(spool_path);
+    remove_file_if_exists(&index_path)?;
+    let connection = Connection::open(&index_path)
+        .map_err(|error| sqlite_index_error("candidate_spool_query_index_open_failed", error))?;
+    candidate_spool_query_index_create_schema(&connection)?;
+    candidate_spool_query_index_set_metadata(
+        &connection,
+        "metadata_version",
+        CANDIDATE_SPOOL_METADATA_VERSION,
+    )?;
+    candidate_spool_query_index_set_metadata(
+        &connection,
+        "query_index_version",
+        CANDIDATE_SPOOL_QUERY_INDEX_VERSION,
+    )?;
+    candidate_spool_query_index_set_metadata(&connection, "query_index_status", "ready")?;
+    candidate_spool_query_index_set_metadata(&connection, "query_index_kind", "sqlite")?;
+    candidate_spool_query_index_set_metadata(&connection, "artifact_kind", "candidate_spool")?;
+    candidate_spool_query_index_set_metadata(&connection, "spool_path", path_string(spool_path))?;
+    candidate_spool_query_index_set_metadata(&connection, "repo_root", path_string(repo_root))?;
+    if let Some(status) = metadata
+        .get("candidate_spool_status")
+        .and_then(Value::as_str)
+    {
+        candidate_spool_query_index_set_metadata(&connection, "candidate_spool_status", status)?;
+    }
+    if let Some(record_model) = metadata.get("record_model").and_then(Value::as_str) {
+        candidate_spool_query_index_set_metadata(&connection, "record_model", record_model)?;
+    }
+    let file = fs::File::open(spool_path)?;
+    let reader = BufReader::new(file);
+    for (line_index, line) in reader.lines().enumerate() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: Value = serde_json::from_str(trimmed).map_err(|error| {
+            IndexError::Message(format!(
+                "candidate_spool_corrupt line {}: {error}",
+                line_index + 1
+            ))
+        })?;
+        if value.get("chunk_id").is_some() || value.get("text").is_some() {
+            candidate_spool_query_index_insert_value(&connection, &value)?;
+        }
+    }
+    let count = candidate_spool_query_index_record_count(&connection)?;
+    let source_binding_count = candidate_spool_query_index_source_binding_count(&connection)?;
+    candidate_spool_query_index_set_metadata(
+        &connection,
+        "query_index_record_count",
+        count.to_string(),
+    )?;
+    candidate_spool_query_index_set_metadata(
+        &connection,
+        "query_index_source_binding_count",
+        source_binding_count.to_string(),
+    )?;
+    Ok(index_path)
+}
+
+fn candidate_spool_sql_mode_filter(subcommand: &str) -> &'static str {
+    match subcommand {
+        "files" => "(candidate_kind = 'file_path_title' OR chunk_kind = 'file_path_title')",
+        "symbols" => "(source_kind = 'graph_entity' OR candidate_kind IN ('symbol_signature', 'import_export_source_navigation', 'parser_local_reference', 'relation_neighborhood_candidate', 'doc_comment_or_title', 'test_or_mock_candidate'))",
+        "text" => "(source_kind = 'text_evidence' OR candidate_kind = 'text_evidence_snippet' OR chunk_kind = 'snippet')",
+        _ => "1 = 1",
+    }
+}
+
+fn candidate_spool_query_terms(query: &str) -> BTreeSet<String> {
+    let mut terms = candidate_spool_index_terms_from_text(query);
+    let filename = candidate_spool_index_filename(query);
+    if filename.len() >= 2 {
+        terms.insert(filename);
+    }
+    terms
+}
+
+fn candidate_spool_query_add_ids(
+    connection: &Connection,
+    scores: &mut BTreeMap<String, i64>,
+    sql: &str,
+    parameter: &str,
+    base_score: i64,
+    limit: usize,
+) -> Result<(), IndexError> {
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(|error| sqlite_index_error("candidate_spool_query_prepare_failed", error))?;
+    let rows = statement
+        .query_map(params![parameter, limit as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1).unwrap_or(0)))
+        })
+        .map_err(|error| sqlite_index_error("candidate_spool_query_failed", error))?;
+    for row in rows {
+        let (chunk_id, score) =
+            row.map_err(|error| sqlite_index_error("candidate_spool_query_row_failed", error))?;
+        *scores.entry(chunk_id).or_default() += base_score + score;
+    }
+    Ok(())
+}
+
+fn candidate_spool_query_exact_ids(
+    connection: &Connection,
+    scores: &mut BTreeMap<String, i64>,
+    subcommand: &str,
+    query: &str,
+    limit: usize,
+) -> Result<(), IndexError> {
+    let normalized = candidate_spool_index_normalize(query);
+    let filename = candidate_spool_index_filename(query);
+    let mode = candidate_spool_sql_mode_filter(subcommand);
+    let exact_limit = limit.saturating_mul(8).max(limit).max(1);
+    let sql = format!(
+        "SELECT chunk_id, 0 FROM candidate_spool_records WHERE {mode} AND normalized_path = ?1 ORDER BY selection_score DESC, chunk_id LIMIT ?2"
+    );
+    candidate_spool_query_add_ids(connection, scores, &sql, &normalized, 1_000, exact_limit)?;
+    let sql = format!(
+        "SELECT chunk_id, 0 FROM candidate_spool_records WHERE {mode} AND filename = ?1 ORDER BY selection_score DESC, chunk_id LIMIT ?2"
+    );
+    candidate_spool_query_add_ids(connection, scores, &sql, &filename, 700, exact_limit)?;
+    if subcommand == "symbols" {
+        let sql = format!(
+            "SELECT chunk_id, 0 FROM candidate_spool_records WHERE {mode} AND normalized_symbol = ?1 ORDER BY selection_score DESC, chunk_id LIMIT ?2"
+        );
+        candidate_spool_query_add_ids(connection, scores, &sql, &normalized, 900, exact_limit)?;
+    }
+    if subcommand == "files" {
+        let sql = format!(
+            "SELECT chunk_id, 0 FROM candidate_spool_records WHERE {mode} AND (top_level_dir = ?1 OR file_kind = ?1) ORDER BY selection_score DESC, chunk_id LIMIT ?2"
+        );
+        candidate_spool_query_add_ids(connection, scores, &sql, &normalized, 400, exact_limit)?;
+    }
+    Ok(())
+}
+
+fn candidate_spool_query_term_ids(
+    connection: &Connection,
+    scores: &mut BTreeMap<String, i64>,
+    subcommand: &str,
+    terms: &BTreeSet<String>,
+    limit: usize,
+) -> Result<(), IndexError> {
+    let mode = candidate_spool_sql_mode_filter(subcommand);
+    let term_limit = limit.saturating_mul(12).max(limit).max(1);
+    let sql = format!(
+        "SELECT records.chunk_id, SUM(terms.weight) AS score
+         FROM candidate_spool_terms terms
+         JOIN candidate_spool_records records ON records.chunk_id = terms.chunk_id
+         WHERE {mode} AND terms.term = ?1
+         GROUP BY records.chunk_id
+         ORDER BY score DESC, records.chunk_id
+         LIMIT ?2"
+    );
+    for term in terms {
+        candidate_spool_query_add_ids(connection, scores, &sql, term, 0, term_limit)?;
+    }
+    Ok(())
+}
+
+fn candidate_spool_query_top_ids(
+    connection: &Connection,
+    scores: &mut BTreeMap<String, i64>,
+    subcommand: &str,
+    limit: usize,
+) -> Result<(), IndexError> {
+    let mode = candidate_spool_sql_mode_filter(subcommand);
+    let sql = format!(
+        "SELECT chunk_id, 0 FROM candidate_spool_records WHERE {mode} ORDER BY selection_score DESC, chunk_id LIMIT ?1"
+    );
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| sqlite_index_error("candidate_spool_query_prepare_failed", error))?;
+    let rows = statement
+        .query_map(params![limit as i64], |row| row.get::<_, String>(0))
+        .map_err(|error| sqlite_index_error("candidate_spool_query_failed", error))?;
+    for row in rows {
+        let chunk_id =
+            row.map_err(|error| sqlite_index_error("candidate_spool_query_row_failed", error))?;
+        *scores.entry(chunk_id).or_default() += 1;
+    }
+    Ok(())
+}
+
+fn candidate_spool_query_load_chunk(
+    connection: &Connection,
+    chunk_id: &str,
+) -> Result<Value, IndexError> {
+    let chunk_json = connection
+        .query_row(
+            "SELECT chunk_json FROM candidate_spool_records WHERE chunk_id = ?1",
+            params![chunk_id],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|error| sqlite_index_error("candidate_spool_query_load_chunk_failed", error))?;
+    serde_json::from_str(&chunk_json).map_err(|error| IndexError::Message(error.to_string()))
+}
+
+fn candidate_spool_validate_query_hits(
+    repo_root: &Path,
+    chunks: &mut [Value],
+    allow_stale: bool,
+) -> Result<Option<String>, IndexError> {
+    let mut stale_reasons = Vec::new();
+    for chunk in chunks.iter_mut() {
+        let Some(path) = chunk.get("path").and_then(Value::as_str) else {
+            continue;
+        };
+        let source_path = repo_root.join(path);
+        if !source_path.exists() {
+            stale_reasons.push(format!("deleted_file: {path}"));
+            continue;
+        }
+        if let Some(expected_size) = chunk.get("source_file_size_bytes").and_then(Value::as_u64) {
+            let actual_size = fs::metadata(&source_path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            if actual_size != expected_size {
+                stale_reasons.push(format!(
+                    "changed_file_size: {path} expected={expected_size} actual={actual_size}"
+                ));
+                continue;
+            }
+        }
+        if let Some(expected_hash) = chunk
+            .get("source_file_content_hash")
+            .and_then(Value::as_str)
+        {
+            match fs::read_to_string(&source_path) {
+                Ok(source) => {
+                    let actual_hash = content_hash(&source);
+                    if actual_hash != expected_hash {
+                        stale_reasons.push(format!("changed_file_hash: {path}"));
+                    }
+                }
+                Err(error) => stale_reasons.push(format!("read_failed: {path}: {error}")),
+            }
+        }
+    }
+    stale_reasons.sort();
+    stale_reasons.dedup();
+    if stale_reasons.is_empty() {
+        return Ok(None);
+    }
+    let reason = stale_reasons.join("; ");
+    if !allow_stale {
+        return Err(IndexError::Message(format!(
+            "candidate_spool_stale: {reason}"
+        )));
+    }
+    for chunk in chunks {
+        if let Some(object) = chunk.as_object_mut() {
+            object.insert("stale".to_string(), json!(true));
+            object.insert("stale_reason".to_string(), json!(reason.clone()));
+        }
+    }
+    Ok(Some(reason))
+}
+
+pub fn query_candidate_spool_index_for_repo(
+    repo_root: &Path,
+    spool_path: &Path,
+    subcommand: &str,
+    query: &str,
+    limit: usize,
+    allow_stale: bool,
+) -> Result<CandidateSpoolIndexQueryResult, IndexError> {
+    if !matches!(
+        subcommand,
+        "files" | "text" | "symbols" | "all" | "candidates"
+    ) {
+        return Err(IndexError::Message(format!(
+            "candidate spool early mode only supports query files/text/symbols/all, got {subcommand}"
+        )));
+    }
+    let mut load = candidate_spool_index_status_for_repo(repo_root, spool_path, allow_stale)?;
+    if load.query_index_status == "index_missing" {
+        rebuild_candidate_spool_query_index_for_repo(repo_root, spool_path)?;
+        load = candidate_spool_index_status_for_repo(repo_root, spool_path, allow_stale)?;
+    }
+    if load.query_index_status != "ready" && !(allow_stale && load.query_index_status == "stale") {
+        return Err(IndexError::Message(format!(
+            "candidate_spool_query_index_unavailable: status={} reason={}",
+            load.query_index_status,
+            load.reason.clone().unwrap_or_default()
+        )));
+    }
+    let connection = Connection::open(&load.query_index_path)
+        .map_err(|error| sqlite_index_error("candidate_spool_query_index_open_failed", error))?;
+    candidate_spool_query_index_create_schema(&connection)?;
+    let terms = candidate_spool_query_terms(query);
+    let mut scores = BTreeMap::new();
+    candidate_spool_query_exact_ids(&connection, &mut scores, subcommand, query, limit)?;
+    candidate_spool_query_term_ids(&connection, &mut scores, subcommand, &terms, limit)?;
+    if scores.is_empty() && terms.is_empty() {
+        candidate_spool_query_top_ids(&connection, &mut scores, subcommand, limit)?;
+    }
+    let mut scored = scores.into_iter().collect::<Vec<_>>();
+    scored.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    let mut chunks = Vec::new();
+    for (chunk_id, _score) in scored.into_iter().take(limit) {
+        let mut chunk = candidate_spool_query_load_chunk(&connection, &chunk_id)?;
+        if let Some(object) = chunk.as_object_mut() {
+            object.insert("query_index_kind".to_string(), json!("sqlite"));
+            object.insert(
+                "query_index_status".to_string(),
+                json!(load.query_index_status.clone()),
+            );
+            object.insert("candidate_only".to_string(), json!(true));
+            object.insert("graph_proof".to_string(), json!(false));
+            object.insert("claimable_for_graph".to_string(), json!(false));
+        }
+        chunks.push(chunk);
+    }
+    let stale_reason = candidate_spool_validate_query_hits(repo_root, &mut chunks, allow_stale)?;
+    if stale_reason.is_some() {
+        load.stale = true;
+        load.reason = stale_reason;
+    }
+    let omitted_count = load.query_index_record_count.saturating_sub(chunks.len());
+    Ok(CandidateSpoolIndexQueryResult {
+        load,
+        chunks,
+        omitted_count,
+    })
+}
+
+fn candidate_spool_lifecycle_binding() -> RetrievalCandidateLifecycleBinding {
+    RetrievalCandidateLifecycleBinding {
+        status: RetrievalCandidateLifecycleStatus::Unknown,
+        db_passport_fingerprint: None,
+        repo_head: None,
+        scope_policy_hash: None,
+        embedding_model_id: None,
+        embedding_profile: None,
+        stale_reason: Some(
+            "candidate spool is not graph proof and requires graph verification".to_string(),
+        ),
+    }
+}
+
+fn candidate_spool_chunk_value(
+    mut chunk: VectorEmbeddingChunk,
+    source_file_content_hash: &str,
+    source_file_size_bytes: u64,
+    source_file_modified_unix_nanos: Option<&str>,
+    lifecycle: &str,
+    indexing_phase: &str,
+    selection_bucket: &str,
+    selection_reason: &str,
+) -> Result<Value, IndexError> {
+    chunk.graph_proof = false;
+    chunk.claimable_for_graph = false;
+    if chunk.proof_status.trim().is_empty() {
+        chunk.proof_status = "candidate_only".to_string();
+    }
+    if chunk.lifecycle_binding.is_none() {
+        chunk.lifecycle_binding = Some(candidate_spool_lifecycle_binding());
+    }
+    chunk.selection_score.get_or_insert(0.0);
+    chunk
+        .selection_bucket
+        .get_or_insert(selection_bucket.to_string());
+    chunk
+        .selection_reason
+        .get_or_insert(selection_reason.to_string());
+    let mut value = serde_json::to_value(chunk).map_err(|error| {
+        IndexError::Message(format!("candidate spool chunk serialize failed: {error}"))
+    })?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("artifact_kind".to_string(), json!("candidate_spool"));
+        object.insert("candidate_only".to_string(), json!(true));
+        object.insert("graph_proof".to_string(), json!(false));
+        object.insert("claimable_for_graph".to_string(), json!(false));
+        object.insert("requires_graph_verification".to_string(), json!(true));
+        object.insert("creates_graph_relations".to_string(), json!(false));
+        object.insert("can_answer_graph_proof".to_string(), json!(false));
+        object.insert("lifecycle".to_string(), json!(lifecycle));
+        object.insert("candidate_spool_lifecycle".to_string(), json!(lifecycle));
+        object.insert(
+            "incomplete".to_string(),
+            json!(lifecycle != "final_spool" && lifecycle != "superseded_by_graph_db"),
+        );
+        object.insert("spooled_indexing_phase".to_string(), json!(indexing_phase));
+        object.insert(
+            "source_file_content_hash".to_string(),
+            json!(source_file_content_hash),
+        );
+        object.insert(
+            "source_file_size_bytes".to_string(),
+            json!(source_file_size_bytes),
+        );
+        object.insert(
+            "source_file_modified_unix_nanos".to_string(),
+            source_file_modified_unix_nanos
+                .map(|value| json!(value))
+                .unwrap_or(Value::Null),
+        );
+        object.insert("db_passport_hash".to_string(), Value::Null);
+        object.insert("selection_score".to_string(), json!(0.0));
+        object.insert("selection_bucket".to_string(), json!(selection_bucket));
+        object.insert("selection_reason".to_string(), json!(selection_reason));
+    }
+    Ok(value)
+}
+
+fn candidate_spool_chunks_for_text_evidence(
+    repo_relative_path: &str,
+    source: &str,
+    file_hash: &str,
+    file_kind: &str,
+    size_bytes: u64,
+    modified_unix_nanos: Option<&str>,
+) -> Result<Vec<Value>, IndexError> {
+    let lifecycle = candidate_spool_lifecycle_binding();
+    let mut chunks = Vec::new();
+    chunks.push(candidate_spool_chunk_value(
+        extract_file_path_title_embedding_chunk_for_path(
+            repo_relative_path,
+            TEXT_EVIDENCE_KIND,
+            Some(file_kind),
+            Some(lifecycle.clone()),
+        ),
+        file_hash,
+        size_bytes,
+        modified_unix_nanos,
+        "partial_spool",
+        "stage0_text_evidence",
+        "file_path_title",
+        "Stage 0 text evidence path/title candidate; source text existence only, not graph proof",
+    )?);
+    for chunk in extract_text_evidence_embedding_chunks_for_path(
+        repo_relative_path,
+        source,
+        Some(lifecycle.clone()),
+    ) {
+        chunks.push(candidate_spool_chunk_value(
+            chunk,
+            file_hash,
+            size_bytes,
+            modified_unix_nanos,
+            "partial_spool",
+            "stage0_text_evidence",
+            "text_evidence",
+            "Stage 0 text evidence snippet; proves source text existence only, not graph proof",
+        )?);
+    }
+    Ok(chunks)
+}
+
+fn candidate_spool_chunks_for_local_bundle(
+    bundle: &LocalFactBundle,
+) -> Result<Vec<Value>, IndexError> {
+    let lifecycle = candidate_spool_lifecycle_binding();
+    let modified_unix_nanos = bundle
+        .extraction
+        .file
+        .metadata
+        .get("modified_unix_nanos")
+        .and_then(Value::as_str);
+    let size_bytes = bundle.extraction.file.size_bytes;
+    let file_kind = bundle.language.as_deref();
+    let mut chunks = Vec::new();
+    chunks.push(candidate_spool_chunk_value(
+        extract_file_path_title_embedding_chunk_for_path(
+            &bundle.repo_relative_path,
+            "source_navigation",
+            file_kind,
+            Some(lifecycle.clone()),
+        ),
+        &bundle.file_hash,
+        size_bytes,
+        modified_unix_nanos,
+        "partial_spool",
+        "parser_local_evidence",
+        "file_path_title",
+        "File path/title candidate emitted from local parser input; not graph proof",
+    )?);
+    for entity in bundle
+        .extraction
+        .entities
+        .iter()
+        .filter(|entity| should_generate_vector_chunks_for_entity(entity))
+    {
+        for chunk in extract_graph_entity_embedding_chunks(
+            entity,
+            Some(&bundle.source),
+            bundle.language.as_deref(),
+            Some(lifecycle.clone()),
+        ) {
+            if matches!(entity.kind, EntityKind::File | EntityKind::Module)
+                && chunk.chunk_kind == VectorEmbeddingChunkKind::SourceSnippet
+            {
+                continue;
+            }
+            chunks.push(candidate_spool_chunk_value(
+                chunk,
+                &bundle.file_hash,
+                size_bytes,
+                modified_unix_nanos,
+                "partial_spool",
+                "parser_local_evidence",
+                "symbol_signature",
+                "Parser-local declared symbol candidate; graph verification required before proof",
+            )?);
+        }
+    }
+    for relation in &bundle.imports {
+        chunks.push(candidate_spool_relation_candidate_chunk(
+            bundle,
+            relation,
+            "import_signature",
+            "Parser-local import/export source-navigation candidate; no resolved cross-file graph proof",
+        )?);
+    }
+    for relation in &bundle.exports {
+        chunks.push(candidate_spool_relation_candidate_chunk(
+            bundle,
+            relation,
+            "export_signature",
+            "Parser-local import/export source-navigation candidate; no resolved cross-file graph proof",
+        )?);
+    }
+    Ok(chunks)
+}
+
+fn candidate_spool_relation_candidate_chunk(
+    bundle: &LocalFactBundle,
+    relation: &LocalFactRelation,
+    selection_bucket: &str,
+    selection_reason: &str,
+) -> Result<Value, IndexError> {
+    let display = reference_display_name(&relation.tail_id);
+    let text = bounded_vector_chunk_text(&format!(
+        "{} {} in {} near {}",
+        relation.relation, display, bundle.repo_relative_path, relation.source_span
+    ));
+    let chunk = build_vector_embedding_chunk(VectorChunkBuildInput {
+        source_kind: VectorEmbeddingChunkSourceKind::Metadata,
+        chunk_kind: VectorEmbeddingChunkKind::RelationNeighborhood,
+        path: &bundle.repo_relative_path,
+        entity_id: Some(&relation.head_id),
+        source_span: Some(relation.source_span.clone()),
+        source_role: "source_navigation",
+        evidence_role: "source_navigation",
+        proof_status: "candidate_only",
+        graph_proof: false,
+        claimable_for_graph: false,
+        text,
+        language: bundle.language.clone(),
+        file_kind: bundle.language.clone(),
+        lifecycle_binding: Some(candidate_spool_lifecycle_binding()),
+    });
+    let modified_unix_nanos = bundle
+        .extraction
+        .file
+        .metadata
+        .get("modified_unix_nanos")
+        .and_then(Value::as_str);
+    candidate_spool_chunk_value(
+        chunk,
+        &bundle.file_hash,
+        bundle.extraction.file.size_bytes,
+        modified_unix_nanos,
+        "partial_spool",
+        "parser_local_import_export_evidence",
+        selection_bucket,
+        selection_reason,
+    )
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct VectorChunkKindCounts {
+    total: usize,
+    text_evidence: usize,
+    graph_entity: usize,
+    file_path_title: usize,
+    metadata: usize,
+}
+
+impl VectorChunkKindCounts {
+    fn from_chunks<'a>(chunks: impl IntoIterator<Item = &'a VectorEmbeddingChunk>) -> Self {
+        let mut counts = Self::default();
+        for chunk in chunks {
+            counts.total += 1;
+            match chunk.source_kind {
+                VectorEmbeddingChunkSourceKind::GraphEntity => counts.graph_entity += 1,
+                VectorEmbeddingChunkSourceKind::TextEvidence => counts.text_evidence += 1,
+                VectorEmbeddingChunkSourceKind::Metadata => counts.metadata += 1,
+            }
+            if chunk.chunk_kind == VectorEmbeddingChunkKind::FilePathTitle {
+                counts.file_path_title += 1;
+            }
+        }
+        counts
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RankedVectorChunk {
+    chunk: VectorEmbeddingChunk,
+    score: f64,
+    bucket: String,
+    reason: String,
+}
+
+#[derive(Debug, Clone)]
+struct VectorChunkSelectionResult {
+    selected: Vec<VectorEmbeddingChunk>,
+    omitted_by_cap: usize,
+    omitted_by_bucket_limit: usize,
+    omitted_low_signal: usize,
+    per_file_cap: usize,
+    per_directory_soft_cap: usize,
+}
+
+fn select_vector_chunks_for_persistence(
+    chunks: Vec<VectorEmbeddingChunk>,
+    max_chunks: usize,
+) -> VectorChunkSelectionResult {
+    if max_chunks == 0 {
+        return VectorChunkSelectionResult {
+            selected: Vec::new(),
+            omitted_by_cap: chunks.len(),
+            omitted_by_bucket_limit: 0,
+            omitted_low_signal: 0,
+            per_file_cap: 0,
+            per_directory_soft_cap: 0,
+        };
+    }
+
+    let mut deduped = BTreeMap::new();
+    for chunk in chunks {
+        deduped.entry(chunk.chunk_id.clone()).or_insert(chunk);
+    }
+
+    let mut omitted_low_signal = 0usize;
+    let mut ranked = Vec::new();
+    for chunk in deduped.into_values() {
+        if vector_chunk_is_low_signal(&chunk) {
+            omitted_low_signal += 1;
+            continue;
+        }
+        let score = vector_chunk_selection_score(&chunk);
+        ranked.push(RankedVectorChunk {
+            bucket: vector_chunk_selection_bucket(&chunk),
+            reason: vector_chunk_selection_reason(&chunk, score),
+            chunk,
+            score,
+        });
+    }
+    ranked.sort_by(vector_ranked_chunk_cmp);
+
+    let top_dirs = ranked
+        .iter()
+        .map(|ranked| vector_chunk_top_level_dir(&ranked.chunk.path))
+        .collect::<BTreeSet<_>>();
+    let per_file_cap = max_chunks.min(24).max(1);
+    let per_directory_soft_cap = if top_dirs.is_empty() {
+        max_chunks
+    } else {
+        ((max_chunks + top_dirs.len() - 1) / top_dirs.len())
+            .saturating_mul(2)
+            .min(max_chunks)
+            .max(1)
+    };
+
+    let mut selected_ids = BTreeSet::new();
+    let mut selected = Vec::new();
+    let mut dir_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut file_counts: BTreeMap<String, usize> = BTreeMap::new();
+
+    for source_kind in [
+        VectorEmbeddingChunkSourceKind::GraphEntity,
+        VectorEmbeddingChunkSourceKind::TextEvidence,
+        VectorEmbeddingChunkSourceKind::Metadata,
+    ] {
+        if selected.len() >= max_chunks {
+            break;
+        }
+        if let Some(index) = ranked.iter().position(|candidate| {
+            candidate.chunk.source_kind == source_kind
+                && !selected_ids.contains(&candidate.chunk.chunk_id)
+        }) {
+            select_ranked_vector_chunk(
+                &ranked[index],
+                "source_kind_minimum",
+                &mut selected,
+                &mut selected_ids,
+                &mut dir_counts,
+                &mut file_counts,
+            );
+        }
+    }
+
+    let mut seen_dirs = BTreeSet::new();
+    for candidate in &ranked {
+        if selected.len() >= max_chunks || seen_dirs.len() >= max_chunks {
+            break;
+        }
+        let dir = vector_chunk_top_level_dir(&candidate.chunk.path);
+        if seen_dirs.insert(dir) && !selected_ids.contains(&candidate.chunk.chunk_id) {
+            select_ranked_vector_chunk(
+                candidate,
+                "top_level_dir_diversity",
+                &mut selected,
+                &mut selected_ids,
+                &mut dir_counts,
+                &mut file_counts,
+            );
+        }
+    }
+
+    let mut seen_file_kinds = BTreeSet::new();
+    for candidate in &ranked {
+        if selected.len() >= max_chunks || seen_file_kinds.len() >= max_chunks {
+            break;
+        }
+        let file_kind = vector_chunk_file_kind_label(&candidate.chunk);
+        if seen_file_kinds.insert(file_kind) && !selected_ids.contains(&candidate.chunk.chunk_id) {
+            select_ranked_vector_chunk(
+                candidate,
+                "file_kind_diversity",
+                &mut selected,
+                &mut selected_ids,
+                &mut dir_counts,
+                &mut file_counts,
+            );
+        }
+    }
+
+    let mut omitted_by_bucket_limit = 0usize;
+    for candidate in &ranked {
+        if selected.len() >= max_chunks {
+            break;
+        }
+        if selected_ids.contains(&candidate.chunk.chunk_id) {
+            continue;
+        }
+        let dir = vector_chunk_top_level_dir(&candidate.chunk.path);
+        let file = candidate.chunk.path.clone();
+        if dir_counts.get(&dir).copied().unwrap_or(0) >= per_directory_soft_cap
+            || file_counts.get(&file).copied().unwrap_or(0) >= per_file_cap
+        {
+            omitted_by_bucket_limit += 1;
+            continue;
+        }
+        select_ranked_vector_chunk(
+            candidate,
+            "diversity_rank_fill",
+            &mut selected,
+            &mut selected_ids,
+            &mut dir_counts,
+            &mut file_counts,
+        );
+    }
+
+    for candidate in &ranked {
+        if selected.len() >= max_chunks {
+            break;
+        }
+        if selected_ids.contains(&candidate.chunk.chunk_id) {
+            continue;
+        }
+        select_ranked_vector_chunk(
+            candidate,
+            "relaxed_cap_fill",
+            &mut selected,
+            &mut selected_ids,
+            &mut dir_counts,
+            &mut file_counts,
+        );
+    }
+
+    selected.sort_by(|left, right| left.chunk_id.cmp(&right.chunk_id));
+    let omitted_by_cap = ranked.len().saturating_sub(selected.len());
+    VectorChunkSelectionResult {
+        selected,
+        omitted_by_cap,
+        omitted_by_bucket_limit,
+        omitted_low_signal,
+        per_file_cap,
+        per_directory_soft_cap,
+    }
+}
+
+fn select_ranked_vector_chunk(
+    ranked: &RankedVectorChunk,
+    cap_stage: &str,
+    selected: &mut Vec<VectorEmbeddingChunk>,
+    selected_ids: &mut BTreeSet<String>,
+    dir_counts: &mut BTreeMap<String, usize>,
+    file_counts: &mut BTreeMap<String, usize>,
+) {
+    if !selected_ids.insert(ranked.chunk.chunk_id.clone()) {
+        return;
+    }
+    let mut chunk = ranked.chunk.clone();
+    let dir = vector_chunk_top_level_dir(&chunk.path);
+    chunk.selection_score = Some(ranked.score);
+    chunk.selection_bucket = Some(ranked.bucket.clone());
+    chunk.selection_reason = Some(ranked.reason.clone());
+    chunk.top_level_dir = Some(dir.clone());
+    chunk.cap_stage = Some(cap_stage.to_string());
+    *dir_counts.entry(dir).or_default() += 1;
+    *file_counts.entry(chunk.path.clone()).or_default() += 1;
+    selected.push(chunk);
+}
+
+fn vector_ranked_chunk_cmp(
+    left: &RankedVectorChunk,
+    right: &RankedVectorChunk,
+) -> std::cmp::Ordering {
+    right
+        .score
+        .total_cmp(&left.score)
+        .then_with(|| left.chunk.chunk_id.cmp(&right.chunk.chunk_id))
+}
+
+fn vector_chunk_is_low_signal(chunk: &VectorEmbeddingChunk) -> bool {
+    let text = chunk.text.trim();
+    text.len() < 4 || !text.chars().any(|ch| ch.is_ascii_alphanumeric())
+}
+
+fn vector_chunk_selection_score(chunk: &VectorEmbeddingChunk) -> f64 {
+    let mut score = 0.0;
+    score += match chunk.source_kind {
+        VectorEmbeddingChunkSourceKind::GraphEntity => 320.0,
+        VectorEmbeddingChunkSourceKind::TextEvidence => 280.0,
+        VectorEmbeddingChunkSourceKind::Metadata => 220.0,
+    };
+    score += match chunk.chunk_kind {
+        VectorEmbeddingChunkKind::Function | VectorEmbeddingChunkKind::Method => 90.0,
+        VectorEmbeddingChunkKind::Type | VectorEmbeddingChunkKind::ModuleFile => 75.0,
+        VectorEmbeddingChunkKind::Signature => 70.0,
+        VectorEmbeddingChunkKind::FilePathTitle => 65.0,
+        VectorEmbeddingChunkKind::SourceSnippet | VectorEmbeddingChunkKind::Snippet => 55.0,
+        VectorEmbeddingChunkKind::DocComment => 45.0,
+        VectorEmbeddingChunkKind::RelationNeighborhood => 40.0,
+        VectorEmbeddingChunkKind::QName | VectorEmbeddingChunkKind::SourceRole => 30.0,
+    };
+    if chunk.source_span.is_some() {
+        score += 35.0;
+    }
+    score += vector_file_kind_priority(chunk);
+    score += vector_path_priority(&chunk.path);
+    let token_count = chunk.token_count;
+    if (2..=80).contains(&token_count) {
+        score += 20.0;
+    }
+    if chunk.byte_count <= VECTOR_EMBEDDING_CHUNK_MAX_TEXT_BYTES / 2 {
+        score += 10.0;
+    }
+    score
+}
+
+fn vector_chunk_selection_bucket(chunk: &VectorEmbeddingChunk) -> String {
+    format!(
+        "{}:{}:{}",
+        chunk.source_kind.as_str(),
+        vector_chunk_top_level_dir(&chunk.path),
+        vector_chunk_file_kind_label(chunk)
+    )
+}
+
+fn vector_chunk_selection_reason(chunk: &VectorEmbeddingChunk, score: f64) -> String {
+    let mut reasons = Vec::new();
+    reasons.push(format!("source_kind={}", chunk.source_kind.as_str()));
+    reasons.push(format!("chunk_kind={}", chunk.chunk_kind.as_str()));
+    reasons.push(format!(
+        "top_level_dir={}",
+        vector_chunk_top_level_dir(&chunk.path)
+    ));
+    reasons.push(format!("file_kind={}", vector_chunk_file_kind_label(chunk)));
+    if chunk.source_span.is_some() {
+        reasons.push("source_span".to_string());
+    }
+    if vector_path_priority(&chunk.path) > 0.0 {
+        reasons.push("path_role_hint".to_string());
+    }
+    reasons.push(format!("score={score:.3}"));
+    reasons.join("; ")
+}
+
+fn vector_file_kind_priority(chunk: &VectorEmbeddingChunk) -> f64 {
+    let path = chunk.path.to_ascii_lowercase();
+    let kind = vector_chunk_file_kind_label(chunk);
+    match kind.as_str() {
+        "source" | "rust" | "typescript" | "javascript" | "python" | "go" | "c" | "cpp" => 55.0,
+        "makefile" | "mk" | "buildroot_package_metadata" => 55.0,
+        "kconfig" | "config" => 55.0,
+        "shell" | "support_script" | "no_extension_text" => 50.0,
+        "adoc" | "markdown" | "md" => 42.0,
+        "test" => 35.0,
+        _ if path.ends_with(".mk") => 55.0,
+        _ if path.ends_with("config.in") || path.ends_with("kconfig") => 55.0,
+        _ if path.ends_with(".adoc") || path.ends_with(".md") => 42.0,
+        _ if path.contains("/support/") || path.starts_with("support/") => 50.0,
+        _ => 20.0,
+    }
+}
+
+fn vector_path_priority(path: &str) -> f64 {
+    let path = normalize_graph_path(path).to_ascii_lowercase();
+    let mut score = 0.0;
+    if path.starts_with("package/") {
+        score += 35.0;
+    }
+    if path.starts_with("support/") {
+        score += 32.0;
+    }
+    if path.starts_with("docs/") {
+        score += 24.0;
+    }
+    if path.starts_with("configs/") {
+        score += 22.0;
+    }
+    if path.starts_with("src/") || path.starts_with("crates/") {
+        score += 28.0;
+    }
+    for needle in [
+        "config.in",
+        "kconfig",
+        ".mk",
+        "pkg-generic",
+        "pkg-download",
+        "download",
+        "wrapper",
+        "package",
+    ] {
+        if path.contains(needle) {
+            score += 12.0;
+        }
+    }
+    score
+}
+
+fn vector_chunk_top_level_dir(path: &str) -> String {
+    let normalized = normalize_graph_path(path);
+    if !normalized.contains('/') {
+        return ".".to_string();
+    }
+    normalized
+        .split('/')
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or(".")
+        .to_string()
+}
+
+fn vector_chunk_file_kind_label(chunk: &VectorEmbeddingChunk) -> String {
+    if let Some(kind) = chunk.file_kind.as_deref().filter(|kind| !kind.is_empty()) {
+        return kind.to_ascii_lowercase();
+    }
+    let path = chunk.path.to_ascii_lowercase();
+    if path.ends_with(".mk") {
+        "mk".to_string()
+    } else if path.ends_with("config.in") || path.ends_with("kconfig") {
+        "kconfig".to_string()
+    } else if path.ends_with(".adoc") {
+        "adoc".to_string()
+    } else if path.ends_with(".md") {
+        "markdown".to_string()
+    } else if path.ends_with(".rs")
+        || path.ends_with(".ts")
+        || path.ends_with(".tsx")
+        || path.ends_with(".js")
+        || path.ends_with(".py")
+        || path.ends_with(".go")
+        || path.ends_with(".c")
+        || path.ends_with(".cpp")
+        || path.ends_with(".h")
+    {
+        "source".to_string()
+    } else if path.starts_with("support/") && !path.rsplit('/').next().unwrap_or("").contains('.') {
+        "no_extension_text".to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+fn count_chunks_by_top_level_dir<'a>(
+    chunks: impl IntoIterator<Item = &'a VectorEmbeddingChunk>,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for chunk in chunks {
+        *counts
+            .entry(vector_chunk_top_level_dir(&chunk.path))
+            .or_default() += 1;
+    }
+    counts
+}
+
+fn count_chunks_by_file_kind<'a>(
+    chunks: impl IntoIterator<Item = &'a VectorEmbeddingChunk>,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for chunk in chunks {
+        *counts
+            .entry(vector_chunk_file_kind_label(chunk))
+            .or_default() += 1;
+    }
+    counts
+}
+
+fn count_chunks_by_source_kind<'a>(
+    chunks: impl IntoIterator<Item = &'a VectorEmbeddingChunk>,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for chunk in chunks {
+        *counts
+            .entry(chunk.source_kind.as_str().to_string())
+            .or_default() += 1;
+    }
+    counts
 }
 
 fn vector_chunk_kind_for_entity(kind: EntityKind) -> VectorEmbeddingChunkKind {
@@ -11008,9 +17483,7 @@ fn vector_chunk_token_count(text: &str) -> usize {
 }
 
 pub fn default_db_path(repo_root: &Path) -> PathBuf {
-    std::env::var_os("CODEGRAPH_DB_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| repo_root.join(".codegraph").join("codegraph.sqlite"))
+    repo_root.join(".codegraph").join("codegraph.sqlite")
 }
 
 fn normalize_db_path(repo_root: &Path, db_path: &Path) -> PathBuf {
@@ -11028,22 +17501,61 @@ fn resolve_repo_root_for_index(repo_path: &Path) -> Result<PathBuf, IndexError> 
     fs::canonicalize(repo_path).map_err(IndexError::from)
 }
 
-fn persisted_entity_ids(entities: &[Entity]) -> BTreeSet<String> {
+fn persisted_entity_ids(entities: &[Entity], storage_mode: StorageMode) -> BTreeSet<String> {
     entities
         .iter()
-        .filter(|entity| should_persist_entity(entity))
+        .filter(|entity| should_persist_entity(entity, storage_mode))
         .map(|entity| entity.id.clone())
         .collect()
 }
 
-fn should_persist_entity(entity: &Entity) -> bool {
-    !should_route_static_reference_entity(entity) && !should_route_unresolved_entity(entity)
+fn should_persist_entity(entity: &Entity, storage_mode: StorageMode) -> bool {
+    !should_route_static_reference_entity(entity)
+        && !should_route_unresolved_entity(entity)
+        && !should_route_local_micro_entity_to_non_proof_storage(entity, storage_mode)
+}
+
+fn should_route_local_micro_entity_to_non_proof_storage(
+    entity: &Entity,
+    storage_mode: StorageMode,
+) -> bool {
+    matches!(storage_mode, StorageMode::Proof)
+        && matches!(entity.kind, EntityKind::Expression | EntityKind::CallSite)
+}
+
+fn should_generate_vector_chunks_for_entity(entity: &Entity) -> bool {
+    !matches!(
+        entity.kind,
+        EntityKind::Expression
+            | EntityKind::Assignment
+            | EntityKind::CallSite
+            | EntityKind::Parameter
+            | EntityKind::LocalVariable
+            | EntityKind::ReturnSite
+            | EntityKind::Import
+            | EntityKind::Export
+            | EntityKind::Assertion
+    )
 }
 
 fn should_persist_edge(edge: &Edge, persisted_entity_ids: &BTreeSet<String>) -> bool {
-    persisted_entity_ids.contains(&edge.head_id)
-        && persisted_entity_ids.contains(&edge.tail_id)
-        && !should_route_heuristic_edge(edge)
+    if should_route_heuristic_edge(edge) {
+        return false;
+    }
+    if is_compact_callsite_relation(edge.relation) {
+        return true;
+    }
+    persisted_entity_ids.contains(&edge.head_id) && persisted_entity_ids.contains(&edge.tail_id)
+}
+
+fn is_compact_callsite_relation(relation: RelationKind) -> bool {
+    matches!(
+        relation,
+        RelationKind::Callee
+            | RelationKind::Argument0
+            | RelationKind::Argument1
+            | RelationKind::ArgumentN
+    )
 }
 
 fn should_store_edge_row(edge: &Edge) -> bool {
@@ -11169,7 +17681,7 @@ mod tests {
     use codegraph_query::{
         RetrievalFunnel, RetrievalFunnelConfig, RetrievalFunnelRequest, VectorCandidateBranchStatus,
     };
-    use codegraph_store::TextSearchKind;
+    use codegraph_store::{EntityFeatureRow, RoutingPacketHandleRow, TextSearchKind};
     use codegraph_vector::DeterministicTestEmbeddingProvider;
 
     use super::*;
@@ -11187,12 +17699,1364 @@ mod tests {
         root
     }
 
+    #[test]
+    fn batch_progress_event_uses_processed_not_durable_completed_language() {
+        let persisted = PersistedBatchSummary {
+            files: 1,
+            entities: 2,
+            edges: 3,
+            duplicate_edges_upserted: 0,
+        };
+        let event =
+            index_batch_processed_progress_event(0, &persisted, 0, 0, 5, 3, 2, 1, 1, 1, 1, 3);
+
+        assert_eq!(event["event"].as_str(), Some("index_batch_processed"));
+        assert_eq!(
+            event["batch_progress_status"].as_str(),
+            Some("processed_not_durably_committed")
+        );
+        assert_eq!(
+            event["visible_db_mutation_claim"].as_str(),
+            Some("not_claimed_until_commit_or_publish")
+        );
+        assert_eq!(event["edges_staged"].as_u64(), Some(3));
+        assert_eq!(event["edges_inserted"].as_u64(), Some(3));
+    }
+
+    #[test]
+    fn graph_output_budget_hits_label_degraded_file_claimability() {
+        let entities = (0..6)
+            .map(|index| {
+                test_entity(
+                    "src/fanout.ts",
+                    EntityKind::Function,
+                    &format!("target{index}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut edges = Vec::new();
+        for index in 1..6 {
+            edges.push(graph_budget_test_edge(
+                &entities[0].id,
+                RelationKind::Calls,
+                &entities[index].id,
+                index + 1,
+            ));
+        }
+        let mut extraction = BasicExtraction {
+            file: graph_budget_file_record("src/fanout.ts"),
+            entities,
+            edges,
+        };
+        let budgets = GraphOutputBudgets {
+            max_local_facts_per_file: 4,
+            max_relation_fanout_per_file: 2,
+            max_derived_edges_per_file: 100,
+            max_source_spans_per_file: 100,
+            max_reducer_edges_per_stage: 100,
+        };
+
+        let hits =
+            apply_graph_output_budgets_to_extraction("src/fanout.ts", &mut extraction, &budgets);
+
+        assert!(
+            hits.iter()
+                .any(|hit| hit.kind == "relation_fanout_per_file" && hit.omitted == 3),
+            "high fanout must be reported, not silently dropped: {hits:#?}"
+        );
+        assert!(
+            hits.iter()
+                .any(|hit| hit.kind == "local_facts_per_file" && hit.after <= 4),
+            "local fact cap must be reported, not silently dropped: {hits:#?}"
+        );
+        assert!(
+            extraction.entities.len() + extraction.edges.len() <= 4,
+            "local graph facts should be capped before persistence"
+        );
+        assert_eq!(
+            extraction.file.metadata["graph_output_budget_hit"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            extraction.file.metadata["graph_output_claimability"].as_str(),
+            Some("degraded_file_nonclaimable_for_omitted_facts")
+        );
+        assert_eq!(
+            extraction.file.metadata["graph_relation_claims"].as_str(),
+            Some("partial")
+        );
+    }
+
+    #[test]
+    fn reducer_edge_budget_truncates_and_reports_nonclaimable_omissions() {
+        let mut plan = GlobalFactReductionPlan::default();
+        for index in 0..5 {
+            plan.push_edge(graph_budget_test_edge(
+                "src/fanout.ts:head",
+                RelationKind::Calls,
+                &format!("src/fanout.ts:tail{index}"),
+                index + 1,
+            ));
+        }
+
+        let hit = plan
+            .apply_reducer_edge_budget("reduce_test_edges", 2)
+            .expect("reducer budget hit");
+
+        assert_eq!(plan.edges.len(), 2);
+        assert_eq!(hit.kind, "reducer_edges_per_stage");
+        assert_eq!(hit.omitted, 3);
+        assert_eq!(
+            hit.claimability_label,
+            "degraded_file_nonclaimable_for_omitted_facts"
+        );
+    }
+
+    #[test]
+    fn proof_storage_routes_micro_entities_out_of_main_rows() {
+        let expression = test_entity("src/main.py", EntityKind::Expression, "expr");
+        let callsite = test_entity("src/main.py", EntityKind::CallSite, "call");
+        let function = test_entity("src/main.py", EntityKind::Function, "run");
+
+        assert!(!should_persist_entity(&expression, StorageMode::Proof));
+        assert!(!should_persist_entity(&callsite, StorageMode::Proof));
+        assert!(should_persist_entity(&function, StorageMode::Proof));
+
+        assert!(should_persist_entity(&expression, StorageMode::Debug));
+        assert!(should_persist_entity(&callsite, StorageMode::Audit));
+    }
+
+    #[test]
+    fn proof_storage_keeps_compact_callsite_edges_without_callsite_entity_rows() {
+        let callsite = test_entity("src/main.py", EntityKind::CallSite, "call");
+        let callee = test_entity("src/main.py", EntityKind::Function, "run");
+        let mut persisted_entity_ids = BTreeSet::new();
+        persisted_entity_ids.insert(callee.id.clone());
+
+        let edge = Edge {
+            id: "edge:callsite:callee".to_string(),
+            head_id: callsite.id,
+            relation: RelationKind::Callee,
+            tail_id: callee.id,
+            source_span: SourceSpan::with_columns("src/main.py", 1, 1, 1, 10),
+            repo_commit: None,
+            file_hash: Some("hash".to_string()),
+            extractor: "test".to_string(),
+            confidence: 1.0,
+            exactness: Exactness::ParserVerified,
+            edge_class: EdgeClass::ReifiedCallsite,
+            context: EdgeContext::Production,
+            derived: false,
+            provenance_edges: Vec::new(),
+            metadata: Metadata::default(),
+        };
+
+        assert!(should_persist_edge(&edge, &persisted_entity_ids));
+    }
+
+    #[test]
+    fn vector_chunk_generation_skips_low_level_local_entities() {
+        for kind in [
+            EntityKind::Expression,
+            EntityKind::Assignment,
+            EntityKind::CallSite,
+            EntityKind::Parameter,
+            EntityKind::LocalVariable,
+            EntityKind::ReturnSite,
+            EntityKind::Import,
+            EntityKind::Export,
+            EntityKind::Assertion,
+        ] {
+            assert!(
+                !should_generate_vector_chunks_for_entity(&test_entity(
+                    "src/main.py",
+                    kind,
+                    "local"
+                )),
+                "{kind} should not produce release vector chunks"
+            );
+        }
+
+        assert!(should_generate_vector_chunks_for_entity(&test_entity(
+            "src/main.py",
+            EntityKind::Function,
+            "run"
+        )));
+        assert!(should_generate_vector_chunks_for_entity(&test_entity(
+            "src/main.py",
+            EntityKind::Class,
+            "Runner"
+        )));
+    }
+
     fn write_test_file(root: &Path, relative: &str, source: &str) {
         let path = root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).expect("create parent");
         }
         fs::write(path, source).expect("write test file");
+    }
+
+    fn read_jsonl_values(path: &Path) -> Vec<Value> {
+        fs::read_to_string(path)
+            .expect("read jsonl")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).expect("jsonl value"))
+            .collect()
+    }
+
+    fn candidate_spool_fixture_repo(name: &str) -> PathBuf {
+        let repo = temp_repo(name);
+        write_test_file(
+            &repo,
+            "src/lib.rs",
+            r#"
+pub fn spool_target(value: i32) -> i32 {
+    value + 1
+}
+
+pub use spool_target as exported_spool_target;
+"#,
+        );
+        write_test_file(
+            &repo,
+            "docs/README.md",
+            "Stage 0 text evidence fixture for spool_target source navigation.\n",
+        );
+        repo
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn candidate_spool_repo_binding_accepts_windows_short_home_alias() {
+        assert!(candidate_spool_paths_equivalent(
+            r"\\?\C:\Users\runneradmin\AppData\Local\Temp\codegraph-cli-unit-1",
+            r"C:\Users\RUNNER~1\AppData\Local\Temp\codegraph-cli-unit-1"
+        ));
+        assert!(!candidate_spool_paths_equivalent(
+            r"\\?\C:\Users\runneradmin\AppData\Local\Temp\codegraph-cli-unit-1",
+            r"C:\Users\RUNNER~1\AppData\Local\Temp\codegraph-cli-unit-2"
+        ));
+    }
+
+    #[test]
+    fn candidate_spool_failpoint_writes_partial_before_final_db_publish() {
+        let repo = candidate_spool_fixture_repo("candidate-spool-partial");
+        let db = repo.join("artifacts").join("codegraph.sqlite");
+        let spool = repo.join("artifacts").join("candidate-spool.jsonl");
+        let mut options = fresh_rebuild_options();
+        options.candidate_spool_path = Some(spool.clone());
+        let result =
+            with_write_path_chaos_failpoint("candidate_spool_after_batch_before_db_write", || {
+                index_repo_to_db_with_options(&repo, &db, options)
+            });
+        assert!(result
+            .expect_err("failpoint should abort before final DB publish")
+            .to_string()
+            .contains("candidate_spool_after_batch_before_db_write"));
+        assert!(
+            !db.exists(),
+            "atomic cold failure must not publish the final DB"
+        );
+        let values = read_jsonl_values(&spool);
+        let chunks = values
+            .iter()
+            .filter(|value| value.get("chunk_id").is_some())
+            .collect::<Vec<_>>();
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.get("chunk_kind").and_then(Value::as_str)
+                    == Some("file_path_title")),
+            "partial spool should contain path/title candidates"
+        );
+        assert!(
+            chunks.iter().any(|chunk| {
+                chunk.get("selection_bucket").and_then(Value::as_str) == Some("symbol_signature")
+                    && chunk
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .contains("spool_target")
+            }),
+            "partial spool should contain parser-local symbol signature candidates"
+        );
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.get("graph_proof").and_then(Value::as_bool) == Some(false)),
+            "spool chunks must never be graph proof"
+        );
+    }
+
+    #[test]
+    fn candidate_spool_final_artifact_is_candidate_only_and_superseded_by_db() {
+        let repo = candidate_spool_fixture_repo("candidate-spool-final");
+        let db = repo.join("artifacts").join("codegraph.sqlite");
+        let spool = repo.join("artifacts").join("candidate-spool.jsonl");
+        let mut options = fresh_rebuild_options();
+        options.candidate_spool_path = Some(spool.clone());
+        let summary = index_repo_to_db_with_options(&repo, &db, options).expect("index fixture");
+        let spool_summary = summary.candidate_spool.expect("candidate spool summary");
+        assert_eq!(
+            spool_summary.candidate_spool_status,
+            "superseded_by_graph_db"
+        );
+        assert!(!spool_summary.incomplete);
+        assert!(spool_summary.db_passport_hash.is_some());
+        let values = read_jsonl_values(&spool);
+        let metadata = values[0].get("metadata").expect("manifest metadata");
+        assert_eq!(
+            metadata
+                .get("candidate_spool_status")
+                .and_then(Value::as_str),
+            Some("superseded_by_graph_db")
+        );
+        assert_eq!(
+            metadata.get("candidate_only").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            metadata.get("graph_proof").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            metadata
+                .get("creates_graph_relations")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        let chunks = values
+            .iter()
+            .filter(|value| value.get("chunk_id").is_some())
+            .collect::<Vec<_>>();
+        assert!(chunks.iter().any(|chunk| {
+            chunk.get("source_kind").and_then(Value::as_str) == Some("text_evidence")
+        }));
+        assert!(chunks.iter().all(|chunk| {
+            chunk.get("proof_status").and_then(Value::as_str) == Some("candidate_only")
+                || chunk.get("proof_status").and_then(Value::as_str) == Some("not_graph_proof")
+        }));
+        assert!(chunks.iter().all(|chunk| {
+            chunk.get("claimable_for_graph").and_then(Value::as_bool) == Some(false)
+        }));
+    }
+
+    #[test]
+    fn candidate_spool_query_index_is_written_and_queryable() {
+        let repo = candidate_spool_fixture_repo("candidate-spool-query-index");
+        let db = repo.join("artifacts").join("codegraph.sqlite");
+        let spool = repo.join("artifacts").join("candidate-spool.jsonl");
+        let mut options = fresh_rebuild_options();
+        options.candidate_spool_path = Some(spool.clone());
+        let summary = index_repo_to_db_with_options(&repo, &db, options).expect("index with spool");
+        let spool_summary = summary.candidate_spool.expect("candidate spool summary");
+        let index_path = candidate_spool_query_index_path(&spool);
+        assert!(index_path.exists(), "query index should be written");
+        assert_eq!(spool_summary.query_index_status, "ready");
+        assert_eq!(spool_summary.query_index_kind, "sqlite");
+        assert!(spool_summary.query_index_bytes > 0);
+        assert_eq!(
+            spool_summary.query_index_record_count,
+            spool_summary.persisted_total_chunks
+        );
+
+        let status =
+            candidate_spool_index_status_for_repo(&repo, &spool, false).expect("index status");
+        assert_eq!(status.query_index_status, "ready");
+        assert_eq!(
+            status.query_index_record_count,
+            spool_summary.persisted_total_chunks
+        );
+
+        let file_hits =
+            query_candidate_spool_index_for_repo(&repo, &spool, "files", "src/lib.rs", 8, false)
+                .expect("file query");
+        assert!(
+            file_hits
+                .chunks
+                .iter()
+                .any(|chunk| chunk.get("path").and_then(Value::as_str) == Some("src/lib.rs")),
+            "file/path lookup should use indexed records"
+        );
+        let symbol_hits = query_candidate_spool_index_for_repo(
+            &repo,
+            &spool,
+            "symbols",
+            "spool_target",
+            8,
+            false,
+        )
+        .expect("symbol query");
+        assert!(
+            symbol_hits.chunks.iter().any(|chunk| {
+                chunk
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .contains("spool_target")
+            }),
+            "symbol lookup should use indexed terms"
+        );
+        let text_hits = query_candidate_spool_index_for_repo(
+            &repo,
+            &spool,
+            "text",
+            "Stage 0 text evidence",
+            8,
+            false,
+        )
+        .expect("text query");
+        assert!(
+            text_hits
+                .chunks
+                .iter()
+                .all(|chunk| chunk.get("graph_proof").and_then(Value::as_bool) == Some(false)),
+            "indexed text candidates remain non-proof"
+        );
+    }
+
+    #[test]
+    fn candidate_spool_query_index_lifecycle_detects_changed_deleted_and_renamed_sources() {
+        let repo = candidate_spool_fixture_repo("candidate-spool-lifecycle");
+        let db = repo.join("artifacts").join("codegraph.sqlite");
+        let spool = repo.join("artifacts").join("candidate-spool.jsonl");
+        let mut options = fresh_rebuild_options();
+        options.candidate_spool_path = Some(spool.clone());
+        index_repo_to_db_with_options(&repo, &db, options.clone()).expect("index fixture");
+
+        let ready =
+            candidate_spool_index_status_for_repo(&repo, &spool, false).expect("ready spool index");
+        assert_eq!(ready.query_index_status, "ready");
+        assert!(
+            ready.query_index_source_binding_count > 0,
+            "query index should keep bounded source bindings for lifecycle checks"
+        );
+
+        write_test_file(&repo, "src/lib.rs", "pub fn changed_spool_target() {}\n");
+        let changed = candidate_spool_index_status_for_repo(&repo, &spool, true)
+            .expect("diagnostic stale status");
+        assert!(changed.stale);
+        assert_eq!(changed.query_index_status, "stale");
+        assert!(changed
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("changed_file"));
+        let changed_error = candidate_spool_index_status_for_repo(&repo, &spool, false)
+            .expect_err("normal status should reject stale source binding");
+        assert!(changed_error.to_string().contains("candidate_spool_stale"));
+
+        fs::remove_file(repo.join("src").join("lib.rs")).expect("delete source");
+        let deleted = candidate_spool_index_status_for_repo(&repo, &spool, true)
+            .expect("diagnostic deleted status");
+        assert!(deleted
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("deleted_file"));
+
+        write_test_file(
+            &repo,
+            "src/main.rs",
+            r#"
+pub fn spool_target(value: i32) -> i32 {
+    value + 2
+}
+"#,
+        );
+        let mut reindex_options = fresh_rebuild_options();
+        reindex_options.candidate_spool_path = Some(spool.clone());
+        index_repo_to_db_with_options(&repo, &db, reindex_options).expect("reindex renamed file");
+        let old_path_hits =
+            query_candidate_spool_index_for_repo(&repo, &spool, "files", "src/lib.rs", 8, false)
+                .expect("query old path after reindex");
+        assert!(
+            old_path_hits
+                .chunks
+                .iter()
+                .all(|chunk| chunk.get("path").and_then(Value::as_str) != Some("src/lib.rs")),
+            "old renamed path must not remain in regenerated spool"
+        );
+        let new_path_hits =
+            query_candidate_spool_index_for_repo(&repo, &spool, "files", "src/main.rs", 8, false)
+                .expect("query new path after reindex");
+        assert!(
+            !new_path_hits.chunks.is_empty(),
+            "new renamed path should be present after regenerated spool"
+        );
+        assert!(new_path_hits
+            .chunks
+            .iter()
+            .all(|chunk| chunk.get("graph_proof").and_then(Value::as_bool) == Some(false)));
+    }
+
+    #[test]
+    fn candidate_spool_query_index_open_failure_is_not_corrupt_without_corruption_proof() {
+        let repo = candidate_spool_fixture_repo("candidate-spool-query-index-access");
+        let db = repo.join("artifacts").join("codegraph.sqlite");
+        let spool = repo.join("artifacts").join("candidate-spool.jsonl");
+        let mut options = fresh_rebuild_options();
+        options.candidate_spool_path = Some(spool.clone());
+        index_repo_to_db_with_options(&repo, &db, options).expect("index with spool");
+
+        let index_path = candidate_spool_query_index_path(&spool);
+        fs::remove_file(&index_path).expect("remove query index");
+        fs::create_dir(&index_path).expect("replace query index with directory");
+
+        let status = candidate_spool_index_status_for_repo(&repo, &spool, true)
+            .expect("diagnostic sidecar status");
+        assert_ne!(status.query_index_status, "corrupt");
+        assert!(matches!(
+            status.query_index_status.as_str(),
+            "filesystem_inaccessible" | "permission_denied" | "sidecar_unavailable"
+        ));
+        assert_eq!(status.stale, true);
+        assert!(status
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("candidate_spool_query_index_open_failed"));
+    }
+
+    #[test]
+    fn candidate_spool_query_index_supports_role_and_directory_terms() {
+        let repo = candidate_spool_fixture_repo("candidate-spool-query-index-roles");
+        let db = repo.join("artifacts").join("codegraph.sqlite");
+        let spool = repo.join("artifacts").join("candidate-spool.jsonl");
+        let mut options = fresh_rebuild_options();
+        options.candidate_spool_path = Some(spool.clone());
+        index_repo_to_db_with_options(&repo, &db, options).expect("index with spool");
+
+        let role_hits = query_candidate_spool_index_for_repo(
+            &repo,
+            &spool,
+            "all",
+            "symbol_signature",
+            16,
+            false,
+        )
+        .expect("role query");
+        assert!(
+            role_hits.chunks.iter().any(|chunk| {
+                chunk.get("candidate_kind").and_then(Value::as_str) == Some("symbol_signature")
+            }),
+            "candidate_kind lookup should be indexed"
+        );
+
+        let dir_hits =
+            query_candidate_spool_index_for_repo(&repo, &spool, "all", "docs", 16, false)
+                .expect("directory query");
+        assert!(
+            dir_hits.chunks.iter().any(|chunk| {
+                chunk.get("top_level_dir").and_then(Value::as_str) == Some("docs")
+            }),
+            "top-level directory lookup should be indexed"
+        );
+    }
+
+    #[test]
+    fn candidate_spool_persistence_is_bounded_and_aggregated_before_write() {
+        let repo = temp_repo("candidate-spool-bounded-persisted");
+        for file_index in 0..20usize {
+            let mut source = String::new();
+            for symbol_index in 0..30usize {
+                source.push_str(&format!(
+                    "pub fn bounded_symbol_{file_index}_{symbol_index}(value: i32) -> i32 {{ value + {symbol_index} }}\n"
+                ));
+            }
+            write_test_file(&repo, &format!("src/module_{file_index}.rs"), &source);
+        }
+        let db = repo.join("artifacts").join("codegraph.sqlite");
+        let spool = repo.join("artifacts").join("candidate-spool.jsonl");
+        let mut options = fresh_rebuild_options();
+        options.candidate_spool_path = Some(spool.clone());
+        options.candidate_spool_caps.global_max_records = 24;
+        options.candidate_spool_caps.per_file_max_records = 3;
+        options.candidate_spool_caps.global_max_bytes = 128 * 1024;
+        let summary = index_repo_to_db_with_options(&repo, &db, options).expect("index fixture");
+        let spool_summary = summary.candidate_spool.expect("candidate spool summary");
+        assert!(spool_summary.generated_total_chunks > spool_summary.persisted_total_chunks);
+        assert!(spool_summary.persisted_total_chunks <= 24);
+        assert!(
+            spool_summary.omitted_by_cap
+                + spool_summary.omitted_by_file_limit
+                + spool_summary.omitted_by_dir_limit
+                + spool_summary.omitted_by_kind_limit
+                + spool_summary.omitted_by_budget
+                > 0
+        );
+        let values = read_jsonl_values(&spool);
+        let metadata = values[0].get("metadata").expect("manifest metadata");
+        assert_eq!(
+            metadata.get("record_model").and_then(Value::as_str),
+            Some(CANDIDATE_SPOOL_RECORD_MODEL_VERSION)
+        );
+        assert_eq!(
+            metadata
+                .get("chunk_selection_strategy")
+                .and_then(Value::as_str),
+            Some("candidate_spool_bounded_packet_selector_v1")
+        );
+        let chunks = values
+            .iter()
+            .filter(|value| value.get("chunk_id").is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(chunks.len(), spool_summary.persisted_total_chunks);
+        assert!(chunks.len() <= 24);
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.get("packet_kind").is_some()));
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.get("selection_reason").is_none()));
+        assert!(chunks.iter().all(|chunk| {
+            chunk.get("graph_proof").and_then(Value::as_bool) == Some(false)
+                && chunk.get("claimable_for_graph").and_then(Value::as_bool) == Some(false)
+                && chunk
+                    .get("creates_graph_relations")
+                    .and_then(Value::as_bool)
+                    == Some(false)
+        }));
+    }
+
+    fn selector_test_spool_summary(caps: CandidateSpoolCaps) -> CandidateSpoolSummary {
+        CandidateSpoolSummary {
+            status: "building".to_string(),
+            candidate_spool_status: "building".to_string(),
+            candidate_spool_path: "candidate-spool.jsonl".to_string(),
+            artifact_kind: "candidate_spool".to_string(),
+            artifact_format: "jsonl".to_string(),
+            lifecycle: "indexing_in_progress".to_string(),
+            spooled_total_chunks: 0,
+            spooled_by_source_kind: BTreeMap::new(),
+            spooled_by_chunk_kind: BTreeMap::new(),
+            spooled_bytes: 0,
+            spooled_indexing_phase: "test".to_string(),
+            candidate_spool_policy: "bounded".to_string(),
+            candidate_spool_required: false,
+            candidate_spool_disabled_reason: None,
+            candidate_spool_warning: None,
+            artifact_budget_remaining_bytes: None,
+            artifact_budget_decision: None,
+            record_model: CANDIDATE_SPOOL_RECORD_MODEL_VERSION.to_string(),
+            generated_total_chunks: 0,
+            normalized_total_chunks: 0,
+            deduped_total_chunks: 0,
+            selected_total_chunks: 0,
+            persisted_total_chunks: 0,
+            omitted_by_cap: 0,
+            omitted_by_budget: 0,
+            omitted_by_dedup: 0,
+            omitted_low_signal: 0,
+            omitted_by_file_limit: 0,
+            omitted_by_dir_limit: 0,
+            omitted_by_kind_limit: 0,
+            candidate_spool_truncated: false,
+            candidate_spool_partial: false,
+            candidate_spool_budget_bytes: caps.global_max_bytes as u64,
+            query_index_status: "not_started".to_string(),
+            query_index_kind: "none".to_string(),
+            query_index_path: None,
+            query_index_bytes: 0,
+            query_index_record_count: 0,
+            query_index_version: String::new(),
+            query_index_bound_manifest_hash: None,
+            candidate_only: true,
+            graph_proof: false,
+            incomplete: true,
+            db_passport_hash: None,
+            db_passport_snapshot: None,
+            scope_hash: None,
+            repo_hash: None,
+            reason: None,
+            caps,
+            selected_candidate_ids: BTreeSet::new(),
+            selected_file_counts: BTreeMap::new(),
+            selected_dir_counts: BTreeMap::new(),
+            selected_kind_counts: BTreeMap::new(),
+            selected_source_counts: BTreeMap::new(),
+        }
+    }
+
+    fn selector_test_chunk(
+        id: usize,
+        path: &str,
+        chunk_kind: &str,
+        source_kind: &str,
+        text: &str,
+        bucket: &str,
+    ) -> Value {
+        json!({
+            "chunk_id": format!("test-chunk-{id}"),
+            "chunk_kind": chunk_kind,
+            "source_kind": source_kind,
+            "path": path,
+            "entity_id": if source_kind == "graph_entity" { json!(format!("entity:{}:{id}", path)) } else { Value::Null },
+            "source_span": {
+                "start_line": (id % 200) + 1,
+                "start_col": 1,
+                "end_line": (id % 200) + 1,
+                "end_col": 20
+            },
+            "source_role": "source_navigation",
+            "evidence_role": "source_navigation",
+            "proof_status": "candidate_only",
+            "graph_proof": false,
+            "claimable_for_graph": false,
+            "text": text,
+            "file_kind": candidate_spool_file_kind_from_path(path),
+            "source_file_content_hash": format!("hash-{path}"),
+            "source_file_size_bytes": 128_u64,
+            "source_file_modified_unix_nanos": "1",
+            "selection_bucket": bucket
+        })
+    }
+
+    fn selected_packet_values(result: &CandidateSpoolSelectionResult) -> Vec<&Value> {
+        result.selected.iter().map(|packet| &packet.value).collect()
+    }
+
+    #[test]
+    fn candidate_spool_selector_is_stable_deduped_and_capped() {
+        let mut caps = CandidateSpoolCaps::default();
+        caps.global_max_records = 6;
+        caps.per_file_max_records = 2;
+        caps.per_top_level_dir_soft_cap = 4;
+        caps.max_snippet_bytes = 64;
+        caps.per_candidate_kind_cap
+            .insert("symbol_signature".to_string(), 3);
+        let spool = selector_test_spool_summary(caps.clone());
+        let mut chunks = Vec::new();
+        for index in 0..12 {
+            chunks.push(selector_test_chunk(
+                index,
+                "src/lib.rs",
+                "function",
+                "graph_entity",
+                &format!("pub fn selected_symbol_{index}() -> usize"),
+                "symbol_signature",
+            ));
+        }
+        chunks.push(chunks[0].clone());
+        chunks.push(selector_test_chunk(
+            100,
+            "docs/README.md",
+            "snippet",
+            "text_evidence",
+            "Important Stage 0 text evidence about selected_symbol_0",
+            "text_evidence",
+        ));
+        let first = select_candidate_spool_packets(chunks.clone(), &caps, &spool);
+        let second = select_candidate_spool_packets(chunks, &caps, &spool);
+        let first_ids = first
+            .selected
+            .iter()
+            .map(|packet| packet.packet_id.clone())
+            .collect::<Vec<_>>();
+        let second_ids = second
+            .selected
+            .iter()
+            .map(|packet| packet.packet_id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(first_ids, second_ids, "selection order must be stable");
+        assert!(first.omitted_by_dedup > 0, "identical input should dedupe");
+        assert!(
+            first.selected.len() <= caps.global_max_records,
+            "global record cap should apply"
+        );
+        let src_count = first
+            .selected
+            .iter()
+            .filter(|packet| packet.path == "src/lib.rs")
+            .count();
+        assert!(
+            src_count <= caps.per_file_max_records,
+            "per-file cap should apply"
+        );
+        assert!(
+            first.omitted_by_file_limit > 0 || first.omitted_by_cap > 0,
+            "selector should account for capped records"
+        );
+        assert_eq!(
+            first.generated_count,
+            first.normalized_count + first.omitted_low_signal
+        );
+        assert_eq!(
+            first.normalized_count,
+            first.deduped_count + first.omitted_by_dedup
+        );
+    }
+
+    #[test]
+    fn candidate_spool_selector_applies_byte_and_snippet_caps_without_verbose_reasons() {
+        let mut caps = CandidateSpoolCaps::default();
+        caps.global_max_bytes = 1_800;
+        caps.global_max_records = 64;
+        caps.max_snippet_bytes = 48;
+        caps.max_snippets_per_file_packet = 2;
+        let spool = selector_test_spool_summary(caps.clone());
+        let long_text = "very_long_identifier_token ".repeat(80);
+        let chunks = (0..24)
+            .map(|index| {
+                selector_test_chunk(
+                    index,
+                    "docs/manual/adding-packages-generic.adoc",
+                    "snippet",
+                    "text_evidence",
+                    &long_text,
+                    "text_evidence",
+                )
+            })
+            .collect::<Vec<_>>();
+        let result = select_candidate_spool_packets(chunks, &caps, &spool);
+        let written_bytes = result
+            .selected
+            .iter()
+            .map(|packet| packet.serialized_bytes)
+            .sum::<usize>();
+        assert!(written_bytes <= caps.global_max_bytes);
+        assert!(
+            result.omitted_by_budget > 0 || result.deduped_count > result.selected_count,
+            "tight byte budget or aggregation should reduce persisted records"
+        );
+        for value in selected_packet_values(&result) {
+            assert!(
+                value.get("selection_reason").is_none(),
+                "bounded spool must omit verbose selection reasons"
+            );
+            if let Some(snippets) = value.get("snippets").and_then(Value::as_array) {
+                assert!(snippets.len() <= caps.max_snippets_per_file_packet);
+                for snippet in snippets {
+                    assert!(
+                        snippet
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .len()
+                            <= caps.max_snippet_bytes
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn candidate_spool_selector_large_synthetic_firehose_stays_bounded() {
+        let mut caps = CandidateSpoolCaps::default();
+        caps.global_max_records = 2_048;
+        caps.global_max_bytes = 2 * 1024 * 1024;
+        caps.per_file_max_records = 8;
+        caps.per_top_level_dir_soft_cap = 512;
+        let spool = selector_test_spool_summary(caps.clone());
+        let mut chunks = Vec::with_capacity(200_000);
+        for index in 0..200_000usize {
+            let file = index % 1_000;
+            let path = format!("package/pkg{}/module{}.py", file % 50, file);
+            let (chunk_kind, source_kind, bucket, text) = match index % 4 {
+                0 => (
+                    "file_path_title",
+                    "metadata",
+                    "file_path_title",
+                    path.clone(),
+                ),
+                1 => (
+                    "function",
+                    "graph_entity",
+                    "symbol_signature",
+                    format!("def synthetic_symbol_{index}(value): return value"),
+                ),
+                2 => (
+                    "snippet",
+                    "text_evidence",
+                    "text_evidence",
+                    format!("synthetic evidence token_{index} package configuration"),
+                ),
+                _ => (
+                    "relation_neighborhood",
+                    "metadata",
+                    "import_signature",
+                    format!("import helper_{index} from local source navigation"),
+                ),
+            };
+            chunks.push(selector_test_chunk(
+                index,
+                &path,
+                chunk_kind,
+                source_kind,
+                &text,
+                bucket,
+            ));
+        }
+        let result = select_candidate_spool_packets(chunks, &caps, &spool);
+        let written_bytes = result
+            .selected
+            .iter()
+            .map(|packet| packet.serialized_bytes)
+            .sum::<usize>();
+        assert!(result.selected.len() <= caps.global_max_records);
+        assert!(written_bytes <= caps.global_max_bytes);
+        let kinds = result
+            .selected
+            .iter()
+            .map(|packet| packet.candidate_kind.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(kinds.contains("file_path_title"));
+        assert!(kinds.contains("symbol_signature"));
+        assert!(kinds.contains("text_evidence_snippet"));
+        assert!(kinds.contains("import_export_source_navigation"));
+        assert!(
+            result.selected.len() < result.generated_count / 20,
+            "aggregation and caps should materially reduce firehose records"
+        );
+    }
+
+    #[test]
+    fn candidate_spool_query_index_large_synthetic_queries_are_bounded() {
+        let repo = temp_repo("candidate-spool-large-query-index");
+        let spool = repo.join("candidate-spool.jsonl");
+        let mut caps = CandidateSpoolCaps::default();
+        caps.global_max_records = 4_096;
+        caps.global_max_bytes = 4 * 1024 * 1024;
+        caps.per_file_max_records = 6;
+        caps.per_top_level_dir_soft_cap = 768;
+        let spool_summary = selector_test_spool_summary(caps.clone());
+        let mut chunks = Vec::with_capacity(200_000);
+        for index in 0..200_000usize {
+            let file = index % 1_200;
+            let path = format!("package/pkg{}/module{}.py", file % 80, file);
+            let (chunk_kind, source_kind, bucket, text) = match index % 4 {
+                0 => (
+                    "file_path_title",
+                    "metadata",
+                    "file_path_title",
+                    path.clone(),
+                ),
+                1 => (
+                    "function",
+                    "graph_entity",
+                    "symbol_signature",
+                    format!("def indexed_symbol_{index}(value): return value"),
+                ),
+                2 => (
+                    "snippet",
+                    "text_evidence",
+                    "text_evidence",
+                    format!("indexed evidence token_{index} vector accounting term"),
+                ),
+                _ => (
+                    "relation_neighborhood",
+                    "metadata",
+                    "import_signature",
+                    format!("implementation_trace import helper_{index} local source navigation"),
+                ),
+            };
+            chunks.push(selector_test_chunk(
+                index,
+                &path,
+                chunk_kind,
+                source_kind,
+                &text,
+                bucket,
+            ));
+        }
+        let selection = select_candidate_spool_packets(chunks, &caps, &spool_summary);
+        assert!(selection.selected.len() <= caps.global_max_records);
+        let written_bytes = selection
+            .selected
+            .iter()
+            .map(|packet| packet.serialized_bytes)
+            .sum::<usize>();
+        let mut lines = Vec::new();
+        lines.push(
+            serde_json::to_string(&json!({
+                "metadata": {
+                    "metadata_version": CANDIDATE_SPOOL_METADATA_VERSION,
+                    "artifact_kind": "candidate_spool",
+                    "artifact_format": "jsonl",
+                    "record_model": CANDIDATE_SPOOL_RECORD_MODEL_VERSION,
+                    "repo_root": path_string(&repo),
+                    "candidate_spool_status": "partial_ready",
+                    "lifecycle": "partial_spool",
+                    "incomplete": true,
+                    "candidate_only": true,
+                    "graph_proof": false,
+                    "claimable_for_graph": false,
+                    "persisted_total_chunks": selection.selected.len(),
+                    "spooled_total_chunks": selection.selected.len()
+                }
+            }))
+            .expect("manifest json"),
+        );
+        for packet in &selection.selected {
+            let mut value = packet.value.clone();
+            if let Some(object) = value.as_object_mut() {
+                object.remove("source_file_content_hash");
+                object.remove("source_file_size_bytes");
+                object.remove("source_file_modified_unix_nanos");
+            }
+            lines.push(serde_json::to_string(&value).expect("packet json"));
+        }
+        fs::write(&spool, format!("{}\n", lines.join("\n"))).expect("write synthetic spool");
+        rebuild_candidate_spool_query_index_for_repo(&repo, &spool).expect("rebuild query index");
+
+        let mut status_durations = Vec::new();
+        for _ in 0..12 {
+            let started = Instant::now();
+            let status =
+                candidate_spool_index_status_for_repo(&repo, &spool, true).expect("indexed status");
+            assert_eq!(status.query_index_record_count, selection.selected.len());
+            status_durations.push(started.elapsed());
+        }
+        status_durations.sort();
+        let status_p95 = status_durations[status_durations.len() * 95 / 100];
+        assert!(
+            status_p95 < Duration::from_millis(1_000),
+            "synthetic indexed spool status p95 was {status_p95:?}"
+        );
+
+        let mut query_latency_ms = BTreeMap::new();
+        for (subcommand, query) in [
+            ("files", "package"),
+            ("symbols", "return"),
+            ("text", "vector accounting"),
+        ] {
+            let mut durations = Vec::new();
+            for _ in 0..12 {
+                let started = Instant::now();
+                let result = query_candidate_spool_index_for_repo(
+                    &repo, &spool, subcommand, query, 20, true,
+                )
+                .expect("indexed query");
+                assert!(
+                    !result.chunks.is_empty(),
+                    "{subcommand} query should find bounded indexed candidates"
+                );
+                durations.push(started.elapsed());
+            }
+            durations.sort();
+            let p95 = durations[durations.len() * 95 / 100];
+            assert!(
+                p95 < Duration::from_millis(500),
+                "synthetic indexed spool {subcommand} query p95 was {p95:?}"
+            );
+            query_latency_ms.insert(subcommand, p95.as_secs_f64() * 1000.0);
+        }
+        let query_index_path = candidate_spool_query_index_path(&spool);
+        let query_index_bytes = fs::metadata(&query_index_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
+        println!(
+            "candidate_spool_large_synthetic_metrics={}",
+            json!({
+                "generated_candidate_inputs": selection.generated_count,
+                "selected_candidate_packets": selection.selected_count,
+                "persisted_candidate_packets": selection.selected.len(),
+                "spool_payload_bytes": written_bytes,
+                "query_index_bytes": query_index_bytes,
+                "omitted_by_budget": selection.omitted_by_budget,
+                "omitted_by_cap": selection.omitted_by_cap,
+                "omitted_by_dedup": selection.omitted_by_dedup,
+                "omitted_by_file_limit": selection.omitted_by_file_limit,
+                "omitted_by_dir_limit": selection.omitted_by_dir_limit,
+                "omitted_by_kind_limit": selection.omitted_by_kind_limit,
+                "path_query_p95_ms": query_latency_ms.get("files").copied().unwrap_or_default(),
+                "symbol_query_p95_ms": query_latency_ms.get("symbols").copied().unwrap_or_default(),
+                "text_query_p95_ms": query_latency_ms.get("text").copied().unwrap_or_default(),
+                "status_p95_ms": status_p95.as_secs_f64() * 1000.0,
+                "candidate_only": true,
+                "graph_proof": false
+            })
+        );
+    }
+
+    #[test]
+    fn candidate_spool_selector_sympy_like_distribution_preserves_diversity() {
+        let mut caps = CandidateSpoolCaps::default();
+        caps.global_max_records = 800;
+        caps.global_max_bytes = 1024 * 1024;
+        caps.per_file_max_records = 6;
+        caps.per_top_level_dir_soft_cap = 120;
+        let spool = selector_test_spool_summary(caps.clone());
+        let mut chunks = Vec::new();
+        for dir in 0..20usize {
+            for file in 0..20usize {
+                let path = format!("sympy/area_{dir}/module_{file}.py");
+                chunks.push(selector_test_chunk(
+                    dir * 10_000 + file,
+                    &path,
+                    "file_path_title",
+                    "metadata",
+                    &path,
+                    "file_path_title",
+                ));
+                for symbol in 0..25usize {
+                    chunks.push(selector_test_chunk(
+                        dir * 10_000 + file * 100 + symbol,
+                        &path,
+                        "function",
+                        "graph_entity",
+                        &format!("def sympy_symbol_{dir}_{file}_{symbol}(expr): return expr"),
+                        "symbol_signature",
+                    ));
+                }
+            }
+        }
+        let result = select_candidate_spool_packets(chunks, &caps, &spool);
+        assert!(result.selected.len() <= caps.global_max_records);
+        let mut by_file = BTreeMap::new();
+        let mut by_dir = BTreeMap::new();
+        for packet in &result.selected {
+            *by_file.entry(packet.path.clone()).or_insert(0usize) += 1;
+            *by_dir.entry(packet.top_level_dir.clone()).or_insert(0usize) += 1;
+        }
+        assert!(by_file
+            .values()
+            .all(|count| *count <= caps.per_file_max_records));
+        assert!(by_dir
+            .values()
+            .all(|count| *count <= caps.per_top_level_dir_soft_cap));
+    }
+
+    #[test]
+    fn candidate_spool_selector_buildroot_roles_survive() {
+        let mut caps = CandidateSpoolCaps::default();
+        caps.global_max_records = 64;
+        caps.global_max_bytes = 128 * 1024;
+        let spool = selector_test_spool_summary(caps.clone());
+        let chunks = vec![
+            selector_test_chunk(
+                1,
+                "package/foo/foo.mk",
+                "file_path_title",
+                "metadata",
+                "package/foo/foo.mk generic-package download site",
+                "file_path_title",
+            ),
+            selector_test_chunk(
+                2,
+                "package/Config.in",
+                "snippet",
+                "text_evidence",
+                "source package/foo/Config.in menu entry",
+                "text_evidence",
+            ),
+            selector_test_chunk(
+                3,
+                "docs/manual/adding-packages-generic.adoc",
+                "snippet",
+                "text_evidence",
+                "generic-package documentation for package metadata",
+                "text_evidence",
+            ),
+            selector_test_chunk(
+                4,
+                "support/download/dl-wrapper",
+                "relation_neighborhood",
+                "metadata",
+                "support download wrapper helper source navigation",
+                "import_signature",
+            ),
+            selector_test_chunk(
+                5,
+                "package/foo/src/foo.c",
+                "function",
+                "graph_entity",
+                "int foo_main(void) { return 0; }",
+                "symbol_signature",
+            ),
+        ];
+        let result = select_candidate_spool_packets(chunks, &caps, &spool);
+        let joined = result
+            .selected
+            .iter()
+            .map(|packet| {
+                format!(
+                    "{} {}",
+                    packet.path,
+                    packet
+                        .value
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for needle in [
+            "package/foo/foo.mk",
+            "package/Config.in",
+            "adding-packages-generic.adoc",
+            "support/download/dl-wrapper",
+            "foo_main",
+        ] {
+            assert!(joined.contains(needle), "missing Buildroot role: {needle}");
+        }
+    }
+
+    #[test]
+    fn candidate_spool_selector_outputs_candidate_only_packets() {
+        let caps = CandidateSpoolCaps::default();
+        let spool = selector_test_spool_summary(caps.clone());
+        let chunks = vec![
+            selector_test_chunk(
+                1,
+                "src/lib.rs",
+                "function",
+                "graph_entity",
+                "pub fn claim_boundary() {}",
+                "symbol_signature",
+            ),
+            selector_test_chunk(
+                2,
+                "src/lib.rs",
+                "relation_neighborhood",
+                "metadata",
+                "CALLS helper in src/lib.rs near 1:1",
+                "import_signature",
+            ),
+        ];
+        let result = select_candidate_spool_packets(chunks, &caps, &spool);
+        assert!(!result.selected.is_empty());
+        for value in selected_packet_values(&result) {
+            assert_eq!(
+                value.get("proof_status").and_then(Value::as_str),
+                Some("candidate_only")
+            );
+            assert_eq!(
+                value.get("graph_proof").and_then(Value::as_bool),
+                Some(false)
+            );
+            assert_eq!(
+                value.get("claimable_for_graph").and_then(Value::as_bool),
+                Some(false)
+            );
+            assert_eq!(
+                value
+                    .get("creates_graph_relations")
+                    .and_then(Value::as_bool),
+                Some(false)
+            );
+            assert!(
+                !value
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .contains(&"full source body ".repeat(20)),
+                "bounded spool should not store full source bodies"
+            );
+        }
+    }
+
+    fn init_git_repo_for_identity_test(root: &Path) -> String {
+        let init = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .arg("init")
+            .output()
+            .expect("run git init");
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+        for (key, value) in [
+            ("user.email", "codegraph-tests@example.invalid"),
+            ("user.name", "CodeGraph Tests"),
+        ] {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(["config", key, value])
+                .output()
+                .expect("run git config");
+            assert!(
+                output.status.success(),
+                "git config {key} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let add = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["add", "."])
+            .output()
+            .expect("run git add");
+        assert!(
+            add.status.success(),
+            "git add failed: {}",
+            String::from_utf8_lossy(&add.stderr)
+        );
+        let commit = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["commit", "-m", "identity-test"])
+            .output()
+            .expect("run git commit");
+        assert!(
+            commit.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+        git_head(root).expect("git repo head")
+    }
+
+    struct WritePathChaosFailpointGuard;
+
+    impl Drop for WritePathChaosFailpointGuard {
+        fn drop(&mut self) {
+            WRITE_PATH_CHAOS_FAILPOINT_OVERRIDE.with(|override_cell| {
+                *override_cell.borrow_mut() = None;
+            });
+        }
+    }
+
+    fn with_write_path_chaos_failpoint<T>(failpoint: &str, action: impl FnOnce() -> T) -> T {
+        WRITE_PATH_CHAOS_FAILPOINT_OVERRIDE.with(|override_cell| {
+            *override_cell.borrow_mut() = Some(failpoint.to_string());
+        });
+        let _guard = WritePathChaosFailpointGuard;
+        action()
+    }
+
+    struct RtdsClosureOverrideGuard;
+
+    impl Drop for RtdsClosureOverrideGuard {
+        fn drop(&mut self) {
+            RTDS_CLOSURE_FAILPOINT_OVERRIDE.with(|override_cell| {
+                *override_cell.borrow_mut() = None;
+            });
+            RTDS_CLOSURE_BUDGET_OVERRIDE.with(|override_cell| {
+                *override_cell.borrow_mut() = None;
+            });
+        }
+    }
+
+    fn with_rtds_closure_budget<T>(
+        budget: RtdsDependencyClosureBudget,
+        action: impl FnOnce() -> T,
+    ) -> T {
+        RTDS_CLOSURE_BUDGET_OVERRIDE.with(|override_cell| {
+            *override_cell.borrow_mut() = Some(budget);
+        });
+        let _guard = RtdsClosureOverrideGuard;
+        action()
+    }
+
+    fn with_rtds_closure_failpoint<T>(failpoint: &str, action: impl FnOnce() -> T) -> T {
+        RTDS_CLOSURE_FAILPOINT_OVERRIDE.with(|override_cell| {
+            *override_cell.borrow_mut() = Some(failpoint.to_string());
+        });
+        let _guard = RtdsClosureOverrideGuard;
+        action()
+    }
+
+    fn fresh_rebuild_options() -> IndexOptions {
+        let mut options = IndexOptions::default();
+        options.db_lifecycle.explicit_db_path = true;
+        options.db_lifecycle.policy = DbLifecyclePolicy::FreshRebuild;
+        options
     }
 
     fn vector_test_passport(scope_hash: &str) -> DbPassport {
@@ -11565,6 +19429,80 @@ mod tests {
 
         fs::remove_dir_all(repo_a).expect("cleanup repo A");
         fs::remove_dir_all(repo_b).expect("cleanup repo B");
+    }
+
+    #[test]
+    fn lifecycle_surface_preflight_repo_head_mismatch_blocks_claimable_reads() {
+        let repo = temp_repo("surface-repo-head-mismatch");
+        write_test_file(
+            &repo,
+            "src/main.ts",
+            "export function current_head_symbol() { return 1; }\n",
+        );
+        let current_head = init_git_repo_for_identity_test(&repo);
+        let db = repo.join("repo-head.sqlite");
+        index_repo_to_db_with_options(&repo, &db, IndexOptions::default()).expect("index repo");
+        {
+            let store = SqliteGraphStore::open(&db).expect("open store");
+            let mut passport = store
+                .get_db_passport()
+                .expect("read passport")
+                .expect("passport");
+            assert_eq!(passport.repo_head.as_deref(), Some(current_head.as_str()));
+            passport.repo_head = Some("stale-head-for-test".to_string());
+            store
+                .upsert_db_passport(&passport)
+                .expect("write stale head");
+        }
+
+        let normal = inspect_db_lifecycle_surface_preflight(surface_preflight_request(
+            &repo,
+            &db,
+            DbLifecycleOperationKind::NormalRead,
+        ))
+        .expect("normal preflight");
+        assert!(!normal.safe_to_read, "{normal:?}");
+        assert!(!normal.claimable, "{normal:?}");
+        assert_eq!(
+            normal.db_problem_kind.as_deref(),
+            Some("repo_head_mismatch")
+        );
+        assert_eq!(
+            normal.artifact_freshness.as_deref(),
+            Some("repo_head_mismatch")
+        );
+        assert!(normal
+            .blockers
+            .iter()
+            .any(|blocker| blocker.contains("repo head mismatch")));
+
+        let blocked_diagnostic = inspect_db_lifecycle_surface_preflight(surface_preflight_request(
+            &repo,
+            &db,
+            DbLifecycleOperationKind::DiagnosticRead,
+        ))
+        .expect("blocked diagnostic");
+        assert!(!blocked_diagnostic.safe_to_read, "{blocked_diagnostic:?}");
+        assert!(!blocked_diagnostic.claimable, "{blocked_diagnostic:?}");
+
+        let mut allowed =
+            surface_preflight_request(&repo, &db, DbLifecycleOperationKind::DiagnosticRead);
+        allowed.allow_stale_read = true;
+        let allowed_diagnostic =
+            inspect_db_lifecycle_surface_preflight(allowed).expect("allowed diagnostic");
+        assert!(allowed_diagnostic.safe_to_read, "{allowed_diagnostic:?}");
+        assert!(allowed_diagnostic.diagnostic_only, "{allowed_diagnostic:?}");
+        assert!(!allowed_diagnostic.claimable, "{allowed_diagnostic:?}");
+        assert!(
+            allowed_diagnostic.blockers.is_empty(),
+            "{allowed_diagnostic:?}"
+        );
+        assert!(allowed_diagnostic
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("stale/passport blocker")));
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
     }
 
     #[test]
@@ -12164,6 +20102,30 @@ mod tests {
         assert!(no_default.contains("target/debug/generated.ts"));
     }
 
+    #[test]
+    fn collect_repo_files_include_patterns_are_overrides_not_restrictive() {
+        let repo = temp_repo("scope-include-override-not-restrictive");
+        write_test_file(&repo, "src/main.ts", "export const main = 1;\n");
+        write_test_file(&repo, "src/other.ts", "export const other = 1;\n");
+        write_test_file(
+            &repo,
+            "target/debug/generated.ts",
+            "export const generated = 1;\n",
+        );
+
+        let files = collected_rel_paths(
+            &repo,
+            &IndexScopeOptions {
+                include_patterns: vec!["target/debug/generated.ts".to_string()],
+                ..IndexScopeOptions::default()
+            },
+        );
+
+        assert!(files.contains("src/main.ts"));
+        assert!(files.contains("src/other.ts"));
+        assert!(files.contains("target/debug/generated.ts"));
+    }
+
     fn assert_db_integrity(db: &Path) {
         let store = SqliteGraphStore::open(db).expect("open db");
         store.full_integrity_gate().expect("integrity gate");
@@ -12291,6 +20253,44 @@ mod tests {
             file_hash: Some("hash".to_string()),
             created_from: "test".to_string(),
             confidence: 1.0,
+            metadata: Metadata::default(),
+        }
+    }
+
+    fn graph_budget_file_record(repo_relative_path: &str) -> FileRecord {
+        FileRecord {
+            repo_relative_path: repo_relative_path.to_string(),
+            file_hash: "hash".to_string(),
+            language: Some("typescript".to_string()),
+            size_bytes: 128,
+            indexed_at_unix_ms: None,
+            metadata: Metadata::default(),
+        }
+    }
+
+    fn graph_budget_test_edge(
+        head_id: &str,
+        relation: RelationKind,
+        tail_id: &str,
+        line: usize,
+    ) -> Edge {
+        let line = line as u32;
+        let span = SourceSpan::with_columns("src/fanout.ts", line, 1, line, 10);
+        Edge {
+            id: stable_edge_id(head_id, relation, tail_id, &span),
+            head_id: head_id.to_string(),
+            relation,
+            tail_id: tail_id.to_string(),
+            source_span: span,
+            repo_commit: None,
+            file_hash: Some("hash".to_string()),
+            extractor: "test".to_string(),
+            confidence: 1.0,
+            exactness: Exactness::ParserVerified,
+            edge_class: EdgeClass::BaseExact,
+            context: EdgeContext::Production,
+            derived: false,
+            provenance_edges: Vec::new(),
             metadata: Metadata::default(),
         }
     }
@@ -14725,6 +22725,46 @@ mod tests {
             index.metadata().estimated_vector_bytes,
             index.len() * index.metadata().estimated_vector_bytes_per_chunk
         );
+        assert_eq!(
+            index.metadata().estimated_f32_payload_bytes,
+            index.metadata().estimated_vector_bytes
+        );
+        assert_eq!(index.metadata().estimated_f32_payload_dim, 64);
+        assert_eq!(index.metadata().estimated_f32_payload_count, index.len());
+        assert_eq!(
+            index.metadata().estimated_vector_bytes_deprecated_alias_for,
+            "estimated_f32_payload_bytes"
+        );
+        assert_eq!(index.metadata().index_artifact_format, "pretty_json");
+        assert_eq!(index.metadata().vector_payload_compression, "none");
+        assert!(index.metadata().stores_chunk_text);
+        assert!(index.metadata().stores_chunk_metadata);
+        assert!(!index.metadata().stores_full_source_body);
+        assert!(index.metadata().generated_total_chunks >= index.len());
+        assert!(index.metadata().generated_text_evidence_chunks >= 1);
+        assert_eq!(index.metadata().generated_file_path_title_chunks, 1);
+        assert_eq!(index.metadata().generated_metadata_chunks, 1);
+        assert_eq!(
+            index.metadata().generated_total_chunks,
+            index.metadata().generated_text_evidence_chunks
+                + index.metadata().generated_graph_entity_chunks
+                + index.metadata().generated_metadata_chunks
+        );
+        assert_eq!(index.metadata().selected_total_chunks, index.len());
+        assert_eq!(index.metadata().persisted_total_chunks, index.len());
+        assert_eq!(index.metadata().chunk_cap, options.max_chunks);
+        assert_eq!(
+            index.metadata().chunk_selection_strategy,
+            "diversity_ranked_v1"
+        );
+        assert!(!index.metadata().input_order_cap);
+        assert!(index
+            .entries()
+            .all(|entry| entry.chunk.selection_score.is_some()
+                && entry.chunk.selection_bucket.is_some()
+                && entry.chunk.selection_reason.is_some()
+                && entry.chunk.top_level_dir.is_some()
+                && entry.chunk.cap_stage.is_some()));
         assert!(index.metadata().estimated_vector_bytes <= index.metadata().max_chunks * 64 * 4);
 
         let hits = index
@@ -14747,6 +22787,231 @@ mod tests {
                 .expect("bounded index");
         assert_eq!(bounded_index.len(), 2);
         assert!(bounded_index.metadata().omitted_chunks > 0);
+        assert!(bounded_index.metadata().chunk_cap_applied);
+        assert!(bounded_index.metadata().generated_total_chunks > bounded_index.len());
+        assert_eq!(bounded_index.metadata().persisted_total_chunks, 2);
+    }
+
+    #[test]
+    fn vector_chunk_selection_diversity_prevents_input_order_starvation() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-selection-starvation");
+        let mut options = VectorChunkIndexBuildOptions::new("scope-selection-starvation");
+        options.max_chunks = 8;
+        let mut chunks = Vec::new();
+        for idx in 0..20 {
+            chunks.push(extract_file_path_title_embedding_chunk_for_path(
+                &format!("docs/board/boot/topic-{idx}.adoc"),
+                TEXT_EVIDENCE_KIND,
+                Some("adoc"),
+                None,
+            ));
+        }
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/foo.mk",
+            "FOO_VERSION = 1.2.3\nFOO_LICENSE = MIT\n$(eval $(generic-package))\n",
+            None,
+        ));
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "support/scripts/pkg-stats",
+            "#!/bin/sh\nprintf 'package support statistics generic-package'\n",
+            None,
+        ));
+
+        let index = build_in_memory_vector_chunk_index(chunks, &provider, &passport, options)
+            .expect("diversity selected index");
+        let selected_paths = index
+            .entries()
+            .map(|entry| entry.chunk.path.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert!(selected_paths.contains("package/foo/foo.mk"));
+        assert!(selected_paths.contains("support/scripts/pkg-stats"));
+        assert_eq!(
+            index.metadata().chunk_selection_strategy,
+            "diversity_ranked_v1"
+        );
+        assert!(!index.metadata().input_order_cap);
+        assert!(index.metadata().omitted_by_cap > 0);
+        assert!(index
+            .metadata()
+            .persisted_chunks_by_top_level_dir
+            .contains_key("package"));
+        assert!(index
+            .metadata()
+            .persisted_chunks_by_top_level_dir
+            .contains_key("support"));
+    }
+
+    #[test]
+    fn vector_chunk_selection_preserves_source_kind_diversity_under_cap() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-selection-source-kind");
+        let mut options = VectorChunkIndexBuildOptions::new("scope-selection-source-kind");
+        options.max_chunks = 3;
+        let source = "/// login token creation\nexport function loginUser() { return true; }\n";
+        let entity = Entity {
+            id: "entity://src/auth.ts/loginUser".to_string(),
+            kind: EntityKind::Function,
+            name: "loginUser".to_string(),
+            qualified_name: "auth::loginUser".to_string(),
+            repo_relative_path: "src/auth.ts".to_string(),
+            source_span: Some(SourceSpan::new("src/auth.ts", 2, 2)),
+            content_hash: Some(content_hash("auth::loginUser")),
+            file_hash: Some(content_hash(source)),
+            created_from: "parser:test".to_string(),
+            confidence: 1.0,
+            metadata: Metadata::default(),
+        };
+        let mut chunks =
+            extract_graph_entity_embedding_chunks(&entity, Some(source), Some("typescript"), None);
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/Config.in",
+            "config BR2_PACKAGE_FOO\n\tbool \"foo\"\n",
+            None,
+        ));
+        chunks.push(extract_file_path_title_embedding_chunk_for_path(
+            "docs/manual/adding-packages.adoc",
+            TEXT_EVIDENCE_KIND,
+            Some("adoc"),
+            None,
+        ));
+
+        let index = build_in_memory_vector_chunk_index(chunks, &provider, &passport, options)
+            .expect("source-kind diversity index");
+        let source_counts = &index.metadata().persisted_chunks_by_source_kind;
+
+        assert!(source_counts.get("graph_entity").copied().unwrap_or(0) >= 1);
+        assert!(source_counts.get("text_evidence").copied().unwrap_or(0) >= 1);
+        assert!(source_counts.get("metadata").copied().unwrap_or(0) >= 1);
+    }
+
+    #[test]
+    fn vector_chunk_selection_buildroot_mini_keeps_package_docs_support_and_source() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-selection-buildroot-mini");
+        let mut options = VectorChunkIndexBuildOptions::new("scope-selection-buildroot-mini");
+        options.max_chunks = 8;
+        let mut chunks = Vec::new();
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "docs/manual/adding-packages.adoc",
+            "package infrastructure documentation generic-package Config.in support scripts\n",
+            None,
+        ));
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/foo.mk",
+            "FOO_VERSION = 1.2.3\nFOO_LICENSE = MIT\n$(eval $(generic-package))\n",
+            None,
+        ));
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "package/foo/Config.in",
+            "config BR2_PACKAGE_FOO\n\tbool \"foo package\"\n",
+            None,
+        ));
+        chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+            "support/scripts/pkg-stats",
+            "#!/bin/sh\nprintf 'support script package statistics'\n",
+            None,
+        ));
+        let source = "int download_package(void) { return 0; }\n";
+        let entity = Entity {
+            id: "entity://src/download.c/download_package".to_string(),
+            kind: EntityKind::Function,
+            name: "download_package".to_string(),
+            qualified_name: "download_package".to_string(),
+            repo_relative_path: "src/download.c".to_string(),
+            source_span: Some(SourceSpan::new("src/download.c", 1, 1)),
+            content_hash: Some(content_hash("download_package")),
+            file_hash: Some(content_hash(source)),
+            created_from: "parser:test".to_string(),
+            confidence: 1.0,
+            metadata: Metadata::default(),
+        };
+        chunks.extend(extract_graph_entity_embedding_chunks(
+            &entity,
+            Some(source),
+            Some("c"),
+            None,
+        ));
+        for idx in 0..20 {
+            chunks.push(extract_file_path_title_embedding_chunk_for_path(
+                &format!("board/vendor/board-{idx}.adoc"),
+                TEXT_EVIDENCE_KIND,
+                Some("adoc"),
+                None,
+            ));
+        }
+
+        let index = build_in_memory_vector_chunk_index(chunks, &provider, &passport, options)
+            .expect("buildroot diversity index");
+        let selected_paths = index
+            .entries()
+            .map(|entry| entry.chunk.path.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert!(selected_paths.contains("package/foo/foo.mk"));
+        assert!(selected_paths.contains("package/foo/Config.in"));
+        assert!(selected_paths.contains("docs/manual/adding-packages.adoc"));
+        assert!(selected_paths.contains("support/scripts/pkg-stats"));
+        assert!(selected_paths.contains("src/download.c"));
+        assert!(index.entries().any(|entry| entry.chunk.entity_id.as_deref()
+            == Some("entity://src/download.c/download_package")));
+    }
+
+    #[test]
+    fn vector_chunk_selection_is_deterministic_and_cap_counts_reconcile() {
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-selection-deterministic");
+        let mut options = VectorChunkIndexBuildOptions::new("scope-selection-deterministic");
+        options.max_chunks = 6;
+        let mut chunks = Vec::new();
+        for idx in 0..18 {
+            let path = match idx % 3 {
+                0 => format!("docs/manual/topic-{idx}.adoc"),
+                1 => format!("package/pkg{idx}/pkg{idx}.mk"),
+                _ => format!("support/scripts/tool-{idx}"),
+            };
+            chunks.extend(extract_text_evidence_embedding_chunks_for_path(
+                &path,
+                &format!("chunk {idx} package support docs generic-package BR2_PACKAGE_{idx}\n"),
+                None,
+            ));
+        }
+
+        let first = build_in_memory_vector_chunk_index(
+            chunks.clone(),
+            &provider,
+            &passport,
+            options.clone(),
+        )
+        .expect("first selection");
+        let second = build_in_memory_vector_chunk_index(chunks, &provider, &passport, options)
+            .expect("second selection");
+        let first_ids = first
+            .entries()
+            .map(|entry| entry.chunk.chunk_id.clone())
+            .collect::<Vec<_>>();
+        let second_ids = second
+            .entries()
+            .map(|entry| entry.chunk.chunk_id.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(first_ids, second_ids);
+        assert!(first.metadata().persisted_total_chunks <= first.metadata().chunk_cap);
+        assert_eq!(
+            first.metadata().generated_total_chunks,
+            first.metadata().persisted_total_chunks
+                + first.metadata().omitted_by_cap
+                + first.metadata().omitted_low_signal
+        );
+        for entry in first.entries() {
+            let path_count = first
+                .entries()
+                .filter(|other| other.chunk.path == entry.chunk.path)
+                .count();
+            assert!(path_count <= first.metadata().per_file_cap);
+        }
+        assert!(first.entries().all(|entry| !entry.chunk.graph_proof));
     }
 
     #[test]
@@ -14848,7 +23113,7 @@ mod tests {
                 &changed_passport,
                 &options
             ),
-            Some("db_passport changed".to_string())
+            Some("repo_head changed".to_string())
         );
 
         let mut changed_scope_passport = passport.clone();
@@ -14902,8 +23167,14 @@ mod tests {
                 .expect("build vector chunk index");
 
         write_vector_chunk_index_json(&index_path, &index).expect("write vector index json");
+        let runtime_text = fs::read_to_string(&index_path).expect("runtime sidecar json");
+        assert!(runtime_text.contains("\"artifact_kind\":\"vector_runtime_sidecar\""));
+        assert!(runtime_text.contains("\"index_artifact_format\":\"compact_json\""));
+        assert!(!runtime_text.contains("selection_reason"));
         let loaded = load_vector_chunk_index_json(&index_path, &provider, &passport, options)
             .expect("load vector index json");
+        assert_eq!(loaded.metadata().index_artifact_format, "compact_json");
+        assert_eq!(loaded.metadata().artifact_kind, "vector_runtime_sidecar");
         let hits = loaded
             .search(&provider, "foo package metadata", 3)
             .expect("search loaded vector index");
@@ -14921,6 +23192,217 @@ mod tests {
         assert!(stale
             .to_string()
             .contains("index_scope_policy_hash changed"));
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn vector_runtime_sidecar_atomic_failpoints_preserve_old_artifact() {
+        let repo = temp_repo("vector-runtime-atomic-failpoints");
+        let index_path = repo.join("artifacts").join("runtime.json");
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-runtime-atomic");
+        let options = VectorChunkIndexBuildOptions::new("scope-runtime-atomic");
+        let old_index = build_in_memory_vector_chunk_index(
+            vec![extract_file_path_title_embedding_chunk_for_path(
+                "src/old.rs",
+                "production",
+                Some("rust"),
+                None,
+            )],
+            &provider,
+            &passport,
+            options.clone(),
+        )
+        .expect("old vector index");
+        write_vector_chunk_runtime_sidecar_json(
+            &index_path,
+            &old_index,
+            VectorChunkArtifactFormat::CompactJson,
+        )
+        .expect("write old runtime");
+        let old_bytes = fs::read(&index_path).expect("old runtime bytes");
+
+        let new_index = build_in_memory_vector_chunk_index(
+            vec![extract_file_path_title_embedding_chunk_for_path(
+                "src/new.rs",
+                "production",
+                Some("rust"),
+                None,
+            )],
+            &provider,
+            &passport,
+            options,
+        )
+        .expect("new vector index");
+
+        for failpoint in [
+            "vector_runtime_after_temp_write_before_publish",
+            "vector_runtime_during_publish",
+        ] {
+            let error = with_write_path_chaos_failpoint(failpoint, || {
+                write_vector_chunk_runtime_sidecar_json(
+                    &index_path,
+                    &new_index,
+                    VectorChunkArtifactFormat::CompactJson,
+                )
+            })
+            .expect_err("runtime sidecar publish failpoint should fail");
+            assert!(
+                error.to_string().contains(failpoint),
+                "failpoint={failpoint} error={error}"
+            );
+            assert_eq!(
+                fs::read(&index_path).expect("preserved runtime bytes"),
+                old_bytes,
+                "old runtime sidecar changed after {failpoint}"
+            );
+            let leftovers = fs::read_dir(index_path.parent().expect("artifact parent"))
+                .expect("read artifact parent")
+                .filter_map(Result::ok)
+                .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+                .filter(|name| name.contains(".tmp-") || name.contains(".backup-"))
+                .collect::<Vec<_>>();
+            assert!(
+                leftovers.is_empty(),
+                "partial runtime artifact leftovers after {failpoint}: {leftovers:?}"
+            );
+        }
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn vector_audit_artifact_atomic_failpoint_preserves_old_artifact() {
+        let repo = temp_repo("vector-audit-atomic-failpoints");
+        let audit_path = repo.join("artifacts").join("audit.json");
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-audit-atomic");
+        let options = VectorChunkIndexBuildOptions::new("scope-audit-atomic");
+        let old_index = build_in_memory_vector_chunk_index(
+            vec![extract_file_path_title_embedding_chunk_for_path(
+                "README.md",
+                "production",
+                Some("markdown"),
+                None,
+            )],
+            &provider,
+            &passport,
+            options.clone(),
+        )
+        .expect("old audit index");
+        write_vector_chunk_audit_artifact_json(&audit_path, &old_index).expect("write old audit");
+        let old_bytes = fs::read(&audit_path).expect("old audit bytes");
+
+        let new_index = build_in_memory_vector_chunk_index(
+            vec![extract_file_path_title_embedding_chunk_for_path(
+                "docs/README.md",
+                "production",
+                Some("markdown"),
+                None,
+            )],
+            &provider,
+            &passport,
+            options,
+        )
+        .expect("new audit index");
+
+        let error = with_write_path_chaos_failpoint("vector_audit_during_publish", || {
+            write_vector_chunk_audit_artifact_json(&audit_path, &new_index)
+        })
+        .expect_err("audit artifact publish failpoint should fail");
+        assert!(error.to_string().contains("vector_audit_during_publish"));
+        assert_eq!(
+            fs::read(&audit_path).expect("preserved audit bytes"),
+            old_bytes
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn legacy_pretty_vector_artifact_still_loads() {
+        let repo = temp_repo("vector-legacy-pretty-load");
+        let index_path = repo.join("artifacts").join("legacy-vector.json");
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-legacy");
+        let options = VectorChunkIndexBuildOptions::new("scope-legacy");
+        let chunks = vec![extract_file_path_title_embedding_chunk_for_path(
+            "README.md",
+            "production",
+            Some("markdown"),
+            None,
+        )];
+        let index =
+            build_in_memory_vector_chunk_index(chunks, &provider, &passport, options.clone())
+                .expect("build vector chunk index");
+        let persisted = persisted_vector_chunk_index_from_index(&index);
+        fs::create_dir_all(index_path.parent().expect("parent")).expect("artifact dir");
+        fs::write(
+            &index_path,
+            serde_json::to_vec_pretty(&persisted).expect("legacy pretty json"),
+        )
+        .expect("write legacy pretty");
+
+        let loaded = load_vector_chunk_index_json(&index_path, &provider, &passport, options)
+            .expect("legacy pretty JSON vector artifact should still load");
+        assert_eq!(loaded.metadata().index_artifact_format, "pretty_json");
+        assert!(!loaded
+            .search(&provider, "README", 3)
+            .expect("search")
+            .is_empty());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn audit_vector_artifact_is_not_runtime_loadable() {
+        let repo = temp_repo("vector-audit-not-runtime");
+        let audit_path = repo.join("artifacts").join("audit-vector.json");
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-audit-runtime");
+        let options = VectorChunkIndexBuildOptions::new("scope-audit-runtime");
+        let chunks = vec![extract_file_path_title_embedding_chunk_for_path(
+            "README.md",
+            "production",
+            Some("markdown"),
+            None,
+        )];
+        let index =
+            build_in_memory_vector_chunk_index(chunks, &provider, &passport, options.clone())
+                .expect("build vector chunk index");
+        write_vector_chunk_audit_artifact_json(&audit_path, &index).expect("write audit artifact");
+
+        let error = load_vector_chunk_index_json(&audit_path, &provider, &passport, options)
+            .expect_err("audit artifact must not be runtime-loadable");
+        assert!(error.to_string().contains("diagnostic_only"));
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn stale_audit_vector_artifact_stays_diagnostic_only() {
+        let repo = temp_repo("vector-audit-stale-diagnostic");
+        let audit_path = repo.join("artifacts").join("audit-vector.json");
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-audit-fresh");
+        let options = VectorChunkIndexBuildOptions::new("scope-audit-fresh");
+        let chunks = vec![extract_file_path_title_embedding_chunk_for_path(
+            "README.md",
+            "production",
+            Some("markdown"),
+            None,
+        )];
+        let index = build_in_memory_vector_chunk_index(chunks, &provider, &passport, options)
+            .expect("build vector chunk index");
+        write_vector_chunk_audit_artifact_json(&audit_path, &index).expect("write audit artifact");
+
+        let stale_passport = vector_test_passport("scope-audit-stale");
+        let stale_options = VectorChunkIndexBuildOptions::new("scope-audit-stale");
+        let error =
+            load_vector_chunk_index_json(&audit_path, &provider, &stale_passport, stale_options)
+                .expect_err("stale audit artifact must stay diagnostic-only");
+        assert!(error.to_string().contains("diagnostic_only"));
 
         fs::remove_dir_all(repo).expect("cleanup");
     }
@@ -15081,6 +23563,143 @@ mod tests {
     }
 
     #[test]
+    fn vector_chunk_source_bindings_reject_changed_and_deleted_files() {
+        let repo = temp_repo("vector-source-binding-stale");
+        let source = "export function login() { return 'ok'; }\n";
+        write_test_file(&repo, "src/auth.ts", source);
+        let file = FileRecord {
+            repo_relative_path: "src/auth.ts".to_string(),
+            file_hash: content_hash(source),
+            language: Some("typescript".to_string()),
+            size_bytes: source.len() as u64,
+            indexed_at_unix_ms: Some(unix_time_ms()),
+            metadata: Metadata::default(),
+        };
+        let entity = Entity {
+            id: "entity://src/auth.ts/login".to_string(),
+            kind: EntityKind::Function,
+            name: "login".to_string(),
+            qualified_name: "auth::login".to_string(),
+            repo_relative_path: "src/auth.ts".to_string(),
+            source_span: Some(SourceSpan::new("src/auth.ts", 1, 1)),
+            content_hash: Some(content_hash("auth::login")),
+            file_hash: Some(content_hash(source)),
+            created_from: "parser:test".to_string(),
+            confidence: 1.0,
+            metadata: Metadata::default(),
+        };
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let passport = vector_test_passport("scope-source-binding");
+        let chunks = bind_vector_chunks_to_source_file(
+            extract_graph_entity_embedding_chunks(&entity, Some(source), Some("typescript"), None),
+            &file,
+        );
+        let index = build_in_memory_vector_chunk_index(
+            chunks,
+            &provider,
+            &passport,
+            VectorChunkIndexBuildOptions::new("scope-source-binding"),
+        )
+        .expect("build bound vector index");
+
+        let valid = validate_vector_chunk_source_bindings(&repo, &index)
+            .expect("valid source binding check");
+        assert!(valid.is_valid(), "{valid:?}");
+        assert_eq!(valid.checked_files, 1);
+
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function loginChanged() { return 'changed'; }\n",
+        );
+        let changed = validate_vector_chunk_source_bindings(&repo, &index)
+            .expect("changed source binding check");
+        assert_eq!(changed.status, "stale");
+        assert!(changed.stale_reasons.iter().any(|reason| {
+            reason.contains("changed_file_size") || reason.contains("changed_file_hash")
+        }));
+
+        fs::remove_file(repo.join("src").join("auth.ts")).expect("delete source file");
+        let deleted = validate_vector_chunk_source_bindings(&repo, &index)
+            .expect("deleted source binding check");
+        assert_eq!(deleted.status, "stale");
+        assert!(deleted
+            .stale_reasons
+            .iter()
+            .any(|reason| reason.contains("deleted_file:src/auth.ts")));
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn incremental_update_refreshes_passport_and_invalidates_old_runtime_sidecar() {
+        let repo = temp_repo("vector-incremental-passport-stale");
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function oldLogin() { return 'old'; }\n",
+        );
+        let db = repo.join("target").join("codegraph.sqlite");
+        let runtime = repo.join("target").join("runtime.json");
+        index_repo_to_db(&repo, &db).expect("initial index");
+        let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
+        let vector_options =
+            VectorChunkIndexBuildOptions::new("context-pack-release-vector-candidates");
+        build_vector_chunk_index_artifacts_for_repo(
+            &repo,
+            &db,
+            &runtime,
+            &provider,
+            vector_options.clone(),
+            VectorChunkIndexArtifactOptions::default(),
+        )
+        .expect("build runtime sidecar");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let before_passport = store
+            .get_db_passport()
+            .expect("read before passport")
+            .expect("before passport");
+        load_vector_chunk_index_json(
+            &runtime,
+            &provider,
+            &before_passport,
+            vector_options.clone(),
+        )
+        .expect("runtime sidecar loads before update");
+        drop(store);
+
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function newLogin() { return 'new'; }\n",
+        );
+        let update = update_changed_files_to_db(&repo, &[PathBuf::from("src/auth.ts")], &db)
+            .expect("incremental update");
+        assert_eq!(update.files_indexed, 1);
+        let store = SqliteGraphStore::open(&db).expect("store after update");
+        let after_passport = store
+            .get_db_passport()
+            .expect("read after passport")
+            .expect("after passport");
+        assert_ne!(
+            db_passport_fingerprint(&before_passport),
+            db_passport_fingerprint(&after_passport),
+            "incremental DB passport fingerprint must change after graph facts change"
+        );
+        let stale =
+            load_vector_chunk_index_json(&runtime, &provider, &after_passport, vector_options)
+                .expect_err("old runtime sidecar must be stale after incremental update");
+        assert!(
+            stale.to_string().contains("db_passport changed")
+                || stale.to_string().contains("repo_head changed"),
+            "{stale}"
+        );
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
     fn vector_chunk_index_metadata_does_not_store_full_source_bodies() {
         let provider = DeterministicTestEmbeddingProvider::for_tests(64).expect("provider");
         let passport = vector_test_passport("scope-no-full-source");
@@ -15124,6 +23743,13 @@ mod tests {
             index.metadata().estimated_vector_bytes,
             index.len() * index.metadata().estimated_vector_bytes_per_chunk
         );
+        assert_eq!(
+            index.metadata().estimated_f32_payload_bytes,
+            index.metadata().estimated_vector_bytes
+        );
+        assert_eq!(index.metadata().index_artifact_format, "pretty_json");
+        assert_eq!(index.metadata().vector_payload_compression, "none");
+        assert!(!index.metadata().stores_full_source_body);
     }
 
     #[test]
@@ -15942,6 +24568,324 @@ mod tests {
     }
 
     #[test]
+    fn write_path_cold_publish_failpoints_preserve_old_claimable_db() {
+        let repo = temp_repo("write-path-cold-publish-failpoints");
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function oldLogin() { return 'old'; }\n",
+        );
+        let db = repo.join("target").join("cold.sqlite");
+        index_repo_to_db(&repo, &db).expect("initial index");
+        let before_hash = semantic_graph_fact_hash(&db);
+
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function newLogin() { return 'new'; }\n",
+        );
+
+        for failpoint in [
+            "cold_before_db_write",
+            "cold_during_db_write",
+            "cold_disk_full_simulated",
+            "cold_after_temp_db_write_before_validation",
+            "cold_after_validation_before_publish",
+            "cold_during_publish",
+            "cold_permission_denied_publish_dir",
+        ] {
+            let error = with_write_path_chaos_failpoint(failpoint, || {
+                index_repo_to_db_with_options(&repo, &db, fresh_rebuild_options())
+            })
+            .expect_err("cold publish failpoint must fail");
+            assert!(
+                error.to_string().contains(failpoint),
+                "failpoint={failpoint} error={error}"
+            );
+
+            let store = SqliteGraphStore::open(&db).expect("open preserved DB");
+            store
+                .full_integrity_gate()
+                .expect("preserved DB remains valid");
+            assert_eq!(
+                semantic_graph_fact_hash(&db),
+                before_hash,
+                "old graph facts changed after {failpoint}"
+            );
+            assert_eq!(
+                entities_by_kind_and_name(&store, EntityKind::Function, "oldLogin").len(),
+                1,
+                "old fact missing after {failpoint}"
+            );
+            assert!(
+                entities_by_kind_and_name(&store, EntityKind::Function, "newLogin").is_empty(),
+                "new fact leaked after {failpoint}"
+            );
+            drop(store);
+
+            let preflight =
+                inspect_repo_db_passport(&repo, &db, &IndexOptions::default()).expect("preflight");
+            assert!(
+                preflight.valid,
+                "old DB became non-claimable after {failpoint}: {preflight:?}"
+            );
+            assert_no_atomic_temp_dbs(&db);
+        }
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn write_path_cold_after_publish_failure_leaves_complete_claimable_db() {
+        let repo = temp_repo("write-path-cold-after-publish");
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function oldLogin() { return 'old'; }\n",
+        );
+        let db = repo.join("target").join("cold.sqlite");
+        index_repo_to_db(&repo, &db).expect("initial index");
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function newLogin() { return 'new'; }\n",
+        );
+
+        let error =
+            with_write_path_chaos_failpoint("cold_after_publish_before_final_status", || {
+                index_repo_to_db_with_options(&repo, &db, fresh_rebuild_options())
+            })
+            .expect_err("post-publish failpoint must fail");
+        assert!(error
+            .to_string()
+            .contains("cold_after_publish_before_final_status"));
+
+        let store = SqliteGraphStore::open(&db).expect("open published DB");
+        store
+            .full_integrity_gate()
+            .expect("published DB remains valid");
+        assert_eq!(
+            entities_by_kind_and_name(&store, EntityKind::Function, "newLogin").len(),
+            1
+        );
+        assert!(entities_by_kind_and_name(&store, EntityKind::Function, "oldLogin").is_empty());
+        drop(store);
+
+        let preflight =
+            inspect_repo_db_passport(&repo, &db, &IndexOptions::default()).expect("preflight");
+        assert!(
+            preflight.valid,
+            "post-publish failpoint must not leave a partial artifact: {preflight:?}"
+        );
+        assert_no_atomic_temp_dbs(&db);
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn write_path_incremental_failpoints_roll_back_changed_file() {
+        for failpoint in [
+            "incremental_before_stale_cleanup",
+            "incremental_after_stale_cleanup_before_insert",
+            "incremental_during_entity_insert",
+            "incremental_during_edge_insert",
+            "incremental_before_path_evidence_refresh",
+            "incremental_after_insert_before_commit",
+            "incremental_before_commit",
+        ] {
+            let repo = temp_repo(&format!("write-path-incremental-{failpoint}"));
+            write_test_file(
+                &repo,
+                "src/auth.ts",
+                "export function helper() { return 'old'; }\n\
+                 export function oldLogin() { return helper(); }\n",
+            );
+            let db = repo.join("target").join("incremental.sqlite");
+            index_repo_to_db(&repo, &db).expect("initial index");
+            let before_hash = semantic_graph_fact_hash(&db);
+
+            write_test_file(
+                &repo,
+                "src/auth.ts",
+                "export function helper() { return 'new'; }\n\
+                 export function newLogin() { return helper(); }\n",
+            );
+            let error = with_write_path_chaos_failpoint(failpoint, || {
+                update_changed_files_to_db(&repo, &[PathBuf::from("src/auth.ts")], &db)
+            })
+            .expect_err("incremental failpoint must fail");
+            assert!(
+                error.to_string().contains(failpoint),
+                "failpoint={failpoint} error={error}"
+            );
+
+            let store = SqliteGraphStore::open(&db).expect("open rolled-back DB");
+            store
+                .full_integrity_gate()
+                .expect("rolled-back DB remains valid");
+            assert_eq!(
+                semantic_graph_fact_hash(&db),
+                before_hash,
+                "graph facts changed after {failpoint}"
+            );
+            assert_eq!(
+                entities_by_kind_and_name(&store, EntityKind::Function, "oldLogin").len(),
+                1,
+                "old symbol missing after {failpoint}"
+            );
+            assert!(
+                entities_by_kind_and_name(&store, EntityKind::Function, "newLogin").is_empty(),
+                "new symbol leaked after {failpoint}"
+            );
+            drop(store);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+    }
+
+    #[test]
+    fn write_path_incremental_success_prunes_dirty_sidecar_handles() {
+        let repo = temp_repo("write-path-incremental-dirty-sidecars");
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function oldLogin() { return 'old'; }\n",
+        );
+        let db = repo.join("target").join("sidecars.sqlite");
+        index_repo_to_db(&repo, &db).expect("initial index");
+        {
+            let store = SqliteGraphStore::open(&db).expect("store");
+            let old_login = entity_by_file_kind_and_name(
+                &store,
+                "src/auth.ts",
+                EntityKind::Function,
+                "oldLogin",
+            );
+            store
+                .insert_entity_feature(&EntityFeatureRow {
+                    entity_id: old_login.id.clone(),
+                    feature_kind: "ast_shape".to_string(),
+                    payload_version: 1,
+                    compact_payload: "{\"shape\":\"old\"}".to_string(),
+                    extraction_version: "test-sidecar-v1".to_string(),
+                    source_span_id: Some(old_login.id.clone()),
+                    claimability: "diagnostic_only".to_string(),
+                })
+                .expect("insert entity feature");
+            store
+                .insert_routing_packet_handle(&RoutingPacketHandleRow {
+                    handle_id: "handle-old-auth".to_string(),
+                    db_passport_hash: "passport-old".to_string(),
+                    task_intent_hash: "intent-old".to_string(),
+                    packet_kind: "routing_packet".to_string(),
+                    evidence_refs_json: format!("[\"{}\"]", old_login.id),
+                    expires_or_invalidates_on: "file_fact_cleanup".to_string(),
+                    payload_version: 1,
+                    claimability: "diagnostic_only".to_string(),
+                })
+                .expect("insert routing handle");
+            let counts = store.sparse_sidecar_counts().expect("sidecar counts");
+            assert_eq!(counts.get("entity_features").copied(), Some(1));
+            assert_eq!(counts.get("routing_packet_handles").copied(), Some(1));
+        }
+
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function newLogin() { return 'new'; }\n",
+        );
+        let summary = update_changed_files_to_db(&repo, &[PathBuf::from("src/auth.ts")], &db)
+            .expect("successful update after sidecar seed");
+        assert_eq!(summary.files_indexed, 1);
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert!(entities_by_kind_and_name(&store, EntityKind::Function, "oldLogin").is_empty());
+        assert_eq!(
+            entities_by_kind_and_name(&store, EntityKind::Function, "newLogin").len(),
+            1
+        );
+        let counts = store.sparse_sidecar_counts().expect("sidecar counts");
+        assert_eq!(counts.get("entity_features").copied(), Some(0));
+        assert_eq!(counts.get("routing_packet_handles").copied(), Some(0));
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn write_path_incremental_sidecar_invalidation_failure_rolls_back_dirty_evidence() {
+        let repo = temp_repo("write-path-incremental-sidecar-rollback");
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function oldLogin() { return 'old'; }\n",
+        );
+        let db = repo.join("target").join("sidecars-rollback.sqlite");
+        index_repo_to_db(&repo, &db).expect("initial index");
+        {
+            let store = SqliteGraphStore::open(&db).expect("store");
+            let old_login = entity_by_file_kind_and_name(
+                &store,
+                "src/auth.ts",
+                EntityKind::Function,
+                "oldLogin",
+            );
+            store
+                .insert_entity_feature(&EntityFeatureRow {
+                    entity_id: old_login.id.clone(),
+                    feature_kind: "ast_shape".to_string(),
+                    payload_version: 1,
+                    compact_payload: "{\"shape\":\"old\"}".to_string(),
+                    extraction_version: "test-sidecar-v1".to_string(),
+                    source_span_id: Some(old_login.id.clone()),
+                    claimability: "diagnostic_only".to_string(),
+                })
+                .expect("insert entity feature");
+            store
+                .insert_routing_packet_handle(&RoutingPacketHandleRow {
+                    handle_id: "handle-old-auth".to_string(),
+                    db_passport_hash: "passport-old".to_string(),
+                    task_intent_hash: "intent-old".to_string(),
+                    packet_kind: "routing_packet".to_string(),
+                    evidence_refs_json: format!("[\"{}\"]", old_login.id),
+                    expires_or_invalidates_on: "file_fact_cleanup".to_string(),
+                    payload_version: 1,
+                    claimability: "diagnostic_only".to_string(),
+                })
+                .expect("insert routing handle");
+        }
+
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function newLogin() { return 'new'; }\n",
+        );
+        let error = with_write_path_chaos_failpoint(
+            "incremental_after_stale_cleanup_before_insert",
+            || update_changed_files_to_db(&repo, &[PathBuf::from("src/auth.ts")], &db),
+        )
+        .expect_err("sidecar invalidation phase failpoint must fail");
+        assert!(error
+            .to_string()
+            .contains("incremental_after_stale_cleanup_before_insert"));
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        store
+            .full_integrity_gate()
+            .expect("rolled-back sidecar invalidation DB remains valid");
+        assert_eq!(
+            entities_by_kind_and_name(&store, EntityKind::Function, "oldLogin").len(),
+            1
+        );
+        assert!(entities_by_kind_and_name(&store, EntityKind::Function, "newLogin").is_empty());
+        let counts = store.sparse_sidecar_counts().expect("sidecar counts");
+        assert_eq!(counts.get("entity_features").copied(), Some(1));
+        assert_eq!(counts.get("routing_packet_handles").copied(), Some(1));
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
     fn audit_full_reindex_after_rename_deletes_old_path_and_indexes_new_path() {
         let repo = temp_repo("rename-cleanup");
         let old_path = repo.join("src").join("old_path.ts");
@@ -16150,6 +25094,405 @@ mod tests {
             calls.iter().any(|edge| edge.tail_id == new_target.id),
             "CALLS should move to newTarget after the import alias changes"
         );
+    }
+
+    #[test]
+    fn rtds_dependency_closure_changed_export_considers_direct_importer_without_full_reparse() {
+        let repo = temp_repo("rtds-closure-export-importer");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function oldTarget() { return 'old'; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/consumer.ts",
+            "import { oldTarget } from './service';\n\
+             export function run() { return oldTarget(); }\n",
+        );
+        let db = repo.join("target").join("closure.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function newTarget() { return 'new'; }\n",
+        );
+        let summary = update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            .expect("delta update");
+
+        assert!(summary
+            .dependency_closure
+            .closure_files_considered
+            .contains(&"src/consumer.ts".to_string()));
+        assert!(summary
+            .dependency_closure
+            .closure_relation_classes
+            .iter()
+            .any(|class| class == "direct_static_importer"
+                || class == "deleted_or_changed_callable_reference"));
+        assert!(!summary.dependency_closure.closure_budget_hit);
+        assert!(summary.dependency_closure.full_repo_fallback_avoided);
+        assert_eq!(
+            summary.files_parsed, 1,
+            "unchanged importer is metadata-checked, not reparsed"
+        );
+        assert_eq!(summary.files_walked, 2);
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert!(entities_by_kind_and_name(&store, EntityKind::Function, "oldTarget").is_empty());
+        assert_eq!(
+            entities_by_kind_and_name(&store, EntityKind::Function, "newTarget").len(),
+            1
+        );
+        drop(store);
+        assert!(!repo.join(".codegraph").exists());
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn rtds_dependency_closure_handles_utf8_bom_static_imports() {
+        let repo = temp_repo("rtds-closure-bom-import");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function oldTarget() { return 'old'; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/consumer.ts",
+            "\u{feff}import { oldTarget } from './service';\n\
+             export function run() { return oldTarget(); }\n",
+        );
+        let db = repo.join("target").join("closure.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function newTarget() { return 'new'; }\n",
+        );
+        let summary = update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            .expect("delta update");
+
+        assert!(summary
+            .dependency_closure
+            .closure_files_considered
+            .contains(&"src/consumer.ts".to_string()));
+        assert!(summary
+            .dependency_closure
+            .closure_relation_classes
+            .contains(&"direct_static_importer".to_string()));
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn rtds_dependency_closure_changed_import_alias_reports_exact_alias_class() {
+        let repo = temp_repo("rtds-closure-alias-change");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function oldTarget() { return 'old'; }\n\
+             export function newTarget() { return 'new'; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/consumer.ts",
+            "import { oldTarget as target } from './service';\n\
+             export function run() { return target(); }\n",
+        );
+        let db = repo.join("target").join("closure.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        write_test_file(
+            &repo,
+            "src/consumer.ts",
+            "import { newTarget as target } from './service';\n\
+             export function run() { return target(); }\n",
+        );
+        let summary = update_changed_files_to_db(&repo, &[PathBuf::from("src/consumer.ts")], &db)
+            .expect("delta update");
+
+        assert!(summary
+            .dependency_closure
+            .closure_relation_classes
+            .contains(&"direct_import_alias".to_string()));
+        assert!(summary
+            .dependency_closure
+            .closure_files_considered
+            .contains(&"src/consumer.ts".to_string()));
+        assert!(!summary.dependency_closure.closure_budget_hit);
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let new_target = entity_by_file_kind_and_name(
+            &store,
+            "src/service.ts",
+            EntityKind::Function,
+            "newTarget",
+        );
+        let run =
+            entity_by_file_kind_and_name(&store, "src/consumer.ts", EntityKind::Function, "run");
+        let calls = store
+            .find_edges_by_head_relation(&run.id, RelationKind::Calls)
+            .expect("calls from run");
+        assert!(calls.iter().any(|edge| edge.tail_id == new_target.id));
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn rtds_dependency_closure_deleted_callable_considers_direct_reference() {
+        let repo = temp_repo("rtds-closure-deleted-callable");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function removedTarget() { return 'old'; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/consumer.ts",
+            "import { removedTarget } from './service';\n\
+             export function run() { return removedTarget(); }\n",
+        );
+        let db = repo.join("target").join("closure.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        fs::remove_file(repo.join("src").join("service.ts")).expect("delete service");
+        let summary = update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            .expect("delta update");
+
+        assert!(summary
+            .dependency_closure
+            .closure_files_considered
+            .contains(&"src/consumer.ts".to_string()));
+        assert!(summary
+            .dependency_closure
+            .closure_relation_classes
+            .contains(&"deleted_or_changed_callable_reference".to_string()));
+        assert_eq!(summary.files_deleted, 1);
+        assert_eq!(summary.files_walked, 2);
+        assert_eq!(summary.files_parsed, 0);
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert!(store.get_file("src/service.ts").expect("file").is_none());
+        assert!(
+            entities_by_kind_and_name(&store, EntityKind::Function, "removedTarget").is_empty()
+        );
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn rtds_dependency_closure_over_budget_degrades_without_full_repo_fallback() {
+        let repo = temp_repo("rtds-closure-over-budget");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function target() { return 'old'; }\n",
+        );
+        for index in 0..4 {
+            write_test_file(
+                &repo,
+                &format!("src/consumer{index}.ts"),
+                "import { target } from './service';\n\
+                 export function run() { return target(); }\n",
+            );
+        }
+        let db = repo.join("target").join("closure.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function target() { return 'new'; }\n",
+        );
+        let budget = RtdsDependencyClosureBudget {
+            max_dirty_files: 1,
+            max_edges_inspected: 64,
+            max_relation_classes: 6,
+            max_wall_ms: 250,
+            max_source_bytes: 4 * 1024 * 1024,
+            max_db_rows_hydrated: 512,
+            max_per_relation: 64,
+        };
+        let summary = with_rtds_closure_budget(budget, || {
+            update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+        })
+        .expect("delta update");
+
+        assert!(summary.dependency_closure.closure_budget_hit);
+        assert_eq!(
+            summary.dependency_closure.status, "degraded",
+            "over-budget closure must be explicit"
+        );
+        assert_eq!(
+            summary.dependency_closure.closure_files_considered,
+            vec!["src/service.ts".to_string()]
+        );
+        assert_eq!(
+            summary.files_walked, 1,
+            "must not silently full-repo fallback"
+        );
+        assert!(summary
+            .dependency_closure
+            .manual_full_index_recommendation
+            .as_deref()
+            .is_some_and(|recommendation| recommendation.contains("agent-use index --fresh")));
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn rtds_dependency_closure_unsupported_relation_is_unknown_not_proof() {
+        let repo = temp_repo("rtds-closure-unsupported-relation");
+        write_test_file(
+            &repo,
+            "src/policy.ts",
+            "export function policy() { return true; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/route.ts",
+            "export function route() { return 'ok'; }\n",
+        );
+        let db = repo.join("target").join("closure.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        {
+            let store = SqliteGraphStore::open(&db).expect("store");
+            let policy = entity_by_file_kind_and_name(
+                &store,
+                "src/policy.ts",
+                EntityKind::Function,
+                "policy",
+            );
+            let route =
+                entity_by_file_kind_and_name(&store, "src/route.ts", EntityKind::Function, "route");
+            let span = SourceSpan::new("src/route.ts", 1, 1);
+            store
+                .upsert_edge(&Edge {
+                    id: stable_edge_id(&route.id, RelationKind::Authorizes, &policy.id, &span),
+                    head_id: route.id,
+                    relation: RelationKind::Authorizes,
+                    tail_id: policy.id,
+                    source_span: span,
+                    repo_commit: None,
+                    file_hash: None,
+                    extractor: "test".to_string(),
+                    confidence: 1.0,
+                    exactness: Exactness::ParserVerified,
+                    edge_class: EdgeClass::BaseExact,
+                    context: EdgeContext::Production,
+                    derived: false,
+                    provenance_edges: Vec::new(),
+                    metadata: Metadata::new(),
+                })
+                .expect("insert unsupported proof relation");
+        }
+
+        write_test_file(
+            &repo,
+            "src/policy.ts",
+            "export function policy() { return false; }\n",
+        );
+        let summary = update_changed_files_to_db(&repo, &[PathBuf::from("src/policy.ts")], &db)
+            .expect("delta update");
+
+        assert!(summary
+            .dependency_closure
+            .closure_unknowns
+            .contains(&"unsupported_relation_class:AUTHORIZES".to_string()));
+        assert!(summary
+            .dependency_closure
+            .skipped_relation_classes
+            .contains(&"AUTHORIZES".to_string()));
+        assert_eq!(summary.dependency_closure.status, "degraded");
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn rtds_dependency_closure_keeps_same_name_symbols_file_scoped() {
+        let repo = temp_repo("rtds-closure-same-name");
+        write_test_file(
+            &repo,
+            "src/a.ts",
+            "export function chooseUser() { return 'a'; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/b.ts",
+            "export function chooseUser() { return 'b'; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/consumer.ts",
+            "import { chooseUser } from './a';\n\
+             export function run() { return chooseUser(); }\n",
+        );
+        let db = repo.join("target").join("closure.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        write_test_file(
+            &repo,
+            "src/a.ts",
+            "export function chooseUser() { return 'a2'; }\n",
+        );
+        let summary = update_changed_files_to_db(&repo, &[PathBuf::from("src/a.ts")], &db)
+            .expect("delta update");
+
+        assert!(summary
+            .dependency_closure
+            .closure_files_considered
+            .contains(&"src/consumer.ts".to_string()));
+        assert!(!summary
+            .dependency_closure
+            .closure_files_considered
+            .contains(&"src/b.ts".to_string()));
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn rtds_dependency_closure_failpoint_preserves_old_good_db() {
+        let repo = temp_repo("rtds-closure-failpoint-preserves-db");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function oldTarget() { return 'old'; }\n",
+        );
+        let db = repo.join("target").join("closure.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        let before_hash = semantic_graph_fact_hash(&db);
+
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function newTarget() { return 'new'; }\n",
+        );
+        let error = with_rtds_closure_failpoint("before_update", || {
+            update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+        })
+        .expect_err("closure failpoint must stop before update");
+        assert!(
+            error
+                .to_string()
+                .contains("rtds_dependency_closure_failpoint"),
+            "error={error}"
+        );
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        store.full_integrity_gate().expect("old DB valid");
+        assert_eq!(semantic_graph_fact_hash(&db), before_hash);
+        assert_eq!(
+            entities_by_kind_and_name(&store, EntityKind::Function, "oldTarget").len(),
+            1
+        );
+        assert!(entities_by_kind_and_name(&store, EntityKind::Function, "newTarget").is_empty());
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
     }
 
     #[test]

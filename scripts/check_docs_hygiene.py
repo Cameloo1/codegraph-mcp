@@ -13,11 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 PUBLIC_DOCS = [
     "README.md",
+    "CONTRIBUTING.md",
     "docs/agent-json.md",
     "docs/architecture.md",
-    "docs/benchmark-guide.md",
     "docs/cli-reference.md",
-    "docs/codegraphcontext-comparison.md",
     "docs/guardrails.md",
     "docs/install.md",
     "docs/language-frontends.md",
@@ -29,7 +28,6 @@ PUBLIC_DOCS = [
 ]
 
 STABLE_REPORT_PREFIXES = (
-    "reports/final/comprehensive_benchmark_latest.",
     "reports/final/intended_tool_quality_gate.",
     "reports/final/lifecycle_quality_gate.",
     "reports/final/manual_relation_precision.",

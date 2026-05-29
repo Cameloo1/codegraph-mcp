@@ -18,23 +18,26 @@ use std::{
 };
 
 use codegraph_core::{
-    ContextPacket, ContextSnippet, Edge, Entity, FileRecord, PathEvidence, RelationKind,
-    RetrievalCandidate, SourceSpan,
+    ContextPacket, ContextSnippet, Edge, Entity, PathEvidence, RelationKind, RetrievalCandidate,
+    SourceSpan,
 };
 use codegraph_index::{
-    default_db_path, index_repo_to_db_with_options, inspect_db_lifecycle_preflight,
-    load_vector_chunk_index_json, update_changed_files_to_db,
-    vector_chunk_search_hit_to_retrieval_candidate, DbLifecyclePreflight, IndexOptions,
+    candidate_spool_index_status_for_repo, default_db_path, index_repo_to_db_with_options,
+    inspect_db_lifecycle_preflight, load_vector_chunk_index_json,
+    query_candidate_spool_index_for_repo, update_changed_files_to_db,
+    validate_vector_chunk_source_bindings, vector_chunk_search_hit_to_retrieval_candidate,
+    CandidateSpoolIndexLoad, CandidateSpoolIndexQueryResult, DbLifecyclePreflight, IndexOptions,
     IndexScopeOptions, VectorChunkIndexBuildOptions, UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::language_frontends;
 use codegraph_query::{
-    ExactGraphQueryEngine, GraphPath, QueryLimits, RetrievalDocument, RetrievalFunnel,
-    RetrievalFunnelConfig, RetrievalFunnelRequest, RetrievalTraceStage,
+    plan_task_retrieval, ExactGraphQueryEngine, GraphPath, QueryLimits, RetrievalDocument,
+    RetrievalFunnel, RetrievalFunnelConfig, RetrievalFunnelRequest, RetrievalTraceStage,
     VectorCandidateBranchStatus,
 };
 use codegraph_store::{
-    DbPreflightReport, GraphStore, SqliteGraphStore, TextSearchHit, TextSearchKind,
+    classify_sqlite_access_problem, DbPreflightReport, GraphStore, SqliteGraphStore, TextSearchHit,
+    TextSearchKind,
 };
 use codegraph_trace::{TraceConfig, TraceLogger};
 use codegraph_vector::{DeterministicTestEmbeddingProvider, TestEmbeddingEnablement};
@@ -46,16 +49,25 @@ use codegraph_index::scope_policy_hash;
 
 pub const SERVER_NAME: &str = "codegraph-mcp";
 pub const PHASE: &str = "30";
+const PRODUCTION_AGENT_USE_PROFILE_NAME: &str = "production-agent-use";
+const MCP_AGENT_USE_PROFILE_DB_FILE_NAME: &str = "production-agent-use.sqlite";
+const MCP_AGENT_USE_PUBLISH_STATE_FILE_NAME: &str = "production-agent-use.publish-state.json";
+const MCP_AGENT_USE_DELTA_STATE_FILE_NAME: &str = "production-agent-use.delta-state.json";
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const EXTERNAL_PROFILE_DB_NOTE: &str =
     "This profile DB is outside the workspace; grant access or choose a workspace-local DB.";
 const DEFAULT_RESULT_LIMIT: usize = 20;
 const DEFAULT_GRAPH_EDGE_LIMIT: usize = 100_000;
 const MCP_VECTOR_INDEX_FILE_NAME: &str = "codegraph-vector-chunks.json";
+const MCP_VECTOR_AUDIT_FILE_NAME: &str = "codegraph-vector-audit.json";
 const MCP_VECTOR_SOURCE_SCOPE: &str = "context-pack-release-vector-candidates";
 const MCP_VECTOR_PROVIDER_DIMENSION: usize = 64;
 const MCP_VECTOR_CANDIDATE_TOP_K: usize = 16;
 const MCP_CONTEXT_PACK_DEFAULT_LIMIT: usize = 12;
+const MCP_CONTEXT_PACK_DOCUMENT_LIMIT: usize = 512;
+const MCP_CONTEXT_PACK_EDGE_LIMIT: usize = 4_096;
+const MCP_CONTEXT_PACK_SOURCE_FILE_LIMIT: usize = 64;
+const MCP_CONTEXT_PACK_SOURCE_BYTE_LIMIT: usize = 256 * 1024;
 
 const MCP_RESOURCE_URIS: &[&str] = &[
     "codegraph://status",
@@ -252,7 +264,26 @@ impl McpServerConfig {
 impl Default for McpServerConfig {
     fn default() -> Self {
         let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        Self::for_repo(repo_root)
+        let trace = TraceConfig::for_repo(&repo_root);
+        let db_path = std::env::var_os("CODEGRAPH_DB_PATH")
+            .map(PathBuf::from)
+            .map(|path| {
+                if path.is_absolute() {
+                    path
+                } else {
+                    repo_root.join(path)
+                }
+            })
+            .unwrap_or_else(|| default_db_path(&repo_root));
+        Self {
+            db_path,
+            repo_root,
+            max_graph_edges: DEFAULT_GRAPH_EDGE_LIMIT,
+            trace_enabled: true,
+            trace_run_id: trace.run_id,
+            trace_task_id: trace.task_id,
+            trace_root: trace.trace_root,
+        }
     }
 }
 
@@ -894,6 +925,9 @@ impl McpServer {
             .map_err(ToolCallError::from)?;
         let sqlite_sidecars =
             mcp_sqlite_sidecars_status_from_health(&db_path, &preflight.db_health);
+        let staged_availability =
+            mcp_staged_availability(&repo_root, &db_path, Some(&preflight), args, None);
+        let staged_fields = mcp_staged_top_level_fields(&staged_availability);
         if !preflight.safe {
             let problem = mcp_db_problem_kind(&preflight);
             let status = if problem == "db_missing" {
@@ -913,7 +947,7 @@ impl McpServer {
             } else {
                 "Call codegraph.index_repo to rebuild the unsafe DB before search or analysis."
             };
-            return Ok(json!({
+            let mut value = json!({
                 "status": status,
                 "problem": problem_value,
                 "db_problem": problem,
@@ -938,7 +972,16 @@ impl McpServer {
                 "suggested_next": suggested_next,
                 "read_mostly": true,
                 "workflow": "single-agent-only",
-            }));
+            });
+            mcp_merge_json_object(&mut value, staged_fields);
+            mcp_attach_rtds_freshness_fields(
+                &mut value,
+                &repo_root,
+                &db_path,
+                Some(&preflight),
+                &staged_availability,
+            );
+            return Ok(value);
         }
 
         let explicit_scope = mcp_explicit_scope_policy(args)?;
@@ -946,7 +989,7 @@ impl McpServer {
             .map_err(ToolCallError::from)?;
         if !preflight.safe {
             let problem = mcp_db_problem_kind(&preflight);
-            return Ok(json!({
+            let mut value = json!({
                 "status": "db_problem",
                 "problem": problem,
                 "db_problem": problem,
@@ -965,11 +1008,26 @@ impl McpServer {
                 "suggested_next": "Call codegraph.index_repo to rebuild the unsafe DB before search or analysis.",
                 "read_mostly": true,
                 "workflow": "single-agent-only",
-            }));
+            });
+            let staged_availability =
+                mcp_staged_availability(&repo_root, &db_path, Some(&preflight), args, None);
+            mcp_merge_json_object(
+                &mut value,
+                mcp_staged_top_level_fields(&staged_availability),
+            );
+            mcp_attach_rtds_freshness_fields(
+                &mut value,
+                &repo_root,
+                &db_path,
+                Some(&preflight),
+                &staged_availability,
+            );
+            return Ok(value);
         }
 
-        let store = SqliteGraphStore::open(&db_path).map_err(mcp_store_error)?;
-        Ok(json!({
+        let store = SqliteGraphStore::open_read_only(&db_path).map_err(mcp_store_error)?;
+        let relation_facts = store.count_edges().map_err(mcp_store_error)?;
+        let mut value = json!({
             "status": "ok",
             "safe_to_query": true,
             "server": SERVER_NAME,
@@ -992,11 +1050,26 @@ impl McpServer {
             "schema_version": store.schema_version().map_err(mcp_store_error)?,
             "files": store.count_files().map_err(mcp_store_error)?,
             "entities": store.count_entities().map_err(mcp_store_error)?,
-            "edges": store.count_edges().map_err(mcp_store_error)?,
+            "relation_facts": relation_facts,
+            "release_reported_relation_facts": relation_facts,
+            "edges": relation_facts,
+            "metric_label_notes": {
+                "relation_facts": "Aggregate reported relation facts across the active store surface; not a raw table-row label.",
+                "edges": "Deprecated compatibility alias for relation_facts."
+            },
             "read_mostly": true,
             "destructive_tools": false,
             "workflow": "single-agent-only",
-        }))
+        });
+        mcp_merge_json_object(&mut value, staged_fields);
+        mcp_attach_rtds_freshness_fields(
+            &mut value,
+            &repo_root,
+            &db_path,
+            Some(&preflight),
+            &staged_availability,
+        );
+        Ok(value)
     }
 
     fn index_repo(&self, args: &Map<String, Value>) -> Result<Value, ToolCallError> {
@@ -1179,30 +1252,73 @@ impl McpServer {
                 || optional_bool_arg(args, "enableNuanceRescueCandidates")?.unwrap_or(false);
         let vector_index_path_arg = optional_string(args, "vector_index")
             .or_else(|| optional_string(args, "vector_index_path"))
+            .or_else(|| optional_string(args, "vector_runtime_sidecar"))
             .or_else(|| optional_string(args, "vectorIndex"))
-            .or_else(|| optional_string(args, "vectorIndexPath"));
+            .or_else(|| optional_string(args, "vectorIndexPath"))
+            .or_else(|| optional_string(args, "vectorRuntimeSidecar"));
+        let candidate_spool_path_arg = optional_string(args, "candidate_spool")
+            .or_else(|| optional_string(args, "candidate_spool_path"))
+            .or_else(|| optional_string(args, "candidateSpool"))
+            .or_else(|| optional_string(args, "candidateSpoolPath"));
+        let enable_candidate_spool = optional_bool_arg(args, "enable_candidate_spool")?
+            .unwrap_or(false)
+            || optional_bool_arg(args, "early_candidates")?.unwrap_or(false)
+            || optional_bool_arg(args, "enableCandidateSpool")?.unwrap_or(false)
+            || optional_bool_arg(args, "earlyCandidates")?.unwrap_or(false)
+            || candidate_spool_path_arg.is_some();
+        let allow_stale_candidate_spool = optional_bool_arg(args, "allow_stale_candidate_spool")?
+            .unwrap_or(false)
+            || optional_bool_arg(args, "allowStaleCandidateSpool")?.unwrap_or(false);
         let repo_root = self.repo_root(args)?;
-        let (store, preflight) = self.open_store_with_preflight(args)?;
+        let db_path = self.db_path(args, &repo_root)?;
+        let explicit_scope = mcp_explicit_scope_policy(args)?;
+        let preflight = inspect_db_lifecycle_preflight(&repo_root, &db_path, explicit_scope)
+            .map_err(ToolCallError::from)?;
+        if !preflight.safe {
+            if enable_candidate_spool {
+                let spool_path = mcp_resolve_artifact_path(
+                    candidate_spool_path_arg.as_deref(),
+                    mcp_default_candidate_spool_path(&repo_root),
+                );
+                return mcp_candidate_spool_context_pack(
+                    &task,
+                    &mode,
+                    response_mode.as_str(),
+                    response_limit,
+                    &repo_root,
+                    &db_path,
+                    &spool_path,
+                    allow_stale_candidate_spool,
+                    Some(mcp_db_problem_kind(&preflight).to_string()),
+                );
+            }
+            return Err(mcp_unsafe_preflight_error(&db_path, &preflight));
+        }
+        let store = SqliteGraphStore::open_read_only(&db_path).map_err(mcp_store_error)?;
         let vector_branch = enable_vector_candidates.then(|| {
             load_mcp_vector_branch(
+                &repo_root,
                 &store,
-                Path::new(&preflight.exact_db_path_checked),
+                &db_path,
                 vector_index_path_arg.as_deref(),
                 &task,
             )
         });
-        let sources = load_sources(&repo_root, &store).map_err(ToolCallError::from)?;
-        let documents = retrieval_documents(&store)?;
+        let (documents, document_metrics) =
+            retrieval_documents_for_context_pack(&store, &task, &seeds)?;
+        let document_paths = retrieval_document_paths(&documents);
+        let (sources, source_metrics) =
+            load_sources_for_paths(&repo_root, &document_paths).map_err(ToolCallError::from)?;
         let mut config = RetrievalFunnelConfig::default();
         config.vector_candidate_top_k = MCP_VECTOR_CANDIDATE_TOP_K;
-        let funnel = RetrievalFunnel::new(
-            store
-                .list_edges(self.config.max_graph_edges)
-                .map_err(mcp_store_error)?,
-            documents,
-            config,
-        )
-        .map_err(|error| ToolCallError::new("retrieval_funnel_failed", error.to_string()))?;
+        let edges = store
+            .list_edges(MCP_CONTEXT_PACK_EDGE_LIMIT)
+            .map_err(mcp_store_error)?;
+        let edge_count = edges.len();
+        let funnel = RetrievalFunnel::new(edges, documents, config)
+            .map_err(|error| ToolCallError::new("retrieval_funnel_failed", error.to_string()))?;
+        let read_path_metrics =
+            mcp_context_pack_read_path_metrics_json(&document_metrics, &source_metrics, edge_count);
         let stage0_docs = stage0_candidates
             .iter()
             .map(|candidate| RetrievalDocument::new(candidate, candidate).stage0_score(1.0))
@@ -1257,31 +1373,71 @@ impl McpServer {
         } else {
             Value::Null
         };
+        let staged_availability = mcp_staged_availability(
+            &repo_root,
+            &db_path,
+            Some(&preflight),
+            args,
+            vector_branch.as_ref(),
+        );
+        packet.metadata.insert(
+            "staged_availability".to_string(),
+            staged_availability.clone(),
+        );
+        let (task_intent, task_profile, retrieval_plan) = plan_task_retrieval(&task);
 
         if response_mode == "verbose" || response_mode == "explain" {
-            return Ok(json!({
+            let staged_fields = mcp_staged_top_level_fields(&staged_availability);
+            let mut value = json!({
                 "status": "ok",
                 "schema_version": 1,
                 "command": "codegraph.context_pack",
                 "response_mode": response_mode,
                 "task": task,
+                "task_intent": task_intent.to_json(),
+                "task_profile": task_profile.to_json(),
+                "retrieval_plan": retrieval_plan.to_json(),
+                "retrieval_plan_summary": retrieval_plan.summary_json(),
                 "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
                 "packet": packet,
                 "funnel_trace": result.trace.iter().map(retrieval_trace_stage_json).collect::<Vec<_>>(),
                 "vector_candidate_diagnostics": vector_candidate_diagnostics,
                 "nuance_rescue_diagnostics": nuance_rescue_diagnostics,
+                "read_path_metrics": read_path_metrics,
+                "staged_availability": staged_availability.clone(),
                 "proof": "Context packet is built through Stage 0 exact seeds, Stage 1 binary sieve, Stage 2 compressed rerank, Stage 3 exact graph verification, and Stage 4 packet emission.",
-            }));
+            });
+            mcp_merge_json_object(&mut value, staged_fields);
+            mcp_attach_rtds_freshness_fields(
+                &mut value,
+                &repo_root,
+                &db_path,
+                Some(&preflight),
+                &staged_availability,
+            );
+            return Ok(value);
         }
 
-        Ok(mcp_context_pack_compact_json(
+        let mut compact = mcp_context_pack_compact_json(
             &task,
             &packet,
             &preflight,
             response_limit,
             vector_candidate_diagnostics,
             nuance_rescue_diagnostics,
-        ))
+            staged_availability.clone(),
+        );
+        if let Some(object) = compact.as_object_mut() {
+            object.insert("read_path_metrics".to_string(), read_path_metrics);
+        }
+        mcp_attach_rtds_freshness_fields(
+            &mut compact,
+            &repo_root,
+            &db_path,
+            Some(&preflight),
+            &staged_availability,
+        );
+        Ok(compact)
     }
 
     fn trace_path(&self, args: &Map<String, Value>) -> Result<Value, ToolCallError> {
@@ -1652,30 +1808,9 @@ impl McpServer {
         let preflight = inspect_db_lifecycle_preflight(&repo_root, &db_path, explicit_scope)
             .map_err(ToolCallError::from)?;
         if !preflight.safe {
-            if let Some(mismatch) = preflight.scope_mismatch.as_ref() {
-                return Err(ToolCallError::new(
-                    "scope_mismatch",
-                    mcp_scope_mismatch_message(&db_path, mismatch),
-                ));
-            }
-            let outside_note = preflight
-                .outside_workspace_note
-                .as_deref()
-                .map(|note| format!("; {note}"))
-                .unwrap_or_default();
-            let problem_kind = mcp_db_problem_kind(&preflight);
-            return Err(ToolCallError::new(
-                problem_kind,
-                format!(
-                    "CodeGraph DB is not safe to read at {}: kind={}; {}{}; call codegraph.index_repo to rebuild",
-                    db_path.display(),
-                    problem_kind,
-                    preflight.blockers.join("; "),
-                    outside_note
-                ),
-            ));
+            return Err(mcp_unsafe_preflight_error(&db_path, &preflight));
         }
-        let store = SqliteGraphStore::open(&db_path).map_err(mcp_store_error)?;
+        let store = SqliteGraphStore::open_read_only(&db_path).map_err(mcp_store_error)?;
         Ok((store, preflight))
     }
 
@@ -1731,6 +1866,7 @@ struct McpVectorBranch {
 }
 
 fn load_mcp_vector_branch(
+    repo_root: &Path,
     store: &SqliteGraphStore,
     db_path: &Path,
     explicit_index_path: Option<&str>,
@@ -1804,7 +1940,40 @@ fn load_mcp_vector_branch(
                     warning: Some(format!(
                         "vector index stale or incompatible; continuing without vector candidates: {error}"
                     )),
-                };
+            };
+        }
+    };
+    let _source_binding_validation = match validate_vector_chunk_source_bindings(repo_root, &index)
+    {
+        Ok(validation) if validation.is_valid() => validation,
+        Ok(validation) => {
+            return McpVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: format!(
+                        "vector_source_binding_stale: {}",
+                        validation.stale_reasons.join("; ")
+                    ),
+                },
+                candidates: Vec::new(),
+                warning: Some(
+                    "vector index source file bindings are stale; continuing without vector candidates"
+                        .to_string(),
+                ),
+            };
+        }
+        Err(error) => {
+            return McpVectorBranch {
+                index_path,
+                status: VectorCandidateBranchStatus::Stale {
+                    reason: format!("vector source binding validation failed: {error}"),
+                },
+                candidates: Vec::new(),
+                warning: Some(
+                    "vector index source file binding validation failed; continuing without vector candidates"
+                        .to_string(),
+                ),
+            };
         }
     };
     let hits = match index.search(&provider, task, MCP_VECTOR_CANDIDATE_TOP_K) {
@@ -2020,6 +2189,17 @@ fn output_schema_for_tool(name: &str) -> Value {
         }
         "codegraph.context_pack" => {
             properties.insert("packet".to_string(), json!({"type": "object"}));
+            properties.insert("staged_availability".to_string(), json!({"type": "object"}));
+            properties.insert("graph_db_status".to_string(), json!({"type": "string"}));
+            properties.insert(
+                "candidate_spool_status".to_string(),
+                json!({"type": "string"}),
+            );
+            properties.insert(
+                "vector_runtime_status".to_string(),
+                json!({"type": "string"}),
+            );
+            properties.insert("vector_audit_status".to_string(), json!({"type": "string"}));
         }
         "codegraph.status" => {
             properties.insert("safe_to_query".to_string(), json!({"type": "boolean"}));
@@ -2032,6 +2212,17 @@ fn output_schema_for_tool(name: &str) -> Value {
             properties.insert("files".to_string(), json!({"type": "integer"}));
             properties.insert("entities".to_string(), json!({"type": "integer"}));
             properties.insert("edges".to_string(), json!({"type": "integer"}));
+            properties.insert("staged_availability".to_string(), json!({"type": "object"}));
+            properties.insert("graph_db_status".to_string(), json!({"type": "string"}));
+            properties.insert(
+                "candidate_spool_status".to_string(),
+                json!({"type": "string"}),
+            );
+            properties.insert(
+                "vector_runtime_status".to_string(),
+                json!({"type": "string"}),
+            );
+            properties.insert("vector_audit_status".to_string(), json!({"type": "string"}));
         }
         _ => {}
     }
@@ -2191,6 +2382,20 @@ fn search_schema() -> Value {
 fn status_schema() -> Value {
     let mut schema = repo_schema(Vec::new());
     add_read_scope_schema_properties(&mut schema);
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        properties.insert(
+            "candidate_spool".to_string(),
+            json!({"type": "string", "description": "Optional candidate spool JSONL path for staged availability inspection."}),
+        );
+        properties.insert(
+            "vector_runtime_sidecar".to_string(),
+            json!({"type": "string", "description": "Optional compact runtime vector sidecar path for staged availability inspection."}),
+        );
+        properties.insert(
+            "vector_audit_artifact".to_string(),
+            json!({"type": "string", "description": "Optional diagnostic-only vector audit artifact path for staged availability inspection."}),
+        );
+    }
     schema
 }
 
@@ -2313,6 +2518,26 @@ fn context_pack_schema() -> Value {
         properties.insert(
             "vector_index_path".to_string(),
             json!({"type": "string", "description": "Alias for vector_index."}),
+        );
+        properties.insert(
+            "vector_runtime_sidecar".to_string(),
+            json!({"type": "string", "description": "Alias for vector_index; expected to point at the compact runtime vector sidecar."}),
+        );
+        properties.insert(
+            "vector_audit_artifact".to_string(),
+            json!({"type": "string", "description": "Optional diagnostic-only vector audit artifact path; it is not used for runtime retrieval."}),
+        );
+        properties.insert(
+            "candidate_spool".to_string(),
+            json!({"type": "string", "description": "Optional candidate spool JSONL path for explicit early candidate context."}),
+        );
+        properties.insert(
+            "enable_candidate_spool".to_string(),
+            json!({"type": "boolean", "description": "Explicitly allow candidate-only spool context when graph DB is unavailable."}),
+        );
+        properties.insert(
+            "early_candidates".to_string(),
+            json!({"type": "boolean", "description": "Alias for enable_candidate_spool."}),
         );
     }
     schema
@@ -2586,6 +2811,7 @@ fn mcp_context_pack_compact_json(
     limit: usize,
     vector_candidate_diagnostics: Value,
     nuance_rescue_diagnostics: Value,
+    staged_availability: Value,
 ) -> Value {
     let lifecycle = mcp_compact_lifecycle_summary(preflight);
     let claimable = lifecycle
@@ -2639,14 +2865,21 @@ fn mcp_context_pack_compact_json(
         } else {
             "unknown"
         });
+    let proof_strength =
+        mcp_context_pack_proof_strength(graph_proof, &fallback_evidence, &packet.snippets);
+    let (task_intent, task_profile, retrieval_plan) = plan_task_retrieval(task);
+    let staged_fields = mcp_staged_top_level_fields(&staged_availability);
 
-    json!({
+    let mut value = json!({
         "status": "ok",
         "schema_version": 1,
         "command": "codegraph.context_pack",
         "response_mode": "compact",
         "task": task,
         "mode": packet.mode.clone(),
+        "task_intent": task_intent.to_json(),
+        "task_profile": task_profile.to_json(),
+        "retrieval_plan_summary": retrieval_plan.summary_json(),
         "lifecycle": lifecycle,
         "claimable": claimable,
         "diagnostic_only": diagnostic_only,
@@ -2662,9 +2895,11 @@ fn mcp_context_pack_compact_json(
         "fallback_evidence_count": fallback_evidence.len(),
         "proof_path_count": proof_path_count,
         "proof_status": proof_status,
+        "proof_strength": proof_strength,
         "graph_proof": graph_proof,
         "evidence_status": packet.metadata.get("evidence_status").cloned().unwrap_or(Value::Null),
         "proof_failure_reason": packet.metadata.get("proof_failure_reason").cloned().unwrap_or(Value::Null),
+        "staged_availability": staged_availability.clone(),
         "truncation": {
             "returned_count": returned_count,
             "limit_applied": omitted_count > 0,
@@ -2676,7 +2911,32 @@ fn mcp_context_pack_compact_json(
         "vector_candidate_diagnostics": mcp_compact_vector_diagnostics(vector_candidate_diagnostics),
         "nuance_rescue_diagnostics": mcp_compact_nuance_rescue_diagnostics(nuance_rescue_diagnostics),
         "proof": "Compact context-pack output omits full packet metadata and funnel trace. Use response_mode=verbose or response_mode=explain for audit detail.",
-    })
+    });
+    mcp_merge_json_object(&mut value, staged_fields);
+    value
+}
+
+fn mcp_context_pack_proof_strength(
+    graph_proof: bool,
+    fallback_evidence: &[Value],
+    snippets: &[ContextSnippet],
+) -> &'static str {
+    if graph_proof {
+        return "graph_relation_proof";
+    }
+    if fallback_evidence.iter().any(|evidence| {
+        evidence.get("evidence_role").and_then(Value::as_str) == Some("text_evidence")
+            || evidence
+                .get("fallback_source")
+                .and_then(Value::as_str)
+                .is_some_and(|source| source.contains("text_evidence"))
+    }) {
+        return "text_evidence";
+    }
+    if !fallback_evidence.is_empty() || !snippets.is_empty() {
+        return "source_navigation_evidence";
+    }
+    "unknown"
 }
 
 fn mcp_compact_lifecycle_summary(preflight: &DbLifecyclePreflight) -> Value {
@@ -2850,6 +3110,1377 @@ fn mcp_compact_nuance_rescue_diagnostics(value: Value) -> Value {
         "dropped_count": object.get("dropped_count").cloned().unwrap_or(Value::Null),
         "proof_contract": object.get("proof_contract").cloned().unwrap_or(Value::Null),
     })
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct McpCandidateSpoolLoad {
+    path: PathBuf,
+    metadata: Value,
+    chunks: Vec<Value>,
+    stale: bool,
+    reason: Option<String>,
+}
+
+fn mcp_default_candidate_spool_path(repo_root: &Path) -> PathBuf {
+    default_db_path(repo_root)
+        .parent()
+        .map(|parent| parent.join("codegraph-candidate-spool.jsonl"))
+        .unwrap_or_else(|| PathBuf::from("codegraph-candidate-spool.jsonl"))
+}
+
+fn mcp_default_vector_runtime_path(db_path: &Path) -> PathBuf {
+    db_path
+        .parent()
+        .map(|parent| parent.join(MCP_VECTOR_INDEX_FILE_NAME))
+        .unwrap_or_else(|| PathBuf::from(MCP_VECTOR_INDEX_FILE_NAME))
+}
+
+fn mcp_default_vector_audit_path(db_path: &Path) -> PathBuf {
+    db_path
+        .parent()
+        .map(|parent| parent.join(MCP_VECTOR_AUDIT_FILE_NAME))
+        .unwrap_or_else(|| PathBuf::from(MCP_VECTOR_AUDIT_FILE_NAME))
+}
+
+fn mcp_resolve_artifact_path(path: Option<&str>, default_path: PathBuf) -> PathBuf {
+    let path = path.map(PathBuf::from).unwrap_or(default_path);
+    if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&path))
+            .unwrap_or(path)
+    }
+}
+
+#[allow(dead_code)]
+fn mcp_load_candidate_spool_for_repo(
+    repo_root: &Path,
+    spool_path: &Path,
+    allow_stale: bool,
+) -> Result<McpCandidateSpoolLoad, ToolCallError> {
+    if !spool_path.exists() {
+        return Err(ToolCallError::new(
+            "candidate_spool_missing",
+            format!("candidate spool does not exist: {}", spool_path.display()),
+        ));
+    }
+    let text = fs::read_to_string(spool_path).map_err(|error| {
+        ToolCallError::new(
+            "candidate_spool_read_failed",
+            format!(
+                "could not read candidate spool {}: {error}",
+                spool_path.display()
+            ),
+        )
+    })?;
+    let mut metadata = Value::Null;
+    let mut chunks = Vec::new();
+    for (line_index, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: Value = serde_json::from_str(trimmed).map_err(|error| {
+            ToolCallError::new(
+                "candidate_spool_corrupt",
+                format!(
+                    "candidate spool JSONL line {} is invalid: {error}",
+                    line_index + 1
+                ),
+            )
+        })?;
+        if value.get("chunk_id").is_some() || value.get("text").is_some() {
+            chunks.push(value);
+        } else if metadata.is_null() {
+            metadata = value
+                .get("metadata")
+                .cloned()
+                .unwrap_or_else(|| value.clone());
+        }
+    }
+    let mut stale = false;
+    let mut reason = None;
+    if let Some(spool_repo) = metadata.get("repo_root").and_then(Value::as_str) {
+        let spool_repo = PathBuf::from(spool_repo);
+        if !paths_equivalent(repo_root, &spool_repo) {
+            stale = true;
+            reason = Some("candidate spool repo_root does not match current repo".to_string());
+        }
+    }
+    if stale && !allow_stale {
+        return Err(ToolCallError::new(
+            "candidate_spool_stale",
+            reason
+                .clone()
+                .unwrap_or_else(|| "candidate spool is stale".to_string()),
+        ));
+    }
+    Ok(McpCandidateSpoolLoad {
+        path: spool_path.to_path_buf(),
+        metadata,
+        chunks,
+        stale,
+        reason,
+    })
+}
+
+fn mcp_candidate_spool_context_pack(
+    task: &str,
+    mode: &str,
+    response_mode: &str,
+    limit: usize,
+    repo_root: &Path,
+    db_path: &Path,
+    spool_path: &Path,
+    allow_stale: bool,
+    db_problem: Option<String>,
+) -> Result<Value, ToolCallError> {
+    let mut query_results = Vec::new();
+    let mut candidates_by_id = BTreeMap::<String, Value>::new();
+    for subcommand in ["symbols", "files", "text"] {
+        let query_result = query_candidate_spool_index_for_repo(
+            repo_root,
+            spool_path,
+            subcommand,
+            task,
+            limit,
+            allow_stale,
+        )
+        .map_err(|error| {
+            ToolCallError::new("candidate_spool_query_index_failed", error.to_string())
+        })?;
+        for candidate in mcp_candidate_spool_index_query_hits(&query_result) {
+            let key = candidate
+                .get("chunk_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            candidates_by_id.entry(key).or_insert(candidate);
+        }
+        query_results.push(query_result);
+    }
+    let Some(first_query_result) = query_results.first() else {
+        return Err(ToolCallError::new(
+            "candidate_spool_query_index_failed",
+            "no candidate spool query result",
+        ));
+    };
+    let candidates = candidates_by_id
+        .into_values()
+        .take(limit)
+        .collect::<Vec<_>>();
+    let staged_availability = mcp_staged_availability_for_spool_index_only(
+        repo_root,
+        db_path,
+        spool_path,
+        &first_query_result.load,
+        db_problem,
+    );
+    let staged_fields = mcp_staged_top_level_fields(&staged_availability);
+    let lifecycle = mcp_candidate_spool_index_lifecycle_json(&first_query_result.load);
+    let mut value = json!({
+        "status": "ok",
+        "schema_version": 1,
+        "command": "codegraph.context_pack",
+        "response_mode": response_mode,
+        "task": task,
+        "mode": mode,
+        "repo_root": path_string(repo_root),
+        "db_path": path_string(db_path),
+        "proof_status": "candidate_only",
+        "proof_strength": "candidate_evidence",
+        "graph_proof": false,
+        "candidate_only": true,
+        "claimable_for_graph": false,
+        "candidate_spool": lifecycle,
+        "staged_availability": staged_availability.clone(),
+        "snippets": candidates,
+        "fallback_evidence": [],
+        "paths": [],
+        "proof_path_count": 0,
+        "warnings": ["Graph DB is still building; returning candidate-only spool context."],
+        "errors": [],
+        "proof": "MCP context_pack candidate spool mode returns candidate-only source-navigation evidence and does not trigger indexing.",
+    });
+    mcp_merge_json_object(&mut value, staged_fields);
+    mcp_attach_rtds_freshness_fields(&mut value, repo_root, db_path, None, &staged_availability);
+    Ok(value)
+}
+
+#[allow(dead_code)]
+fn mcp_candidate_spool_query_hits(
+    spool: &McpCandidateSpoolLoad,
+    task: &str,
+    limit: usize,
+) -> Vec<Value> {
+    let terms = task
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_' && ch != '-' && ch != '/')
+        .map(|term| term.to_ascii_lowercase())
+        .filter(|term| term.len() >= 2)
+        .collect::<Vec<_>>();
+    let mut scored = Vec::new();
+    for chunk in &spool.chunks {
+        let haystack = mcp_candidate_spool_haystack(chunk);
+        let score = terms
+            .iter()
+            .filter(|term| haystack.contains(term.as_str()))
+            .count();
+        if score == 0 && !terms.is_empty() {
+            continue;
+        }
+        scored.push((score, mcp_candidate_spool_hit_json(chunk)));
+    }
+    scored.sort_by(|left, right| {
+        right.0.cmp(&left.0).then_with(|| {
+            mcp_candidate_spool_sort_key(&left.1).cmp(&mcp_candidate_spool_sort_key(&right.1))
+        })
+    });
+    scored
+        .into_iter()
+        .map(|(_, value)| value)
+        .take(limit)
+        .collect()
+}
+
+fn mcp_candidate_spool_index_query_hits(
+    query_result: &CandidateSpoolIndexQueryResult,
+) -> Vec<Value> {
+    query_result
+        .chunks
+        .iter()
+        .map(mcp_candidate_spool_hit_json)
+        .collect()
+}
+
+#[allow(dead_code)]
+fn mcp_candidate_spool_haystack(chunk: &Value) -> String {
+    [
+        chunk.get("path").and_then(Value::as_str).unwrap_or(""),
+        chunk.get("entity_id").and_then(Value::as_str).unwrap_or(""),
+        chunk.get("text").and_then(Value::as_str).unwrap_or(""),
+        chunk
+            .get("selection_reason")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+        chunk
+            .get("source_kind")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+        chunk
+            .get("chunk_kind")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    ]
+    .join(" ")
+    .to_ascii_lowercase()
+}
+
+fn mcp_candidate_spool_hit_json(chunk: &Value) -> Value {
+    let span = chunk.get("source_span").cloned().unwrap_or(Value::Null);
+    let text = chunk.get("text").and_then(Value::as_str).unwrap_or("");
+    let chunk_kind = chunk
+        .get("chunk_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("candidate");
+    let proof_strength = match chunk
+        .get("source_kind")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+    {
+        "text_evidence" => "text_evidence",
+        "graph_entity" => "symbol_evidence",
+        _ if chunk_kind == "file_path_title" => "source_navigation_evidence",
+        _ => "candidate_evidence",
+    };
+    json!({
+        "chunk_id": chunk.get("chunk_id").cloned().unwrap_or(Value::Null),
+        "chunk_kind": chunk.get("chunk_kind").cloned().unwrap_or(Value::Null),
+        "source_kind": chunk.get("source_kind").cloned().unwrap_or(Value::Null),
+        "path": chunk.get("path").cloned().unwrap_or(Value::Null),
+        "source_span": span,
+        "entity_id": chunk.get("entity_id").cloned().unwrap_or(Value::Null),
+        "text": compact_mcp_text(text, 600),
+        "selection_score": chunk.get("selection_score").cloned().unwrap_or(Value::Null),
+        "selection_bucket": chunk.get("selection_bucket").cloned().unwrap_or(Value::Null),
+        "selection_reason": chunk.get("selection_reason").cloned().unwrap_or(Value::Null),
+        "proof_status": "candidate_only",
+        "proof_strength": proof_strength,
+        "graph_proof": false,
+        "claimable_for_graph": false,
+        "requires_graph_verification": true,
+        "candidate_only": true,
+    })
+}
+
+#[allow(dead_code)]
+fn mcp_candidate_spool_sort_key(value: &Value) -> String {
+    format!(
+        "{}:{}",
+        value.get("path").and_then(Value::as_str).unwrap_or(""),
+        value.get("chunk_id").and_then(Value::as_str).unwrap_or("")
+    )
+}
+
+#[allow(dead_code)]
+fn mcp_candidate_spool_lifecycle_json(spool: &McpCandidateSpoolLoad) -> Value {
+    json!({
+        "candidate_spool_status": if spool.stale {
+            "stale"
+        } else {
+            spool.metadata
+                .get("candidate_spool_status")
+                .and_then(Value::as_str)
+                .or_else(|| spool.metadata.get("status").and_then(Value::as_str))
+                .unwrap_or("unknown")
+        },
+        "candidate_spool_path": path_string(&spool.path),
+        "artifact_kind": "candidate_spool",
+        "artifact_format": "jsonl",
+        "lifecycle": spool.metadata.get("lifecycle").cloned().unwrap_or(Value::Null),
+        "incomplete": spool.metadata.get("incomplete").and_then(Value::as_bool).unwrap_or(true),
+        "stale": spool.stale,
+        "reason": spool.reason.clone(),
+        "spooled_total_chunks": spool.chunks.len(),
+        "candidate_only": true,
+        "graph_proof": false,
+        "claimable_for_graph": false,
+    })
+}
+
+fn mcp_candidate_spool_index_lifecycle_json(spool: &CandidateSpoolIndexLoad) -> Value {
+    json!({
+        "candidate_spool_status": if spool.stale {
+            "stale"
+        } else {
+            spool.metadata
+                .get("candidate_spool_status")
+                .and_then(Value::as_str)
+                .or_else(|| spool.metadata.get("status").and_then(Value::as_str))
+                .unwrap_or("unknown")
+        },
+        "candidate_spool_path": path_string(&spool.path),
+        "artifact_kind": "candidate_spool",
+        "artifact_format": spool.metadata.get("artifact_format").and_then(Value::as_str).unwrap_or("jsonl"),
+        "lifecycle": spool.metadata.get("lifecycle").cloned().unwrap_or(Value::Null),
+        "candidate_spool_policy": spool.metadata.get("candidate_spool_policy").cloned().unwrap_or_else(|| json!("bounded")),
+        "candidate_spool_required": spool.metadata.get("candidate_spool_required").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_spool_budget_bytes": spool.metadata.get("candidate_spool_budget_bytes").cloned().unwrap_or(Value::Null),
+        "candidate_spool_written_bytes": spool.metadata.get("candidate_spool_written_bytes").cloned().unwrap_or(Value::Null),
+        "candidate_spool_truncated": spool.metadata.get("candidate_spool_truncated").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_spool_disabled_reason": spool.metadata.get("candidate_spool_disabled_reason").cloned().unwrap_or(Value::Null),
+        "candidate_spool_warning": spool.metadata.get("candidate_spool_warning").cloned().unwrap_or(Value::Null),
+        "artifact_budget_remaining_bytes": spool.metadata.get("artifact_budget_remaining_bytes").cloned().unwrap_or(Value::Null),
+        "artifact_budget_decision": spool.metadata.get("artifact_budget_decision").cloned().unwrap_or(Value::Null),
+        "incomplete": spool.metadata.get("incomplete").and_then(Value::as_bool).unwrap_or(true),
+        "stale": spool.stale,
+        "reason": spool.reason.clone(),
+        "spooled_total_chunks": spool.query_index_record_count,
+        "query_index_status": spool.query_index_status.clone(),
+        "query_index_kind": spool.query_index_kind.clone(),
+        "query_index_path": path_string(&spool.query_index_path),
+        "query_index_bytes": spool.query_index_bytes,
+        "query_index_record_count": spool.query_index_record_count,
+        "query_index_source_binding_count": spool.query_index_source_binding_count,
+        "query_index_version": spool.query_index_version.clone(),
+        "candidate_only": true,
+        "graph_proof": false,
+        "claimable_for_graph": false,
+    })
+}
+
+fn mcp_staged_availability(
+    repo_root: &Path,
+    db_path: &Path,
+    preflight: Option<&DbLifecyclePreflight>,
+    args: &Map<String, Value>,
+    vector_branch: Option<&McpVectorBranch>,
+) -> Value {
+    let graph = mcp_graph_layer_status(preflight);
+    let candidate_spool_path = optional_string(args, "candidate_spool")
+        .or_else(|| optional_string(args, "candidate_spool_path"))
+        .or_else(|| optional_string(args, "candidateSpool"))
+        .or_else(|| optional_string(args, "candidateSpoolPath"));
+    let spool_path = mcp_resolve_artifact_path(
+        candidate_spool_path.as_deref(),
+        mcp_default_candidate_spool_path(repo_root),
+    );
+    let spool = mcp_candidate_spool_layer_status(repo_root, &spool_path);
+    let vector_path_arg = optional_string(args, "vector_index")
+        .or_else(|| optional_string(args, "vector_index_path"))
+        .or_else(|| optional_string(args, "vector_runtime_sidecar"))
+        .or_else(|| optional_string(args, "vectorIndex"))
+        .or_else(|| optional_string(args, "vectorIndexPath"))
+        .or_else(|| optional_string(args, "vectorRuntimeSidecar"));
+    let runtime_path = vector_branch
+        .map(|branch| branch.index_path.clone())
+        .unwrap_or_else(|| {
+            mcp_resolve_artifact_path(
+                vector_path_arg.as_deref(),
+                mcp_default_vector_runtime_path(db_path),
+            )
+        });
+    let runtime = mcp_vector_runtime_layer_status(
+        repo_root,
+        db_path,
+        preflight,
+        &runtime_path,
+        vector_branch,
+    );
+    let audit_path_arg = optional_string(args, "vector_audit_artifact")
+        .or_else(|| optional_string(args, "vectorAuditArtifact"));
+    let audit_path = mcp_resolve_artifact_path(
+        audit_path_arg.as_deref(),
+        mcp_default_vector_audit_path(db_path),
+    );
+    let audit = mcp_vector_audit_layer_status(preflight, &audit_path);
+    mcp_staged_availability_from_layers(graph, spool, runtime, audit)
+}
+
+fn mcp_staged_availability_for_spool_index_only(
+    _repo_root: &Path,
+    _db_path: &Path,
+    spool_path: &Path,
+    spool: &CandidateSpoolIndexLoad,
+    db_problem: Option<String>,
+) -> Value {
+    let graph = json!({
+        "layer": "graph_db",
+        "status": "building",
+        "ready": false,
+        "graph_proof_available": false,
+        "path": Value::Null,
+        "reason": db_problem.unwrap_or_else(|| "Graph DB is still building or unavailable.".to_string()),
+    });
+    let spool = mcp_candidate_spool_layer_from_index_load(spool_path, spool);
+    let runtime = json!({
+        "layer": "vector_runtime",
+        "status": "missing",
+        "ready": false,
+        "path": Value::Null,
+        "candidate_only": true,
+        "graph_proof": false,
+        "complete_path_symbol_index": false,
+        "reason": "runtime vector sidecar missing",
+    });
+    let audit = json!({
+        "layer": "vector_audit",
+        "status": "missing",
+        "ready": false,
+        "path": Value::Null,
+        "diagnostic_only": true,
+        "runtime_dependency": false,
+    });
+    mcp_staged_availability_from_layers(graph, spool, runtime, audit)
+}
+
+fn mcp_graph_layer_status(preflight: Option<&DbLifecyclePreflight>) -> Value {
+    let Some(preflight) = preflight else {
+        return json!({
+            "layer": "graph_db",
+            "status": "unknown",
+            "ready": false,
+            "graph_proof_available": false,
+            "reason": "graph DB lifecycle was not inspected",
+        });
+    };
+    let status = if preflight.safe {
+        "ready"
+    } else if preflight.path_access_status == "db_missing" {
+        "no_index"
+    } else {
+        preflight.db_problem_kind.as_deref().unwrap_or("blocked")
+    };
+    json!({
+        "layer": "graph_db",
+        "status": status,
+        "ready": preflight.safe,
+        "graph_proof_available": preflight.safe,
+        "path": preflight.exact_db_path_checked.clone(),
+        "lifecycle_decision": if preflight.safe { "read_reuse" } else { "blocked" },
+        "claimable": preflight.safe,
+        "diagnostic_only": !preflight.safe,
+        "passport_status": preflight.db_health.passport_status.clone(),
+        "schema_status": preflight.schema_status.clone(),
+        "scope_status": preflight.scope_status.clone(),
+        "blockers": preflight.blockers.clone(),
+        "warnings": preflight.warnings.clone(),
+    })
+}
+
+fn mcp_candidate_spool_layer_status(repo_root: &Path, spool_path: &Path) -> Value {
+    if !spool_path.exists() {
+        return json!({
+                "layer": "candidate_spool",
+                "status": "no_spool",
+                "ready": false,
+                "path": path_string(spool_path),
+            "candidate_only": true,
+            "graph_proof": false,
+            "candidate_spool_unavailable": true,
+            "candidate_context_truncated": false,
+        });
+    }
+    match candidate_spool_index_status_for_repo(repo_root, spool_path, true) {
+        Ok(spool) => mcp_candidate_spool_layer_from_index_load(spool_path, &spool),
+        Err(error) => json!({
+            "layer": "candidate_spool",
+            "status": if error.to_string().contains("corrupt") { "corrupt" } else { "foreign" },
+            "ready": false,
+            "path": path_string(spool_path),
+            "candidate_only": true,
+            "graph_proof": false,
+            "candidate_spool_unavailable": true,
+            "candidate_context_truncated": false,
+            "reason": error.to_string(),
+        }),
+    }
+}
+
+fn mcp_candidate_spool_layer_from_index_load(
+    spool_path: &Path,
+    spool: &CandidateSpoolIndexLoad,
+) -> Value {
+    let lifecycle = mcp_candidate_spool_index_lifecycle_json(spool);
+    let status = match spool.query_index_status.as_str() {
+        "index_missing" => "query_index_missing",
+        "permission_denied" => "permission_denied",
+        "filesystem_inaccessible" => "filesystem_inaccessible",
+        "sidecar_unavailable" => "sidecar_unavailable",
+        "corrupt" => "query_index_corrupt",
+        "stale" => "stale",
+        _ => lifecycle
+            .get("candidate_spool_status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown"),
+    };
+    let ready = matches!(
+        status,
+        "building"
+            | "partial_ready"
+            | "bounded_ready"
+            | "truncated_ready"
+            | "superseded_by_graph_db"
+    ) && spool.query_index_status == "ready";
+    let candidate_context_truncated = lifecycle
+        .get("candidate_spool_truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    json!({
+        "layer": "candidate_spool",
+        "status": status,
+        "ready": ready,
+        "path": path_string(spool_path),
+        "candidate_only": true,
+        "graph_proof": false,
+        "proof_strength": "candidate_evidence",
+        "source_navigation_evidence": true,
+        "spooled_total_chunks": spool.query_index_record_count,
+        "incomplete": lifecycle.get("incomplete").cloned().unwrap_or(Value::Null),
+        "stale": spool.stale,
+        "reason": spool.reason.clone(),
+        "query_index_status": spool.query_index_status.clone(),
+        "query_index_problem_kind": spool.query_index_status.clone(),
+        "query_index_kind": spool.query_index_kind.clone(),
+        "query_index_path": path_string(&spool.query_index_path),
+        "query_index_bytes": spool.query_index_bytes,
+        "query_index_record_count": spool.query_index_record_count,
+        "query_index_source_binding_count": spool.query_index_source_binding_count,
+        "query_index_version": spool.query_index_version.clone(),
+        "candidate_context_truncated": candidate_context_truncated,
+        "candidate_spool_unavailable": !ready,
+        "complete_path_symbol_index": false,
+        "candidate_spool_policy": lifecycle.get("candidate_spool_policy").cloned().unwrap_or_else(|| json!("bounded")),
+        "candidate_spool_required": lifecycle.get("candidate_spool_required").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_spool_budget_bytes": lifecycle.get("candidate_spool_budget_bytes").cloned().unwrap_or(Value::Null),
+        "candidate_spool_written_bytes": lifecycle.get("candidate_spool_written_bytes").cloned().unwrap_or(Value::Null),
+        "candidate_spool_truncated": lifecycle.get("candidate_spool_truncated").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_spool_disabled_reason": lifecycle.get("candidate_spool_disabled_reason").cloned().unwrap_or(Value::Null),
+        "candidate_spool_warning": lifecycle.get("candidate_spool_warning").cloned().unwrap_or(Value::Null),
+        "artifact_budget_remaining_bytes": lifecycle.get("artifact_budget_remaining_bytes").cloned().unwrap_or(Value::Null),
+        "artifact_budget_decision": lifecycle.get("artifact_budget_decision").cloned().unwrap_or(Value::Null),
+    })
+}
+
+#[allow(dead_code)]
+fn mcp_candidate_spool_layer_from_load(spool_path: &Path, spool: &McpCandidateSpoolLoad) -> Value {
+    let lifecycle = mcp_candidate_spool_lifecycle_json(spool);
+    let status = lifecycle
+        .get("candidate_spool_status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let ready = matches!(
+        status,
+        "building"
+            | "partial_ready"
+            | "bounded_ready"
+            | "truncated_ready"
+            | "superseded_by_graph_db"
+    );
+    json!({
+        "layer": "candidate_spool",
+        "status": status,
+        "ready": ready,
+        "path": path_string(spool_path),
+        "candidate_only": true,
+        "graph_proof": false,
+        "proof_strength": "candidate_evidence",
+        "source_navigation_evidence": true,
+        "spooled_total_chunks": spool.chunks.len(),
+        "incomplete": lifecycle.get("incomplete").cloned().unwrap_or(Value::Null),
+        "stale": spool.stale,
+        "candidate_context_truncated": lifecycle.get("candidate_spool_truncated").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_spool_unavailable": !ready,
+        "complete_path_symbol_index": false,
+        "reason": spool.reason.clone(),
+    })
+}
+
+fn mcp_vector_runtime_layer_status(
+    repo_root: &Path,
+    _db_path: &Path,
+    preflight: Option<&DbLifecyclePreflight>,
+    runtime_path: &Path,
+    branch: Option<&McpVectorBranch>,
+) -> Value {
+    if let Some(branch) = branch {
+        return json!({
+            "layer": "vector_runtime",
+            "status": branch.status.as_str(),
+            "ready": matches!(branch.status, VectorCandidateBranchStatus::Ready),
+            "path": path_string(runtime_path),
+            "candidate_only": true,
+            "graph_proof": false,
+            "complete_path_symbol_index": false,
+            "selected_chunks_only": true,
+            "candidate_count": branch.candidates.len(),
+            "reason": branch.warning.clone(),
+        });
+    }
+    if !runtime_path.exists() {
+        return json!({
+            "layer": "vector_runtime",
+            "status": "missing",
+            "ready": false,
+            "path": path_string(runtime_path),
+            "candidate_only": true,
+            "graph_proof": false,
+            "complete_path_symbol_index": false,
+            "reason": "runtime vector sidecar missing",
+        });
+    }
+    let Some(preflight) = preflight else {
+        return json!({
+            "layer": "vector_runtime",
+            "status": "present_unvalidated",
+            "ready": false,
+            "path": path_string(runtime_path),
+            "candidate_only": true,
+            "graph_proof": false,
+            "reason": "runtime sidecar exists but graph DB validation was not run",
+        });
+    };
+    if !preflight.safe {
+        return json!({
+            "layer": "vector_runtime",
+            "status": "blocked_by_graph_db",
+            "ready": false,
+            "path": path_string(runtime_path),
+            "candidate_only": true,
+            "graph_proof": false,
+            "reason": "runtime sidecar validation requires a valid graph DB passport",
+        });
+    }
+    let Some(passport) = preflight.db_health.passport.as_ref() else {
+        return json!({
+            "layer": "vector_runtime",
+            "status": "stale",
+            "ready": false,
+            "path": path_string(runtime_path),
+            "candidate_only": true,
+            "graph_proof": false,
+            "reason": "graph DB passport missing",
+        });
+    };
+    let provider = match mcp_vector_provider() {
+        Ok(provider) => provider,
+        Err(error) => {
+            return json!({
+                "layer": "vector_runtime",
+                "status": "stale",
+                "ready": false,
+                "path": path_string(runtime_path),
+                "candidate_only": true,
+                "graph_proof": false,
+                "reason": error,
+            });
+        }
+    };
+    match load_vector_chunk_index_json(runtime_path, &provider, passport, mcp_vector_options()) {
+        Ok(index) => {
+            let source_binding_validation = match validate_vector_chunk_source_bindings(
+                repo_root, &index,
+            ) {
+                Ok(validation) if validation.is_valid() => validation,
+                Ok(validation) => {
+                    return json!({
+                        "layer": "vector_runtime",
+                        "status": "stale",
+                        "ready": false,
+                        "path": path_string(runtime_path),
+                        "candidate_only": true,
+                        "graph_proof": false,
+                        "reason": format!("vector_source_binding_stale: {}", validation.stale_reasons.join("; ")),
+                        "source_binding_validation": serde_json::to_value(validation).unwrap_or(Value::Null),
+                    });
+                }
+                Err(error) => {
+                    return json!({
+                        "layer": "vector_runtime",
+                        "status": "stale",
+                        "ready": false,
+                        "path": path_string(runtime_path),
+                        "candidate_only": true,
+                        "graph_proof": false,
+                        "reason": format!("vector source binding validation failed: {error}"),
+                    });
+                }
+            };
+            json!({
+                "layer": "vector_runtime",
+                "status": "ready",
+                "ready": true,
+                "path": path_string(runtime_path),
+                "candidate_only": true,
+                "graph_proof": false,
+                "complete_path_symbol_index": false,
+                "selected_chunks_only": true,
+                "source_binding_validation": serde_json::to_value(source_binding_validation).unwrap_or(Value::Null),
+            })
+        }
+        Err(error) => json!({
+            "layer": "vector_runtime",
+            "status": "stale",
+            "ready": false,
+            "path": path_string(runtime_path),
+            "candidate_only": true,
+            "graph_proof": false,
+            "reason": error.to_string(),
+        }),
+    }
+}
+
+fn mcp_vector_audit_layer_status(
+    preflight: Option<&DbLifecyclePreflight>,
+    audit_path: &Path,
+) -> Value {
+    if !audit_path.exists() {
+        return json!({
+            "layer": "vector_audit",
+            "status": "missing",
+            "ready": false,
+            "path": path_string(audit_path),
+            "diagnostic_only": true,
+            "runtime_dependency": false,
+        });
+    }
+    let value = match fs::read_to_string(audit_path)
+        .map_err(|error| error.to_string())
+        .and_then(|text| serde_json::from_str::<Value>(&text).map_err(|error| error.to_string()))
+    {
+        Ok(value) => value,
+        Err(error) => {
+            return json!({
+                "layer": "vector_audit",
+                "status": "corrupt",
+                "ready": false,
+                "path": path_string(audit_path),
+                "diagnostic_only": true,
+                "runtime_dependency": false,
+                "reason": error,
+            });
+        }
+    };
+    let metadata = value.get("metadata").unwrap_or(&value);
+    let artifact_kind = metadata
+        .get("artifact_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let mut status = if artifact_kind == "audit_artifact" {
+        "ready"
+    } else {
+        "unknown"
+    };
+    let mut reason = None;
+    if let Some(preflight) = preflight.filter(|preflight| preflight.safe) {
+        if let Some(passport) = preflight.db_health.passport.as_ref() {
+            let artifact_scope = metadata
+                .get("passport")
+                .and_then(|passport| passport.get("index_scope_policy_hash"))
+                .and_then(Value::as_str);
+            if artifact_scope.is_some()
+                && artifact_scope != Some(passport.index_scope_policy_hash.as_str())
+            {
+                status = "stale";
+                reason = Some("audit artifact passport scope differs from graph DB".to_string());
+            }
+        }
+    }
+    json!({
+        "layer": "vector_audit",
+        "status": status,
+        "ready": matches!(status, "ready" | "diagnostic_only" | "stale"),
+        "path": path_string(audit_path),
+        "artifact_kind": artifact_kind,
+        "artifact_format": metadata.get("index_artifact_format").cloned().unwrap_or(Value::Null),
+        "diagnostic_only": true,
+        "runtime_dependency": false,
+        "reason": reason,
+    })
+}
+
+fn mcp_staged_availability_from_layers(
+    graph: Value,
+    spool: Value,
+    runtime: Value,
+    audit: Value,
+) -> Value {
+    let layers = vec![
+        ("graph_db", graph),
+        ("candidate_spool", spool),
+        ("vector_runtime", runtime),
+        ("vector_audit", audit),
+    ];
+    let mut layer_readiness = Map::new();
+    let mut available_layers = Vec::new();
+    let mut missing_layers = Vec::new();
+    let mut active_candidate_sources = Vec::new();
+    let mut warnings = Vec::new();
+    for (name, layer) in &layers {
+        let status = layer
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let ready = layer.get("ready").and_then(Value::as_bool).unwrap_or(false);
+        layer_readiness.insert((*name).to_string(), layer.clone());
+        if ready {
+            available_layers.push((*name).to_string());
+        } else if matches!(
+            status,
+            "missing"
+                | "no_spool"
+                | "no_index"
+                | "blocked"
+                | "corrupt"
+                | "foreign"
+                | "stale"
+                | "query_index_missing"
+                | "query_index_corrupt"
+                | "permission_denied"
+                | "filesystem_inaccessible"
+                | "sidecar_unavailable"
+                | "disabled_budget_exceeded"
+        ) {
+            missing_layers.push((*name).to_string());
+        }
+    }
+    let graph_ready = mcp_layer_ready(&layer_readiness, "graph_db");
+    let spool_ready = mcp_layer_ready(&layer_readiness, "candidate_spool");
+    let vector_ready = mcp_layer_ready(&layer_readiness, "vector_runtime");
+    let audit_ready = mcp_layer_ready(&layer_readiness, "vector_audit");
+    if spool_ready {
+        active_candidate_sources.push("candidate_spool".to_string());
+    }
+    if graph_ready {
+        active_candidate_sources.push("graph_db".to_string());
+        active_candidate_sources.push("stage0_text_evidence".to_string());
+        active_candidate_sources.push("symbol_lookup".to_string());
+    }
+    if vector_ready {
+        active_candidate_sources.push("vector_semantic".to_string());
+    }
+    if !graph_ready && spool_ready {
+        warnings.push(
+            "Graph DB is still building; returning candidate-only spool context.".to_string(),
+        );
+    }
+    let spool_status = layer_readiness
+        .get("candidate_spool")
+        .and_then(|layer| layer.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("no_spool");
+    let candidate_context_truncated = layer_readiness
+        .get("candidate_spool")
+        .and_then(|layer| layer.get("candidate_context_truncated"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let candidate_spool_unavailable = layer_readiness
+        .get("candidate_spool")
+        .and_then(|layer| layer.get("candidate_spool_unavailable"))
+        .and_then(Value::as_bool)
+        .unwrap_or(!spool_ready);
+    if candidate_context_truncated {
+        warnings.push(
+            "Candidate spool context is truncated; returned spans are a bounded working set."
+                .to_string(),
+        );
+    }
+    if matches!(spool_status, "disabled_budget_exceeded") {
+        warnings.push(
+            "Candidate spool unavailable: storage budget disabled the optional spool.".to_string(),
+        );
+    }
+    let vector_status = layer_readiness
+        .get("vector_runtime")
+        .and_then(|layer| layer.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("missing")
+        .to_string();
+    if vector_status == "stale" {
+        warnings.push("Vector runtime sidecar is stale; vector candidates omitted.".to_string());
+    }
+    if vector_ready
+        || matches!(
+            vector_status.as_str(),
+            "ready" | "not_requested" | "present_unvalidated"
+        )
+    {
+        warnings
+            .push("Selected vector sidecar is not a complete file/path/symbol index.".to_string());
+    }
+    if audit_ready {
+        warnings.push(
+            "Audit artifact exists but is diagnostic-only and not used for runtime retrieval."
+                .to_string(),
+        );
+    }
+    let candidate_only_available = spool_ready || vector_ready;
+    json!({
+        "schema_version": 1,
+        "available_layers": available_layers,
+        "missing_layers": missing_layers,
+        "layer_readiness": Value::Object(layer_readiness),
+        "graph_db_status": mcp_layer_status(&layers, "graph_db"),
+        "candidate_spool_status": mcp_layer_status(&layers, "candidate_spool"),
+        "vector_runtime_status": mcp_layer_status(&layers, "vector_runtime"),
+        "vector_audit_status": mcp_layer_status(&layers, "vector_audit"),
+        "active_candidate_sources": active_candidate_sources,
+        "candidate_context_available": candidate_only_available || graph_ready,
+        "candidate_context_truncated": candidate_context_truncated,
+        "candidate_spool_unavailable": candidate_spool_unavailable,
+        "candidate_only_available": candidate_only_available,
+        "graph_proof_available": graph_ready,
+        "lifecycle_decision": if graph_ready { "read_reuse" } else if spool_ready { "partial_candidate_context" } else { "blocked" },
+        "claimability": {
+            "claimable": graph_ready,
+            "candidate_only": candidate_only_available && !graph_ready,
+            "graph_proof_available": graph_ready,
+            "diagnostic_only": false,
+        },
+        "recommended_next_step": if vector_status == "stale" {
+            "rebuild vector sidecar"
+        } else if !graph_ready && spool_ready {
+            "inspect candidate spans"
+        } else if !graph_ready {
+            "wait_for_graph_db"
+        } else {
+            "run final graph verification"
+        },
+        "risks": [
+            {"risk_id": "candidate_context_not_graph_proof", "sentence": "Candidate context is not graph proof."},
+            {"risk_id": "vector_sidecar_not_complete_path_index", "sentence": "Selected vector sidecar is not a complete file/path/symbol index."},
+            {"risk_id": "audit_artifact_not_runtime_source", "sentence": "Audit artifact exists only for diagnostics and is not used for runtime retrieval."}
+        ],
+        "warnings": warnings,
+        "blockers": if graph_ready { Vec::<String>::new() } else { vec!["graph_db_not_ready".to_string()] },
+        "public_claim": false,
+    })
+}
+
+fn mcp_layer_ready(layer_readiness: &Map<String, Value>, layer_name: &str) -> bool {
+    layer_readiness
+        .get(layer_name)
+        .and_then(|layer| layer.get("ready"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn mcp_layer_status(layers: &[(&str, Value)], layer_name: &str) -> Value {
+    layers
+        .iter()
+        .find(|(name, _)| *name == layer_name)
+        .and_then(|(_, layer)| layer.get("status").cloned())
+        .unwrap_or_else(|| json!("unknown"))
+}
+
+fn mcp_staged_top_level_fields(staged: &Value) -> Value {
+    json!({
+        "staged_availability": staged,
+        "graph_db_status": staged.get("graph_db_status").cloned().unwrap_or(Value::Null),
+        "candidate_spool_status": staged.get("candidate_spool_status").cloned().unwrap_or(Value::Null),
+        "vector_runtime_status": staged.get("vector_runtime_status").cloned().unwrap_or(Value::Null),
+        "vector_audit_status": staged.get("vector_audit_status").cloned().unwrap_or(Value::Null),
+        "active_candidate_sources": staged.get("active_candidate_sources").cloned().unwrap_or_else(|| json!([])),
+        "candidate_context_truncated": staged.get("candidate_context_truncated").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_spool_unavailable": staged.get("candidate_spool_unavailable").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_only_available": staged.get("candidate_only_available").cloned().unwrap_or_else(|| json!(false)),
+        "graph_proof_available": staged.get("graph_proof_available").cloned().unwrap_or_else(|| json!(false)),
+        "lifecycle_decision": staged.get("lifecycle_decision").cloned().unwrap_or(Value::Null),
+        "claimability": staged.get("claimability").cloned().unwrap_or(Value::Null),
+        "warnings": staged.get("warnings").cloned().unwrap_or_else(|| json!([])),
+        "blockers": staged.get("blockers").cloned().unwrap_or_else(|| json!([])),
+    })
+}
+
+fn mcp_attach_rtds_freshness_fields(
+    value: &mut Value,
+    repo_root: &Path,
+    db_path: &Path,
+    preflight: Option<&DbLifecyclePreflight>,
+    staged_availability: &Value,
+) {
+    let rtds = mcp_rtds_freshness_json(repo_root, db_path, preflight, staged_availability);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("rtds_freshness".to_string(), rtds.clone());
+        object.insert(
+            "publish_state".to_string(),
+            rtds.get("publish_state").cloned().unwrap_or(Value::Null),
+        );
+        object.insert(
+            "last_delta_update_summary".to_string(),
+            rtds.get("last_delta_update_summary")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "graph_freshness".to_string(),
+            rtds.get("graph_freshness").cloned().unwrap_or(Value::Null),
+        );
+        object.insert(
+            "delta_state".to_string(),
+            rtds.get("delta_state").cloned().unwrap_or(Value::Null),
+        );
+        object.insert(
+            "dirty_state".to_string(),
+            rtds.get("dirty_state").cloned().unwrap_or(Value::Null),
+        );
+        object.insert(
+            "stale_candidate_layers".to_string(),
+            rtds.get("stale_candidate_layers")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        );
+        object.insert(
+            "blocked_labels".to_string(),
+            rtds.get("blocked_labels")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        );
+        object.insert(
+            "retryable_labels".to_string(),
+            rtds.get("retryable_labels")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        );
+        object.insert(
+            "recovery_commands".to_string(),
+            rtds.get("recovery_commands")
+                .cloned()
+                .unwrap_or_else(|| json!(mcp_agent_use_recovery_commands(repo_root))),
+        );
+        object.insert(
+            "candidate_only_available".to_string(),
+            staged_availability
+                .get("candidate_only_available")
+                .cloned()
+                .unwrap_or_else(|| json!(false)),
+        );
+        object.insert(
+            "graph_proof_available".to_string(),
+            staged_availability
+                .get("graph_proof_available")
+                .cloned()
+                .unwrap_or_else(|| json!(false)),
+        );
+    }
+}
+
+fn mcp_rtds_freshness_json(
+    repo_root: &Path,
+    db_path: &Path,
+    preflight: Option<&DbLifecyclePreflight>,
+    staged_availability: &Value,
+) -> Value {
+    let publish_state = mcp_agent_use_publish_state_json(db_path);
+    let publish_active = publish_state
+        .get("active")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let publish_status = publish_state
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("absent");
+    let last_delta = mcp_agent_use_last_delta_state_json(db_path);
+    let last_summary = last_delta
+        .get("last_delta_update_summary")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let graph_layer_status = staged_availability
+        .get("graph_db_status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let graph_freshness = if preflight.is_some_and(|preflight| preflight.safe) {
+        "current".to_string()
+    } else if let Some(preflight) = preflight {
+        if preflight.path_access_status == "db_missing" {
+            "absent".to_string()
+        } else {
+            preflight
+                .db_problem_kind
+                .clone()
+                .unwrap_or_else(|| "unavailable".to_string())
+        }
+    } else {
+        graph_layer_status.to_string()
+    };
+    let dirty_state = if publish_active {
+        publish_status.to_string()
+    } else if graph_freshness == "current" {
+        "ready".to_string()
+    } else {
+        graph_freshness.clone()
+    };
+    let delta_state = if publish_active {
+        publish_status.to_string()
+    } else {
+        last_delta
+            .get("delta_state")
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .unwrap_or_else(|| dirty_state.clone())
+    };
+    let mut blocked_labels = BTreeSet::new();
+    if let Some(preflight) = preflight {
+        for blocker in &preflight.blockers {
+            blocked_labels.insert(blocker.clone());
+        }
+    }
+    if let Some(blockers) = staged_availability
+        .get("blockers")
+        .and_then(Value::as_array)
+    {
+        for blocker in blockers {
+            if let Some(blocker) = blocker.as_str() {
+                blocked_labels.insert(blocker.to_string());
+            }
+        }
+    }
+    let mut retryable_labels = BTreeSet::new();
+    if publish_active && matches!(publish_status, "updating" | "publishing") {
+        retryable_labels.insert("wait_for_current_update".to_string());
+    }
+    if blocked_labels
+        .iter()
+        .any(|label| label.to_ascii_lowercase().contains("locked"))
+    {
+        retryable_labels.insert("db_locked".to_string());
+    }
+    let stale_candidate_layers = mcp_stale_candidate_layers(staged_availability);
+    json!({
+        "schema_version": 1,
+        "profile_name": if mcp_db_looks_like_agent_use_profile(db_path) { PRODUCTION_AGENT_USE_PROFILE_NAME } else { "unknown" },
+        "repo_root": path_string(repo_root),
+        "db_path": path_string(db_path),
+        "graph_freshness": graph_freshness,
+        "dirty_state": dirty_state,
+        "delta_state": delta_state,
+        "publish_state": publish_state,
+        "last_delta_state": last_delta,
+        "last_delta_update_summary": last_summary,
+        "stale_candidate_layers": stale_candidate_layers,
+        "candidate_only_available": staged_availability.get("candidate_only_available").cloned().unwrap_or_else(|| json!(false)),
+        "graph_proof_available": staged_availability.get("graph_proof_available").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_context_available": staged_availability.get("candidate_context_available").cloned().unwrap_or_else(|| json!(false)),
+        "blocked_labels": blocked_labels.into_iter().collect::<Vec<_>>(),
+        "retryable_labels": retryable_labels.into_iter().collect::<Vec<_>>(),
+        "recovery_commands": mcp_agent_use_recovery_commands(repo_root),
+        "context_pack_graph_proof_policy": "refuse_unsafe_graph_proof",
+        "candidate_context_policy": "candidate_only_only_when_current_source_bound",
+        "startup_auto_index": false,
+        "dot_codegraph_fallback": false,
+        "public_claim": false,
+    })
+}
+
+fn mcp_agent_use_publish_state_json(db_path: &Path) -> Value {
+    let path = mcp_agent_use_profile_sibling_path(db_path, MCP_AGENT_USE_PUBLISH_STATE_FILE_NAME);
+    if !path.exists() {
+        return json!({
+            "status": "absent",
+            "path": path_string(&path),
+            "active": false,
+            "updating": false,
+            "publishing": false,
+            "claimability_effect": "none",
+            "temp_db_claimability": "never_claimable",
+        });
+    }
+    let parsed = fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    let status = parsed
+        .as_ref()
+        .and_then(|value| value.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("publishing");
+    json!({
+        "status": status,
+        "path": path_string(&path),
+        "active": true,
+        "updating": status == "updating",
+        "publishing": true,
+        "state_readable": parsed.is_some(),
+        "state": parsed.unwrap_or(Value::Null),
+        "claimability_effect": "old valid DB may remain readable; temp DB is never claimable",
+        "temp_db_claimability": "never_claimable",
+    })
+}
+
+fn mcp_agent_use_last_delta_state_json(db_path: &Path) -> Value {
+    let path = mcp_agent_use_profile_sibling_path(db_path, MCP_AGENT_USE_DELTA_STATE_FILE_NAME);
+    if !path.exists() {
+        return json!({
+            "status": "absent",
+            "path": path_string(&path),
+            "state_readable": false,
+            "last_delta_update_summary": Value::Null,
+            "public_claim": false,
+        });
+    }
+    match fs::read_to_string(&path)
+        .map_err(|error| error.to_string())
+        .and_then(|text| serde_json::from_str::<Value>(&text).map_err(|error| error.to_string()))
+    {
+        Ok(mut value) => {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("path".to_string(), json!(path_string(&path)));
+                object.insert("state_readable".to_string(), json!(true));
+            }
+            value
+        }
+        Err(error) => json!({
+            "status": "error",
+            "path": path_string(&path),
+            "state_readable": false,
+            "error": error,
+            "last_delta_update_summary": Value::Null,
+            "public_claim": false,
+        }),
+    }
+}
+
+fn mcp_agent_use_profile_sibling_path(db_path: &Path, file_name: &str) -> PathBuf {
+    db_path
+        .parent()
+        .map(|parent| parent.join(file_name))
+        .unwrap_or_else(|| PathBuf::from(file_name))
+}
+
+fn mcp_db_looks_like_agent_use_profile(db_path: &Path) -> bool {
+    db_path.file_name().and_then(|value| value.to_str()) == Some(MCP_AGENT_USE_PROFILE_DB_FILE_NAME)
+}
+
+fn mcp_agent_use_recovery_commands(repo_root: &Path) -> Vec<String> {
+    let repo = path_string(repo_root);
+    vec![
+        format!("codegraph-mcp agent-use status --repo \"{repo}\" --json"),
+        format!("codegraph-mcp agent-use index --repo \"{repo}\" --json"),
+        format!("codegraph-mcp agent-use watch --repo \"{repo}\" --once --changed <path> --json"),
+        format!(
+            "codegraph-mcp agent-use context-pack --repo \"{repo}\" --task \"<task>\" --agent-json"
+        ),
+        format!("codegraph-mcp agent-use mcp-config --repo \"{repo}\" --json"),
+    ]
+}
+
+fn mcp_stale_candidate_layers(staged_availability: &Value) -> Vec<Value> {
+    let mut layers = Vec::new();
+    for layer_name in ["candidate_spool", "vector_runtime", "vector_audit"] {
+        let layer = staged_availability
+            .pointer(&format!("/layer_readiness/{layer_name}"))
+            .unwrap_or(&Value::Null);
+        let status = layer
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        if mcp_candidate_layer_status_is_stale(status) {
+            layers.push(json!({
+                "layer": layer_name,
+                "status": status,
+                "path": layer.get("path").cloned().unwrap_or(Value::Null),
+                "reason": layer.get("reason").cloned().unwrap_or(Value::Null),
+                "graph_proof": false,
+            }));
+        }
+        if layer_name == "candidate_spool" {
+            let query_status = layer
+                .get("query_index_status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            if mcp_candidate_layer_status_is_stale(query_status) {
+                layers.push(json!({
+                    "layer": "candidate_spool_query_index",
+                    "status": query_status,
+                    "path": layer.get("query_index_path").cloned().unwrap_or(Value::Null),
+                    "reason": layer.get("reason").cloned().unwrap_or(Value::Null),
+                    "graph_proof": false,
+                }));
+            }
+        }
+    }
+    layers
+}
+
+fn mcp_candidate_layer_status_is_stale(status: &str) -> bool {
+    matches!(
+        status,
+        "stale"
+            | "corrupt"
+            | "query_index_corrupt"
+            | "permission_denied"
+            | "filesystem_inaccessible"
+            | "sidecar_unavailable"
+            | "blocked_by_graph_db"
+    )
+}
+
+fn mcp_merge_json_object(target: &mut Value, fields: Value) {
+    let Some(target_object) = target.as_object_mut() else {
+        return;
+    };
+    if let Some(fields_object) = fields.as_object() {
+        for (key, value) in fields_object {
+            if matches!(key.as_str(), "warnings" | "blockers") {
+                if let (Some(existing), Some(incoming)) = (
+                    target_object.get_mut(key).and_then(Value::as_array_mut),
+                    value.as_array(),
+                ) {
+                    let mut seen = existing
+                        .iter()
+                        .map(|item| item.to_string())
+                        .collect::<BTreeSet<_>>();
+                    for item in incoming {
+                        if seen.insert(item.to_string()) {
+                            existing.push(item.clone());
+                        }
+                    }
+                    continue;
+                }
+            }
+            target_object.insert(key.clone(), value.clone());
+        }
+    }
 }
 
 fn compact_mcp_text(value: &str, max_chars: usize) -> String {
@@ -3247,30 +4878,163 @@ fn mcp_path_starts_with_workspace(path: &Path, workspace_root: &Path) -> bool {
     path.starts_with(workspace_root)
 }
 
-fn retrieval_documents(store: &SqliteGraphStore) -> Result<Vec<RetrievalDocument>, ToolCallError> {
-    Ok(store
-        .list_entities(50_000)
-        .map_err(mcp_store_error)?
-        .into_iter()
-        .map(|entity| {
-            let text = format!(
-                "{} {} {} {} {}",
-                entity.kind,
-                entity.name,
-                entity.qualified_name,
-                entity.repo_relative_path,
-                entity.created_from
-            );
-            let mut document = RetrievalDocument::new(entity.id, text).stage0_score(0.25);
-            document
-                .metadata
-                .insert("repo_relative_path".to_string(), entity.repo_relative_path);
-            document
-                .metadata
-                .insert("kind".to_string(), entity.kind.to_string());
-            document
-        })
-        .collect())
+#[derive(Debug, Clone, Copy, Default)]
+struct McpContextPackDocumentMetrics {
+    exact_symbol_lookups: usize,
+    fts_lookups: usize,
+    documents_returned: usize,
+    entities_hydrated: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct McpContextPackSourceMetrics {
+    files_loaded: usize,
+    bytes_loaded: usize,
+    budget_hit: bool,
+}
+
+fn retrieval_documents_for_context_pack(
+    store: &SqliteGraphStore,
+    task: &str,
+    seeds: &[String],
+) -> Result<(Vec<RetrievalDocument>, McpContextPackDocumentMetrics), ToolCallError> {
+    let mut metrics = McpContextPackDocumentMetrics::default();
+    let mut documents = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for seed in seeds {
+        metrics.exact_symbol_lookups += 1;
+        for entity in store
+            .find_entities_by_exact_symbol(seed)
+            .map_err(mcp_store_error)?
+        {
+            if documents.len() >= MCP_CONTEXT_PACK_DOCUMENT_LIMIT {
+                break;
+            }
+            if seen.insert(entity.id.clone()) {
+                metrics.entities_hydrated += 1;
+                documents.push(retrieval_document_from_entity(entity, 1.0));
+            }
+        }
+        if documents.len() >= MCP_CONTEXT_PACK_DOCUMENT_LIMIT {
+            break;
+        }
+    }
+
+    if documents.len() < MCP_CONTEXT_PACK_DOCUMENT_LIMIT {
+        metrics.fts_lookups += 1;
+        for hit in store
+            .search_text(
+                task,
+                MCP_CONTEXT_PACK_DOCUMENT_LIMIT.saturating_sub(documents.len()),
+            )
+            .map_err(mcp_store_error)?
+        {
+            if documents.len() >= MCP_CONTEXT_PACK_DOCUMENT_LIMIT {
+                break;
+            }
+            match hit.kind {
+                TextSearchKind::Entity => {
+                    if seen.contains(&hit.id) {
+                        continue;
+                    }
+                    if let Some(entity) = store.get_entity(&hit.id).map_err(mcp_store_error)? {
+                        if seen.insert(entity.id.clone()) {
+                            metrics.entities_hydrated += 1;
+                            documents.push(retrieval_document_from_entity(entity, 0.75));
+                        }
+                    }
+                }
+                TextSearchKind::File | TextSearchKind::Snippet => {
+                    let document_id = format!("stage0://{}:{}", hit.kind.as_str(), hit.id);
+                    if seen.insert(document_id.clone()) {
+                        let mut document = RetrievalDocument::new(
+                            document_id,
+                            format!("{} {}", hit.title, hit.text),
+                        )
+                        .stage0_score(0.5);
+                        document
+                            .metadata
+                            .insert("repo_relative_path".to_string(), hit.repo_relative_path);
+                        document
+                            .metadata
+                            .insert("kind".to_string(), hit.kind.as_str().to_string());
+                        documents.push(document);
+                    }
+                }
+            }
+        }
+    }
+
+    metrics.documents_returned = documents.len();
+    Ok((documents, metrics))
+}
+
+fn retrieval_document_from_entity(entity: Entity, score: f64) -> RetrievalDocument {
+    let text = format!(
+        "{} {} {} {} {}",
+        entity.kind,
+        entity.name,
+        entity.qualified_name,
+        entity.repo_relative_path,
+        entity.created_from
+    );
+    let mut document = RetrievalDocument::new(entity.id, text).stage0_score(score);
+    document
+        .metadata
+        .insert("repo_relative_path".to_string(), entity.repo_relative_path);
+    document
+        .metadata
+        .insert("kind".to_string(), entity.kind.to_string());
+    document
+}
+
+fn retrieval_document_paths(documents: &[RetrievalDocument]) -> BTreeSet<String> {
+    documents
+        .iter()
+        .filter_map(|document| document.metadata.get("repo_relative_path").cloned())
+        .collect()
+}
+
+fn mcp_context_pack_read_path_metrics_json(
+    document_metrics: &McpContextPackDocumentMetrics,
+    source_metrics: &McpContextPackSourceMetrics,
+    edge_count: usize,
+) -> Value {
+    json!({
+        "schema_version": 1,
+        "surface": "mcp codegraph.context_pack",
+        "lookup_strategy": "bounded_exact_symbol_and_stage0_fts_candidates",
+        "indexed_lookup_count": document_metrics.exact_symbol_lookups + document_metrics.fts_lookups,
+        "fts_lookup_count": document_metrics.fts_lookups,
+        "path_dictionary_lookup_count": 0,
+        "symbol_dictionary_lookup_count": document_metrics.exact_symbol_lookups,
+        "full_scan_count": 0,
+        "bounded_table_scan_count": 1,
+        "entity_edge_million_row_load": false,
+        "source_file_load_count": source_metrics.files_loaded,
+        "entities_hydrated": document_metrics.entities_hydrated,
+        "edges_hydrated": edge_count,
+        "source_bytes_loaded": source_metrics.bytes_loaded,
+        "snippets_loaded": 0,
+        "disk_fallback_used": false,
+        "disk_fallback_files": 0,
+        "debug_broad_scan": false,
+        "diagnostic_only": false,
+        "limits_apply_before_hydration": true,
+        "budget_hit": source_metrics.budget_hit
+            || document_metrics.documents_returned >= MCP_CONTEXT_PACK_DOCUMENT_LIMIT
+            || edge_count >= MCP_CONTEXT_PACK_EDGE_LIMIT,
+        "limits": {
+            "max_files_inspected": MCP_CONTEXT_PACK_SOURCE_FILE_LIMIT,
+            "max_entities_hydrated": MCP_CONTEXT_PACK_DOCUMENT_LIMIT,
+            "max_edges_visited": MCP_CONTEXT_PACK_EDGE_LIMIT,
+            "max_source_bytes_loaded": MCP_CONTEXT_PACK_SOURCE_BYTE_LIMIT,
+            "max_snippets_loaded": MCP_CONTEXT_PACK_DEFAULT_LIMIT,
+            "max_disk_fallback_files": 0,
+            "timeout_ms": Value::Null,
+        }
+    })
 }
 
 fn retrieval_trace_stage_json(stage: &RetrievalTraceStage) -> Value {
@@ -3464,7 +5228,37 @@ fn mcp_resource_result(uri: &str, value: Value) -> Value {
 }
 
 fn mcp_store_error(error: codegraph_store::StoreError) -> ToolCallError {
-    ToolCallError::new("store_error", error.to_string())
+    let message = error.to_string();
+    if let Some(problem) = classify_sqlite_access_problem(&message) {
+        ToolCallError::new(problem.db_problem_kind, message)
+    } else {
+        ToolCallError::new("store_error", message)
+    }
+}
+
+fn mcp_unsafe_preflight_error(db_path: &Path, preflight: &DbLifecyclePreflight) -> ToolCallError {
+    if let Some(mismatch) = preflight.scope_mismatch.as_ref() {
+        return ToolCallError::new(
+            "scope_mismatch",
+            mcp_scope_mismatch_message(db_path, mismatch),
+        );
+    }
+    let outside_note = preflight
+        .outside_workspace_note
+        .as_deref()
+        .map(|note| format!("; {note}"))
+        .unwrap_or_default();
+    let problem_kind = mcp_db_problem_kind(preflight);
+    ToolCallError::new(
+        problem_kind,
+        format!(
+            "CodeGraph DB is not safe to read at {}: kind={}; {}{}; call codegraph.index_repo to rebuild",
+            db_path.display(),
+            problem_kind,
+            preflight.blockers.join("; "),
+            outside_note
+        ),
+    )
 }
 
 fn mcp_explicit_scope_policy(
@@ -3600,6 +5394,7 @@ fn mcp_passport_summary_json(preflight: &DbLifecyclePreflight) -> Value {
         "codegraph_schema_version": passport.map(|value| value.codegraph_schema_version),
         "storage_mode": passport.map(|value| value.storage_mode.clone()),
         "canonical_repo_root": passport.map(|value| value.canonical_repo_root.clone()),
+        "repo_head": passport.and_then(|value| value.repo_head.clone()),
         "scope_source": preflight.scope_source.clone(),
         "scope_status": preflight.scope_status.clone(),
         "passport_scope_hash": preflight.passport_scope_hash.clone(),
@@ -3697,27 +5492,31 @@ fn unix_time_ms() -> u64 {
     }
 }
 
-fn load_sources(
+fn load_sources_for_paths(
     repo_root: &Path,
-    store: &SqliteGraphStore,
-) -> Result<BTreeMap<String, String>, McpServerError> {
+    paths: &BTreeSet<String>,
+) -> Result<(BTreeMap<String, String>, McpContextPackSourceMetrics), McpServerError> {
     let mut sources = BTreeMap::new();
-    for file in store.list_files(10_000)? {
-        read_indexed_file(repo_root, &file, &mut sources)?;
+    let mut metrics = McpContextPackSourceMetrics::default();
+    for repo_relative_path in paths {
+        if sources.len() >= MCP_CONTEXT_PACK_SOURCE_FILE_LIMIT {
+            metrics.budget_hit = true;
+            break;
+        }
+        let path = repo_root.join(repo_relative_path);
+        if !path.exists() {
+            continue;
+        }
+        let source = fs::read_to_string(path)?;
+        if metrics.bytes_loaded.saturating_add(source.len()) > MCP_CONTEXT_PACK_SOURCE_BYTE_LIMIT {
+            metrics.budget_hit = true;
+            continue;
+        }
+        metrics.bytes_loaded += source.len();
+        sources.insert(repo_relative_path.clone(), source);
     }
-    Ok(sources)
-}
-
-fn read_indexed_file(
-    repo_root: &Path,
-    file: &FileRecord,
-    sources: &mut BTreeMap<String, String>,
-) -> Result<(), McpServerError> {
-    let path = repo_root.join(&file.repo_relative_path);
-    if path.exists() {
-        sources.insert(file.repo_relative_path.clone(), fs::read_to_string(path)?);
-    }
-    Ok(())
+    metrics.files_loaded = sources.len();
+    Ok((sources, metrics))
 }
 
 fn mcp_sqlite_sidecars_status_for_path(db_path: &Path) -> Value {
@@ -3803,8 +5602,11 @@ fn path_string(path: &Path) -> String {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::Mutex;
+    use std::time::Duration;
 
     static FIXTURE_COUNTER: AtomicUsize = AtomicUsize::new(0);
+    static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn ok<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
         match result {
@@ -3829,6 +5631,62 @@ mod tests {
         )
         .expect("write source");
         root
+    }
+
+    fn write_mcp_candidate_spool_fixture(repo: &Path) -> PathBuf {
+        let spool = repo.join("candidate-spool.jsonl");
+        let source_path = repo.join("src").join("auth.ts");
+        let source = fs::read_to_string(&source_path).expect("read mcp fixture source");
+        let source_hash = codegraph_parser::content_hash(&source);
+        let manifest = json!({
+            "metadata": {
+                "metadata_version": "candidate_spool_v1",
+                "artifact_kind": "candidate_spool",
+                "artifact_format": "jsonl",
+                "repo_root": path_string(repo),
+                "candidate_spool_status": "partial_ready",
+                "lifecycle": "partial_spool",
+                "incomplete": true,
+                "candidate_only": true,
+                "graph_proof": false,
+                "claimable_for_graph": false
+            }
+        });
+        let chunk = json!({
+            "chunk_id": "candidate-spool:mcp:login",
+            "chunk_kind": "signature",
+            "source_kind": "graph_entity",
+            "path": "src/auth.ts",
+            "entity_id": "entity:login",
+            "source_span": {
+                "repo_relative_path": "src/auth.ts",
+                "start_line": 9,
+                "start_col": 1,
+                "end_line": 12,
+                "end_col": 1
+            },
+            "proof_status": "candidate_only",
+            "graph_proof": false,
+            "claimable_for_graph": false,
+            "requires_graph_verification": true,
+            "text": "function login in src/auth.ts handles email",
+            "selection_bucket": "symbol_signature",
+            "selection_reason": "test candidate spool symbol signature",
+            "source_file_content_hash": source_hash,
+            "source_file_size_bytes": source.as_bytes().len() as u64,
+            "lifecycle": "partial_spool",
+            "incomplete": true
+        });
+        fs::write(
+            &spool,
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&manifest).expect("manifest json"),
+                serde_json::to_string(&chunk).expect("chunk json")
+            ),
+        )
+        .expect("write MCP candidate spool");
+        spool
     }
 
     fn non_default_scope_repo() -> PathBuf {
@@ -3862,6 +5720,86 @@ mod tests {
         let login = first_symbol_id(&server, &repo, "login");
         let sanitize = first_symbol_id(&server, &repo, "sanitize");
         (server, repo, login, sanitize)
+    }
+
+    #[test]
+    fn mcp_default_config_uses_explicit_env_db_path_for_agent_profile() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let repo = fixture_repo();
+        let profile_root = repo.join("external-profile");
+        fs::create_dir_all(&profile_root).expect("profile root");
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let old_cwd = std::env::current_dir().expect("cwd");
+        let old_db = std::env::var_os("CODEGRAPH_DB_PATH");
+        std::env::set_current_dir(&repo).expect("set cwd");
+        std::env::set_var("CODEGRAPH_DB_PATH", &db_path);
+
+        let config = McpServerConfig::default();
+
+        assert_eq!(config.repo_root, repo);
+        assert_eq!(config.db_path, db_path);
+        if let Some(old_db) = old_db {
+            std::env::set_var("CODEGRAPH_DB_PATH", old_db);
+        } else {
+            std::env::remove_var("CODEGRAPH_DB_PATH");
+        }
+        std::env::set_current_dir(old_cwd).expect("restore cwd");
+        fs::remove_dir_all(config.repo_root).expect("cleanup");
+    }
+
+    #[test]
+    fn mcp_status_and_read_tools_report_db_locked_without_claimable_context() {
+        let repo = fixture_repo();
+        let server = McpServer::new(McpServerConfig::for_repo(&repo));
+        ok(server.call_tool("codegraph.index_repo", &json!({"repo": path_string(&repo)})));
+        let db_path = default_db_path(&repo);
+        let lock = rusqlite::Connection::open(&db_path).expect("open lock connection");
+        lock.busy_timeout(Duration::from_millis(0))
+            .expect("set busy timeout");
+        let _: String = lock
+            .query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))
+            .expect("switch to rollback journal");
+        lock.execute_batch(
+            "
+            PRAGMA locking_mode=EXCLUSIVE;
+            BEGIN EXCLUSIVE;
+            CREATE TABLE IF NOT EXISTS lock_marker(id INTEGER PRIMARY KEY);
+            INSERT INTO lock_marker(id) VALUES (1);
+            ",
+        )
+        .expect("hold exclusive write lock");
+
+        let before_bytes = fs::read(&db_path).expect("read locked DB before MCP inspection");
+        let status = ok(server.call_tool("codegraph.status", &json!({"repo": path_string(&repo)})));
+        let search_error = server
+            .call_tool(
+                "codegraph.search_symbols",
+                &json!({"repo": path_string(&repo), "query": "login"}),
+            )
+            .expect_err("read tool must not return claimable context while DB is locked");
+        let after_bytes = fs::read(&db_path).expect("read locked DB after MCP inspection");
+
+        assert_eq!(status["status"].as_str(), Some("db_problem"));
+        assert_eq!(status["problem"].as_str(), Some("db_locked"));
+        assert_eq!(status["db_problem"].as_str(), Some("db_locked"));
+        assert_eq!(status["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(status["graph_proof_available"].as_bool(), Some(false));
+        assert_eq!(status["graph_freshness"].as_str(), Some("db_locked"));
+        assert!(status["retryable_labels"]
+            .as_array()
+            .expect("retryable labels")
+            .iter()
+            .any(|label| label.as_str() == Some("db_locked")));
+        assert_eq!(
+            status["passport_summary"]["db_problem_kind"].as_str(),
+            Some("db_locked")
+        );
+        assert_eq!(search_error.code, "db_locked");
+        assert_eq!(before_bytes, after_bytes);
+
+        lock.execute_batch("ROLLBACK").expect("release lock");
+        drop(lock);
+        fs::remove_dir_all(repo).expect("cleanup");
     }
 
     fn first_symbol_id(server: &McpServer, repo: &Path, query: &str) -> String {
@@ -4217,6 +6155,38 @@ mod tests {
         assert!(status["files"].as_u64().is_some());
         assert!(status["entities"].as_u64().is_some());
         assert!(status["edges"].as_u64().is_some());
+        assert_eq!(status["relation_facts"], status["edges"]);
+        assert_eq!(
+            status["release_reported_relation_facts"],
+            status["relation_facts"]
+        );
+        assert_eq!(
+            status["metric_label_notes"]["edges"].as_str(),
+            Some("Deprecated compatibility alias for relation_facts.")
+        );
+        assert_eq!(status["graph_db_status"].as_str(), Some("ready"));
+        assert_eq!(status["graph_proof_available"].as_bool(), Some(true));
+        assert_eq!(status["graph_freshness"].as_str(), Some("current"));
+        assert_eq!(status["dirty_state"].as_str(), Some("ready"));
+        assert_eq!(
+            status["rtds_freshness"]["startup_auto_index"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            status["rtds_freshness"]["dot_codegraph_fallback"].as_bool(),
+            Some(false)
+        );
+        assert!(status["recovery_commands"].as_array().is_some());
+        assert_eq!(
+            status["last_delta_update_summary"],
+            Value::Null,
+            "fresh full index has no RTDS delta history yet"
+        );
+        assert!(status["active_candidate_sources"]
+            .as_array()
+            .expect("candidate sources")
+            .iter()
+            .any(|source| source.as_str() == Some("graph_db")));
         assert!(status["blockers"].as_array().expect("blockers").is_empty());
 
         fs::remove_dir_all(repo).expect("cleanup");
@@ -4228,6 +6198,12 @@ mod tests {
         let server = McpServer::new(McpServerConfig::for_repo(&repo));
 
         let status = ok(server.call_tool("codegraph.status", &json!({"repo": path_string(&repo)})));
+        let context_error = server
+            .call_tool(
+                "codegraph.context_pack",
+                &json!({"repo": path_string(&repo), "task": "inspect login"}),
+            )
+            .expect_err("context-pack must refuse unsafe graph proof without candidate context");
 
         assert_eq!(status["status"].as_str(), Some("missing"));
         assert_eq!(status["problem"].as_str(), Some("index_required"));
@@ -4235,10 +6211,127 @@ mod tests {
         assert_eq!(status["path_access_status"].as_str(), Some("db_missing"));
         assert_eq!(status["db_path_outside_workspace"].as_bool(), Some(false));
         assert_eq!(status["safe_to_query"].as_bool(), Some(false));
+        assert_eq!(status["graph_db_status"].as_str(), Some("no_index"));
+        assert_eq!(status["graph_proof_available"].as_bool(), Some(false));
+        assert_eq!(status["graph_freshness"].as_str(), Some("absent"));
+        assert_eq!(status["delta_state"].as_str(), Some("absent"));
+        assert_eq!(
+            status["rtds_freshness"]["startup_auto_index"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            status["rtds_freshness"]["dot_codegraph_fallback"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(status["candidate_only_available"].as_bool(), Some(false));
         assert_blocker_contains(&status, "main DB does not exist");
+        assert_eq!(context_error.code, "db_missing");
         assert!(status.get("files").is_none());
         assert!(status.get("entities").is_none());
         assert!(status.get("edges").is_none());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mcp_context_pack_candidate_spool_only_returns_candidate_labels() {
+        let repo = fixture_repo();
+        let spool = write_mcp_candidate_spool_fixture(&repo);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo));
+
+        let result = ok(server.call_tool(
+            "codegraph.context_pack",
+            &json!({
+                "repo": path_string(&repo),
+                "task": "Change login email handling",
+                "candidate_spool": path_string(&spool),
+                "early_candidates": true
+            }),
+        ));
+
+        assert_eq!(result["status"].as_str(), Some("ok"));
+        assert_eq!(result["proof_status"].as_str(), Some("candidate_only"));
+        assert_eq!(
+            result["proof_strength"].as_str(),
+            Some("candidate_evidence")
+        );
+        assert_eq!(result["graph_proof"].as_bool(), Some(false));
+        assert_eq!(result["graph_proof_available"].as_bool(), Some(false));
+        assert_eq!(result["candidate_only_available"].as_bool(), Some(true));
+        assert_eq!(
+            result["rtds_freshness"]["candidate_context_policy"].as_str(),
+            Some("candidate_only_only_when_current_source_bound")
+        );
+        assert_eq!(
+            result["rtds_freshness"]["startup_auto_index"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            result["candidate_spool_status"].as_str(),
+            Some("partial_ready")
+        );
+        assert_eq!(result["candidate_context_truncated"].as_bool(), Some(false));
+        assert_eq!(result["candidate_spool_unavailable"].as_bool(), Some(false));
+        assert_eq!(
+            result["staged_availability"]["recommended_next_step"].as_str(),
+            Some("inspect candidate spans")
+        );
+        assert!(result["snippets"]
+            .as_array()
+            .expect("candidate snippets")
+            .iter()
+            .all(|snippet| snippet["graph_proof"].as_bool() == Some(false)));
+
+        fs::write(
+            repo.join("src").join("auth.ts"),
+            "export function changedLogin() { return 'changed'; }\n",
+        )
+        .expect("modify source");
+        let stale_status = ok(server.call_tool(
+            "codegraph.status",
+            &json!({
+                "repo": path_string(&repo),
+                "candidate_spool": path_string(&spool)
+            }),
+        ));
+        assert_eq!(
+            stale_status["candidate_spool_status"].as_str(),
+            Some("stale")
+        );
+        assert_eq!(
+            stale_status["staged_availability"]["layer_readiness"]["candidate_spool"]["ready"]
+                .as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            stale_status["candidate_spool_unavailable"].as_bool(),
+            Some(true)
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mcp_candidate_spool_query_index_access_error_is_not_labeled_corrupt() {
+        let repo = fixture_repo();
+        let spool = write_mcp_candidate_spool_fixture(&repo);
+        let index_path = codegraph_index::candidate_spool_query_index_path(&spool);
+        fs::create_dir(&index_path).expect("create inaccessible query index path");
+
+        let status = super::mcp_candidate_spool_layer_status(&repo, &spool);
+        assert_ne!(status["status"].as_str(), Some("query_index_corrupt"));
+        assert!(matches!(
+            status["status"].as_str(),
+            Some("filesystem_inaccessible")
+                | Some("permission_denied")
+                | Some("sidecar_unavailable")
+        ));
+        assert_eq!(status["ready"].as_bool(), Some(false));
+        assert_eq!(status["candidate_spool_unavailable"].as_bool(), Some(true));
+        assert_eq!(
+            status["query_index_problem_kind"].as_str(),
+            status["status"].as_str()
+        );
 
         fs::remove_dir_all(repo).expect("cleanup");
     }
@@ -4656,6 +6749,14 @@ mod tests {
             result["vector_candidate_diagnostics"]["vector_candidate_count"].as_u64(),
             Some(0)
         );
+        assert_eq!(result["graph_db_status"].as_str(), Some("ready"));
+        assert_eq!(result["vector_runtime_status"].as_str(), Some("missing"));
+        assert_eq!(result["graph_proof_available"].as_bool(), Some(true));
+        assert!(result["active_candidate_sources"]
+            .as_array()
+            .expect("candidate sources")
+            .iter()
+            .all(|source| source.as_str() != Some("vector_semantic")));
 
         let explain = ok(server.call_tool(
             "codegraph.context_pack",
@@ -4672,6 +6773,8 @@ mod tests {
             explain["packet"]["metadata"]["vector_candidate_trace"]["vector_index_status"].as_str(),
             Some("missing")
         );
+        assert_eq!(explain["vector_runtime_status"].as_str(), Some("missing"));
+        assert!(explain["staged_availability"].is_object());
 
         fs::remove_dir_all(repo).expect("cleanup");
     }
@@ -4929,6 +7032,18 @@ mod tests {
         assert!(compact["diagnostic_only"].as_bool().is_some());
         assert!(compact["paths"].as_array().expect("paths").len() <= 1);
         assert!(compact["snippets"].as_array().expect("snippets").len() <= 1);
+        assert_eq!(
+            compact["read_path_metrics"]["full_scan_count"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            compact["read_path_metrics"]["entity_edge_million_row_load"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            compact["read_path_metrics"]["limits_apply_before_hydration"].as_bool(),
+            Some(true)
+        );
 
         let encoded = serde_json::to_vec(&compact).expect("compact json");
         assert!(

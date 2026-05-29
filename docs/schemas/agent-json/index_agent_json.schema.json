@@ -72,6 +72,9 @@
     "timings": {
       "$ref": "common.schema.json#/$defs/timings"
     },
+    "telemetry": {
+      "$ref": "common.schema.json#/$defs/telemetry_truth"
+    },
     "summary": {
       "type": "object",
       "required": ["repo", "build_mode"],
@@ -105,6 +108,97 @@
         },
         "duration_ms": {
           "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "vector_index": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "generated_total_chunks": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "persisted_total_chunks": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "chunk_cap": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "chunk_cap_applied": {
+          "type": "boolean"
+        },
+        "input_order_cap": {
+          "type": "boolean"
+        },
+        "actual_index_file_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "index_artifact_format": {
+          "enum": ["pretty_json", "compact_json", "binary", "sqlite_table", "in_memory"]
+        },
+        "estimated_f32_payload_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "estimated_f32_payload_dim": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "estimated_f32_payload_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stores_chunk_text": {
+          "type": "boolean"
+        },
+        "stores_chunk_metadata": {
+          "type": "boolean"
+        },
+        "stores_full_source_body": {
+          "type": "boolean"
+        },
+        "vector_payload_compression": {
+          "enum": ["none", "diagnostic", "real"]
+        },
+        "estimated_vector_bytes_deprecated_alias_for": {
+          "const": "estimated_f32_payload_bytes"
+        },
+        "persisted_chunks_by_top_level_dir": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "persisted_chunks_by_file_kind": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "persisted_chunks_by_source_kind": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "omitted_by_cap": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omitted_by_bucket_limit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omitted_low_signal": {
+          "type": "integer",
           "minimum": 0
         }
       }

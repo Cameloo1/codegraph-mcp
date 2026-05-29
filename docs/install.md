@@ -27,18 +27,20 @@ outside the source tree:
 
 ```powershell
 cargo build --release --bin codegraph-mcp
-codegraph-mcp --repo C:\path\to\repo --db C:\path\to\agent-indexes\repo.sqlite status
-codegraph-mcp --repo C:\path\to\repo --db C:\path\to\agent-indexes\repo.sqlite index C:\path\to\repo
+codegraph-mcp agent-use status --repo C:\path\to\repo --json
+codegraph-mcp agent-use index --repo C:\path\to\repo --json
+codegraph-mcp agent-use mcp-config --repo C:\path\to\repo --json
 ```
 
-Use a development profile only when testing CodeGraph itself.
+Use a development DB only when testing CodeGraph itself. The `agent-use`
+namespace resolves the production profile path for you and does not silently
+fall back to repo-local `.codegraph`.
 
 ## Local Dry Runs
 
 ```powershell
 codegraph-mcp config release-metadata --json
 codegraph-mcp config completions --shell powershell --json
-codegraph-mcp bench synthetic-index --output-dir target\index-speed --files 250
 powershell -NoProfile -ExecutionPolicy Bypass -File install\install.ps1 -DryRun
 ```
 
