@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File},
-    io::Read,
+    io::{self, Read},
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -1078,9 +1078,11 @@ struct ScopeAuditAggregate {
     excluded_files_by_directory: BTreeMap<String, ScopeDirStats>,
     extensions: BTreeMap<String, ScopeDirStats>,
     suspicious_included_dirs: BTreeMap<String, ScopeDirStats>,
+    path_access_warning_counts: BTreeMap<String, u64>,
     hard_excluded_directory_hits: Vec<Value>,
     soft_excluded_warnings: Vec<Value>,
     warning_examples: Vec<Value>,
+    path_access_warning_examples: Vec<Value>,
     included_examples: Vec<Value>,
     excluded_examples: Vec<Value>,
     makefile: ScopeVisibilityStats,
@@ -1113,9 +1115,11 @@ impl Default for ScopeAuditAggregate {
             excluded_files_by_directory: BTreeMap::new(),
             extensions: BTreeMap::new(),
             suspicious_included_dirs: BTreeMap::new(),
+            path_access_warning_counts: BTreeMap::new(),
             hard_excluded_directory_hits: Vec::new(),
             soft_excluded_warnings: Vec::new(),
             warning_examples: Vec::new(),
+            path_access_warning_examples: Vec::new(),
             included_examples: Vec::new(),
             excluded_examples: Vec::new(),
             makefile: ScopeVisibilityStats::default(),
@@ -1145,7 +1149,16 @@ fn run_index_scope_command(args: &[String]) -> Result<Value, String> {
     let normal_codegraph_before = repo_root.join(".codegraph").exists();
     let scope = IndexScope::for_repo(&repo_root, options.scope.clone());
     let mut aggregate = ScopeAuditAggregate::default();
-    walk_index_scope(&repo_root, &repo_root, &scope, &options, &mut aggregate)?;
+    let mut traversal = ScopeAuditTraversalState::default();
+    walk_index_scope(
+        &repo_root,
+        &repo_root,
+        &scope,
+        &options,
+        &mut aggregate,
+        &mut traversal,
+        0,
+    )?;
     let normal_codegraph_after = repo_root.join(".codegraph").exists();
 
     let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -1187,6 +1200,9 @@ fn run_index_scope_command(args: &[String]) -> Result<Value, String> {
             "hard_excluded_directory_hits": aggregate.hard_excluded_directory_count,
             "soft_excluded_paths": aggregate.soft_excluded_path_count,
             "warnings": aggregate.warning_count,
+            "path_access_warnings": aggregate.path_access_warning_counts.values().sum::<u64>(),
+            "filename_too_long_warnings": aggregate.path_access_warning_counts.get("filename_too_long").copied().unwrap_or_default(),
+            "path_too_long_warnings": aggregate.path_access_warning_counts.get("path_too_long").copied().unwrap_or_default(),
             "bytes_considered": aggregate.bytes_considered,
             "bytes_included": aggregate.bytes_included,
             "bytes_excluded_files": aggregate.bytes_excluded_files,
@@ -1201,9 +1217,11 @@ fn run_index_scope_command(args: &[String]) -> Result<Value, String> {
         "top_included_directories": stats_map_json(&aggregate.included_files_by_directory, 25),
         "top_excluded_directories": stats_map_json(&aggregate.excluded_files_by_directory, 25),
         "suspicious_included_directories": stats_map_json(&aggregate.suspicious_included_dirs, 25),
+        "path_access_warning_counts": aggregate.path_access_warning_counts,
         "hard_excluded_directory_hits": aggregate.hard_excluded_directory_hits,
         "soft_excluded_warnings": aggregate.soft_excluded_warnings,
         "warning_examples": aggregate.warning_examples,
+        "path_access_warning_examples": aggregate.path_access_warning_examples,
         "included_examples": if options.include_included_examples { aggregate.included_examples } else { Vec::new() },
         "excluded_examples": if options.include_excluded_examples { aggregate.excluded_examples } else { Vec::new() },
         "visibility": {
@@ -1279,9 +1297,82 @@ fn walk_index_scope(
     scope: &IndexScope,
     options: &IndexScopeAuditOptions,
     aggregate: &mut ScopeAuditAggregate,
+    traversal: &mut ScopeAuditTraversalState,
+    depth: usize,
 ) -> Result<(), String> {
     aggregate.paths_walked += 1;
-    if path.is_dir() {
+    if depth > SCOPE_AUDIT_TRAVERSAL_MAX_DEPTH {
+        record_scope_path_warning_label(
+            aggregate,
+            root,
+            path,
+            "path_depth_cap",
+            "path_mapping_unavailable",
+            "scope traversal depth cap reached",
+            options.example_limit,
+        );
+        return Ok(());
+    }
+
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            record_scope_path_io_warning(
+                aggregate,
+                root,
+                path,
+                "symlink_metadata",
+                &error,
+                options.example_limit,
+            );
+            return Ok(());
+        }
+    };
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        let (label, error) = audit_symlink_warning(root, path, traversal);
+        record_scope_path_warning_label(
+            aggregate,
+            root,
+            path,
+            "symlink_entry",
+            label,
+            &error,
+            options.example_limit,
+        );
+        return Ok(());
+    }
+
+    if file_type.is_dir() {
+        match fs::canonicalize(path) {
+            Ok(canonical) => {
+                let identity = audit_scope_path_identity_key(&canonical);
+                if !traversal.visited_directories.insert(identity) {
+                    record_scope_path_warning_label(
+                        aggregate,
+                        root,
+                        path,
+                        "directory_identity",
+                        audit_scope_loop_label(),
+                        "directory resolves to an already visited location",
+                        options.example_limit,
+                    );
+                    return Ok(());
+                }
+            }
+            Err(error) => {
+                record_scope_path_io_warning(
+                    aggregate,
+                    root,
+                    path,
+                    "canonicalize",
+                    &error,
+                    options.example_limit,
+                );
+                return Ok(());
+            }
+        }
+
         if path != root {
             let relative = relative_scope_path(root, path);
             let decision = scope.evaluate_repo_path(&relative, ScopePathKind::Directory);
@@ -1299,23 +1390,67 @@ fn walk_index_scope(
             }
         }
 
-        let mut entries = match fs::read_dir(path) {
-            Ok(entries) => entries.filter_map(Result::ok).collect::<Vec<_>>(),
-            Err(_) => return Ok(()),
+        let mut entries = Vec::new();
+        match fs::read_dir(path) {
+            Ok(read_dir) => {
+                for entry in read_dir {
+                    match entry {
+                        Ok(entry) => entries.push(entry),
+                        Err(error) => record_scope_path_io_warning(
+                            aggregate,
+                            root,
+                            path,
+                            "read_dir_entry",
+                            &error,
+                            options.example_limit,
+                        ),
+                    }
+                }
+            }
+            Err(error) => {
+                record_scope_path_io_warning(
+                    aggregate,
+                    root,
+                    path,
+                    "read_dir",
+                    &error,
+                    options.example_limit,
+                );
+                return Ok(());
+            }
         };
         entries.sort_by_key(|entry| entry.path());
         for entry in entries {
-            walk_index_scope(root, &entry.path(), scope, options, aggregate)?;
+            walk_index_scope(
+                root,
+                &entry.path(),
+                scope,
+                options,
+                aggregate,
+                traversal,
+                depth + 1,
+            )?;
         }
         return Ok(());
     }
 
-    if path.is_file() {
+    if file_type.is_file() {
         let relative = relative_scope_path(root, path);
         let decision = scope.evaluate_repo_path(&relative, ScopePathKind::File);
-        let bytes = fs::metadata(path)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
+        let bytes = match fs::metadata(path) {
+            Ok(metadata) => metadata.len(),
+            Err(error) => {
+                record_scope_path_io_warning(
+                    aggregate,
+                    root,
+                    path,
+                    "metadata",
+                    &error,
+                    options.example_limit,
+                );
+                0
+            }
+        };
         let language = detect_language(path).map(|language| language.as_str().to_string());
         aggregate.files_considered += 1;
         aggregate.bytes_considered += bytes;
@@ -1348,6 +1483,162 @@ fn walk_index_scope(
     }
 
     Ok(())
+}
+
+const SCOPE_AUDIT_TRAVERSAL_MAX_DEPTH: usize = 256;
+
+#[derive(Debug, Default)]
+struct ScopeAuditTraversalState {
+    visited_directories: BTreeSet<String>,
+}
+
+fn audit_symlink_warning(
+    root: &Path,
+    path: &Path,
+    traversal: &ScopeAuditTraversalState,
+) -> (&'static str, String) {
+    match fs::canonicalize(path) {
+        Ok(target) => {
+            if !target.starts_with(root) {
+                return (
+                    "path_outside_repo",
+                    format!("symlink target is outside repo: {}", target.display()),
+                );
+            }
+            let target_identity = audit_scope_path_identity_key(&target);
+            if traversal.visited_directories.contains(&target_identity) {
+                return (
+                    "symlink_loop",
+                    format!("symlink target was already visited: {}", target.display()),
+                );
+            }
+            (
+                "path_mapping_unavailable",
+                format!(
+                    "symlink target was not traversed to avoid duplicate scope paths: {}",
+                    target.display()
+                ),
+            )
+        }
+        Err(error) => {
+            let message = error.to_string();
+            if path_io_error_is_symlink_loop(&error) {
+                ("symlink_loop", message)
+            } else {
+                ("path_mapping_unavailable", message)
+            }
+        }
+    }
+}
+
+fn audit_scope_loop_label() -> &'static str {
+    if cfg!(windows) {
+        "junction_loop"
+    } else {
+        "symlink_loop"
+    }
+}
+
+fn audit_scope_path_identity_key(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) {
+        path.to_ascii_lowercase()
+    } else {
+        path
+    }
+}
+
+fn record_scope_path_warning_label(
+    aggregate: &mut ScopeAuditAggregate,
+    root: &Path,
+    path: &Path,
+    operation: &str,
+    label: &str,
+    error: &str,
+    example_limit: usize,
+) {
+    *aggregate
+        .path_access_warning_counts
+        .entry(label.to_string())
+        .or_default() += 1;
+    aggregate.warning_count += 1;
+    push_limited_value(
+        &mut aggregate.path_access_warning_examples,
+        json!({
+            "path": relative_scope_path(root, path),
+            "operation": operation,
+            "label": label,
+            "status": "skipped",
+            "diagnostic_only": true,
+            "error": error,
+        }),
+        example_limit,
+    );
+}
+
+fn record_scope_path_io_warning(
+    aggregate: &mut ScopeAuditAggregate,
+    root: &Path,
+    path: &Path,
+    operation: &str,
+    error: &io::Error,
+    example_limit: usize,
+) {
+    let label = path_io_error_label(path, error);
+    *aggregate
+        .path_access_warning_counts
+        .entry(label.to_string())
+        .or_default() += 1;
+    aggregate.warning_count += 1;
+    push_limited_value(
+        &mut aggregate.path_access_warning_examples,
+        json!({
+            "path": relative_scope_path(root, path),
+            "operation": operation,
+            "label": label,
+            "status": "skipped",
+            "diagnostic_only": true,
+            "error": error.to_string(),
+        }),
+        example_limit,
+    );
+}
+
+fn path_io_error_label(path: &Path, error: &io::Error) -> &'static str {
+    if path_io_error_is_too_long(error) {
+        return if path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.chars().count() >= 240)
+        {
+            "filename_too_long"
+        } else {
+            "path_too_long"
+        };
+    }
+    match error.kind() {
+        io::ErrorKind::PermissionDenied => "permission_denied",
+        _ => "filesystem_inaccessible",
+    }
+}
+
+fn path_io_error_is_too_long(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(206) | Some(36) | Some(63)) || {
+        let message = error.to_string().to_ascii_lowercase();
+        message.contains("filename or extension is too long")
+            || message.contains("file name too long")
+            || message.contains("filename too long")
+            || message.contains("path too long")
+    }
+}
+
+fn path_io_error_is_symlink_loop(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(40) | Some(114)) || {
+        let message = error.to_string().to_ascii_lowercase();
+        message.contains("too many levels of symbolic links")
+            || message.contains("symbolic link loop")
+            || message.contains("reparse point")
+    }
 }
 
 fn record_scope_decision(
@@ -1540,6 +1831,7 @@ Diagnostic-only release CLI dry run. No index DB is created and no source parse/
 - Files skipped: `{}`\n\
 - Directory prunes: `{}`\n\
 - Warnings: `{}`\n\
+- Path access warnings: `{}`\n\
 - Include semantics: `{}`\n\
 - Normal `.codegraph` created: `{}`\n\n\
 ## Visibility\n\n\
@@ -1557,6 +1849,7 @@ This report is diagnostic-only local evidence. It is not a public benchmark, not
         counts["files_skipped"].as_u64().unwrap_or_default(),
         counts["directory_pruned_count"].as_u64().unwrap_or_default(),
         counts["warnings"].as_u64().unwrap_or_default(),
+        counts["path_access_warnings"].as_u64().unwrap_or_default(),
         report["include_semantics"].as_str().unwrap_or("unknown"),
         report["normal_codegraph_db_created"].as_bool().unwrap_or(false),
         visibility["makefile"]["visible"].as_bool().unwrap_or(false),
@@ -1601,6 +1894,11 @@ fn index_scope_stdout_summary(report: &Value) -> Value {
         "visibility": compact_visibility_summary(&report["visibility"]),
         "hard_excluded_directory_hits": hard_hits,
         "soft_excluded_warnings": soft_warnings,
+        "path_access_warning_counts": report["path_access_warning_counts"].clone(),
+        "path_access_warning_examples": report["path_access_warning_examples"]
+            .as_array()
+            .map(|items| items.iter().take(8).cloned().collect::<Vec<_>>())
+            .unwrap_or_default(),
         "suspicious_included_directories_count": report["suspicious_included_directories"]
             .as_array()
             .map(Vec::len)
@@ -11459,6 +11757,86 @@ mod tests {
         RelationKind, SourceSpan,
     };
     use codegraph_store::{GraphStore, SqliteGraphStore};
+
+    #[test]
+    fn index_scope_path_access_warning_classifies_filename_too_long() {
+        let root = temp_audit_dir("scope-path-warning");
+        let long_file_name = format!("{}.log", "x".repeat(260));
+        let artifact_path = root
+            .join("reports")
+            .join("audit")
+            .join("artifacts")
+            .join(long_file_name);
+        let mut aggregate = ScopeAuditAggregate::default();
+        let error = io::Error::from_raw_os_error(if cfg!(windows) { 206 } else { 36 });
+
+        record_scope_path_io_warning(
+            &mut aggregate,
+            &root,
+            &artifact_path,
+            "read_dir_entry",
+            &error,
+            10,
+        );
+
+        assert_eq!(
+            aggregate
+                .path_access_warning_counts
+                .get("filename_too_long")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(aggregate.warning_count, 1);
+        assert_eq!(
+            aggregate.path_access_warning_examples[0]["label"].as_str(),
+            Some("filename_too_long")
+        );
+        assert_eq!(
+            aggregate.path_access_warning_examples[0]["diagnostic_only"].as_bool(),
+            Some(true)
+        );
+        assert!(aggregate.path_access_warning_examples[0]["path"]
+            .as_str()
+            .expect("warning path")
+            .contains("reports/audit/artifacts"));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn index_scope_path_access_warning_records_mapping_labels() {
+        let root = temp_audit_dir("scope-path-mapping-warning");
+        let symlink_path = root.join("src").join("loop");
+        fs::create_dir_all(root.join("src")).expect("create src");
+        let mut aggregate = ScopeAuditAggregate::default();
+
+        record_scope_path_warning_label(
+            &mut aggregate,
+            &root,
+            &symlink_path,
+            "symlink_entry",
+            "symlink_loop",
+            "symlink target was already visited",
+            10,
+        );
+
+        assert_eq!(
+            aggregate
+                .path_access_warning_counts
+                .get("symlink_loop")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(aggregate.warning_count, 1);
+        assert_eq!(
+            aggregate.path_access_warning_examples[0]["operation"].as_str(),
+            Some("symlink_entry")
+        );
+        assert_eq!(
+            aggregate.path_access_warning_examples[0]["status"].as_str(),
+            Some("skipped")
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
 
     #[test]
     fn vector_chunk_inspector_legacy_pretty_json_fixture() {

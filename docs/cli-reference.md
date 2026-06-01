@@ -43,6 +43,12 @@ results bounded:
 ```powershell
 codegraph-mcp agent-use query symbols <symbol> --repo <repo> `
   --limit 5 --agent-json
+codegraph-mcp agent-use query callers <symbol> --repo <repo> `
+  --limit 5 --agent-json
+codegraph-mcp agent-use query callees <symbol> --repo <repo> `
+  --limit 5 --agent-json
+codegraph-mcp agent-use query path <source> <target> --repo <repo> `
+  --limit 3 --agent-json
 
 codegraph-mcp agent-use context-pack --repo <repo> `
   --task "Trace the change impact" `
@@ -71,6 +77,9 @@ codegraph-mcp agent-use index --repo <repo> --json
 codegraph-mcp agent-use query symbols <symbol> --repo <repo> --limit 5 --agent-json
 codegraph-mcp agent-use query text "text" --repo <repo> --limit 5 --agent-json
 codegraph-mcp agent-use query files service --repo <repo> --limit 5 --agent-json
+codegraph-mcp agent-use query callers handle_request --repo <repo> --limit 5 --agent-json
+codegraph-mcp agent-use query callees handle_request --repo <repo> --limit 5 --agent-json
+codegraph-mcp agent-use query path handle_request save_record --repo <repo> --limit 3 --agent-json
 codegraph-mcp agent-use context-pack --repo <repo> --task "Trace the change impact" --agent-json
 codegraph-mcp agent-use mcp-config --repo <repo> --json
 codegraph-mcp agent-use watch --repo <repo> --once --changed src\file.ts --json
@@ -95,6 +104,15 @@ debounces and coalesces filesystem events, serializes writer work, retries
 transient locks within bounds, and calls the same changed-file update contract
 rather than owning a second delta engine. It also refuses unsafe profile DB
 states instead of creating a new graph silently.
+
+`agent-use query` maps to the same query engine as plain `query` while resolving
+the external production profile DB first. It supports `symbols`, `text`,
+`files`, `callers`, `callees`, `path`, `chain`, `references`, `definitions`,
+and `unresolved-calls` where the corresponding plain query exists. Unsafe
+missing, stale, foreign, or schema-mismatched profile DB states fail closed.
+Relation and path agent JSON includes relation kind, exactness/provenance,
+source spans, evidence role, `proof_status`, and `proof_strength`;
+`graph_proof=true` is only for verified graph/source relation proof.
 
 `agent-use validate-edit` is deferred to MVP3. Do not treat the current RTDS
 surface as a compiler/test replacement or as a complete dangling-edge
@@ -176,14 +194,16 @@ Searches the local SQLite FTS/BM25 index across files, entities, and snippets.
 
 Finds repo-relative files by FTS and path proximity.
 
-`query references <symbol>`
+`query references <symbol> [--limit <n>] [--concise|--agent-json]`
 
 Lists graph edges connected to a resolved symbol or explicit unresolved
-same-name placeholders.
+same-name placeholders. Agent JSON labels graph references separately from text
+references.
 
-`query definitions <symbol>`
+`query definitions <symbol> [--limit <n>] [--concise|--agent-json]`
 
-Returns declaration/executable symbol hits.
+Returns declaration/executable symbol hits. Definitions are symbol-location
+evidence and do not claim behavior by themselves.
 
 `query callers [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] <symbol>`
 
@@ -199,7 +219,7 @@ older broad alias/global behavior.
 Returns `CALLS` edges emitted by the symbol. It uses the same exact,
 ambiguous, and fuzzy modes as `query callers`.
 
-`query chain <source> <target>`
+`query chain <source> <target> [--limit <n>] [--concise|--agent-json]`
 
 Runs cycle-safe call-chain recovery over `CALLS` edges, preserving exactness and
 confidence labels.
@@ -210,7 +230,7 @@ Lists retained unresolved calls labeled as `static_heuristic`. The exact DB path
 used by this command is checked with the same lifecycle/passport preflight as
 other read paths.
 
-`query path <source> <target>`
+`query path <source> <target> [--limit <n>] [--concise|--agent-json]`
 
 Runs exact graph path tracing with source spans and PathEvidence.
 

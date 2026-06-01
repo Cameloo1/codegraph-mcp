@@ -32,6 +32,15 @@ codegraph-mcp agent-use query text "token or phrase" --repo <repo> `
 codegraph-mcp agent-use query files service --repo <repo> `
   --limit 5 --agent-json
 
+codegraph-mcp agent-use query callers handle_request --repo <repo> `
+  --limit 5 --agent-json
+
+codegraph-mcp agent-use query callees handle_request --repo <repo> `
+  --limit 5 --agent-json
+
+codegraph-mcp agent-use query path handle_request save_record --repo <repo> `
+  --limit 3 --agent-json
+
 codegraph-mcp agent-use context-pack --repo <repo> `
   --task "Trace the change impact" `
   --agent-json
@@ -51,6 +60,14 @@ DB and its bounded profile artifacts. `agent-use query` and `agent-use
 context-pack` use that same external DB and refuse unsafe DB states instead of
 falling back to `.codegraph`. `agent-use mcp-config` emits config JSON only by
 default; it does not write a config file.
+
+`agent-use query` supports the compact symbol, text, file, caller, callee,
+path, chain, reference, definition, and unresolved-call read surfaces when the
+underlying plain query supports them. Relation/navigation output carries
+relation kind, exactness, source spans, evidence role, `proof_status`, and
+`proof_strength`. `graph_proof=true` is reserved for verified graph/source
+relations or proof paths; definitions are symbol-location evidence, and
+references distinguish graph references from text references.
 
 Real-Time Delta Sync now has two production-profile surfaces. `agent-use watch
 --once --changed <path>` is the deterministic changed-file primitive. It
@@ -196,11 +213,15 @@ Context and proof evidence is labeled with one of:
 - `production`
 - `test`
 - `mock`
+- `stub`
+- `generated`
 - `mixed`
+- `text_evidence`
 - `unknown`
 
-Default production context excludes test, mock, mixed, and unknown evidence
-unless a production-only subpath can be split safely. `test-impact` mode
+Default production context excludes test, mock, stub, generated, mixed,
+text-evidence, and unknown evidence unless a production-only subpath can be
+split safely. `test-impact` mode
 intentionally includes test/mock evidence and labels it clearly.
 
 Inline Rust tests in `src/lib.rs`, including `#[cfg(test)] mod tests` and

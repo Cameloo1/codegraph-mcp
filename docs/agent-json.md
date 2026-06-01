@@ -91,12 +91,13 @@ When returning context or proof evidence, responses include:
 - candidate provenance fields such as `candidate_source`, `candidate_sources`,
   and `candidate_source_counts` where the surface returns retrieval candidates
 
-Valid evidence roles are `production`, `test`, `mock`, `mixed`, and `unknown`.
+Valid evidence roles are `production`, `test`, `mock`, `stub`, `generated`,
+`mixed`, `text_evidence`, and `unknown`.
 Default production context must not silently treat `test`, `mock`, `mixed`, or
 `unknown` evidence as production proof.
 
-Candidate sources such as exact seeds, text evidence, lexical search, vector
-semantic recall, binary-vector recall, nuance rescue, graph-neighborhood
+Candidate sources such as exact seeds, text evidence, lexical search,
+deterministic token-projection vector recall, binary-vector recall, nuance rescue, graph-neighborhood
 expansion, PathEvidence, and fallback text evidence are not graph proof by
 themselves. Context-pack output should use `no_proof_path_found` when it
 returns bounded source-text fallback without a verified graph path.
@@ -124,6 +125,10 @@ Regression tests enforce these default size targets:
 - query agent JSON surfaces: 12 KiB
 - `context_pack_agent_json`: 16 KiB by default, or the requested
   `--max-output-bytes` value when supplied
+- `agent-use` profile envelopes (status/query/context-pack under the
+  `agent-use` namespace): 12 KiB by default. Compaction preserves the
+  schema-required fields and trims optional diagnostic sections first; the
+  `--explain` and audit modes raise this bound for richer output.
 
 Agent JSON must not include non-empty `scope.included_examples` or
 `scope.excluded_examples` arrays. Scope examples and full audit payloads remain

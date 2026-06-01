@@ -79,6 +79,15 @@
     "timings": {
       "$ref": "common.schema.json#/$defs/timings"
     },
+    "recovery": {
+      "$ref": "common.schema.json#/$defs/recovery_pointer"
+    },
+    "recovery_commands": {
+      "$ref": "common.schema.json#/$defs/recovery_commands"
+    },
+    "agent_json_budget": {
+      "$ref": "common.schema.json#/$defs/agent_json_budget"
+    },
     "task": {
       "type": "string"
     },

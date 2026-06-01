@@ -4,7 +4,7 @@
 //! Soft exclude names are still warning-first: they are excluded only when
 //! `.gitignore` says so or when they match a known generated artifact prefix.
 
-use std::{fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 
 use serde::{Deserialize, Serialize};
 
@@ -353,6 +353,8 @@ pub struct IndexScopeRuntimeReport {
     pub paths_excluded: usize,
     pub files_excluded: usize,
     pub warnings: usize,
+    pub path_io_warning_counts: BTreeMap<String, usize>,
+    pub path_io_warning_examples: Vec<IndexScopePathIoWarning>,
     pub included_examples: Vec<IndexScopeDecision>,
     pub excluded_examples: Vec<IndexScopeDecision>,
     pub warning_examples: Vec<IndexScopeDecision>,
@@ -398,6 +400,15 @@ impl IndexScopeRuntimeReport {
     pub fn record_directory_prune(&mut self, decision: IndexScopeDirectoryPruneDecision) {
         push_limited_directory_prune(&mut self.directory_prune_decisions, decision);
     }
+
+    pub fn record_path_io_warning(&mut self, warning: IndexScopePathIoWarning) {
+        self.warnings += 1;
+        *self
+            .path_io_warning_counts
+            .entry(warning.label.clone())
+            .or_default() += 1;
+        push_limited_path_io_warning(&mut self.path_io_warning_examples, warning);
+    }
 }
 
 fn push_limited(items: &mut Vec<IndexScopeDecision>, item: IndexScopeDecision) {
@@ -413,6 +424,25 @@ fn push_limited_directory_prune(
     if items.len() < SCOPE_EXAMPLE_LIMIT {
         items.push(item);
     }
+}
+
+fn push_limited_path_io_warning(
+    items: &mut Vec<IndexScopePathIoWarning>,
+    item: IndexScopePathIoWarning,
+) {
+    if items.len() < SCOPE_EXAMPLE_LIMIT {
+        items.push(item);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexScopePathIoWarning {
+    pub path: String,
+    pub operation: String,
+    pub label: String,
+    pub status: String,
+    pub diagnostic_only: bool,
+    pub error: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

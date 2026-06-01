@@ -2759,7 +2759,9 @@ impl ExactGraphQueryEngine {
                 let role = classify_edge_evidence_role(&step.edge);
                 serde_json::json!({
                     "edge_id": step.edge.id,
+                    "head_id": step.edge.head_id,
                     "relation": step.edge.relation.to_string(),
+                    "tail_id": step.edge.tail_id,
                     "exactness": step.edge.exactness.to_string(),
                     "confidence": step.edge.confidence,
                     "extractor": step.edge.extractor,
@@ -2768,6 +2770,7 @@ impl ExactGraphQueryEngine {
                     "derived": step.edge.derived,
                     "provenance_edges": step.edge.provenance_edges.clone(),
                     "source_span": step.edge.source_span.to_string(),
+                    "source_span_detail": step.edge.source_span,
                     "file_hash": step.edge.file_hash,
                     "fact_class": fact_class.as_str(),
                     "proof_grade_edge_class": fact_class_is_proof_eligible(&step.edge, fact_class),
@@ -8465,7 +8468,11 @@ fn vector_candidate_provider_json(
         "dimension": candidate.and_then(|candidate| candidate.embedding_dim),
         "embedding_profile": candidate
             .and_then(|candidate| candidate.embedding_profile.as_deref())
-            .unwrap_or("unknown")
+            .unwrap_or("unknown"),
+        "embedding_kind": "deterministic_token_projection",
+        "display_label": "deterministic token-projection candidate recall",
+        "learned_semantic_embeddings": false,
+        "production_semantic_quality": false
     })
 }
 
@@ -8612,7 +8619,8 @@ fn vector_text_fallback_snippet(candidate: &RetrievalCandidate) -> Option<Contex
         file,
         lines,
         text,
-        reason: "vector semantic text-evidence candidate; no graph proof".to_string(),
+        reason: "deterministic token-projection text-evidence candidate; no graph proof"
+            .to_string(),
     })
 }
 
@@ -12575,6 +12583,18 @@ mod tests {
         assert_eq!(
             trace["provider"]["model_id"].as_str(),
             Some("codegraph-deterministic-token-projection-v1")
+        );
+        assert_eq!(
+            trace["provider"]["embedding_kind"].as_str(),
+            Some("deterministic_token_projection")
+        );
+        assert_eq!(
+            trace["provider"]["learned_semantic_embeddings"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            trace["provider"]["production_semantic_quality"].as_bool(),
+            Some(false)
         );
         assert_eq!(trace["provider"]["dimension"].as_u64(), Some(64));
         assert_eq!(trace["chunk_count_searched"].as_u64(), Some(1));

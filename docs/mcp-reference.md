@@ -17,7 +17,7 @@ indexes.
 
 For CLI-driven agent loops, see [agent-use.md](agent-use.md). The CLI
 `--agent-json` schemas are the stable compact machine-readable contract for
-index, query, callers/callees, and context-pack output.
+index, query, relation navigation, and context-pack output.
 
 Suggested generic Codex config:
 
@@ -55,6 +55,10 @@ cwd = "<repo>"
 
 ## Tools
 
+- `codegraph.search`
+- `codegraph.analyze`
+- `codegraph.plan_context`
+- `codegraph.explain_missing`
 - `codegraph.status`
 - `codegraph.index_repo`
 - `codegraph.update_changed_files`
@@ -79,9 +83,12 @@ cwd = "<repo>"
 
 Every listed tool advertises an `inputSchema`, an `outputSchema`, and safety
 annotations. The annotations mark tools as local-only and
-`destructiveHint = false`; index/update tools write only the configured local
-SQLite index and never edit source files. In the production agent-use profile,
-that configured index is the external profile DB, not repo-local `.codegraph`.
+`destructiveHint = false`. All tools except `codegraph.index_repo` and
+`codegraph.update_changed_files` advertise `readOnlyHint = true`; those two
+index/update tools advertise `readOnlyHint = false` because they write only the
+configured local SQLite index and never edit source files. In the production
+agent-use profile, that configured index is the external profile DB, not
+repo-local `.codegraph`.
 
 ## Resources
 
@@ -117,6 +124,11 @@ where applicable. Invalid input returns a structured JSON-RPC error.
 Caller/callee tools preserve exact traversal when an `entity_id` is supplied.
 For symbol queries, an unambiguous symbol resolves to exact entity results;
 ambiguous symbols return candidate ids instead of silently choosing one match.
+CLI `agent-use query callers`, `callees`, `path`, and `chain` use the same
+relation/path semantics through the external production profile DB. Shared
+fields keep the same proof boundary: relation kind, exactness, source spans,
+evidence role, `proof_status`, and `proof_strength` describe graph evidence,
+while candidate/text/source-navigation evidence is not graph proof.
 
 `codegraph.context_pack` accepts compact agent-loop controls:
 
@@ -124,7 +136,7 @@ ambiguous symbols return candidate ids instead of silently choosing one match.
 - `mode`: production, test-impact, debug, or impact context where supported.
 - `limit`: bounds returned compact evidence.
 - `enable_vector_candidates` with `vector_index`: opt-in vector candidate
-  recall from a matching local vector index.
+  recall from a matching local deterministic token-projection vector index.
 - `enable_nuance_rescue_candidates`: opt-in rare-token/identifier/path/config
   rescue candidates.
 
@@ -153,17 +165,20 @@ candidate spool, vector, PathEvidence, routing, or text-evidence layers are
 reported separately from graph freshness.
 
 Context/proof responses label evidence as `production`, `test`, `mock`,
-`mixed`, or `unknown` when that evidence classification is available.
+`stub`, `generated`, `mixed`, `text_evidence`, or `unknown` when that evidence
+classification is available.
 Production context excludes test/mock/mixed/unknown evidence by default; test
 impact requests include test evidence intentionally. Inline Rust `#[cfg(test)]`
 modules and `#[test]` functions are test evidence even when they are inside a
 normal source file.
 
-Candidate lanes such as exact seeds, text evidence, lexical search, vector
-semantic recall, binary-vector recall, nuance rescue, graph neighbors, and
-fallback evidence are not graph proof by themselves. They become graph proof
-only after graph/source verification returns a proof path. If no proof path is
-available, context-pack may return source-text fallback evidence with
+Candidate lanes such as exact seeds, text evidence, lexical search,
+deterministic token-projection vector recall, binary-vector recall, nuance
+rescue, graph neighbors, and fallback evidence are not graph proof by
+themselves. The deterministic token-projection lane is local candidate recall,
+not a learned semantic-embedding quality claim. Candidate lanes become graph
+proof only after graph/source verification returns a proof path. If no proof
+path is available, context-pack may return source-text fallback evidence with
 `no_proof_path_found`.
 
 Candidate-only context may be returned only when the candidate layer is current

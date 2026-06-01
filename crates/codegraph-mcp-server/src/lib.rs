@@ -1232,7 +1232,7 @@ impl McpServer {
             "hits": hits,
             "pagination": pagination,
             "resource_links": result_resource_links(),
-            "proof": "Persistent semantic vector serving is not exposed through MCP in Phase 30; this tool returns Stage 0 text evidence only.",
+            "proof": "MCP semantic search returns deterministic token-projection/text candidate recall only; it is not a learned semantic embedding claim and not graph proof.",
         }))
     }
 
@@ -2086,7 +2086,7 @@ fn tool_definition(name: &str) -> Value {
             search_schema(),
         ),
         "codegraph.search_semantic" => (
-            "Return deterministic Stage 0 text evidence as Phase 15 semantic fallback.",
+            "Return deterministic token-projection/text candidate recall; not learned semantic proof.",
             search_schema(),
         ),
         "codegraph.context_pack" => (
@@ -4141,7 +4141,37 @@ fn mcp_attach_rtds_freshness_fields(
     staged_availability: &Value,
 ) {
     let rtds = mcp_rtds_freshness_json(repo_root, db_path, preflight, staged_availability);
+    let profile_identity = mcp_profile_identity_json(repo_root, db_path);
     if let Some(object) = value.as_object_mut() {
+        object.insert("profile_identity".to_string(), profile_identity.clone());
+        object.insert(
+            "profile_name".to_string(),
+            profile_identity
+                .get("profile_name")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "active_profile_name".to_string(),
+            profile_identity
+                .get("active_profile_name")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "repo_identity_label".to_string(),
+            profile_identity
+                .get("repo_identity_label")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "repo_identity_hash".to_string(),
+            profile_identity
+                .get("repo_identity_hash")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
         object.insert("rtds_freshness".to_string(), rtds.clone());
         object.insert(
             "publish_state".to_string(),
@@ -4212,6 +4242,7 @@ fn mcp_rtds_freshness_json(
     preflight: Option<&DbLifecyclePreflight>,
     staged_availability: &Value,
 ) -> Value {
+    let profile_identity = mcp_profile_identity_json(repo_root, db_path);
     let publish_state = mcp_agent_use_publish_state_json(db_path);
     let publish_active = publish_state
         .get("active")
@@ -4289,7 +4320,9 @@ fn mcp_rtds_freshness_json(
     let stale_candidate_layers = mcp_stale_candidate_layers(staged_availability);
     json!({
         "schema_version": 1,
-        "profile_name": if mcp_db_looks_like_agent_use_profile(db_path) { PRODUCTION_AGENT_USE_PROFILE_NAME } else { "unknown" },
+        "profile_name": profile_identity.get("profile_name").cloned().unwrap_or_else(|| json!("unknown")),
+        "active_profile_name": profile_identity.get("active_profile_name").cloned().unwrap_or_else(|| json!("unknown")),
+        "profile_identity": profile_identity,
         "repo_root": path_string(repo_root),
         "db_path": path_string(db_path),
         "graph_freshness": graph_freshness,
@@ -4311,6 +4344,60 @@ fn mcp_rtds_freshness_json(
         "dot_codegraph_fallback": false,
         "public_claim": false,
     })
+}
+
+fn mcp_profile_identity_json(repo_root: &Path, db_path: &Path) -> Value {
+    let env_profile_name = std::env::var("CODEGRAPH_AGENT_USE_PROFILE").ok();
+    let profile_name = if let Some(profile_name) = env_profile_name {
+        profile_name
+    } else if mcp_db_looks_like_agent_use_profile(db_path) {
+        PRODUCTION_AGENT_USE_PROFILE_NAME.to_string()
+    } else {
+        "unknown".to_string()
+    };
+    let profile_root = std::env::var_os("CODEGRAPH_AGENT_USE_PROFILE_ROOT")
+        .map(PathBuf::from)
+        .or_else(|| db_path.parent().map(Path::to_path_buf));
+    let (label_from_root, hash_from_root) = profile_root
+        .as_deref()
+        .and_then(mcp_parse_profile_root_identity)
+        .unwrap_or((None, None));
+    let env_hash = std::env::var("CODEGRAPH_AGENT_USE_REPO_IDENTITY_HASH").ok();
+    let repo_identity_hash = env_hash.clone().or(hash_from_root);
+    let repo_identity_source = if env_hash.is_some() {
+        "env"
+    } else if repo_identity_hash.is_some() {
+        "profile_root"
+    } else {
+        "unknown"
+    };
+    json!({
+        "profile_name": profile_name,
+        "active_profile_name": profile_name,
+        "repo_root": path_string(repo_root),
+        "db_path": path_string(db_path),
+        "profile_root": profile_root.as_ref().map(|path| path_string(path)),
+        "repo_identity_label": label_from_root.unwrap_or_else(|| "unknown".to_string()),
+        "repo_identity_hash": repo_identity_hash.unwrap_or_else(|| "unknown".to_string()),
+        "repo_identity_source": repo_identity_source,
+        "safe_read_only_startup": true,
+        "auto_index_on_startup": false,
+        "startup_auto_index": false,
+        "dot_codegraph_fallback": false,
+        "public_claim": false,
+    })
+}
+
+fn mcp_parse_profile_root_identity(
+    profile_root: &Path,
+) -> Option<(Option<String>, Option<String>)> {
+    let name = profile_root.file_name()?.to_str()?;
+    let (label, hash) = name.rsplit_once('-')?;
+    if hash.len() == 32 && hash.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        Some((Some(label.to_string()), Some(hash.to_string())))
+    } else {
+        Some((Some(name.to_string()), None))
+    }
 }
 
 fn mcp_agent_use_publish_state_json(db_path: &Path) -> Value {
@@ -5748,6 +5835,87 @@ mod tests {
     }
 
     #[test]
+    fn mcp_status_and_context_expose_agent_profile_identity() {
+        let _guard = ENV_TEST_LOCK.lock().expect("env lock");
+        let repo = fixture_repo();
+        let profile_root = repo
+            .parent()
+            .expect("repo parent")
+            .join("app-0123456789abcdef0123456789abcdef");
+        fs::create_dir_all(&profile_root).expect("profile root");
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let old_profile = std::env::var_os("CODEGRAPH_AGENT_USE_PROFILE");
+        let old_hash = std::env::var_os("CODEGRAPH_AGENT_USE_REPO_IDENTITY_HASH");
+        let old_root = std::env::var_os("CODEGRAPH_AGENT_USE_PROFILE_ROOT");
+        std::env::set_var(
+            "CODEGRAPH_AGENT_USE_PROFILE",
+            PRODUCTION_AGENT_USE_PROFILE_NAME,
+        );
+        std::env::set_var(
+            "CODEGRAPH_AGENT_USE_REPO_IDENTITY_HASH",
+            "0123456789abcdef0123456789abcdef",
+        );
+        std::env::set_var("CODEGRAPH_AGENT_USE_PROFILE_ROOT", &profile_root);
+
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+        ok(server.call_tool("codegraph.index_repo", &json!({"repo": path_string(&repo)})));
+        let status = ok(server.call_tool("codegraph.status", &json!({"repo": path_string(&repo)})));
+        let context = ok(server.call_tool(
+            "codegraph.context_pack",
+            &json!({"repo": path_string(&repo), "task": "Change login", "limit": 1}),
+        ));
+
+        for value in [&status, &context] {
+            assert_eq!(
+                value["profile_name"].as_str(),
+                Some(PRODUCTION_AGENT_USE_PROFILE_NAME)
+            );
+            assert_eq!(
+                value["active_profile_name"].as_str(),
+                Some(PRODUCTION_AGENT_USE_PROFILE_NAME)
+            );
+            assert_eq!(value["repo_identity_label"].as_str(), Some("app"));
+            assert_eq!(
+                value["repo_identity_hash"].as_str(),
+                Some("0123456789abcdef0123456789abcdef")
+            );
+            assert_eq!(
+                value["profile_identity"]["repo_identity_hash"].as_str(),
+                Some("0123456789abcdef0123456789abcdef")
+            );
+            assert_eq!(
+                value["profile_identity"]["auto_index_on_startup"].as_bool(),
+                Some(false)
+            );
+            assert_eq!(
+                value["rtds_freshness"]["profile_identity"]["repo_identity_hash"].as_str(),
+                Some("0123456789abcdef0123456789abcdef")
+            );
+            assert_eq!(value["graph_freshness"].as_str(), Some("current"));
+        }
+        assert_eq!(status["safe_to_query"].as_bool(), Some(true));
+        assert_eq!(context["graph_proof"].as_bool().is_some(), true);
+
+        if let Some(old_profile) = old_profile {
+            std::env::set_var("CODEGRAPH_AGENT_USE_PROFILE", old_profile);
+        } else {
+            std::env::remove_var("CODEGRAPH_AGENT_USE_PROFILE");
+        }
+        if let Some(old_hash) = old_hash {
+            std::env::set_var("CODEGRAPH_AGENT_USE_REPO_IDENTITY_HASH", old_hash);
+        } else {
+            std::env::remove_var("CODEGRAPH_AGENT_USE_REPO_IDENTITY_HASH");
+        }
+        if let Some(old_root) = old_root {
+            std::env::set_var("CODEGRAPH_AGENT_USE_PROFILE_ROOT", old_root);
+        } else {
+            std::env::remove_var("CODEGRAPH_AGENT_USE_PROFILE_ROOT");
+        }
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
+    }
+
+    #[test]
     fn mcp_status_and_read_tools_report_db_locked_without_claimable_context() {
         let repo = fixture_repo();
         let server = McpServer::new(McpServerConfig::for_repo(&repo));
@@ -5977,6 +6145,37 @@ mod tests {
         );
         assert!(plan_schema["properties"]["task"].is_object());
         assert!(plan_schema["properties"]["seeds"].is_object());
+    }
+
+    #[test]
+    fn mcp_reference_docs_match_advertised_tools_and_safety_annotations() {
+        let docs_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("docs")
+            .join("mcp-reference.md");
+        let docs = fs::read_to_string(&docs_path).expect("read mcp reference docs");
+        for name in TOOL_NAMES {
+            assert!(docs.contains(&format!("`{name}`")), "docs missing {name}");
+        }
+        for advertised_only in [
+            "codegraph.search",
+            "codegraph.analyze",
+            "codegraph.plan_context",
+            "codegraph.explain_missing",
+        ] {
+            assert!(
+                docs.contains(&format!("`{advertised_only}`")),
+                "docs must include high-level advertised tool {advertised_only}"
+            );
+        }
+        assert!(docs.contains("destructiveHint = false"));
+        assert!(docs.contains("readOnlyHint = true"));
+        assert!(docs.contains("readOnlyHint = false"));
+        assert!(
+            docs.contains("MCP startup does not surprise-index"),
+            "docs must preserve no-auto-index lifecycle language"
+        );
     }
 
     #[test]

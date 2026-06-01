@@ -11,10 +11,11 @@
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
+    env,
     error::Error,
     fmt, fs,
     fs::OpenOptions,
-    io::{BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader, Write},
     path::{Component, Path, PathBuf},
     process::Command,
     str::FromStr,
@@ -65,11 +66,29 @@ const DERIVED_DATAFLOW_CLOSURE_MAX_OUTPUT_EDGES: usize = 100_000;
 const DERIVED_DATAFLOW_CLOSURE_MAX_HOPS_PER_NODE: usize = 64;
 pub const DEFAULT_INDEX_BATCH_MAX_FILES: usize = 128;
 pub const DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES: usize = 32 * 1024 * 1024;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_ENTITIES_PER_FILE: usize = 10_000;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_EDGES_PER_FILE: usize = 20_000;
 pub const DEFAULT_GRAPH_OUTPUT_MAX_LOCAL_FACTS_PER_FILE: usize = 20_000;
 pub const DEFAULT_GRAPH_OUTPUT_MAX_RELATION_FANOUT_PER_FILE: usize = 4_096;
 pub const DEFAULT_GRAPH_OUTPUT_MAX_DERIVED_EDGES_PER_FILE: usize = 20_000;
 pub const DEFAULT_GRAPH_OUTPUT_MAX_SOURCE_SPANS_PER_FILE: usize = 20_000;
 pub const DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_EDGES_PER_STAGE: usize = 100_000;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_INPUT_EDGES: usize = 100_000;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_RELATION_CLASS_EDGES_INSPECTED: usize = 50_000;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_DERIVED_EDGES_EMITTED: usize = 100_000;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_CLOSURE_DEPTH: usize = 3;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_WALL_MS: usize = 0;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_EDGES_PER_FILE: usize = 20_000;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_COMPONENT_EDGES: usize = 20_000;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_LOCAL_READS_PER_FILE: usize = 4_096;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_LOCAL_WRITES_PER_FILE: usize = 4_096;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_LOCAL_FLOWS_PER_FILE: usize = 4_096;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_CALLSITES_PER_FILE: usize = 4_096;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_ARGUMENTS_PER_CALLSITE: usize = 32;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_EXTRACT_WALL_MS_PER_FILE: usize = 0;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_GENERATED_TEST_FILE_DETAIL_LEVEL: usize = 0;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_GENERATED_TEST_SOURCE_BYTES_PER_FILE: usize = 64 * 1024;
+pub const DEFAULT_GRAPH_OUTPUT_MAX_SOURCE_BYTES_PER_FILE_BEFORE_DEGRADE: usize = 2 * 1024 * 1024;
 const GRAPH_OUTPUT_BUDGET_REPORTED_HIT_LIMIT: usize = 16;
 pub const DEFAULT_STORAGE_POLICY: &str = "proof:compact-proof-graph";
 pub const FILE_LIFECYCLE_STATE_KEY: &str = "file_lifecycle_state";
@@ -274,23 +293,135 @@ pub struct IndexSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphOutputBudgets {
+    pub max_entities_per_file: usize,
+    pub max_edges_per_file: usize,
     pub max_local_facts_per_file: usize,
     pub max_relation_fanout_per_file: usize,
     pub max_derived_edges_per_file: usize,
     pub max_source_spans_per_file: usize,
     pub max_reducer_edges_per_stage: usize,
+    pub max_reducer_input_edges: usize,
+    pub max_reducer_relation_class_edges_inspected: usize,
+    pub max_reducer_derived_edges_emitted: usize,
+    pub max_reducer_closure_depth: usize,
+    pub max_reducer_wall_ms: usize,
+    pub max_reducer_edges_per_file: usize,
+    pub max_reducer_component_edges: usize,
+    pub max_local_reads_per_file: usize,
+    pub max_local_writes_per_file: usize,
+    pub max_local_flows_per_file: usize,
+    pub max_callsites_per_file: usize,
+    pub max_arguments_per_callsite: usize,
+    pub max_extract_wall_ms_per_file: usize,
+    pub max_generated_test_file_detail_level: usize,
+    pub max_generated_test_source_bytes_per_file: usize,
+    pub max_source_bytes_per_file_before_degrade: usize,
 }
 
 impl Default for GraphOutputBudgets {
     fn default() -> Self {
         Self {
-            max_local_facts_per_file: DEFAULT_GRAPH_OUTPUT_MAX_LOCAL_FACTS_PER_FILE,
-            max_relation_fanout_per_file: DEFAULT_GRAPH_OUTPUT_MAX_RELATION_FANOUT_PER_FILE,
-            max_derived_edges_per_file: DEFAULT_GRAPH_OUTPUT_MAX_DERIVED_EDGES_PER_FILE,
-            max_source_spans_per_file: DEFAULT_GRAPH_OUTPUT_MAX_SOURCE_SPANS_PER_FILE,
-            max_reducer_edges_per_stage: DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_EDGES_PER_STAGE,
+            max_entities_per_file: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_ENTITIES_PER_FILE",
+                DEFAULT_GRAPH_OUTPUT_MAX_ENTITIES_PER_FILE,
+            ),
+            max_edges_per_file: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_EDGES_PER_FILE",
+                DEFAULT_GRAPH_OUTPUT_MAX_EDGES_PER_FILE,
+            ),
+            max_local_facts_per_file: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_LOCAL_FACTS_PER_FILE",
+                DEFAULT_GRAPH_OUTPUT_MAX_LOCAL_FACTS_PER_FILE,
+            ),
+            max_relation_fanout_per_file: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_RELATION_FANOUT_PER_FILE",
+                DEFAULT_GRAPH_OUTPUT_MAX_RELATION_FANOUT_PER_FILE,
+            ),
+            max_derived_edges_per_file: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_DERIVED_EDGES_PER_FILE",
+                DEFAULT_GRAPH_OUTPUT_MAX_DERIVED_EDGES_PER_FILE,
+            ),
+            max_source_spans_per_file: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_SOURCE_SPANS_PER_FILE",
+                DEFAULT_GRAPH_OUTPUT_MAX_SOURCE_SPANS_PER_FILE,
+            ),
+            max_reducer_edges_per_stage: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_REDUCER_EDGES_PER_STAGE",
+                DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_EDGES_PER_STAGE,
+            ),
+            max_reducer_input_edges: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_REDUCER_INPUT_EDGES",
+                DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_INPUT_EDGES,
+            ),
+            max_reducer_relation_class_edges_inspected: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_REDUCER_RELATION_CLASS_EDGES_INSPECTED",
+                DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_RELATION_CLASS_EDGES_INSPECTED,
+            ),
+            max_reducer_derived_edges_emitted: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_REDUCER_DERIVED_EDGES_EMITTED",
+                DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_DERIVED_EDGES_EMITTED,
+            ),
+            max_reducer_closure_depth: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_REDUCER_CLOSURE_DEPTH",
+                DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_CLOSURE_DEPTH,
+            ),
+            max_reducer_wall_ms: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_REDUCER_WALL_MS",
+                DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_WALL_MS,
+            ),
+            max_reducer_edges_per_file: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_REDUCER_EDGES_PER_FILE",
+                DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_EDGES_PER_FILE,
+            ),
+            max_reducer_component_edges: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_REDUCER_COMPONENT_EDGES",
+                DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_COMPONENT_EDGES,
+            ),
+            max_local_reads_per_file: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_LOCAL_READS_PER_FILE",
+                DEFAULT_GRAPH_OUTPUT_MAX_LOCAL_READS_PER_FILE,
+            ),
+            max_local_writes_per_file: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_LOCAL_WRITES_PER_FILE",
+                DEFAULT_GRAPH_OUTPUT_MAX_LOCAL_WRITES_PER_FILE,
+            ),
+            max_local_flows_per_file: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_LOCAL_FLOWS_PER_FILE",
+                DEFAULT_GRAPH_OUTPUT_MAX_LOCAL_FLOWS_PER_FILE,
+            ),
+            max_callsites_per_file: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_CALLSITES_PER_FILE",
+                DEFAULT_GRAPH_OUTPUT_MAX_CALLSITES_PER_FILE,
+            ),
+            max_arguments_per_callsite: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_ARGUMENTS_PER_CALLSITE",
+                DEFAULT_GRAPH_OUTPUT_MAX_ARGUMENTS_PER_CALLSITE,
+            ),
+            max_extract_wall_ms_per_file: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_EXTRACT_WALL_MS_PER_FILE",
+                DEFAULT_GRAPH_OUTPUT_MAX_EXTRACT_WALL_MS_PER_FILE,
+            ),
+            max_generated_test_file_detail_level: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_GENERATED_TEST_FILE_DETAIL_LEVEL",
+                DEFAULT_GRAPH_OUTPUT_MAX_GENERATED_TEST_FILE_DETAIL_LEVEL,
+            ),
+            max_generated_test_source_bytes_per_file: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_GENERATED_TEST_SOURCE_BYTES_PER_FILE",
+                DEFAULT_GRAPH_OUTPUT_MAX_GENERATED_TEST_SOURCE_BYTES_PER_FILE,
+            ),
+            max_source_bytes_per_file_before_degrade: graph_budget_env_usize(
+                "CODEGRAPH_GRAPH_OUTPUT_MAX_SOURCE_BYTES_PER_FILE_BEFORE_DEGRADE",
+                DEFAULT_GRAPH_OUTPUT_MAX_SOURCE_BYTES_PER_FILE_BEFORE_DEGRADE,
+            ),
         }
     }
+}
+
+fn graph_budget_env_usize(name: &str, default: usize) -> usize {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(default)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,22 +433,49 @@ pub struct GraphOutputBudgetHit {
     pub after: usize,
     pub budget: usize,
     pub omitted: usize,
+    #[serde(default = "graph_output_budget_hit_unit_default")]
+    pub unit: String,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub relation_class: Option<String>,
+    #[serde(default)]
+    pub inspected: Option<usize>,
+    #[serde(default = "graph_output_budget_omitted_count_status_default")]
+    pub omitted_count_status: String,
+    #[serde(default)]
+    pub degradation_reason: Option<String>,
+    #[serde(default = "graph_output_budget_claim_state_default")]
+    pub claim_state: String,
     pub claimability_label: String,
 }
 
 impl GraphOutputBudgetHit {
     fn message(&self) -> String {
         format!(
-            "{} hit {} budget at stage {}; omitted {} fact(s), before={}, after={}, budget={}",
+            "{} hit {} budget at stage {}; omitted {} {}, before={}, after={}, budget={}",
             self.repo_relative_path,
             self.kind,
             self.stage,
             self.omitted,
+            self.unit,
             self.before,
             self.after,
             self.budget
         )
     }
+}
+
+fn graph_output_budget_hit_unit_default() -> String {
+    "fact(s)".to_string()
+}
+
+fn graph_output_budget_omitted_count_status_default() -> String {
+    "exact".to_string()
+}
+
+fn graph_output_budget_claim_state_default() -> String {
+    "degraded_output_not_complete_graph_proof".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -331,11 +489,27 @@ pub struct GraphOutputBudgetSummary {
     pub derived_edge_budget_hits: usize,
     pub source_span_budget_hits: usize,
     pub reducer_edge_budget_hits: usize,
+    pub entity_budget_hits: usize,
+    pub edge_budget_hits: usize,
+    pub local_read_budget_hits: usize,
+    pub local_write_budget_hits: usize,
+    pub local_flow_budget_hits: usize,
+    pub callsite_budget_hits: usize,
+    pub argument_budget_hits: usize,
+    pub source_bytes_budget_hits: usize,
     pub omitted_local_facts: usize,
     pub omitted_relation_fanout_edges: usize,
     pub omitted_derived_edges: usize,
     pub omitted_source_span_facts: usize,
     pub omitted_reducer_edges: usize,
+    pub omitted_entities: usize,
+    pub omitted_edges: usize,
+    pub omitted_local_reads: usize,
+    pub omitted_local_writes: usize,
+    pub omitted_local_flows: usize,
+    pub omitted_callsites: usize,
+    pub omitted_arguments: usize,
+    pub omitted_source_bytes: usize,
     pub claimability_label: String,
     pub warnings: Vec<String>,
     pub degraded_files: Vec<GraphOutputBudgetHit>,
@@ -356,11 +530,27 @@ impl GraphOutputBudgetSummary {
             derived_edge_budget_hits: 0,
             source_span_budget_hits: 0,
             reducer_edge_budget_hits: 0,
+            entity_budget_hits: 0,
+            edge_budget_hits: 0,
+            local_read_budget_hits: 0,
+            local_write_budget_hits: 0,
+            local_flow_budget_hits: 0,
+            callsite_budget_hits: 0,
+            argument_budget_hits: 0,
+            source_bytes_budget_hits: 0,
             omitted_local_facts: 0,
             omitted_relation_fanout_edges: 0,
             omitted_derived_edges: 0,
             omitted_source_span_facts: 0,
             omitted_reducer_edges: 0,
+            omitted_entities: 0,
+            omitted_edges: 0,
+            omitted_local_reads: 0,
+            omitted_local_writes: 0,
+            omitted_local_flows: 0,
+            omitted_callsites: 0,
+            omitted_arguments: 0,
+            omitted_source_bytes: 0,
             claimability_label: "full_graph_output_with_no_budget_degradation".to_string(),
             warnings: Vec::new(),
             degraded_files: Vec::new(),
@@ -385,9 +575,41 @@ impl GraphOutputBudgetSummary {
                 self.source_span_budget_hits += 1;
                 self.omitted_source_span_facts += hit.omitted;
             }
-            "reducer_edges_per_stage" => {
+            kind if kind.starts_with("reducer_") || kind == "reducer_edges_per_stage" => {
                 self.reducer_edge_budget_hits += 1;
                 self.omitted_reducer_edges += hit.omitted;
+            }
+            "entities_per_file" => {
+                self.entity_budget_hits += 1;
+                self.omitted_entities += hit.omitted;
+            }
+            "edges_per_file" => {
+                self.edge_budget_hits += 1;
+                self.omitted_edges += hit.omitted;
+            }
+            "local_reads_per_file" => {
+                self.local_read_budget_hits += 1;
+                self.omitted_local_reads += hit.omitted;
+            }
+            "local_writes_per_file" => {
+                self.local_write_budget_hits += 1;
+                self.omitted_local_writes += hit.omitted;
+            }
+            "local_flows_per_file" => {
+                self.local_flow_budget_hits += 1;
+                self.omitted_local_flows += hit.omitted;
+            }
+            "callsites_per_file" => {
+                self.callsite_budget_hits += 1;
+                self.omitted_callsites += hit.omitted;
+            }
+            "arguments_per_callsite" => {
+                self.argument_budget_hits += 1;
+                self.omitted_arguments += hit.omitted;
+            }
+            "source_bytes_per_file" => {
+                self.source_bytes_budget_hits += 1;
+                self.omitted_source_bytes += hit.omitted;
             }
             _ => {}
         }
@@ -795,6 +1017,23 @@ pub struct IndexProfile {
     pub worker_count: usize,
     pub skipped_unchanged_files: usize,
     pub spans: Vec<PhaseTiming>,
+    pub source_bytes_read: u64,
+    pub source_clone_count: Option<u64>,
+    pub source_clone_count_status: String,
+    pub source_clone_count_reason: String,
+    pub db_write_attribution: String,
+    pub db_write_attribution_reason: String,
+    pub file_attribution: Vec<FileProfileAttribution>,
+    pub stage_attribution: Vec<StageProfileSummary>,
+    pub slowest_stages: Vec<StageProfileSummary>,
+    pub slowest_files: Vec<FileProfileAttribution>,
+    pub slowest_files_by_parse: Vec<FileProfileAttribution>,
+    pub slowest_files_by_extraction: Vec<FileProfileAttribution>,
+    pub highest_entity_files: Vec<FileProfileAttribution>,
+    pub highest_edge_files: Vec<FileProfileAttribution>,
+    pub highest_source_span_files: Vec<FileProfileAttribution>,
+    pub high_fanout_files: Vec<FileProfileAttribution>,
+    pub db_write_contributors: Vec<FileProfileAttribution>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -803,6 +1042,51 @@ pub struct PhaseTiming {
     pub elapsed_ms: f64,
     pub count: u64,
     pub items: u64,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileProfileAttribution {
+    pub path: String,
+    pub language: Option<String>,
+    pub file_kind: String,
+    pub source_role: String,
+    pub bytes: u64,
+    pub metadata_ms: Option<f64>,
+    pub read_ms: Option<f64>,
+    pub hash_ms: Option<f64>,
+    pub source_role_classification_ms: Option<f64>,
+    pub parse_ms: Option<f64>,
+    pub extract_ms: Option<f64>,
+    pub local_fact_bundle_ms: Option<f64>,
+    pub local_fact_count: Option<usize>,
+    pub entity_count: Option<usize>,
+    pub edge_count: Option<usize>,
+    pub source_span_count: Option<usize>,
+    pub text_evidence_count: Option<usize>,
+    pub parse_error_count: usize,
+    pub syntax_diagnostic_count: usize,
+    pub degraded_labels: Vec<String>,
+    pub skipped_labels: Vec<String>,
+    pub budget_hit_labels: Vec<String>,
+    pub warnings: Vec<String>,
+    pub db_write_ms: Option<f64>,
+    pub db_write_attribution: String,
+    pub total_measured_ms: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StageProfileSummary {
+    pub name: String,
+    pub total_ms: Option<f64>,
+    pub status: String,
+    pub count: u64,
+    pub items: u64,
+    pub p50_ms: Option<f64>,
+    pub p95_ms: Option<f64>,
+    pub max_ms: Option<f64>,
+    pub distribution: String,
+    pub source_spans: Vec<String>,
     pub notes: Vec<String>,
 }
 
@@ -943,6 +1227,9 @@ pub struct PendingIndexFile {
     pub source: String,
     pub file_hash: String,
     pub language: Option<String>,
+    pub file_kind: String,
+    pub source_role: String,
+    pub source_role_classification_ms: f64,
     pub size_bytes: u64,
     pub modified_unix_nanos: Option<String>,
     pub needs_delete: bool,
@@ -957,7 +1244,6 @@ pub struct PendingIndexBatch {
 }
 
 const RUBI_GRAPH_EXTRACTION_SKIP_BYTES: usize = 8 * 1024;
-const LARGE_TEST_OR_GENERATED_GRAPH_EXTRACTION_SKIP_BYTES: usize = 64 * 1024;
 const LARGE_GENERATED_OR_TEST_GRAPH_EXTRACTION_SKIP_BYTES: usize = 384 * 1024;
 
 #[derive(Debug)]
@@ -966,6 +1252,9 @@ struct HashedIndexCandidate {
     source: String,
     file_hash: String,
     language: Option<String>,
+    file_kind: String,
+    source_role: String,
+    source_role_classification_ms: f64,
     size_bytes: u64,
     modified_unix_nanos: Option<String>,
     needs_delete: bool,
@@ -1784,6 +2073,7 @@ struct GlobalEntityFact {
 struct GlobalFactReductionPlan {
     entities: Vec<GlobalEntityFact>,
     edges: Vec<Edge>,
+    budget_hits: Vec<GraphOutputBudgetHit>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1826,6 +2116,7 @@ impl GlobalFactReductionPlan {
         if repo_relative_paths.is_empty() {
             self.entities.clear();
             self.edges.clear();
+            self.budget_hits.clear();
             return;
         }
         self.entities.retain(|fact| {
@@ -1837,22 +2128,215 @@ impl GlobalFactReductionPlan {
         });
     }
 
-    fn apply_reducer_edge_budget(
+    fn apply_reducer_budgets(
         &mut self,
         stage: &str,
+        budgets: &GraphOutputBudgets,
+    ) -> Vec<GraphOutputBudgetHit> {
+        let mut hits = std::mem::take(&mut self.budget_hits);
+        if let Some(hit) = self.apply_reducer_total_budget(
+            stage,
+            "reducer_input_edges",
+            budgets.max_reducer_input_edges,
+        ) {
+            hits.push(hit);
+        }
+        hits.extend(self.apply_reducer_relation_class_budget(
+            stage,
+            budgets.max_reducer_relation_class_edges_inspected,
+        ));
+        hits.extend(
+            self.apply_reducer_component_budget(stage, budgets.max_reducer_component_edges),
+        );
+        hits.extend(
+            self.apply_reducer_edges_per_file_budget(stage, budgets.max_reducer_edges_per_file),
+        );
+        if let Some(hit) =
+            self.apply_reducer_derived_edge_budget(stage, budgets.max_reducer_derived_edges_emitted)
+        {
+            hits.push(hit);
+        }
+        if let Some(hit) = self.apply_reducer_total_budget(
+            stage,
+            "reducer_edges_per_stage",
+            budgets.max_reducer_edges_per_stage,
+        ) {
+            hits.push(hit);
+        }
+        hits
+    }
+
+    fn apply_reducer_total_budget(
+        &mut self,
+        stage: &str,
+        kind: &str,
         budget: usize,
     ) -> Option<GraphOutputBudgetHit> {
         let before = self.edges.len();
-        if before <= budget {
+        if budget == 0 || before <= budget {
             return None;
         }
         self.edges.truncate(budget);
         Some(graph_budget_hit(
             "<global>",
             stage,
-            "reducer_edges_per_stage",
+            kind,
             before,
             self.edges.len(),
+            budget,
+        ))
+    }
+
+    fn apply_reducer_relation_class_budget(
+        &mut self,
+        stage: &str,
+        budget: usize,
+    ) -> Vec<GraphOutputBudgetHit> {
+        if budget == 0 || self.edges.is_empty() {
+            return Vec::new();
+        }
+        let mut counts = BTreeMap::<String, usize>::new();
+        let mut retained = Vec::with_capacity(self.edges.len().min(budget));
+        for edge in std::mem::take(&mut self.edges) {
+            let relation = edge.relation.to_string();
+            let count = counts.entry(relation).or_default();
+            *count += 1;
+            if *count <= budget {
+                retained.push(edge);
+            }
+        }
+        self.edges = retained;
+        counts
+            .into_iter()
+            .filter_map(|(relation, before)| {
+                if before <= budget {
+                    return None;
+                }
+                let mut hit = graph_budget_hit(
+                    "<global>",
+                    stage,
+                    "reducer_relation_class_edges_inspected",
+                    before,
+                    budget,
+                    budget,
+                );
+                hit.relation_class = Some(relation);
+                Some(hit)
+            })
+            .collect()
+    }
+
+    fn apply_reducer_component_budget(
+        &mut self,
+        stage: &str,
+        budget: usize,
+    ) -> Vec<GraphOutputBudgetHit> {
+        if budget == 0 || self.edges.is_empty() {
+            return Vec::new();
+        }
+        let mut counts = BTreeMap::<String, usize>::new();
+        let mut retained = Vec::with_capacity(self.edges.len().min(budget));
+        for edge in std::mem::take(&mut self.edges) {
+            let path = normalize_graph_path(&edge.source_span.repo_relative_path);
+            let component = format!("{}|{}", path, edge.relation);
+            let count = counts.entry(component).or_default();
+            *count += 1;
+            if *count <= budget {
+                retained.push(edge);
+            }
+        }
+        self.edges = retained;
+        counts
+            .into_iter()
+            .filter_map(|(component, before)| {
+                if before <= budget {
+                    return None;
+                }
+                let (path, relation) = component
+                    .split_once('|')
+                    .map(|(path, relation)| (path.to_string(), relation.to_string()))
+                    .unwrap_or_else(|| ("<global>".to_string(), component));
+                let mut hit = graph_budget_hit(
+                    &path,
+                    stage,
+                    "reducer_component_edges",
+                    before,
+                    budget,
+                    budget,
+                );
+                hit.relation_class = Some(relation);
+                Some(hit)
+            })
+            .collect()
+    }
+
+    fn apply_reducer_edges_per_file_budget(
+        &mut self,
+        stage: &str,
+        budget: usize,
+    ) -> Vec<GraphOutputBudgetHit> {
+        if budget == 0 || self.edges.is_empty() {
+            return Vec::new();
+        }
+        let mut counts = BTreeMap::<String, usize>::new();
+        let mut retained = Vec::with_capacity(self.edges.len().min(budget));
+        for edge in std::mem::take(&mut self.edges) {
+            let path = normalize_graph_path(&edge.source_span.repo_relative_path);
+            let count = counts.entry(path.clone()).or_default();
+            *count += 1;
+            if *count <= budget {
+                retained.push(edge);
+            }
+        }
+        self.edges = retained;
+        counts
+            .into_iter()
+            .filter_map(|(path, before)| {
+                if before <= budget {
+                    return None;
+                }
+                Some(graph_budget_hit(
+                    &path,
+                    stage,
+                    "reducer_edges_per_file",
+                    before,
+                    budget,
+                    budget,
+                ))
+            })
+            .collect()
+    }
+
+    fn apply_reducer_derived_edge_budget(
+        &mut self,
+        stage: &str,
+        budget: usize,
+    ) -> Option<GraphOutputBudgetHit> {
+        if budget == 0 || self.edges.is_empty() {
+            return None;
+        }
+        let before = self.edges.iter().filter(|edge| edge.derived).count();
+        if before <= budget {
+            return None;
+        }
+        let mut retained = Vec::with_capacity(self.edges.len());
+        let mut retained_derived = 0usize;
+        for edge in std::mem::take(&mut self.edges) {
+            if edge.derived {
+                if retained_derived >= budget {
+                    continue;
+                }
+                retained_derived += 1;
+            }
+            retained.push(edge);
+        }
+        self.edges = retained;
+        Some(graph_budget_hit(
+            "<global>",
+            stage,
+            "reducer_derived_edges_emitted",
+            before,
+            retained_derived,
             budget,
         ))
     }
@@ -2057,7 +2541,42 @@ fn apply_graph_output_budgets_to_extraction(
 ) -> Vec<GraphOutputBudgetHit> {
     let mut hits = Vec::new();
     apply_relation_fanout_budget(repo_relative_path, extraction, budgets, &mut hits);
+    apply_local_relation_kind_budget(
+        repo_relative_path,
+        extraction,
+        budgets.max_callsites_per_file,
+        "callsites_per_file",
+        is_callsite_budget_relation,
+        &mut hits,
+    );
+    apply_arguments_per_callsite_budget(repo_relative_path, extraction, budgets, &mut hits);
+    apply_local_relation_kind_budget(
+        repo_relative_path,
+        extraction,
+        budgets.max_local_reads_per_file,
+        "local_reads_per_file",
+        |relation| matches!(relation, RelationKind::Reads),
+        &mut hits,
+    );
+    apply_local_relation_kind_budget(
+        repo_relative_path,
+        extraction,
+        budgets.max_local_writes_per_file,
+        "local_writes_per_file",
+        is_local_write_budget_relation,
+        &mut hits,
+    );
+    apply_local_relation_kind_budget(
+        repo_relative_path,
+        extraction,
+        budgets.max_local_flows_per_file,
+        "local_flows_per_file",
+        is_local_flow_budget_relation,
+        &mut hits,
+    );
     apply_derived_edge_budget(repo_relative_path, extraction, budgets, &mut hits);
+    apply_entity_count_budget(repo_relative_path, extraction, budgets, &mut hits);
+    apply_edge_count_budget(repo_relative_path, extraction, budgets, &mut hits);
     apply_local_fact_budget(repo_relative_path, extraction, budgets, &mut hits);
     apply_source_span_budget(repo_relative_path, extraction, budgets, &mut hits);
     if !hits.is_empty() {
@@ -2074,6 +2593,26 @@ fn graph_budget_hit(
     after: usize,
     budget: usize,
 ) -> GraphOutputBudgetHit {
+    graph_budget_hit_with_unit(
+        repo_relative_path,
+        stage,
+        kind,
+        before,
+        after,
+        budget,
+        "fact(s)",
+    )
+}
+
+fn graph_budget_hit_with_unit(
+    repo_relative_path: &str,
+    stage: &str,
+    kind: &str,
+    before: usize,
+    after: usize,
+    budget: usize,
+    unit: &str,
+) -> GraphOutputBudgetHit {
     GraphOutputBudgetHit {
         repo_relative_path: normalize_graph_path(repo_relative_path),
         stage: stage.to_string(),
@@ -2082,7 +2621,69 @@ fn graph_budget_hit(
         after,
         budget,
         omitted: before.saturating_sub(after),
+        unit: unit.to_string(),
+        labels: graph_budget_hit_labels(kind),
+        relation_class: graph_budget_relation_class(stage, kind),
+        inspected: Some(before),
+        omitted_count_status: "exact".to_string(),
+        degradation_reason: Some(graph_budget_degradation_reason(kind)),
+        claim_state: graph_budget_claim_state(kind),
         claimability_label: "degraded_file_nonclaimable_for_omitted_facts".to_string(),
+    }
+}
+
+fn graph_budget_hit_labels(kind: &str) -> Vec<String> {
+    let labels: &[&str] = match kind {
+        "relation_fanout_per_file" => &["high_fanout", "relation_budget_hit"],
+        "derived_edges_per_file" => &["relation_budget_hit"],
+        "reducer_edges_per_stage"
+        | "reducer_input_edges"
+        | "reducer_relation_class_edges_inspected"
+        | "reducer_derived_edges_emitted"
+        | "reducer_edges_per_file"
+        | "reducer_component_edges"
+        | "reducer_wall_ms" => &[
+            "relation_budget_hit",
+            "reducer_budget_hit",
+            "relation_class_degraded",
+        ],
+        "source_spans_per_file" => &["source_span_budget_hit"],
+        "source_bytes_per_file" => &["extraction_budget_hit", "diagnostic_only"],
+        "local_reads_per_file"
+        | "local_writes_per_file"
+        | "local_flows_per_file"
+        | "callsites_per_file"
+        | "arguments_per_callsite" => &["extraction_budget_hit", "relation_budget_hit"],
+        "entities_per_file" | "edges_per_file" | "local_facts_per_file" => {
+            &["extraction_budget_hit"]
+        }
+        _ => &["extraction_budget_hit"],
+    };
+    labels.iter().map(|label| (*label).to_string()).collect()
+}
+
+fn graph_budget_relation_class(stage: &str, kind: &str) -> Option<String> {
+    if kind.starts_with("reducer_") || kind == "reducer_edges_per_stage" {
+        Some(stage.to_string())
+    } else {
+        None
+    }
+}
+
+fn graph_budget_degradation_reason(kind: &str) -> String {
+    if kind.starts_with("reducer_") || kind == "reducer_edges_per_stage" {
+        "reducer budget hit; omitted relation facts are not complete graph proof for this class"
+            .to_string()
+    } else {
+        "graph output budget hit; omitted facts are not claimable".to_string()
+    }
+}
+
+fn graph_budget_claim_state(kind: &str) -> String {
+    if kind.starts_with("reducer_") || kind == "reducer_edges_per_stage" {
+        "relation_class_degraded_not_complete_graph_proof".to_string()
+    } else {
+        "file_degraded_not_complete_graph_proof_for_omitted_facts".to_string()
     }
 }
 
@@ -2100,6 +2701,12 @@ fn apply_relation_fanout_budget(
     let mut counts = BTreeMap::<String, usize>::new();
     let mut retained = Vec::with_capacity(extraction.edges.len().min(budget));
     for edge in std::mem::take(&mut extraction.edges) {
+        // Proof/structural edges are exempt from the fanout cap: a function that
+        // legitimately calls many others is real call-graph data, not noise.
+        if is_budget_exempt_edge_relation(edge.relation) {
+            retained.push(edge);
+            continue;
+        }
         let key = format!("{}|{}", edge.head_id, edge.relation);
         let count = counts.entry(key).or_default();
         if *count < budget {
@@ -2154,6 +2761,292 @@ fn apply_derived_edge_budget(
     ));
 }
 
+/// Declaration-like entities are the findable "symbols" an agent looks up
+/// (functions, types, imports, routes, tests, config keys, ...). They are NEVER
+/// dropped by the per-file entity budget: silently losing a real symbol is the
+/// worst failure mode for a proof/lookup tool. The budget only bounds high-volume
+/// "noise" entities (locals, parameters, call sites, return sites, expressions)
+/// produced by dataflow extraction, which can balloon on very large files.
+fn is_declaration_like_entity_kind(kind: EntityKind) -> bool {
+    !matches!(
+        kind,
+        EntityKind::LocalVariable
+            | EntityKind::Parameter
+            | EntityKind::CallSite
+            | EntityKind::ReturnSite
+            | EntityKind::Expression
+            | EntityKind::Assignment
+            | EntityKind::GenericType
+    )
+}
+
+/// Dynamic per-file noise budget. Real hand-written files have a roughly
+/// bounded entity density per byte; the budget scales with file size so normal
+/// files are never truncated, while a pathologically large/generated file is
+/// still capped. Returns an even number, clamped to [static floor, ceiling].
+///
+/// `entities_per_kb` is the slope; observed declaration+noise density on this
+/// codebase is well under 32/KB, so 32/KB leaves headroom without DB bloat.
+/// The ceiling bounds a 10MB+ file; the floor is the configured static cap so
+/// the dynamic value never drops below the documented per-file budget.
+fn dynamic_noise_entity_budget(source_bytes: usize, budgets: &GraphOutputBudgets) -> usize {
+    const ENTITIES_PER_KB: usize = 32;
+    const CEILING: usize = 24_000;
+    let floor = budgets.max_entities_per_file;
+    let size_kb = source_bytes / 1024;
+    let scaled = size_kb.saturating_mul(ENTITIES_PER_KB);
+    let budget = scaled.clamp(floor, CEILING);
+    // Keep the budget an even number per the dynamic-cap design.
+    budget & !1
+}
+
+fn apply_entity_count_budget(
+    repo_relative_path: &str,
+    extraction: &mut BasicExtraction,
+    budgets: &GraphOutputBudgets,
+    hits: &mut Vec<GraphOutputBudgetHit>,
+) {
+    let static_budget = budgets.max_entities_per_file;
+    if static_budget == 0 {
+        return;
+    }
+    let before = extraction.entities.len();
+    if before <= static_budget {
+        return;
+    }
+
+    // Declarations are always retained; only noise entities are subject to the
+    // dynamic budget. This guarantees every real symbol stays findable even when
+    // a large file's dataflow noise exceeds the static per-file cap.
+    let declaration_count = extraction
+        .entities
+        .iter()
+        .filter(|entity| is_declaration_like_entity_kind(entity.kind))
+        .count();
+    let noise_budget = dynamic_noise_entity_budget(extraction.file.size_bytes as usize, budgets);
+
+    let mut kept_noise = 0usize;
+    extraction.entities.retain(|entity| {
+        if is_declaration_like_entity_kind(entity.kind) {
+            return true;
+        }
+        if kept_noise < noise_budget {
+            kept_noise += 1;
+            true
+        } else {
+            false
+        }
+    });
+    let after = extraction.entities.len();
+    if after == before {
+        return;
+    }
+    retain_edges_with_present_entities(extraction);
+    hits.push(graph_budget_hit(
+        repo_relative_path,
+        "local_extraction",
+        "entities_per_file",
+        before,
+        after,
+        declaration_count.saturating_add(noise_budget),
+    ));
+}
+
+fn apply_edge_count_budget(
+    repo_relative_path: &str,
+    extraction: &mut BasicExtraction,
+    budgets: &GraphOutputBudgets,
+    hits: &mut Vec<GraphOutputBudgetHit>,
+) {
+    let budget = budgets.max_edges_per_file;
+    let before = extraction.edges.len();
+    if budget == 0 || before <= budget {
+        return;
+    }
+    // Never drop proof/structural edges. Keep all exempt edges, then fill the
+    // remaining budget with noise edges in order. If exempt edges alone exceed
+    // the budget we still keep them all (proof completeness wins over the cap).
+    let exempt_count = extraction
+        .edges
+        .iter()
+        .filter(|edge| is_budget_exempt_edge_relation(edge.relation))
+        .count();
+    let noise_allowance = budget.saturating_sub(exempt_count);
+    let mut kept_noise = 0usize;
+    extraction.edges.retain(|edge| {
+        if is_budget_exempt_edge_relation(edge.relation) {
+            return true;
+        }
+        if kept_noise < noise_allowance {
+            kept_noise += 1;
+            true
+        } else {
+            false
+        }
+    });
+    let after = extraction.edges.len();
+    if after == before {
+        return;
+    }
+    hits.push(graph_budget_hit(
+        repo_relative_path,
+        "local_extraction",
+        "edges_per_file",
+        before,
+        after,
+        budget,
+    ));
+}
+
+fn apply_local_relation_kind_budget(
+    repo_relative_path: &str,
+    extraction: &mut BasicExtraction,
+    budget: usize,
+    kind: &str,
+    predicate: impl Fn(RelationKind) -> bool,
+    hits: &mut Vec<GraphOutputBudgetHit>,
+) {
+    if budget == 0 || extraction.edges.is_empty() {
+        return;
+    }
+    let before = extraction
+        .edges
+        .iter()
+        .filter(|edge| predicate(edge.relation))
+        .count();
+    if before <= budget {
+        return;
+    }
+    let mut retained_matching = 0usize;
+    extraction.edges.retain(|edge| {
+        if !predicate(edge.relation) {
+            return true;
+        }
+        if retained_matching < budget {
+            retained_matching += 1;
+            true
+        } else {
+            false
+        }
+    });
+    hits.push(graph_budget_hit(
+        repo_relative_path,
+        "local_extraction",
+        kind,
+        before,
+        retained_matching,
+        budget,
+    ));
+}
+
+fn apply_arguments_per_callsite_budget(
+    repo_relative_path: &str,
+    extraction: &mut BasicExtraction,
+    budgets: &GraphOutputBudgets,
+    hits: &mut Vec<GraphOutputBudgetHit>,
+) {
+    let budget = budgets.max_arguments_per_callsite;
+    if budget == 0 || extraction.edges.is_empty() {
+        return;
+    }
+    let before = extraction
+        .edges
+        .iter()
+        .filter(|edge| is_argument_budget_relation(edge.relation))
+        .count();
+    if before <= budget {
+        return;
+    }
+    let mut counts_by_callsite = BTreeMap::<String, usize>::new();
+    let mut retained_arguments = 0usize;
+    extraction.edges.retain(|edge| {
+        if !is_argument_budget_relation(edge.relation) {
+            return true;
+        }
+        let count = counts_by_callsite.entry(edge.head_id.clone()).or_default();
+        if *count < budget {
+            *count += 1;
+            retained_arguments += 1;
+            true
+        } else {
+            false
+        }
+    });
+    if retained_arguments < before {
+        hits.push(graph_budget_hit(
+            repo_relative_path,
+            "local_extraction",
+            "arguments_per_callsite",
+            before,
+            retained_arguments,
+            budget,
+        ));
+    }
+}
+
+/// Proof-bearing call edges. These are the verifiable caller/callee relations
+/// the agent relies on and must NEVER be dropped by a per-file count budget:
+/// losing a real `CALLS` edge silently breaks call-graph proof. Only local
+/// call *noise* (return-site plumbing) may be trimmed by the callsite budget.
+fn is_proof_call_relation(relation: RelationKind) -> bool {
+    matches!(
+        relation,
+        RelationKind::Calls | RelationKind::CalledBy | RelationKind::Callee
+    )
+}
+
+/// True for edges that are graph proof or structural and must survive every
+/// per-file count budget. Only dataflow/argument "noise" edges are budgetable.
+fn is_budget_exempt_edge_relation(relation: RelationKind) -> bool {
+    if is_proof_call_relation(relation) {
+        return true;
+    }
+    // Structural relations define the skeleton an agent navigates (containment,
+    // definitions, declarations, imports/exports, returns). Never budget these.
+    matches!(
+        relation,
+        RelationKind::Contains
+            | RelationKind::DefinedIn
+            | RelationKind::Defines
+            | RelationKind::Declares
+            | RelationKind::Imports
+            | RelationKind::Exports
+            | RelationKind::Returns
+    )
+}
+
+fn is_callsite_budget_relation(relation: RelationKind) -> bool {
+    // Proof call edges (Calls/Callee/CalledBy) are intentionally excluded: the
+    // callsite budget only trims non-proof call plumbing. Returns-to is local
+    // plumbing and may be capped.
+    matches!(relation, RelationKind::ReturnsTo)
+}
+
+fn is_argument_budget_relation(relation: RelationKind) -> bool {
+    matches!(
+        relation,
+        RelationKind::Argument0 | RelationKind::Argument1 | RelationKind::ArgumentN
+    )
+}
+
+fn is_local_write_budget_relation(relation: RelationKind) -> bool {
+    matches!(
+        relation,
+        RelationKind::Writes
+            | RelationKind::Mutates
+            | RelationKind::MutatedBy
+            | RelationKind::AssignedFrom
+            | RelationKind::ReachingDef
+    )
+}
+
+fn is_local_flow_budget_relation(relation: RelationKind) -> bool {
+    matches!(
+        relation,
+        RelationKind::FlowsTo | RelationKind::DataDependsOn | RelationKind::ControlDependsOn
+    )
+}
+
 fn apply_local_fact_budget(
     repo_relative_path: &str,
     extraction: &mut BasicExtraction,
@@ -2162,18 +3055,60 @@ fn apply_local_fact_budget(
 ) {
     let budget = budgets.max_local_facts_per_file;
     let before = extraction.entities.len() + extraction.edges.len();
-    if before <= budget {
+    if budget == 0 || before <= budget {
         return;
     }
-    if extraction.entities.len() >= budget {
-        extraction.entities.truncate(budget);
-        extraction.edges.clear();
-    } else {
-        let allowed_edges = budget.saturating_sub(extraction.entities.len());
-        extraction.edges.truncate(allowed_edges);
-    }
+    // Declaration entities and proof/structural edges are exempt: they are the
+    // findable symbols and verifiable relations. The combined local-fact budget
+    // only trims noise (locals/params/callsites + dataflow/argument edges), and
+    // never below the exempt floor even if that floor exceeds the budget.
+    let exempt_entities = extraction
+        .entities
+        .iter()
+        .filter(|entity| is_declaration_like_entity_kind(entity.kind))
+        .count();
+    let exempt_edges = extraction
+        .edges
+        .iter()
+        .filter(|edge| is_budget_exempt_edge_relation(edge.relation))
+        .count();
+    let exempt_total = exempt_entities + exempt_edges;
+    let noise_allowance = budget.saturating_sub(exempt_total);
+
+    // Split the noise allowance: keep declaration entities, then as many noise
+    // entities as fit; keep exempt edges, then as many noise edges as fit.
+    let entity_noise_allowance = noise_allowance / 2;
+    let edge_noise_allowance = noise_allowance.saturating_sub(entity_noise_allowance);
+
+    let mut kept_entity_noise = 0usize;
+    extraction.entities.retain(|entity| {
+        if is_declaration_like_entity_kind(entity.kind) {
+            return true;
+        }
+        if kept_entity_noise < entity_noise_allowance {
+            kept_entity_noise += 1;
+            true
+        } else {
+            false
+        }
+    });
+    let mut kept_edge_noise = 0usize;
+    extraction.edges.retain(|edge| {
+        if is_budget_exempt_edge_relation(edge.relation) {
+            return true;
+        }
+        if kept_edge_noise < edge_noise_allowance {
+            kept_edge_noise += 1;
+            true
+        } else {
+            false
+        }
+    });
     retain_edges_with_present_entities(extraction);
     let after = extraction.entities.len() + extraction.edges.len();
+    if after == before {
+        return;
+    }
     hits.push(graph_budget_hit(
         repo_relative_path,
         "local_extraction",
@@ -2197,10 +3132,17 @@ fn apply_source_span_budget(
     }
     let mut seen = BTreeSet::<String>::new();
     extraction.entities.retain(|entity| {
+        // Declaration entities are exempt: their span must survive so the symbol
+        // stays queryable. Their spans still count toward `seen` so the budget
+        // reflects reality, but they are never dropped.
         let Some(span) = &entity.source_span else {
             return true;
         };
         let key = span.to_string();
+        if is_declaration_like_entity_kind(entity.kind) {
+            seen.insert(key);
+            return true;
+        }
         if seen.contains(&key) || seen.len() < budget {
             seen.insert(key);
             true
@@ -2210,7 +3152,12 @@ fn apply_source_span_budget(
     });
     retain_edges_with_present_entities(extraction);
     extraction.edges.retain(|edge| {
+        // Proof/structural edges are exempt from the span budget.
         let key = edge.source_span.to_string();
+        if is_budget_exempt_edge_relation(edge.relation) {
+            seen.insert(key);
+            return true;
+        }
         if seen.contains(&key) || seen.len() < budget {
             seen.insert(key);
             true
@@ -2259,6 +3206,14 @@ fn annotate_graph_output_budget_hits(
     budgets: &GraphOutputBudgets,
     hits: &[GraphOutputBudgetHit],
 ) {
+    let mut labels = Vec::<String>::new();
+    for hit in hits {
+        push_unique_label(&mut labels, hit.kind.clone());
+        for label in &hit.labels {
+            push_unique_label(&mut labels, label.clone());
+        }
+        push_unique_label(&mut labels, hit.claimability_label.clone());
+    }
     metadata.insert("graph_output_budget_hit".to_string(), json!(true));
     metadata.insert(
         "claim_state".to_string(),
@@ -2277,6 +3232,77 @@ fn annotate_graph_output_budget_hits(
         "graph_output_budget_hits".to_string(),
         serde_json::to_value(hits).unwrap_or(Value::Null),
     );
+    metadata.insert("degradation_labels".to_string(), json!(labels));
+    metadata.insert("graph_output_degradation_labels".to_string(), json!(labels));
+}
+
+fn append_degradation_labels(metadata: &mut Metadata, labels: &[String]) {
+    if labels.is_empty() {
+        return;
+    }
+    let mut merged = metadata
+        .get("degradation_labels")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for label in labels {
+        push_unique_label(&mut merged, label.clone());
+    }
+    metadata.insert("degradation_labels".to_string(), json!(merged.clone()));
+    metadata.insert("graph_output_degradation_labels".to_string(), json!(merged));
+}
+
+fn extraction_degradation_labels(extraction: &BasicExtraction, syntax_error: bool) -> Vec<String> {
+    let mut labels = Vec::new();
+    if syntax_error {
+        push_unique_label(&mut labels, "parse_degraded".to_string());
+    }
+    if extraction
+        .entities
+        .iter()
+        .any(entity_has_unsupported_dynamic_or_macro_label)
+        || extraction
+            .edges
+            .iter()
+            .any(edge_has_unsupported_dynamic_or_macro_label)
+    {
+        push_unique_label(&mut labels, "unsupported_dynamic_or_macro".to_string());
+    }
+    labels
+}
+
+fn entity_has_unsupported_dynamic_or_macro_label(entity: &Entity) -> bool {
+    metadata_contains_dynamic_or_macro_unsupported(&entity.metadata)
+        || entity.qualified_name.contains("dynamic_import:")
+}
+
+fn edge_has_unsupported_dynamic_or_macro_label(edge: &Edge) -> bool {
+    metadata_contains_dynamic_or_macro_unsupported(&edge.metadata)
+        || edge.head_id.contains("dynamic_import:")
+        || edge.tail_id.contains("dynamic_import:")
+}
+
+fn metadata_contains_dynamic_or_macro_unsupported(metadata: &Metadata) -> bool {
+    let haystack = [
+        metadata.get("unsupported_behavior_label"),
+        metadata.get("unsupported_reason"),
+        metadata.get("resolution"),
+        metadata.get("import_kind"),
+        metadata.get("target_resolution_claim_state"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_str)
+    .collect::<Vec<_>>()
+    .join(" ")
+    .to_ascii_lowercase();
+    haystack.contains("dynamic") || haystack.contains("macro") || haystack.contains("preprocessor")
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -2324,17 +3350,130 @@ pub struct ReducedIndexPlan {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParseExtractStat {
     pub repo_relative_path: String,
+    pub language: Option<String>,
+    pub file_kind: String,
+    pub source_role: String,
+    pub bytes: u64,
+    pub source_role_classification_ms: f64,
     pub parse_ms: u128,
     pub extraction_ms: u128,
     pub bundle_ms: u128,
+    pub local_fact_count: usize,
+    pub entity_count: usize,
+    pub edge_count: usize,
+    pub source_span_count: usize,
+    pub text_evidence_count: usize,
     pub parse_error: bool,
     pub syntax_error: bool,
     pub skipped: bool,
     pub message: Option<String>,
+    pub degraded_labels: Vec<String>,
+    pub skipped_labels: Vec<String>,
     pub graph_output_budget_hits: Vec<GraphOutputBudgetHit>,
+}
+
+impl FileProfileAttribution {
+    fn new(
+        path: String,
+        language: Option<String>,
+        file_kind: String,
+        source_role: String,
+        bytes: u64,
+    ) -> Self {
+        Self {
+            path,
+            language,
+            file_kind,
+            source_role,
+            bytes,
+            metadata_ms: None,
+            read_ms: None,
+            hash_ms: None,
+            source_role_classification_ms: None,
+            parse_ms: None,
+            extract_ms: None,
+            local_fact_bundle_ms: None,
+            local_fact_count: None,
+            entity_count: None,
+            edge_count: None,
+            source_span_count: None,
+            text_evidence_count: None,
+            parse_error_count: 0,
+            syntax_diagnostic_count: 0,
+            degraded_labels: Vec::new(),
+            skipped_labels: Vec::new(),
+            budget_hit_labels: Vec::new(),
+            warnings: vec![
+                "per-file DB write attribution is not measured; db_write_ms is aggregate-only"
+                    .to_string(),
+            ],
+            db_write_ms: None,
+            db_write_attribution: "aggregate_only".to_string(),
+            total_measured_ms: 0.0,
+        }
+    }
+
+    fn refresh_total_measured_ms(&mut self) {
+        self.total_measured_ms = [
+            self.metadata_ms,
+            self.read_ms,
+            self.hash_ms,
+            self.source_role_classification_ms,
+            self.parse_ms,
+            self.extract_ms,
+            self.local_fact_bundle_ms,
+            self.db_write_ms,
+        ]
+        .into_iter()
+        .flatten()
+        .sum::<f64>();
+    }
+}
+
+fn file_profile_entry_mut<'a>(
+    file_profiles: &'a mut BTreeMap<String, FileProfileAttribution>,
+    path: &str,
+    language: Option<String>,
+    file_kind: String,
+    source_role: String,
+    bytes: u64,
+) -> &'a mut FileProfileAttribution {
+    file_profiles.entry(path.to_string()).or_insert_with(|| {
+        FileProfileAttribution::new(path.to_string(), language, file_kind, source_role, bytes)
+    })
+}
+
+fn push_unique_label(labels: &mut Vec<String>, label: impl Into<String>) {
+    let label = label.into();
+    if !labels.iter().any(|existing| existing == &label) {
+        labels.push(label);
+    }
+}
+
+fn classify_file_profile_source_role(
+    repo_relative_path: &str,
+    source: Option<&str>,
+    file_kind: &str,
+) -> String {
+    if file_kind == TEXT_EVIDENCE_KIND {
+        return TEXT_EVIDENCE_KIND.to_string();
+    }
+    let normalized = normalize_graph_path(repo_relative_path).to_ascii_lowercase();
+    if normalized.contains("/generated/") || normalized.contains(".generated.") {
+        return "generated".to_string();
+    }
+    if normalized.contains("/fixtures/") {
+        return "fixture".to_string();
+    }
+    if is_test_file_path_for_index(repo_relative_path)
+        || source.is_some_and(source_may_have_test_relation)
+    {
+        return "test".to_string();
+    }
+    "production".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2897,6 +4036,7 @@ fn index_repo_to_existing_db_with_options(
     let mut max_worker_count = 1usize;
     let mut bulk_index_load_started = false;
     let mut hashed_candidates = Vec::<HashedIndexCandidate>::new();
+    let mut file_profiles = BTreeMap::<String, FileProfileAttribution>::new();
     if !text_evidence_candidates.is_empty() {
         let text_evidence_transaction_start = Instant::now();
         store.begin_write_transaction()?;
@@ -2905,6 +4045,22 @@ fn index_repo_to_existing_db_with_options(
                 let metadata_start = Instant::now();
                 let file_metadata = fs::metadata(&candidate.file_path)?;
                 let size_bytes = file_metadata.len();
+                if options.profile {
+                    let entry = file_profile_entry_mut(
+                        &mut file_profiles,
+                        &candidate.repo_relative_path,
+                        None,
+                        candidate.kind.as_str().to_string(),
+                        TEXT_EVIDENCE_KIND.to_string(),
+                        size_bytes,
+                    );
+                    entry.metadata_ms = Some(duration_ms(metadata_start.elapsed()));
+                    entry.text_evidence_count = Some(0);
+                    entry.entity_count = Some(0);
+                    entry.edge_count = Some(0);
+                    entry.source_span_count = Some(0);
+                    entry.local_fact_count = Some(0);
+                }
                 let existing_file = manifest_diff
                     .existing_file(&candidate.repo_relative_path)
                     .cloned();
@@ -2918,16 +4074,56 @@ fn index_repo_to_existing_db_with_options(
                         &file_metadata,
                     ) == ManifestFileDecision::MetadataUnchanged
                 {
-                    phase_profile.add_duration("metadata_diff", metadata_start.elapsed(), 1, 1);
+                    let metadata_elapsed = metadata_start.elapsed();
+                    phase_profile.add_duration("metadata_diff", metadata_elapsed, 1, 1);
+                    if options.profile {
+                        let entry = file_profile_entry_mut(
+                            &mut file_profiles,
+                            &candidate.repo_relative_path,
+                            None,
+                            candidate.kind.as_str().to_string(),
+                            TEXT_EVIDENCE_KIND.to_string(),
+                            size_bytes,
+                        );
+                        entry.metadata_ms = Some(duration_ms(metadata_elapsed));
+                        push_unique_label(&mut entry.skipped_labels, "metadata_unchanged");
+                        push_unique_label(
+                            &mut entry.warnings,
+                            "file not read because metadata was unchanged",
+                        );
+                    }
                     summary.files_skipped += 1;
                     summary.files_metadata_unchanged += 1;
                     skipped_unchanged_files += 1;
                     continue;
                 }
-                phase_profile.add_duration("metadata_diff", metadata_start.elapsed(), 1, 1);
+                let metadata_elapsed = metadata_start.elapsed();
+                phase_profile.add_duration("metadata_diff", metadata_elapsed, 1, 1);
+                if options.profile {
+                    let entry = file_profile_entry_mut(
+                        &mut file_profiles,
+                        &candidate.repo_relative_path,
+                        None,
+                        candidate.kind.as_str().to_string(),
+                        TEXT_EVIDENCE_KIND.to_string(),
+                        size_bytes,
+                    );
+                    entry.metadata_ms = Some(duration_ms(metadata_elapsed));
+                }
 
                 if size_bytes > TEXT_EVIDENCE_MAX_READ_BYTES_PER_FILE {
                     summary.files_skipped += 1;
+                    if options.profile {
+                        let entry = file_profile_entry_mut(
+                            &mut file_profiles,
+                            &candidate.repo_relative_path,
+                            None,
+                            candidate.kind.as_str().to_string(),
+                            TEXT_EVIDENCE_KIND.to_string(),
+                            size_bytes,
+                        );
+                        push_unique_label(&mut entry.skipped_labels, "text_evidence_too_large");
+                    }
                     if existing_file.is_some() {
                         let delete_start = Instant::now();
                         store.delete_facts_for_file(&candidate.repo_relative_path)?;
@@ -2952,7 +4148,23 @@ fn index_repo_to_existing_db_with_options(
                 let source = match fs::read_to_string(&candidate.file_path) {
                     Ok(source) => source,
                     Err(error) => {
-                        phase_profile.add_duration("file_read", read_start.elapsed(), 1, 1);
+                        let read_elapsed = read_start.elapsed();
+                        phase_profile.add_duration("file_read", read_elapsed, 1, 1);
+                        if options.profile {
+                            let entry = file_profile_entry_mut(
+                                &mut file_profiles,
+                                &candidate.repo_relative_path,
+                                None,
+                                candidate.kind.as_str().to_string(),
+                                TEXT_EVIDENCE_KIND.to_string(),
+                                size_bytes,
+                            );
+                            entry.read_ms = Some(duration_ms(read_elapsed));
+                            push_unique_label(
+                                &mut entry.skipped_labels,
+                                "text_evidence_read_error",
+                            );
+                        }
                         summary.files_skipped += 1;
                         summary.failed_files_deleted += 1;
                         if existing_file.is_some() {
@@ -2972,16 +4184,34 @@ fn index_repo_to_existing_db_with_options(
                         continue;
                     }
                 };
-                phase_profile.add_duration(
-                    "file_read",
-                    read_start.elapsed(),
-                    1,
-                    source.len() as u64,
-                );
+                let read_elapsed = read_start.elapsed();
+                phase_profile.add_duration("file_read", read_elapsed, 1, source.len() as u64);
                 summary.files_read += 1;
+                if options.profile {
+                    let entry = file_profile_entry_mut(
+                        &mut file_profiles,
+                        &candidate.repo_relative_path,
+                        None,
+                        candidate.kind.as_str().to_string(),
+                        TEXT_EVIDENCE_KIND.to_string(),
+                        size_bytes,
+                    );
+                    entry.read_ms = Some(duration_ms(read_elapsed));
+                }
 
                 if !looks_like_text_evidence_source(&source) {
                     summary.files_skipped += 1;
+                    if options.profile {
+                        let entry = file_profile_entry_mut(
+                            &mut file_profiles,
+                            &candidate.repo_relative_path,
+                            None,
+                            candidate.kind.as_str().to_string(),
+                            TEXT_EVIDENCE_KIND.to_string(),
+                            size_bytes,
+                        );
+                        push_unique_label(&mut entry.skipped_labels, "text_evidence_not_text_like");
+                    }
                     if existing_file.is_some() {
                         let delete_start = Instant::now();
                         store.delete_facts_for_file(&candidate.repo_relative_path)?;
@@ -3001,13 +4231,21 @@ fn index_repo_to_existing_db_with_options(
 
                 let hash_start = Instant::now();
                 let hash = content_hash(&source);
-                phase_profile.add_duration(
-                    "file_hash",
-                    hash_start.elapsed(),
-                    1,
-                    source.len() as u64,
-                );
+                let hash_elapsed = hash_start.elapsed();
+                phase_profile.add_duration("file_hash", hash_elapsed, 1, source.len() as u64);
                 summary.files_hashed += 1;
+                if options.profile {
+                    let entry = file_profile_entry_mut(
+                        &mut file_profiles,
+                        &candidate.repo_relative_path,
+                        None,
+                        candidate.kind.as_str().to_string(),
+                        TEXT_EVIDENCE_KIND.to_string(),
+                        size_bytes,
+                    );
+                    entry.hash_ms = Some(duration_ms(hash_elapsed));
+                }
+                let candidate_spool_start = Instant::now();
                 append_candidate_spool_chunks(
                     &mut summary,
                     candidate_spool_chunks_for_text_evidence(
@@ -3019,16 +4257,24 @@ fn index_repo_to_existing_db_with_options(
                         modified_unix_nanos(&file_metadata).as_deref(),
                     )?,
                 )?;
+                phase_profile.add_duration(
+                    "candidate_spool_build",
+                    candidate_spool_start.elapsed(),
+                    1,
+                    1,
+                );
 
                 if let Some(record) = existing_file
                     .as_ref()
                     .filter(|record| record.file_hash == hash && existing_is_text_evidence)
                 {
                     let refresh_start = Instant::now();
+                    let evidence =
+                        build_text_evidence_index(&candidate.repo_relative_path, &source);
                     let metadata = text_evidence_file_metadata(
                         modified_unix_nanos(&file_metadata),
                         candidate.kind,
-                        &build_text_evidence_index(&candidate.repo_relative_path, &source),
+                        &evidence,
                     );
                     store.upsert_file(&FileRecord {
                         repo_relative_path: candidate.repo_relative_path.clone(),
@@ -3045,6 +4291,19 @@ fn index_repo_to_existing_db_with_options(
                         1,
                         1,
                     );
+                    if options.profile {
+                        let entry = file_profile_entry_mut(
+                            &mut file_profiles,
+                            &candidate.repo_relative_path,
+                            None,
+                            candidate.kind.as_str().to_string(),
+                            TEXT_EVIDENCE_KIND.to_string(),
+                            size_bytes,
+                        );
+                        entry.text_evidence_count = Some(evidence.snippets.len());
+                        entry.local_fact_count = Some(evidence.snippets.len());
+                        push_unique_label(&mut entry.skipped_labels, "content_hash_unchanged");
+                    }
                     summary.files_skipped += 1;
                     skipped_unchanged_files += 1;
                     continue;
@@ -3060,6 +4319,7 @@ fn index_repo_to_existing_db_with_options(
 
                 let evidence_index =
                     build_text_evidence_index(&candidate.repo_relative_path, &source);
+                let text_evidence_count = evidence_index.snippets.len();
                 let write_start = Instant::now();
                 persist_text_evidence_to_writer(
                     &store,
@@ -3074,6 +4334,21 @@ fn index_repo_to_existing_db_with_options(
                 )?;
                 db_write_ms += write_start.elapsed().as_millis();
                 phase_profile.add_duration("text_evidence_upsert", write_start.elapsed(), 1, 1);
+                if options.profile {
+                    let entry = file_profile_entry_mut(
+                        &mut file_profiles,
+                        &candidate.repo_relative_path,
+                        None,
+                        candidate.kind.as_str().to_string(),
+                        TEXT_EVIDENCE_KIND.to_string(),
+                        size_bytes,
+                    );
+                    entry.text_evidence_count = Some(text_evidence_count);
+                    entry.local_fact_count = Some(text_evidence_count);
+                    entry.entity_count = Some(0);
+                    entry.edge_count = Some(0);
+                    entry.source_span_count = Some(0);
+                }
                 summary.files_indexed += 1;
             }
             Ok(())
@@ -3099,22 +4374,73 @@ fn index_repo_to_existing_db_with_options(
         let metadata_start = Instant::now();
         let file_metadata = fs::metadata(&file_path)?;
         let size_bytes = file_metadata.len();
+        let language = detect_language(&file_path).map(|language| language.as_str().to_string());
+        let file_kind = language.clone().unwrap_or_else(|| "source".to_string());
         let existing_file = manifest_diff.existing_file(&repo_relative_path).cloned();
         if manifest_diff.classify_file(&repo_relative_path, size_bytes, &file_metadata)
             == ManifestFileDecision::MetadataUnchanged
         {
-            phase_profile.add_duration("metadata_diff", metadata_start.elapsed(), 1, 1);
+            let metadata_elapsed = metadata_start.elapsed();
+            phase_profile.add_duration("metadata_diff", metadata_elapsed, 1, 1);
+            if options.profile {
+                let source_role_start = Instant::now();
+                let source_role =
+                    classify_file_profile_source_role(&repo_relative_path, None, &file_kind);
+                let source_role_elapsed = source_role_start.elapsed();
+                phase_profile.add_duration("source_role_classification", source_role_elapsed, 1, 1);
+                let entry = file_profile_entry_mut(
+                    &mut file_profiles,
+                    &repo_relative_path,
+                    language.clone(),
+                    file_kind.clone(),
+                    source_role,
+                    size_bytes,
+                );
+                entry.metadata_ms = Some(duration_ms(metadata_elapsed));
+                entry.source_role_classification_ms = Some(duration_ms(source_role_elapsed));
+                push_unique_label(&mut entry.skipped_labels, "metadata_unchanged");
+                push_unique_label(
+                    &mut entry.warnings,
+                    "file not read because metadata was unchanged",
+                );
+            }
             summary.files_skipped += 1;
             summary.files_metadata_unchanged += 1;
             skipped_unchanged_files += 1;
             continue;
         }
-        phase_profile.add_duration("metadata_diff", metadata_start.elapsed(), 1, 1);
+        let metadata_elapsed = metadata_start.elapsed();
+        phase_profile.add_duration("metadata_diff", metadata_elapsed, 1, 1);
         let read_start = Instant::now();
         let source = match fs::read_to_string(&file_path) {
             Ok(source) => source,
             Err(error) => {
-                phase_profile.add_duration("file_read", read_start.elapsed(), 1, 1);
+                let read_elapsed = read_start.elapsed();
+                phase_profile.add_duration("file_read", read_elapsed, 1, 1);
+                if options.profile {
+                    let source_role_start = Instant::now();
+                    let source_role =
+                        classify_file_profile_source_role(&repo_relative_path, None, &file_kind);
+                    let source_role_elapsed = source_role_start.elapsed();
+                    phase_profile.add_duration(
+                        "source_role_classification",
+                        source_role_elapsed,
+                        1,
+                        1,
+                    );
+                    let entry = file_profile_entry_mut(
+                        &mut file_profiles,
+                        &repo_relative_path,
+                        language.clone(),
+                        file_kind.clone(),
+                        source_role,
+                        size_bytes,
+                    );
+                    entry.metadata_ms = Some(duration_ms(metadata_elapsed));
+                    entry.read_ms = Some(duration_ms(read_elapsed));
+                    entry.source_role_classification_ms = Some(duration_ms(source_role_elapsed));
+                    push_unique_label(&mut entry.skipped_labels, "read_error");
+                }
                 summary.files_skipped += 1;
                 summary.failed_files_deleted += 1;
                 if existing_file.is_some() {
@@ -3134,13 +4460,33 @@ fn index_repo_to_existing_db_with_options(
                 continue;
             }
         };
-        phase_profile.add_duration("file_read", read_start.elapsed(), 1, source.len() as u64);
+        let read_elapsed = read_start.elapsed();
+        phase_profile.add_duration("file_read", read_elapsed, 1, source.len() as u64);
         summary.files_read += 1;
         let hash_start = Instant::now();
         let hash = content_hash(&source);
-        phase_profile.add_duration("file_hash", hash_start.elapsed(), 1, source.len() as u64);
+        let hash_elapsed = hash_start.elapsed();
+        phase_profile.add_duration("file_hash", hash_elapsed, 1, source.len() as u64);
         summary.files_hashed += 1;
-        let language = detect_language(&file_path).map(|language| language.as_str().to_string());
+        let source_role_start = Instant::now();
+        let source_role =
+            classify_file_profile_source_role(&repo_relative_path, Some(&source), &file_kind);
+        let source_role_elapsed = source_role_start.elapsed();
+        phase_profile.add_duration("source_role_classification", source_role_elapsed, 1, 1);
+        if options.profile {
+            let entry = file_profile_entry_mut(
+                &mut file_profiles,
+                &repo_relative_path,
+                language.clone(),
+                file_kind.clone(),
+                source_role.clone(),
+                size_bytes,
+            );
+            entry.metadata_ms = Some(duration_ms(metadata_elapsed));
+            entry.read_ms = Some(duration_ms(read_elapsed));
+            entry.hash_ms = Some(duration_ms(hash_elapsed));
+            entry.source_role_classification_ms = Some(duration_ms(source_role_elapsed));
+        }
         let needs_delete = existing_file.is_some();
         if let Some(record) = existing_file
             .as_ref()
@@ -3151,7 +4497,7 @@ fn index_repo_to_existing_db_with_options(
                 tx.upsert_file(&FileRecord {
                     repo_relative_path: repo_relative_path.clone(),
                     file_hash: record.file_hash.clone(),
-                    language,
+                    language: language.clone(),
                     size_bytes,
                     indexed_at_unix_ms: Some(indexed_at),
                     metadata: file_manifest_metadata(modified_unix_nanos(&file_metadata)),
@@ -3159,6 +4505,17 @@ fn index_repo_to_existing_db_with_options(
             })?;
             db_write_ms += refresh_start.elapsed().as_millis();
             phase_profile.add_duration("file_manifest_refresh", refresh_start.elapsed(), 1, 1);
+            if options.profile {
+                let entry = file_profile_entry_mut(
+                    &mut file_profiles,
+                    &repo_relative_path,
+                    language.clone(),
+                    file_kind.clone(),
+                    source_role,
+                    size_bytes,
+                );
+                push_unique_label(&mut entry.skipped_labels, "content_hash_unchanged");
+            }
             summary.files_skipped += 1;
             skipped_unchanged_files += 1;
             continue;
@@ -3173,6 +4530,9 @@ fn index_repo_to_existing_db_with_options(
             source,
             file_hash: hash,
             language,
+            file_kind,
+            source_role,
+            source_role_classification_ms: duration_ms(source_role_elapsed),
             size_bytes,
             modified_unix_nanos: modified_unix_nanos(&file_metadata),
             needs_delete,
@@ -3229,6 +4589,7 @@ fn index_repo_to_existing_db_with_options(
                 &mut bulk_index_load_started,
                 &mut db_write_ms,
                 &mut phase_profile,
+                &mut file_profiles,
             )?;
             parse_ms += batch_profile.parse_ms;
             extraction_ms += batch_profile.extraction_ms;
@@ -3243,6 +4604,9 @@ fn index_repo_to_existing_db_with_options(
             source: candidate.source,
             file_hash: candidate.file_hash,
             language: candidate.language,
+            file_kind: candidate.file_kind,
+            source_role: candidate.source_role,
+            source_role_classification_ms: candidate.source_role_classification_ms,
             size_bytes: candidate.size_bytes,
             modified_unix_nanos: candidate.modified_unix_nanos,
             needs_delete: candidate.needs_delete,
@@ -3262,6 +4626,7 @@ fn index_repo_to_existing_db_with_options(
                 &mut bulk_index_load_started,
                 &mut db_write_ms,
                 &mut phase_profile,
+                &mut file_profiles,
             )?;
             parse_ms += batch_profile.parse_ms;
             extraction_ms += batch_profile.extraction_ms;
@@ -3281,6 +4646,7 @@ fn index_repo_to_existing_db_with_options(
             &mut bulk_index_load_started,
             &mut db_write_ms,
             &mut phase_profile,
+            &mut file_profiles,
         )?;
         parse_ms += batch_profile.parse_ms;
         extraction_ms += batch_profile.extraction_ms;
@@ -3347,10 +4713,9 @@ fn index_repo_to_existing_db_with_options(
             let mut import_plan =
                 reduce_static_import_edges_from_workspace(repo_root, &resolver_workspace)?;
             import_plan.sort();
-            if let Some(hit) = import_plan.apply_reducer_edge_budget(
-                "reduce_static_import_edges",
-                options.graph_output_budgets.max_reducer_edges_per_stage,
-            ) {
+            for hit in import_plan
+                .apply_reducer_budgets("reduce_static_import_edges", &options.graph_output_budgets)
+            {
                 record_graph_output_budget_hit(&mut summary, &options, hit);
             }
             phase_profile.add_duration(
@@ -3370,10 +4735,9 @@ fn index_repo_to_existing_db_with_options(
             let mut security_plan =
                 reduce_security_edges_from_workspace(repo_root, &resolver_workspace)?;
             security_plan.sort();
-            if let Some(hit) = security_plan.apply_reducer_edge_budget(
-                "reduce_security_edges",
-                options.graph_output_budgets.max_reducer_edges_per_stage,
-            ) {
+            for hit in security_plan
+                .apply_reducer_budgets("reduce_security_edges", &options.graph_output_budgets)
+            {
                 record_graph_output_budget_hit(&mut summary, &options, hit);
             }
             phase_profile.add_duration(
@@ -3392,10 +4756,9 @@ fn index_repo_to_existing_db_with_options(
             emit_post_local_stage_started(&options, "reduce_test_edges");
             let mut test_plan = reduce_test_edges_from_workspace(repo_root, &resolver_workspace)?;
             test_plan.sort();
-            if let Some(hit) = test_plan.apply_reducer_edge_budget(
-                "reduce_test_edges",
-                options.graph_output_budgets.max_reducer_edges_per_stage,
-            ) {
+            for hit in
+                test_plan.apply_reducer_budgets("reduce_test_edges", &options.graph_output_budgets)
+            {
                 record_graph_output_budget_hit(&mut summary, &options, hit);
             }
             phase_profile.add_duration(
@@ -3472,11 +4835,12 @@ fn index_repo_to_existing_db_with_options(
             );
             let stage_start = Instant::now();
             emit_post_local_stage_started(&options, "reduce_derived_mutation_edges");
-            let mut derived_plan = reduce_derived_mutation_edges_from_store(&store)?;
+            let mut derived_plan =
+                reduce_derived_mutation_edges_from_store(&store, &options.graph_output_budgets)?;
             derived_plan.sort();
-            if let Some(hit) = derived_plan.apply_reducer_edge_budget(
+            for hit in derived_plan.apply_reducer_budgets(
                 "reduce_derived_mutation_edges",
-                options.graph_output_budgets.max_reducer_edges_per_stage,
+                &options.graph_output_budgets,
             ) {
                 record_graph_output_budget_hit(&mut summary, &options, hit);
             }
@@ -3556,6 +4920,11 @@ fn index_repo_to_existing_db_with_options(
                     json!({
                         "event": "transaction_commit_started",
                         "durability_status": "commit_starting",
+                        "transaction_started": true,
+                        "transaction_committed": false,
+                        "published": false,
+                        "visible_db_updated": false,
+                        "resumable_batches_supported": false,
                         "visible_db_mutation_claim": if bulk_durability == BulkIndexLoadDurability::HiddenAtomicColdTemp {
                             "hidden_temp_db_commit_not_visible_until_publish"
                         } else {
@@ -3575,6 +4944,11 @@ fn index_repo_to_existing_db_with_options(
                     json!({
                         "event": "transaction_commit_completed",
                         "elapsed_ms": commit_start.elapsed().as_millis(),
+                        "transaction_started": true,
+                        "transaction_committed": true,
+                        "published": false,
+                        "visible_db_updated": bulk_durability != BulkIndexLoadDurability::HiddenAtomicColdTemp,
+                        "resumable_batches_supported": false,
                         "durability_status": if bulk_durability == BulkIndexLoadDurability::HiddenAtomicColdTemp {
                             "committed_to_hidden_temp_db"
                         } else {
@@ -3598,26 +4972,23 @@ fn index_repo_to_existing_db_with_options(
         let stale_deleted = delete_indexed_files_by_path(&store, &stale_cleanup_paths)?;
         let mut import_plan = reduce_static_import_edges_from_store(repo_root, &store)?;
         import_plan.sort();
-        if let Some(hit) = import_plan.apply_reducer_edge_budget(
-            "reduce_static_import_edges",
-            options.graph_output_budgets.max_reducer_edges_per_stage,
-        ) {
+        for hit in import_plan
+            .apply_reducer_budgets("reduce_static_import_edges", &options.graph_output_budgets)
+        {
             record_graph_output_budget_hit(&mut summary, &options, hit);
         }
         let mut security_plan = reduce_security_edges_from_store(repo_root, &store)?;
         security_plan.sort();
-        if let Some(hit) = security_plan.apply_reducer_edge_budget(
-            "reduce_security_edges",
-            options.graph_output_budgets.max_reducer_edges_per_stage,
-        ) {
+        for hit in security_plan
+            .apply_reducer_budgets("reduce_security_edges", &options.graph_output_budgets)
+        {
             record_graph_output_budget_hit(&mut summary, &options, hit);
         }
         let mut test_plan = reduce_test_edges_from_store(repo_root, &store)?;
         test_plan.sort();
-        if let Some(hit) = test_plan.apply_reducer_edge_budget(
-            "reduce_test_edges",
-            options.graph_output_budgets.max_reducer_edges_per_stage,
-        ) {
+        for hit in
+            test_plan.apply_reducer_budgets("reduce_test_edges", &options.graph_output_budgets)
+        {
             record_graph_output_budget_hit(&mut summary, &options, hit);
         }
         emit_index_progress(
@@ -3625,6 +4996,11 @@ fn index_repo_to_existing_db_with_options(
             json!({
                 "event": "transaction_commit_started",
                 "durability_status": "commit_starting",
+                "transaction_started": true,
+                "transaction_committed": false,
+                "published": false,
+                "visible_db_updated": false,
+                "resumable_batches_supported": false,
                 "visible_db_mutation_claim": "visible_db_transaction_commit_starting",
             }),
         );
@@ -3649,12 +5025,13 @@ fn index_repo_to_existing_db_with_options(
                     &options,
                     &mut phase_profile,
                 )?;
-                let mut derived_plan = reduce_derived_mutation_edges_from_store(tx)
-                    .map_err(index_error_as_store_error)?;
+                let mut derived_plan =
+                    reduce_derived_mutation_edges_from_store(tx, &options.graph_output_budgets)
+                        .map_err(index_error_as_store_error)?;
                 derived_plan.sort();
-                if let Some(hit) = derived_plan.apply_reducer_edge_budget(
+                for hit in derived_plan.apply_reducer_budgets(
                     "reduce_derived_mutation_edges",
-                    options.graph_output_budgets.max_reducer_edges_per_stage,
+                    &options.graph_output_budgets,
                 ) {
                     record_graph_output_budget_hit(&mut summary, &options, hit);
                 }
@@ -3683,6 +5060,11 @@ fn index_repo_to_existing_db_with_options(
             json!({
                 "event": "transaction_commit_completed",
                 "elapsed_ms": transaction_start.elapsed().as_millis(),
+                "transaction_started": true,
+                "transaction_committed": true,
+                "published": false,
+                "visible_db_updated": true,
+                "resumable_batches_supported": false,
                 "durability_status": "committed_to_visible_db",
                 "visible_db_mutation_claim": "visible_db_updated_by_committed_transaction",
             }),
@@ -3801,7 +5183,29 @@ fn index_repo_to_existing_db_with_options(
             worker_count: max_worker_count,
             skipped_unchanged_files,
             spans: phase_profile.clone().into_spans(),
+            source_bytes_read: 0,
+            source_clone_count: None,
+            source_clone_count_status: "unknown".to_string(),
+            source_clone_count_reason:
+                "source clone count is not instrumented; pending source buffers are moved into worker chunks without cloning"
+                    .to_string(),
+            db_write_attribution: "aggregate_only".to_string(),
+            db_write_attribution_reason:
+                "per-file DB write attribution is not measured; db_write_ms is measured as aggregate SQL write spans"
+                    .to_string(),
+            file_attribution: file_profiles.into_values().collect(),
+            stage_attribution: Vec::new(),
+            slowest_stages: Vec::new(),
+            slowest_files: Vec::new(),
+            slowest_files_by_parse: Vec::new(),
+            slowest_files_by_extraction: Vec::new(),
+            highest_entity_files: Vec::new(),
+            highest_edge_files: Vec::new(),
+            highest_source_span_files: Vec::new(),
+            high_fanout_files: Vec::new(),
+            db_write_contributors: Vec::new(),
         });
+        refresh_index_profile_derived_fields(&mut summary);
     }
 
     let checkpoint_start = Instant::now();
@@ -3832,6 +5236,7 @@ fn index_repo_to_existing_db_with_options(
         if let Some(profile) = &mut summary.profile {
             profile.spans = phase_profile.into_spans();
         }
+        refresh_index_profile_derived_fields(&mut summary);
     }
 
     emit_index_progress(
@@ -3840,12 +5245,35 @@ fn index_repo_to_existing_db_with_options(
             "event": "index_completed",
             "repo_root": summary.repo_root.clone(),
             "db_path": summary.db_path.clone(),
+            "durability_status": if bulk_durability == BulkIndexLoadDurability::HiddenAtomicColdTemp {
+                "hidden_temp_db_completed_not_published"
+            } else {
+                "visible_db_completed"
+            },
             "batches_completed": summary.batches_completed,
             "files_indexed": summary.files_indexed,
             "files_skipped": summary.files_skipped,
             "parse_errors": summary.parse_errors,
             "syntax_errors": summary.syntax_errors,
             "issues": summary.issues.len(),
+            "progress_terms": {
+                "discovered": summary.files_seen,
+                "read": summary.files_read,
+                "hashed": summary.files_hashed,
+                "parsed": summary.files_parsed,
+                "extracted": summary.files_indexed,
+                "reduced": summary.edges,
+                "staged": summary.entities + summary.edges,
+                "transaction_started": summary.batches_completed > 0,
+                "transaction_committed": summary.batches_completed > 0,
+                "sidecars_written": summary.candidate_spool.is_some(),
+                "published": bulk_durability != BulkIndexLoadDurability::HiddenAtomicColdTemp,
+                "visible_db_updated": bulk_durability != BulkIndexLoadDurability::HiddenAtomicColdTemp
+            },
+            "published": bulk_durability != BulkIndexLoadDurability::HiddenAtomicColdTemp,
+            "visible_db_updated": bulk_durability != BulkIndexLoadDurability::HiddenAtomicColdTemp,
+            "temp_db_claimable": false,
+            "resumable_batches_supported": false,
         }),
     );
 
@@ -3884,6 +5312,10 @@ fn index_repo_to_atomic_cold_db(
                         "event": "temp_db_validation_started",
                         "temp_db_path": path_string(&temp_db_path),
                         "final_db_path": path_string(final_db_path),
+                        "transaction_committed": true,
+                        "published": false,
+                        "visible_db_updated": false,
+                        "temp_db_claimable": false,
                         "durability_status": "hidden_temp_db_committed_not_published",
                         "visible_db_mutation_claim": "old_good_db_still_visible_until_publish",
                     }),
@@ -3933,6 +5365,10 @@ fn index_repo_to_atomic_cold_db(
                         "event": "temp_db_validation_completed",
                         "elapsed_ms": temp_finalize_start.elapsed().as_millis(),
                         "temp_db_path": path_string(&temp_db_path),
+                        "transaction_committed": true,
+                        "published": false,
+                        "visible_db_updated": false,
+                        "temp_db_claimable": false,
                         "durability_status": "hidden_temp_db_validated_not_published",
                         "visible_db_mutation_claim": "old_good_db_still_visible_until_publish",
                     }),
@@ -3944,6 +5380,10 @@ fn index_repo_to_atomic_cold_db(
                         "event": "publish_started",
                         "temp_db_path": path_string(&temp_db_path),
                         "final_db_path": path_string(final_db_path),
+                        "transaction_committed": true,
+                        "published": false,
+                        "visible_db_updated": false,
+                        "temp_db_claimable": false,
                         "durability_status": "atomic_publish_starting",
                         "visible_db_mutation_claim": "old_good_db_visible_until_rename_succeeds",
                     }),
@@ -3973,8 +5413,11 @@ fn index_repo_to_atomic_cold_db(
                         "event": "temp_db_published",
                         "elapsed_ms": replace_start.elapsed().as_millis(),
                         "final_db_path": path_string(final_db_path),
+                        "transaction_committed": true,
+                        "published": true,
                         "durability_status": "published_to_visible_db",
                         "visible_db_updated": true,
+                        "temp_db_claimable": false,
                         "visible_db_mutation_claim": "visible_db_updated_after_atomic_publish",
                     }),
                 );
@@ -3983,6 +5426,9 @@ fn index_repo_to_atomic_cold_db(
                     json!({
                         "event": "visible_db_updated",
                         "final_db_path": path_string(final_db_path),
+                        "transaction_committed": true,
+                        "published": true,
+                        "visible_db_updated": true,
                         "durability_status": "published_to_visible_db",
                         "claimability": "pending_final_status_check",
                     }),
@@ -4376,6 +5822,348 @@ impl IndexPhaseRecorder {
     }
 }
 
+pub fn add_index_profile_span_ms_to_summary(
+    summary: &mut IndexSummary,
+    name: &str,
+    elapsed_ms: f64,
+    count: u64,
+    items: u64,
+    note: &str,
+) {
+    let Some(profile) = &mut summary.profile else {
+        return;
+    };
+    if let Some(span) = profile.spans.iter_mut().find(|span| span.name == name) {
+        span.elapsed_ms += elapsed_ms;
+        span.count = span.count.saturating_add(count);
+        span.items = span.items.saturating_add(items);
+        if !note.is_empty() && !span.notes.iter().any(|existing| existing == note) {
+            span.notes.push(note.to_string());
+        }
+    } else {
+        profile.spans.push(PhaseTiming {
+            name: name.to_string(),
+            elapsed_ms,
+            count,
+            items,
+            notes: if note.is_empty() {
+                Vec::new()
+            } else {
+                vec![note.to_string()]
+            },
+        });
+    }
+    profile
+        .spans
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    refresh_index_profile_derived_fields(summary);
+}
+
+pub fn refresh_index_profile_derived_fields(summary: &mut IndexSummary) {
+    let Some(profile) = &mut summary.profile else {
+        return;
+    };
+    refresh_index_profile(profile);
+}
+
+fn refresh_index_profile(profile: &mut IndexProfile) {
+    for file in &mut profile.file_attribution {
+        file.refresh_total_measured_ms();
+    }
+    profile
+        .file_attribution
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    profile.source_bytes_read = profile
+        .file_attribution
+        .iter()
+        .filter(|file| file.read_ms.is_some())
+        .map(|file| file.bytes)
+        .sum::<u64>();
+    profile.stage_attribution = build_stage_profile_summaries(profile);
+    profile.slowest_stages = profile.stage_attribution.clone();
+    profile.slowest_stages.sort_by(|left, right| {
+        right
+            .total_ms
+            .unwrap_or(-1.0)
+            .partial_cmp(&left.total_ms.unwrap_or(-1.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    profile.slowest_stages.truncate(20);
+    profile.slowest_files = top_files_by_f64(
+        &profile.file_attribution,
+        |file| Some(file.total_measured_ms),
+        true,
+    );
+    profile.slowest_files_by_parse =
+        top_files_by_f64(&profile.file_attribution, |file| file.parse_ms, true);
+    profile.slowest_files_by_extraction =
+        top_files_by_f64(&profile.file_attribution, |file| file.extract_ms, true);
+    profile.highest_entity_files =
+        top_files_by_usize(&profile.file_attribution, |file| file.entity_count);
+    profile.highest_edge_files =
+        top_files_by_usize(&profile.file_attribution, |file| file.edge_count);
+    profile.highest_source_span_files =
+        top_files_by_usize(&profile.file_attribution, |file| file.source_span_count);
+    profile.high_fanout_files =
+        top_files_by_usize(&profile.file_attribution, |file| file.edge_count);
+    profile.db_write_contributors =
+        top_files_by_f64(&profile.file_attribution, |file| file.db_write_ms, false);
+}
+
+fn top_files_by_f64<F>(
+    files: &[FileProfileAttribution],
+    metric: F,
+    include_zero: bool,
+) -> Vec<FileProfileAttribution>
+where
+    F: Fn(&FileProfileAttribution) -> Option<f64>,
+{
+    let mut ranked = files
+        .iter()
+        .filter_map(|file| {
+            let value = metric(file)?;
+            if !include_zero && value <= 0.0 {
+                return None;
+            }
+            Some((value, file.clone()))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|(left_value, left), (right_value, right)| {
+        right_value
+            .partial_cmp(left_value)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    ranked
+        .into_iter()
+        .take(20)
+        .map(|(_, file)| file)
+        .collect::<Vec<_>>()
+}
+
+fn top_files_by_usize<F>(files: &[FileProfileAttribution], metric: F) -> Vec<FileProfileAttribution>
+where
+    F: Fn(&FileProfileAttribution) -> Option<usize>,
+{
+    let mut ranked = files
+        .iter()
+        .filter_map(|file| {
+            let value = metric(file)?;
+            if value == 0 {
+                return None;
+            }
+            Some((value, file.clone()))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|(left_value, left), (right_value, right)| {
+        right_value
+            .cmp(left_value)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    ranked
+        .into_iter()
+        .take(20)
+        .map(|(_, file)| file)
+        .collect::<Vec<_>>()
+}
+
+fn build_stage_profile_summaries(profile: &IndexProfile) -> Vec<StageProfileSummary> {
+    let specs = [
+        ("scope_walk", &["file_walk"][..], ProfileSampleKind::None),
+        (
+            "metadata_hash",
+            &["metadata_diff", "file_hash"][..],
+            ProfileSampleKind::MetadataHash,
+        ),
+        ("source_read", &["file_read"][..], ProfileSampleKind::Read),
+        ("parse", &["parse"][..], ProfileSampleKind::Parse),
+        (
+            "local_extraction",
+            &["extract_entities_and_relations"][..],
+            ProfileSampleKind::Extract,
+        ),
+        (
+            "source_role_classification",
+            &["source_role_classification"][..],
+            ProfileSampleKind::SourceRole,
+        ),
+        (
+            "local_fact_bundle_creation",
+            &["local_fact_bundle_creation"][..],
+            ProfileSampleKind::Bundle,
+        ),
+        (
+            "global_resolver_workspace_load",
+            &["global_resolver_workspace_load"][..],
+            ProfileSampleKind::None,
+        ),
+        (
+            "reducer",
+            &[
+                "reducer",
+                "reduce_static_import_edges",
+                "reduce_security_edges",
+                "reduce_test_edges",
+            ][..],
+            ProfileSampleKind::None,
+        ),
+        (
+            "derived_relation_closure",
+            &["reduce_derived_mutation_edges", "apply_derived_edges"][..],
+            ProfileSampleKind::None,
+        ),
+        (
+            "db_write",
+            DB_WRITE_PROFILE_SPANS,
+            ProfileSampleKind::DbWrite,
+        ),
+        ("fts_build", &["fts_build"][..], ProfileSampleKind::None),
+        (
+            "transaction_commit",
+            &["transaction_commit"][..],
+            ProfileSampleKind::None,
+        ),
+        (
+            "candidate_spool_build",
+            &["candidate_spool_build"][..],
+            ProfileSampleKind::None,
+        ),
+        (
+            "runtime_vector_sidecar_build",
+            &["vector_runtime_sidecar_build"][..],
+            ProfileSampleKind::None,
+        ),
+        (
+            "audit_artifact_build",
+            &["vector_audit_artifact_build"][..],
+            ProfileSampleKind::None,
+        ),
+        (
+            "publish_rename",
+            &["artifact_publish_rename"][..],
+            ProfileSampleKind::None,
+        ),
+    ];
+    specs
+        .iter()
+        .map(|(name, span_names, sample_kind)| {
+            stage_profile_summary(name, span_names, *sample_kind, profile)
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ProfileSampleKind {
+    None,
+    MetadataHash,
+    Read,
+    Parse,
+    Extract,
+    SourceRole,
+    Bundle,
+    DbWrite,
+}
+
+fn stage_profile_summary(
+    name: &str,
+    span_names: &[&str],
+    sample_kind: ProfileSampleKind,
+    profile: &IndexProfile,
+) -> StageProfileSummary {
+    let spans = span_names
+        .iter()
+        .filter_map(|span_name| profile.spans.iter().find(|span| span.name == *span_name))
+        .collect::<Vec<_>>();
+    let measured_spans = spans
+        .iter()
+        .filter(|span| span.elapsed_ms > 0.0 || span.count > 0 || span.items > 0)
+        .collect::<Vec<_>>();
+    let total_ms = measured_spans
+        .iter()
+        .map(|span| span.elapsed_ms)
+        .sum::<f64>();
+    let mut samples = profile_samples_for_stage(sample_kind, &profile.file_attribution);
+    let (p50_ms, p95_ms, max_ms) = sample_distribution(&mut samples);
+    let mut notes = spans
+        .iter()
+        .flat_map(|span| span.notes.clone())
+        .collect::<Vec<_>>();
+    if matches!(sample_kind, ProfileSampleKind::DbWrite) {
+        notes.push(profile.db_write_attribution_reason.clone());
+    }
+    let status = if measured_spans.is_empty() {
+        "unknown_or_not_run"
+    } else {
+        "measured"
+    };
+    let distribution = if p50_ms.is_some() {
+        "per_file_distribution"
+    } else if measured_spans.is_empty() {
+        "unknown_or_not_run"
+    } else {
+        "aggregate_only"
+    };
+    StageProfileSummary {
+        name: name.to_string(),
+        total_ms: if measured_spans.is_empty() {
+            None
+        } else {
+            Some(total_ms)
+        },
+        status: status.to_string(),
+        count: measured_spans.iter().map(|span| span.count).sum(),
+        items: measured_spans.iter().map(|span| span.items).sum(),
+        p50_ms,
+        p95_ms,
+        max_ms,
+        distribution: distribution.to_string(),
+        source_spans: span_names.iter().map(|name| (*name).to_string()).collect(),
+        notes,
+    }
+}
+
+fn profile_samples_for_stage(
+    kind: ProfileSampleKind,
+    files: &[FileProfileAttribution],
+) -> Vec<f64> {
+    files
+        .iter()
+        .filter_map(|file| match kind {
+            ProfileSampleKind::None => None,
+            ProfileSampleKind::MetadataHash => {
+                Some(file.metadata_ms.unwrap_or(0.0) + file.hash_ms.unwrap_or(0.0))
+            }
+            ProfileSampleKind::Read => file.read_ms,
+            ProfileSampleKind::Parse => file.parse_ms,
+            ProfileSampleKind::Extract => file.extract_ms,
+            ProfileSampleKind::SourceRole => file.source_role_classification_ms,
+            ProfileSampleKind::Bundle => file.local_fact_bundle_ms,
+            ProfileSampleKind::DbWrite => file.db_write_ms,
+        })
+        .collect()
+}
+
+fn sample_distribution(samples: &mut Vec<f64>) -> (Option<f64>, Option<f64>, Option<f64>) {
+    if samples.is_empty() {
+        return (None, None, None);
+    }
+    samples.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    let p50 = percentile_from_sorted(samples, 0.50);
+    let p95 = percentile_from_sorted(samples, 0.95);
+    let max = samples.last().copied();
+    (p50, p95, max)
+}
+
+fn percentile_from_sorted(sorted: &[f64], percentile: f64) -> Option<f64> {
+    if sorted.is_empty() {
+        return None;
+    }
+    let rank = ((sorted.len() as f64) * percentile).ceil() as usize;
+    let index = rank.saturating_sub(1).min(sorted.len() - 1);
+    sorted.get(index).copied()
+}
+
 fn add_profile_span_to_summary(
     summary: &mut IndexSummary,
     name: &str,
@@ -4384,33 +6172,14 @@ fn add_profile_span_to_summary(
     items: u64,
     note: &str,
 ) {
-    let Some(profile) = &mut summary.profile else {
-        return;
-    };
-    let elapsed_ms = elapsed.as_secs_f64() * 1_000.0;
-    if let Some(span) = profile.spans.iter_mut().find(|span| span.name == name) {
-        span.elapsed_ms += elapsed_ms;
-        span.count = span.count.saturating_add(count);
-        span.items = span.items.saturating_add(items);
-        if !note.is_empty() && !span.notes.iter().any(|existing| existing == note) {
-            span.notes.push(note.to_string());
-        }
-        return;
-    }
-    profile.spans.push(PhaseTiming {
-        name: name.to_string(),
-        elapsed_ms,
+    add_index_profile_span_ms_to_summary(
+        summary,
+        name,
+        elapsed.as_secs_f64() * 1_000.0,
         count,
         items,
-        notes: if note.is_empty() {
-            Vec::new()
-        } else {
-            vec![note.to_string()]
-        },
-    });
-    profile
-        .spans
-        .sort_by(|left, right| left.name.cmp(&right.name));
+        note,
+    );
 }
 
 const REQUIRED_PROFILE_SPANS: &[&str] = &[
@@ -4425,6 +6194,7 @@ const REQUIRED_PROFILE_SPANS: &[&str] = &[
     "metadata_diff",
     "file_read",
     "file_hash",
+    "source_role_classification",
     "parse",
     "parse_extract_workers_wall",
     "parse_extract",
@@ -4432,6 +6202,12 @@ const REQUIRED_PROFILE_SPANS: &[&str] = &[
     "local_fact_bundle_creation",
     "content_template_dedupe",
     "reducer",
+    "global_resolver_workspace_load",
+    "reduce_static_import_edges",
+    "reduce_security_edges",
+    "reduce_test_edges",
+    "reduce_derived_mutation_edges",
+    "apply_derived_edges",
     "symbol_interning",
     "qname_prefix_interning",
     "qualified_name_interning",
@@ -4460,6 +6236,9 @@ const REQUIRED_PROFILE_SPANS: &[&str] = &[
     "qname_prefix_dict_insert",
     "qualified_name_dict_insert",
     "fts_build",
+    "candidate_spool_build",
+    "vector_runtime_sidecar_build",
+    "vector_audit_artifact_build",
     "index_creation",
     "index_creation_by_name",
     "transaction_commit",
@@ -4962,6 +6741,7 @@ fn process_and_commit_index_batch(
     bulk_index_load_started: &mut bool,
     db_write_ms: &mut u128,
     profile: &mut IndexPhaseRecorder,
+    file_profiles: &mut BTreeMap<String, FileProfileAttribution>,
 ) -> Result<IndexBatchProfile, IndexError> {
     ensure_bulk_index_load(
         store,
@@ -4971,7 +6751,15 @@ fn process_and_commit_index_batch(
         db_write_ms,
         profile,
     )?;
-    match process_index_batch(store, summary, options, batch, indexed_at, profile) {
+    match process_index_batch(
+        store,
+        summary,
+        options,
+        batch,
+        indexed_at,
+        profile,
+        file_profiles,
+    ) {
         Ok(batch_profile) => {
             if let Err(error) = commit_bulk_index_batch(store, db_write_ms) {
                 let _ = store.rollback_bulk_index_transaction();
@@ -5750,6 +7538,7 @@ fn process_index_batch(
     batch: PendingIndexBatch,
     indexed_at: u64,
     profile: &mut IndexPhaseRecorder,
+    file_profiles: &mut BTreeMap<String, FileProfileAttribution>,
 ) -> Result<IndexBatchProfile, IndexError> {
     if batch.files.is_empty() {
         return Ok(IndexBatchProfile::default());
@@ -5802,7 +7591,14 @@ fn process_index_batch(
         stats.len() as u64,
     );
     let reduce_start = Instant::now();
-    let reduced_plan = reduce_local_fact_bundles(local_bundles);
+    let mut reduced_plan = reduce_local_fact_bundles(local_bundles);
+    reduced_plan.global_facts.sort();
+    for hit in reduced_plan
+        .global_facts
+        .apply_reducer_budgets("reduce_static_import_edges", &options.graph_output_budgets)
+    {
+        record_graph_output_budget_hit(summary, options, hit);
+    }
     let bundles_reduced = reduced_plan.bundles.len();
     let edges_staged = reduced_plan
         .bundles
@@ -5824,6 +7620,50 @@ fn process_index_batch(
     let parse_ms = stats.iter().map(|stat| stat.parse_ms).sum::<u128>();
     let extraction_ms = stats.iter().map(|stat| stat.extraction_ms).sum::<u128>();
     let bundle_ms = stats.iter().map(|stat| stat.bundle_ms).sum::<u128>();
+    if options.profile {
+        for stat in &stats {
+            let entry = file_profile_entry_mut(
+                file_profiles,
+                &stat.repo_relative_path,
+                stat.language.clone(),
+                stat.file_kind.clone(),
+                stat.source_role.clone(),
+                stat.bytes,
+            );
+            entry.parse_ms = Some(stat.parse_ms as f64);
+            entry.extract_ms = Some(stat.extraction_ms as f64);
+            entry.local_fact_bundle_ms = Some(stat.bundle_ms as f64);
+            entry.source_role_classification_ms = Some(stat.source_role_classification_ms);
+            entry.local_fact_count = Some(stat.local_fact_count);
+            entry.entity_count = Some(stat.entity_count);
+            entry.edge_count = Some(stat.edge_count);
+            entry.source_span_count = Some(stat.source_span_count);
+            entry.text_evidence_count = Some(stat.text_evidence_count);
+            entry.parse_error_count = usize::from(stat.parse_error);
+            entry.syntax_diagnostic_count = usize::from(stat.syntax_error);
+            for label in &stat.degraded_labels {
+                push_unique_label(&mut entry.degraded_labels, label.clone());
+            }
+            for label in &stat.skipped_labels {
+                push_unique_label(&mut entry.skipped_labels, label.clone());
+            }
+            for hit in &stat.graph_output_budget_hits {
+                push_unique_label(
+                    &mut entry.budget_hit_labels,
+                    format!("{}:{}", hit.stage, hit.kind),
+                );
+                push_unique_label(&mut entry.budget_hit_labels, hit.kind.clone());
+                for label in &hit.labels {
+                    push_unique_label(&mut entry.budget_hit_labels, label.clone());
+                    push_unique_label(&mut entry.degraded_labels, label.clone());
+                }
+                push_unique_label(&mut entry.degraded_labels, hit.claimability_label.clone());
+            }
+            if let Some(message) = &stat.message {
+                push_unique_label(&mut entry.warnings, message.clone());
+            }
+        }
+    }
     profile.add_ms(
         "parse",
         parse_ms as f64,
@@ -5953,6 +7793,22 @@ fn index_batch_processed_progress_event(
         "batch_progress_status": "processed_not_durably_committed",
         "durability_status": "staged_in_open_transaction",
         "visible_db_mutation_claim": "not_claimed_until_commit_or_publish",
+        "resumable_batches_supported": false,
+        "batch_durability_scope": "processed_and_staged_only_until_transaction_commit",
+        "progress_terms": {
+            "discovered": true,
+            "read": true,
+            "hashed": true,
+            "parsed": files_parsed,
+            "extracted": persisted.entities + persisted.edges,
+            "reduced": bundles_reduced,
+            "staged": persisted.entities + persisted.edges,
+            "transaction_started": true,
+            "transaction_committed": false,
+            "sidecars_written": false,
+            "published": false,
+            "visible_db_updated": false
+        },
         "batch_index": batch_index,
         "files_parsed": files_parsed,
         "bundles_reduced": bundles_reduced,
@@ -6035,6 +7891,7 @@ fn apply_global_fact_reduction_plan_to_writer(
     let fast_fresh_proof_insert = options.build_mode == IndexBuildMode::ProofBuildOnly;
     let mut seen_edge_ids = BTreeSet::<&str>::new();
     for edge in &plan.edges {
+        validate_derived_edge_provenance(edge)?;
         if should_route_heuristic_edge(edge) {
             if options.storage_mode.preserves_heuristic_sidecars() {
                 writer.insert_heuristic_edge_after_file_delete(edge)?;
@@ -6064,6 +7921,30 @@ fn apply_global_fact_reduction_plan_to_writer(
         }
     }
     Ok(summary)
+}
+
+fn validate_derived_edge_provenance(edge: &Edge) -> Result<(), StoreError> {
+    if !(edge.derived || edge.edge_class == EdgeClass::Derived) {
+        return Ok(());
+    }
+    if edge.provenance_edges.is_empty() {
+        return Err(StoreError::Message(format!(
+            "derived edge {} is missing provenance_edges",
+            edge.id
+        )));
+    }
+    let claim_state = edge
+        .metadata
+        .get("claim_state")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if claim_state != "derived_with_provenance" {
+        return Err(StoreError::Message(format!(
+            "derived edge {} is missing derived_with_provenance claim_state",
+            edge.id
+        )));
+    }
+    Ok(())
 }
 
 fn refresh_stored_path_evidence_to_writer(
@@ -6642,7 +8523,7 @@ fn parse_extract_pending_files_with_progress(
                         file: FileRecord {
                             repo_relative_path: file.repo_relative_path.clone(),
                             file_hash: file.file_hash,
-                            language: file.language,
+                            language: file.language.clone(),
                             size_bytes: file.size_bytes,
                             indexed_at_unix_ms: None,
                             metadata: file_manifest_metadata(file.modified_unix_nanos.clone()),
@@ -6677,20 +8558,34 @@ fn parse_extract_pending_files_with_progress(
                     }
                     stats.push(ParseExtractStat {
                         repo_relative_path: file.repo_relative_path,
+                        language: file.language,
+                        file_kind: file.file_kind,
+                        source_role: file.source_role,
+                        bytes: file.size_bytes,
+                        source_role_classification_ms: file.source_role_classification_ms,
                         parse_ms: 0,
                         extraction_ms: 0,
                         bundle_ms,
+                        local_fact_count: 0,
+                        entity_count: 0,
+                        edge_count: 0,
+                        source_span_count: 0,
+                        text_evidence_count: 0,
                         parse_error: false,
                         syntax_error: false,
                         skipped: false,
                         message: None,
+                        degraded_labels: Vec::new(),
+                        skipped_labels: vec!["duplicate_template".to_string()],
                         graph_output_budget_hits: Vec::new(),
                     });
                     continue;
                 }
-                if should_skip_graph_extraction_for_large_generated_or_test_source(
+                if let Some(policy) = pathological_file_policy_decision(
                     &file.repo_relative_path,
+                    &file.source_role,
                     file.source.len(),
+                    &graph_output_budgets,
                 ) {
                     let mut metadata = file_manifest_metadata(file.modified_unix_nanos.clone());
                     metadata.insert(
@@ -6701,9 +8596,33 @@ fn parse_extract_pending_files_with_progress(
                     metadata.insert("graph_extraction_skipped".to_string(), true.into());
                     metadata.insert(
                         "graph_extraction_skip_reason".to_string(),
-                        "large_generated_or_test_source_budget".into(),
+                        policy.reason.clone().into(),
                     );
                     metadata.insert("graph_relation_claims".to_string(), json!([]));
+                    metadata.insert("diagnostic_only".to_string(), json!(true));
+                    metadata.insert(
+                        "degradation_labels".to_string(),
+                        json!(policy.labels.clone()),
+                    );
+                    metadata.insert(
+                        "graph_output_degradation_labels".to_string(),
+                        json!(policy.labels.clone()),
+                    );
+                    metadata.insert(
+                        "graph_output_budget_policy".to_string(),
+                        serde_json::to_value(&graph_output_budgets).unwrap_or(Value::Null),
+                    );
+                    let hit = graph_budget_hit_with_unit(
+                        &file.repo_relative_path,
+                        "local_extraction",
+                        "source_bytes_per_file",
+                        file.source.len(),
+                        0,
+                        policy.budget,
+                        "bytes",
+                    );
+                    metadata.insert("graph_output_budget_hit".to_string(), json!(true));
+                    metadata.insert("graph_output_budget_hits".to_string(), json!([hit.clone()]));
                     let extraction = BasicExtraction {
                         file: FileRecord {
                             repo_relative_path: file.repo_relative_path.clone(),
@@ -6733,7 +8652,8 @@ fn parse_extract_pending_files_with_progress(
                                 "event": "file_extract_completed",
                                 "repo_relative_path": &file.repo_relative_path,
                                 "status": "graph_extraction_skipped_budget",
-                                "reason": "large_generated_or_test_source_budget",
+                                "reason": &policy.reason,
+                                "degradation_labels": &policy.labels,
                                 "parse_ms": 0,
                                 "extraction_ms": 0,
                                 "bundle_ms": bundle_ms,
@@ -6744,14 +8664,26 @@ fn parse_extract_pending_files_with_progress(
                     }
                     stats.push(ParseExtractStat {
                         repo_relative_path: file.repo_relative_path,
+                        language: file.language,
+                        file_kind: file.file_kind,
+                        source_role: file.source_role,
+                        bytes: file.size_bytes,
+                        source_role_classification_ms: file.source_role_classification_ms,
                         parse_ms: 0,
                         extraction_ms: 0,
                         bundle_ms,
+                        local_fact_count: 0,
+                        entity_count: 0,
+                        edge_count: 0,
+                        source_span_count: 0,
+                        text_evidence_count: 0,
                         parse_error: false,
                         syntax_error: false,
                         skipped: false,
                         message: Some("graph_extraction_skipped_budget".to_string()),
-                        graph_output_budget_hits: Vec::new(),
+                        degraded_labels: policy.labels.clone(),
+                        skipped_labels: policy.skipped_labels.clone(),
+                        graph_output_budget_hits: vec![hit],
                     });
                     continue;
                 }
@@ -6768,15 +8700,31 @@ fn parse_extract_pending_files_with_progress(
                             file.modified_unix_nanos.clone(),
                             extraction.file.metadata.clone(),
                         );
+                        let mut degraded_labels =
+                            extraction_degradation_labels(&extraction, syntax_error);
                         let graph_output_budget_hits = apply_graph_output_budgets_to_extraction(
                             &file.repo_relative_path,
                             &mut extraction,
                             &graph_output_budgets,
                         );
+                        if !graph_output_budget_hits.is_empty() {
+                            for hit in &graph_output_budget_hits {
+                                for label in &hit.labels {
+                                    push_unique_label(&mut degraded_labels, label.clone());
+                                }
+                                push_unique_label(
+                                    &mut degraded_labels,
+                                    hit.claimability_label.clone(),
+                                );
+                            }
+                        }
+                        append_degradation_labels(&mut extraction.file.metadata, &degraded_labels);
                         let extraction_ms = extraction_start.elapsed().as_millis();
                         let extracted_repo_relative_path = parsed.repo_relative_path.clone();
                         let entity_count = extraction.entities.len();
                         let edge_count = extraction.edges.len();
+                        let source_span_count = extraction_source_span_count(&extraction);
+                        let local_fact_count = entity_count + edge_count + source_span_count;
                         let bundle_start = Instant::now();
                         outputs.push(LocalFactBundle::new(
                             file.repo_relative_path,
@@ -6805,13 +8753,25 @@ fn parse_extract_pending_files_with_progress(
                         }
                         stats.push(ParseExtractStat {
                             repo_relative_path: extracted_repo_relative_path,
+                            language: file.language,
+                            file_kind: file.file_kind,
+                            source_role: file.source_role,
+                            bytes: file.size_bytes,
+                            source_role_classification_ms: file.source_role_classification_ms,
                             parse_ms,
                             extraction_ms,
                             bundle_ms,
+                            local_fact_count,
+                            entity_count,
+                            edge_count,
+                            source_span_count,
+                            text_evidence_count: 0,
                             parse_error: false,
                             syntax_error,
                             skipped: false,
                             message: None,
+                            degraded_labels,
+                            skipped_labels: Vec::new(),
                             graph_output_budget_hits,
                         });
                     }
@@ -6834,13 +8794,25 @@ fn parse_extract_pending_files_with_progress(
                         }
                         stats.push(ParseExtractStat {
                             repo_relative_path: file.repo_relative_path,
+                            language: file.language,
+                            file_kind: file.file_kind,
+                            source_role: file.source_role,
+                            bytes: file.size_bytes,
+                            source_role_classification_ms: file.source_role_classification_ms,
                             parse_ms,
                             extraction_ms: 0,
                             bundle_ms: 0,
+                            local_fact_count: 0,
+                            entity_count: 0,
+                            edge_count: 0,
+                            source_span_count: 0,
+                            text_evidence_count: 0,
                             parse_error: false,
                             syntax_error: false,
                             skipped: true,
                             message: Some("unsupported language after detection".to_string()),
+                            degraded_labels: Vec::new(),
+                            skipped_labels: vec!["unsupported_language".to_string()],
                             graph_output_budget_hits: Vec::new(),
                         });
                     }
@@ -6895,13 +8867,25 @@ fn parse_extract_pending_files_with_progress(
                         }
                         stats.push(ParseExtractStat {
                             repo_relative_path: file.repo_relative_path,
+                            language,
+                            file_kind: file.file_kind,
+                            source_role: file.source_role,
+                            bytes: file.size_bytes,
+                            source_role_classification_ms: file.source_role_classification_ms,
                             parse_ms,
                             extraction_ms: 0,
                             bundle_ms,
+                            local_fact_count: 0,
+                            entity_count: 0,
+                            edge_count: 0,
+                            source_span_count: 0,
+                            text_evidence_count: 0,
                             parse_error: true,
                             syntax_error: false,
                             skipped: false,
                             message: Some(error_message),
+                            degraded_labels: vec!["parse_degraded".to_string()],
+                            skipped_labels: vec!["parse_error".to_string()],
                             graph_output_budget_hits: Vec::new(),
                         });
                     }
@@ -7678,10 +9662,15 @@ pub fn update_changed_files_with_cache_to_db(
                     resolver_impact_paths.len() as u64,
                 );
                 if has_static_sources {
+                    let reducer_budgets = GraphOutputBudgets::default();
                     let mut import_plan = reduce_static_import_edges_from_store(&repo_root, tx)
                         .map_err(index_error_as_store_error)?;
                     import_plan.retain_paths(&resolver_impact_paths);
                     import_plan.sort();
+                    for _hit in import_plan
+                        .apply_reducer_budgets("reduce_static_import_edges", &reducer_budgets)
+                    {
+                    }
                     changed_cache_entities
                         .extend(import_plan.entities.iter().map(|fact| fact.entity.clone()));
                     changed_cache_edges.extend(import_plan.edges.iter().cloned());
@@ -7703,6 +9692,10 @@ pub fn update_changed_files_with_cache_to_db(
                         .map_err(index_error_as_store_error)?;
                     security_plan.retain_paths(&resolver_impact_paths);
                     security_plan.sort();
+                    for _hit in security_plan
+                        .apply_reducer_budgets("reduce_security_edges", &reducer_budgets)
+                    {
+                    }
                     changed_cache_entities.extend(
                         security_plan
                             .entities
@@ -7728,6 +9721,10 @@ pub fn update_changed_files_with_cache_to_db(
                         .map_err(index_error_as_store_error)?;
                     test_plan.retain_paths(&resolver_impact_paths);
                     test_plan.sort();
+                    for _hit in
+                        test_plan.apply_reducer_budgets("reduce_test_edges", &reducer_budgets)
+                    {
+                    }
                     changed_cache_entities
                         .extend(test_plan.entities.iter().map(|fact| fact.entity.clone()));
                     changed_cache_edges.extend(test_plan.edges.iter().cloned());
@@ -7744,10 +9741,15 @@ pub fn update_changed_files_with_cache_to_db(
                         &IndexOptions::default(),
                         &mut phase_profile,
                     )?;
-                    let mut derived_plan = reduce_derived_mutation_edges_from_store(tx)
-                        .map_err(index_error_as_store_error)?;
+                    let mut derived_plan =
+                        reduce_derived_mutation_edges_from_store(tx, &reducer_budgets)
+                            .map_err(index_error_as_store_error)?;
                     derived_plan.retain_paths(&resolver_impact_paths);
                     derived_plan.sort();
+                    for _hit in derived_plan
+                        .apply_reducer_budgets("reduce_derived_mutation_edges", &reducer_budgets)
+                    {
+                    }
                     changed_cache_entities
                         .extend(derived_plan.entities.iter().map(|fact| fact.entity.clone()));
                     changed_cache_edges.extend(derived_plan.edges.iter().cloned());
@@ -7973,7 +9975,30 @@ pub fn update_changed_files_with_cache_to_db(
         worker_count: 1,
         skipped_unchanged_files: summary.files_metadata_unchanged,
         spans: phase_profile.into_spans(),
+        source_bytes_read: 0,
+        source_clone_count: None,
+        source_clone_count_status: "unknown".to_string(),
+        source_clone_count_reason:
+            "incremental update profile does not instrument source clone count".to_string(),
+        db_write_attribution: "aggregate_only".to_string(),
+        db_write_attribution_reason:
+            "per-file DB write attribution is not measured for incremental update profiles"
+                .to_string(),
+        file_attribution: Vec::new(),
+        stage_attribution: Vec::new(),
+        slowest_stages: Vec::new(),
+        slowest_files: Vec::new(),
+        slowest_files_by_parse: Vec::new(),
+        slowest_files_by_extraction: Vec::new(),
+        highest_entity_files: Vec::new(),
+        highest_edge_files: Vec::new(),
+        highest_source_span_files: Vec::new(),
+        high_fanout_files: Vec::new(),
+        db_write_contributors: Vec::new(),
     });
+    if let Some(profile) = &mut summary.profile {
+        refresh_index_profile(profile);
+    }
     Ok(summary)
 }
 
@@ -9086,14 +11111,42 @@ fn reduce_test_edges_from_workspace(
 
 fn reduce_derived_mutation_edges_from_store(
     store: &SqliteGraphStore,
+    budgets: &GraphOutputBudgets,
 ) -> Result<GlobalFactReductionPlan, IndexError> {
-    let calls =
-        store.list_stored_edges_by_relation(RelationKind::Calls, UNBOUNDED_STORE_READ_LIMIT)?;
-    let mut writes =
-        store.list_stored_edges_by_relation(RelationKind::Writes, UNBOUNDED_STORE_READ_LIMIT)?;
-    writes.extend(
-        store.list_stored_edges_by_relation(RelationKind::Mutates, UNBOUNDED_STORE_READ_LIMIT)?,
-    );
+    let started = Instant::now();
+    let relation_read_limit = reducer_relation_read_limit(budgets);
+    let closure_depth = reducer_closure_depth(budgets);
+    let derived_edge_limit = reducer_derived_edge_limit(budgets);
+    let mut input_budget_hits = Vec::new();
+    let mut wall_budget_hit = false;
+    let (calls, hit) = list_reducer_relation_input_edges(
+        store,
+        RelationKind::Calls,
+        relation_read_limit,
+        "reduce_derived_mutation_edges",
+    )?;
+    if let Some(hit) = hit {
+        input_budget_hits.push(hit);
+    }
+    let (mut writes, hit) = list_reducer_relation_input_edges(
+        store,
+        RelationKind::Writes,
+        relation_read_limit,
+        "reduce_derived_mutation_edges",
+    )?;
+    if let Some(hit) = hit {
+        input_budget_hits.push(hit);
+    }
+    let (mutates, hit) = list_reducer_relation_input_edges(
+        store,
+        RelationKind::Mutates,
+        relation_read_limit,
+        "reduce_derived_mutation_edges",
+    )?;
+    if let Some(hit) = hit {
+        input_budget_hits.push(hit);
+    }
+    writes.extend(mutates);
     let mut writes_by_head = BTreeMap::<&str, Vec<&Edge>>::new();
     for edge in writes.iter().filter(|edge| !edge.derived) {
         writes_by_head
@@ -9103,30 +11156,44 @@ fn reduce_derived_mutation_edges_from_store(
     }
 
     let mut plan = GlobalFactReductionPlan::default();
+    plan.budget_hits.extend(input_budget_hits);
     let mut derived_edge_ids = BTreeSet::<String>::new();
     let mut mutation_edges = 0_usize;
-    'mutation_calls: for call in calls.iter().filter(|edge| !edge.derived) {
-        let Some(writes_for_callee) = writes_by_head.get(call.tail_id.as_str()) else {
-            continue;
-        };
-        for write in writes_for_callee
-            .iter()
-            .take(DERIVED_MUTATION_CLOSURE_MAX_WRITES_PER_CALLEE)
-        {
-            if mutation_edges >= DERIVED_MUTATION_CLOSURE_MAX_OUTPUT_EDGES {
+    if closure_depth >= 2 {
+        'mutation_calls: for call in calls.iter().filter(|edge| !edge.derived) {
+            if reducer_wall_budget_elapsed(started, budgets) {
+                wall_budget_hit = true;
                 break 'mutation_calls;
             }
-            if push_unique_derived_edge(
-                &mut plan,
-                &mut derived_edge_ids,
-                derived_mutation_edge(call, write),
-            ) {
-                mutation_edges += 1;
+            let Some(writes_for_callee) = writes_by_head.get(call.tail_id.as_str()) else {
+                continue;
+            };
+            for write in writes_for_callee
+                .iter()
+                .take(DERIVED_MUTATION_CLOSURE_MAX_WRITES_PER_CALLEE)
+            {
+                if mutation_edges >= derived_edge_limit {
+                    break 'mutation_calls;
+                }
+                if push_unique_derived_edge(
+                    &mut plan,
+                    &mut derived_edge_ids,
+                    derived_mutation_edge(call, write),
+                ) {
+                    mutation_edges += 1;
+                }
             }
         }
     }
-    let flows =
-        store.list_stored_edges_by_relation(RelationKind::FlowsTo, UNBOUNDED_STORE_READ_LIMIT)?;
+    let (flows, hit) = list_reducer_relation_input_edges(
+        store,
+        RelationKind::FlowsTo,
+        relation_read_limit,
+        "reduce_derived_mutation_edges",
+    )?;
+    if let Some(hit) = hit {
+        plan.budget_hits.push(hit);
+    }
     let base_flows = flows
         .iter()
         .filter(|edge| !edge.derived)
@@ -9139,61 +11206,158 @@ fn reduce_derived_mutation_edges_from_store(
             .push(*edge);
     }
     let mut dataflow_edges = 0_usize;
-    'dataflow_sources: for first in &base_flows {
-        let Some(second_hops) = flows_by_head.get(first.tail_id.as_str()) else {
-            continue;
-        };
-        for second in second_hops
-            .iter()
-            .take(DERIVED_DATAFLOW_CLOSURE_MAX_HOPS_PER_NODE)
-        {
-            if dataflow_edges >= DERIVED_DATAFLOW_CLOSURE_MAX_OUTPUT_EDGES {
+    if closure_depth >= 2 {
+        'dataflow_sources: for first in &base_flows {
+            if reducer_wall_budget_elapsed(started, budgets) {
+                wall_budget_hit = true;
                 break 'dataflow_sources;
             }
-            if !chainable_dataflow_edges(first, second)
-                || first.head_id == second.tail_id
-                || first.id == second.id
-            {
-                continue;
-            }
-            if push_unique_derived_edge(
-                &mut plan,
-                &mut derived_edge_ids,
-                derived_dataflow_edge(&[*first, *second]),
-            ) {
-                dataflow_edges += 1;
-            }
-
-            let Some(third_hops) = flows_by_head.get(second.tail_id.as_str()) else {
+            let Some(second_hops) = flows_by_head.get(first.tail_id.as_str()) else {
                 continue;
             };
-            for third in third_hops
+            for second in second_hops
                 .iter()
                 .take(DERIVED_DATAFLOW_CLOSURE_MAX_HOPS_PER_NODE)
             {
-                if dataflow_edges >= DERIVED_DATAFLOW_CLOSURE_MAX_OUTPUT_EDGES {
+                if dataflow_edges >= derived_edge_limit {
                     break 'dataflow_sources;
                 }
-                if !chainable_dataflow_edges(second, third)
-                    || first.id == third.id
-                    || second.id == third.id
-                    || first.head_id == third.tail_id
-                    || second.head_id == third.tail_id
+                if !chainable_dataflow_edges(first, second)
+                    || first.head_id == second.tail_id
+                    || first.id == second.id
                 {
                     continue;
                 }
                 if push_unique_derived_edge(
                     &mut plan,
                     &mut derived_edge_ids,
-                    derived_dataflow_edge(&[*first, *second, *third]),
+                    derived_dataflow_edge(&[*first, *second]),
                 ) {
                     dataflow_edges += 1;
+                }
+                if closure_depth < 3 {
+                    continue;
+                }
+
+                let Some(third_hops) = flows_by_head.get(second.tail_id.as_str()) else {
+                    continue;
+                };
+                for third in third_hops
+                    .iter()
+                    .take(DERIVED_DATAFLOW_CLOSURE_MAX_HOPS_PER_NODE)
+                {
+                    if dataflow_edges >= derived_edge_limit {
+                        break 'dataflow_sources;
+                    }
+                    if !chainable_dataflow_edges(second, third)
+                        || first.id == third.id
+                        || second.id == third.id
+                        || first.head_id == third.tail_id
+                        || second.head_id == third.tail_id
+                    {
+                        continue;
+                    }
+                    if push_unique_derived_edge(
+                        &mut plan,
+                        &mut derived_edge_ids,
+                        derived_dataflow_edge(&[*first, *second, *third]),
+                    ) {
+                        dataflow_edges += 1;
+                    }
                 }
             }
         }
     }
+    if wall_budget_hit {
+        let elapsed_ms = started.elapsed().as_millis() as usize;
+        let mut hit = graph_budget_hit_with_unit(
+            "<global>",
+            "reduce_derived_mutation_edges",
+            "reducer_wall_ms",
+            elapsed_ms,
+            budgets.max_reducer_wall_ms,
+            budgets.max_reducer_wall_ms,
+            "ms",
+        );
+        hit.omitted_count_status = "not_applicable".to_string();
+        hit.degradation_reason = Some(
+            "reducer wall-time budget elapsed; remaining derived relation closure was skipped"
+                .to_string(),
+        );
+        plan.budget_hits.push(hit);
+    }
     plan.sort();
     Ok(plan)
+}
+
+fn list_reducer_relation_input_edges(
+    store: &SqliteGraphStore,
+    relation: RelationKind,
+    limit: usize,
+    stage: &str,
+) -> Result<(Vec<Edge>, Option<GraphOutputBudgetHit>), IndexError> {
+    let query_limit = if limit >= UNBOUNDED_STORE_READ_LIMIT {
+        limit
+    } else {
+        limit.saturating_add(1)
+    };
+    let mut edges = store.list_stored_edges_by_relation(relation, query_limit)?;
+    if limit >= UNBOUNDED_STORE_READ_LIMIT || edges.len() <= limit {
+        return Ok((edges, None));
+    }
+    let before = edges.len();
+    edges.truncate(limit);
+    let mut hit = graph_budget_hit(
+        "<global>",
+        stage,
+        "reducer_relation_class_edges_inspected",
+        before,
+        edges.len(),
+        limit,
+    );
+    hit.relation_class = Some(relation.to_string());
+    hit.omitted_count_status = "lower_bound_at_least_one".to_string();
+    hit.degradation_reason = Some(
+        "reducer relation input read reached the configured cap; omitted count is a lower bound"
+            .to_string(),
+    );
+    Ok((edges, Some(hit)))
+}
+
+fn reducer_relation_read_limit(budgets: &GraphOutputBudgets) -> usize {
+    let input = budgets.max_reducer_input_edges;
+    let relation = budgets.max_reducer_relation_class_edges_inspected;
+    match (input, relation) {
+        (0, 0) => UNBOUNDED_STORE_READ_LIMIT,
+        (0, relation) => relation,
+        (input, 0) => input,
+        (input, relation) => input.min(relation),
+    }
+    .max(1)
+}
+
+fn reducer_closure_depth(budgets: &GraphOutputBudgets) -> usize {
+    if budgets.max_reducer_closure_depth == 0 {
+        DEFAULT_GRAPH_OUTPUT_MAX_REDUCER_CLOSURE_DEPTH
+    } else {
+        budgets.max_reducer_closure_depth
+    }
+}
+
+fn reducer_derived_edge_limit(budgets: &GraphOutputBudgets) -> usize {
+    if budgets.max_reducer_derived_edges_emitted == 0 {
+        DERIVED_MUTATION_CLOSURE_MAX_OUTPUT_EDGES.min(DERIVED_DATAFLOW_CLOSURE_MAX_OUTPUT_EDGES)
+    } else {
+        budgets
+            .max_reducer_derived_edges_emitted
+            .min(DERIVED_MUTATION_CLOSURE_MAX_OUTPUT_EDGES)
+            .min(DERIVED_DATAFLOW_CLOSURE_MAX_OUTPUT_EDGES)
+    }
+}
+
+fn reducer_wall_budget_elapsed(started: Instant, budgets: &GraphOutputBudgets) -> bool {
+    budgets.max_reducer_wall_ms > 0
+        && started.elapsed().as_millis() >= budgets.max_reducer_wall_ms as u128
 }
 
 fn push_unique_derived_edge(
@@ -9229,6 +11393,7 @@ fn derived_mutation_edge(call: &Edge, write: &Edge) -> Edge {
         write.relation.to_string().into(),
     );
     metadata.insert("provenance_kind".to_string(), "CALLS->WRITES".into());
+    metadata.insert("claim_state".to_string(), "derived_with_provenance".into());
 
     Edge {
         id: stable_edge_id(
@@ -11921,6 +14086,11 @@ fn parser_error_file_metadata(
     metadata.insert("parser_error".to_string(), true.into());
     metadata.insert("parser_error_message".to_string(), error_message.into());
     metadata.insert("graph_relation_claims".to_string(), json!([]));
+    metadata.insert("degradation_labels".to_string(), json!(["parse_degraded"]));
+    metadata.insert(
+        "graph_output_degradation_labels".to_string(),
+        json!(["parse_degraded"]),
+    );
     if let Some(language) = language {
         metadata.insert("parser_frontend".to_string(), language.into());
     }
@@ -12301,12 +14471,28 @@ pub fn collect_repo_files_with_scope(
     let scope = IndexScope::for_repo(root, options.clone());
     let mut files = Vec::new();
     let mut scope_report = IndexScopeRuntimeReport::new(options);
-    collect_repo_files_inner(root, root, &scope, &mut scope_report, &mut files)?;
+    let mut traversal = ScopeTraversalState::default();
+    collect_repo_files_inner(
+        root,
+        root,
+        &scope,
+        &mut scope_report,
+        &mut files,
+        &mut traversal,
+        0,
+    )?;
     files.sort();
     Ok(ScopedRepoFiles {
         files,
         scope_report,
     })
+}
+
+const SCOPE_TRAVERSAL_MAX_DEPTH: usize = 256;
+
+#[derive(Debug, Default)]
+struct ScopeTraversalState {
+    visited_directories: BTreeSet<String>,
 }
 
 fn collect_repo_files_inner(
@@ -12315,8 +14501,57 @@ fn collect_repo_files_inner(
     scope: &IndexScope,
     scope_report: &mut IndexScopeRuntimeReport,
     files: &mut Vec<PathBuf>,
+    traversal: &mut ScopeTraversalState,
+    depth: usize,
 ) -> Result<(), IndexError> {
-    if path.is_dir() {
+    if depth > SCOPE_TRAVERSAL_MAX_DEPTH {
+        record_scope_path_warning_label(
+            root,
+            path,
+            "path_depth_cap",
+            "path_mapping_unavailable",
+            "scope traversal depth cap reached",
+            scope_report,
+        );
+        return Ok(());
+    }
+
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            record_scope_path_io_warning(root, path, "symlink_metadata", &error, scope_report);
+            return Ok(());
+        }
+    };
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        let (label, error) = scope_symlink_warning(root, path, traversal);
+        record_scope_path_warning_label(root, path, "symlink_entry", label, &error, scope_report);
+        return Ok(());
+    }
+
+    if file_type.is_dir() {
+        match fs::canonicalize(path) {
+            Ok(canonical) => {
+                let identity = scope_path_identity_key(&canonical);
+                if !traversal.visited_directories.insert(identity) {
+                    record_scope_path_warning_label(
+                        root,
+                        path,
+                        "directory_identity",
+                        scope_loop_label(),
+                        "directory resolves to an already visited location",
+                        scope_report,
+                    );
+                    return Ok(());
+                }
+            }
+            Err(error) => {
+                record_scope_path_io_warning(root, path, "canonicalize", &error, scope_report);
+                return Ok(());
+            }
+        }
+
         if path != root {
             let relative = path.strip_prefix(root).unwrap_or(path);
             let relative = relative.to_string_lossy().replace('\\', "/");
@@ -12352,15 +14587,40 @@ fn collect_repo_files_inner(
             }
         }
 
-        let mut entries = match fs::read_dir(path) {
-            Ok(entries) => entries.filter_map(Result::ok).collect::<Vec<_>>(),
-            Err(_) => return Ok(()),
+        let mut entries = Vec::new();
+        match fs::read_dir(path) {
+            Ok(read_dir) => {
+                for entry in read_dir {
+                    match entry {
+                        Ok(entry) => entries.push(entry),
+                        Err(error) => record_scope_path_io_warning(
+                            root,
+                            path,
+                            "read_dir_entry",
+                            &error,
+                            scope_report,
+                        ),
+                    }
+                }
+            }
+            Err(error) => {
+                record_scope_path_io_warning(root, path, "read_dir", &error, scope_report);
+                return Ok(());
+            }
         };
         entries.sort_by_key(|entry| entry.path());
         for entry in entries {
-            collect_repo_files_inner(root, &entry.path(), scope, scope_report, files)?;
+            collect_repo_files_inner(
+                root,
+                &entry.path(),
+                scope,
+                scope_report,
+                files,
+                traversal,
+                depth + 1,
+            )?;
         }
-    } else if path.is_file() {
+    } else if file_type.is_file() {
         let relative = path.strip_prefix(root).unwrap_or(path);
         let relative = relative.to_string_lossy().replace('\\', "/");
         let decision = scope.evaluate_repo_path(relative, ScopePathKind::File);
@@ -12372,6 +14632,141 @@ fn collect_repo_files_inner(
     }
 
     Ok(())
+}
+
+fn scope_symlink_warning(
+    root: &Path,
+    path: &Path,
+    traversal: &ScopeTraversalState,
+) -> (&'static str, String) {
+    match fs::canonicalize(path) {
+        Ok(target) => {
+            if !target.starts_with(root) {
+                return (
+                    "path_outside_repo",
+                    format!("symlink target is outside repo: {}", target.display()),
+                );
+            }
+            let target_identity = scope_path_identity_key(&target);
+            if traversal.visited_directories.contains(&target_identity) {
+                return (
+                    "symlink_loop",
+                    format!("symlink target was already visited: {}", target.display()),
+                );
+            }
+            (
+                "path_mapping_unavailable",
+                format!(
+                    "symlink target was not traversed to avoid duplicate scope paths: {}",
+                    target.display()
+                ),
+            )
+        }
+        Err(error) => {
+            let message = error.to_string();
+            if path_io_error_is_symlink_loop(&error) {
+                ("symlink_loop", message)
+            } else {
+                ("path_mapping_unavailable", message)
+            }
+        }
+    }
+}
+
+fn scope_loop_label() -> &'static str {
+    if cfg!(windows) {
+        "junction_loop"
+    } else {
+        "symlink_loop"
+    }
+}
+
+fn scope_path_identity_key(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) {
+        path.to_ascii_lowercase()
+    } else {
+        path
+    }
+}
+
+fn record_scope_path_warning_label(
+    root: &Path,
+    path: &Path,
+    operation: &str,
+    label: &str,
+    error: &str,
+    scope_report: &mut IndexScopeRuntimeReport,
+) {
+    scope_report.record_path_io_warning(scope::IndexScopePathIoWarning {
+        path: repo_relative_warning_path(root, path),
+        operation: operation.to_string(),
+        label: label.to_string(),
+        status: "skipped".to_string(),
+        diagnostic_only: true,
+        error: error.to_string(),
+    });
+}
+
+fn record_scope_path_io_warning(
+    root: &Path,
+    path: &Path,
+    operation: &str,
+    error: &io::Error,
+    scope_report: &mut IndexScopeRuntimeReport,
+) {
+    scope_report.record_path_io_warning(scope::IndexScopePathIoWarning {
+        path: repo_relative_warning_path(root, path),
+        operation: operation.to_string(),
+        label: path_io_error_label(path, error).to_string(),
+        status: "skipped".to_string(),
+        diagnostic_only: true,
+        error: error.to_string(),
+    });
+}
+
+fn repo_relative_warning_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn path_io_error_label(path: &Path, error: &io::Error) -> &'static str {
+    if path_io_error_is_too_long(error) {
+        return if path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.chars().count() >= 240)
+        {
+            "filename_too_long"
+        } else {
+            "path_too_long"
+        };
+    }
+    match error.kind() {
+        io::ErrorKind::PermissionDenied => "permission_denied",
+        _ => "filesystem_inaccessible",
+    }
+}
+
+fn path_io_error_is_too_long(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(206) | Some(36) | Some(63)) || {
+        let message = error.to_string().to_ascii_lowercase();
+        message.contains("filename or extension is too long")
+            || message.contains("file name too long")
+            || message.contains("filename too long")
+            || message.contains("path too long")
+    }
+}
+
+fn path_io_error_is_symlink_loop(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(40) | Some(114)) || {
+        let message = error.to_string().to_ascii_lowercase();
+        message.contains("too many levels of symbolic links")
+            || message.contains("symbolic link loop")
+            || message.contains("reparse point")
+    }
 }
 
 pub fn should_ignore_path(root: &Path, path: &Path) -> bool {
@@ -12420,15 +14815,27 @@ fn should_skip_file_with_scope(
     should_skip_file(path)
 }
 
-fn should_skip_graph_extraction_for_large_generated_or_test_source(
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PathologicalFilePolicyDecision {
+    reason: String,
+    labels: Vec<String>,
+    skipped_labels: Vec<String>,
+    budget: usize,
+}
+
+fn pathological_file_policy_decision(
     repo_relative_path: &str,
+    source_role: &str,
     source_bytes: usize,
-) -> bool {
+    budgets: &GraphOutputBudgets,
+) -> Option<PathologicalFilePolicyDecision> {
     let normalized = repo_relative_path.replace('\\', "/").to_ascii_lowercase();
     let is_rubi_symbolic_source =
         normalized.contains("/rubi/") || normalized.contains("/rubi_tests/");
-    let is_test_or_generated_source = normalized.contains("/generated/")
-        || normalized.contains("/fixtures/")
+    let is_generated_source = normalized.contains("/generated/")
+        || normalized.contains(".generated.")
+        || source_role.eq_ignore_ascii_case("generated");
+    let is_test_or_fixture_source = normalized.contains("/fixtures/")
         || normalized.contains("/tests/")
         || normalized.ends_with("_test.py")
         || normalized.ends_with("_test.go")
@@ -12436,12 +14843,79 @@ fn should_skip_graph_extraction_for_large_generated_or_test_source(
         || normalized.ends_with(".spec.tsx")
         || normalized.ends_with(".test.ts")
         || normalized.ends_with(".test.tsx");
+    // NOTE: file-level test/fixture detection for the extraction budget is
+    // PATH-based only. It must not key off `source_role == "test"`, because the
+    // role classifier marks any file containing inline tests (e.g. a Rust
+    // `#[cfg(test)] mod tests` inside a large production `src/lib.rs`) as
+    // "test". Trusting that role here degraded entire production files to zero
+    // entities under the 64 KB generated/test-source budget. Inline tests are an
+    // entity-level label, not a file-level one.
 
-    (is_rubi_symbolic_source && source_bytes >= RUBI_GRAPH_EXTRACTION_SKIP_BYTES)
-        || (is_test_or_generated_source
-            && source_bytes >= LARGE_TEST_OR_GENERATED_GRAPH_EXTRACTION_SKIP_BYTES)
-        || ((is_rubi_symbolic_source || is_test_or_generated_source)
-            && source_bytes >= LARGE_GENERATED_OR_TEST_GRAPH_EXTRACTION_SKIP_BYTES)
+    let mut labels = Vec::new();
+    let mut skipped_labels = Vec::new();
+    let mut budget = budgets.max_source_bytes_per_file_before_degrade;
+    let mut reason = None;
+
+    if is_rubi_symbolic_source && source_bytes >= RUBI_GRAPH_EXTRACTION_SKIP_BYTES {
+        reason = Some("large_symbolic_fixture_source_budget");
+        budget = RUBI_GRAPH_EXTRACTION_SKIP_BYTES;
+        push_unique_label(&mut labels, "test_fixture_large".to_string());
+    } else if (is_generated_source || is_test_or_fixture_source)
+        && source_bytes >= budgets.max_generated_test_source_bytes_per_file
+    {
+        reason = Some("large_generated_or_test_source_budget");
+        budget = budgets.max_generated_test_source_bytes_per_file;
+        if is_generated_source {
+            push_unique_label(&mut labels, "generated_large".to_string());
+            push_unique_label(&mut skipped_labels, "skipped_generated".to_string());
+        }
+        if is_test_or_fixture_source {
+            push_unique_label(&mut labels, "test_fixture_large".to_string());
+        }
+    } else if (is_rubi_symbolic_source || is_generated_source || is_test_or_fixture_source)
+        && source_bytes >= LARGE_GENERATED_OR_TEST_GRAPH_EXTRACTION_SKIP_BYTES
+    {
+        reason = Some("large_noisy_source_budget");
+        budget = LARGE_GENERATED_OR_TEST_GRAPH_EXTRACTION_SKIP_BYTES;
+        if is_generated_source {
+            push_unique_label(&mut labels, "generated_large".to_string());
+            push_unique_label(&mut skipped_labels, "skipped_generated".to_string());
+        }
+        if is_test_or_fixture_source || is_rubi_symbolic_source {
+            push_unique_label(&mut labels, "test_fixture_large".to_string());
+        }
+    } else if source_bytes >= budgets.max_source_bytes_per_file_before_degrade
+        && (is_generated_source || is_test_or_fixture_source || is_rubi_symbolic_source)
+    {
+        reason = Some("max_source_bytes_per_single_file_before_degrade");
+        budget = budgets.max_source_bytes_per_file_before_degrade;
+        if is_generated_source {
+            push_unique_label(&mut labels, "generated_large".to_string());
+            push_unique_label(&mut skipped_labels, "skipped_generated".to_string());
+        }
+        if is_test_or_fixture_source || is_rubi_symbolic_source {
+            push_unique_label(&mut labels, "test_fixture_large".to_string());
+        }
+    }
+
+    let reason = reason?;
+    push_unique_label(&mut labels, "extraction_budget_hit".to_string());
+    push_unique_label(&mut labels, "diagnostic_only".to_string());
+    push_unique_label(&mut labels, "graph_extraction_skipped_budget".to_string());
+    push_unique_label(&mut labels, "source_navigation_only".to_string());
+    if skipped_labels.is_empty() {
+        push_unique_label(
+            &mut skipped_labels,
+            "graph_extraction_skipped_budget".to_string(),
+        );
+    }
+
+    Some(PathologicalFilePolicyDecision {
+        reason: reason.to_string(),
+        labels,
+        skipped_labels,
+        budget,
+    })
 }
 
 fn emit_scope_decision(options: &IndexScopeOptions, decision: &scope::IndexScopeDecision) {
@@ -12486,6 +14960,13 @@ pub fn normalize_changed_path(root: &Path, path: &Path) -> Result<(PathBuf, Stri
         root.join(path)
     };
     let normalized = normalize_lexical_path(&absolute);
+    let normalized = match fs::canonicalize(&normalized) {
+        Ok(canonical) => {
+            repo_relative_path_for_changed_path(root, &canonical)?;
+            canonical
+        }
+        Err(_) => normalized,
+    };
     let normalized = resolve_existing_changed_path_case(root, &normalized);
     let repo_relative_path = repo_relative_path_for_changed_path(root, &normalized)?;
     Ok((normalized, repo_relative_path))
@@ -13743,7 +16224,7 @@ pub fn vector_chunk_search_hit_to_retrieval_candidate(
     let mut candidate = RetrievalCandidate::new(
         format!("vector://{}", chunk.chunk_id),
         RetrievalCandidateSource::VectorSemantic,
-        "vector semantic chunk candidate; not graph proof",
+        "deterministic token-projection chunk candidate; not graph proof",
     );
     candidate.embedding_source = Some(vector_embedding_source_for_chunk(chunk));
     candidate.file_id = Some(chunk.file_id.clone());
@@ -16120,6 +18601,7 @@ fn candidate_spool_query_index_open_failure_status(
         match classify_sqlite_access_problem(&message).map(|problem| problem.db_problem_kind) {
             Some("sqlite_corrupt") => "corrupt",
             Some("permission_denied") => "permission_denied",
+            Some("db_locked") => "sidecar_locked",
             Some("filesystem_inaccessible") => "filesystem_inaccessible",
             Some(_) | None => "sidecar_unavailable",
         };
@@ -17699,6 +20181,77 @@ mod tests {
         root
     }
 
+    fn try_create_dir_symlink(target: &Path, link: &Path) -> io::Result<()> {
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(target, link)
+        }
+        #[cfg(not(windows))]
+        {
+            std::os::unix::fs::symlink(target, link)
+        }
+    }
+
+    fn graph_output_test_budgets() -> GraphOutputBudgets {
+        GraphOutputBudgets {
+            max_entities_per_file: 100,
+            max_edges_per_file: 100,
+            max_local_facts_per_file: 100,
+            max_relation_fanout_per_file: 100,
+            max_derived_edges_per_file: 100,
+            max_source_spans_per_file: 100,
+            max_reducer_edges_per_stage: 100,
+            max_reducer_input_edges: 100,
+            max_reducer_relation_class_edges_inspected: 100,
+            max_reducer_derived_edges_emitted: 100,
+            max_reducer_closure_depth: 3,
+            max_reducer_wall_ms: 0,
+            max_reducer_edges_per_file: 100,
+            max_reducer_component_edges: 100,
+            max_local_reads_per_file: 100,
+            max_local_writes_per_file: 100,
+            max_local_flows_per_file: 100,
+            max_callsites_per_file: 100,
+            max_arguments_per_callsite: 100,
+            max_extract_wall_ms_per_file: 0,
+            max_generated_test_file_detail_level: 0,
+            max_generated_test_source_bytes_per_file: 64 * 1024,
+            max_source_bytes_per_file_before_degrade: 2 * 1024 * 1024,
+        }
+    }
+
+    fn pending_ts_file(
+        repo_relative_path: &str,
+        source: &str,
+        source_role: &str,
+    ) -> PendingIndexFile {
+        PendingIndexFile {
+            repo_relative_path: repo_relative_path.to_string(),
+            source: source.to_string(),
+            file_hash: content_hash(source),
+            language: Some("typescript".to_string()),
+            file_kind: "typescript".to_string(),
+            source_role: source_role.to_string(),
+            source_role_classification_ms: 0.0,
+            size_bytes: source.len() as u64,
+            modified_unix_nanos: None,
+            needs_delete: false,
+            duplicate_of: None,
+            template_required: false,
+        }
+    }
+
+    fn labels_contain(labels: &[String], expected: &str) -> bool {
+        labels.iter().any(|label| label == expected)
+    }
+
+    fn metadata_labels_contain(metadata: &Metadata, expected: &str) -> bool {
+        metadata
+            .get("degradation_labels")
+            .and_then(Value::as_array)
+            .is_some_and(|labels| labels.iter().any(|label| label.as_str() == Some(expected)))
+    }
+
     #[test]
     fn batch_progress_event_uses_processed_not_durable_completed_language() {
         let persisted = PersistedBatchSummary {
@@ -17721,11 +20274,22 @@ mod tests {
         );
         assert_eq!(event["edges_staged"].as_u64(), Some(3));
         assert_eq!(event["edges_inserted"].as_u64(), Some(3));
+        assert_eq!(event["resumable_batches_supported"].as_bool(), Some(false));
+        assert_eq!(
+            event["progress_terms"]["transaction_committed"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            event["progress_terms"]["visible_db_updated"].as_bool(),
+            Some(false)
+        );
     }
 
     #[test]
     fn graph_output_budget_hits_label_degraded_file_claimability() {
-        let entities = (0..6)
+        // Declaration entities (the findable symbols) plus their proof Calls
+        // edges. These are budget-exempt and must all survive.
+        let mut entities = (0..6)
             .map(|index| {
                 test_entity(
                     "src/fanout.ts",
@@ -17734,6 +20298,14 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
+        // Plus dataflow noise entities (locals) that the local-fact budget may trim.
+        for index in 0..6 {
+            entities.push(test_entity(
+                "src/fanout.ts",
+                EntityKind::LocalVariable,
+                &format!("local{index}"),
+            ));
+        }
         let mut edges = Vec::new();
         for index in 1..6 {
             edges.push(graph_budget_test_edge(
@@ -17741,6 +20313,15 @@ mod tests {
                 RelationKind::Calls,
                 &entities[index].id,
                 index + 1,
+            ));
+        }
+        // Noise edges (reads onto locals) that the local-fact budget may trim.
+        for index in 0..6 {
+            edges.push(graph_budget_test_edge(
+                &entities[0].id,
+                RelationKind::Reads,
+                &entities[6 + index].id,
+                100 + index,
             ));
         }
         let mut extraction = BasicExtraction {
@@ -17751,27 +20332,45 @@ mod tests {
         let budgets = GraphOutputBudgets {
             max_local_facts_per_file: 4,
             max_relation_fanout_per_file: 2,
-            max_derived_edges_per_file: 100,
-            max_source_spans_per_file: 100,
-            max_reducer_edges_per_stage: 100,
+            ..graph_output_test_budgets()
         };
 
         let hits =
             apply_graph_output_budgets_to_extraction("src/fanout.ts", &mut extraction, &budgets);
 
-        assert!(
-            hits.iter()
-                .any(|hit| hit.kind == "relation_fanout_per_file" && hit.omitted == 3),
-            "high fanout must be reported, not silently dropped: {hits:#?}"
+        let fanout_hit = hits
+            .iter()
+            .find(|hit| hit.kind == "relation_fanout_per_file")
+            .expect("fanout hit");
+        assert!(labels_contain(&fanout_hit.labels, "high_fanout"));
+        assert!(labels_contain(&fanout_hit.labels, "relation_budget_hit"));
+        let local_fact_hit = hits
+            .iter()
+            .find(|hit| hit.kind == "local_facts_per_file")
+            .expect("local fact hit");
+        assert!(labels_contain(
+            &local_fact_hit.labels,
+            "extraction_budget_hit"
+        ));
+        // The 6 declaration entities and 5 proof Calls edges must all survive;
+        // only noise (LocalVariable entities / Reads edges) is trimmed.
+        assert_eq!(
+            extraction
+                .entities
+                .iter()
+                .filter(|entity| entity.kind == EntityKind::Function)
+                .count(),
+            6,
+            "declaration entities must never be dropped by a budget"
         );
-        assert!(
-            hits.iter()
-                .any(|hit| hit.kind == "local_facts_per_file" && hit.after <= 4),
-            "local fact cap must be reported, not silently dropped: {hits:#?}"
-        );
-        assert!(
-            extraction.entities.len() + extraction.edges.len() <= 4,
-            "local graph facts should be capped before persistence"
+        assert_eq!(
+            extraction
+                .edges
+                .iter()
+                .filter(|edge| edge.relation == RelationKind::Calls)
+                .count(),
+            5,
+            "proof Calls edges must never be dropped by a budget"
         );
         assert_eq!(
             extraction.file.metadata["graph_output_budget_hit"].as_bool(),
@@ -17785,6 +20384,265 @@ mod tests {
             extraction.file.metadata["graph_relation_claims"].as_str(),
             Some("partial")
         );
+        for label in [
+            "high_fanout",
+            "relation_budget_hit",
+            "extraction_budget_hit",
+            "degraded_file_nonclaimable_for_omitted_facts",
+        ] {
+            assert!(
+                metadata_labels_contain(&extraction.file.metadata, label),
+                "missing degradation label {label}: {:?}",
+                extraction.file.metadata.get("degradation_labels")
+            );
+        }
+    }
+
+    #[test]
+    fn pathological_file_policy_labels_generated_and_test_fixture_degradation() {
+        let budgets = GraphOutputBudgets {
+            max_generated_test_source_bytes_per_file: 32,
+            max_source_bytes_per_file_before_degrade: 1024,
+            ..graph_output_test_budgets()
+        };
+
+        let generated = pathological_file_policy_decision(
+            "src/generated/big.generated.ts",
+            "generated",
+            256,
+            &budgets,
+        )
+        .expect("generated policy");
+
+        assert_eq!(generated.reason, "large_generated_or_test_source_budget");
+        assert_eq!(generated.budget, 32);
+        for label in [
+            "generated_large",
+            "extraction_budget_hit",
+            "diagnostic_only",
+            "graph_extraction_skipped_budget",
+            "source_navigation_only",
+        ] {
+            assert!(
+                labels_contain(&generated.labels, label),
+                "missing generated label {label}: {:?}",
+                generated.labels
+            );
+        }
+        assert!(labels_contain(
+            &generated.skipped_labels,
+            "skipped_generated"
+        ));
+
+        let fixture = pathological_file_policy_decision(
+            "tests/fixtures/big_fixture.test.ts",
+            "fixture",
+            256,
+            &budgets,
+        )
+        .expect("fixture policy");
+
+        assert_eq!(fixture.reason, "large_generated_or_test_source_budget");
+        assert!(labels_contain(&fixture.labels, "test_fixture_large"));
+        assert!(labels_contain(&fixture.labels, "diagnostic_only"));
+        assert!(labels_contain(
+            &fixture.skipped_labels,
+            "graph_extraction_skipped_budget"
+        ));
+    }
+
+    #[test]
+    fn generated_large_file_degrades_explicitly_before_graph_extraction() {
+        let budgets = GraphOutputBudgets {
+            max_generated_test_source_bytes_per_file: 32,
+            max_source_bytes_per_file_before_degrade: 1024,
+            ..graph_output_test_budgets()
+        };
+        let source = "export const generatedValue = 1;\n".repeat(8);
+        let pending = pending_ts_file("src/generated/big.generated.ts", &source, "generated");
+
+        let (outputs, stats) =
+            parse_extract_pending_files_with_progress(vec![pending], 1, false, &budgets)
+                .expect("parse/extract");
+
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(stats.len(), 1);
+        let output = &outputs[0];
+        let stat = &stats[0];
+        assert!(output.extraction.entities.is_empty());
+        assert!(output.extraction.edges.is_empty());
+        assert_eq!(
+            stat.message.as_deref(),
+            Some("graph_extraction_skipped_budget")
+        );
+        assert!(labels_contain(&stat.degraded_labels, "generated_large"));
+        assert!(labels_contain(
+            &stat.degraded_labels,
+            "extraction_budget_hit"
+        ));
+        assert!(labels_contain(&stat.degraded_labels, "diagnostic_only"));
+        assert!(labels_contain(&stat.skipped_labels, "skipped_generated"));
+        assert_eq!(stat.graph_output_budget_hits.len(), 1);
+        let hit = &stat.graph_output_budget_hits[0];
+        assert_eq!(hit.kind, "source_bytes_per_file");
+        assert_eq!(hit.unit, "bytes");
+        assert_eq!(hit.after, 0);
+        assert_eq!(hit.omitted, source.len());
+        assert_eq!(
+            output.extraction.file.metadata["claim_state"].as_str(),
+            Some("source_navigation_only")
+        );
+        assert_eq!(
+            output.extraction.file.metadata["diagnostic_only"].as_bool(),
+            Some(true)
+        );
+        assert!(metadata_labels_contain(
+            &output.extraction.file.metadata,
+            "generated_large"
+        ));
+        assert!(metadata_labels_contain(
+            &output.extraction.file.metadata,
+            "diagnostic_only"
+        ));
+    }
+
+    #[test]
+    fn normal_file_remains_exact_without_degradation_labels() {
+        let source = "export function compute(value: number) { return value + 1; }\n";
+        let pending = pending_ts_file("src/normal.ts", source, "production");
+
+        let (outputs, stats) = parse_extract_pending_files_with_progress(
+            vec![pending],
+            1,
+            false,
+            &graph_output_test_budgets(),
+        )
+        .expect("parse/extract");
+
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(stats.len(), 1);
+        let output = &outputs[0];
+        let stat = &stats[0];
+        assert!(!output.extraction.entities.is_empty());
+        assert!(stat.entity_count > 0);
+        assert!(stat.source_span_count > 0);
+        assert!(stat.degraded_labels.is_empty(), "{stat:#?}");
+        assert!(stat.graph_output_budget_hits.is_empty());
+        assert!(output
+            .extraction
+            .file
+            .metadata
+            .get("graph_output_budget_hit")
+            .is_none());
+        assert!(output
+            .extraction
+            .file
+            .metadata
+            .get("degradation_labels")
+            .is_none());
+    }
+
+    #[test]
+    fn relation_kind_budgets_report_omitted_counts_and_preserve_emitted_spans() {
+        let entities = (0..14)
+            .map(|index| {
+                test_entity(
+                    "src/repeated.ts",
+                    EntityKind::Function,
+                    &format!("target{index}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut edges = Vec::new();
+        // ReturnsTo is budgetable call-noise; Calls is proof and must be exempt.
+        // Include two Calls edges to assert they survive every budget below.
+        for (index, relation) in [
+            RelationKind::Reads,
+            RelationKind::Reads,
+            RelationKind::Writes,
+            RelationKind::Writes,
+            RelationKind::FlowsTo,
+            RelationKind::FlowsTo,
+            RelationKind::ReturnsTo,
+            RelationKind::ReturnsTo,
+            RelationKind::Argument0,
+            RelationKind::Argument1,
+            RelationKind::ArgumentN,
+            RelationKind::Calls,
+            RelationKind::Calls,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            edges.push(graph_budget_test_edge(
+                &entities[0].id,
+                relation,
+                &entities[index + 1].id,
+                index + 1,
+            ));
+        }
+        let mut extraction = BasicExtraction {
+            file: graph_budget_file_record("src/repeated.ts"),
+            entities,
+            edges,
+        };
+        let budgets = GraphOutputBudgets {
+            max_local_reads_per_file: 1,
+            max_local_writes_per_file: 1,
+            max_local_flows_per_file: 1,
+            max_callsites_per_file: 1,
+            max_arguments_per_callsite: 1,
+            ..graph_output_test_budgets()
+        };
+
+        let hits =
+            apply_graph_output_budgets_to_extraction("src/repeated.ts", &mut extraction, &budgets);
+
+        for kind in [
+            "local_reads_per_file",
+            "local_writes_per_file",
+            "local_flows_per_file",
+            "callsites_per_file",
+            "arguments_per_callsite",
+        ] {
+            let hit = hits
+                .iter()
+                .find(|hit| hit.kind == kind)
+                .unwrap_or_else(|| panic!("missing {kind} hit in {hits:#?}"));
+            assert!(hit.omitted > 0, "{hit:#?}");
+            assert!(labels_contain(&hit.labels, "extraction_budget_hit"));
+            assert!(labels_contain(&hit.labels, "relation_budget_hit"));
+        }
+        assert!(extraction
+            .edges
+            .iter()
+            .all(|edge| edge.source_span.start_line > 0));
+        assert!(metadata_labels_contain(
+            &extraction.file.metadata,
+            "relation_budget_hit"
+        ));
+        // Proof call edges are exempt from every per-file budget: both Calls
+        // edges must survive even though noise relations were capped to 1.
+        assert_eq!(
+            extraction
+                .edges
+                .iter()
+                .filter(|edge| edge.relation == RelationKind::Calls)
+                .count(),
+            2,
+            "Calls (proof) edges must never be dropped by a budget: {:#?}",
+            extraction.edges
+        );
+
+        let mut summary = GraphOutputBudgetSummary::new(budgets);
+        for hit in hits {
+            summary.record_hit(hit);
+        }
+        assert_eq!(summary.omitted_local_reads, 1);
+        assert_eq!(summary.omitted_local_writes, 1);
+        assert_eq!(summary.omitted_local_flows, 1);
+        assert_eq!(summary.omitted_callsites, 1);
+        assert_eq!(summary.omitted_arguments, 2);
     }
 
     #[test]
@@ -17799,17 +20657,77 @@ mod tests {
             ));
         }
 
-        let hit = plan
-            .apply_reducer_edge_budget("reduce_test_edges", 2)
+        let budgets = GraphOutputBudgets {
+            max_reducer_edges_per_stage: 2,
+            ..graph_output_test_budgets()
+        };
+        let hits = plan.apply_reducer_budgets("reduce_test_edges", &budgets);
+        let hit = hits
+            .iter()
+            .find(|hit| hit.kind == "reducer_edges_per_stage")
             .expect("reducer budget hit");
 
         assert_eq!(plan.edges.len(), 2);
         assert_eq!(hit.kind, "reducer_edges_per_stage");
         assert_eq!(hit.omitted, 3);
+        assert!(labels_contain(&hit.labels, "reducer_budget_hit"));
+        assert!(labels_contain(&hit.labels, "relation_class_degraded"));
+        assert_eq!(
+            hit.claim_state,
+            "relation_class_degraded_not_complete_graph_proof"
+        );
         assert_eq!(
             hit.claimability_label,
             "degraded_file_nonclaimable_for_omitted_facts"
         );
+    }
+
+    #[test]
+    fn reducer_relation_class_budget_labels_degraded_relation_class() {
+        let mut plan = GlobalFactReductionPlan::default();
+        for index in 0..5 {
+            plan.push_edge(graph_budget_test_edge(
+                "src/fanout.ts:head",
+                RelationKind::Calls,
+                &format!("src/fanout.ts:tail{index}"),
+                index + 1,
+            ));
+        }
+        let budgets = GraphOutputBudgets {
+            max_reducer_relation_class_edges_inspected: 2,
+            ..graph_output_test_budgets()
+        };
+
+        let hits = plan.apply_reducer_budgets("reduce_static_import_edges", &budgets);
+
+        assert_eq!(plan.edges.len(), 2);
+        let hit = hits
+            .iter()
+            .find(|hit| hit.kind == "reducer_relation_class_edges_inspected")
+            .expect("relation-class reducer hit");
+        assert_eq!(hit.relation_class, Some(RelationKind::Calls.to_string()));
+        assert_eq!(hit.inspected, Some(5));
+        assert_eq!(hit.omitted, 3);
+        assert!(labels_contain(&hit.labels, "relation_class_degraded"));
+    }
+
+    #[test]
+    fn derived_edges_without_provenance_are_rejected_before_persistence() {
+        let mut edge = graph_budget_test_edge(
+            "src/fanout.ts:head",
+            RelationKind::FlowsTo,
+            "src/fanout.ts:tail",
+            1,
+        );
+        edge.derived = true;
+        edge.edge_class = EdgeClass::Derived;
+        edge.metadata
+            .insert("claim_state".to_string(), json!("derived_with_provenance"));
+
+        let error = validate_derived_edge_provenance(&edge)
+            .expect_err("derived edge without provenance must fail");
+
+        assert!(error.to_string().contains("missing provenance_edges"));
     }
 
     #[test]
@@ -19506,6 +22424,71 @@ pub fn spool_target(value: i32) -> i32 {
     }
 
     #[test]
+    fn lifecycle_surface_preflight_combined_foreign_and_stale_requires_both_overrides() {
+        let repo_a = temp_repo("surface-combined-diagnostic-repo-a");
+        let repo_b = temp_repo("surface-combined-diagnostic-repo-b");
+        write_test_file(
+            &repo_a,
+            "src/a.ts",
+            "export function combined_repo_a() { return 1; }\n",
+        );
+        write_test_file(
+            &repo_b,
+            "src/b.ts",
+            "export function combined_repo_b() { return 1; }\n",
+        );
+        let current_head = init_git_repo_for_identity_test(&repo_a);
+        let _other_head = init_git_repo_for_identity_test(&repo_b);
+        let db = repo_a.join("repo-a.sqlite");
+        index_repo_to_db_with_options(&repo_a, &db, IndexOptions::default()).expect("index repo A");
+        {
+            let store = SqliteGraphStore::open(&db).expect("open store");
+            let mut passport = store
+                .get_db_passport()
+                .expect("read passport")
+                .expect("passport");
+            assert_eq!(passport.repo_head.as_deref(), Some(current_head.as_str()));
+            passport.repo_head = Some("stale-head-for-combined-test".to_string());
+            store
+                .upsert_db_passport(&passport)
+                .expect("write stale head");
+        }
+
+        let mut foreign_only =
+            surface_preflight_request(&repo_b, &db, DbLifecycleOperationKind::DiagnosticRead);
+        foreign_only.allow_foreign_repo = true;
+        let foreign_only =
+            inspect_db_lifecycle_surface_preflight(foreign_only).expect("foreign diagnostic");
+        assert!(!foreign_only.safe_to_read, "{foreign_only:?}");
+        assert!(!foreign_only.claimable, "{foreign_only:?}");
+        assert!(foreign_only
+            .blockers
+            .iter()
+            .any(|blocker| blocker.contains("repo head mismatch")));
+
+        let mut both =
+            surface_preflight_request(&repo_b, &db, DbLifecycleOperationKind::DiagnosticRead);
+        both.allow_foreign_repo = true;
+        both.allow_stale_read = true;
+        let both = inspect_db_lifecycle_surface_preflight(both).expect("combined diagnostic");
+        assert!(both.safe_to_read, "{both:?}");
+        assert!(both.diagnostic_only, "{both:?}");
+        assert!(!both.claimable, "{both:?}");
+        assert!(both.blockers.is_empty(), "{both:?}");
+        assert!(both
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("foreign-repo blocker")));
+        assert!(both
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("stale/passport blocker")));
+
+        fs::remove_dir_all(repo_a).expect("cleanup repo A");
+        fs::remove_dir_all(repo_b).expect("cleanup repo B");
+    }
+
+    #[test]
     fn lifecycle_surface_preflight_write_update_is_stricter_than_diagnostic_read() {
         let repo_a = temp_repo("surface-write-repo-a");
         let repo_b = temp_repo("surface-write-repo-b");
@@ -19960,6 +22943,86 @@ pub fn spool_target(value: i32) -> i32 {
             assert!(decision.pruned, "{decision:?}");
             assert!(!decision.could_include_descendant, "{decision:?}");
         }
+    }
+
+    #[test]
+    fn scope_path_io_warning_labels_filename_too_long() {
+        let repo = temp_repo("scope-path-io-warning");
+        let long_name = format!("{}.log", "x".repeat(260));
+        let path = repo
+            .join("reports")
+            .join("audit")
+            .join("artifacts")
+            .join(long_name);
+        let mut report = IndexScopeRuntimeReport::new(&IndexScopeOptions::default());
+        let error = io::Error::from_raw_os_error(if cfg!(windows) { 206 } else { 36 });
+
+        record_scope_path_io_warning(&repo, &path, "read_dir_entry", &error, &mut report);
+
+        assert_eq!(
+            report
+                .path_io_warning_counts
+                .get("filename_too_long")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(report.warnings, 1);
+        assert_eq!(
+            report.path_io_warning_examples[0].label.as_str(),
+            "filename_too_long"
+        );
+        assert!(report.path_io_warning_examples[0]
+            .path
+            .contains("reports/audit/artifacts"));
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn scope_walk_labels_symlink_loop_or_unavailable() {
+        let repo = temp_repo("scope-symlink-loop");
+        fs::write(
+            repo.join("src").join("main.ts"),
+            "export function scopeSymlinkLoopFixture() { return 1; }\n",
+        )
+        .expect("write fixture");
+        let link = repo.join("src").join("loop");
+
+        if try_create_dir_symlink(&repo, &link).is_ok() {
+            let scoped = collect_repo_files_with_scope(&repo, &IndexScopeOptions::default())
+                .expect("collect scope with symlink");
+            assert_eq!(
+                scoped
+                    .scope_report
+                    .path_io_warning_counts
+                    .get("symlink_loop")
+                    .copied(),
+                Some(1)
+            );
+            assert!(
+                scoped.files.iter().all(|path| !path.starts_with(&link)),
+                "symlink traversal must not add duplicate source paths"
+            );
+        } else {
+            let mut report = IndexScopeRuntimeReport::new(&IndexScopeOptions::default());
+            record_scope_path_warning_label(
+                &repo,
+                &link,
+                "symlink_entry",
+                "path_mapping_unavailable",
+                "symlink creation unavailable on this platform",
+                &mut report,
+            );
+            assert_eq!(
+                report
+                    .path_io_warning_counts
+                    .get("path_mapping_unavailable")
+                    .copied(),
+                Some(1)
+            );
+        }
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
     }
 
     #[test]
@@ -20988,6 +24051,9 @@ pub fn spool_target(value: i32) -> i32 {
             source: source.to_string(),
             file_hash: content_hash(source),
             language: Some("typescript".to_string()),
+            file_kind: "typescript".to_string(),
+            source_role: "production".to_string(),
+            source_role_classification_ms: 0.0,
             size_bytes: source.len() as u64,
             modified_unix_nanos: None,
             needs_delete: false,
@@ -21702,6 +24768,100 @@ pub fn spool_target(value: i32) -> i32 {
                     entity.repo_relative_path == "src/consumer.ts" && entity.name == "target"
                 })
         }));
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn audit_rust_path_alias_self_and_receiver_calls_are_queryable_edges() {
+        let repo = temp_repo("rust-callgraph-hardening");
+        fs::write(
+            repo.join("src").join("lib.rs"),
+            r#"
+pub fn helper() {}
+
+pub mod util {
+    pub fn helper() {}
+}
+
+use crate::util::helper as h;
+
+pub struct Service;
+
+impl Service {
+    pub fn new() -> Self { Service }
+    pub fn build() {
+        Self::new();
+        Service::new();
+    }
+    pub fn run(&self) {}
+}
+
+pub fn caller() {
+    helper();
+    util::helper();
+    crate::util::helper();
+    h();
+    let s = Service::new();
+    s.run();
+}
+"#,
+        )
+        .expect("write rust fixture");
+
+        let db = repo.join("target").join("rust-callgraph.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let entities = store
+            .list_entities_by_file("src/lib.rs")
+            .expect("rust entities");
+        let by_qname = |name: &str, kind: EntityKind, suffix: &str| {
+            entities
+                .iter()
+                .find(|entity| {
+                    entity.name == name
+                        && entity.kind == kind
+                        && entity.qualified_name.ends_with(suffix)
+                })
+                .unwrap_or_else(|| panic!("missing {kind} {name} ending {suffix}"))
+                .clone()
+        };
+        let caller = by_qname("caller", EntityKind::Function, ".caller");
+        let root_helper = by_qname("helper", EntityKind::Function, ".helper");
+        let util_helper = by_qname("helper", EntityKind::Function, ".util.helper");
+        let new_method = by_qname("new", EntityKind::Method, ".new");
+        let run_method = by_qname("run", EntityKind::Method, ".run");
+        let calls = store
+            .find_edges_by_head_relation(&caller.id, RelationKind::Calls)
+            .expect("calls from caller");
+
+        let exact_call = |target: &Entity| {
+            calls.iter().any(|edge| {
+                edge.tail_id == target.id
+                    && edge.exactness == Exactness::ParserVerified
+                    && edge.source_span.repo_relative_path == "src/lib.rs"
+            })
+        };
+        assert!(exact_call(&root_helper), "direct helper call must be exact");
+        assert!(
+            calls
+                .iter()
+                .filter(|edge| {
+                    edge.tail_id == util_helper.id && edge.exactness == Exactness::ParserVerified
+                })
+                .count()
+                >= 3,
+            "module path, crate path, and alias calls must target util::helper"
+        );
+        assert!(
+            exact_call(&new_method),
+            "Service::new constructor call must be exact"
+        );
+        assert!(
+            exact_call(&run_method),
+            "locally typed receiver call must be exact"
+        );
 
         drop(store);
         fs::remove_dir_all(repo).expect("cleanup");
@@ -24122,6 +27282,9 @@ pub fn spool_target(value: i32) -> i32 {
                 "provider_id": provider.metadata().provider_id,
                 "model_id": provider.metadata().model_id,
                 "dimension": provider.metadata().dimension,
+                "embedding_kind": "deterministic_token_projection",
+                "display_label": "deterministic token-projection candidate recall",
+                "learned_semantic_embeddings": false,
                 "production_semantic_quality": provider.metadata().production_semantic_quality,
                 "source_leaves_machine": provider.metadata().source_leaves_machine
             },
@@ -24443,6 +27606,20 @@ pub fn spool_target(value: i32) -> i32 {
                 .skipped_unchanged_files,
             1
         );
+        let repeat_profile = repeat.profile.as_ref().expect("profile");
+        let auth_profile = repeat_profile
+            .file_attribution
+            .iter()
+            .find(|file| file.path == "src/auth.ts")
+            .expect("auth file profile");
+        assert!(auth_profile.read_ms.is_none());
+        assert!(auth_profile.hash_ms.is_none());
+        assert!(auth_profile.parse_ms.is_none());
+        assert_eq!(repeat_profile.source_clone_count_status, "unknown");
+        assert!(auth_profile
+            .skipped_labels
+            .iter()
+            .any(|label| label == "metadata_unchanged"));
         let store = SqliteGraphStore::open(&db).expect("store");
         let file = store
             .get_file("src/auth.ts")

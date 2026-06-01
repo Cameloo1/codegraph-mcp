@@ -370,7 +370,7 @@ mod tests {
         let mut candidate = RetrievalCandidate::new(
             "vector://text-evidence/src/auth.ts/chunk-0001",
             RetrievalCandidateSource::VectorSemantic,
-            "vector semantic candidate over text evidence; not graph proof",
+            "deterministic token-projection candidate over text evidence; not graph proof",
         );
         candidate.embedding_source = Some(VectorEmbeddingSource::TextEvidence);
         candidate.file_id = Some("src/auth.ts".to_string());
@@ -486,7 +486,7 @@ mod tests {
         let mut candidate = RetrievalCandidate::new(
             "vector://graph-entity/AuthService.login",
             RetrievalCandidateSource::VectorSemantic,
-            "vector semantic graph-entity candidate; source span not verified",
+            "deterministic token-projection graph-entity candidate; source span not verified",
         );
         candidate.embedding_source = Some(VectorEmbeddingSource::GraphEntity);
         candidate.file_id = Some("src/auth.ts".to_string());

@@ -13,6 +13,11 @@ Do not infer current quality from old run payloads, raw logs, copied fixtures,
 temporary DBs, or local benchmark work directories. Unsupported, skipped,
 timed-out, debug-only, partial, or diagnostic data must stay labeled that way.
 
+`reports/final/*` is the canonical promoted dashboard surface. `reports/audit/*`
+and `reports/audit/artifacts/*` are local diagnostic evidence unless a curated
+summary is explicitly promoted; raw logs, DBs, WAL/SHM files, and benchmark
+payloads stay local.
+
 ## Repository Hygiene
 
 Keep these out of committed source unless a small summary is explicitly
@@ -76,7 +81,7 @@ typed graph facts, exactness labels, source spans, provenance, and explicit
 path evidence.
 
 Current candidate lanes include exact seeds, Stage 0 text evidence,
-lexical/FTS matches, vector semantic candidates, binary-vector candidates,
+lexical/FTS matches, deterministic token-projection vector candidates, binary-vector candidates,
 nuance-rescue candidates, graph-neighborhood candidates, PathEvidence
 candidates, and fallback source-text evidence. These are candidate/source
 evidence until graph/source verification promotes them. If no proof path is

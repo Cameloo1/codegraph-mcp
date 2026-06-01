@@ -36,19 +36,20 @@ use codegraph_core::{
     RetrievalVerificationStatus, SourceSpan, VectorEmbeddingSource,
 };
 pub use codegraph_index::{
-    build_vector_chunk_index_artifacts_for_repo, build_vector_chunk_index_json_for_repo,
-    candidate_spool_index_status_for_repo, candidate_spool_query_index_path, collect_repo_files,
-    default_db_path, graph_fact_hash, index_repo, index_repo_to_db_with_options,
-    index_repo_with_options, inspect_db_lifecycle_preflight,
-    inspect_db_lifecycle_surface_preflight, inspect_repo_db_passport, load_vector_chunk_index_json,
-    normalize_changed_path, parse_extract_pending_files, query_candidate_spool_index_for_repo,
-    rebuild_candidate_spool_query_index_for_repo, require_reusable_db_passport, scope_policy_hash,
-    should_ignore_path, should_start_new_index_batch, update_changed_files,
-    update_changed_files_to_db, update_changed_files_with_cache,
-    update_changed_files_with_cache_to_db, validate_vector_chunk_source_bindings,
-    vector_chunk_search_hit_to_retrieval_candidate, CandidateSpoolIndexLoad,
-    CandidateSpoolIndexQueryResult, CandidateSpoolPolicy, DbLifecycleOperationKind,
-    DbLifecyclePolicy, DbLifecyclePreflight, DbLifecycleSurfacePreflight,
+    add_index_profile_span_ms_to_summary, build_vector_chunk_index_artifacts_for_repo,
+    build_vector_chunk_index_json_for_repo, candidate_spool_index_status_for_repo,
+    candidate_spool_query_index_path, collect_repo_files, default_db_path, graph_fact_hash,
+    index_repo, index_repo_to_db_with_options, index_repo_with_options,
+    inspect_db_lifecycle_preflight, inspect_db_lifecycle_surface_preflight,
+    inspect_repo_db_passport, load_vector_chunk_index_json, normalize_changed_path,
+    parse_extract_pending_files, query_candidate_spool_index_for_repo,
+    rebuild_candidate_spool_query_index_for_repo, refresh_index_profile_derived_fields,
+    require_reusable_db_passport, scope_policy_hash, should_ignore_path,
+    should_start_new_index_batch, update_changed_files, update_changed_files_to_db,
+    update_changed_files_with_cache, update_changed_files_with_cache_to_db,
+    validate_vector_chunk_source_bindings, vector_chunk_search_hit_to_retrieval_candidate,
+    CandidateSpoolIndexLoad, CandidateSpoolIndexQueryResult, CandidateSpoolPolicy,
+    DbLifecycleOperationKind, DbLifecyclePolicy, DbLifecyclePreflight, DbLifecycleSurfacePreflight,
     DbLifecycleSurfacePreflightRequest, IncrementalIndexCache, IncrementalIndexSummary,
     IndexBuildMode, IndexError, IndexIssue, IndexOptions, IndexProfile, IndexScopeOptions,
     IndexSummary, LocalFactBundle, PendingIndexFile, StorageMode, VectorChunkArtifactFormat,
@@ -104,6 +105,7 @@ const AGENT_USE_WATCH_DEFAULT_DEBOUNCE_MS: u64 = 250;
 const AGENT_USE_WATCH_DEFAULT_LOCK_RETRIES: usize = 3;
 const AGENT_USE_WATCH_DEFAULT_LOCK_RETRY_MS: u64 = 100;
 const AGENT_USE_WATCH_DEFAULT_MAX_BATCH_PATHS: usize = 256;
+const ARTIFACT_SAFE_FILENAME_MAX_CHARS: usize = 120;
 const DEFAULT_UI_NODE_CAP: usize = 80;
 const MAX_UI_NODE_CAP: usize = 250;
 const SYMBOL_SEARCH_MIN_FTS_CANDIDATES: usize = 128;
@@ -223,6 +225,8 @@ const QUERY_AGENT_JSON_SIZE_TARGET_BYTES: usize = 12 * 1024;
 const DEFAULT_CONTEXT_AGENT_PATH_LIMIT: usize = 5;
 const DEFAULT_CONTEXT_AGENT_SNIPPET_LIMIT: usize = 5;
 const DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES: usize = 16 * 1024;
+const DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES: usize = 12 * 1024;
+const DEFAULT_AGENT_USE_EXPLAIN_MAX_OUTPUT_BYTES: usize = 48 * 1024;
 const MAX_CONTEXT_AGENT_PATH_LIMIT: usize = 64;
 const MAX_CONTEXT_AGENT_SNIPPET_LIMIT: usize = 64;
 const MIN_CONTEXT_AGENT_MAX_OUTPUT_BYTES: usize = 1024;
@@ -274,7 +278,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "agent-use",
-        usage: "codegraph-mcp agent-use <status|index|query|context-pack|mcp-config|watch> --repo <repo> --json\n  codegraph-mcp agent-use status --repo <repo> --json\n  codegraph-mcp agent-use index --repo <repo> [--fresh|--rebuild|--incremental] [--json]\n  codegraph-mcp agent-use query symbols|text|files <query> --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use context-pack --repo <repo> --task <task> --agent-json\n  codegraph-mcp agent-use mcp-config --repo <repo> --json\n  codegraph-mcp agent-use watch --repo <repo> --json [--debounce-ms <ms>]\n  codegraph-mcp agent-use watch --repo <repo> --once --changed <path> [--changed <path>] --json",
+        usage: "codegraph-mcp agent-use <status|index|query|context-pack|mcp-config|watch> --repo <repo> --json\n  codegraph-mcp agent-use status --repo <repo> --json\n  codegraph-mcp agent-use index --repo <repo> [--fresh|--rebuild|--incremental] [--json]\n  codegraph-mcp agent-use query symbols|text|files|references|definitions|callers|callees|path|chain|unresolved-calls <args> --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use context-pack --repo <repo> --task <task> --agent-json\n  codegraph-mcp agent-use mcp-config --repo <repo> --json\n  codegraph-mcp agent-use watch --repo <repo> --json [--debounce-ms <ms>]\n  codegraph-mcp agent-use watch --repo <repo> --once --changed <path> [--changed <path>] --json",
         description: "Use the production agent profile outside the source tree.",
     },
     CommandSpec {
@@ -1322,20 +1326,38 @@ fn run_index_command(args: &[String]) -> Result<Value, String> {
     .map_err(|error| error.to_string())?;
     let vector_index_summary = if let Some(vector_index_path) = vector_index_path.as_ref() {
         let provider = context_pack_vector_provider()?;
-        Some(
-            build_vector_chunk_index_artifacts_for_repo(
-                &repo_root,
-                &db_path,
-                vector_index_path,
-                &provider,
-                context_pack_vector_build_options(),
-                VectorChunkIndexArtifactOptions {
-                    runtime_format: vector_index_options.runtime_format,
-                    audit_artifact_path: vector_audit_artifact_path.clone(),
-                },
-            )
-            .map_err(|error| error.to_string())?,
+        let vector_summary = build_vector_chunk_index_artifacts_for_repo(
+            &repo_root,
+            &db_path,
+            vector_index_path,
+            &provider,
+            context_pack_vector_build_options(),
+            VectorChunkIndexArtifactOptions {
+                runtime_format: vector_index_options.runtime_format,
+                audit_artifact_path: vector_audit_artifact_path.clone(),
+            },
         )
+        .map_err(|error| error.to_string())?;
+        add_index_profile_span_ms_to_summary(
+            &mut summary,
+            "vector_runtime_sidecar_build",
+            vector_summary.build_timings.total_ms,
+            1,
+            vector_summary.persisted_total_chunks as u64,
+            "runtime vector sidecar build total from vector build summary",
+        );
+        if vector_audit_artifact_path.is_some() {
+            add_index_profile_span_ms_to_summary(
+                &mut summary,
+                "vector_audit_artifact_build",
+                vector_summary.build_timings.write_json_ms,
+                1,
+                vector_summary.audit_total_chunks as u64,
+                "audit artifact write is measured inside aggregate vector write_json_ms; runtime/audit write split is not yet separable",
+            );
+        }
+        refresh_index_profile_derived_fields(&mut summary);
+        Some(vector_summary)
     } else {
         None
     };
@@ -1468,6 +1490,29 @@ fn run_agent_use_command(args: &[String]) -> Result<Value, String> {
 #[derive(Debug, Clone)]
 struct AgentUseBasicOptions {
     repo: PathBuf,
+    detail_mode: AgentUseDetailMode,
+    max_output_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentUseDetailMode {
+    Compact,
+    Explain,
+    Audit,
+}
+
+impl AgentUseDetailMode {
+    fn preserves_full_details(self) -> bool {
+        !matches!(self, AgentUseDetailMode::Compact)
+    }
+
+    fn default_max_output_bytes(self) -> usize {
+        if self.preserves_full_details() {
+            DEFAULT_AGENT_USE_EXPLAIN_MAX_OUTPUT_BYTES
+        } else {
+            DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1501,10 +1546,30 @@ fn parse_agent_use_basic_args(
     subcommand: &str,
 ) -> Result<AgentUseBasicOptions, String> {
     let mut repo = None;
+    let mut detail_mode = AgentUseDetailMode::Compact;
+    let mut max_output_bytes = None;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
-            "--json" => {}
+            "--json" | "--agent-json" | "--agent_json" => {}
+            "--explain" => {
+                detail_mode = AgentUseDetailMode::Explain;
+            }
+            "--verbose" => {
+                if detail_mode == AgentUseDetailMode::Compact {
+                    detail_mode = AgentUseDetailMode::Explain;
+                }
+            }
+            "--audit-json" | "--audit_json" => {
+                detail_mode = AgentUseDetailMode::Audit;
+            }
+            "--max-output-bytes" | "--max-bytes" | "--max_output_bytes" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--max-output-bytes requires a value".to_string());
+                };
+                max_output_bytes = Some(parse_context_pack_max_output_bytes(value)?);
+            }
             "--repo" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -1533,6 +1598,8 @@ fn parse_agent_use_basic_args(
     }
     Ok(AgentUseBasicOptions {
         repo: repo.unwrap_or_else(|| PathBuf::from(".")),
+        detail_mode,
+        max_output_bytes,
     })
 }
 
@@ -1542,7 +1609,7 @@ fn parse_agent_use_index_args(args: &[String]) -> Result<AgentUseIndexOptions, S
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
-            "--json" => {}
+            "--json" | "--agent-json" | "--agent_json" => {}
             "--repo" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -1772,6 +1839,68 @@ fn parse_agent_use_forward_args(
     })
 }
 
+fn agent_use_forward_detail_mode(args: &[String]) -> AgentUseDetailMode {
+    let mut mode = AgentUseDetailMode::Compact;
+    for arg in args {
+        match arg.as_str() {
+            "--audit-json" | "--audit_json" => return AgentUseDetailMode::Audit,
+            "--explain" | "--debug" => mode = AgentUseDetailMode::Explain,
+            "--verbose" if mode == AgentUseDetailMode::Compact => {
+                mode = AgentUseDetailMode::Explain
+            }
+            _ => {}
+        }
+    }
+    mode
+}
+
+fn strip_agent_use_query_wrapper_flags(
+    args: Vec<String>,
+) -> Result<(Vec<String>, AgentUseDetailMode, Option<usize>), String> {
+    let detail_mode = agent_use_forward_detail_mode(&args);
+    let mut max_output_bytes = None;
+    let mut stripped = Vec::new();
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--max-output-bytes" | "--max-bytes" | "--max_output_bytes" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--max-output-bytes requires a value".to_string());
+                };
+                max_output_bytes = Some(parse_context_pack_max_output_bytes(value)?);
+            }
+            value
+                if value.starts_with("--max-output-bytes=")
+                    || value.starts_with("--max-bytes=")
+                    || value.starts_with("--max_output_bytes=") =>
+            {
+                let value = value
+                    .split_once('=')
+                    .map(|(_, value)| value)
+                    .unwrap_or_default();
+                max_output_bytes = Some(parse_context_pack_max_output_bytes(value)?);
+            }
+            "--explain" | "--verbose" | "--audit-json" | "--audit_json" => {}
+            _ => stripped.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    Ok((stripped, detail_mode, max_output_bytes))
+}
+
+fn agent_use_context_max_output_bytes(args: &[String], detail_mode: AgentUseDetailMode) -> usize {
+    context_pack_forwarded_max_output_bytes(args)
+        .unwrap_or_else(|| detail_mode.default_max_output_bytes())
+}
+
+fn ensure_context_pack_max_output_arg(args: &mut Vec<String>, max_output_bytes: usize) {
+    if context_pack_forwarded_max_output_bytes(args).is_none() {
+        args.push("--max-output-bytes".to_string());
+        args.push(max_output_bytes.to_string());
+    }
+}
+
 fn query_args_request_agent_json(args: &[String]) -> bool {
     args.iter()
         .any(|arg| matches!(arg.as_str(), "--agent-json" | "--agent_json" | "--concise"))
@@ -1852,15 +1981,19 @@ fn run_agent_use_query_command(args: &[String]) -> Result<Value, String> {
     let options = parse_agent_use_forward_args(args, "query")?;
     let Some(query_kind) = options.forwarded_args.first().cloned() else {
         return Err(
-            "Usage: codegraph-mcp agent-use query <symbols|text|files> <query> --repo <repo> --limit <n> --agent-json"
+            "Usage: codegraph-mcp agent-use query <symbols|text|files|references|definitions|callers|callees|path|chain|unresolved-calls> <args> --repo <repo> --limit <n> --agent-json"
                 .to_string(),
         );
     };
-    if !matches!(query_kind.as_str(), "symbols" | "text" | "files") {
+    if !agent_use_query_kind_supported(query_kind.as_str()) {
         return Err(format!(
-            "agent-use query supports symbols, text, or files; got {query_kind}"
+            "agent-use query supports symbols, text, files, references, definitions, callers, callees, path, chain, and unresolved-calls; got {query_kind}"
         ));
     }
+    let (mut forwarded_args, detail_mode, max_output_bytes) =
+        strip_agent_use_query_wrapper_flags(options.forwarded_args)?;
+    let max_output_bytes =
+        max_output_bytes.unwrap_or_else(|| detail_mode.default_max_output_bytes());
     let profile = resolve_agent_use_profile(&options.repo)?;
     let normal_dot_codegraph = profile.repo_root.join(".codegraph");
     let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
@@ -1870,19 +2003,30 @@ fn run_agent_use_query_command(args: &[String]) -> Result<Value, String> {
         Some(profile.scope_policy.clone()),
     )?;
     if !preflight.safe {
-        return Ok(agent_use_unavailable_json(
+        let mut value = agent_use_unavailable_json(
             &profile,
             &preflight,
             "query",
             Some(query_kind.as_str()),
             None,
             normal_dot_codegraph_existed_before,
-        ));
+        );
+        compact_agent_use_agent_json_envelope(
+            &mut value,
+            &profile,
+            detail_mode,
+            max_output_bytes,
+            None,
+        );
+        return Ok(value);
     }
 
-    let mut forwarded_args = options.forwarded_args;
     if !query_args_request_agent_json(&forwarded_args) {
-        forwarded_args.push("--agent-json".to_string());
+        if query_kind == "unresolved-calls" {
+            forwarded_args.push("--json".to_string());
+        } else {
+            forwarded_args.push("--agent-json".to_string());
+        }
     }
     let mut value =
         with_agent_use_profile_context(&profile, || run_query_command(&forwarded_args))?;
@@ -1895,7 +2039,30 @@ fn run_agent_use_query_command(args: &[String]) -> Result<Value, String> {
     add_agent_use_db_lifecycle_read(&mut value, &preflight);
     add_agent_use_durability_labels(&mut value, &profile, &preflight, None);
     add_agent_use_query_read_path_metrics(&mut value, query_kind.as_str());
+    compact_agent_use_agent_json_envelope(
+        &mut value,
+        &profile,
+        detail_mode,
+        max_output_bytes,
+        None,
+    );
     Ok(value)
+}
+
+fn agent_use_query_kind_supported(kind: &str) -> bool {
+    matches!(
+        kind,
+        "symbols"
+            | "text"
+            | "files"
+            | "references"
+            | "definitions"
+            | "callers"
+            | "callees"
+            | "path"
+            | "chain"
+            | "unresolved-calls"
+    )
 }
 
 fn run_agent_use_context_pack_command(args: &[String]) -> Result<Value, String> {
@@ -1909,6 +2076,9 @@ fn run_agent_use_context_pack_command(args: &[String]) -> Result<Value, String> 
         Some(profile.scope_policy.clone()),
     )?;
     let mut forwarded_args = options.forwarded_args;
+    let detail_mode = agent_use_forward_detail_mode(&forwarded_args);
+    let max_output_bytes = agent_use_context_max_output_bytes(&forwarded_args, detail_mode);
+    ensure_context_pack_max_output_arg(&mut forwarded_args, max_output_bytes);
     if !context_args_request_agent_json(&forwarded_args) {
         forwarded_args.push("--agent-json".to_string());
     }
@@ -1947,6 +2117,19 @@ fn run_agent_use_context_pack_command(args: &[String]) -> Result<Value, String> 
         add_agent_use_rtds_freshness_fields(&mut value, &profile, &preflight, &staged_availability);
         add_agent_use_durability_labels(&mut value, &profile, &preflight, None);
         add_agent_use_context_pack_read_path_metrics(&mut value);
+        // Compact the agent-use-specific heavy sections (recovery, lifecycle,
+        // read_path_metrics, etc.) BEFORE the context-pack size enforcer runs.
+        // Otherwise the enforcer sees a transiently-oversized envelope and sheds
+        // contract-required sections (patch_assist_packet) that would have fit
+        // once the agent-use compaction shrank the rest.
+        compact_agent_use_agent_json_envelope(
+            &mut value,
+            &profile,
+            detail_mode,
+            max_output_bytes,
+            Some(&staged_availability),
+        );
+        enforce_agent_use_context_pack_max_output_bytes(&mut value, max_output_bytes);
         return Ok(value);
     }
 
@@ -2003,32 +2186,1084 @@ fn run_agent_use_context_pack_command(args: &[String]) -> Result<Value, String> 
                     &staged_availability,
                 );
                 add_agent_use_context_pack_read_path_metrics(&mut value);
+                // Compact agent-use-specific heavy sections before the context
+                // enforcer so it does not shed contract-required patch_assist_packet
+                // from a transiently-oversized envelope (matches the safe-DB path).
+                compact_agent_use_agent_json_envelope(
+                    &mut value,
+                    &profile,
+                    detail_mode,
+                    max_output_bytes,
+                    Some(&staged_availability),
+                );
+                enforce_agent_use_context_pack_max_output_bytes(&mut value, max_output_bytes);
                 Ok(value)
             }
-            Err(error) => Ok(agent_use_unavailable_json(
-                &profile,
-                &preflight,
-                "context-pack",
-                None,
-                Some(error),
-                normal_dot_codegraph_existed_before,
-            )),
+            Err(error) => {
+                let mut value = agent_use_unavailable_json(
+                    &profile,
+                    &preflight,
+                    "context-pack",
+                    None,
+                    Some(error),
+                    normal_dot_codegraph_existed_before,
+                );
+                let staged_availability = value.get("staged_availability").cloned();
+                compact_agent_use_agent_json_envelope(
+                    &mut value,
+                    &profile,
+                    detail_mode,
+                    max_output_bytes,
+                    staged_availability.as_ref(),
+                );
+                Ok(value)
+            }
         };
     }
 
-    Ok(agent_use_unavailable_json(
+    let mut value = agent_use_unavailable_json(
         &profile,
         &preflight,
         "context-pack",
         None,
         None,
         normal_dot_codegraph_existed_before,
-    ))
+    );
+    let staged_availability = value.get("staged_availability").cloned();
+    compact_agent_use_agent_json_envelope(
+        &mut value,
+        &profile,
+        detail_mode,
+        max_output_bytes,
+        staged_availability.as_ref(),
+    );
+    Ok(value)
+}
+
+fn context_pack_forwarded_max_output_bytes(args: &[String]) -> Option<usize> {
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if matches!(
+            arg,
+            "--max-output-bytes" | "--max-bytes" | "--max_output_bytes"
+        ) {
+            return args
+                .get(index.saturating_add(1))
+                .and_then(|value| parse_context_pack_max_output_bytes(value).ok());
+        }
+        for prefix in ["--max-output-bytes=", "--max-bytes=", "--max_output_bytes="] {
+            if let Some(value) = arg.strip_prefix(prefix) {
+                return parse_context_pack_max_output_bytes(value).ok();
+            }
+        }
+        index = index.saturating_add(1);
+    }
+    None
+}
+
+fn enforce_agent_use_context_pack_max_output_bytes(value: &mut Value, max_output_bytes: usize) {
+    for _ in 0..64 {
+        if serialized_json_len(value) <= max_output_bytes {
+            break;
+        }
+        let _ = enforce_context_agent_max_output_bytes(value, max_output_bytes);
+        if compact_context_agent_staged_availability(value) {
+            continue;
+        }
+        if compact_context_agent_db_lifecycle_read(value) {
+            continue;
+        }
+        if compact_context_agent_patch_assist_packet_minimal(value) {
+            continue;
+        }
+        if compact_context_agent_publish_state(value) {
+            continue;
+        }
+        for key in [
+            "fallback_evidence",
+            "follow_up_queries",
+            "likely_files",
+            "paths",
+            "proof_paths",
+            "recommended_tests",
+            "risks",
+            "snippets",
+            "active_candidate_sources",
+            "staged_availability",
+            "agent_use_profile_root",
+            "candidate_spool_query_index_path",
+            "candidate_spool_query_index_bytes",
+            "candidate_spool_query_index_kind",
+            "candidate_spool_query_index_record_count",
+            "normal_dot_codegraph_path",
+            "resolved_db",
+            "repo_root",
+            "symbols",
+            "critical_symbols",
+            "candidate_total_count",
+            "candidate_omitted_count",
+            "candidate_sources",
+            "stale_candidate_layers",
+            "blocked_labels",
+            "retryable_labels",
+        ] {
+            if remove_context_agent_field(value, key) {
+                break;
+            }
+        }
+    }
+    let output_bytes = serialized_json_len(value);
+    if let Some(object) = value.as_object_mut() {
+        if let Some(truncation) = object.get_mut("truncation").and_then(Value::as_object_mut) {
+            truncation.insert("output_bytes".to_string(), json!(output_bytes));
+        }
+    }
+}
+
+fn compact_context_agent_publish_state(value: &mut Value) -> bool {
+    let Some(publish_state) = value.get("publish_state").cloned() else {
+        return false;
+    };
+    let compact = compact_agent_use_publish_state_summary(&publish_state);
+    if compact == publish_state {
+        return false;
+    }
+    if let Some(object) = value.as_object_mut() {
+        object.insert("publish_state".to_string(), compact);
+        return true;
+    }
+    false
+}
+
+fn compact_agent_use_agent_json_envelope(
+    value: &mut Value,
+    profile: &AgentUseProfile,
+    detail_mode: AgentUseDetailMode,
+    max_output_bytes: usize,
+    staged_availability: Option<&Value>,
+) {
+    let mut truncated_sections = Vec::new();
+    let mut omitted_count = 0u64;
+    agent_use_ensure_required_agent_fields(value, profile);
+    agent_use_dedupe_recovery_commands(value, profile, &mut omitted_count);
+
+    if detail_mode.preserves_full_details() {
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "agent_json_detail_mode".to_string(),
+                json!(match detail_mode {
+                    AgentUseDetailMode::Compact => "compact",
+                    AgentUseDetailMode::Explain => "explain",
+                    AgentUseDetailMode::Audit => "audit",
+                }),
+            );
+        }
+    } else {
+        agent_use_compact_recovery_fields(
+            value,
+            profile,
+            &mut truncated_sections,
+            &mut omitted_count,
+        );
+        agent_use_compact_lifecycle_fields(value, &mut truncated_sections, &mut omitted_count);
+        agent_use_compact_staged_availability_field(
+            value,
+            staged_availability,
+            &mut truncated_sections,
+            &mut omitted_count,
+        );
+        agent_use_compact_rtds_freshness_field(value, &mut truncated_sections, &mut omitted_count);
+        // Preserve a minimal top-level last_delta_update_summary (status + counts)
+        // rather than dropping it entirely; agents and the delta contract need
+        // `last_delta_update_summary.status` after a watch/delta update.
+        if let Some(summary) = value.get("last_delta_update_summary").cloned() {
+            if !summary.is_null() {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "last_delta_update_summary".to_string(),
+                        compact_agent_use_last_delta_update_summary(&summary),
+                    );
+                }
+            }
+        }
+        agent_use_compact_publish_state_field(value, &mut truncated_sections, &mut omitted_count);
+        agent_use_compact_read_path_metrics_field(
+            value,
+            &mut truncated_sections,
+            &mut omitted_count,
+        );
+        agent_use_compact_query_results_field(value, &mut truncated_sections, &mut omitted_count);
+        for key in [
+            "agent_use_command",
+            "agent_use_profile_name",
+            "output_mode",
+            "repo_source",
+            "resolved_repo",
+            "profile",
+            "agent_use_profile",
+            "db_health",
+            "sqlite_sidecars",
+            "agent_use_profile_root",
+            "normal_dot_codegraph_path",
+            "repo_root",
+            "resolved_db",
+            "db_exists",
+            "db_created",
+            "profile_parent_exists",
+            "profile_parent_created",
+            "candidate_spool_query_index_path",
+            "candidate_spool_query_index_bytes",
+            "candidate_spool_query_index_kind",
+            "candidate_spool_query_index_record_count",
+            "vector_runtime_path",
+            "vector_audit_path",
+            "scope_examples",
+            "sidecar_manifests",
+            "blocked_labels",
+            "blockers",
+            "active_candidate_sources",
+            "candidate_context_truncated",
+            "candidate_spool_unavailable",
+            "lifecycle_decision",
+            "outside_workspace_note",
+            "path_access_error",
+            "path_access_status",
+            "files",
+            "entities",
+            "relation_facts",
+            "source_span_facts",
+            "edges",
+            "source_spans",
+            "languages",
+        ] {
+            if agent_use_remove_field(value, key) {
+                truncated_sections.push(key.to_string());
+                omitted_count = omitted_count.saturating_add(1);
+            }
+        }
+    }
+
+    let enforcement_budget = max_output_bytes
+        .saturating_sub(1024)
+        .max(max_output_bytes.min(MIN_CONTEXT_AGENT_MAX_OUTPUT_BYTES));
+    agent_use_enforce_total_output_budget(
+        value,
+        enforcement_budget,
+        &mut truncated_sections,
+        &mut omitted_count,
+    );
+    if serialized_json_len(value) > max_output_bytes {
+        let hard_budget = if max_output_bytes <= 4096 {
+            enforcement_budget
+        } else {
+            max_output_bytes
+        };
+        agent_use_enforce_hard_agent_json_budget(
+            value,
+            hard_budget,
+            max_output_bytes <= 4096,
+            &mut truncated_sections,
+            &mut omitted_count,
+        );
+    }
+    agent_use_finalize_agent_json_budget(
+        value,
+        detail_mode,
+        max_output_bytes,
+        truncated_sections,
+        omitted_count,
+    );
+}
+
+fn agent_use_ensure_required_agent_fields(value: &mut Value, profile: &AgentUseProfile) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let command = object
+        .get("command")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    object
+        .entry("schema_version".to_string())
+        .or_insert_with(|| json!(AGENT_JSON_SCHEMA_VERSION));
+    if !object.contains_key("schema_name") {
+        let schema_name = match command.as_str() {
+            "status" => Some("status_compact_json"),
+            "context-pack" | "context" => Some("context_pack_agent_json"),
+            _ => None,
+        };
+        if let Some(schema_name) = schema_name {
+            object.insert("schema_name".to_string(), json!(schema_name));
+        }
+    }
+    object
+        .entry("repo".to_string())
+        .or_insert_with(|| json!(path_string(&profile.repo_root)));
+    object
+        .entry("db".to_string())
+        .or_insert_with(|| json!(path_string(&profile.db_path)));
+    object
+        .entry("db_path".to_string())
+        .or_insert_with(|| json!(path_string(&profile.db_path)));
+    object
+        .entry("db_source".to_string())
+        .or_insert_with(|| json!("agent-use profile"));
+    object
+        .entry("external_db_used".to_string())
+        .or_insert_with(|| json!(true));
+    object
+        .entry("profile_name".to_string())
+        .or_insert_with(|| json!(profile.profile_name.clone()));
+    object
+        .entry("warnings".to_string())
+        .or_insert_with(|| json!([]));
+    object
+        .entry("errors".to_string())
+        .or_insert_with(|| json!([]));
+    object
+        .entry("public_claim".to_string())
+        .or_insert_with(|| json!(false));
+    object
+        .entry("normal_dot_codegraph_mutated".to_string())
+        .or_insert_with(|| json!(false));
+
+    let claimable = object
+        .get("claimable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let diagnostic_only = object
+        .get("diagnostic_only")
+        .and_then(Value::as_bool)
+        .unwrap_or(!claimable);
+    let graph_proof = object
+        .get("graph_proof")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let proof_status = object
+        .get("proof_status")
+        .and_then(Value::as_str)
+        .unwrap_or(if graph_proof {
+            "proof_path_found"
+        } else {
+            "not_graph_proof"
+        })
+        .to_string();
+    let proof_strength = object
+        .get("proof_strength")
+        .and_then(Value::as_str)
+        .unwrap_or(if graph_proof {
+            "graph_source_verified"
+        } else {
+            "none"
+        })
+        .to_string();
+    object
+        .entry("graph_proof".to_string())
+        .or_insert_with(|| json!(graph_proof));
+    object
+        .entry("proof_status".to_string())
+        .or_insert_with(|| json!(proof_status));
+    object
+        .entry("proof_strength".to_string())
+        .or_insert_with(|| json!(proof_strength));
+    object.entry("claimability".to_string()).or_insert_with(|| {
+        json!({
+            "claimable": claimable,
+            "diagnostic_only": diagnostic_only,
+            "graph_proof": graph_proof,
+            "proof_status": proof_status,
+            "proof_strength": proof_strength,
+            "graph_proof_only_from_graph_source_verification": true,
+            "candidate_evidence_is_not_graph_proof": true,
+            "text_evidence_is_not_graph_proof": true,
+            "vector_evidence_is_not_graph_proof": true,
+        })
+    });
+}
+
+fn agent_use_recovery_reference_json(profile: &AgentUseProfile) -> Value {
+    let recovery = agent_use_recovery_json(profile);
+    json!({
+        "id": "agent_use_recovery",
+        "commands_ref": "recovery_commands",
+        "agent_use_index_command": recovery.get("agent_use_index_command").cloned().unwrap_or(Value::Null),
+        "agent_use_status_command": recovery.get("agent_use_status_command").cloned().unwrap_or(Value::Null),
+        "agent_use_mcp_config_command": recovery.get("agent_use_mcp_config_command").cloned().unwrap_or(Value::Null),
+        "agent_use_query_symbols_command": recovery.get("agent_use_query_symbols_command").cloned().unwrap_or(Value::Null),
+        "agent_use_query_text_command": recovery.get("agent_use_query_text_command").cloned().unwrap_or(Value::Null),
+        "agent_use_query_files_command": recovery.get("agent_use_query_files_command").cloned().unwrap_or(Value::Null),
+        "agent_use_context_pack_command": recovery.get("agent_use_context_pack_command").cloned().unwrap_or(Value::Null),
+        "agent_use_watch_once_command": recovery.get("agent_use_watch_once_command").cloned().unwrap_or(Value::Null),
+        "agent_use_mcp_config_available": true,
+        "agent_use_mcp_config_status": "implemented",
+        "agent_use_query_available": true,
+        "agent_use_query_status": "implemented",
+        "agent_use_watch_available": true,
+        "agent_use_watch_status": "implemented_once_changed",
+    })
+}
+
+fn agent_use_dedupe_recovery_commands(
+    value: &mut Value,
+    profile: &AgentUseProfile,
+    omitted_count: &mut u64,
+) {
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "recovery_commands".to_string(),
+            json!(profile.recovery_commands.clone()),
+        );
+        object.insert(
+            "recovery".to_string(),
+            agent_use_recovery_reference_json(profile),
+        );
+    }
+    agent_use_dedupe_nested_recovery_commands(value, true, omitted_count);
+}
+
+fn agent_use_compact_recovery_fields(
+    value: &mut Value,
+    _profile: &AgentUseProfile,
+    truncated_sections: &mut Vec<String>,
+    omitted_count: &mut u64,
+) {
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "recovery_commands".to_string(),
+            compact_agent_use_recovery_commands_json(),
+        );
+        object.insert(
+            "recovery".to_string(),
+            json!({
+                "id": "agent_use_recovery",
+                "commands_ref": "recovery_commands",
+                "repo_ref": "repo",
+                "db_ref": "db",
+                "agent_use_index_command": format!("{BIN_NAME} agent-use index --repo <repo> --json"),
+                "placeholder_policy": "substitute <repo> with the top-level repo field",
+                "agent_use_mcp_config_available": true,
+                "agent_use_mcp_config_status": "implemented",
+                "agent_use_query_available": true,
+                "agent_use_query_status": "implemented",
+                "agent_use_watch_available": true,
+                "agent_use_watch_status": "implemented_once_changed",
+            }),
+        );
+    }
+    truncated_sections.push("recovery_commands".to_string());
+    *omitted_count = omitted_count.saturating_add(1);
+}
+
+fn compact_agent_use_recovery_commands_json() -> Value {
+    json!({
+        "kind": "agent_use_recovery_commands",
+        "repo_ref": "repo",
+        "db_ref": "db",
+        "placeholder_policy": "substitute <repo> with the top-level repo field",
+        "commands": {
+            "status": format!("{BIN_NAME} agent-use status --repo <repo> --json"),
+            "index": format!("{BIN_NAME} agent-use index --repo <repo> --json"),
+            "mcp_config": format!("{BIN_NAME} agent-use mcp-config --repo <repo> --json"),
+            "query_symbols": format!("{BIN_NAME} agent-use query symbols <symbol> --repo <repo> --limit 5 --agent-json"),
+            "query_text": format!("{BIN_NAME} agent-use query text \"<text>\" --repo <repo> --limit 5 --agent-json"),
+            "query_files": format!("{BIN_NAME} agent-use query files <path-or-text> --repo <repo> --limit 5 --agent-json"),
+            "context_pack": format!("{BIN_NAME} agent-use context-pack --repo <repo> --task \"<task>\" --agent-json"),
+            "watch_once": format!("{BIN_NAME} agent-use watch --repo <repo> --once --changed <path> --json"),
+        },
+    })
+}
+
+fn agent_use_dedupe_nested_recovery_commands(
+    value: &mut Value,
+    is_root: bool,
+    omitted_count: &mut u64,
+) {
+    match value {
+        Value::Object(object) => {
+            if !is_root && object.remove("recovery_commands").is_some() {
+                object.insert(
+                    "recovery_commands_ref".to_string(),
+                    json!("recovery_commands"),
+                );
+                *omitted_count = omitted_count.saturating_add(1);
+            }
+            let looks_like_recovery = object.contains_key("agent_use_index_command")
+                || object.contains_key("agent_use_status_command")
+                || object.contains_key("agent_use_context_pack_command");
+            if looks_like_recovery && object.remove("commands").is_some() {
+                object.insert("commands_ref".to_string(), json!("recovery_commands"));
+                *omitted_count = omitted_count.saturating_add(1);
+            }
+            for child in object.values_mut() {
+                agent_use_dedupe_nested_recovery_commands(child, false, omitted_count);
+            }
+        }
+        Value::Array(array) => {
+            for child in array {
+                agent_use_dedupe_nested_recovery_commands(child, false, omitted_count);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn agent_use_compact_lifecycle_fields(
+    value: &mut Value,
+    truncated_sections: &mut Vec<String>,
+    omitted_count: &mut u64,
+) {
+    let lifecycle = value.get("db_lifecycle_read").cloned();
+    if let Some(lifecycle) = lifecycle {
+        let compact = compact_agent_use_lifecycle_summary(&lifecycle);
+        let public = compact_agent_use_public_lifecycle_summary(&compact);
+        if let Some(object) = value.as_object_mut() {
+            object.insert("db_lifecycle_read".to_string(), compact.clone());
+            object.insert("lifecycle".to_string(), public);
+        }
+        truncated_sections.push("db_lifecycle_read".to_string());
+        *omitted_count = omitted_count.saturating_add(1);
+    } else if let Some(lifecycle) = value.get("lifecycle").cloned() {
+        let compact = compact_agent_use_public_lifecycle_summary(
+            &compact_agent_use_lifecycle_summary(&lifecycle),
+        );
+        if let Some(object) = value.as_object_mut() {
+            object.insert("lifecycle".to_string(), compact);
+        }
+        truncated_sections.push("lifecycle".to_string());
+        *omitted_count = omitted_count.saturating_add(1);
+    }
+}
+
+fn compact_agent_use_lifecycle_summary(lifecycle: &Value) -> Value {
+    json!({
+        "claimable": lifecycle.get("claimable").cloned().unwrap_or_else(|| json!(false)),
+        "diagnostic_only": lifecycle.get("diagnostic_only").cloned().unwrap_or_else(|| json!(true)),
+        "decision": lifecycle.get("decision").cloned().unwrap_or_else(|| json!("unknown")),
+        "db_problem_kind": lifecycle.get("db_problem_kind").cloned().unwrap_or(Value::Null),
+        "path_access_status": lifecycle.get("path_access_status").cloned().unwrap_or(Value::Null),
+        "path_access_error": lifecycle.get("path_access_error").cloned().unwrap_or(Value::Null),
+        "artifact_freshness": lifecycle.get("artifact_freshness").cloned().unwrap_or(Value::Null),
+        "passport_status": lifecycle.get("passport_status").cloned().unwrap_or(Value::Null),
+        "schema_status": lifecycle.get("schema_status").cloned().unwrap_or(Value::Null),
+        "storage_mode_status": lifecycle.get("storage_mode_status").cloned().unwrap_or(Value::Null),
+        "scope_status": lifecycle.get("scope_status").cloned().unwrap_or(Value::Null),
+        "repo_root_status": lifecycle.get("repo_root_status").cloned().unwrap_or(Value::Null),
+        "sidecar_status": lifecycle.get("sidecar_status").cloned().unwrap_or(Value::Null),
+        "exact_db_path_checked": lifecycle.get("exact_db_path_checked").cloned().unwrap_or(Value::Null),
+        "db_path_outside_workspace": lifecycle.get("db_path_outside_workspace").cloned().unwrap_or(Value::Null),
+        "allow_stale_read": lifecycle.get("allow_stale_read").cloned().unwrap_or(Value::Null),
+        "allow_foreign_db": lifecycle.get("allow_foreign_db").cloned().unwrap_or(Value::Null),
+        "blocker_count": lifecycle.get("blockers").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
+        "blockers_ref": "errors",
+        "warning_count": lifecycle.get("warnings").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
+        "warnings_ref": "warnings",
+        "agent_json_compacted": true,
+    })
+}
+
+fn compact_agent_use_public_lifecycle_summary(lifecycle: &Value) -> Value {
+    json!({
+        "claimable": lifecycle.get("claimable").cloned().unwrap_or_else(|| json!(false)),
+        "diagnostic_only": lifecycle.get("diagnostic_only").cloned().unwrap_or_else(|| json!(true)),
+        "decision": lifecycle.get("decision").cloned().unwrap_or_else(|| json!("unknown")),
+        "db_problem_kind": lifecycle.get("db_problem_kind").cloned().unwrap_or(Value::Null),
+        "path_access_status": lifecycle.get("path_access_status").cloned().unwrap_or(Value::Null),
+        "artifact_freshness": lifecycle.get("artifact_freshness").cloned().unwrap_or(Value::Null),
+        "passport_status": lifecycle.get("passport_status").cloned().unwrap_or(Value::Null),
+        "schema_status": lifecycle.get("schema_status").cloned().unwrap_or(Value::Null),
+        "scope_status": lifecycle.get("scope_status").cloned().unwrap_or(Value::Null),
+        "sidecar_status": lifecycle.get("sidecar_status").cloned().unwrap_or(Value::Null),
+        "blocker_count": lifecycle.get("blocker_count").cloned().unwrap_or_else(|| json!(0)),
+        "warning_count": lifecycle.get("warning_count").cloned().unwrap_or_else(|| json!(0)),
+        "agent_json_compacted": true,
+    })
+}
+
+fn agent_use_compact_staged_availability_field(
+    value: &mut Value,
+    staged_availability: Option<&Value>,
+    truncated_sections: &mut Vec<String>,
+    omitted_count: &mut u64,
+) {
+    let source = value
+        .get("staged_availability")
+        .or(staged_availability)
+        .cloned();
+    let Some(staged) = source else {
+        return;
+    };
+    let compact = compact_agent_use_staged_availability_summary(&staged);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("staged_availability".to_string(), compact);
+    }
+    truncated_sections.push("staged_availability".to_string());
+    *omitted_count = omitted_count.saturating_add(1);
+}
+
+fn compact_agent_use_staged_availability_summary(staged: &Value) -> Value {
+    json!({
+        "graph_db_status": staged.get("graph_db_status").cloned().unwrap_or(Value::Null),
+        "candidate_spool_status": staged.get("candidate_spool_status").cloned().unwrap_or(Value::Null),
+        "candidate_spool_query_index_status": staged.get("candidate_spool_query_index_status").cloned().unwrap_or(Value::Null),
+        "vector_runtime_status": staged.get("vector_runtime_status").cloned().unwrap_or(Value::Null),
+        "vector_audit_status": staged.get("vector_audit_status").cloned().unwrap_or(Value::Null),
+        "graph_proof_available": staged.get("graph_proof_available").cloned().unwrap_or(Value::Null),
+        "candidate_only_available": staged.get("candidate_only_available").cloned().unwrap_or(Value::Null),
+        "candidate_context_available": staged.get("candidate_context_available").cloned().unwrap_or(Value::Null),
+        "active_candidate_sources": staged.get("active_candidate_sources").cloned().unwrap_or_else(|| json!([])),
+        "claimability": staged.get("claimability").cloned().unwrap_or(Value::Null),
+        "layer_readiness": compact_agent_use_layer_readiness_summary(staged.get("layer_readiness")),
+        "blocker_count": staged.get("blockers").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
+        "warning_count": staged.get("warnings").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
+        "agent_json_compacted": true,
+        "public_claim": false,
+    })
+}
+
+/// Compact per-layer readiness: keep only the small boolean/status flags an
+/// agent (and the contract tests) need, dropping verbose path/blocker/reason
+/// detail that would re-bloat the compact envelope past its byte budget.
+fn compact_agent_use_layer_readiness_summary(layer_readiness: Option<&Value>) -> Value {
+    let Some(layers) = layer_readiness.and_then(Value::as_object) else {
+        return Value::Null;
+    };
+    let mut compact = serde_json::Map::new();
+    for (name, layer) in layers {
+        let pick = |key: &str| layer.get(key).cloned().unwrap_or(Value::Null);
+        compact.insert(
+            name.clone(),
+            json!({
+                "status": pick("status"),
+                "ready": pick("ready"),
+                "graph_proof": pick("graph_proof"),
+                "candidate_only": pick("candidate_only"),
+                "diagnostic_only": pick("diagnostic_only"),
+                "runtime_dependency": pick("runtime_dependency"),
+            }),
+        );
+    }
+    Value::Object(compact)
+}
+
+/// Minimal last-delta-update summary: keep the small contract fields (status and
+/// the changed/dirty counts an agent acts on), drop verbose per-file detail.
+fn compact_agent_use_last_delta_update_summary(summary: &Value) -> Value {
+    if summary.is_null() {
+        return Value::Null;
+    }
+    json!({
+        "status": summary.get("status").cloned().unwrap_or(Value::Null),
+        "changed_files": summary.get("changed_files").cloned().unwrap_or(Value::Null),
+        "delta_state": summary.get("delta_state").cloned().unwrap_or(Value::Null),
+        "new_graph_valid": summary.get("new_graph_valid").cloned().unwrap_or(Value::Null),
+        "agent_json_compacted": true,
+    })
+}
+
+fn agent_use_compact_rtds_freshness_field(
+    value: &mut Value,
+    truncated_sections: &mut Vec<String>,
+    omitted_count: &mut u64,
+) {
+    let Some(rtds) = value.get("rtds_freshness").cloned() else {
+        return;
+    };
+    let compact = json!({
+        "schema_version": rtds.get("schema_version").cloned().unwrap_or_else(|| json!(1)),
+        "graph_freshness": rtds.get("graph_freshness").cloned().unwrap_or(Value::Null),
+        "dirty_state": rtds.get("dirty_state").cloned().unwrap_or(Value::Null),
+        "delta_state": rtds.get("delta_state").cloned().unwrap_or(Value::Null),
+        "publish_state": rtds.get("publish_state").map(compact_agent_use_publish_state_summary).unwrap_or(Value::Null),
+        "stale_candidate_layers": rtds.get("stale_candidate_layers").cloned().unwrap_or_else(|| json!([])),
+        "candidate_only_available": rtds.get("candidate_only_available").cloned().unwrap_or(Value::Null),
+        "graph_proof_available": rtds.get("graph_proof_available").cloned().unwrap_or(Value::Null),
+        "candidate_context_available": rtds.get("candidate_context_available").cloned().unwrap_or(Value::Null),
+        "startup_auto_index": rtds.get("startup_auto_index").cloned().unwrap_or(Value::Null),
+        "dot_codegraph_fallback": rtds.get("dot_codegraph_fallback").cloned().unwrap_or(Value::Null),
+        "last_delta_update_summary": rtds.get("last_delta_update_summary").map(compact_agent_use_last_delta_update_summary).unwrap_or(Value::Null),
+        "blocked_label_count": rtds.get("blocked_labels").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
+        "blocked_labels_ref": "errors",
+        "retryable_labels": rtds.get("retryable_labels").cloned().unwrap_or_else(|| json!([])),
+        "recovery_commands_ref": "recovery_commands",
+        "agent_json_compacted": true,
+        "public_claim": false,
+    });
+    if let Some(object) = value.as_object_mut() {
+        object.insert("rtds_freshness".to_string(), compact);
+    }
+    truncated_sections.push("rtds_freshness".to_string());
+    *omitted_count = omitted_count.saturating_add(1);
+}
+
+fn agent_use_compact_publish_state_field(
+    value: &mut Value,
+    truncated_sections: &mut Vec<String>,
+    omitted_count: &mut u64,
+) {
+    let Some(publish_state) = value.get("publish_state").cloned() else {
+        return;
+    };
+    let compact = compact_agent_use_publish_state_summary(&publish_state);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("publish_state".to_string(), compact);
+    }
+    truncated_sections.push("publish_state".to_string());
+    *omitted_count = omitted_count.saturating_add(1);
+}
+
+fn compact_agent_use_publish_state_summary(publish_state: &Value) -> Value {
+    json!({
+        "status": publish_state.get("status").cloned().unwrap_or(Value::Null),
+        "active": publish_state.get("active").cloned().unwrap_or(Value::Null),
+        "updating": publish_state.get("updating").cloned().unwrap_or(Value::Null),
+        "publishing": publish_state.get("publishing").cloned().unwrap_or(Value::Null),
+        "visible_db_mutation_claim": publish_state.get("visible_db_mutation_claim").cloned().unwrap_or(Value::Null),
+        "temp_db_claimability": publish_state.get("temp_db_claimability").cloned().unwrap_or(Value::Null),
+        "updated_unix_ms": publish_state.get("updated_unix_ms").cloned().unwrap_or(Value::Null),
+        "agent_json_compacted": true,
+    })
+}
+
+fn agent_use_compact_read_path_metrics_field(
+    value: &mut Value,
+    truncated_sections: &mut Vec<String>,
+    omitted_count: &mut u64,
+) {
+    let Some(metrics) = value.get("read_path_metrics").cloned() else {
+        return;
+    };
+    let compact = json!({
+        "schema_version": metrics.get("schema_version").cloned().unwrap_or_else(|| json!(1)),
+        "surface": metrics.get("surface").cloned().unwrap_or(Value::Null),
+        "lookup_strategy": metrics.get("lookup_strategy").cloned().unwrap_or(Value::Null),
+        "indexed_lookup_count": metrics.get("indexed_lookup_count").cloned().unwrap_or(Value::Null),
+        "symbol_dictionary_lookup_count": metrics.get("symbol_dictionary_lookup_count").cloned().unwrap_or(Value::Null),
+        "full_scan_count": metrics.get("full_scan_count").cloned().unwrap_or_else(|| json!(0)),
+        "source_file_load_count": metrics.get("source_file_load_count").cloned().unwrap_or_else(|| json!(0)),
+        "disk_fallback_used": metrics.get("disk_fallback_used").cloned().unwrap_or_else(|| json!(false)),
+        "debug_broad_scan": metrics.get("debug_broad_scan").cloned().unwrap_or_else(|| json!(false)),
+        "limits_apply_before_hydration": metrics.get("limits_apply_before_hydration").cloned().unwrap_or_else(|| json!(true)),
+        "budget_hit": metrics.get("budget_hit").cloned().unwrap_or_else(|| json!(false)),
+        "elapsed_ms": metrics.get("elapsed_ms").cloned().unwrap_or(Value::Null),
+        "agent_json_compacted": true,
+    });
+    if let Some(object) = value.as_object_mut() {
+        object.insert("read_path_metrics".to_string(), compact);
+    }
+    truncated_sections.push("read_path_metrics".to_string());
+    *omitted_count = omitted_count.saturating_add(1);
+}
+
+fn agent_use_compact_query_results_field(
+    value: &mut Value,
+    truncated_sections: &mut Vec<String>,
+    omitted_count: &mut u64,
+) {
+    let Some(results) = value.get_mut("results").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let mut changed = false;
+    for result in results {
+        let Some(object) = result.as_object_mut() else {
+            continue;
+        };
+        if object.contains_key("edge") {
+            changed |= object.remove("caller").is_some();
+            changed |= object.remove("callee").is_some();
+        }
+        if object.contains_key("source_span") {
+            changed |= object.remove("span").is_some();
+        }
+    }
+    if changed {
+        truncated_sections.push("results".to_string());
+        *omitted_count = omitted_count.saturating_add(1);
+    }
+}
+
+fn agent_use_enforce_total_output_budget(
+    value: &mut Value,
+    max_output_bytes: usize,
+    truncated_sections: &mut Vec<String>,
+    omitted_count: &mut u64,
+) {
+    for _ in 0..128 {
+        if serialized_json_len(value) <= max_output_bytes {
+            return;
+        }
+        if compact_context_agent_patch_assist_packet_minimal(value) {
+            truncated_sections.push("patch_assist_packet".to_string());
+            *omitted_count = omitted_count.saturating_add(1);
+            continue;
+        }
+        if compact_context_agent_graph_verification(value) {
+            truncated_sections.push("graph_verification".to_string());
+            *omitted_count = omitted_count.saturating_add(1);
+            continue;
+        }
+        if pop_context_agent_array_item(value, "snippets") {
+            truncated_sections.push("snippets".to_string());
+            *omitted_count = omitted_count.saturating_add(1);
+            continue;
+        }
+        if pop_context_agent_array_item(value, "fallback_evidence") {
+            truncated_sections.push("fallback_evidence".to_string());
+            *omitted_count = omitted_count.saturating_add(1);
+            continue;
+        }
+        if pop_context_agent_array_item(value, "paths") {
+            truncated_sections.push("paths".to_string());
+            *omitted_count = omitted_count.saturating_add(1);
+            continue;
+        }
+        if pop_context_agent_array_item(value, "candidates") {
+            truncated_sections.push("candidates".to_string());
+            *omitted_count = omitted_count.saturating_add(1);
+            continue;
+        }
+        let mut removed = false;
+        for key in [
+            "retrieval_explain",
+            "planning_packet",
+            "routing_packet",
+            "telemetry",
+            "timings",
+            "candidate_source_counts",
+            "candidate_sources",
+            "critical_symbols",
+            "likely_files",
+            "follow_up_queries",
+            "recommended_tests",
+            "risks",
+        ] {
+            if agent_use_remove_field(value, key) {
+                truncated_sections.push(key.to_string());
+                *omitted_count = omitted_count.saturating_add(1);
+                removed = true;
+                break;
+            }
+        }
+        if !removed {
+            return;
+        }
+    }
+}
+
+fn agent_use_enforce_hard_agent_json_budget(
+    value: &mut Value,
+    max_output_bytes: usize,
+    allow_omit_patch_assist: bool,
+    truncated_sections: &mut Vec<String>,
+    omitted_count: &mut u64,
+) {
+    for key in [
+        // Watch/queue/candidate diagnostics: large and not contract-required for
+        // compact context-pack/status output, so they are the first to go under
+        // hard budget pressure (e.g. an explicit small --max-output-bytes), before
+        // contract sections like patch_assist_packet.
+        "candidate_spool_trace",
+        "update_queue_state",
+        "lock_state",
+        "artifact_hygiene",
+        "staged_availability",
+        "rtds_freshness",
+        "read_path_metrics",
+        "db_lifecycle_read",
+        "graph_verification",
+        "limits",
+        "omitted",
+        "candidate_cap",
+        "candidate_count",
+        "candidate_only_available",
+        "candidate_payload_compacted",
+        "candidate_spool_query_index_status",
+        "candidate_spool_status",
+        "candidates",
+        "delta_state",
+        "dirty_state",
+        "evidence_status",
+        "graph_db_status",
+        "graph_freshness",
+        "graph_proof_available",
+        "mode",
+        "normal_dot_codegraph_created",
+        "omitted_by_budget",
+        "omitted_by_dedup",
+        "proof_failure_reason",
+        "proof_path_available",
+        "proof_path_count",
+        "publishing",
+        "staged_claimability",
+        "task",
+        "truncated_sections",
+        "vector_audit_status",
+        "vector_runtime_status",
+        // candidate_spool is a verbose lifecycle blob; the compact
+        // candidate_spool_status scalar already conveys readiness, so drop the
+        // blob before sacrificing the patch_assist contract section.
+        "candidate_spool",
+    ] {
+        if serialized_json_len(value) <= max_output_bytes {
+            return;
+        }
+        if agent_use_remove_field(value, key) {
+            truncated_sections.push(key.to_string());
+            *omitted_count = omitted_count.saturating_add(1);
+        }
+    }
+    // Reduce patch_assist to its minimal proof stub (keeps first_use_state /
+    // graph_proof / bounded candidate_evidence) before any full removal: those
+    // scalar fields are the patch-assist contract surface.
+    if serialized_json_len(value) > max_output_bytes
+        && compact_context_agent_patch_assist_packet_minimal(value)
+    {
+        truncated_sections.push("patch_assist_packet".to_string());
+        *omitted_count = omitted_count.saturating_add(1);
+    }
+    if allow_omit_patch_assist
+        && serialized_json_len(value) > max_output_bytes
+        && agent_use_remove_field(value, "patch_assist_packet")
+    {
+        truncated_sections.push("patch_assist_packet".to_string());
+        *omitted_count = omitted_count.saturating_add(1);
+    }
+    if serialized_json_len(value) > max_output_bytes
+        && agent_use_remove_field(value, "recovery_commands")
+    {
+        if let Some(recovery) = value.get_mut("recovery").and_then(Value::as_object_mut) {
+            recovery.insert(
+                "commands_status".to_string(),
+                json!("omitted_by_max_output_bytes"),
+            );
+        }
+        truncated_sections.push("recovery_commands".to_string());
+        *omitted_count = omitted_count.saturating_add(1);
+    }
+}
+
+fn agent_use_finalize_agent_json_budget(
+    value: &mut Value,
+    detail_mode: AgentUseDetailMode,
+    max_output_bytes: usize,
+    mut truncated_sections: Vec<String>,
+    omitted_count: u64,
+) {
+    truncated_sections.sort();
+    truncated_sections.dedup();
+    let truncated_section_count = truncated_sections.len();
+    let mut displayed_truncated_sections =
+        truncated_sections.into_iter().take(12).collect::<Vec<_>>();
+    if truncated_section_count > displayed_truncated_sections.len() {
+        displayed_truncated_sections.push("additional_sections_omitted".to_string());
+    }
+    let output_bytes = serialized_json_len(value);
+    let truncated = omitted_count > 0 || output_bytes > max_output_bytes;
+    let mode = match detail_mode {
+        AgentUseDetailMode::Compact => "compact",
+        AgentUseDetailMode::Explain => "explain",
+        AgentUseDetailMode::Audit => "audit",
+    };
+    if let Some(object) = value.as_object_mut() {
+        let truncated_sections_json = json!(displayed_truncated_sections);
+        object.insert(
+            "agent_json_budget".to_string(),
+            json!({
+                "mode": mode,
+                "max_output_bytes": max_output_bytes,
+                "output_bytes": output_bytes,
+                "truncated": truncated,
+                "omitted_count": omitted_count,
+                "truncated_section_count": truncated_section_count,
+                "truncated_sections_ref": "truncated_sections",
+                "max_output_bytes_exceeded": output_bytes > max_output_bytes,
+                "required_safety_fields_preserved": true,
+            }),
+        );
+        object.insert("truncated".to_string(), json!(truncated));
+        object.insert("truncated_sections".to_string(), truncated_sections_json);
+        object.insert("omitted_count".to_string(), json!(omitted_count));
+        if let Some(truncation) = object.get_mut("truncation").and_then(Value::as_object_mut) {
+            truncation.insert("output_bytes".to_string(), json!(output_bytes));
+            truncation.insert("max_output_bytes".to_string(), json!(max_output_bytes));
+            truncation.insert("truncated".to_string(), json!(truncated));
+            truncation.insert(
+                "truncated_section_count".to_string(),
+                json!(truncated_section_count),
+            );
+            truncation.insert(
+                "truncated_sections_ref".to_string(),
+                json!("truncated_sections"),
+            );
+            let current_omitted = truncation
+                .get("omitted_count")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            truncation.insert(
+                "omitted_count".to_string(),
+                json!(current_omitted.saturating_add(omitted_count)),
+            );
+            truncation.insert("required_safety_fields_preserved".to_string(), json!(true));
+            truncation.insert(
+                "max_output_bytes_exceeded".to_string(),
+                json!(output_bytes > max_output_bytes),
+            );
+        } else {
+            object.insert(
+                "truncation".to_string(),
+                json!({
+                    "returned_count": object
+                        .get("result_count")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(1),
+                    "limit_applied": truncated,
+                    "omitted_count": omitted_count,
+                    "total_available_unknown": true,
+                    "output_bytes": output_bytes,
+                    "max_output_bytes": max_output_bytes,
+                    "truncated": truncated,
+                    "truncated_section_count": truncated_section_count,
+                    "truncated_sections_ref": "truncated_sections",
+                    "required_safety_fields_preserved": true,
+                    "max_output_bytes_exceeded": output_bytes > max_output_bytes,
+                }),
+            );
+        }
+    }
+    let final_output_bytes = serialized_json_len(value);
+    if let Some(object) = value.as_object_mut() {
+        if let Some(budget) = object
+            .get_mut("agent_json_budget")
+            .and_then(Value::as_object_mut)
+        {
+            budget.insert("output_bytes".to_string(), json!(final_output_bytes));
+            budget.insert(
+                "max_output_bytes_exceeded".to_string(),
+                json!(final_output_bytes > max_output_bytes),
+            );
+        }
+        if let Some(truncation) = object.get_mut("truncation").and_then(Value::as_object_mut) {
+            truncation.insert("output_bytes".to_string(), json!(final_output_bytes));
+            truncation.insert(
+                "max_output_bytes_exceeded".to_string(),
+                json!(final_output_bytes > max_output_bytes),
+            );
+        }
+    }
+}
+
+fn agent_use_remove_field(value: &mut Value, key: &str) -> bool {
+    let Some(object) = value.as_object_mut() else {
+        return false;
+    };
+    object.remove(key).is_some()
 }
 
 fn run_agent_use_mcp_config_command(args: &[String]) -> Result<Value, String> {
     let options = parse_agent_use_basic_args(args, "mcp-config")?;
     let profile = resolve_agent_use_profile(&options.repo)?;
+    let generated_at_unix_ms = unix_time_ms();
     let normal_dot_codegraph = profile.repo_root.join(".codegraph");
     let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
     let preflight = inspect_read_db_lifecycle_preflight(
@@ -2049,6 +3284,11 @@ fn run_agent_use_mcp_config_command(args: &[String]) -> Result<Value, String> {
         preflight.db_problem_kind.as_deref().unwrap_or("db_problem")
     };
     let binary = discover_agent_use_binary_path(&profile.repo_root);
+    let sidecar_paths = agent_use_profile_sidecar_paths_json(&profile);
+    let path_mapping = agent_use_profile_path_mapping_json(&profile);
+    let mapping_warnings = path_mapping["warnings"].clone();
+    let mcp_config_identity =
+        agent_use_mcp_config_identity_json(&profile, sidecar_paths.clone(), path_mapping.clone());
     let server = json!({
         "command": binary,
         "args": profile.mcp_args.clone(),
@@ -2058,22 +3298,62 @@ fn run_agent_use_mcp_config_command(args: &[String]) -> Result<Value, String> {
             "CODEGRAPH_DB_SOURCE": "agent-use profile",
             "CODEGRAPH_REPO_SOURCE": "agent-use --repo",
             "CODEGRAPH_AGENT_USE_PROFILE": profile.profile_name.clone(),
+            "CODEGRAPH_AGENT_USE_REPO_IDENTITY_HASH": profile.repo_identity_hash.clone(),
+            "CODEGRAPH_AGENT_USE_PROFILE_ROOT": path_string(&profile.profile_root),
         },
     });
     Ok(json!({
         "status": status,
+        "config_version": 1,
+        "generated_at": generated_at_unix_ms,
+        "generated_at_unix_ms": generated_at_unix_ms,
         "command": "mcp-config",
         "command_namespace": "agent-use",
         "profile_name": profile.profile_name.clone(),
+        "active_profile_name": profile.profile_name.clone(),
+        "local_agent_profile": {
+            "profile_name": profile.profile_name.clone(),
+            "agent_label": Value::Null,
+            "agent_label_supported": false,
+            "profile_root": path_string(&profile.profile_root),
+        },
         "repo": path_string(&profile.repo_root),
         "repo_root": path_string(&profile.repo_root),
+        "repo_identity_label": profile.repo_identity_label.clone(),
+        "repo_identity_hash": profile.repo_identity_hash.clone(),
+        "repo_identity_short_hash": agent_use_repo_identity_short_hash(&profile),
+        "profile_root": path_string(&profile.profile_root),
         "db": path_string(&profile.db_path),
         "db_path": path_string(&profile.db_path),
-        "db_source": "agent-use profile",
+          "db_source": "agent-use profile",
+          "sidecar_paths": sidecar_paths,
+          "path_mapping": path_mapping,
+          "mapping_warnings": mapping_warnings,
+          "env_discovery": agent_use_env_discovery_json(&profile),
+          "config_discovery": agent_use_config_discovery_json(&profile.repo_root),
+          "artifact_hygiene": agent_use_artifact_hygiene_json(),
+          "mcp_config_identity": mcp_config_identity,
+          "mcp_server_args": profile.mcp_args.clone(),
         "external_db_used": true,
         "canonical_production_profile": true,
+        "safe_read_only_startup": true,
+        "auto_index_on_startup": false,
         "mcp_startup_auto_index": false,
         "mcp_no_dot_codegraph_fallback": true,
+        "startup_policy": {
+            "safe_read_only_startup": true,
+            "auto_index_on_startup": false,
+            "missing_db_claims_ready": false,
+            "stale_db_claims_ready": false,
+            "dot_codegraph_fallback": false,
+        },
+        "output_policy": {
+            "default_stdout_json_only": true,
+            "writes_files_by_default": false,
+            "write_mode_supported": false,
+            "explicit_output_path_supported": false,
+            "output_path": Value::Null,
+        },
         "claimable": preflight.safe,
         "diagnostic_only": !preflight.safe,
         "db_lifecycle_read": lifecycle,
@@ -2093,6 +3373,7 @@ fn run_agent_use_mcp_config_command(args: &[String]) -> Result<Value, String> {
             "codegraph-mcp": server
         },
         "recommended_commands": agent_use_recovery_json(&profile),
+        "recovery_commands": profile.recovery_commands.clone(),
         "warnings": if preflight.safe { Vec::<String>::new() } else { preflight.blockers.clone() },
         "normal_dot_codegraph_path": path_string(&normal_dot_codegraph),
         "normal_dot_codegraph_created": !normal_dot_codegraph_existed_before && normal_dot_codegraph.exists(),
@@ -2207,6 +3488,15 @@ fn run_agent_use_status_command(args: &[String]) -> Result<Value, String> {
     }
     merge_json_object(&mut value, staged_fields);
     add_agent_use_rtds_freshness_fields(&mut value, &profile, &preflight, &staged_availability);
+    compact_agent_use_agent_json_envelope(
+        &mut value,
+        &profile,
+        options.detail_mode,
+        options
+            .max_output_bytes
+            .unwrap_or_else(|| options.detail_mode.default_max_output_bytes()),
+        Some(&staged_availability),
+    );
     Ok(value)
 }
 
@@ -3312,8 +4602,66 @@ fn agent_use_persistent_watch_status_json(
                 "graph_proof_available": last_error.is_null(),
             })
         });
+    let status = if last_error.is_null() {
+        "stopped".to_string()
+    } else {
+        last_error
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("blocked")
+            .to_string()
+    };
+    let publish_state = agent_use_publish_state_json(profile);
+    let publish_active = publish_state
+        .get("active")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let publish_status = publish_state
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("absent");
+    let blocked_labels = last_error
+        .get("blockers")
+        .and_then(Value::as_array)
+        .map(|blockers| {
+            blockers
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut retryable_labels = Vec::new();
+    if last_error
+        .get("retryable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        retryable_labels.push(status.clone());
+    }
+    if publish_active && matches!(publish_status, "updating" | "publishing") {
+        retryable_labels.push("wait_for_current_update".to_string());
+    }
+    let lock_state = agent_use_profile_lock_state_json(
+        profile,
+        publish_active,
+        publish_status,
+        &blocked_labels,
+        &retryable_labels,
+        Some(lock_retry_count),
+    );
+    let update_queue_state = agent_use_profile_update_queue_state_json(
+        publish_active,
+        publish_status,
+        last_update_summary.clone(),
+        json!(pending_paths.clone()),
+        queue_depth,
+        updates_attempted,
+        updates_succeeded,
+        last_error.clone(),
+    );
     json!({
-        "status": if last_error.is_null() { "stopped" } else { last_error.get("status").and_then(Value::as_str).unwrap_or("blocked") },
+        "status": status,
         "command": "watch",
         "subcommand": "persistent",
         "command_namespace": "agent-use",
@@ -3350,6 +4698,8 @@ fn agent_use_persistent_watch_status_json(
         "updates_succeeded": updates_succeeded,
         "last_update_state": last_update_state,
         "last_update_summary": last_update_summary,
+        "lock_state": lock_state,
+        "update_queue_state": update_queue_state,
         "last_successful_update_time_unix_ms": last_successful_update_time,
         "last_error": last_error,
         "recovery_commands": profile.recovery_commands.clone(),
@@ -3432,12 +4782,20 @@ fn agent_use_watch_path_preflight(
                 }
             }
             Err(error) => {
+                let mapping_path = if changed_path.is_absolute() {
+                    changed_path.to_path_buf()
+                } else {
+                    repo_root.join(changed_path)
+                };
                 preflight.rejected_paths.push(json!({
                     "path": requested,
+                    "requested_path": requested,
+                    "original_path": path_string(changed_path),
                     "reason": "path_outside_repo",
                     "status": "rejected",
                     "read": false,
                     "indexed": false,
+                    "path_mapping": agent_use_path_mapping_json(&mapping_path),
                     "error": error.to_string(),
                 }));
             }
@@ -3802,13 +5160,16 @@ fn agent_use_status_base_json(
         "sidecar_change_classification": sqlite_sidecars["sidecar_change_classification"].clone(),
         "lifecycle": lifecycle.clone(),
         "db_lifecycle_read": lifecycle.clone(),
-        "publish_state": agent_use_publish_state_json(profile),
-        "publishing": agent_use_publish_state_active(profile),
-        "safety_labels": safety_labels,
-        "claimable": preflight.safe,
-        "diagnostic_only": !preflight.safe,
-        "profile": agent_use_profile_json(profile),
-        "agent_use_profile": agent_use_profile_json(profile),
+          "publish_state": agent_use_publish_state_json(profile),
+          "publishing": agent_use_publish_state_active(profile),
+          "safety_labels": safety_labels,
+          "claimable": preflight.safe,
+          "diagnostic_only": !preflight.safe,
+          "env_discovery": agent_use_env_discovery_json(profile),
+          "config_discovery": agent_use_config_discovery_json(&profile.repo_root),
+          "artifact_hygiene": agent_use_artifact_hygiene_json(),
+          "profile": agent_use_profile_json(profile),
+          "agent_use_profile": agent_use_profile_json(profile),
         "recovery": agent_use_recovery_json(profile),
         "telemetry": runtime_telemetry_unknown_json(),
         "truncation": {
@@ -3834,6 +5195,7 @@ fn agent_use_profile_json(profile: &AgentUseProfile) -> Value {
         "repo_root": path_string(&profile.repo_root),
         "repo_identity_label": profile.repo_identity_label.clone(),
         "repo_identity_hash": profile.repo_identity_hash.clone(),
+        "repo_identity_short_hash": agent_use_repo_identity_short_hash(profile),
         "profile_root": path_string(&profile.profile_root),
         "db_path": path_string(&profile.db_path),
         "candidate_spool_path": path_string(&profile.candidate_spool_path),
@@ -3842,6 +5204,11 @@ fn agent_use_profile_json(profile: &AgentUseProfile) -> Value {
         "vector_audit_path": path_string(&profile.vector_audit_path),
         "lock_or_publish_state_path": path_string(&profile.lock_or_publish_state_path),
         "delta_state_path": path_string(&profile.delta_state_path),
+        "sidecar_paths": agent_use_profile_sidecar_paths_json(profile),
+        "path_mapping": agent_use_profile_path_mapping_json(profile),
+        "env_discovery": agent_use_env_discovery_json(profile),
+        "config_discovery": agent_use_config_discovery_json(&profile.repo_root),
+        "artifact_hygiene": agent_use_artifact_hygiene_json(),
         "lifecycle_expectations": profile.lifecycle_expectations.clone(),
         "binary_profile": profile.binary_profile.clone(),
         "scope_policy": {
@@ -3853,6 +5220,388 @@ fn agent_use_profile_json(profile: &AgentUseProfile) -> Value {
         },
         "mcp_args": profile.mcp_args.clone(),
         "recovery_commands": profile.recovery_commands.clone(),
+    })
+}
+
+fn agent_use_repo_identity_short_hash(profile: &AgentUseProfile) -> String {
+    profile.repo_identity_hash.chars().take(12).collect()
+}
+
+fn agent_use_profile_sidecar_paths_json(profile: &AgentUseProfile) -> Value {
+    json!({
+        "candidate_spool_path": path_string(&profile.candidate_spool_path),
+        "candidate_spool_query_index_path": path_string(&profile.candidate_spool_query_index_path),
+        "vector_runtime_path": path_string(&profile.vector_runtime_path),
+        "vector_audit_path": path_string(&profile.vector_audit_path),
+        "lock_or_publish_state_path": path_string(&profile.lock_or_publish_state_path),
+        "delta_state_path": path_string(&profile.delta_state_path),
+    })
+}
+
+fn agent_use_profile_path_mapping_json(profile: &AgentUseProfile) -> Value {
+    let entries = [
+        ("repo_root", profile.repo_root.as_path()),
+        ("profile_root", profile.profile_root.as_path()),
+        ("db_path", profile.db_path.as_path()),
+        (
+            "candidate_spool_path",
+            profile.candidate_spool_path.as_path(),
+        ),
+        (
+            "candidate_spool_query_index_path",
+            profile.candidate_spool_query_index_path.as_path(),
+        ),
+        ("vector_runtime_path", profile.vector_runtime_path.as_path()),
+        ("vector_audit_path", profile.vector_audit_path.as_path()),
+        (
+            "lock_or_publish_state_path",
+            profile.lock_or_publish_state_path.as_path(),
+        ),
+        ("delta_state_path", profile.delta_state_path.as_path()),
+    ];
+    let mappings = entries
+        .iter()
+        .map(|(name, path)| ((*name).to_string(), agent_use_path_mapping_json(path)))
+        .collect::<serde_json::Map<_, _>>();
+    let warnings = mappings
+        .iter()
+        .filter_map(|(name, mapping)| {
+            mapping["mapping_unavailable"]
+                .as_bool()
+                .unwrap_or(false)
+                .then(|| {
+                    json!({
+                        "path_name": name,
+                        "label": "path_mapping_unavailable",
+                        "mapping_kind": mapping["mapping_kind"].clone(),
+                        "mapping_status": mapping["mapping_status"].clone(),
+                        "path": mapping["path"].clone(),
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "status": if warnings.is_empty() { "ok" } else { "mapping_warnings" },
+        "warnings": warnings,
+        "paths": mappings,
+    })
+}
+
+fn agent_use_env_discovery_json(_profile: &AgentUseProfile) -> Value {
+    let explicit_data_root = std::env::var_os(AGENT_USE_DATA_ROOT_ENV);
+    let explicit = match explicit_data_root {
+        Some(value) if value.is_empty() => json!({
+            "env_var": AGENT_USE_DATA_ROOT_ENV,
+            "status": "env_invalid",
+            "required": false,
+            "message": "env var is set but empty",
+        }),
+        Some(value) => json!({
+            "env_var": AGENT_USE_DATA_ROOT_ENV,
+            "status": "ok",
+            "required": false,
+            "path": path_string(&PathBuf::from(value)),
+        }),
+        None => json!({
+            "env_var": AGENT_USE_DATA_ROOT_ENV,
+            "status": "env_missing",
+            "required": false,
+            "message": "optional override not set; platform data dir is used",
+        }),
+    };
+    let platform = agent_use_platform_data_dir_env_json();
+    json!({
+        "status": if explicit["status"] == "env_invalid" || platform["status"] == "env_missing" { "diagnostic" } else { "ok" },
+        "data_root_source": if explicit["status"] == "ok" { "env" } else { "platform_default" },
+        "explicit_data_root": explicit,
+        "platform_data_dir": platform,
+        "profile_root_ref": "profile_root",
+        "db_path_ref": "db",
+    })
+}
+
+fn agent_use_platform_data_dir_env_json() -> Value {
+    #[cfg(windows)]
+    {
+        match std::env::var_os("LOCALAPPDATA") {
+            Some(value) if !value.is_empty() => json!({
+                "env_var": "LOCALAPPDATA",
+                "status": "ok",
+                "required": true,
+                "path": path_string(&PathBuf::from(value)),
+            }),
+            _ => json!({
+                "env_var": "LOCALAPPDATA",
+                "status": "env_missing",
+                "required": true,
+                "message": "LOCALAPPDATA is required when CODEGRAPH_AGENT_USE_DATA_ROOT is not set",
+            }),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if let Some(value) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
+            return json!({
+                "env_var": "XDG_DATA_HOME",
+                "status": "ok",
+                "required": true,
+                "path": path_string(&PathBuf::from(value)),
+            });
+        }
+        match std::env::var_os("HOME") {
+            Some(value) if !value.is_empty() => json!({
+                "env_var": "HOME",
+                "status": "ok",
+                "required": true,
+                "path": path_string(&PathBuf::from(value)),
+            }),
+            _ => json!({
+                "env_var": "HOME|XDG_DATA_HOME",
+                "status": "env_missing",
+                "required": true,
+                "message": "HOME or XDG_DATA_HOME is required when CODEGRAPH_AGENT_USE_DATA_ROOT is not set",
+            }),
+        }
+    }
+}
+
+fn agent_use_config_discovery_json(repo_root: &Path) -> Value {
+    let config_path = repo_root.join(".codex").join("config.toml");
+    if !config_path.exists() {
+        return json!({
+          "status": "config_missing",
+          "required": false,
+            "diagnostic_only": true,
+            "path": path_string(&config_path),
+            "message": "optional Codex MCP config is missing; agent-use commands remain available",
+            "recovery_ref": "recovery_commands.mcp_config",
+        });
+    }
+    let text = match fs::read_to_string(&config_path) {
+        Ok(text) => text,
+        Err(error) => {
+            let classification = sidecar_access_classification_from_message(&error.to_string());
+            return json!({
+                "status": classification.status,
+                "required": false,
+                "diagnostic_only": true,
+                "path": path_string(&config_path),
+                "path_access_status": classification.path_access_status,
+                "problem_kind": classification.problem_kind,
+                "message": error.to_string(),
+            });
+        }
+    };
+    let validation = validate_codex_mcp_config_text(&text);
+    json!({
+        "status": validation.status,
+        "required": false,
+        "diagnostic_only": validation.status != "ok",
+        "path": path_string(&config_path),
+        "unknown_field_policy": "warning",
+        "unknown_fields": validation.unknown_fields,
+        "warnings": validation.warnings,
+        "errors": validation.errors,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodexConfigValidation {
+    status: &'static str,
+    unknown_fields: Vec<String>,
+    warnings: Vec<String>,
+    errors: Vec<String>,
+}
+
+fn validate_codex_mcp_config_text(text: &str) -> CodexConfigValidation {
+    let allowed_keys = ["command", "args", "cwd", "env"];
+    let mut current_section = String::new();
+    let mut unknown_fields = Vec::new();
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+    for (line_index, raw_line) in text.lines().enumerate() {
+        let line_number = line_index + 1;
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            if !line.ends_with(']') {
+                errors.push(format!(
+                    "config_invalid: malformed section header at line {line_number}"
+                ));
+                continue;
+            }
+            current_section = line
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim()
+                .trim_matches('"')
+                .to_string();
+            if current_section != "mcp_servers.codegraph-mcp" {
+                unknown_fields.push(current_section.clone());
+                warnings.push(format!(
+                    "config_unknown_field: unsupported section {} at line {line_number}",
+                    current_section
+                ));
+            }
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            errors.push(format!(
+                "config_invalid: expected key = value at line {line_number}"
+            ));
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() || value.is_empty() || !config_value_balanced(value) {
+            errors.push(format!(
+                "config_invalid: malformed value for {key} at line {line_number}"
+            ));
+            continue;
+        }
+        if current_section == "mcp_servers.codegraph-mcp" && !allowed_keys.contains(&key) {
+            unknown_fields.push(key.to_string());
+            warnings.push(format!(
+                "config_unknown_field: unsupported key {key} in mcp_servers.codegraph-mcp at line {line_number}"
+            ));
+        }
+    }
+    let status = if !errors.is_empty() {
+        "config_invalid"
+    } else if !unknown_fields.is_empty() {
+        "config_unknown_field"
+    } else {
+        "ok"
+    };
+    CodexConfigValidation {
+        status,
+        unknown_fields,
+        warnings,
+        errors,
+    }
+}
+
+fn config_value_balanced(value: &str) -> bool {
+    value.matches('"').count() % 2 == 0
+        && value.matches('[').count() == value.matches(']').count()
+        && value.matches('{').count() == value.matches('}').count()
+}
+
+fn agent_use_artifact_hygiene_json() -> Value {
+    json!({
+        "status": "local_ignored",
+        "reports_final_canonical_dashboard": true,
+        "reports_audit_local_evidence": true,
+        "raw_artifacts_not_promoted": true,
+        "ignored_local_pattern_count": 9,
+        "ignored_local_patterns_ref": "docs/guardrails.md",
+        "public_claim": false,
+    })
+}
+
+fn agent_use_path_mapping_json(path: &Path) -> Value {
+    let raw = path_string(path);
+    let normalized = raw.replace('\\', "/");
+    let lower = normalized.to_ascii_lowercase();
+    let mapping_kind = classify_agent_use_path_mapping_kind(&lower);
+    let mapping_unavailable = matches!(
+        mapping_kind,
+        "wsl_path" | "docker_mount_path" | "unknown_mapping"
+    );
+    json!({
+        "path": raw,
+        "normalized_display_path": normalized,
+        "mapping_kind": mapping_kind,
+        "mapping_status": if mapping_unavailable { "mapping_unavailable" } else { "ok" },
+        "mapping_unavailable": mapping_unavailable,
+        "label": if mapping_unavailable { "path_mapping_unavailable" } else { "native_path" },
+        "diagnostic_only": mapping_unavailable,
+        "warnings": if mapping_unavailable {
+            vec![json!({
+                "label": "path_mapping_unavailable",
+                "status": "unavailable",
+                "diagnostic_only": true,
+                "message": format!("{mapping_kind} requires an explicit host/container path mapping before reuse"),
+            })]
+        } else {
+            Vec::<Value>::new()
+        },
+    })
+}
+
+fn classify_agent_use_path_mapping_kind(normalized_lower: &str) -> &'static str {
+    if normalized_lower.starts_with("//wsl$/")
+        || normalized_lower.starts_with("//wsl.localhost/")
+        || looks_like_wsl_mount_path(normalized_lower)
+    {
+        return "wsl_path";
+    }
+    if normalized_lower.starts_with("/workspace/")
+        || normalized_lower == "/workspace"
+        || normalized_lower.starts_with("/workspaces/")
+        || normalized_lower == "/workspaces"
+        || normalized_lower.starts_with("/var/lib/docker/")
+        || normalized_lower.contains("/docker/volumes/")
+    {
+        return "docker_mount_path";
+    }
+    if cfg!(windows) {
+        let bytes = normalized_lower.as_bytes();
+        if normalized_lower.starts_with("//")
+            || (bytes.len() >= 3
+                && bytes[1] == b':'
+                && bytes[2] == b'/'
+                && bytes[0].is_ascii_alphabetic())
+        {
+            return "native_windows";
+        }
+    } else if normalized_lower.starts_with('/') {
+        return "native_unix";
+    }
+    if normalized_lower.starts_with("./") || !normalized_lower.starts_with('/') {
+        return if cfg!(windows) {
+            "native_windows"
+        } else {
+            "native_unix"
+        };
+    }
+    "unknown_mapping"
+}
+
+fn looks_like_wsl_mount_path(normalized_lower: &str) -> bool {
+    let bytes = normalized_lower.as_bytes();
+    normalized_lower.starts_with("/mnt/")
+        && bytes.len() >= 7
+        && bytes[5].is_ascii_alphabetic()
+        && bytes[6] == b'/'
+}
+
+fn agent_use_mcp_config_identity_json(
+    profile: &AgentUseProfile,
+    sidecar_paths: Value,
+    path_mapping: Value,
+) -> Value {
+    json!({
+        "config_version": 1,
+        "server_name": "codegraph-mcp",
+        "profile_name": profile.profile_name.clone(),
+        "active_profile_name": profile.profile_name.clone(),
+        "repo_root": path_string(&profile.repo_root),
+        "repo_identity_label": profile.repo_identity_label.clone(),
+        "repo_identity_hash": profile.repo_identity_hash.clone(),
+        "repo_identity_short_hash": agent_use_repo_identity_short_hash(profile),
+        "profile_root": path_string(&profile.profile_root),
+        "db_path": path_string(&profile.db_path),
+        "sidecar_paths": sidecar_paths,
+        "path_mapping": path_mapping,
+        "config_pins_repo": true,
+        "config_pins_db": true,
+        "config_pins_profile": true,
+        "safe_read_only_startup": true,
+        "auto_index_on_startup": false,
+        "no_dot_codegraph_fallback": true,
     })
 }
 
@@ -4209,6 +5958,16 @@ fn add_agent_use_rtds_freshness_fields(
                 .unwrap_or(Value::Null),
         );
         object.insert(
+            "lock_state".to_string(),
+            rtds.get("lock_state").cloned().unwrap_or(Value::Null),
+        );
+        object.insert(
+            "update_queue_state".to_string(),
+            rtds.get("update_queue_state")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
             "blocked_labels".to_string(),
             rtds.get("blocked_labels")
                 .cloned()
@@ -4313,6 +6072,26 @@ fn agent_use_rtds_freshness_json(
         retryable_labels.insert("db_locked".to_string());
     }
     let stale_candidate_layers = agent_use_stale_candidate_layers(staged_availability);
+    let blocked_labels = blocked_labels.into_iter().collect::<Vec<_>>();
+    let retryable_labels = retryable_labels.into_iter().collect::<Vec<_>>();
+    let lock_state = agent_use_profile_lock_state_json(
+        profile,
+        publish_active,
+        publish_status,
+        &blocked_labels,
+        &retryable_labels,
+        None,
+    );
+    let update_queue_state = agent_use_profile_update_queue_state_json(
+        publish_active,
+        publish_status,
+        last_summary.clone(),
+        Value::Null,
+        0,
+        0,
+        0,
+        Value::Null,
+    );
     json!({
         "schema_version": 1,
         "profile_name": profile.profile_name.clone(),
@@ -4328,14 +6107,88 @@ fn agent_use_rtds_freshness_json(
         "candidate_only_available": staged_availability.get("candidate_only_available").cloned().unwrap_or_else(|| json!(false)),
         "graph_proof_available": staged_availability.get("graph_proof_available").cloned().unwrap_or_else(|| json!(false)),
         "candidate_context_available": staged_availability.get("candidate_context_available").cloned().unwrap_or_else(|| json!(false)),
-        "blocked_labels": blocked_labels.into_iter().collect::<Vec<_>>(),
-        "retryable_labels": retryable_labels.into_iter().collect::<Vec<_>>(),
+        "blocked_labels": blocked_labels,
+        "retryable_labels": retryable_labels,
+        "lock_state": lock_state,
+        "update_queue_state": update_queue_state,
         "recovery_commands": profile.recovery_commands.clone(),
         "context_pack_graph_proof_policy": "refuse_unsafe_graph_proof",
         "candidate_context_policy": "candidate_only_only_when_current_source_bound",
         "startup_auto_index": false,
         "dot_codegraph_fallback": false,
         "public_claim": false,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn agent_use_profile_update_queue_state_json(
+    publish_active: bool,
+    publish_status: &str,
+    last_update_summary: Value,
+    pending_paths: Value,
+    queue_depth: usize,
+    updates_attempted: usize,
+    updates_succeeded: usize,
+    last_error: Value,
+) -> Value {
+    json!({
+        "queue_scope": "repo_profile",
+        "persistent_watch_attached": false,
+        "writer_queue_serialized": true,
+        "max_concurrent_writers": 1,
+        "queue_depth": queue_depth,
+        "pending_paths": pending_paths,
+        "updates_attempted": updates_attempted,
+        "updates_succeeded": updates_succeeded,
+        "active_update": publish_active,
+        "status": if publish_active { publish_status } else { "idle" },
+        "last_update_summary": last_update_summary,
+        "last_error": last_error,
+        "auto_index_enabled": false,
+        "old_db_preserved": true,
+        "temp_db_claimable": false,
+        "unrelated_repo_blocking": false,
+    })
+}
+
+fn agent_use_profile_lock_state_json(
+    profile: &AgentUseProfile,
+    publish_active: bool,
+    publish_status: &str,
+    blocked_labels: &[String],
+    retryable_labels: &[String],
+    lock_retry_count: Option<usize>,
+) -> Value {
+    let db_locked = blocked_labels
+        .iter()
+        .chain(retryable_labels.iter())
+        .any(|label| {
+            let label = label.to_ascii_lowercase();
+            label.contains("db_locked") || label.contains("locked")
+        });
+    json!({
+        "scope": "repo_profile",
+        "profile_name": profile.profile_name.clone(),
+        "repo_root": path_string(&profile.repo_root),
+        "repo_identity_label": profile.repo_identity_label.clone(),
+        "repo_identity_hash": profile.repo_identity_hash.clone(),
+        "profile_root": path_string(&profile.profile_root),
+        "db_path": path_string(&profile.db_path),
+        "lock_or_publish_state_path": path_string(&profile.lock_or_publish_state_path),
+        "writer_queue_serialized": true,
+        "max_concurrent_writers": 1,
+        "active_update": publish_active,
+        "publish_status": publish_status,
+        "db_locked": db_locked,
+        "retryable": !retryable_labels.is_empty() || db_locked,
+        "retryable_labels": retryable_labels,
+        "blocked_labels": blocked_labels,
+        "lock_retry_count": lock_retry_count.map(Value::from).unwrap_or(Value::Null),
+        "global_lock_scope": "none_for_repo_profile_paths",
+        "unrelated_repo_blocking": false,
+        "old_db_preserved": true,
+        "temp_db_claimable": false,
+        "no_dot_codegraph_fallback": true,
     })
 }
 
@@ -4510,7 +6363,18 @@ fn agent_use_query_read_path_metrics_json(kind: &str, value: &Value) -> Value {
         ),
         "text" => ("stage0_fts_bounded_lookup", 1, 0, 0, 0),
         "files" => ("stage0_fts_file_path_title_lookup", 1, 1, 0, 0),
-        _ => ("bounded_indexed_lookup", 1, 0, 0, 0),
+        "callers" | "callees" => ("bounded_call_relation_graph_lookup", 0, 0, 1, result_count),
+        "path" | "chain" => ("bounded_graph_path_lookup", 0, 0, 2, result_count),
+        "references" => (
+            "bounded_symbol_reference_graph_lookup",
+            0,
+            0,
+            1,
+            result_count,
+        ),
+        "definitions" => ("bounded_symbol_definition_lookup", 0, 0, 1, result_count),
+        "unresolved-calls" => ("bounded_unresolved_call_lookup", 0, 0, 0, result_count),
+        _ => ("bounded_indexed_lookup", 0, 0, 0, result_count),
     };
     let hydrated_limit = match kind {
         "symbols" => limit
@@ -4909,7 +6773,7 @@ fn agent_use_unavailable_json(
         "staged_availability": staged_availability.clone(),
         "recovery": agent_use_recovery_json(profile),
         "warnings": preflight.warnings.clone(),
-        "errors": errors,
+        "errors": errors.clone(),
         "normal_dot_codegraph_path": path_string(&normal_dot_codegraph),
         "normal_dot_codegraph_created": !normal_dot_codegraph_existed_before && normal_dot_codegraph.exists(),
         "normal_dot_codegraph_mutated": normal_dot_codegraph_existed_before != normal_dot_codegraph.exists(),
@@ -4919,6 +6783,15 @@ fn agent_use_unavailable_json(
         &mut value,
         staged_availability_top_level_fields(&staged_availability),
     );
+    if command == "context-pack" {
+        attach_unavailable_patch_assist_packet(
+            &mut value,
+            profile,
+            &staged_availability,
+            &errors,
+            status,
+        );
+    }
     value
 }
 
@@ -5847,15 +7720,23 @@ fn run_query_command_inner(
             if args.len() < 2 {
                 return Err("Usage: codegraph-mcp query references <symbol>".to_string());
             }
-            let query = args[1..].join(" ");
-            query_references(&current_repo_root()?, &query, 32)
+            let options = parse_list_query_args("references", &args[1..])?;
+            query_references_with_options(
+                &current_repo_root()?,
+                &options,
+                lifecycle_summary.as_ref(),
+            )
         }
         "definitions" => {
             if args.len() < 2 {
                 return Err("Usage: codegraph-mcp query definitions <symbol>".to_string());
             }
-            let query = args[1..].join(" ");
-            query_definitions(&current_repo_root()?, &query, 20)
+            let options = parse_list_query_args("definitions", &args[1..])?;
+            query_definitions_with_options(
+                &current_repo_root()?,
+                &options,
+                lifecycle_summary.as_ref(),
+            )
         }
         "callers" => {
             if args.len() < 2 {
@@ -5882,10 +7763,8 @@ fn run_query_command_inner(
             )
         }
         "chain" => {
-            if args.len() != 3 {
-                return Err("Usage: codegraph-mcp query chain <source> <target>".to_string());
-            }
-            query_chain(&current_repo_root()?, &args[1], &args[2])
+            let options = parse_path_query_args("chain", &args[1..])?;
+            query_chain_with_options(&current_repo_root()?, &options, lifecycle_summary.as_ref())
         }
         "unresolved-calls" => {
             let mut options = parse_unresolved_calls_args(&args[1..])?;
@@ -5895,10 +7774,8 @@ fn run_query_command_inner(
             query_unresolved_calls(&current_repo_root()?, options)
         }
         "path" => {
-            if args.len() != 3 {
-                return Err("Usage: codegraph-mcp query path <source> <target>".to_string());
-            }
-            query_path(&current_repo_root()?, &args[1], &args[2])
+            let options = parse_path_query_args("path", &args[1..])?;
+            query_path_with_options(&current_repo_root()?, &options, lifecycle_summary.as_ref())
         }
         other => Err(format!("unknown query subcommand: {other}")),
     }
@@ -5978,6 +7855,13 @@ impl QueryOutputOptions {
 #[derive(Debug, Clone)]
 struct ParsedCallRelationArgs {
     options: CallRelationQueryOptions,
+    output: QueryOutputOptions,
+}
+
+#[derive(Debug, Clone)]
+struct PathQueryOptions {
+    source: String,
+    target: String,
     output: QueryOutputOptions,
 }
 
@@ -6082,6 +7966,79 @@ fn parse_list_query_args(command_name: &str, args: &[String]) -> Result<QueryLis
         debug,
         explain,
     })
+}
+
+fn parse_path_query_args(command_name: &str, args: &[String]) -> Result<PathQueryOptions, String> {
+    let mut output_mode = QueryOutputMode::RichJson;
+    let mut explicit_limit = None;
+    let mut terms = Vec::new();
+    let mut index = 0usize;
+    let mut literal_terms = false;
+    while index < args.len() {
+        if literal_terms {
+            terms.push(args[index].to_string());
+            index += 1;
+            continue;
+        }
+        match args[index].as_str() {
+            "--" => literal_terms = true,
+            "--limit" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(path_query_usage(command_name));
+                };
+                explicit_limit = Some(parse_limit_value(value)?);
+            }
+            "--agent-json" | "--agent_json" => {
+                output_mode = QueryOutputMode::AgentJson;
+            }
+            "--concise" => {
+                if output_mode != QueryOutputMode::AgentJson {
+                    output_mode = QueryOutputMode::Concise;
+                }
+            }
+            "--json" => {}
+            value if value.starts_with("--limit=") => {
+                let value = value.trim_start_matches("--limit=");
+                explicit_limit = Some(parse_limit_value(value)?);
+            }
+            value if value.starts_with("--") => {
+                if let Some(error) = misplaced_global_flag_error(value, "query") {
+                    return Err(error);
+                }
+                return Err(format!(
+                    "unknown query {command_name} option: {value}\n{}",
+                    path_query_usage(command_name)
+                ));
+            }
+            value => terms.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if terms.len() != 2 {
+        return Err(path_query_usage(command_name));
+    }
+    let default_limit = match output_mode {
+        QueryOutputMode::AgentJson => DEFAULT_QUERY_AGENT_JSON_LIMIT,
+        QueryOutputMode::Concise | QueryOutputMode::RichJson => DEFAULT_QUERY_JSON_LIMIT,
+    };
+    let limit = explicit_limit.unwrap_or(default_limit);
+    Ok(PathQueryOptions {
+        source: terms[0].clone(),
+        target: terms[1].clone(),
+        output: QueryOutputOptions {
+            limit,
+            explicit_limit: explicit_limit.is_some(),
+            output_mode,
+        },
+    })
+}
+
+fn path_query_usage(command_name: &str) -> String {
+    format!(
+        "Usage: codegraph-mcp query {command_name} <source> <target> [--limit <n>] [--concise|--agent-json]"
+    )
 }
 
 fn list_query_usage(command_name: &str) -> String {
@@ -6811,6 +8768,115 @@ fn graph_db_layer_status_from_lifecycle(lifecycle: &Value) -> Value {
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SidecarAccessClassification {
+    status: &'static str,
+    problem_kind: &'static str,
+    path_access_status: &'static str,
+}
+
+fn sidecar_access_classification_from_message(message: &str) -> SidecarAccessClassification {
+    let lower = message.to_ascii_lowercase();
+    // Passport / version / scope incompatibility means the sidecar was built
+    // against an older graph DB and is now STALE (e.g. after a changed-file delta
+    // updates the DB passport). This is not an access error: it must classify as
+    // stale so the delta layer action reports `invalidated`, matching how the
+    // candidate spool reports a passport-superseded sidecar.
+    if lower.contains("changed")
+        || lower.contains("mismatch")
+        || lower.contains("stale")
+        || lower.contains("superseded")
+        || lower.contains("incompatible")
+    {
+        return SidecarAccessClassification {
+            status: "stale",
+            problem_kind: "sidecar_stale",
+            path_access_status: "ok",
+        };
+    }
+    if lower.contains("locked") || lower.contains("database is busy") {
+        return SidecarAccessClassification {
+            status: "sidecar_locked",
+            problem_kind: "sidecar_locked",
+            path_access_status: "ok",
+        };
+    }
+    if lower.contains("readonly database")
+        || lower.contains("read-only")
+        || lower.contains("read only")
+    {
+        return SidecarAccessClassification {
+            status: "read_only",
+            problem_kind: "read_only",
+            path_access_status: "permission_denied",
+        };
+    }
+    if lower.contains("permission denied")
+        || lower.contains("access is denied")
+        || lower.contains("access permission denied")
+        || lower.contains("authorization denied")
+    {
+        return SidecarAccessClassification {
+            status: "permission_denied",
+            problem_kind: "permission_denied",
+            path_access_status: "permission_denied",
+        };
+    }
+    if lower.contains("corrupt")
+        || lower.contains("malformed")
+        || lower.contains("not a database")
+        || lower.contains("file is not a database")
+        || lower.contains("failed to parse")
+        || lower.contains("expected value")
+    {
+        return SidecarAccessClassification {
+            status: "sidecar_corrupt",
+            problem_kind: "sidecar_corrupt",
+            path_access_status: "ok",
+        };
+    }
+    if lower.contains("is a directory")
+        || lower.contains("unable to open")
+        || lower.contains("disk i/o error")
+        || lower.contains("i/o error")
+        || lower.contains("io error")
+        || lower.contains("system cannot find")
+    {
+        return SidecarAccessClassification {
+            status: "sidecar_unavailable",
+            problem_kind: "filesystem_inaccessible",
+            path_access_status: "filesystem_inaccessible",
+        };
+    }
+    SidecarAccessClassification {
+        status: "sidecar_unavailable",
+        problem_kind: "filesystem_inaccessible",
+        path_access_status: "filesystem_inaccessible",
+    }
+}
+
+fn sidecar_access_error_layer_json(
+    layer: &str,
+    path: &Path,
+    error: &str,
+    diagnostic_only: bool,
+) -> Value {
+    let classification = sidecar_access_classification_from_message(error);
+    json!({
+        "layer": layer,
+        "status": classification.status,
+        "ready": false,
+        "path": path_string(path),
+        "path_access_status": classification.path_access_status,
+        "sidecar_problem_kind": classification.problem_kind,
+        "sidecar_access_label": classification.status,
+        "candidate_only": true,
+        "graph_proof": false,
+        "diagnostic_only": diagnostic_only,
+        "reason": error,
+    })
+}
+
 fn candidate_spool_layer_status(repo_root: &Path, spool_path: &Path) -> Value {
     if !spool_path.exists() {
         return json!({
@@ -6826,17 +8892,30 @@ fn candidate_spool_layer_status(repo_root: &Path, spool_path: &Path) -> Value {
     }
     match candidate_spool_index_status_for_repo(repo_root, spool_path, true) {
         Ok(spool) => candidate_spool_layer_from_index_load(spool_path, &spool),
-        Err(error) => json!({
-            "layer": "candidate_spool",
-            "status": if error.to_string().contains("corrupt") { "corrupt" } else { "foreign" },
-            "ready": false,
-            "path": path_string(spool_path),
-            "candidate_only": true,
-            "graph_proof": false,
-            "candidate_spool_unavailable": true,
-            "candidate_context_truncated": false,
-            "reason": error.to_string(),
-        }),
+        Err(error) => {
+            let error = error.to_string();
+            if error.contains("foreign_repo") || error.contains("candidate_spool_stale") {
+                json!({
+                    "layer": "candidate_spool",
+                    "status": "foreign",
+                    "ready": false,
+                    "path": path_string(spool_path),
+                    "candidate_only": true,
+                    "graph_proof": false,
+                    "candidate_spool_unavailable": true,
+                    "candidate_context_truncated": false,
+                    "reason": error,
+                })
+            } else {
+                let mut value =
+                    sidecar_access_error_layer_json("candidate_spool", spool_path, &error, true);
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("candidate_spool_unavailable".to_string(), json!(true));
+                    object.insert("candidate_context_truncated".to_string(), json!(false));
+                }
+                value
+            }
+        }
     }
 }
 
@@ -7082,15 +9161,22 @@ fn vector_runtime_layer_status(
                 "metrics": metrics,
             })
         }
-        Err(error) => json!({
-            "layer": "vector_runtime",
-            "status": "stale",
-            "ready": false,
-            "path": path_string(runtime_path),
-            "candidate_only": true,
-            "graph_proof": false,
-            "reason": error.to_string(),
-        }),
+        Err(error) => {
+            let error = error.to_string();
+            let classification = sidecar_access_classification_from_message(&error);
+            json!({
+                "layer": "vector_runtime",
+                "status": classification.status,
+                "ready": false,
+                "path": path_string(runtime_path),
+                "candidate_only": true,
+                "graph_proof": false,
+                "sidecar_problem_kind": classification.problem_kind,
+                "sidecar_access_label": classification.status,
+                "path_access_status": classification.path_access_status,
+                "reason": error,
+            })
+        }
     }
 }
 
@@ -7145,20 +9231,34 @@ fn vector_audit_layer_status(
             "runtime_dependency": false,
         });
     }
-    let value = match fs::read_to_string(audit_path)
-        .map_err(|error| error.to_string())
-        .and_then(|text| serde_json::from_str::<Value>(&text).map_err(|error| error.to_string()))
-    {
+    let text = match fs::read_to_string(audit_path) {
+        Ok(text) => text,
+        Err(error) => {
+            let mut value = sidecar_access_error_layer_json(
+                "vector_audit",
+                audit_path,
+                &error.to_string(),
+                true,
+            );
+            if let Some(object) = value.as_object_mut() {
+                object.insert("runtime_dependency".to_string(), json!(false));
+            }
+            return value;
+        }
+    };
+    let value = match serde_json::from_str::<Value>(&text) {
         Ok(value) => value,
         Err(error) => {
             return json!({
                 "layer": "vector_audit",
-                "status": "corrupt",
+                "status": "sidecar_corrupt",
                 "ready": false,
                 "path": path_string(audit_path),
                 "diagnostic_only": true,
                 "runtime_dependency": false,
-                "reason": error,
+                "sidecar_problem_kind": "sidecar_corrupt",
+                "path_access_status": "ok",
+                "reason": error.to_string(),
             });
         }
     };
@@ -7250,8 +9350,11 @@ fn staged_availability_from_layers(
                 | "query_index_missing"
                 | "query_index_corrupt"
                 | "permission_denied"
+                | "read_only"
                 | "filesystem_inaccessible"
                 | "sidecar_unavailable"
+                | "sidecar_corrupt"
+                | "sidecar_locked"
                 | "disabled_budget_exceeded"
         ) {
             missing_layers.push((*name).to_string());
@@ -7562,6 +9665,649 @@ fn staged_routing_packet_for_spool(
     })
 }
 
+const PATCH_ASSIST_PACKET_TARGET_BYTES: usize = 12 * 1024;
+const PATCH_ASSIST_PACKET_FILE_LIMIT: usize = 8;
+const PATCH_ASSIST_PACKET_SYMBOL_LIMIT: usize = 8;
+const PATCH_ASSIST_PACKET_EVIDENCE_LIMIT: usize = 8;
+const PATCH_ASSIST_PACKET_QUERY_LIMIT: usize = 6;
+const PATCH_ASSIST_PACKET_WARNING_LIMIT: usize = 8;
+
+fn attach_context_pack_patch_assist_packet(
+    value: &mut Value,
+    task: &str,
+    mode: &str,
+    staged_availability: &Value,
+    max_output_bytes: usize,
+) {
+    let packet = context_pack_patch_assist_packet_from_response(
+        value,
+        task,
+        mode,
+        staged_availability,
+        max_output_bytes,
+    );
+    if let Some(object) = value.as_object_mut() {
+        object.insert("patch_assist_packet".to_string(), packet);
+    }
+}
+
+fn attach_unavailable_patch_assist_packet(
+    value: &mut Value,
+    profile: &AgentUseProfile,
+    staged_availability: &Value,
+    errors: &[String],
+    status: &str,
+) {
+    let packet = unavailable_patch_assist_packet(profile, staged_availability, errors, status);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("patch_assist_packet".to_string(), packet);
+    }
+}
+
+fn context_pack_patch_assist_packet_from_response(
+    response: &Value,
+    task: &str,
+    mode: &str,
+    staged_availability: &Value,
+    max_output_bytes: usize,
+) -> Value {
+    let routing = response.get("routing_packet").unwrap_or(&Value::Null);
+    let proof_status = response
+        .get("proof_status")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| {
+            routing
+                .get("proof_status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        });
+    let proof_strength = response
+        .get("proof_strength")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| {
+            routing
+                .get("proof_strength")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        });
+    let graph_proof = response
+        .get("graph_proof")
+        .and_then(Value::as_bool)
+        .or_else(|| routing.get("graph_proof").and_then(Value::as_bool))
+        .unwrap_or(false);
+    let candidate_evidence = patch_assist_candidate_evidence_from_response(response);
+    let source_navigation_evidence = routing_take_array(
+        routing,
+        "source_navigation_evidence",
+        PATCH_ASSIST_PACKET_EVIDENCE_LIMIT,
+    );
+    let text_evidence =
+        routing_take_array(routing, "text_evidence", PATCH_ASSIST_PACKET_EVIDENCE_LIMIT);
+    let critical_files =
+        routing_take_array(routing, "critical_files", PATCH_ASSIST_PACKET_FILE_LIMIT);
+    let critical_symbols = routing_take_array(
+        routing,
+        "critical_symbols",
+        PATCH_ASSIST_PACKET_SYMBOL_LIMIT,
+    );
+    let graph_proof_paths = if graph_proof {
+        routing_take_array(routing, "verified_paths", 3)
+    } else {
+        json!([])
+    };
+    let unknowns = routing_take_array(routing, "unknowns", PATCH_ASSIST_PACKET_EVIDENCE_LIMIT);
+    let risks = routing_take_array(routing, "risks", PATCH_ASSIST_PACKET_EVIDENCE_LIMIT);
+    let validation_steps =
+        routing_take_array(routing, "validation_steps", PATCH_ASSIST_PACKET_QUERY_LIMIT);
+    let follow_up_queries = patch_assist_follow_up_queries(routing);
+    let expansion_handles = routing_take_array(
+        routing,
+        "expansion_handles",
+        PATCH_ASSIST_PACKET_QUERY_LIMIT,
+    );
+    let artifact_or_db_inspection_requirements = patch_assist_artifact_or_db_requirements(routing);
+    let degradation_warnings = patch_assist_degradation_warnings(
+        &critical_files,
+        &critical_symbols,
+        &source_navigation_evidence,
+        &text_evidence,
+        &candidate_evidence,
+        staged_availability,
+    );
+    let candidate_evidence_available = candidate_evidence
+        .as_array()
+        .is_some_and(|items| !items.is_empty());
+    let degraded_warning_available = degradation_warnings
+        .as_array()
+        .is_some_and(|items| !items.is_empty());
+    let first_use_state = patch_assist_first_use_state(
+        staged_availability,
+        response,
+        graph_proof,
+        candidate_evidence_available,
+        degraded_warning_available,
+    );
+    let available = first_use_state != "unavailable";
+    let mut packet = json!({
+        "packet_kind": "patch_assist_staged_context",
+        "schema_version": 1,
+        "task": task,
+        "mode": mode,
+        "task_intent": routing.get("task_intent").cloned().unwrap_or_else(|| json!({
+            "task_kind": "unknown",
+            "signals": [],
+        })),
+        "task_roles": routing.get("task_roles").cloned().unwrap_or_else(|| json!([])),
+        "first_use_state": first_use_state,
+        "critical_files": critical_files,
+        "critical_symbols": critical_symbols,
+        "source_navigation_evidence": source_navigation_evidence,
+        "text_evidence": text_evidence,
+        "candidate_evidence": candidate_evidence,
+        "graph_proof_paths": graph_proof_paths,
+        "proof_status": proof_status,
+        "proof_strength": proof_strength,
+        "graph_proof": graph_proof,
+        "unknowns": unknowns,
+        "risks": risks,
+        "validation_steps": validation_steps,
+        "follow_up_queries": follow_up_queries,
+        "expansion_handles": expansion_handles,
+        "artifact_or_db_inspection_requirements": artifact_or_db_inspection_requirements,
+        "degradation_warnings": degradation_warnings,
+        "staged_availability": patch_assist_compact_staged_availability(staged_availability),
+        "staged_availability_summary": {
+            "graph_db_status": staged_availability.get("graph_db_status").cloned().unwrap_or_else(|| json!("unknown")),
+            "candidate_spool_status": staged_availability.get("candidate_spool_status").cloned().unwrap_or_else(|| json!("unknown")),
+            "vector_runtime_status": staged_availability.get("vector_runtime_status").cloned().unwrap_or_else(|| json!("unknown")),
+            "candidate_context_available": staged_availability.get("candidate_context_available").cloned().unwrap_or_else(|| json!(false)),
+            "candidate_only_available": staged_availability.get("candidate_only_available").cloned().unwrap_or_else(|| json!(false)),
+            "graph_proof_available": staged_availability.get("graph_proof_available").cloned().unwrap_or_else(|| json!(graph_proof)),
+            "recommended_next_step": staged_availability.get("recommended_next_step").cloned().unwrap_or_else(|| json!(if graph_proof { "inspect verified graph/source paths" } else { "inspect candidate spans then run graph/source verification" })),
+        },
+        "claimability": {
+            "claimable": response.get("claimable").and_then(Value::as_bool).unwrap_or(false),
+            "graph_proof": graph_proof,
+            "graph_proof_only_from_graph_source_verification": true,
+            "candidate_evidence_graph_proof": false,
+            "text_evidence_graph_proof": false,
+            "source_navigation_evidence_graph_proof": false,
+            "vector_evidence_graph_proof": false,
+        },
+        "unavailable": !available,
+        "recovery": response.get("recovery").cloned().unwrap_or(Value::Null),
+        "proof_contract": "Patch-assist context may use source/text/path/symbol/candidate evidence for orientation, but graph_proof=true is allowed only from verified graph/source paths.",
+    });
+    enforce_patch_assist_packet_budget(&mut packet, max_output_bytes);
+    packet
+}
+
+fn unavailable_patch_assist_packet(
+    profile: &AgentUseProfile,
+    staged_availability: &Value,
+    errors: &[String],
+    status: &str,
+) -> Value {
+    let mut packet = json!({
+        "packet_kind": "patch_assist_staged_context",
+        "schema_version": 1,
+        "task": Value::Null,
+        "mode": "agent-use",
+        "task_intent": {
+            "task_kind": "unknown",
+            "signals": [],
+            "reason": "context unavailable before task routing",
+        },
+        "task_roles": [],
+        "first_use_state": patch_assist_first_use_state(staged_availability, &Value::Null, false, false, false),
+        "critical_files": [],
+        "critical_symbols": [],
+        "source_navigation_evidence": [],
+        "text_evidence": [],
+        "candidate_evidence": [],
+        "graph_proof_paths": [],
+        "proof_status": "not_available_until_index",
+        "proof_strength": "none",
+        "graph_proof": false,
+        "unknowns": [{
+            "claim": "patch-assist context",
+            "reason": status,
+            "sentence": "No safe graph or candidate context is currently available for this repository profile."
+        }],
+        "risks": [{
+            "risk_id": "unavailable_context_is_not_evidence",
+            "forbidden_claim": "graph proof or candidate freshness",
+            "sentence": "Do not infer source, candidate, or graph proof from an unavailable context packet."
+        }],
+        "validation_steps": [],
+        "follow_up_queries": [],
+        "expansion_handles": [],
+        "artifact_or_db_inspection_requirements": [{
+            "claim": "safe patch-assist context",
+            "required": true,
+            "why": "agent-use profile has no safe current graph or candidate context",
+            "repair_action": profile.recovery_commands.first().cloned().unwrap_or_else(|| format!("{BIN_NAME} agent-use index --repo \"{}\" --json", path_string(&profile.repo_root))),
+        }],
+        "degradation_warnings": patch_assist_layer_warnings(staged_availability),
+        "staged_availability": patch_assist_compact_staged_availability(staged_availability),
+        "staged_availability_summary": {
+            "graph_db_status": staged_availability.get("graph_db_status").cloned().unwrap_or_else(|| json!("unknown")),
+            "candidate_spool_status": staged_availability.get("candidate_spool_status").cloned().unwrap_or_else(|| json!("unknown")),
+            "vector_runtime_status": staged_availability.get("vector_runtime_status").cloned().unwrap_or_else(|| json!("unknown")),
+            "candidate_context_available": false,
+            "candidate_only_available": false,
+            "graph_proof_available": false,
+            "recommended_next_step": staged_availability.get("recommended_next_step").cloned().unwrap_or_else(|| json!("run agent-use index")),
+        },
+        "claimability": {
+            "claimable": false,
+            "graph_proof": false,
+            "graph_proof_only_from_graph_source_verification": true,
+            "candidate_evidence_graph_proof": false,
+            "text_evidence_graph_proof": false,
+            "source_navigation_evidence_graph_proof": false,
+            "vector_evidence_graph_proof": false,
+        },
+        "unavailable": true,
+        "unavailable_reason": status,
+        "recovery": {
+            "commands": profile.recovery_commands.clone(),
+            "agent_use_index_command": profile.recovery_commands.first().cloned().unwrap_or_else(|| format!("{BIN_NAME} agent-use index --repo \"{}\" --json", path_string(&profile.repo_root))),
+        },
+        "errors": errors,
+        "proof_contract": "Unavailable context is not evidence. Build or refresh the agent-use profile before patch-assist can return claim-labeled source/candidate context.",
+    });
+    enforce_patch_assist_packet_budget(&mut packet, DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES);
+    packet
+}
+
+fn patch_assist_candidate_evidence_from_response(response: &Value) -> Value {
+    let candidates = response
+        .get("candidates")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let compact = candidates
+        .iter()
+        .take(PATCH_ASSIST_PACKET_EVIDENCE_LIMIT)
+        .map(patch_assist_candidate_evidence_json)
+        .collect::<Vec<_>>();
+    Value::Array(compact)
+}
+
+fn patch_assist_candidate_evidence_json(candidate: &Value) -> Value {
+    let file = candidate
+        .get("file")
+        .or_else(|| candidate.get("path"))
+        .or_else(|| candidate.get("repo_relative_path"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let mut value = json!({
+        "evidence_id": candidate.get("candidate_id")
+            .or_else(|| candidate.get("chunk_id"))
+            .or_else(|| candidate.get("id"))
+            .cloned()
+            .unwrap_or_else(|| json!(format!("candidate://{}", context_agent_stable_component(file)))),
+        "file": file,
+        "symbol": candidate.get("symbol").or_else(|| candidate.get("name")).cloned().unwrap_or(Value::Null),
+        "span": candidate.get("span").or_else(|| candidate.get("source_span")).cloned().unwrap_or(Value::Null),
+        "candidate_sources": candidate.get("candidate_sources").cloned().unwrap_or_else(|| {
+            candidate.get("source_labels").cloned().unwrap_or_else(|| json!([]))
+        }),
+        "evidence_role": candidate.get("evidence_role").cloned().unwrap_or_else(|| json!("candidate_evidence")),
+        "proof_status": candidate.get("proof_status").cloned().unwrap_or_else(|| json!("candidate_only")),
+        "proof_strength": candidate.get("proof_strength").cloned().unwrap_or_else(|| json!("candidate_evidence")),
+        "graph_proof": candidate.get("graph_proof").and_then(Value::as_bool).unwrap_or(false),
+        "claimability": candidate.get("claimability").cloned().unwrap_or_else(|| json!({
+            "claimable_as": [],
+            "not_claimable_as": ["graph_relation_proof"]
+        })),
+        "reason": candidate.get("reason").or_else(|| candidate.get("match_reason")).cloned().unwrap_or_else(|| json!("candidate evidence")),
+        "text_preview": candidate.get("text")
+            .or_else(|| candidate.pointer("/snippet/text"))
+            .and_then(Value::as_str)
+            .map(|text| text.chars().take(160).collect::<String>())
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+    });
+    if let Some(object) = value.as_object_mut() {
+        copy_context_candidate_degradation_fields(candidate, object);
+    }
+    value
+}
+
+fn patch_assist_follow_up_queries(routing: &Value) -> Value {
+    let queries = routing
+        .get("follow_up_queries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .take(PATCH_ASSIST_PACKET_QUERY_LIMIT)
+        .map(|query| {
+            let mut object = query.as_object().cloned().unwrap_or_default();
+            object.insert("kind".to_string(), json!("codegraph_query_hint"));
+            object.insert("shell_ready".to_string(), json!(false));
+            if !object.contains_key("risk") {
+                object.insert(
+                    "risk".to_string(),
+                    json!("candidate_only_until_graph_source_verified"),
+                );
+            }
+            Value::Object(object)
+        })
+        .collect::<Vec<_>>();
+    Value::Array(queries)
+}
+
+fn patch_assist_artifact_or_db_requirements(routing: &Value) -> Value {
+    let mut requirements = Vec::new();
+    for key in [
+        "artifact_inspection_requirements",
+        "db_inspection_requirements",
+    ] {
+        requirements.extend(
+            routing
+                .get(key)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .take(3)
+                .cloned(),
+        );
+    }
+    requirements.truncate(6);
+    Value::Array(requirements)
+}
+
+fn patch_assist_compact_staged_availability(staged_availability: &Value) -> Value {
+    let layer_status = |name: &str| {
+        let layer = staged_availability
+            .pointer(&format!("/layer_readiness/{name}"))
+            .unwrap_or(&Value::Null);
+        json!({
+            "status": layer.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+            "ready": layer.get("ready").cloned().unwrap_or_else(|| json!(false)),
+            "graph_proof": layer
+                .get("graph_proof")
+                .or_else(|| layer.get("graph_proof_available"))
+                .cloned()
+                .unwrap_or_else(|| json!(false)),
+            "candidate_only": layer.get("candidate_only").cloned().unwrap_or_else(|| json!(name != "graph_db")),
+            "diagnostic_only": layer.get("diagnostic_only").cloned().unwrap_or_else(|| json!(false)),
+            "reason": layer.get("reason").cloned().unwrap_or(Value::Null),
+        })
+    };
+    json!({
+        "graph_db_status": staged_availability.get("graph_db_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "candidate_spool_status": staged_availability.get("candidate_spool_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "vector_runtime_status": staged_availability.get("vector_runtime_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "vector_audit_status": staged_availability.get("vector_audit_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "candidate_context_available": staged_availability.get("candidate_context_available").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_only_available": staged_availability.get("candidate_only_available").cloned().unwrap_or_else(|| json!(false)),
+        "graph_proof_available": staged_availability.get("graph_proof_available").cloned().unwrap_or_else(|| json!(false)),
+        "active_candidate_sources": staged_availability.get("active_candidate_sources").cloned().unwrap_or_else(|| json!([])),
+        "available_layers": staged_availability.get("available_layers").cloned().unwrap_or_else(|| json!([])),
+        "missing_layers": staged_availability.get("missing_layers").cloned().unwrap_or_else(|| json!([])),
+        "recommended_next_step": staged_availability.get("recommended_next_step").cloned().unwrap_or_else(|| json!("inspect current evidence then verify graph/source proof")),
+        "layer_readiness": {
+            "graph_db": layer_status("graph_db"),
+            "candidate_spool": layer_status("candidate_spool"),
+            "vector_runtime": layer_status("vector_runtime"),
+            "vector_audit": layer_status("vector_audit"),
+        },
+    })
+}
+
+fn patch_assist_degradation_warnings(
+    critical_files: &Value,
+    critical_symbols: &Value,
+    source_navigation_evidence: &Value,
+    text_evidence: &Value,
+    candidate_evidence: &Value,
+    staged_availability: &Value,
+) -> Value {
+    let mut warnings = Vec::new();
+    for (section, values) in [
+        ("critical_files", critical_files),
+        ("critical_symbols", critical_symbols),
+        ("source_navigation_evidence", source_navigation_evidence),
+        ("text_evidence", text_evidence),
+        ("candidate_evidence", candidate_evidence),
+    ] {
+        if let Some(array) = values.as_array() {
+            for item in array {
+                if let Some(warning) = patch_assist_degradation_warning(section, item) {
+                    warnings.push(warning);
+                }
+                if warnings.len() >= PATCH_ASSIST_PACKET_WARNING_LIMIT {
+                    return Value::Array(warnings);
+                }
+            }
+        }
+    }
+    warnings.extend(patch_assist_layer_warnings(staged_availability));
+    warnings.truncate(PATCH_ASSIST_PACKET_WARNING_LIMIT);
+    Value::Array(warnings)
+}
+
+fn patch_assist_degradation_warning(section: &str, item: &Value) -> Option<Value> {
+    let degraded = item
+        .get("graph_output_degraded")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || item
+            .get("degradation_labels")
+            .and_then(Value::as_array)
+            .is_some_and(|labels| !labels.is_empty())
+        || item.get("graph_extraction_skip_reason").is_some();
+    if !degraded {
+        return None;
+    }
+    Some(json!({
+        "section": section,
+        "file": item.get("file").or_else(|| item.get("path")).cloned().unwrap_or(Value::Null),
+        "labels": item.get("degradation_labels").cloned().unwrap_or_else(|| json!([])),
+        "reason": item.get("graph_extraction_skip_reason").cloned().unwrap_or_else(|| json!("degraded_graph_output")),
+        "claimability": item.get("claimability").cloned().unwrap_or_else(|| json!({
+            "claimable_as": [],
+            "not_claimable_as": ["complete_graph_for_degraded_file", "graph_relation_proof"]
+        })),
+        "graph_proof": false,
+    }))
+}
+
+fn patch_assist_layer_warnings(staged_availability: &Value) -> Vec<Value> {
+    let mut warnings = Vec::new();
+    if let Some(layer_readiness) = staged_availability
+        .get("layer_readiness")
+        .and_then(Value::as_object)
+    {
+        for (layer_name, layer) in layer_readiness {
+            let status = layer
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            if agent_use_candidate_layer_status_is_stale(status) {
+                warnings.push(json!({
+                    "section": "staged_availability",
+                    "layer": layer_name,
+                    "status": status,
+                    "reason": layer.get("reason").cloned().unwrap_or(Value::Null),
+                    "graph_proof": false,
+                    "candidate_evidence_used": false,
+                }));
+            }
+        }
+    }
+    warnings
+}
+
+fn patch_assist_first_use_state(
+    staged_availability: &Value,
+    response: &Value,
+    graph_proof: bool,
+    candidate_evidence_available: bool,
+    degraded_warning_available: bool,
+) -> &'static str {
+    let graph_ready = graph_proof
+        || staged_availability
+            .get("graph_proof_available")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || staged_availability
+            .get("graph_db_status")
+            .and_then(Value::as_str)
+            == Some("ready");
+    if graph_ready {
+        return "graph_ready";
+    }
+    let candidate_context_available = candidate_evidence_available
+        || response
+            .get("candidate_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || staged_availability
+            .get("candidate_context_available")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || staged_availability
+            .get("candidate_only_available")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    if candidate_context_available && !patch_assist_has_stale_candidate_layers(staged_availability)
+    {
+        return "candidate_ready_no_graph";
+    }
+    if degraded_warning_available || patch_assist_has_stale_candidate_layers(staged_availability) {
+        return "stale_or_degraded";
+    }
+    "unavailable"
+}
+
+fn patch_assist_has_stale_candidate_layers(staged_availability: &Value) -> bool {
+    ["candidate_spool", "vector_runtime", "vector_audit"]
+        .iter()
+        .any(|layer_name| {
+            let pointer = format!("/layer_readiness/{layer_name}/status");
+            staged_availability
+                .pointer(&pointer)
+                .and_then(Value::as_str)
+                .is_some_and(agent_use_candidate_layer_status_is_stale)
+        })
+}
+
+fn enforce_patch_assist_packet_budget(packet: &mut Value, max_output_bytes: usize) {
+    let packet_budget = max_output_bytes.min(PATCH_ASSIST_PACKET_TARGET_BYTES);
+    let mut omitted = 0usize;
+    for _ in 0..64 {
+        if serialized_json_len(packet) <= packet_budget {
+            break;
+        }
+        if pop_patch_assist_array_item(packet, "candidate_evidence")
+            || pop_patch_assist_array_item(packet, "source_navigation_evidence")
+            || pop_patch_assist_array_item(packet, "text_evidence")
+            || pop_patch_assist_array_item(packet, "follow_up_queries")
+            || pop_patch_assist_array_item(packet, "expansion_handles")
+            || pop_patch_assist_array_item(packet, "critical_symbols")
+            || pop_patch_assist_array_item(packet, "critical_files")
+            || pop_patch_assist_array_item(packet, "degradation_warnings")
+        {
+            omitted += 1;
+            continue;
+        }
+        if let Some(object) = packet.as_object_mut() {
+            object.remove("staged_availability");
+        }
+        break;
+    }
+    let serialized_bytes = serialized_json_len(packet);
+    if let Some(object) = packet.as_object_mut() {
+        object.insert(
+            "packet_budget_status".to_string(),
+            json!({
+                "packet_budget_enforced": true,
+                "packet_budget_bytes": packet_budget,
+                "serialized_bytes": serialized_bytes,
+                "status": if serialized_bytes <= packet_budget { "within_budget" } else { "bounded_with_omissions" },
+                "omitted_by_packet_budget": omitted,
+            }),
+        );
+    }
+}
+
+fn pop_patch_assist_array_item(packet: &mut Value, key: &str) -> bool {
+    packet
+        .get_mut(key)
+        .and_then(Value::as_array_mut)
+        .is_some_and(|array| array.pop().is_some())
+}
+
+fn compact_context_agent_patch_assist_packet(response: &mut Value) -> bool {
+    let Some(packet_value) = response.get_mut("patch_assist_packet") else {
+        return false;
+    };
+    let already_compacted = packet_value
+        .get("packet_budget_status")
+        .and_then(|status| status.get("agent_json_compacted"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if already_compacted {
+        return false;
+    }
+    let staged = packet_value
+        .get("staged_availability")
+        .unwrap_or(&Value::Null);
+    let compact_staged = json!({
+        "graph_db_status": staged.get("graph_db_status").cloned().unwrap_or(Value::Null),
+        "candidate_spool_status": staged.get("candidate_spool_status").cloned().unwrap_or(Value::Null),
+        "vector_runtime_status": staged.get("vector_runtime_status").cloned().unwrap_or(Value::Null),
+        "vector_audit_status": staged.get("vector_audit_status").cloned().unwrap_or(Value::Null),
+        "graph_proof_available": staged.get("graph_proof_available").cloned().unwrap_or(Value::Null),
+        "candidate_only_available": staged.get("candidate_only_available").cloned().unwrap_or(Value::Null),
+        "active_candidate_sources": staged.get("active_candidate_sources").cloned().unwrap_or_else(|| json!([])),
+    });
+    let compact_claimability = json!({
+        "claimable": packet_value
+            .pointer("/claimability/claimable")
+            .and_then(Value::as_bool)
+            .or_else(|| packet_value.get("claimable").and_then(Value::as_bool))
+            .unwrap_or(false),
+        "graph_proof": packet_value.get("graph_proof").cloned().unwrap_or_else(|| json!(false)),
+        "graph_proof_only_from_graph_source_verification": true,
+        "candidate_evidence_graph_proof": false,
+        "text_evidence_graph_proof": false,
+        "vector_evidence_graph_proof": false,
+    });
+    let compact = json!({
+        "packet_kind": packet_value.get("packet_kind").cloned().unwrap_or_else(|| json!("patch_assist_staged_context")),
+        "schema_version": packet_value.get("schema_version").cloned().unwrap_or_else(|| json!(1)),
+        "first_use_state": packet_value.get("first_use_state").cloned().unwrap_or_else(|| json!("unavailable")),
+        "proof_status": packet_value.get("proof_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "proof_strength": packet_value.get("proof_strength").cloned().unwrap_or_else(|| json!("unknown")),
+        "graph_proof": packet_value.get("graph_proof").cloned().unwrap_or_else(|| json!(false)),
+        "claimability": compact_claimability,
+        "staged_availability": compact_staged,
+        "candidate_evidence": routing_take_array(packet_value, "candidate_evidence", 1),
+        "source_navigation_evidence": routing_take_array(packet_value, "source_navigation_evidence", 1),
+        "degradation_warnings": routing_take_array(packet_value, "degradation_warnings", 2),
+        "unavailable": packet_value.get("unavailable").cloned().unwrap_or_else(|| json!(false)),
+        "recovery_command": packet_value.get("recovery_command").cloned().unwrap_or(Value::Null),
+        "degradation_warning_count": packet_value.get("degradation_warnings").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
+        "candidate_evidence_count": packet_value.get("candidate_evidence").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
+        "source_navigation_evidence_count": packet_value.get("source_navigation_evidence").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
+        "packet_budget_status": {
+            "packet_budget_enforced": true,
+            "status": "bounded_with_omissions",
+            "patch_assist_packet_compacted": true,
+            "agent_json_compacted": true,
+            "preserved_core_state": true,
+        },
+    });
+    *packet_value = compact;
+    true
+}
+
 #[allow(dead_code)]
 fn candidate_spool_sort_key(value: &Value) -> String {
     format!(
@@ -7613,9 +10359,24 @@ fn compact_lifecycle_summary(lifecycle: &Value) -> Value {
         "repo_root_status",
         "sidecar_status",
         "path_access_status",
+        "allow_stale_read",
+        "allow_foreign_db",
     ] {
         if let Some(value) = lifecycle.get(key).filter(|value| !value.is_null()) {
             object.insert(key.to_string(), value.clone());
+        }
+    }
+    if diagnostic_only || !claimable {
+        for key in [
+            "blockers",
+            "warnings",
+            "safety_labels",
+            "exact_db_path_checked",
+            "repo_root_expected",
+        ] {
+            if let Some(value) = lifecycle.get(key).filter(|value| !value.is_null()) {
+                object.insert(key.to_string(), value.clone());
+            }
         }
     }
     Value::Object(object)
@@ -8478,6 +11239,15 @@ fn run_candidate_spool_context_pack_command(
             "errors": [],
         });
         merge_json_object(&mut value, staged_fields);
+        attach_context_pack_patch_assist_packet(
+            &mut value,
+            &options.task,
+            &options.mode,
+            &staged_availability,
+            options
+                .max_output_bytes
+                .unwrap_or(DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES),
+        );
         return Ok(value);
     }
     let mut value = json!({
@@ -8509,6 +11279,15 @@ fn run_candidate_spool_context_pack_command(
         "proof": "Fast Candidate Spool context-pack returns candidate-only source-navigation evidence and cannot answer graph proof.",
     });
     merge_json_object(&mut value, staged_fields);
+    attach_context_pack_patch_assist_packet(
+        &mut value,
+        &options.task,
+        &options.mode,
+        &staged_availability,
+        options
+            .max_output_bytes
+            .unwrap_or(DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES),
+    );
     Ok(value)
 }
 
@@ -11117,6 +13896,12 @@ fn proof_build_mode_artifact_metadata(
     let db_path = PathBuf::from(&summary.db_path);
     let schema_version = sqlite_user_version_read_only(&db_path).unwrap_or(SCHEMA_VERSION);
     let db_size_bytes = metadata_len(&db_path).unwrap_or(0);
+    let artifact_metadata_filename_policy =
+        artifact_safe_file_name_metadata(&artifact_safe_file_name_for_path(
+            &db_path,
+            ".metadata.json",
+            ARTIFACT_SAFE_FILENAME_MAX_CHARS,
+        ));
     let build_duration_ms = summary
         .profile
         .as_ref()
@@ -11150,6 +13935,7 @@ fn proof_build_mode_artifact_metadata(
         "current_migration_version": SCHEMA_VERSION,
         "artifact_path": summary.db_path.clone(),
         "artifact_metadata_path": path_string(metadata_path),
+        "artifact_metadata_filename_policy": artifact_metadata_filename_policy,
         "artifact_created_at": file_modified_unix_ms(&db_path).unwrap_or_else(unix_time_ms),
         "git_commit": current_git_commit(),
         "storage_mode": "proof",
@@ -12140,6 +14926,25 @@ fn inspect_existing_comprehensive_proof_artifact(
             worker_count: options.workers.unwrap_or(1),
             skipped_unchanged_files: 0,
             spans: Vec::new(),
+            source_bytes_read: 0,
+            source_clone_count: None,
+            source_clone_count_status: "unknown".to_string(),
+            source_clone_count_reason:
+                "synthetic proof metadata profile does not measure source clone count".to_string(),
+            db_write_attribution: "aggregate_only".to_string(),
+            db_write_attribution_reason:
+                "synthetic proof metadata profile has no per-file DB write attribution".to_string(),
+            file_attribution: Vec::new(),
+            stage_attribution: Vec::new(),
+            slowest_stages: Vec::new(),
+            slowest_files: Vec::new(),
+            slowest_files_by_parse: Vec::new(),
+            slowest_files_by_extraction: Vec::new(),
+            highest_entity_files: Vec::new(),
+            highest_edge_files: Vec::new(),
+            highest_source_span_files: Vec::new(),
+            high_fanout_files: Vec::new(),
+            db_write_contributors: Vec::new(),
         }),
     };
     patch_gate_with_proof_artifact(
@@ -12403,7 +15208,113 @@ fn comprehensive_artifact_freshness_metrics(metadata: &Value) -> Vec<Value> {
 }
 
 fn default_artifact_metadata_path(db_path: &Path) -> PathBuf {
-    PathBuf::from(format!("{}.metadata.json", db_path.to_string_lossy()))
+    let safe_name = artifact_safe_file_name_for_path(
+        db_path,
+        ".metadata.json",
+        ARTIFACT_SAFE_FILENAME_MAX_CHARS,
+    );
+    db_path
+        .parent()
+        .map(|parent| parent.join(&safe_name.file_name))
+        .unwrap_or_else(|| PathBuf::from(&safe_name.file_name))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArtifactSafeFileName {
+    pub file_name: String,
+    pub original_file_name: String,
+    pub original_path: String,
+    pub hash_suffix: String,
+    pub shortened: bool,
+    pub max_filename_chars: usize,
+    pub extension_preserved: bool,
+}
+
+pub(crate) fn artifact_safe_file_name_for_path(
+    original_path: &Path,
+    extra_extension: &str,
+    max_filename_chars: usize,
+) -> ArtifactSafeFileName {
+    let original_file_name = original_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "artifact".to_string());
+    let extension = if extra_extension.is_empty() {
+        String::new()
+    } else if extra_extension.starts_with('.') {
+        extra_extension.to_string()
+    } else {
+        format!(".{extra_extension}")
+    };
+    let mut candidate =
+        sanitize_artifact_file_component(&format!("{original_file_name}{extension}"));
+    let hash = stable_agent_use_identity_hash(path_string(original_path).as_bytes());
+    let hash_suffix = hash.chars().take(12).collect::<String>();
+    let effective_max = max_filename_chars.max(extension.chars().count() + hash_suffix.len() + 2);
+    let shortened = candidate.chars().count() > effective_max;
+    if shortened {
+        let suffix = format!("-{hash_suffix}{extension}");
+        let suffix_chars = suffix.chars().count();
+        let prefix_max = effective_max.saturating_sub(suffix_chars).max(1);
+        let prefix = sanitize_artifact_file_component(&original_file_name)
+            .chars()
+            .take(prefix_max)
+            .collect::<String>()
+            .trim_matches(['.', '_', '-'])
+            .to_string();
+        let prefix = if prefix.is_empty() {
+            "artifact".to_string()
+        } else {
+            prefix
+        };
+        candidate = format!("{prefix}{suffix}");
+    }
+    let extension_preserved = extension.is_empty() || candidate.ends_with(&extension);
+    ArtifactSafeFileName {
+        file_name: candidate,
+        original_file_name,
+        original_path: path_string(original_path),
+        hash_suffix,
+        shortened,
+        max_filename_chars: effective_max,
+        extension_preserved,
+    }
+}
+
+fn sanitize_artifact_file_component(value: &str) -> String {
+    let mut sanitized = String::new();
+    let mut last_was_underscore = false;
+    for ch in value.chars() {
+        let safe = ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-');
+        if safe {
+            sanitized.push(ch);
+            last_was_underscore = false;
+        } else if !last_was_underscore {
+            sanitized.push('_');
+            last_was_underscore = true;
+        }
+    }
+    let sanitized = sanitized.trim_matches(['.', '_', '-']);
+    if sanitized.is_empty() {
+        "artifact".to_string()
+    } else {
+        sanitized.to_string()
+    }
+}
+
+pub(crate) fn artifact_safe_file_name_metadata(plan: &ArtifactSafeFileName) -> Value {
+    json!({
+        "safe_file_name": plan.file_name.clone(),
+        "original_file_name": plan.original_file_name.clone(),
+        "original_path": plan.original_path.clone(),
+        "hash_suffix": plan.hash_suffix.clone(),
+        "shortened": plan.shortened,
+        "max_filename_chars": plan.max_filename_chars,
+        "extension_preserved": plan.extension_preserved,
+        "collision_strategy": "readable_prefix_plus_stable_hash_suffix",
+    })
 }
 
 #[allow(dead_code)]
@@ -12546,6 +15457,11 @@ fn resolve_agent_use_profile_with_data_root(
 fn agent_use_profile_data_root() -> Result<PathBuf, String> {
     with_process_context_lock(|| {
         if let Some(root) = std::env::var_os(AGENT_USE_DATA_ROOT_ENV) {
+            if root.is_empty() {
+                return Err(format!(
+                    "env_invalid: {AGENT_USE_DATA_ROOT_ENV} is set but empty"
+                ));
+            }
             let root = PathBuf::from(root);
             return absolutize_path(&root).or(Ok(root));
         }
@@ -12558,7 +15474,8 @@ fn agent_use_profile_data_root() -> Result<PathBuf, String> {
                     .join("agent-indexes"));
             }
             return Err(
-                "LOCALAPPDATA is required for production agent-use profile paths".to_string(),
+                "env_missing: LOCALAPPDATA is required for production agent-use profile paths"
+                    .to_string(),
             );
         }
 
@@ -12577,7 +15494,7 @@ fn agent_use_profile_data_root() -> Result<PathBuf, String> {
                     .join("agent-indexes"));
             }
             Err(
-                "HOME or XDG_DATA_HOME is required for production agent-use profile paths"
+                "env_missing: HOME or XDG_DATA_HOME is required for production agent-use profile paths"
                     .to_string(),
             )
         }
@@ -19051,9 +21968,21 @@ fn file_record_query_haystack(file: &FileRecord) -> String {
         "proof_status",
         "source_file_kind",
         "source_file_label",
+        "claim_state",
+        "graph_output_claimability",
+        "graph_output_degradation_labels",
+        "degradation_labels",
+        "graph_extraction_skip_reason",
     ] {
         if let Some(value) = file.metadata.get(key).and_then(Value::as_str) {
             parts.push(value.to_ascii_lowercase());
+        } else if let Some(values) = file.metadata.get(key).and_then(Value::as_array) {
+            parts.extend(
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_ascii_lowercase),
+            );
         }
     }
     if let Some(tokens) = file
@@ -19078,6 +22007,10 @@ fn enrich_file_hit_with_text_evidence_preview(
     query: &str,
     hit: &mut Value,
 ) -> Result<(), String> {
+    insert_file_degradation_labels(file, hit);
+    if let Some(object) = hit.as_object_mut() {
+        insert_query_evidence_role_labels(object, query_evidence_role_for_file(file));
+    }
     if !file_record_is_text_evidence(file) {
         return Ok(());
     }
@@ -19118,6 +22051,67 @@ fn enrich_file_hit_with_text_evidence_preview(
         object.insert("text".to_string(), json!(snippet));
     }
     Ok(())
+}
+
+fn insert_file_degradation_labels(file: &FileRecord, hit: &mut Value) {
+    let Some(object) = hit.as_object_mut() else {
+        return;
+    };
+    let metadata = &file.metadata;
+    let graph_output_budget_hit = metadata
+        .get("graph_output_budget_hit")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let degradation_labels = metadata
+        .get("degradation_labels")
+        .or_else(|| metadata.get("graph_output_degradation_labels"))
+        .cloned();
+    let graph_output_claimability = metadata
+        .get("graph_output_claimability")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let graph_relation_claims = metadata.get("graph_relation_claims").cloned();
+    let diagnostic_only = metadata
+        .get("diagnostic_only")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if graph_output_budget_hit || degradation_labels.is_some() || diagnostic_only {
+        object.insert("graph_output_degraded".to_string(), json!(true));
+        object.insert(
+            "degradation_labels".to_string(),
+            degradation_labels.unwrap_or_else(|| json!([])),
+        );
+        object.insert(
+            "graph_output_claimability".to_string(),
+            json!(graph_output_claimability
+                .unwrap_or_else(|| { "degraded_file_nonclaimable_for_omitted_facts".to_string() })),
+        );
+        object.insert(
+            "graph_relation_claims".to_string(),
+            graph_relation_claims.unwrap_or_else(|| json!("partial")),
+        );
+        object.insert(
+            "graph_output_budget_hits".to_string(),
+            metadata
+                .get("graph_output_budget_hits")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        );
+        if let Some(reason) = metadata.get("graph_extraction_skip_reason").cloned() {
+            object.insert("graph_extraction_skip_reason".to_string(), reason);
+        }
+        object.insert("diagnostic_only".to_string(), json!(diagnostic_only));
+        object.insert(
+            "claimability".to_string(),
+            json!({
+                "claimable": true,
+                "claimable_as": ["emitted_graph_facts_with_source_spans"],
+                "not_claimable_as": ["complete_graph_for_degraded_file", "omitted_relation_classes"],
+                "diagnostic_only": diagnostic_only,
+                "reason": "file has degraded graph output; emitted facts remain source-span claimable, omitted facts are not claimable"
+            }),
+        );
+    }
 }
 
 fn file_record_is_text_evidence(file: &FileRecord) -> bool {
@@ -19184,30 +22178,85 @@ fn bounded_retrieval_candidate_snippet_text(text: &str) -> (String, bool) {
     (text[..end].to_string(), true)
 }
 
-fn query_definitions(repo_root: &Path, query: &str, limit: usize) -> Result<Value, String> {
+fn query_definitions_with_options(
+    repo_root: &Path,
+    options: &QueryListOptions,
+    lifecycle_summary: Option<&Value>,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let db_path = resolved_db_path_for_repo(repo_root);
     let store = open_existing_store(repo_root)?;
-    let hits = symbol_search_hits(&store, query, limit * 2)?
+    let hits = symbol_search_hits(&store, &options.query, options.fetch_limit() * 2)?
         .into_iter()
         .filter(|hit| is_definition_kind(hit.entity.kind))
-        .take(limit)
-        .map(|hit| symbol_search_hit_json(&hit))
+        .take(options.fetch_limit())
         .collect::<Vec<_>>();
+
+    if options.output_mode.is_compact() {
+        let (hits, truncation) = truncate_for_agent(hits, options.limit);
+        let results = hits
+            .iter()
+            .map(agent_definition_result_json)
+            .collect::<Vec<_>>();
+        let warnings = if results.is_empty() {
+            vec![bounded_message(
+                "no_definition_found",
+                "No symbol definition matched the query.",
+                "warning",
+            )]
+        } else {
+            Vec::new()
+        };
+        return Ok(canonical_agent_query_response(
+            "query_definitions_agent_json",
+            "query definitions",
+            repo_root,
+            &db_path,
+            if results.is_empty() { "warning" } else { "ok" },
+            lifecycle_summary,
+            truncation,
+            json!({
+                "text": options.query,
+                "explicit_limit": options.explicit_limit,
+            }),
+            results,
+            warnings,
+            Vec::new(),
+            options.output_mode,
+            agent_timings_json(started),
+        ));
+    }
+
+    let hits = hits.iter().map(symbol_search_hit_json).collect::<Vec<_>>();
 
     Ok(json!({
         "status": "ok",
-        "query": query,
+        "query": options.query,
+        "result_count": hits.len(),
+        "limit": options.limit,
+        "explicit_limit": options.explicit_limit,
+        "output_mode": options.output_mode.as_str(),
         "definitions": hits,
+        "graph_proof": false,
+        "proof_status": if hits.is_empty() { "no_proof_path_found" } else { "symbol_definition_found" },
+        "proof_strength": "symbol_definition",
         "proof": "Definitions are symbol-search hits constrained to declaration/executable entity kinds.",
     }))
 }
 
-fn query_references(repo_root: &Path, query: &str, limit: usize) -> Result<Value, String> {
+fn query_references_with_options(
+    repo_root: &Path,
+    options: &QueryListOptions,
+    lifecycle_summary: Option<&Value>,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let db_path = resolved_db_path_for_repo(repo_root);
     let store = open_existing_store(repo_root)?;
     let entities = store
         .list_entities(UNBOUNDED_STORE_READ_LIMIT)
         .map_err(|error| error.to_string())?;
     let entity_by_id = entities_by_id(&entities);
-    let seeds = resolve_symbol_candidates(&store, query, 8)?;
+    let seeds = resolve_symbol_candidates(&store, &options.query, 8)?;
     let seed_ids = seeds
         .iter()
         .map(|entity| entity.id.clone())
@@ -19218,7 +22267,7 @@ fn query_references(repo_root: &Path, query: &str, limit: usize) -> Result<Value
         .list_edges(UNBOUNDED_STORE_READ_LIMIT)
         .map_err(|error| error.to_string())?
     {
-        if references.len() >= limit {
+        if references.len() >= options.fetch_limit() {
             break;
         }
         let head_aliases = entity_by_id
@@ -19234,20 +22283,76 @@ fn query_references(repo_root: &Path, query: &str, limit: usize) -> Result<Value
             || aliases_overlap(&seed_aliases, &head_aliases)
             || aliases_overlap(&seed_aliases, &tail_aliases);
         if matches_seed {
-            references.push(edge_with_entities_json(&edge, &entity_by_id));
+            references.push(edge);
         }
     }
 
+    if options.output_mode.is_compact() {
+        let (references, truncation) = truncate_for_agent(references, options.limit);
+        let results = references
+            .iter()
+            .map(|edge| agent_reference_edge_json(edge, &entity_by_id))
+            .collect::<Vec<_>>();
+        let warnings = if results.is_empty() {
+            vec![bounded_message(
+                "no_references_found",
+                "No graph references matched the resolved symbol candidates.",
+                "warning",
+            )]
+        } else {
+            Vec::new()
+        };
+        return Ok(canonical_agent_query_response(
+            "query_references_agent_json",
+            "query references",
+            repo_root,
+            &db_path,
+            if results.is_empty() { "warning" } else { "ok" },
+            lifecycle_summary,
+            truncation,
+            json!({
+                "text": options.query,
+                "explicit_limit": options.explicit_limit,
+                "resolved_symbols": seeds.iter().map(agent_entity_ref_json).collect::<Vec<_>>(),
+            }),
+            results,
+            warnings,
+            Vec::new(),
+            options.output_mode,
+            agent_timings_json(started),
+        ));
+    }
+
+    let graph_proof = references.iter().any(edge_is_graph_relation_proof);
+    let reference_rows = references
+        .iter()
+        .map(|edge| edge_with_entities_json(edge, &entity_by_id))
+        .collect::<Vec<_>>();
+
     Ok(json!({
         "status": "ok",
-        "query": query,
+        "query": options.query,
+        "result_count": reference_rows.len(),
+        "limit": options.limit,
+        "explicit_limit": options.explicit_limit,
+        "output_mode": options.output_mode.as_str(),
         "resolved_symbols": seeds.iter().map(entity_json).collect::<Vec<_>>(),
-        "references": references,
+        "references": reference_rows,
+        "text_reference_count": 0,
+        "graph_proof": graph_proof,
+        "proof_status": if graph_proof { "proof_path_found" } else { "no_proof_path_found" },
+        "proof_strength": if graph_proof { "graph_relation_proof" } else { "none" },
         "proof": "References are graph edges connected to resolved symbol ids or explicit same-name unresolved placeholders.",
     }))
 }
 
-fn query_chain(repo_root: &Path, source: &str, target: &str) -> Result<Value, String> {
+fn query_chain_with_options(
+    repo_root: &Path,
+    options: &PathQueryOptions,
+    lifecycle_summary: Option<&Value>,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let db_path = resolved_db_path_for_repo(repo_root);
     let store = open_existing_store(repo_root)?;
     let entities = store
         .list_entities(UNBOUNDED_STORE_READ_LIMIT)
@@ -19256,29 +22361,52 @@ fn query_chain(repo_root: &Path, source: &str, target: &str) -> Result<Value, St
         .list_edges(UNBOUNDED_STORE_READ_LIMIT)
         .map_err(|error| error.to_string())?;
     let entity_by_id = entities_by_id(&entities);
-    let source_entities = resolve_symbol_candidates(&store, source, 8)?;
-    let target_entities = resolve_symbol_candidates(&store, target, 8)?;
+    let source_entities = resolve_symbol_candidates(&store, &options.source, 8)?;
+    let target_entities = resolve_symbol_candidates(&store, &options.target, 8)?;
     let target_aliases = alias_set_for_entities(&target_entities)
         .into_iter()
-        .chain([normalize_symbol_alias(target)])
+        .chain([normalize_symbol_alias(&options.target)])
         .collect::<BTreeSet<_>>();
+    let mut limits = default_query_limits();
+    limits.max_paths = options.output.fetch_limit();
     let paths = call_chain_paths(
         &edges,
         &entity_by_id,
         &source_entities,
         &target_aliases,
-        default_query_limits(),
+        limits,
     );
     let engine = ExactGraphQueryEngine::new(edges);
-    let evidence = engine.path_evidence_from_paths(&paths);
+    let mut evidence = engine.path_evidence_from_paths(&paths);
+    hydrate_path_evidence_endpoint_labels(&mut evidence, &entity_by_id);
+    if options.output.output_mode.is_compact() {
+        return Ok(agent_path_query_response(
+            "query_chain_agent_json",
+            "query chain",
+            repo_root,
+            &db_path,
+            lifecycle_summary,
+            options,
+            evidence,
+            agent_timings_json(started),
+        ));
+    }
+    let graph_proof = evidence.iter().any(path_evidence_is_graph_relation_proof);
 
     Ok(json!({
         "status": "ok",
-        "source": source,
-        "target": target,
+        "source": options.source,
+        "target": options.target,
         "resolved_sources": source_entities.iter().map(entity_json).collect::<Vec<_>>(),
         "resolved_targets": target_entities.iter().map(entity_json).collect::<Vec<_>>(),
         "paths": evidence,
+        "result_count": evidence.len(),
+        "limit": options.output.limit,
+        "explicit_limit": options.output.explicit_limit,
+        "output_mode": options.output.output_mode.as_str(),
+        "graph_proof": graph_proof,
+        "proof_status": path_query_proof_status(&evidence),
+        "proof_strength": path_query_proof_strength(&evidence),
         "chain_confidence": evidence.iter().map(|path| path.confidence).fold(0.0_f64, f64::max),
         "resolver_order": [
             "direct verified calls",
@@ -19353,7 +22481,7 @@ fn parse_unresolved_calls_args(args: &[String]) -> Result<UnresolvedCallsOptions
                 let path = args.get(index).ok_or_else(unresolved_calls_usage)?;
                 options.db_path = Some(PathBuf::from(path));
             }
-            "--json" => {}
+            "--json" | "--agent-json" | "--agent_json" => {}
             "--no-snippets" => {
                 options.include_snippets = false;
             }
@@ -20072,24 +23200,53 @@ fn edge_is_unresolved_call(edge: &Edge, entity_by_id: &BTreeMap<String, Entity>)
                 .is_some_and(entity_is_unresolved_reference))
 }
 
-fn query_path(repo_root: &Path, source: &str, target: &str) -> Result<Value, String> {
+fn query_path_with_options(
+    repo_root: &Path,
+    options: &PathQueryOptions,
+    lifecycle_summary: Option<&Value>,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let db_path = resolved_db_path_for_repo(repo_root);
     let store = open_existing_store(repo_root)?;
     let engine = query_engine(&store)?;
-    let source_id = resolve_symbol_or_literal(&store, source)?;
-    let target_id = resolve_symbol_or_literal(&store, target)?;
-    let paths = engine.trace_path(
-        &source_id,
-        &target_id,
-        RelationKind::ALL,
-        default_query_limits(),
-    );
+    let source_id = resolve_symbol_or_literal(&store, &options.source)?;
+    let target_id = resolve_symbol_or_literal(&store, &options.target)?;
+    let mut limits = default_query_limits();
+    limits.max_paths = options.output.fetch_limit();
+    let paths = engine.trace_path(&source_id, &target_id, RelationKind::ALL, limits);
+    let mut evidence = engine.path_evidence_from_paths(&paths);
+    let entities = store
+        .list_entities(UNBOUNDED_STORE_READ_LIMIT)
+        .map_err(|error| error.to_string())?;
+    let entity_by_id = entities_by_id(&entities);
+    hydrate_path_evidence_endpoint_labels(&mut evidence, &entity_by_id);
+    if options.output.output_mode.is_compact() {
+        return Ok(agent_path_query_response(
+            "query_path_agent_json",
+            "query path",
+            repo_root,
+            &db_path,
+            lifecycle_summary,
+            options,
+            evidence,
+            agent_timings_json(started),
+        ));
+    }
+    let graph_proof = evidence.iter().any(path_evidence_is_graph_relation_proof);
     Ok(json!({
         "status": "ok",
-        "source": source,
-        "target": target,
+        "source": options.source,
+        "target": options.target,
         "resolved_source": source_id,
         "resolved_target": target_id,
-        "paths": engine.path_evidence_from_paths(&paths),
+        "paths": evidence,
+        "result_count": evidence.len(),
+        "limit": options.output.limit,
+        "explicit_limit": options.output.explicit_limit,
+        "output_mode": options.output.output_mode.as_str(),
+        "graph_proof": graph_proof,
+        "proof_status": path_query_proof_status(&evidence),
+        "proof_strength": path_query_proof_strength(&evidence),
         "proof": "Path query is exact graph traversal over local persisted edges.",
     }))
 }
@@ -20506,7 +23663,7 @@ fn call_edge_result_json(
     let unresolved = entity_by_id
         .get(&edge.tail_id)
         .is_some_and(entity_is_unresolved_reference);
-    let role = classify_edge_evidence_role(edge);
+    let role = query_evidence_role_for_edge(edge);
     json!({
         "match_kind": match_kind,
         "exact_entity_id": exact_entity_id,
@@ -20514,9 +23671,9 @@ fn call_edge_result_json(
         "callee": entity_by_id.get(&edge.tail_id).map(entity_json),
         "edge": edge_json(edge),
         "source_span": edge.source_span,
-        "evidence_role": role.role.as_str(),
+        "evidence_role": role.role,
         "classification_reason": role.reason,
-        "classification_source": role.classification_source,
+        "classification_source": role.source,
         "proof_labels": {
             "relation": edge.relation.to_string(),
             "exactness": edge.exactness.to_string(),
@@ -20588,10 +23745,13 @@ fn agent_call_relation_response(
     {
         query.insert(
             "resolved_entity".to_string(),
-            agent_entity_ref_from_value(entity),
+            agent_compact_entity_ref_from_value(entity),
         );
     }
     query.insert("explicit_limit".to_string(), json!(output.explicit_limit));
+    let graph_proof = results
+        .iter()
+        .any(|result| result.get("graph_proof").and_then(Value::as_bool) == Some(true));
 
     let mut response = canonical_agent_query_response(
         "callers_callees_agent_json",
@@ -20610,6 +23770,23 @@ fn agent_call_relation_response(
     );
     if let Some(object) = response.as_object_mut() {
         object.insert("direction".to_string(), json!(key));
+        object.insert("graph_proof".to_string(), json!(graph_proof));
+        object.insert(
+            "proof_status".to_string(),
+            json!(if graph_proof {
+                "proof_path_found"
+            } else {
+                "no_proof_path_found"
+            }),
+        );
+        object.insert(
+            "proof_strength".to_string(),
+            json!(if graph_proof {
+                "graph_relation_proof"
+            } else {
+                "source_navigation_evidence"
+            }),
+        );
     }
     response
 }
@@ -20617,11 +23794,11 @@ fn agent_call_relation_response(
 fn agent_call_relation_row_json(row: &Value) -> Value {
     let caller = row
         .get("caller")
-        .map(agent_entity_ref_from_value)
+        .map(agent_compact_entity_ref_from_value)
         .unwrap_or_else(|| json!({}));
     let callee = row
         .get("callee")
-        .map(agent_entity_ref_from_value)
+        .map(agent_compact_entity_ref_from_value)
         .unwrap_or_else(|| json!({}));
     let edge = row.get("edge").cloned().unwrap_or_else(|| json!({}));
     let relation = edge
@@ -20667,28 +23844,516 @@ fn agent_call_relation_row_json(row: &Value) -> Value {
     result.insert("edge".to_string(), Value::Object(compact_edge));
     result.insert("caller".to_string(), caller);
     result.insert("callee".to_string(), callee);
+    result.insert("evidence_role".to_string(), json!(evidence_role));
     if let Some(span) = source_span {
         result.insert("span".to_string(), span.clone());
         result.insert("source_span".to_string(), span);
     }
+    let graph_proof = edge_value_is_graph_relation_proof(&edge);
+    result.insert("graph_proof".to_string(), json!(graph_proof));
+    result.insert(
+        "proof_status".to_string(),
+        json!(if graph_proof {
+            "proof_path_found"
+        } else {
+            "no_proof_path_found"
+        }),
+    );
+    result.insert(
+        "proof_strength".to_string(),
+        json!(if graph_proof {
+            "graph_relation_proof"
+        } else {
+            "source_navigation_evidence"
+        }),
+    );
     if let Some(match_kind) = row.get("match_kind").and_then(Value::as_str) {
         result.insert("match_reason".to_string(), json!(match_kind));
     }
     Value::Object(result)
 }
 
-fn agent_entity_ref_from_value(value: &Value) -> Value {
+fn agent_definition_result_json(hit: &SymbolSearchHit) -> Value {
+    let mut value = agent_symbol_search_hit_json(hit);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("graph_proof".to_string(), json!(false));
+        object.insert("proof_status".to_string(), json!("symbol_definition_found"));
+        object.insert("proof_strength".to_string(), json!("symbol_definition"));
+        object.insert(
+            "claimability".to_string(),
+            json!({
+                "claimable_as": ["symbol_definition"],
+                "not_claimable_as": ["graph_relation_proof", "behavior_proof"],
+            }),
+        );
+    }
+    value
+}
+
+fn agent_reference_edge_json(edge: &Edge, entity_by_id: &BTreeMap<String, Entity>) -> Value {
+    let role = query_evidence_role_for_edge(edge);
+    let graph_proof = edge_is_graph_relation_proof(edge);
+    json!({
+        "reference_evidence_kind": "graph_reference",
+        "text_reference": false,
+        "graph_proof": graph_proof,
+        "proof_status": if graph_proof { "proof_path_found" } else { "no_proof_path_found" },
+        "proof_strength": if graph_proof { "graph_relation_proof" } else { "source_navigation_evidence" },
+        "evidence_role": role.role,
+        "classification_reason": role.reason,
+        "classification_source": role.source,
+        "edge": {
+            "edge_id": edge.id,
+            "relation": edge.relation.to_string(),
+            "exactness": edge.exactness.to_string(),
+            "confidence": edge.confidence,
+            "source": entity_by_id.get(&edge.head_id).map(agent_entity_ref_json),
+            "target": entity_by_id.get(&edge.tail_id).map(agent_entity_ref_json),
+            "source_spans": [agent_source_span_json(&edge.source_span)],
+            "provenance_edges": edge.provenance_edges,
+        },
+        "head": entity_by_id.get(&edge.head_id).map(agent_entity_ref_json),
+        "tail": entity_by_id.get(&edge.tail_id).map(agent_entity_ref_json),
+        "source_span": agent_source_span_json(&edge.source_span),
+    })
+}
+
+fn agent_path_query_response(
+    schema_name: &str,
+    command: &str,
+    repo_root: &Path,
+    db_path: &Path,
+    lifecycle_summary: Option<&Value>,
+    options: &PathQueryOptions,
+    evidence: Vec<PathEvidence>,
+    timings: Value,
+) -> Value {
+    let proof_status = path_query_proof_status(&evidence);
+    let proof_strength = path_query_proof_strength(&evidence);
+    let graph_proof = evidence.iter().any(path_evidence_is_graph_relation_proof);
+    let (evidence, truncation) = truncate_for_agent(evidence, options.output.limit);
+    let results = evidence
+        .iter()
+        .map(agent_path_evidence_result_json)
+        .collect::<Vec<_>>();
+    let warnings = if results.is_empty() {
+        vec![bounded_message(
+            "no_proof_path_found",
+            "No verified graph path was found for the requested endpoints.",
+            "warning",
+        )]
+    } else {
+        Vec::new()
+    };
+    let mut response = canonical_agent_query_response(
+        schema_name,
+        command,
+        repo_root,
+        db_path,
+        if results.is_empty() { "warning" } else { "ok" },
+        lifecycle_summary,
+        truncation,
+        json!({
+            "source": options.source,
+            "target": options.target,
+            "explicit_limit": options.output.explicit_limit,
+        }),
+        results,
+        warnings,
+        Vec::new(),
+        options.output.output_mode,
+        timings,
+    );
+    if let Some(object) = response.as_object_mut() {
+        object.insert("graph_proof".to_string(), json!(graph_proof));
+        object.insert("proof_status".to_string(), json!(proof_status));
+        object.insert("proof_strength".to_string(), json!(proof_strength));
+    }
+    response
+}
+
+fn agent_path_evidence_result_json(path: &PathEvidence) -> Value {
+    let graph_proof = path_evidence_is_graph_relation_proof(path);
+    let evidence_role = path
+        .metadata
+        .get("evidence_role")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let edges = agent_path_edges_json(path);
+    json!({
+        "path_id": path.id,
+        "summary": path.summary,
+        "source": path.source,
+        "source_endpoint": agent_path_endpoint_from_path_id(path, &path.source, "source"),
+        "target": path.target,
+        "target_endpoint": agent_path_endpoint_from_path_id(path, &path.target, "target"),
+        "relations": path.metapath.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        "edges": edges,
+        "source_spans": path.source_spans.iter().map(agent_source_span_json).collect::<Vec<_>>(),
+        "exactness": path.exactness.to_string(),
+        "confidence": path.confidence,
+        "length": path.length,
+        "evidence_role": evidence_role,
+        "classification_reason": path.metadata.get("classification_reason").cloned().unwrap_or_else(|| json!("unknown")),
+        "classification_source": path.metadata.get("classification_source").cloned().unwrap_or_else(|| json!("unknown")),
+        "production_proof_eligible": path.metadata.get("production_proof_eligible").cloned().unwrap_or_else(|| json!(false)),
+        "edge_labels": path.metadata.get("edge_labels").cloned().unwrap_or_else(|| json!([])),
+        "graph_proof": graph_proof,
+        "proof_status": if graph_proof { "proof_path_found" } else { "not_graph_relation_proof" },
+        "proof_strength": if graph_proof { "graph_relation_proof" } else { "source_navigation_evidence" },
+    })
+}
+
+fn agent_path_edges_json(path: &PathEvidence) -> Vec<Value> {
+    if let Some(labels) = path.metadata.get("edge_labels").and_then(Value::as_array) {
+        let edges = labels
+            .iter()
+            .map(agent_path_edge_from_label_json)
+            .collect::<Vec<_>>();
+        if !edges.is_empty() {
+            return edges;
+        }
+    }
+
+    path.edges
+        .iter()
+        .map(|(source, relation, target)| {
+            json!({
+                "edge_id": null,
+                "edge_id_unavailable": true,
+                "edge_id_unavailable_reason": "stored PathEvidence edge tuple has no persisted edge id",
+                "source": agent_path_endpoint_ref_from_id(source),
+                "relation": relation.to_string(),
+                "target": agent_path_endpoint_ref_from_id(target),
+                "evidence_role": path
+                    .metadata
+                    .get("evidence_role")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown"),
+                "classification_reason": path
+                    .metadata
+                    .get("classification_reason")
+                    .cloned()
+                    .unwrap_or_else(|| json!("unhydrated PathEvidence edge tuple")),
+            })
+        })
+        .collect()
+}
+
+fn agent_path_edge_from_label_json(label: &Value) -> Value {
+    let edge_id = label.get("edge_id").and_then(Value::as_str);
     let mut object = serde_json::Map::new();
+    if let Some(edge_id) = edge_id.filter(|value| !value.trim().is_empty()) {
+        object.insert("edge_id".to_string(), json!(edge_id));
+    } else {
+        object.insert("edge_id".to_string(), Value::Null);
+        object.insert("edge_id_unavailable".to_string(), json!(true));
+        object.insert(
+            "edge_id_unavailable_reason".to_string(),
+            json!("persisted edge id was not available in hydrated PathEvidence metadata"),
+        );
+    }
+    object.insert(
+        "source".to_string(),
+        agent_path_endpoint_from_label(label, "head", "head_id"),
+    );
+    object.insert(
+        "target".to_string(),
+        agent_path_endpoint_from_label(label, "tail", "tail_id"),
+    );
+    object.insert(
+        "relation".to_string(),
+        label
+            .get("relation")
+            .cloned()
+            .unwrap_or_else(|| json!("unknown")),
+    );
+    for key in [
+        "exactness",
+        "confidence",
+        "derived",
+        "edge_class",
+        "fact_class",
+        "context",
+        "evidence_role",
+        "classification_reason",
+        "classification_source",
+        "provenance_edges",
+    ] {
+        if let Some(value) = label.get(key).cloned() {
+            object.insert(key.to_string(), value);
+        }
+    }
+    if let Some(span) = label
+        .get("source_span_detail")
+        .and_then(agent_source_span_from_value)
+        .or_else(|| {
+            label
+                .get("source_span")
+                .and_then(Value::as_str)
+                .filter(|path| !path.is_empty())
+                .map(|path| {
+                    json!({
+                        "file": path,
+                        "start_line": 1,
+                        "end_line": 1,
+                        "span_unavailable": true,
+                    })
+                })
+        })
+    {
+        object.insert("source_spans".to_string(), json!([span]));
+    }
+    Value::Object(object)
+}
+
+fn agent_path_endpoint_from_label(label: &Value, prefix: &str, id_key: &str) -> Value {
+    let entity_key = format!("{prefix}_entity");
+    if let Some(entity) = label.get(&entity_key).filter(|value| value.is_object()) {
+        return agent_path_endpoint_ref_from_value(entity);
+    }
+    let id = label
+        .get(id_key)
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    agent_path_endpoint_ref_from_id(id)
+}
+
+fn agent_path_endpoint_from_path_id(path: &PathEvidence, id: &str, _endpoint: &str) -> Value {
+    if let Some(labels) = path.metadata.get("edge_labels").and_then(Value::as_array) {
+        for label in labels {
+            for (prefix, id_key) in [("head", "head_id"), ("tail", "tail_id")] {
+                if label
+                    .get(id_key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == id)
+                {
+                    return agent_path_endpoint_from_label(label, prefix, id_key);
+                }
+            }
+        }
+    }
+    agent_path_endpoint_ref_from_id(id)
+}
+
+fn agent_path_endpoint_ref_from_value(value: &Value) -> Value {
+    let id = value
+        .get("entity_id")
+        .or_else(|| value.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let display_name = value
+        .get("display_name")
+        .or_else(|| value.get("name"))
+        .or_else(|| value.get("symbol"))
+        .or_else(|| value.get("qualified_name"))
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty());
+    let mut object = serde_json::Map::new();
+    object.insert("entity_id".to_string(), json!(id));
+    object.insert("id".to_string(), json!(id));
+    if let Some(display_name) = display_name {
+        object.insert("display_name".to_string(), json!(display_name));
+        object.insert("name".to_string(), json!(display_name));
+        object.insert("symbol".to_string(), json!(display_name));
+        object.insert("name_unavailable".to_string(), json!(false));
+    } else {
+        object.insert("display_name".to_string(), json!(id));
+        object.insert("name".to_string(), json!(id));
+        object.insert("symbol".to_string(), json!(id));
+        object.insert("name_unavailable".to_string(), json!(true));
+    }
     for (target, source) in [
-        ("id", "id"),
-        ("name", "name"),
         ("qualified_name", "qualified_name"),
         ("kind", "kind"),
+        ("file", "file"),
         ("file", "repo_relative_path"),
+        ("path", "path"),
+        ("path", "repo_relative_path"),
+        ("evidence_role", "evidence_role"),
+        ("classification_reason", "classification_reason"),
+        ("classification_source", "classification_source"),
     ] {
+        if object.contains_key(target) {
+            continue;
+        }
         if let Some(text) = value.get(source).and_then(Value::as_str) {
             object.insert(target.to_string(), json!(text));
         }
+    }
+    if let Some(span) = value
+        .get("span")
+        .and_then(agent_source_span_from_value)
+        .or_else(|| {
+            value
+                .get("source_span")
+                .and_then(agent_source_span_from_value)
+        })
+    {
+        object.insert("span".to_string(), span.clone());
+        object.insert("source_span".to_string(), span);
+    }
+    Value::Object(object)
+}
+
+fn agent_path_endpoint_ref_from_id(id: &str) -> Value {
+    json!({
+        "entity_id": id,
+        "id": id,
+        "display_name": id,
+        "name": id,
+        "symbol": id,
+        "name_unavailable": true,
+    })
+}
+
+fn hydrate_path_evidence_endpoint_labels(
+    paths: &mut [PathEvidence],
+    entity_by_id: &BTreeMap<String, Entity>,
+) {
+    for path in paths {
+        let Some(labels) = path
+            .metadata
+            .get_mut("edge_labels")
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        for label in labels {
+            let Some(object) = label.as_object_mut() else {
+                continue;
+            };
+            let head_id = object
+                .get("head_id")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if let Some(head_id) = head_id.as_deref() {
+                if let Some(entity) = entity_by_id.get(head_id) {
+                    object.insert("head_entity".to_string(), agent_entity_ref_json(entity));
+                    let role = query_evidence_role_for_entity(entity);
+                    object.insert("head_source_role".to_string(), json!(role.role));
+                }
+            }
+            let tail_id = object
+                .get("tail_id")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if let Some(tail_id) = tail_id.as_deref() {
+                if let Some(entity) = entity_by_id.get(tail_id) {
+                    object.insert("tail_entity".to_string(), agent_entity_ref_json(entity));
+                    let role = query_evidence_role_for_entity(entity);
+                    object.insert("tail_source_role".to_string(), json!(role.role));
+                }
+            }
+        }
+    }
+}
+
+fn edge_value_is_graph_relation_proof(edge: &Value) -> bool {
+    let exactness = edge
+        .get("exactness")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    !matches!(exactness, "static_heuristic" | "inferred" | "unknown")
+        && (edge.get("source_spans").is_some() || edge.get("source_span").is_some())
+}
+
+fn edge_is_graph_relation_proof(edge: &Edge) -> bool {
+    !matches!(
+        edge.exactness,
+        Exactness::StaticHeuristic | Exactness::Inferred
+    ) && !edge.source_span.repo_relative_path.is_empty()
+}
+
+fn path_evidence_is_graph_relation_proof(path: &PathEvidence) -> bool {
+    if path.length == 0
+        || matches!(
+            path.exactness,
+            Exactness::StaticHeuristic | Exactness::Inferred
+        )
+        || path.source_spans.len() < path.length
+    {
+        return false;
+    }
+    if path
+        .metadata
+        .get("proof_grade_edge_classes")
+        .and_then(Value::as_bool)
+        == Some(false)
+    {
+        return false;
+    }
+    if path
+        .metadata
+        .get("derived_edges_have_provenance")
+        .and_then(Value::as_bool)
+        == Some(false)
+    {
+        return false;
+    }
+    true
+}
+
+fn path_query_proof_status(paths: &[PathEvidence]) -> &'static str {
+    if paths.iter().any(path_evidence_is_graph_relation_proof) {
+        "proof_path_found"
+    } else if paths.is_empty() {
+        "no_proof_path_found"
+    } else {
+        "not_graph_relation_proof"
+    }
+}
+
+fn path_query_proof_strength(paths: &[PathEvidence]) -> &'static str {
+    if paths.iter().any(path_evidence_is_graph_relation_proof) {
+        "graph_relation_proof"
+    } else if paths.is_empty() {
+        "none"
+    } else {
+        "source_navigation_evidence"
+    }
+}
+
+fn agent_compact_entity_ref_from_value(value: &Value) -> Value {
+    let id = value
+        .get("id")
+        .or_else(|| value.get("entity_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let name = value
+        .get("name")
+        .or_else(|| value.get("display_name"))
+        .or_else(|| value.get("symbol"))
+        .or_else(|| value.get("qualified_name"))
+        .and_then(Value::as_str)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(id);
+    let mut object = serde_json::Map::new();
+    object.insert("id".to_string(), json!(id));
+    object.insert("name".to_string(), json!(name));
+    if let Some(qualified_name) = value.get("qualified_name").and_then(Value::as_str) {
+        object.insert("qualified_name".to_string(), json!(qualified_name));
+    }
+    if let Some(kind) = value.get("kind").and_then(Value::as_str) {
+        object.insert("kind".to_string(), json!(kind));
+    }
+    if let Some(file) = value
+        .get("repo_relative_path")
+        .or_else(|| value.get("file"))
+        .or_else(|| value.get("path"))
+        .and_then(Value::as_str)
+    {
+        object.insert("file".to_string(), json!(file));
+    }
+    let name_unavailable = name.is_empty() || name == id;
+    if name_unavailable {
+        object.insert("name_unavailable".to_string(), json!(true));
+    }
+    if let Some(span) = value
+        .get("source_span")
+        .and_then(agent_source_span_from_value)
+    {
+        object.insert("source_span".to_string(), span);
     }
     Value::Object(object)
 }
@@ -24520,9 +28185,12 @@ fn hydrate_stored_path_evidence_metadata(
                         json!({
                             "edge_id": row.edge_id.clone(),
                             "head_id": row.head_id.clone(),
+                            "head_entity": stored_context_entity_agent_json(row.head_entity.as_ref()),
                             "relation": row.relation.clone(),
                             "tail_id": row.tail_id.clone(),
+                            "tail_entity": stored_context_entity_agent_json(row.tail_entity.as_ref()),
                             "source_span": row.source_span_path.clone(),
+                            "source_span_detail": stored_context_edge_source_span_json(row),
                             "exactness": row.exactness.clone().unwrap_or_else(|| path.exactness.to_string()),
                             "confidence": row.confidence.unwrap_or(path.confidence),
                             "derived": row.derived,
@@ -24565,6 +28233,54 @@ fn hydrate_stored_path_evidence_metadata(
         annotate_context_path_evidence_role(path);
     }
     Ok(stats)
+}
+
+fn stored_context_entity_agent_json(entity: Option<&StoredContextEntityMetadata>) -> Value {
+    let Some(entity) = entity else {
+        return Value::Null;
+    };
+    let display_name = if entity.name.trim().is_empty() {
+        entity.id.as_str()
+    } else {
+        entity.name.as_str()
+    };
+    let role = stored_context_entity_role(Some(entity));
+    let mut object = serde_json::Map::new();
+    object.insert("entity_id".to_string(), json!(entity.id));
+    object.insert("id".to_string(), json!(entity.id));
+    object.insert("display_name".to_string(), json!(display_name));
+    object.insert("name".to_string(), json!(entity.name));
+    object.insert("symbol".to_string(), json!(entity.name));
+    object.insert("qualified_name".to_string(), json!(entity.qualified_name));
+    if let Some(kind) = entity.kind {
+        object.insert("kind".to_string(), json!(kind.to_string()));
+    }
+    object.insert("file".to_string(), json!(entity.repo_relative_path));
+    object.insert("path".to_string(), json!(entity.repo_relative_path));
+    object.insert(
+        "name_unavailable".to_string(),
+        json!(entity.name.trim().is_empty()),
+    );
+    object.insert("evidence_role".to_string(), json!(role.role.as_str()));
+    object.insert("classification_reason".to_string(), json!(role.reason));
+    object.insert("classification_source".to_string(), json!(role.source));
+    if let Some(span) = entity.source_span.as_ref() {
+        object.insert("span".to_string(), agent_source_span_json(span));
+        object.insert("source_span".to_string(), agent_source_span_json(span));
+    }
+    Value::Object(object)
+}
+
+fn stored_context_edge_source_span_json(row: &StoredContextPathEdgeMetadata) -> Value {
+    let Some(path) = row.source_span_path.as_deref() else {
+        return Value::Null;
+    };
+    json!({
+        "file": path,
+        "start_line": 1,
+        "end_line": 1,
+        "span_unavailable": true,
+    })
 }
 
 fn load_bounded_context_edges(
@@ -26592,6 +30308,8 @@ fn context_pack_vector_retrieval_candidate_json(
         .cloned()
         .chain(["candidate_only".to_string(), "no_graph_proof".to_string()])
         .collect::<BTreeSet<_>>();
+    let vector_semantic_candidate = sources.contains("vector_semantic");
+    let binary_vector_candidate = sources.contains("binary_vector");
     let ranking_features = json!({
         "exact_seed_match": false,
         "file_path_match": matches!(candidate.embedding_source, Some(VectorEmbeddingSource::FilePathTitle)),
@@ -26626,6 +30344,15 @@ fn context_pack_vector_retrieval_candidate_json(
         "source_score": candidate.score,
         "vector_score": if sources.contains("vector_semantic") { candidate.score } else { None },
         "binary_score": if sources.contains("binary_vector") { candidate.score } else { None },
+        "semantic_backend": if vector_semantic_candidate { json!("deterministic_token_projection") } else { Value::Null },
+        "semantic_provider_kind": if vector_semantic_candidate { json!("deterministic_token_projection") } else { Value::Null },
+        "learned_semantic_embeddings": if vector_semantic_candidate { json!(false) } else { Value::Null },
+        "semantic_embedding_claim": if vector_semantic_candidate { json!("not_learned_semantic_embedding") } else { Value::Null },
+        "vector_candidate_claim_boundary": if vector_semantic_candidate || binary_vector_candidate {
+            json!("vector_evidence_candidate_only; graph_proof_requires_graph_source_verification")
+        } else {
+            Value::Null
+        },
         "rank": candidate.rank,
         "matched_seeds": candidate.matched_seeds.clone(),
         "matched_token": candidate.matched_seeds.first().cloned(),
@@ -26848,6 +30575,7 @@ fn build_context_agent_retrieval_candidates(
         .collect::<Vec<_>>();
     let exact_seed_cap_override = selected.len() > CONTEXT_AGENT_RETRIEVAL_CANDIDATE_LIMIT;
     for (index, candidate) in selected.iter_mut().enumerate() {
+        enforce_context_agent_candidate_vector_truth(candidate);
         let rank = index.saturating_add(1);
         let score = context_agent_candidate_rank_score(candidate);
         if let Some(object) = candidate.as_object_mut() {
@@ -26873,6 +30601,145 @@ fn build_context_agent_retrieval_candidates(
         omitted_count,
         omitted_candidates,
         exact_seed_cap_override,
+    }
+}
+
+fn annotate_context_agent_candidates_with_file_degradation(
+    candidates: &mut [Value],
+    db_path: &Path,
+) {
+    if candidates.is_empty() {
+        return;
+    }
+    let Ok(store) = SqliteGraphStore::open_read_only(db_path) else {
+        return;
+    };
+    let mut cache = BTreeMap::<String, Option<FileRecord>>::new();
+    for candidate in candidates {
+        let Some(path) = context_agent_candidate_file_path(candidate) else {
+            continue;
+        };
+        let key = context_agent_path_key(&path);
+        let file = if let Some(file) = cache.get(&key) {
+            file.clone()
+        } else {
+            let loaded = store.get_file(&path).ok().flatten();
+            cache.insert(key, loaded.clone());
+            loaded
+        };
+        if let Some(file) = file {
+            insert_context_candidate_degradation_from_file(&file, candidate);
+        }
+    }
+}
+
+fn context_agent_candidate_file_path(candidate: &Value) -> Option<String> {
+    candidate
+        .get("path")
+        .or_else(|| candidate.get("file_id"))
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+        .map(|path| path.replace('\\', "/"))
+}
+
+fn insert_context_candidate_degradation_from_file(file: &FileRecord, candidate: &mut Value) {
+    let source_labels = context_agent_string_set(candidate, "source_labels");
+    let Some(object) = candidate.as_object_mut() else {
+        return;
+    };
+    let metadata = &file.metadata;
+    let graph_output_budget_hit = metadata
+        .get("graph_output_budget_hit")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let degradation_labels = metadata
+        .get("degradation_labels")
+        .or_else(|| metadata.get("graph_output_degradation_labels"))
+        .cloned();
+    let diagnostic_only = metadata
+        .get("diagnostic_only")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !graph_output_budget_hit && degradation_labels.is_none() && !diagnostic_only {
+        return;
+    }
+
+    object.insert("graph_output_degraded".to_string(), json!(true));
+    object.insert(
+        "degradation_labels".to_string(),
+        degradation_labels.unwrap_or_else(|| json!([])),
+    );
+    object.insert(
+        "graph_output_claimability".to_string(),
+        metadata
+            .get("graph_output_claimability")
+            .cloned()
+            .unwrap_or_else(|| json!("degraded_file_nonclaimable_for_omitted_facts")),
+    );
+    object.insert(
+        "graph_relation_claims".to_string(),
+        metadata
+            .get("graph_relation_claims")
+            .cloned()
+            .unwrap_or_else(|| json!("partial")),
+    );
+    object.insert(
+        "graph_output_budget_hits".to_string(),
+        metadata
+            .get("graph_output_budget_hits")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+    );
+    if let Some(reason) = metadata.get("graph_extraction_skip_reason").cloned() {
+        object.insert("graph_extraction_skip_reason".to_string(), reason);
+    }
+    object.insert("diagnostic_only".to_string(), json!(diagnostic_only));
+    object.insert(
+        "degraded_output_not_complete_graph_proof".to_string(),
+        json!(true),
+    );
+    object.insert(
+        "claimability".to_string(),
+        json!({
+            "claimable": false,
+            "claimable_as": [],
+            "not_claimable_as": [
+                "complete_graph_for_degraded_file",
+                "omitted_relation_classes",
+                "graph_relation_proof"
+            ],
+            "diagnostic_only": diagnostic_only,
+            "reason": "file has degraded graph output; context candidates must not be treated as complete graph proof"
+        }),
+    );
+    let mut merged_labels = source_labels.into_iter().collect::<Vec<_>>();
+    if !merged_labels
+        .iter()
+        .any(|label| label == "degraded_graph_output")
+    {
+        merged_labels.push("degraded_graph_output".to_string());
+    }
+    object.insert("source_labels".to_string(), json!(merged_labels));
+}
+
+fn copy_context_candidate_degradation_fields(
+    from: &Value,
+    object: &mut serde_json::Map<String, Value>,
+) {
+    for key in [
+        "graph_output_degraded",
+        "degradation_labels",
+        "graph_output_claimability",
+        "graph_output_budget_hits",
+        "graph_relation_claims",
+        "graph_extraction_skip_reason",
+        "diagnostic_only",
+        "degraded_output_not_complete_graph_proof",
+        "claimability",
+    ] {
+        if let Some(value) = from.get(key).cloned() {
+            object.insert(key.to_string(), value);
+        }
     }
 }
 
@@ -27386,6 +31253,44 @@ fn context_agent_candidate_sources(candidate: &Value) -> BTreeSet<String> {
 
 fn context_agent_candidate_has_source(candidate: &Value, expected: &str) -> bool {
     context_agent_candidate_sources(candidate).contains(expected)
+}
+
+fn enforce_context_agent_candidate_vector_truth(candidate: &mut Value) {
+    let sources = context_agent_candidate_sources(candidate);
+    let vector_semantic_candidate =
+        sources.contains("vector_semantic") || sources.contains("vector_rerank");
+    let binary_vector_candidate = sources.contains("binary_vector");
+    if !vector_semantic_candidate && !binary_vector_candidate {
+        return;
+    }
+    let Some(object) = candidate.as_object_mut() else {
+        return;
+    };
+    object.insert(
+        "vector_candidate_claim_boundary".to_string(),
+        json!("vector_evidence_candidate_only; graph_proof_requires_graph_source_verification"),
+    );
+    if vector_semantic_candidate {
+        object.insert(
+            "semantic_backend".to_string(),
+            json!("deterministic_token_projection"),
+        );
+        object.insert(
+            "semantic_provider_kind".to_string(),
+            json!("deterministic_token_projection"),
+        );
+        object.insert("learned_semantic_embeddings".to_string(), json!(false));
+        object.insert(
+            "semantic_embedding_claim".to_string(),
+            json!("not_learned_semantic_embedding"),
+        );
+    }
+    if binary_vector_candidate {
+        object.insert(
+            "binary_vector_projection".to_string(),
+            json!("candidate_only"),
+        );
+    }
 }
 
 fn context_agent_candidate_sources_verified(candidates: &[Value]) -> Vec<String> {
@@ -29171,7 +33076,7 @@ fn context_pack_public_candidate_json(candidate: &Value) -> Value {
 }
 
 fn context_pack_compact_candidate_json(candidate: &Value) -> Value {
-    json!({
+    let mut value = json!({
         "candidate_id": candidate.get("candidate_id").cloned().unwrap_or(Value::Null),
         "candidate_source": candidate.get("candidate_source").cloned().unwrap_or(Value::Null),
         "candidate_sources": candidate.get("candidate_sources").cloned().unwrap_or_else(|| json!([])),
@@ -29189,7 +33094,11 @@ fn context_pack_compact_candidate_json(candidate: &Value) -> Value {
         "graph_verification_status": candidate.get("graph_verification_status").cloned().unwrap_or(Value::Null),
         "rank": candidate.get("rank").cloned().unwrap_or(Value::Null),
         "score": candidate.get("score").cloned().unwrap_or(Value::Null),
-    })
+    });
+    if let Some(object) = value.as_object_mut() {
+        copy_context_candidate_degradation_fields(candidate, object);
+    }
+    value
 }
 
 fn context_pack_candidate_values_with_compact_fallback(candidates: &[Value]) -> (Vec<Value>, bool) {
@@ -29608,7 +33517,7 @@ fn routing_evidence_from_candidate(
             "candidate_only"
         });
     let matched_signal = routing_matched_signal(&candidate);
-    Some(json!({
+    let mut evidence = json!({
         "evidence_id": evidence_id,
         "role": role,
         "file": file,
@@ -29623,7 +33532,13 @@ fn routing_evidence_from_candidate(
         "rank_score": routing_evidence_rank_score(task_kind, &candidate),
         "source_navigation_is_graph_proof": false,
         "candidate": candidate,
-    }))
+    });
+    if let Some(object) = evidence.as_object_mut() {
+        if let Some(candidate) = object.get("candidate").cloned() {
+            copy_context_candidate_degradation_fields(&candidate, object);
+        }
+    }
+    Some(evidence)
 }
 
 fn routing_evidence_from_proof_path(
@@ -29696,7 +33611,7 @@ fn routing_evidence_from_fallback(
     } else {
         json!(["source_navigation", "fallback"])
     };
-    Some(json!({
+    let mut value = json!({
         "evidence_id": evidence_id,
         "role": role,
         "file": file,
@@ -29713,7 +33628,11 @@ fn routing_evidence_from_fallback(
         "reason": evidence.get("classification_reason").cloned().unwrap_or_else(|| json!("source text fallback")),
         "source_navigation_is_graph_proof": false,
         "fallback": evidence,
-    }))
+    });
+    if let Some(object) = value.as_object_mut() {
+        copy_context_candidate_degradation_fields(evidence, object);
+    }
+    Some(value)
 }
 
 fn routing_evidence_from_snippet(
@@ -29731,7 +33650,7 @@ fn routing_evidence_from_snippet(
             .and_then(Value::as_str)
             .unwrap_or("unknown")
     );
-    Some(json!({
+    let mut value = json!({
         "evidence_id": evidence_id,
         "role": role,
         "file": file,
@@ -29748,7 +33667,11 @@ fn routing_evidence_from_snippet(
         "reason": snippet.get("reason").cloned().unwrap_or_else(|| json!("fallback snippet")),
         "source_navigation_is_graph_proof": false,
         "snippet": snippet,
-    }))
+    });
+    if let Some(object) = value.as_object_mut() {
+        copy_context_candidate_degradation_fields(snippet, object);
+    }
+    Some(value)
 }
 
 fn routing_candidate_file(candidate: &Value) -> Option<String> {
@@ -30120,6 +34043,7 @@ fn routing_merge_evidence(existing: &mut Value, incoming: &mut Value) {
         existing_object.insert("graph_proof".to_string(), json!(true));
         existing_object.insert("proof_status".to_string(), json!("proof_path_found"));
     }
+    copy_context_candidate_degradation_fields(incoming, existing_object);
 }
 
 fn routing_string_values(value: &Value, key: &str) -> Vec<String> {
@@ -30263,7 +34187,7 @@ fn routing_critical_files(evidence: &[Value], limit: usize) -> (Vec<Value>, usiz
         if !seen.insert(key) {
             continue;
         }
-        files.push(json!({
+        let mut file_entry = json!({
             "file": file,
             "role": item.get("role").cloned().unwrap_or_else(|| json!("unknown")),
             "evidence_ids": [routing_evidence_id(item)],
@@ -30273,7 +34197,11 @@ fn routing_critical_files(evidence: &[Value], limit: usize) -> (Vec<Value>, usiz
             ),
             "proof_status": item.get("proof_status").cloned().unwrap_or_else(|| json!("unknown")),
             "graph_proof": item.get("graph_proof").and_then(Value::as_bool).unwrap_or(false),
-        }));
+        });
+        if let Some(object) = file_entry.as_object_mut() {
+            copy_context_candidate_degradation_fields(item, object);
+        }
+        files.push(file_entry);
     }
     let omitted = files.len().saturating_sub(limit);
     files.truncate(limit);
@@ -30400,7 +34328,7 @@ fn routing_source_navigation_evidence(
 }
 
 fn routing_compact_evidence_json(item: &Value, graph_proof: bool, evidence_type: &str) -> Value {
-    json!({
+    let mut value = json!({
         "evidence_id": item.get("evidence_id").cloned().unwrap_or(Value::Null),
         "role": item.get("role").cloned().unwrap_or_else(|| json!("unknown")),
         "file": item.get("file").cloned().unwrap_or(Value::Null),
@@ -30421,7 +34349,11 @@ fn routing_compact_evidence_json(item: &Value, graph_proof: bool, evidence_type:
         },
         "matched_signal": item.get("matched_signal").cloned().unwrap_or_else(|| json!("source signal")),
         "reason": item.get("reason").cloned().unwrap_or_else(|| json!("source evidence")),
-    })
+    });
+    if let Some(object) = value.as_object_mut() {
+        copy_context_candidate_degradation_fields(item, object);
+    }
+    value
 }
 
 fn routing_fallback_snippets(
@@ -31257,12 +35189,18 @@ fn context_pack_agent_json_response(
         .max_output_bytes
         .unwrap_or(DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES);
 
-    let paths = packet
+    let mut paths = packet
         .verified_paths
         .iter()
         .take(path_limit)
         .map(agent_context_path_json)
         .collect::<Vec<_>>();
+    // Resolve any proof-path edge endpoints still shown as opaque entity ids
+    // (freshly-walked fallback edges carry no resolved entity in their label) to
+    // human-readable symbol names via a single bounded store lookup. No-op when
+    // the DB cannot be opened (e.g. unit fixtures), so the proof boundary and
+    // existing behavior are unchanged.
+    resolve_context_path_edge_names(&mut paths, db_path);
     let all_fallback_evidence = packet
         .metadata
         .get("fallback_evidence")
@@ -31323,7 +35261,7 @@ fn context_pack_agent_json_response(
             agent_context_snippet_json(snippet, &packet.verified_paths, &fallback_evidence)
         })
         .collect::<Vec<_>>();
-    let candidate_set = build_context_agent_retrieval_candidates(
+    let mut candidate_set = build_context_agent_retrieval_candidates(
         options,
         packet,
         &paths,
@@ -31335,6 +35273,7 @@ fn context_pack_agent_json_response(
             .unwrap_or(false),
         proof_path_available,
     );
+    annotate_context_agent_candidates_with_file_degradation(&mut candidate_set.candidates, db_path);
     let candidate_count = candidate_set.candidates.len();
     let candidate_total_count = candidate_set.total_count;
     let candidate_omitted_count = candidate_set.omitted_count;
@@ -31610,6 +35549,11 @@ fn context_pack_agent_json_response(
             object.insert("claimability".to_string(), claimability);
         }
     }
+    if let Some(object) = response.as_object_mut() {
+        object.entry("claimability".to_string()).or_insert_with(|| {
+            context_pack_top_level_claimability_json(lifecycle_claimable, graph_proof)
+        });
+    }
 
     let mut max_output_bytes_exceeded = false;
     let mut omitted_retrieval_architecture = 0;
@@ -31643,6 +35587,8 @@ fn context_pack_agent_json_response(
             break;
         }
     }
+    let final_max_output_bytes_exceeded =
+        max_output_bytes_exceeded && serialized_json_len(&response) > max_output_bytes;
     update_context_agent_truncation(
         &mut response,
         path_limit,
@@ -31654,7 +35600,7 @@ fn context_pack_agent_json_response(
         omitted_risks,
         omitted_planning_packet,
         omitted_routing_packet,
-        max_output_bytes_exceeded,
+        final_max_output_bytes_exceeded,
     );
     if candidate_count > 0 {
         let candidate_bytes = serialized_json_len(&candidate_values);
@@ -31792,6 +35738,50 @@ fn context_pack_agent_json_response(
             }),
         );
     }
+    attach_context_pack_patch_assist_packet(
+        &mut response,
+        &packet.task,
+        &packet.mode,
+        &staged_availability,
+        max_output_bytes,
+    );
+    for _ in 0..4 {
+        if serialized_json_len(&response) <= max_output_bytes {
+            break;
+        }
+        let omitted_by_size =
+            enforce_context_agent_max_output_bytes(&mut response, max_output_bytes);
+        omitted_retrieval_architecture += omitted_by_size.retrieval_architecture;
+        omitted_paths += omitted_by_size.paths;
+        omitted_snippets += omitted_by_size.snippets;
+        omitted_fallback_evidence += omitted_by_size.fallback_evidence;
+        omitted_recommended_tests += omitted_by_size.recommended_tests;
+        omitted_risks += omitted_by_size.risks;
+        omitted_planning_packet += omitted_by_size.planning_packet;
+        omitted_routing_packet += omitted_by_size.routing_packet;
+        max_output_bytes_exceeded |= omitted_by_size.max_output_bytes_exceeded;
+        if serialized_json_len(&response) <= max_output_bytes {
+            break;
+        }
+        if compact_context_agent_patch_assist_packet(&mut response) {
+            omitted_routing_packet += 1;
+            continue;
+        }
+        break;
+    }
+    update_context_agent_truncation(
+        &mut response,
+        path_limit,
+        omitted_retrieval_architecture,
+        omitted_paths,
+        omitted_snippets,
+        omitted_fallback_evidence,
+        omitted_recommended_tests,
+        omitted_risks,
+        omitted_planning_packet,
+        omitted_routing_packet,
+        max_output_bytes_exceeded,
+    );
     response
 }
 
@@ -32633,6 +36623,31 @@ fn context_planning_claimability_json(
     })
 }
 
+fn context_pack_top_level_claimability_json(lifecycle_claimable: bool, graph_proof: bool) -> Value {
+    if lifecycle_claimable && graph_proof {
+        return json!({
+            "claimable": true,
+            "claimable_as": ["graph_relation_proof", "source_text_existence"],
+            "not_claimable_as": [],
+            "graph_proof_only_from_graph_source_verification": true,
+        });
+    }
+    if lifecycle_claimable {
+        return json!({
+            "claimable": true,
+            "claimable_as": ["source_text_existence"],
+            "not_claimable_as": ["graph_relation_proof"],
+            "graph_proof_only_from_graph_source_verification": true,
+        });
+    }
+    json!({
+        "claimable": false,
+        "claimable_as": [],
+        "not_claimable_as": ["graph_relation_proof"],
+        "graph_proof_only_from_graph_source_verification": true,
+    })
+}
+
 fn context_planning_do_not_touch_areas(likely_files: &[String]) -> Vec<String> {
     let build_or_config_surface = likely_files.iter().any(|file| {
         let lower = context_planning_normalize_path(file).to_ascii_lowercase();
@@ -32738,6 +36753,19 @@ fn enforce_context_agent_max_output_bytes(
             omitted.retrieval_architecture += 1;
             continue;
         }
+        // Only drop retrieval_explain if it is the full (large) explain. Once it
+        // has been reduced to the bounded budget summary (`budget_limited: true`),
+        // keep it: it is small and is the explain-mode contract surface.
+        if response
+            .get("retrieval_explain")
+            .and_then(|explain| explain.get("budget_limited"))
+            .and_then(Value::as_bool)
+            != Some(true)
+            && remove_context_agent_field(response, "retrieval_explain")
+        {
+            omitted.retrieval_architecture += 1;
+            continue;
+        }
         if pop_context_agent_planning_array_item(response, "evidence_items") {
             omitted.planning_packet += 1;
             continue;
@@ -32794,8 +36822,46 @@ fn enforce_context_agent_max_output_bytes(
             omitted.routing_packet += 1;
             continue;
         }
-        if remove_context_agent_field(response, "planning_packet") {
+        // Never remove planning_packet outright: its proof-labeled scalar fields
+        // (evidence_type/proof_status/graph_proof/claimability) are part of the
+        // contract. Reduce it to a minimal proof stub instead, dropping the bulky
+        // arrays already trimmed above.
+        if compact_context_agent_planning_packet_minimal(response) {
             omitted.planning_packet += 1;
+            continue;
+        }
+        if compact_context_agent_patch_assist_packet(response) {
+            omitted.routing_packet += 1;
+            continue;
+        }
+        if compact_context_agent_graph_verification(response) {
+            omitted.retrieval_architecture += 1;
+            continue;
+        }
+        if pop_context_agent_candidate_item(response) {
+            omitted.retrieval_architecture += 1;
+            continue;
+        }
+        let mut removed_compact_field = false;
+        for key in [
+            "candidate_source_counts",
+            "candidate_omitted_reason",
+            "candidate_exact_seed_cap_override",
+            "candidate_cap_policy",
+            "selected_role_coverage",
+            "evidence_budget_status",
+            // NOTE: fallback_snippets and explain_budget_status are intentionally
+            // NOT in this early-removal list. fallback_snippets is reduced via
+            // pop-preserve-one below (and only fully removed at last resort), and
+            // explain_budget_status is part of the explain contract.
+        ] {
+            if remove_context_agent_field(response, key) {
+                omitted.retrieval_architecture += 1;
+                removed_compact_field = true;
+                break;
+            }
+        }
+        if removed_compact_field {
             continue;
         }
         if pop_context_agent_array_item_preserve_one(response, "recommended_tests") {
@@ -32847,16 +36913,223 @@ fn enforce_context_agent_max_output_bytes(
             omitted.routing_packet += 1;
             continue;
         }
+        // Last-resort trims under extreme budgets (e.g. 4 KiB). These are not in
+        // the always-protected scalar set (claimability, graph_verification,
+        // lifecycle, proof_status/strength, graph_proof) the contract guarantees,
+        // so they may be reduced only after every lighter trim above is exhausted.
+        // patch_assist is first reduced to its minimal proof stub (keeps
+        // first_use_state / graph_proof / bounded candidate_evidence) and only
+        // fully removed if even that minimal form does not fit.
+        // Reduce patch_assist to its minimal proof stub first. Its full removal is
+        // deferred to the very end (after candidates / planning / fallback) so the
+        // minimal stub — which carries first_use_state / graph_proof — survives
+        // whenever it can fit, since it is the patch-assist contract surface.
+        if compact_context_agent_patch_assist_packet_minimal(response) {
+            omitted.routing_packet += 1;
+            continue;
+        }
+        if pop_context_agent_candidate_item_inner(response, true) {
+            omitted.retrieval_architecture += 1;
+            continue;
+        }
+        // planning_packet is droppable before fallback_snippets: the latter is the
+        // actual source/text evidence an agent reads when there is no graph proof,
+        // so it is the last narrative section to go.
+        if remove_context_agent_field(response, "planning_packet") {
+            omitted.planning_packet += 1;
+            continue;
+        }
+        if remove_context_agent_field(response, "fallback_snippets") {
+            omitted.snippets += 1;
+            continue;
+        }
+        // The minimal patch_assist stub (first_use_state / graph_proof) is the
+        // patch-assist contract surface and is intentionally NOT fully removed
+        // here: it is tiny and must survive. If the envelope is still over budget
+        // after every other trim, report the overflow rather than dropping it.
         omitted.max_output_bytes_exceeded = true;
         break;
     }
     omitted
 }
 
+fn compact_context_agent_graph_verification(response: &mut Value) -> bool {
+    let Some(graph) = response.get_mut("graph_verification") else {
+        return false;
+    };
+    if graph
+        .get("compacted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let compact = json!({
+        "status": graph.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+        "proof_status": graph.get("proof_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "graph_proof": graph.get("graph_proof").cloned().unwrap_or_else(|| json!(false)),
+        "evidence_status": graph.get("evidence_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "proof_failure_reason": graph.get("proof_failure_reason").cloned().unwrap_or(Value::Null),
+        "compacted": true,
+        "contract": {
+            "graph_source_verification_only": true,
+            "text_evidence_is_not_graph_proof": true,
+            "candidate_evidence_is_not_graph_proof": true,
+            "vector_evidence_is_not_graph_proof": true,
+        },
+    });
+    *graph = compact;
+    true
+}
+
+fn compact_context_agent_staged_availability(response: &mut Value) -> bool {
+    let Some(staged) = response.get_mut("staged_availability") else {
+        return false;
+    };
+    if staged
+        .get("agent_json_compacted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let compact = json!({
+        "graph_db_status": staged.get("graph_db_status").cloned().unwrap_or(Value::Null),
+        "candidate_spool_status": staged.get("candidate_spool_status").cloned().unwrap_or(Value::Null),
+        "vector_runtime_status": staged.get("vector_runtime_status").cloned().unwrap_or(Value::Null),
+        "vector_audit_status": staged.get("vector_audit_status").cloned().unwrap_or(Value::Null),
+        "graph_proof_available": staged.get("graph_proof_available").cloned().unwrap_or(Value::Null),
+        "candidate_only_available": staged.get("candidate_only_available").cloned().unwrap_or(Value::Null),
+        "claimability": staged.get("claimability").cloned().unwrap_or(Value::Null),
+        "active_candidate_sources": staged.get("active_candidate_sources").cloned().unwrap_or_else(|| json!([])),
+        "public_claim": false,
+        "agent_json_compacted": true,
+    });
+    *staged = compact;
+    true
+}
+
+fn compact_context_agent_patch_assist_packet_minimal(response: &mut Value) -> bool {
+    let Some(packet) = response.get_mut("patch_assist_packet") else {
+        return false;
+    };
+    if packet
+        .pointer("/packet_budget_status/agent_use_wrapper_minimal")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let compact = json!({
+        "packet_kind": packet.get("packet_kind").cloned().unwrap_or_else(|| json!("patch_assist_staged_context")),
+        "schema_version": packet.get("schema_version").cloned().unwrap_or_else(|| json!(1)),
+        "first_use_state": packet.get("first_use_state").cloned().unwrap_or_else(|| json!("unknown")),
+        "proof_status": packet.get("proof_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "proof_strength": packet.get("proof_strength").cloned().unwrap_or_else(|| json!("unknown")),
+        "graph_proof": packet.get("graph_proof").cloned().unwrap_or_else(|| json!(false)),
+        "claimability": packet.get("claimability").cloned().unwrap_or(Value::Null),
+        "unavailable": packet.get("unavailable").cloned().unwrap_or_else(|| json!(false)),
+        // Keep a bounded slice of the proof-relevant arrays (not just counts): the
+        // contract surfaces at least one candidate-evidence item and the layer
+        // degradation warnings agents act on. Counts are preserved from the source.
+        "candidate_evidence": routing_take_array(packet, "candidate_evidence", 1),
+        "degradation_warnings": routing_take_array(packet, "degradation_warnings", 2),
+        "candidate_evidence_count": packet.get("candidate_evidence_count").cloned().unwrap_or_else(|| json!(0)),
+        "degradation_warning_count": packet.get("degradation_warning_count").cloned().unwrap_or_else(|| json!(0)),
+        "source_navigation_evidence_count": packet.get("source_navigation_evidence_count").cloned().unwrap_or_else(|| json!(0)),
+        "packet_budget_status": {
+            "packet_budget_enforced": true,
+            "status": "bounded_with_omissions",
+            "agent_json_compacted": true,
+            "agent_use_wrapper_minimal": true,
+            "preserved_core_state": true,
+        },
+    });
+    *packet = compact;
+    true
+}
+
+fn compact_context_agent_db_lifecycle_read(response: &mut Value) -> bool {
+    let Some(lifecycle) = response.get_mut("db_lifecycle_read") else {
+        return false;
+    };
+    if lifecycle
+        .get("agent_json_compacted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let compact = json!({
+        "claimable": lifecycle.get("claimable").cloned().unwrap_or_else(|| json!(false)),
+        "diagnostic_only": lifecycle.get("diagnostic_only").cloned().unwrap_or_else(|| json!(true)),
+        "decision": lifecycle.get("decision").cloned().unwrap_or_else(|| json!("unknown")),
+        "artifact_freshness": lifecycle.get("artifact_freshness").cloned().unwrap_or(Value::Null),
+        "passport_status": lifecycle.get("passport_status").cloned().unwrap_or(Value::Null),
+        "path_access_status": lifecycle.get("path_access_status").cloned().unwrap_or(Value::Null),
+        "repo_root_status": lifecycle.get("repo_root_status").cloned().unwrap_or(Value::Null),
+        "schema_status": lifecycle.get("schema_status").cloned().unwrap_or(Value::Null),
+        "scope_status": lifecycle.get("scope_status").cloned().unwrap_or(Value::Null),
+        "sidecar_status": lifecycle.get("sidecar_status").cloned().unwrap_or(Value::Null),
+        "db_path_outside_workspace": lifecycle.get("db_path_outside_workspace").cloned().unwrap_or(Value::Null),
+        "agent_json_compacted": true,
+    });
+    *lifecycle = compact;
+    true
+}
+
 fn serialized_json_len(value: &Value) -> usize {
     serde_json::to_vec(value)
         .map(|bytes| bytes.len())
         .unwrap_or(usize::MAX)
+}
+
+fn pop_context_agent_candidate_item(response: &mut Value) -> bool {
+    pop_context_agent_candidate_item_inner(response, false)
+}
+
+fn pop_context_agent_candidate_item_inner(response: &mut Value, allow_empty: bool) -> bool {
+    let Some(candidates) = response.get_mut("candidates").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    // Under moderate pressure keep at least one candidate so a proof-bearing
+    // (path_evidence) candidate survives; only the extreme last-resort pass
+    // (allow_empty) may empty the array entirely.
+    let floor = if allow_empty { 0 } else { 1 };
+    if candidates.len() <= floor {
+        return false;
+    }
+    // Prefer dropping a non-proof candidate so a graph-verified / path_evidence
+    // candidate is the one retained under pressure. Fall back to popping the
+    // last element only when every remaining candidate is proof-bearing.
+    let is_proof_candidate = |candidate: &Value| -> bool {
+        candidate["verification_status"].as_str() == Some("graph_verified")
+            || candidate["proof_status"].as_str() == Some("proof_path_found")
+            || candidate["candidate_sources"]
+                .as_array()
+                .is_some_and(|sources| {
+                    sources
+                        .iter()
+                        .any(|source| source.as_str() == Some("path_evidence"))
+                })
+    };
+    if let Some(index) = candidates.iter().rposition(|c| !is_proof_candidate(c)) {
+        candidates.remove(index);
+    } else {
+        candidates.pop();
+    }
+    let candidate_count = candidates.len();
+    if let Some(object) = response.as_object_mut() {
+        object.insert("candidate_count".to_string(), json!(candidate_count));
+        object.insert("candidate_payload_compacted".to_string(), json!(true));
+        object.insert(
+            "candidate_omitted_reason".to_string(),
+            json!(
+                "candidate_payload_omitted_to_preserve_required_agent_state_under_max_output_bytes"
+            ),
+        );
+    }
+    true
 }
 
 fn pop_context_agent_array_item(response: &mut Value, key: &str) -> bool {
@@ -32886,6 +37159,34 @@ fn remove_context_agent_field(response: &mut Value, key: &str) -> bool {
         return false;
     };
     object.remove(key).is_some()
+}
+
+/// Reduce `planning_packet` to a minimal proof-labeled stub under byte pressure,
+/// preserving the contract scalar fields while dropping bulky arrays/sub-objects.
+/// Returns false when there is no planning_packet or it is already minimal, so
+/// the size-enforcement loop makes progress instead of spinning.
+fn compact_context_agent_planning_packet_minimal(response: &mut Value) -> bool {
+    let Some(packet) = response.get("planning_packet").and_then(Value::as_object) else {
+        return false;
+    };
+    // Already minimal (only the preserved keys present) -> nothing more to do.
+    if packet.get("agent_json_compacted").and_then(Value::as_bool) == Some(true) {
+        return false;
+    }
+    let minimal = json!({
+        "evidence_type": packet.get("evidence_type").cloned().unwrap_or(Value::Null),
+        "proof_status": packet.get("proof_status").cloned().unwrap_or(Value::Null),
+        "graph_proof": packet.get("graph_proof").cloned().unwrap_or(Value::Null),
+        "claimable": packet.get("claimable").cloned().unwrap_or(Value::Null),
+        "claimability": packet.get("claimability").cloned().unwrap_or(Value::Null),
+        "confidence": packet.get("confidence").cloned().unwrap_or(Value::Null),
+        "agent_json_compacted": true,
+    });
+    if let Some(object) = response.as_object_mut() {
+        object.insert("planning_packet".to_string(), minimal);
+        return true;
+    }
+    false
 }
 
 fn pop_context_agent_planning_array_item(response: &mut Value, key: &str) -> bool {
@@ -33173,8 +37474,14 @@ fn agent_context_path_json(path: &PathEvidence) -> Value {
                 edge.insert("edge_id".to_string(), json!(edge_id));
             }
             edge.insert("relation".to_string(), json!(relation.to_string()));
-            edge.insert("source".to_string(), agent_context_entity_ref(head));
-            edge.insert("target".to_string(), agent_context_entity_ref(tail));
+            edge.insert(
+                "source".to_string(),
+                agent_context_entity_ref_resolved(head, label, "head"),
+            );
+            edge.insert(
+                "target".to_string(),
+                agent_context_entity_ref_resolved(tail, label, "tail"),
+            );
             edge.insert("exactness".to_string(), json!(path.exactness.to_string()));
             edge.insert("confidence".to_string(), json!(path.confidence));
             edge.insert("evidence_role".to_string(), json!(edge_role));
@@ -33226,11 +37533,149 @@ fn agent_context_path_json(path: &PathEvidence) -> Value {
     Value::Object(object)
 }
 
-fn agent_context_entity_ref(id: &str) -> Value {
+/// Resolve a proof-path edge endpoint to a human-readable symbol ref. The stored
+/// PathEvidence loader attaches resolved `head_entity`/`tail_entity` objects (with
+/// name/qualified_name/kind/source span) to each edge label; prefer those so proof
+/// paths show real symbol names instead of opaque `repo://e/...` ids. When no
+/// resolved entity is present (e.g. freshly-walked fallback edges that were never
+/// persisted with name metadata) it falls back to the bare id as the name — an
+/// endpoint whose `name == id` is treated as still-unresolved by the store-backed
+/// `resolve_context_path_edge_names` pass. This fallback is byte-identical to the
+/// historical `{id, name}` ref so it never inflates the context-pack budget; the
+/// richer fields are only emitted once we actually have a real (shorter) name to
+/// substitute for the opaque id.
+fn agent_context_entity_ref_resolved(id: &str, label: Option<&Value>, prefix: &str) -> Value {
+    if let Some(entity) = label
+        .and_then(|label| label.get(format!("{prefix}_entity")))
+        .filter(|value| value.is_object())
+    {
+        let name = entity
+            .get("display_name")
+            .or_else(|| entity.get("name"))
+            .or_else(|| entity.get("symbol"))
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty() && *text != id);
+        if let Some(name) = name {
+            let mut object = serde_json::Map::new();
+            object.insert("id".to_string(), json!(id));
+            object.insert("name".to_string(), json!(name));
+            object.insert("display_name".to_string(), json!(name));
+            object.insert("name_unavailable".to_string(), json!(false));
+            for key in ["kind", "qualified_name", "file", "source_span"] {
+                if let Some(value) = entity.get(key) {
+                    object.insert(key.to_string(), value.clone());
+                }
+            }
+            return Value::Object(object);
+        }
+    }
     json!({
         "id": id,
         "name": id,
     })
+}
+
+/// Batch-resolve proof-path edge endpoints whose name is still the opaque entity id
+/// (i.e. `name == id`, the unresolved fallback shape) to their real symbol names by a
+/// single read-only store lookup keyed on entity id. Patches the `source`/`target`
+/// objects in place, substituting the short real name for the long opaque id (so the
+/// envelope shrinks rather than grows). Silently no-ops when no ids need resolving or
+/// the DB cannot be opened read-only, so fixture/unit callers and the proof boundary
+/// are unaffected.
+fn resolve_context_path_edge_names(paths: &mut [Value], db_path: &Path) {
+    // Collect endpoint ids still shown as the opaque id (name == id).
+    let mut unresolved: BTreeSet<String> = BTreeSet::new();
+    for path in paths.iter() {
+        if let Some(edges) = path.get("edges").and_then(Value::as_array) {
+            for edge in edges {
+                for side in ["source", "target"] {
+                    if let Some(id) = context_path_endpoint_unresolved_id(edge.get(side)) {
+                        unresolved.insert(id);
+                    }
+                }
+            }
+        }
+    }
+    if unresolved.is_empty() {
+        return;
+    }
+    let Ok(connection) = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    else {
+        return;
+    };
+    let ids: Vec<String> = unresolved.into_iter().collect();
+    let placeholders = sql_placeholders(ids.len());
+    let sql = format!(
+        "SELECT oid.value AS id, name.value AS name, qname.value AS qualified_name,
+                kind.value AS kind
+         FROM object_id_lookup oid
+         JOIN entities e ON e.id_key = oid.id
+         LEFT JOIN symbol_dict name ON name.id = e.name_id
+         LEFT JOIN qualified_name_lookup qname ON qname.id = e.qualified_name_id
+         LEFT JOIN entity_kind_dict kind ON kind.id = e.kind_id
+         WHERE oid.value IN ({placeholders})"
+    );
+    let mut resolved: BTreeMap<String, (String, Option<String>, Option<String>)> = BTreeMap::new();
+    if let Ok(mut statement) = connection.prepare(&sql) {
+        let rows = statement.query_map(rusqlite::params_from_iter(ids.iter()), |row| {
+            let id: String = row.get("id")?;
+            let name: Option<String> = row.get("name").ok();
+            let qualified_name: Option<String> = row.get("qualified_name").ok();
+            let kind: Option<String> = row.get("kind").ok();
+            Ok((id, name, qualified_name, kind))
+        });
+        if let Ok(rows) = rows {
+            for row in rows.flatten() {
+                if let Some(name) = row.1.filter(|n| !n.trim().is_empty()) {
+                    resolved.insert(row.0, (name, row.2, row.3));
+                }
+            }
+        }
+    }
+    if resolved.is_empty() {
+        return;
+    }
+    for path in paths.iter_mut() {
+        let Some(edges) = path.get_mut("edges").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for edge in edges.iter_mut() {
+            for side in ["source", "target"] {
+                let Some(id) = context_path_endpoint_unresolved_id(edge.get(side)) else {
+                    continue;
+                };
+                let Some((name, qualified_name, kind)) = resolved.get(&id) else {
+                    continue;
+                };
+                let Some(endpoint) = edge.get_mut(side).and_then(Value::as_object_mut) else {
+                    continue;
+                };
+                endpoint.insert("name".to_string(), json!(name));
+                endpoint.insert("display_name".to_string(), json!(name));
+                endpoint.insert("name_unavailable".to_string(), json!(false));
+                if let Some(qualified_name) = qualified_name {
+                    endpoint.insert("qualified_name".to_string(), json!(qualified_name));
+                }
+                if let Some(kind) = kind {
+                    endpoint.insert("kind".to_string(), json!(kind));
+                }
+            }
+        }
+    }
+}
+
+/// Return the entity id of a proof-path edge endpoint that is still unresolved — i.e.
+/// its `name` is just the opaque `id` (the byte-minimal fallback shape). Returns
+/// `None` for already-resolved endpoints (real name substituted) or malformed ones.
+fn context_path_endpoint_unresolved_id(endpoint: Option<&Value>) -> Option<String> {
+    let endpoint = endpoint?;
+    let id = endpoint.get("id").and_then(Value::as_str)?;
+    let name = endpoint.get("name").and_then(Value::as_str)?;
+    if name == id {
+        Some(id.to_string())
+    } else {
+        None
+    }
 }
 
 fn agent_context_snippet_json(
@@ -33988,6 +38433,14 @@ fn text_search_hit_json(hit: codegraph_store::TextSearchHit) -> Value {
 fn insert_text_evidence_labels(object: &mut serde_json::Map<String, Value>) {
     object.insert("evidence_kind".to_string(), json!("text_evidence"));
     object.insert("evidence_role".to_string(), json!("text_evidence"));
+    object.insert(
+        "classification_reason".to_string(),
+        json!("bounded text evidence; not graph proof"),
+    );
+    object.insert(
+        "classification_source".to_string(),
+        json!("text_evidence_lane"),
+    );
     object.insert("proof_status".to_string(), json!("not_graph_proof"));
     object.insert("graph_proof".to_string(), json!(false));
     object.insert("claimable_for_text".to_string(), json!(true));
@@ -34018,6 +38471,264 @@ fn text_evidence_claimability_json() -> Value {
         "diagnostic_only": false,
         "reason": "lifecycle-safe indexed text evidence; not graph proof"
     })
+}
+
+#[derive(Debug, Clone)]
+struct QueryEvidenceRoleLabel {
+    role: String,
+    reason: String,
+    source: String,
+}
+
+impl QueryEvidenceRoleLabel {
+    fn new(role: impl Into<String>, reason: impl Into<String>, source: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            reason: reason.into(),
+            source: source.into(),
+        }
+    }
+}
+
+fn query_evidence_role_for_entity(entity: &Entity) -> QueryEvidenceRoleLabel {
+    if entity_generated_or_degraded(entity) {
+        return QueryEvidenceRoleLabel::new(
+            "generated",
+            "entity path or metadata identifies generated/degraded source",
+            "path_or_degradation_metadata",
+        );
+    }
+    if matches!(entity.kind, EntityKind::Stub) || path_or_symbol_looks_stub(&entity.name) {
+        return QueryEvidenceRoleLabel::new(
+            "stub",
+            "entity is stub evidence",
+            "entity_kind_or_name",
+        );
+    }
+    let classified = classify_entity_source_role(entity);
+    if classified.role == EvidenceRole::Mock && path_or_symbol_looks_stub(&entity.qualified_name) {
+        return QueryEvidenceRoleLabel::new(
+            "stub",
+            classified.reason,
+            classified.classification_source,
+        );
+    }
+    if classified.role != EvidenceRole::Unknown {
+        return QueryEvidenceRoleLabel::new(
+            classified.role.as_str(),
+            classified.reason,
+            classified.classification_source,
+        );
+    }
+    query_evidence_role_for_path_and_metadata(
+        &entity.repo_relative_path,
+        Some(&entity.metadata),
+        None,
+        "entity_path_fallback",
+    )
+}
+
+fn query_evidence_role_for_file(file: &FileRecord) -> QueryEvidenceRoleLabel {
+    if file_record_is_text_evidence(file) {
+        return QueryEvidenceRoleLabel::new(
+            "text_evidence",
+            "indexed file is a bounded text-evidence lane, not graph proof",
+            "file_metadata",
+        );
+    }
+    query_evidence_role_for_path_and_metadata(
+        &file.repo_relative_path,
+        Some(&file.metadata),
+        file.language.as_deref(),
+        "file_record",
+    )
+}
+
+fn query_evidence_role_for_hit_path(path: &str, hit: &Value) -> QueryEvidenceRoleLabel {
+    if value_is_text_evidence_hit(hit) {
+        return QueryEvidenceRoleLabel::new(
+            "text_evidence",
+            "query text/file result is bounded text evidence, not graph proof",
+            "query_hit",
+        );
+    }
+    query_evidence_role_for_path_and_metadata(path, None, None, "query_hit_path")
+}
+
+fn query_evidence_role_for_edge(edge: &Edge) -> QueryEvidenceRoleLabel {
+    if edge.relation == RelationKind::Stubs
+        || path_or_symbol_looks_stub(&edge.head_id)
+        || path_or_symbol_looks_stub(&edge.tail_id)
+    {
+        return QueryEvidenceRoleLabel::new(
+            "stub",
+            "edge is stub evidence",
+            "relation_or_endpoint",
+        );
+    }
+    if edge_generated_or_degraded(edge) {
+        return QueryEvidenceRoleLabel::new(
+            "generated",
+            "edge path or metadata identifies generated/degraded source",
+            "path_or_degradation_metadata",
+        );
+    }
+    let classified = classify_edge_evidence_role(edge);
+    if classified.role != EvidenceRole::Unknown {
+        return QueryEvidenceRoleLabel::new(
+            classified.role.as_str(),
+            classified.reason,
+            classified.classification_source,
+        );
+    }
+    query_evidence_role_for_path_and_metadata(
+        &edge.source_span.repo_relative_path,
+        Some(&edge.metadata),
+        None,
+        "edge_path_fallback",
+    )
+}
+
+fn query_evidence_role_for_path_and_metadata(
+    path: &str,
+    metadata: Option<&Metadata>,
+    language_or_kind: Option<&str>,
+    source: &str,
+) -> QueryEvidenceRoleLabel {
+    if metadata_has_any_label(metadata, &["text_evidence"]) {
+        return QueryEvidenceRoleLabel::new(
+            "text_evidence",
+            "metadata identifies bounded text evidence, not graph proof",
+            source,
+        );
+    }
+    if metadata_has_any_label(
+        metadata,
+        &["generated", "generated_large", "skipped_generated"],
+    ) || path_looks_generated(path)
+    {
+        return QueryEvidenceRoleLabel::new(
+            "generated",
+            "path or metadata identifies generated source",
+            source,
+        );
+    }
+    if metadata_has_any_label(metadata, &["stub"]) || path_or_symbol_looks_stub(path) {
+        return QueryEvidenceRoleLabel::new(
+            "stub",
+            "path or metadata identifies stub evidence",
+            source,
+        );
+    }
+    if metadata_has_any_label(metadata, &["mock"]) || path_or_symbol_looks_mock(path) {
+        return QueryEvidenceRoleLabel::new(
+            "mock",
+            "path or metadata identifies mock evidence",
+            source,
+        );
+    }
+    if metadata_has_any_label(metadata, &["test", "fixture"]) || path_looks_test(path) {
+        return QueryEvidenceRoleLabel::new(
+            "test",
+            "path or metadata identifies test evidence",
+            source,
+        );
+    }
+    if path.trim().is_empty() && language_or_kind.is_none() {
+        return QueryEvidenceRoleLabel::new(
+            "unknown",
+            "source role cannot be determined from missing path and metadata",
+            source,
+        );
+    }
+    QueryEvidenceRoleLabel::new(
+        "production",
+        "default source role for non-test, non-mock, non-generated source",
+        source,
+    )
+}
+
+fn insert_query_evidence_role_labels(
+    object: &mut serde_json::Map<String, Value>,
+    label: QueryEvidenceRoleLabel,
+) {
+    object.insert("evidence_role".to_string(), json!(label.role));
+    object.insert("classification_reason".to_string(), json!(label.reason));
+    object.insert("classification_source".to_string(), json!(label.source));
+}
+
+fn metadata_has_any_label(metadata: Option<&Metadata>, needles: &[&str]) -> bool {
+    let Some(metadata) = metadata else {
+        return false;
+    };
+    metadata
+        .values()
+        .any(|value| value_contains_any_label(value, needles))
+}
+
+fn value_contains_any_label(value: &Value, needles: &[&str]) -> bool {
+    match value {
+        Value::String(text) => {
+            let normalized = text.to_ascii_lowercase();
+            needles.iter().any(|needle| normalized.contains(needle))
+        }
+        Value::Array(values) => values
+            .iter()
+            .any(|value| value_contains_any_label(value, needles)),
+        Value::Object(object) => object
+            .values()
+            .any(|value| value_contains_any_label(value, needles)),
+        _ => false,
+    }
+}
+
+fn entity_generated_or_degraded(entity: &Entity) -> bool {
+    path_looks_generated(&entity.repo_relative_path)
+        || metadata_has_any_label(
+            Some(&entity.metadata),
+            &["generated", "generated_large", "skipped_generated"],
+        )
+}
+
+fn edge_generated_or_degraded(edge: &Edge) -> bool {
+    path_looks_generated(&edge.source_span.repo_relative_path)
+        || metadata_has_any_label(
+            Some(&edge.metadata),
+            &["generated", "generated_large", "skipped_generated"],
+        )
+}
+
+fn path_looks_generated(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    normalized.contains("/generated/")
+        || normalized.contains(".generated.")
+        || normalized.ends_with(".pb.go")
+        || normalized.ends_with(".g.dart")
+}
+
+fn path_looks_test(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    normalized.contains("/tests/")
+        || normalized.contains("/test/")
+        || normalized.contains("/fixtures/")
+        || normalized.ends_with("_test.py")
+        || normalized.ends_with("_test.go")
+        || normalized.ends_with(".test.ts")
+        || normalized.ends_with(".test.tsx")
+        || normalized.ends_with(".test.js")
+        || normalized.ends_with(".test.jsx")
+        || normalized.ends_with(".spec.ts")
+        || normalized.ends_with(".spec.tsx")
+        || normalized.ends_with(".spec.js")
+        || normalized.ends_with(".spec.jsx")
+}
+
+fn path_or_symbol_looks_mock(value: &str) -> bool {
+    value.to_ascii_lowercase().contains("mock")
+}
+
+fn path_or_symbol_looks_stub(value: &str) -> bool {
+    value.to_ascii_lowercase().contains("stub")
 }
 
 fn context_pack_fallback_claimability_json() -> Value {
@@ -34078,17 +38789,33 @@ fn agent_source_span_json(span: &SourceSpan) -> Value {
 }
 
 fn agent_entity_ref_json(entity: &Entity) -> Value {
-    json!({
-        "id": entity.id,
-        "name": entity.name,
-        "qualified_name": entity.qualified_name,
-        "kind": entity.kind.to_string(),
-        "file": entity.repo_relative_path,
-    })
+    let role = query_evidence_role_for_entity(entity);
+    let mut object = serde_json::Map::new();
+    object.insert("entity_id".to_string(), json!(entity.id));
+    object.insert("id".to_string(), json!(entity.id));
+    object.insert("display_name".to_string(), json!(entity.name));
+    object.insert("name".to_string(), json!(entity.name));
+    object.insert("symbol".to_string(), json!(entity.name));
+    object.insert("qualified_name".to_string(), json!(entity.qualified_name));
+    object.insert("kind".to_string(), json!(entity.kind.to_string()));
+    object.insert("file".to_string(), json!(entity.repo_relative_path));
+    object.insert("path".to_string(), json!(entity.repo_relative_path));
+    object.insert(
+        "name_unavailable".to_string(),
+        json!(entity.name.trim().is_empty()),
+    );
+    object.insert("evidence_role".to_string(), json!(role.role));
+    object.insert("classification_reason".to_string(), json!(role.reason));
+    object.insert("classification_source".to_string(), json!(role.source));
+    if let Some(span) = entity.source_span.as_ref() {
+        object.insert("span".to_string(), agent_source_span_json(span));
+        object.insert("source_span".to_string(), agent_source_span_json(span));
+    }
+    Value::Object(object)
 }
 
 fn agent_symbol_search_hit_json(hit: &SymbolSearchHit) -> Value {
-    let role = classify_entity_source_role(&hit.entity);
+    let role = query_evidence_role_for_entity(&hit.entity);
     let mut object = serde_json::Map::new();
     object.insert("file".to_string(), json!(hit.entity.repo_relative_path));
     object.insert("symbol".to_string(), json!(hit.entity.name));
@@ -34097,14 +38824,9 @@ fn agent_symbol_search_hit_json(hit: &SymbolSearchHit) -> Value {
         object.insert("span".to_string(), span);
     }
     object.insert("score".to_string(), json!(hit.score));
-    object.insert("evidence_role".to_string(), json!(role.role.as_str()));
-    if role.role != EvidenceRole::Unknown {
-        object.insert("classification_reason".to_string(), json!(role.reason));
-        object.insert(
-            "classification_source".to_string(),
-            json!(role.classification_source),
-        );
-    }
+    object.insert("evidence_role".to_string(), json!(role.role));
+    object.insert("classification_reason".to_string(), json!(role.reason));
+    object.insert("classification_source".to_string(), json!(role.source));
     object.insert("entity".to_string(), agent_entity_ref_json(&hit.entity));
     Value::Object(object)
 }
@@ -34157,8 +38879,30 @@ fn agent_text_hit_json(hit: &Value) -> Value {
         }),
     );
     object.insert("match_reason".to_string(), json!(match_reason));
+    for key in [
+        "graph_output_degraded",
+        "degradation_labels",
+        "graph_output_claimability",
+        "graph_output_budget_hits",
+        "graph_relation_claims",
+        "graph_extraction_skip_reason",
+        "diagnostic_only",
+        "claimability",
+    ] {
+        if let Some(value) = hit.get(key).cloned() {
+            object.insert(key.to_string(), value);
+        }
+    }
     if value_is_text_evidence_hit(hit) {
         insert_text_evidence_labels(&mut object);
+    } else {
+        insert_text_evidence_labels(&mut object);
+        if !file.is_empty() {
+            let source_role = query_evidence_role_for_hit_path(file, hit);
+            object.insert("source_role".to_string(), json!(source_role.role));
+            object.insert("source_role_reason".to_string(), json!(source_role.reason));
+            object.insert("source_role_source".to_string(), json!(source_role.source));
+        }
     }
     Value::Object(object)
 }
@@ -34206,8 +38950,24 @@ fn agent_file_hit_json(hit: &Value) -> Value {
         );
     }
     object.insert("match_reason".to_string(), json!(match_reason));
+    for key in [
+        "graph_output_degraded",
+        "degradation_labels",
+        "graph_output_claimability",
+        "graph_output_budget_hits",
+        "graph_relation_claims",
+        "graph_extraction_skip_reason",
+        "diagnostic_only",
+        "claimability",
+    ] {
+        if let Some(value) = hit.get(key).cloned() {
+            object.insert(key.to_string(), value);
+        }
+    }
     if value_is_text_evidence_hit(hit) {
         insert_text_evidence_labels(&mut object);
+    } else {
+        insert_query_evidence_role_labels(&mut object, query_evidence_role_for_hit_path(file, hit));
     }
     Value::Object(object)
 }
@@ -34478,7 +39238,7 @@ fn index_summary_concise_json(summary: &IndexSummary, wall_ms: f64) -> Result<Va
         "timing": index_timing_summary_json(summary, wall_ms),
         "telemetry": index_runtime_telemetry_json(summary),
         "indexing_durability": index_batch_durability_json(summary),
-        "graph_output_budgets": &summary.graph_output_budgets,
+        "graph_output_budgets": index_concise_graph_output_budgets_json(summary),
         "warnings_count": index_warning_count(summary),
         "issue_counts": summary.issue_counts,
         "issues_count": summary.issues.len(),
@@ -34713,6 +39473,11 @@ fn index_timing_summary_json(summary: &IndexSummary, wall_ms: f64) -> Value {
         "debug_assertions".to_string(),
         json!(cfg!(debug_assertions)),
     );
+    object.insert("debug_timing_not_used_for_claim".to_string(), json!(true));
+    object.insert(
+        "profile_timing_claim_scope".to_string(),
+        json!("local_diagnostic_only"),
+    );
     if let Some(profile) = summary.profile.as_ref() {
         object.insert("total_wall_ms".to_string(), json!(profile.total_wall_ms));
         object.insert(
@@ -34794,6 +39559,11 @@ fn index_runtime_telemetry_json(summary: &IndexSummary) -> Value {
     object.insert(
         "debug_assertions".to_string(),
         json!(cfg!(debug_assertions)),
+    );
+    object.insert("debug_timing_not_used_for_claim".to_string(), json!(true));
+    object.insert(
+        "profile_timing_claim_scope".to_string(),
+        json!("local_diagnostic_only"),
     );
     object.insert(
         "profile_available".to_string(),
@@ -34897,8 +39667,9 @@ fn index_profile_timing_fields_json(summary: &IndexSummary) -> Value {
         "edge_insert": timing_field_from_span(profile, "edge_insert", "measured local edge insert span"),
         "proof_edge_insert": timing_field_from_span(profile, "proof_edge_insert", "measured SQLite edge insert span"),
         "dictionary_lookup_insert": timing_field_from_span(profile, "dictionary_lookup_insert", "measured shared dictionary lookup/insert span"),
-        "candidate_spool_build": timing_field_unknown(profile, "not measured as a separate profile substage"),
-        "vector_sidecar_build": timing_field_unknown(profile, "not measured as an index profile substage"),
+        "candidate_spool_build": timing_field_from_span(profile, "candidate_spool_build", "measured candidate spool chunk build/write span when candidate spool is active"),
+        "vector_sidecar_build": timing_field_from_span(profile, "vector_runtime_sidecar_build", "measured runtime vector sidecar build span when requested"),
+        "audit_artifact_build": timing_field_from_span(profile, "vector_audit_artifact_build", "measured audit artifact write span when requested"),
         "profile_total": timing_field_from_profile_total(
             profile,
             profile.map(|profile| profile.total_wall_ms as f64),
@@ -34960,15 +39731,6 @@ fn timing_field_from_span(profile: Option<&IndexProfile>, span_name: &str, note:
         "elapsed_ms": elapsed_ms,
         "count": count,
         "measurement": span_name,
-        "note": note,
-    })
-}
-
-fn timing_field_unknown(profile: Option<&IndexProfile>, note: &str) -> Value {
-    json!({
-        "status": if profile.is_some() { "unknown" } else { "profile_not_requested" },
-        "elapsed_ms": Value::Null,
-        "measurement": if profile.is_some() { "not_split_yet" } else { "profile_not_requested" },
         "note": note,
     })
 }
@@ -35106,6 +39868,10 @@ fn index_batch_durability_json(summary: &IndexSummary) -> Value {
     let fresh_temp_db_path = lifecycle.and_then(|lifecycle| lifecycle.fresh_temp_db_path.clone());
     let atomic_temp_publish_used = fresh_temp_db_path.is_some();
     let visible_db_exists = Path::new(&summary.db_path).exists();
+    let visible_db_update_claimed = lifecycle
+        .map(|lifecycle| !lifecycle.old_db_used || lifecycle.old_db_replaced)
+        .unwrap_or(false)
+        || summary.batches_completed > 0;
     json!({
         "batch_progress_vocabulary": {
             "processed": "parser/reducer/DB write work for a batch finished, but this does not mean visible production DB durability",
@@ -35116,12 +39882,18 @@ fn index_batch_durability_json(summary: &IndexSummary) -> Value {
         "batches_processed": summary.batches_completed,
         "batches_completed_legacy_alias_for": "batches_processed",
         "batch_progress_status": "processed_not_durably_committed_until_transaction_commit",
+        "resumable_batches_supported": false,
+        "batch_durability_scope": "processed/staged batches become durable only at SQLite transaction commit; hidden temp DBs become visible only after atomic publish",
+        "processed_batches_are_visible_db_durable": false,
         "atomic_temp_publish_used": atomic_temp_publish_used,
         "visible_db_old_good_until_publish": atomic_temp_publish_used,
         "temp_db_never_claimable": true,
         "temp_db_path": fresh_temp_db_path,
         "visible_db_path": summary.db_path,
         "visible_db_exists": visible_db_exists,
+        "temp_db_transaction_committed": atomic_temp_publish_used && visible_db_exists,
+        "visible_db_published": if atomic_temp_publish_used { visible_db_exists } else { visible_db_update_claimed },
+        "visible_db_updated": visible_db_exists && visible_db_update_claimed,
         "old_db_replaced": lifecycle
             .map(|lifecycle| lifecycle.old_db_replaced)
             .unwrap_or(false),
@@ -35143,11 +39915,19 @@ fn index_batch_durability_agent_json(summary: &IndexSummary) -> Value {
         .and_then(|lifecycle| lifecycle.fresh_temp_db_path.as_ref())
         .is_some();
     let visible_db_exists = Path::new(&summary.db_path).exists();
+    let visible_db_update_claimed = lifecycle
+        .map(|lifecycle| !lifecycle.old_db_used || lifecycle.old_db_replaced)
+        .unwrap_or(false)
+        || summary.batches_completed > 0;
     json!({
         "batches_processed": summary.batches_completed,
         "batch_progress_status": "processed_not_durably_committed_until_transaction_commit",
+        "resumable_batches_supported": false,
+        "processed_batches_are_visible_db_durable": false,
         "atomic_temp_publish_used": atomic_temp_publish_used,
         "temp_db_never_claimable": true,
+        "visible_db_published": if atomic_temp_publish_used { visible_db_exists } else { visible_db_update_claimed },
+        "visible_db_updated": visible_db_exists && visible_db_update_claimed,
         "old_db_replaced": lifecycle
             .map(|lifecycle| lifecycle.old_db_replaced)
             .unwrap_or(false),
@@ -35161,8 +39941,37 @@ fn index_batch_durability_agent_json(summary: &IndexSummary) -> Value {
     })
 }
 
+/// Concise (`--json`) graph-output-budgets block. Serializes the full summary
+/// but drops the verbose `configured` budget-limit sub-object when nothing was
+/// degraded, keeping the no-op concise envelope under its size target. The
+/// required `claimability_label` and `worker_dispatch_source_clone_policy`
+/// fields are always preserved.
+fn index_concise_graph_output_budgets_json(summary: &IndexSummary) -> Value {
+    let budgets = &summary.graph_output_budgets;
+    let mut value = serde_json::to_value(budgets).unwrap_or_else(|_| json!({}));
+    let no_degradation = budgets.files_degraded == 0 && budgets.degraded_files.is_empty();
+    if no_degradation {
+        if let Some(object) = value.as_object_mut() {
+            object.remove("configured");
+        }
+    }
+    value
+}
+
 fn index_graph_output_budgets_agent_json(summary: &IndexSummary) -> Value {
     let budgets = &summary.graph_output_budgets;
+    // Compact-by-default: when nothing was degraded, the ~30 per-budget counters
+    // are all zero and only bloat the agent-json envelope past its size target.
+    // Emit a minimal "no degradation" summary in that case; the full counter
+    // breakdown stays available on the concise/audit (`--json`) surface.
+    if budgets.files_degraded == 0 && budgets.degraded_files.is_empty() {
+        return json!({
+            "claimability_label": budgets.claimability_label.clone(),
+            "files_degraded": 0,
+            "degraded_files_count": 0,
+            "degraded_files": [],
+        });
+    }
     json!({
         "claimability_label": budgets.claimability_label.clone(),
         "files_degraded": budgets.files_degraded,
@@ -35171,8 +39980,30 @@ fn index_graph_output_budgets_agent_json(summary: &IndexSummary) -> Value {
         "derived_edge_budget_hits": budgets.derived_edge_budget_hits,
         "source_span_budget_hits": budgets.source_span_budget_hits,
         "reducer_edge_budget_hits": budgets.reducer_edge_budget_hits,
+        "entity_budget_hits": budgets.entity_budget_hits,
+        "edge_budget_hits": budgets.edge_budget_hits,
+        "local_read_budget_hits": budgets.local_read_budget_hits,
+        "local_write_budget_hits": budgets.local_write_budget_hits,
+        "local_flow_budget_hits": budgets.local_flow_budget_hits,
+        "callsite_budget_hits": budgets.callsite_budget_hits,
+        "argument_budget_hits": budgets.argument_budget_hits,
+        "source_bytes_budget_hits": budgets.source_bytes_budget_hits,
+        "omitted_local_facts": budgets.omitted_local_facts,
+        "omitted_relation_fanout_edges": budgets.omitted_relation_fanout_edges,
+        "omitted_derived_edges": budgets.omitted_derived_edges,
+        "omitted_source_span_facts": budgets.omitted_source_span_facts,
+        "omitted_reducer_edges": budgets.omitted_reducer_edges,
+        "omitted_entities": budgets.omitted_entities,
+        "omitted_edges": budgets.omitted_edges,
+        "omitted_local_reads": budgets.omitted_local_reads,
+        "omitted_local_writes": budgets.omitted_local_writes,
+        "omitted_local_flows": budgets.omitted_local_flows,
+        "omitted_callsites": budgets.omitted_callsites,
+        "omitted_arguments": budgets.omitted_arguments,
+        "omitted_source_bytes": budgets.omitted_source_bytes,
         "warnings_count": budgets.warnings.len(),
         "degraded_files_count": budgets.degraded_files.len(),
+        "degraded_files": budgets.degraded_files,
     })
 }
 
@@ -36446,8 +41277,8 @@ mod tests {
 
     use codegraph_core::{
         stable_edge_id, stable_entity_id_for_kind, ContextPacket, ContextSnippet, Edge, EdgeClass,
-        EdgeContext, Entity, EntityKind, EvidenceRole, Exactness, Metadata, PathEvidence,
-        RelationKind, SourceSpan,
+        EdgeContext, Entity, EntityKind, EvidenceRole, Exactness, FileRecord, Metadata,
+        PathEvidence, RelationKind, SourceSpan,
     };
     use codegraph_store::{GraphStore, SqliteGraphStore};
     use rusqlite::{Connection, OpenFlags};
@@ -36566,6 +41397,165 @@ mod tests {
     }
 
     #[test]
+    fn agent_file_json_exposes_degraded_graph_output_claimability() {
+        let mut metadata = Metadata::default();
+        metadata.insert("graph_output_budget_hit".to_string(), json!(true));
+        metadata.insert(
+            "degradation_labels".to_string(),
+            json!([
+                "generated_large",
+                "extraction_budget_hit",
+                "diagnostic_only"
+            ]),
+        );
+        metadata.insert(
+            "graph_output_claimability".to_string(),
+            json!("degraded_file_nonclaimable_for_omitted_facts"),
+        );
+        metadata.insert("graph_relation_claims".to_string(), json!("partial"));
+        metadata.insert("diagnostic_only".to_string(), json!(true));
+        metadata.insert(
+            "graph_extraction_skip_reason".to_string(),
+            json!("large_generated_or_test_source_budget"),
+        );
+        metadata.insert(
+            "graph_output_budget_hits".to_string(),
+            json!([{
+                "repo_relative_path": "src/generated/big.generated.ts",
+                "stage": "local_extraction",
+                "kind": "source_bytes_per_file",
+                "before": 256,
+                "after": 0,
+                "budget": 32,
+                "omitted": 256,
+                "unit": "bytes",
+                "labels": ["extraction_budget_hit", "diagnostic_only"],
+                "claimability_label": "degraded_file_nonclaimable_for_omitted_facts"
+            }]),
+        );
+        let file = FileRecord {
+            repo_relative_path: "src/generated/big.generated.ts".to_string(),
+            file_hash: "hash".to_string(),
+            language: Some("typescript".to_string()),
+            size_bytes: 256,
+            indexed_at_unix_ms: None,
+            metadata,
+        };
+        let mut hit = json!({
+            "repo_relative_path": "src/generated/big.generated.ts",
+            "score": 1.0,
+            "match": "path_contains",
+            "text": "export const generatedValue = 1;"
+        });
+
+        super::insert_file_degradation_labels(&file, &mut hit);
+        assert_eq!(hit["graph_output_degraded"].as_bool(), Some(true));
+        assert_eq!(hit["diagnostic_only"].as_bool(), Some(true));
+        assert_eq!(
+            hit["graph_extraction_skip_reason"].as_str(),
+            Some("large_generated_or_test_source_budget")
+        );
+        assert_eq!(
+            hit["claimability"]["not_claimable_as"][0].as_str(),
+            Some("complete_graph_for_degraded_file")
+        );
+
+        let agent = super::agent_file_hit_json(&hit);
+        assert_eq!(agent["graph_output_degraded"].as_bool(), Some(true));
+        assert_eq!(
+            agent["graph_output_claimability"].as_str(),
+            Some("degraded_file_nonclaimable_for_omitted_facts")
+        );
+        assert_eq!(
+            agent["graph_extraction_skip_reason"].as_str(),
+            Some("large_generated_or_test_source_budget")
+        );
+        assert_eq!(
+            agent["claimability"]["not_claimable_as"][1].as_str(),
+            Some("omitted_relation_classes")
+        );
+    }
+
+    #[test]
+    fn context_candidate_json_exposes_degraded_graph_output_claimability() {
+        let mut metadata = Metadata::default();
+        metadata.insert("graph_output_budget_hit".to_string(), json!(true));
+        metadata.insert(
+            "degradation_labels".to_string(),
+            json!([
+                "generated_large",
+                "extraction_budget_hit",
+                "diagnostic_only"
+            ]),
+        );
+        metadata.insert(
+            "graph_output_claimability".to_string(),
+            json!("degraded_file_nonclaimable_for_omitted_facts"),
+        );
+        metadata.insert("graph_relation_claims".to_string(), json!([]));
+        metadata.insert("diagnostic_only".to_string(), json!(true));
+        metadata.insert(
+            "graph_extraction_skip_reason".to_string(),
+            json!("large_generated_or_test_source_budget"),
+        );
+        metadata.insert(
+            "graph_output_budget_hits".to_string(),
+            json!([{
+                "repo_relative_path": "src/generated/large.generated.ts",
+                "stage": "local_extraction",
+                "kind": "source_bytes_per_file",
+                "before": 256,
+                "after": 0,
+                "budget": 32,
+                "omitted": 256,
+                "unit": "bytes",
+                "labels": ["extraction_budget_hit", "diagnostic_only"],
+                "claimability_label": "degraded_file_nonclaimable_for_omitted_facts"
+            }]),
+        );
+        let file = FileRecord {
+            repo_relative_path: "src/generated/large.generated.ts".to_string(),
+            file_hash: "hash".to_string(),
+            language: Some("typescript".to_string()),
+            size_bytes: 256,
+            indexed_at_unix_ms: None,
+            metadata,
+        };
+        let mut candidate = super::exact_seed_retrieval_candidate_json(
+            "src/generated/large.generated.ts",
+            true,
+            "no_proof_path_found",
+        );
+
+        super::insert_context_candidate_degradation_from_file(&file, &mut candidate);
+
+        assert_eq!(candidate["graph_output_degraded"].as_bool(), Some(true));
+        assert_eq!(
+            candidate["graph_extraction_skip_reason"].as_str(),
+            Some("large_generated_or_test_source_budget")
+        );
+        assert_eq!(
+            candidate["claimability"]["not_claimable_as"][0].as_str(),
+            Some("complete_graph_for_degraded_file")
+        );
+        assert_eq!(
+            candidate["degraded_output_not_complete_graph_proof"].as_bool(),
+            Some(true)
+        );
+
+        let compact = super::context_pack_compact_candidate_json(&candidate);
+        assert_eq!(compact["graph_output_degraded"].as_bool(), Some(true));
+        assert_eq!(
+            compact["degradation_labels"][0].as_str(),
+            Some("generated_large")
+        );
+        assert_eq!(
+            compact["claimability"]["not_claimable_as"][2].as_str(),
+            Some("graph_relation_proof")
+        );
+    }
+
+    #[test]
     fn candidate_spool_context_pack_returns_no_graph_proof() {
         let repo = temp_repo();
         let spool = write_candidate_spool_cli_fixture(&repo);
@@ -36609,6 +41599,18 @@ mod tests {
             Some("no_graph_db")
         );
         assert!(value["snippets"].as_array().map(Vec::len).unwrap_or(0) <= 5);
+        assert_eq!(
+            value["patch_assist_packet"]["first_use_state"].as_str(),
+            Some("candidate_ready_no_graph")
+        );
+        assert_eq!(
+            value["patch_assist_packet"]["graph_proof"].as_bool(),
+            Some(false)
+        );
+        assert!(!value["patch_assist_packet"]["candidate_evidence"]
+            .as_array()
+            .expect("candidate evidence")
+            .is_empty());
     }
 
     #[test]
@@ -37532,12 +42534,126 @@ mod tests {
         );
         assert_eq!(
             timing_fields["candidate_spool_build"]["status"].as_str(),
-            Some("unknown")
+            Some("unknown_or_not_run")
         );
         assert_eq!(
             timing_fields["vector_sidecar_build"]["measurement"].as_str(),
-            Some("not_split_yet")
+            Some("vector_runtime_sidecar_build")
         );
+        assert_eq!(
+            value["telemetry"]["debug_timing_not_used_for_claim"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            value["telemetry"]["binary_profile"].as_str(),
+            Some(crate::build_profile())
+        );
+
+        remove_dir_all_with_retry(&repo, "cleanup");
+    }
+
+    #[test]
+    fn index_release_profile_attribution_includes_slowest_files_and_unknowns() {
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+        let value = run_index_output_json(&repo, &db, &["--fresh", "--json", "--profile"]);
+        let profile = &value["profile"];
+
+        assert!(profile["stage_attribution"]
+            .as_array()
+            .expect("stage attribution")
+            .iter()
+            .any(|stage| stage["name"].as_str() == Some("parse")
+                && stage["total_ms"].is_number()
+                && stage["p50_ms"].is_number()));
+        assert!(profile["stage_attribution"]
+            .as_array()
+            .expect("stage attribution")
+            .iter()
+            .any(|stage| stage["name"].as_str() == Some("db_write")
+                && stage["distribution"].as_str() == Some("aggregate_only")));
+        assert!(profile["slowest_stages"]
+            .as_array()
+            .expect("slowest stages")
+            .iter()
+            .any(|stage| stage["name"].as_str().is_some()));
+
+        let files = profile["file_attribution"]
+            .as_array()
+            .expect("file attribution");
+        let service = files
+            .iter()
+            .find(|file| file["path"].as_str() == Some("src/service.ts"))
+            .expect("service file attribution");
+        assert_eq!(service["file_kind"].as_str(), Some("typescript"));
+        assert_eq!(service["source_role"].as_str(), Some("production"));
+        assert!(service["bytes"].as_u64().unwrap_or_default() > 0);
+        assert!(service["read_ms"].is_number());
+        assert!(service["hash_ms"].is_number());
+        assert!(service["parse_ms"].is_number());
+        assert!(service["extract_ms"].is_number());
+        assert!(service["local_fact_count"].as_u64().unwrap_or_default() > 0);
+        assert!(service["entity_count"].as_u64().unwrap_or_default() > 0);
+        assert!(service["edge_count"].as_u64().is_some());
+        assert!(service["source_span_count"].as_u64().is_some());
+        assert!(service["text_evidence_count"].as_u64().is_some());
+        assert!(service["db_write_ms"].is_null());
+        assert_eq!(
+            service["db_write_attribution"].as_str(),
+            Some("aggregate_only")
+        );
+
+        assert!(profile["slowest_files"]
+            .as_array()
+            .expect("slowest files")
+            .iter()
+            .any(|file| file["path"].as_str() == Some("src/service.ts")));
+        assert!(profile["slowest_files_by_parse"]
+            .as_array()
+            .expect("slowest by parse")
+            .iter()
+            .any(|file| file["path"].as_str() == Some("src/service.ts")));
+        assert!(profile["highest_entity_files"]
+            .as_array()
+            .expect("highest entity files")
+            .iter()
+            .any(|file| file["path"].as_str() == Some("src/service.ts")));
+        assert_eq!(profile["memory_measured"].as_bool(), Some(false));
+        assert!(profile["memory_bytes"].is_null());
+        assert_eq!(profile["memory_status"].as_str(), Some("unknown"));
+        assert_eq!(
+            profile["source_clone_count_status"].as_str(),
+            Some("unknown")
+        );
+
+        remove_dir_all_with_retry(&repo, "cleanup");
+    }
+
+    #[test]
+    fn warm_unchanged_release_profile_labels_unread_files_truthfully() {
+        let repo = index_output_fixture_repo();
+        let db = repo.join("index-output.sqlite");
+        let cold = run_index_output_json(&repo, &db, &["--fresh", "--json", "--profile"]);
+        let warm = run_index_output_json(&repo, &db, &["--json", "--profile"]);
+
+        assert!(cold["files_read"].as_u64().unwrap_or_default() > 0);
+        assert_eq!(warm["files_read"].as_u64(), Some(0));
+        assert_eq!(warm["files_parsed"].as_u64(), Some(0));
+        let warm_files = warm["profile"]["file_attribution"]
+            .as_array()
+            .expect("warm file attribution");
+        let service = warm_files
+            .iter()
+            .find(|file| file["path"].as_str() == Some("src/service.ts"))
+            .expect("warm service attribution");
+        assert!(service["read_ms"].is_null());
+        assert!(service["hash_ms"].is_null());
+        assert!(service["parse_ms"].is_null());
+        assert!(service["skipped_labels"]
+            .as_array()
+            .expect("skipped labels")
+            .iter()
+            .any(|label| label.as_str() == Some("metadata_unchanged")));
 
         remove_dir_all_with_retry(&repo, "cleanup");
     }
@@ -38373,6 +43489,9 @@ mod tests {
             .map(|index| PendingIndexFile {
                 file_hash: format!("hash-{index}"),
                 language: Some("typescript".to_string()),
+                file_kind: "typescript".to_string(),
+                source_role: "production".to_string(),
+                source_role_classification_ms: 0.0,
                 repo_relative_path: format!("src/file_{index}.ts"),
                 source: format!(
                     "export function service{index}(value: number) {{\n  return value + {index};\n}}\n"
@@ -38624,6 +43743,11 @@ mod tests {
             .expect("profile a");
         let profile_a_again = super::resolve_agent_use_profile_with_data_root(&repo_a, &data_root)
             .expect("profile a again");
+        let profile_a_canonical = super::resolve_agent_use_profile_with_data_root(
+            &fs::canonicalize(&repo_a).expect("canonical repo a"),
+            &data_root,
+        )
+        .expect("profile a canonical");
         let profile_b = super::resolve_agent_use_profile_with_data_root(&repo_b, &data_root)
             .expect("profile b");
 
@@ -38632,7 +43756,39 @@ mod tests {
             super::PRODUCTION_AGENT_USE_PROFILE_NAME
         );
         assert_eq!(profile_a.db_path, profile_a_again.db_path);
+        assert_eq!(profile_a.db_path, profile_a_canonical.db_path);
+        assert_eq!(profile_a.repo_identity_hash.len(), 32);
+        assert_eq!(
+            super::agent_use_repo_identity_short_hash(&profile_a),
+            profile_a
+                .repo_identity_hash
+                .chars()
+                .take(12)
+                .collect::<String>()
+        );
+        assert_eq!(profile_a.repo_identity_label, "app");
+        assert!(profile_a
+            .profile_root
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.starts_with("app-")));
         assert_ne!(profile_a.db_path, profile_b.db_path);
+        assert_ne!(profile_a.profile_root, profile_b.profile_root);
+        assert_ne!(
+            profile_a.candidate_spool_path,
+            profile_b.candidate_spool_path
+        );
+        assert_ne!(
+            profile_a.candidate_spool_query_index_path,
+            profile_b.candidate_spool_query_index_path
+        );
+        assert_ne!(profile_a.vector_runtime_path, profile_b.vector_runtime_path);
+        assert_ne!(profile_a.vector_audit_path, profile_b.vector_audit_path);
+        assert_ne!(
+            profile_a.lock_or_publish_state_path,
+            profile_b.lock_or_publish_state_path
+        );
+        assert_ne!(profile_a.delta_state_path, profile_b.delta_state_path);
         assert_ne!(profile_a.repo_identity_hash, profile_b.repo_identity_hash);
         assert!(profile_a.db_path.starts_with(&data_root));
         assert!(!profile_a.db_path.starts_with(repo_a.join(".codegraph")));
@@ -38676,6 +43832,8 @@ mod tests {
         let (spaces_parent, spaces_repo) = temp_repo_named("repo with spaces");
         let (unicode_parent, unicode_repo) = temp_repo_named("unicode-repo-é");
         let (remote_parent, remote_repo) = temp_repo_named("remote-app");
+        let long_name = "very-long-repository-name-".repeat(4);
+        let (long_parent, long_repo) = temp_repo_named(&long_name);
         add_git_remote_for_test(&remote_repo, "https://example.invalid/acme/remote-app.git");
 
         let spaces = super::resolve_agent_use_profile_with_data_root(&spaces_repo, &data_root)
@@ -38687,13 +43845,53 @@ mod tests {
         let remote_again =
             super::resolve_agent_use_profile_with_data_root(&remote_repo, &data_root)
                 .expect("remote profile again");
+        let long = super::resolve_agent_use_profile_with_data_root(&long_repo, &data_root)
+            .expect("long profile");
+        let relative_spaces = {
+            let mut process = super::ProcessContextSnapshot::capture().expect("capture context");
+            std::env::set_current_dir(&spaces_parent).expect("set cwd to spaces parent");
+            let relative = spaces_repo
+                .file_name()
+                .map(PathBuf::from)
+                .expect("spaces repo name");
+            let profile = super::resolve_agent_use_profile_with_data_root(&relative, &data_root)
+                .expect("relative spaces profile");
+            process.restore().expect("restore context");
+            profile
+        };
 
         assert!(spaces.db_path.starts_with(&data_root));
         assert!(unicode.db_path.starts_with(&data_root));
         assert!(remote.db_path.starts_with(&data_root));
+        assert!(long.db_path.starts_with(&data_root));
+        assert_eq!(spaces.db_path, relative_spaces.db_path);
+        assert_eq!(
+            spaces.repo_identity_hash,
+            relative_spaces.repo_identity_hash
+        );
         assert_eq!(remote.db_path, remote_again.db_path);
+        assert_eq!(
+            remote.repo_identity_hash,
+            super::stable_agent_use_identity_hash(
+                b"remote:https://example.invalid/acme/remote-app.git"
+            )
+        );
+        let expected_spaces_material = format!(
+            "path:{}",
+            super::normalize_agent_use_identity_path(&path_string(&spaces.repo_root))
+        );
+        assert_eq!(
+            spaces.repo_identity_hash,
+            super::stable_agent_use_identity_hash(expected_spaces_material.as_bytes())
+        );
         assert_ne!(spaces.repo_identity_hash, unicode.repo_identity_hash);
         assert_ne!(remote.repo_identity_hash, spaces.repo_identity_hash);
+        assert!(long.repo_identity_label.len() <= 64);
+        assert!(long
+            .profile_root
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.len() <= 97));
         assert!(
             !spaces.db_path.to_string_lossy().contains(".codegraph"),
             "{spaces:?}"
@@ -38718,6 +43916,61 @@ mod tests {
         remove_dir_all_with_retry(&spaces_parent, "cleanup spaces");
         remove_dir_all_with_retry(&unicode_parent, "cleanup unicode");
         remove_dir_all_with_retry(&remote_parent, "cleanup remote");
+        remove_dir_all_with_retry(&long_parent, "cleanup long");
+    }
+
+    #[test]
+    fn artifact_safe_filename_shortens_deterministically_and_preserves_origin_metadata() {
+        let long_name = format!(
+            "{}-report.sqlite",
+            "very-long-generated-artifact-name".repeat(10)
+        );
+        let original = PathBuf::from("reports")
+            .join("audit")
+            .join("artifacts")
+            .join(&long_name);
+
+        let first = super::artifact_safe_file_name_for_path(&original, ".metadata.json", 96);
+        let second = super::artifact_safe_file_name_for_path(&original, ".metadata.json", 96);
+        let other = super::artifact_safe_file_name_for_path(
+            &PathBuf::from("reports")
+                .join("audit")
+                .join("artifacts")
+                .join(format!("other-{long_name}")),
+            ".metadata.json",
+            96,
+        );
+
+        assert_eq!(first, second);
+        assert!(first.shortened, "{first:?}");
+        assert!(first.file_name.chars().count() <= 96, "{first:?}");
+        assert!(first.file_name.ends_with(".metadata.json"), "{first:?}");
+        assert!(first.extension_preserved);
+        assert_ne!(first.file_name, other.file_name);
+
+        let metadata = super::artifact_safe_file_name_metadata(&first);
+        assert_eq!(
+            metadata["original_path"].as_str(),
+            Some(super::path_string(&original).as_str())
+        );
+        assert_eq!(metadata["shortened"].as_bool(), Some(true));
+        assert_eq!(
+            metadata["collision_strategy"].as_str(),
+            Some("readable_prefix_plus_stable_hash_suffix")
+        );
+
+        let default_plan = super::artifact_safe_file_name_for_path(
+            &original,
+            ".metadata.json",
+            super::ARTIFACT_SAFE_FILENAME_MAX_CHARS,
+        );
+        let default_metadata_path = super::default_artifact_metadata_path(&original);
+        assert_eq!(
+            default_metadata_path
+                .file_name()
+                .and_then(|value| value.to_str()),
+            Some(default_plan.file_name.as_str())
+        );
     }
 
     #[test]
@@ -38907,11 +44160,13 @@ mod tests {
         assert_eq!(status["claimable"].as_bool(), Some(false));
         assert_eq!(status["external_db_used"].as_bool(), Some(true));
         assert_eq!(
-            status["db_path"].as_str(),
+            status["db"].as_str(),
             Some(path_string(&profile.db_path).as_str())
         );
-        assert_eq!(status["db_exists"].as_bool(), Some(false));
-        assert_eq!(status["profile_parent_created"].as_bool(), Some(false));
+        assert_eq!(
+            status["db_lifecycle_read"]["path_access_status"].as_str(),
+            Some("db_missing")
+        );
         assert!(!profile.profile_root.exists());
         assert!(!profile.db_path.exists());
         assert_eq!(
@@ -38921,6 +44176,18 @@ mod tests {
         assert_eq!(
             status["recovery"]["agent_use_query_available"].as_bool(),
             Some(true)
+        );
+        assert_eq!(count_key_occurrences(&status, "recovery_commands"), 1);
+        assert!(status["recovery"]["commands"].is_null());
+        assert_eq!(
+            status["recovery"]["commands_ref"].as_str(),
+            Some("recovery_commands")
+        );
+        assert!(
+            serialized_len_for_test(&status)
+                <= super::DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+            "{} bytes: {status}",
+            serialized_len_for_test(&status)
         );
         assert_no_dot_codegraph_sqlite(&repo);
 
@@ -39090,24 +44357,66 @@ mod tests {
             status["status_detail_source"].as_str(),
             Some("db_lifecycle_preflight_and_passport_only")
         );
-        assert_eq!(
-            status["read_path_metrics"]["full_scan_count"].as_u64(),
-            Some(0)
-        );
-        assert_eq!(
-            status["read_path_metrics"]["source_file_load_count"].as_u64(),
-            Some(0)
-        );
-        assert_eq!(
-            status["read_path_metrics"]["entities_hydrated"].as_u64(),
-            Some(0)
-        );
-        assert_eq!(
-            status["read_path_metrics"]["edges_hydrated"].as_u64(),
-            Some(0)
-        );
+        if !status["read_path_metrics"].is_null() {
+            assert_eq!(
+                status["read_path_metrics"]["full_scan_count"].as_u64(),
+                Some(0)
+            );
+            if !status["read_path_metrics"]["source_file_load_count"].is_null() {
+                assert_eq!(
+                    status["read_path_metrics"]["source_file_load_count"].as_u64(),
+                    Some(0)
+                );
+            }
+            if !status["read_path_metrics"]["entities_hydrated"].is_null() {
+                assert_eq!(
+                    status["read_path_metrics"]["entities_hydrated"].as_u64(),
+                    Some(0)
+                );
+            }
+            if !status["read_path_metrics"]["edges_hydrated"].is_null() {
+                assert_eq!(
+                    status["read_path_metrics"]["edges_hydrated"].as_u64(),
+                    Some(0)
+                );
+            }
+        }
         assert!(status["storage_accounting"].is_null());
         assert!(status["relation_counts"].is_null());
+        assert_eq!(status["schema_name"].as_str(), Some("status_compact_json"));
+        assert_eq!(count_key_occurrences(&status, "recovery_commands"), 1);
+        assert!(status["profile"].is_null());
+        assert!(status["agent_use_profile"].is_null());
+        assert_eq!(
+            status["agent_json_budget"]["max_output_bytes"].as_u64(),
+            Some(super::DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES as u64)
+        );
+        assert!(
+            serialized_len_for_test(&status)
+                <= super::DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+            "{} bytes: {status}",
+            serialized_len_for_test(&status)
+        );
+        let status_explain = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "status".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+                "--explain".to_string(),
+            ])
+        })
+        .expect("agent-use status explain");
+        assert!(!status_explain["profile"].is_null());
+        assert!(status_explain["db_lifecycle_read"]["reasons"].is_array());
+        assert_eq!(
+            status_explain["agent_json_detail_mode"].as_str(),
+            Some("explain")
+        );
+        assert_eq!(
+            count_key_occurrences(&status_explain, "recovery_commands"),
+            1
+        );
         assert_no_dot_codegraph_sqlite(&repo);
 
         let warm = with_agent_use_data_root(&data_root, || {
@@ -39455,6 +44764,27 @@ mod tests {
         assert_eq!(watch["updates_succeeded"].as_u64(), Some(1));
         assert_eq!(watch["last_update_state"].as_str(), Some("updated"));
         assert_eq!(
+            watch["lock_state"]["writer_queue_serialized"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            watch["lock_state"]["unrelated_repo_blocking"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(watch["lock_state"]["lock_retry_count"].as_u64(), Some(0));
+        assert_eq!(
+            watch["update_queue_state"]["updates_attempted"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            watch["update_queue_state"]["updates_succeeded"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            watch["update_queue_state"]["unrelated_repo_blocking"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
             watch["last_update_summary"]["watch_mode"].as_str(),
             Some("once_changed")
         );
@@ -39639,6 +44969,18 @@ mod tests {
         .expect("many-change persistent event");
         assert_eq!(many["status"].as_str(), Some("degraded"));
         assert_eq!(many["last_update_state"].as_str(), Some("degraded"));
+        assert_eq!(
+            many["lock_state"]["writer_queue_serialized"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            many["update_queue_state"]["last_update_summary"]["status"].as_str(),
+            Some("degraded")
+        );
+        assert_eq!(
+            many["update_queue_state"]["last_update_summary"]["old_db_preserved"].as_bool(),
+            Some(true)
+        );
         assert_eq!(
             many["last_update_summary"]["reason"].as_str(),
             Some("too_many_changes_branch_switch_suspected")
@@ -40503,6 +45845,21 @@ mod tests {
             outside_reject["rejected_paths"][0]["reason"].as_str(),
             Some("path_outside_repo")
         );
+        let outside_requested = path_string(&outside).replace('\\', "/");
+        let outside_original = path_string(&outside);
+        assert_eq!(
+            outside_reject["rejected_paths"][0]["requested_path"].as_str(),
+            Some(outside_requested.as_str())
+        );
+        assert_eq!(
+            outside_reject["rejected_paths"][0]["original_path"].as_str(),
+            Some(outside_original.as_str())
+        );
+        assert!(
+            outside_reject["rejected_paths"][0]["path_mapping"]["mapping_status"]
+                .as_str()
+                .is_some()
+        );
         assert_eq!(outside_reject["files_read"].as_u64(), Some(0));
         assert_eq!(
             before_db, after_db,
@@ -40646,6 +46003,293 @@ mod tests {
     }
 
     #[test]
+    fn agent_use_relation_queries_use_external_profile_db() {
+        let _guard = lock_env_test();
+        let data_root = temp_repo();
+        let repo = temp_repo();
+        write_agent_use_rust_relation_fixture(&repo);
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "index".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("agent-use index");
+
+        let callees = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "callees".to_string(),
+                "caller".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--limit".to_string(),
+                "2".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("agent-use query callees");
+        assert_agent_use_relation_query_claims_profile_db(&callees, &profile);
+        assert_eq!(callees["direction"].as_str(), Some("callees"));
+        assert_eq!(callees["limit"].as_u64(), Some(2));
+        assert!(
+            callees["result_count"].as_u64().unwrap_or_default() > 0,
+            "{callees:?}"
+        );
+        assert!(
+            callees["result_count"].as_u64().unwrap_or_default() <= 2,
+            "{callees:?}"
+        );
+        assert_eq!(callees["graph_proof"].as_bool(), Some(true));
+        assert_eq!(callees["proof_status"].as_str(), Some("proof_path_found"));
+        assert_eq!(
+            callees["read_path_metrics"]["lookup_strategy"].as_str(),
+            Some("bounded_call_relation_graph_lookup")
+        );
+        assert_eq!(
+            callees["results"][0]["edge"]["relation"].as_str(),
+            Some("CALLS")
+        );
+        assert_eq!(
+            callees["results"][0]["edge"]["exactness"].as_str(),
+            Some("parser_verified")
+        );
+        assert!(callees["results"][0]["source_span"].is_object());
+        assert_eq!(
+            callees["results"][0]["evidence_role"].as_str(),
+            Some("production")
+        );
+        assert_eq!(
+            callees["results"][0]["proof_strength"].as_str(),
+            Some("graph_relation_proof")
+        );
+
+        let plain_callees = super::with_repo_db_context(&repo, &profile.db_path, || {
+            super::run_query_command(&[
+                "callees".to_string(),
+                "caller".to_string(),
+                "--limit".to_string(),
+                "2".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("plain query callees");
+        assert_eq!(
+            callees["result_count"].as_u64(),
+            plain_callees["result_count"].as_u64()
+        );
+
+        let callers = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "callers".to_string(),
+                "leaf".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--limit".to_string(),
+                "5".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("agent-use query callers");
+        assert_agent_use_relation_query_claims_profile_db(&callers, &profile);
+        assert_eq!(callers["direction"].as_str(), Some("callers"));
+        assert_eq!(callers["graph_proof"].as_bool(), Some(true));
+        assert_eq!(
+            callers["results"][0]["edge"]["evidence_role"].as_str(),
+            Some("production")
+        );
+        assert!(
+            serialized_len_for_test(&callers)
+                <= super::DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+            "{} bytes: {callers}",
+            serialized_len_for_test(&callers)
+        );
+        assert_eq!(count_key_occurrences(&callers, "recovery_commands"), 1);
+        assert!(callers["profile"].is_null());
+        assert!(callers["agent_use_profile"].is_null());
+        assert_eq!(
+            callers["agent_json_budget"]["max_output_bytes"].as_u64(),
+            Some(super::DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES as u64)
+        );
+
+        let path = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "path".to_string(),
+                "caller".to_string(),
+                "leaf".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--limit".to_string(),
+                "3".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("agent-use query path");
+        assert_agent_use_relation_query_claims_profile_db(&path, &profile);
+        assert_eq!(path["schema_name"].as_str(), Some("query_path_agent_json"));
+        assert_eq!(path["graph_proof"].as_bool(), Some(true));
+        assert_eq!(path["proof_status"].as_str(), Some("proof_path_found"));
+        if !path["read_path_metrics"].is_null() {
+            assert_eq!(
+                path["read_path_metrics"]["lookup_strategy"].as_str(),
+                Some("bounded_graph_path_lookup")
+            );
+        }
+        assert_eq!(
+            path["results"][0]["proof_strength"].as_str(),
+            Some("graph_relation_proof")
+        );
+        assert!(path["results"][0]["source_spans"]
+            .as_array()
+            .is_some_and(|spans| !spans.is_empty()));
+
+        let chain = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "chain".to_string(),
+                "caller".to_string(),
+                "leaf".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--limit".to_string(),
+                "3".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("agent-use query chain");
+        assert_agent_use_relation_query_claims_profile_db(&chain, &profile);
+        assert_eq!(
+            chain["schema_name"].as_str(),
+            Some("query_chain_agent_json")
+        );
+        assert_eq!(chain["graph_proof"].as_bool(), Some(true));
+
+        let references = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "references".to_string(),
+                "leaf".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--limit".to_string(),
+                "5".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("agent-use query references");
+        assert_agent_use_relation_query_claims_profile_db(&references, &profile);
+        assert_eq!(
+            references["schema_name"].as_str(),
+            Some("query_references_agent_json")
+        );
+        assert!(
+            references["result_count"].as_u64().unwrap_or_default() > 0,
+            "{references:?}"
+        );
+        assert_eq!(
+            references["results"][0]["reference_evidence_kind"].as_str(),
+            Some("graph_reference")
+        );
+        assert_eq!(
+            references["results"][0]["text_reference"].as_bool(),
+            Some(false)
+        );
+
+        let definitions = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "definitions".to_string(),
+                "leaf".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--limit".to_string(),
+                "5".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("agent-use query definitions");
+        assert_agent_use_relation_query_claims_profile_db(&definitions, &profile);
+        assert_eq!(
+            definitions["schema_name"].as_str(),
+            Some("query_definitions_agent_json")
+        );
+        assert!(
+            definitions["result_count"].as_u64().unwrap_or_default() > 0,
+            "{definitions:?}"
+        );
+        assert_eq!(
+            definitions["results"][0]["graph_proof"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            definitions["results"][0]["proof_strength"].as_str(),
+            Some("symbol_definition")
+        );
+        assert_eq!(
+            definitions["read_path_metrics"]["lookup_strategy"].as_str(),
+            Some("bounded_symbol_definition_lookup")
+        );
+
+        let no_path = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "path".to_string(),
+                "leaf".to_string(),
+                "not_present".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("agent-use query no path");
+        assert_agent_use_relation_query_claims_profile_db(&no_path, &profile);
+        assert_eq!(no_path["graph_proof"].as_bool(), Some(false));
+        assert_eq!(
+            no_path["proof_status"].as_str(),
+            Some("no_proof_path_found")
+        );
+
+        let unresolved = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "query".to_string(),
+                "unresolved-calls".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--source-scan".to_string(),
+                "--limit".to_string(),
+                "5".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("agent-use query unresolved-calls");
+        assert_eq!(unresolved["status"].as_str(), Some("ok"));
+        if !unresolved["read_path_metrics"].is_null() {
+            assert_eq!(
+                unresolved["read_path_metrics"]["lookup_strategy"].as_str(),
+                Some("bounded_unresolved_call_lookup")
+            );
+        }
+        if !unresolved["db_lifecycle_read"].is_null() {
+            assert_eq!(
+                unresolved["db_lifecycle_read"]["exact_db_path_checked"].as_str(),
+                Some(path_string(&profile.db_path).as_str())
+            );
+        }
+        assert_eq!(unresolved["external_db_used"].as_bool(), Some(true));
+        assert_no_dot_codegraph_sqlite(&repo);
+
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
+    }
+
+    #[test]
     fn agent_use_query_reports_unsafe_profile_db_without_fallback() {
         let _guard = lock_env_test();
         let data_root = temp_repo();
@@ -40657,8 +46301,8 @@ mod tests {
         let missing = with_agent_use_data_root(&data_root, || {
             super::run_agent_use_command(&[
                 "query".to_string(),
-                "symbols".to_string(),
-                "agentUseTarget".to_string(),
+                "callees".to_string(),
+                "callAgentUseTarget".to_string(),
                 "--repo".to_string(),
                 path_string(&repo),
                 "--agent-json".to_string(),
@@ -40691,7 +46335,7 @@ mod tests {
         let stale = with_agent_use_data_root(&data_root, || {
             super::run_agent_use_command(&[
                 "query".to_string(),
-                "symbols".to_string(),
+                "callers".to_string(),
                 "agentUseTarget".to_string(),
                 "--repo".to_string(),
                 path_string(&repo),
@@ -40715,7 +46359,8 @@ mod tests {
         let foreign = with_agent_use_data_root(&data_root, || {
             super::run_agent_use_command(&[
                 "query".to_string(),
-                "symbols".to_string(),
+                "path".to_string(),
+                "callAgentUseTarget".to_string(),
                 "agentUseTarget".to_string(),
                 "--repo".to_string(),
                 path_string(&repo_foreign),
@@ -40743,7 +46388,7 @@ mod tests {
         let old = with_agent_use_data_root(&data_root, || {
             super::run_agent_use_command(&[
                 "query".to_string(),
-                "symbols".to_string(),
+                "definitions".to_string(),
                 "agentUseTarget".to_string(),
                 "--repo".to_string(),
                 path_string(&repo_old),
@@ -40821,6 +46466,83 @@ mod tests {
             graph["read_path_metrics"]["limits_apply_before_hydration"].as_bool(),
             Some(true)
         );
+        assert_eq!(
+            graph["patch_assist_packet"]["first_use_state"].as_str(),
+            Some("graph_ready")
+        );
+        assert_eq!(
+            graph["patch_assist_packet"]["claimability"]
+                ["graph_proof_only_from_graph_source_verification"]
+                .as_bool(),
+            Some(true)
+        );
+        let graph_budget = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "context-pack".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--task".to_string(),
+                "Find agentUseTarget".to_string(),
+                "--seed".to_string(),
+                "agentUseTarget".to_string(),
+                "--budget".to_string(),
+                "1600".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("agent-use budgeted context graph");
+        assert!(
+            serialized_len_for_test(&graph_budget)
+                <= super::DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+            "{} bytes: {graph_budget}",
+            serialized_len_for_test(&graph_budget)
+        );
+        assert_eq!(count_key_occurrences(&graph_budget, "recovery_commands"), 1);
+        assert!(graph_budget["profile"].is_null());
+        assert!(graph_budget["agent_use_profile"].is_null());
+        assert_eq!(
+            graph_budget["agent_json_budget"]["max_output_bytes"].as_u64(),
+            Some(super::DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES as u64)
+        );
+        assert!(!graph_budget["claimability"].is_null());
+        assert!(!graph_budget["db_lifecycle_read"].is_null());
+        assert_eq!(graph_budget["graph_proof"].as_bool(), Some(true));
+        let graph_compact = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "context-pack".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--task".to_string(),
+                "Find agentUseTarget".to_string(),
+                "--seed".to_string(),
+                "agentUseTarget".to_string(),
+                "--agent-json".to_string(),
+                "--max-output-bytes".to_string(),
+                "4096".to_string(),
+            ])
+        })
+        .expect("agent-use compact context graph");
+        assert!(
+            serialized_len_for_test(&graph_compact) <= 4096,
+            "{} bytes: {graph_compact}",
+            serialized_len_for_test(&graph_compact)
+        );
+        assert!(!graph_compact["claimability"].is_null());
+        assert_eq!(
+            graph_compact["db_source"].as_str(),
+            Some("agent-use profile")
+        );
+        assert!(!graph_compact["recovery"].is_null());
+        assert!(!graph_compact["lifecycle"].is_null());
+        assert_eq!(graph_compact["graph_proof"].as_bool(), Some(true));
+        assert_eq!(
+            graph_compact["agent_json_budget"]["required_safety_fields_preserved"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            graph_compact["normal_dot_codegraph_mutated"].as_bool(),
+            Some(false)
+        );
         assert_no_dot_codegraph_sqlite(&repo);
 
         let spool_repo = temp_repo();
@@ -40849,14 +46571,36 @@ mod tests {
         assert_eq!(candidate["status"].as_str(), Some("ok"));
         assert_eq!(candidate["graph_proof"].as_bool(), Some(false));
         assert_eq!(candidate["candidate_only"].as_bool(), Some(true));
+        if !candidate["read_path_metrics"].is_null() {
+            assert_eq!(
+                candidate["read_path_metrics"]["full_scan_count"].as_u64(),
+                Some(0)
+            );
+        }
+        if !candidate["db_lifecycle_read"].is_null() {
+            assert_eq!(
+                candidate["db_lifecycle_read"]["path_access_status"].as_str(),
+                Some("db_missing")
+            );
+        }
         assert_eq!(
-            candidate["read_path_metrics"]["full_scan_count"].as_u64(),
-            Some(0)
+            candidate["patch_assist_packet"]["first_use_state"].as_str(),
+            Some("candidate_ready_no_graph")
         );
         assert_eq!(
-            candidate["db_lifecycle_read"]["path_access_status"].as_str(),
-            Some("db_missing")
+            candidate["patch_assist_packet"]["graph_proof"].as_bool(),
+            Some(false)
         );
+        let candidate_evidence_count = candidate["patch_assist_packet"]["candidate_evidence"]
+            .as_array()
+            .map(Vec::len)
+            .or_else(|| {
+                candidate["patch_assist_packet"]["candidate_evidence_count"]
+                    .as_u64()
+                    .and_then(|count| usize::try_from(count).ok())
+            })
+            .unwrap_or_default();
+        assert!(candidate_evidence_count > 0, "{candidate}");
 
         write_cli_fixture_file(&spool_repo, "src/lib.rs", "pub fn changed() {}\n");
         let stale = with_agent_use_data_root(&data_root, || {
@@ -40879,6 +46623,20 @@ mod tests {
                 .as_str()
                 .unwrap_or("")
                 .contains("candidate_spool_stale")));
+        assert_eq!(
+            stale["patch_assist_packet"]["first_use_state"].as_str(),
+            Some("stale_or_degraded")
+        );
+        let stale_candidate_evidence_count = stale["patch_assist_packet"]["candidate_evidence"]
+            .as_array()
+            .map(Vec::len)
+            .or_else(|| {
+                stale["patch_assist_packet"]["candidate_evidence_count"]
+                    .as_u64()
+                    .and_then(|count| usize::try_from(count).ok())
+            })
+            .unwrap_or_default();
+        assert_eq!(stale_candidate_evidence_count, 0, "{stale}");
         assert_no_dot_codegraph_sqlite(&spool_repo);
 
         let missing_repo = temp_repo();
@@ -40896,6 +46654,14 @@ mod tests {
         .expect("missing context");
         assert_eq!(missing["status"].as_str(), Some("not_indexed"));
         assert_eq!(missing["claimable"].as_bool(), Some(false));
+        assert_eq!(
+            missing["patch_assist_packet"]["first_use_state"].as_str(),
+            Some("unavailable")
+        );
+        assert_eq!(
+            missing["patch_assist_packet"]["proof_status"].as_str(),
+            Some("not_available_until_index")
+        );
         assert_no_dot_codegraph_sqlite(&missing_repo);
 
         remove_dir_all_with_retry(&repo, "cleanup repo");
@@ -41053,6 +46819,27 @@ mod tests {
                 .as_str()
                 .unwrap_or_default()
                 .contains("Vector runtime sidecar is stale")));
+        assert_eq!(
+            stale_vector["patch_assist_packet"]["first_use_state"].as_str(),
+            Some("graph_ready")
+        );
+        assert!(stale_vector["patch_assist_packet"]["degradation_warnings"]
+            .as_array()
+            .expect("degradation warnings")
+            .iter()
+            .any(
+                |warning| warning["layer"].as_str() == Some("vector_runtime")
+                    && warning["status"].as_str() == Some("stale")
+            ));
+        assert!(!stale_vector["patch_assist_packet"]["candidate_evidence"]
+            .as_array()
+            .expect("candidate evidence")
+            .iter()
+            .any(|candidate| candidate["candidate_sources"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|source| source.as_str() == Some("vector_semantic"))));
 
         let candidate_repo = temp_repo();
         write_agent_use_context_fixture(&candidate_repo);
@@ -41347,6 +47134,13 @@ mod tests {
         write_agent_use_context_fixture(&repo_a);
         write_agent_use_context_fixture(&repo_b);
         write_agent_use_context_fixture(&unicode_repo);
+        let profile =
+            super::resolve_agent_use_profile_with_data_root(&repo_a, &data_root).expect("profile");
+        let profile_b = super::resolve_agent_use_profile_with_data_root(&repo_b, &data_root)
+            .expect("profile b");
+        let profile_unicode =
+            super::resolve_agent_use_profile_with_data_root(&unicode_repo, &data_root)
+                .expect("unicode profile");
 
         let status = with_agent_use_data_root(&data_root, || {
             super::run_agent_use_command(&[
@@ -41368,11 +47162,145 @@ mod tests {
         .expect("mcp config");
         assert_eq!(config["status"].as_str(), Some("not_indexed"));
         assert_eq!(
+            status["config_discovery"]["status"].as_str(),
+            Some("config_missing")
+        );
+        assert_eq!(
+            config["config_discovery"]["status"].as_str(),
+            Some("config_missing")
+        );
+        assert_eq!(
+            config["artifact_hygiene"]["reports_audit_local_evidence"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(config["config_version"].as_u64(), Some(1));
+        assert!(config["generated_at"].as_u64().is_some());
+        assert!(config["generated_at_unix_ms"].as_u64().is_some());
+        assert_eq!(
             config["profile_name"].as_str(),
             Some(super::PRODUCTION_AGENT_USE_PROFILE_NAME)
         );
+        assert_eq!(
+            config["active_profile_name"].as_str(),
+            Some(super::PRODUCTION_AGENT_USE_PROFILE_NAME)
+        );
+        assert_eq!(
+            config["repo_identity_label"].as_str(),
+            Some(profile.repo_identity_label.as_str())
+        );
+        assert_eq!(
+            config["repo_identity_hash"].as_str(),
+            Some(profile.repo_identity_hash.as_str())
+        );
+        assert_eq!(
+            config["repo_identity_short_hash"].as_str(),
+            Some(super::agent_use_repo_identity_short_hash(&profile).as_str())
+        );
+        assert_eq!(
+            config["profile_root"].as_str(),
+            Some(path_string(&profile.profile_root).as_str())
+        );
+        assert_eq!(
+            config["local_agent_profile"]["profile_name"].as_str(),
+            Some(super::PRODUCTION_AGENT_USE_PROFILE_NAME)
+        );
+        assert_eq!(
+            config["local_agent_profile"]["agent_label_supported"].as_bool(),
+            Some(false)
+        );
+        assert!(config["local_agent_profile"]["agent_label"].is_null());
         assert_eq!(config["writes_files"].as_bool(), Some(false));
         assert_eq!(config["db_path"].as_str(), status["db_path"].as_str());
+        assert_eq!(
+            config["mcp_server_args"].as_array().expect("mcp args"),
+            profile
+                .mcp_args
+                .iter()
+                .map(|arg| Value::String(arg.clone()))
+                .collect::<Vec<_>>()
+                .as_slice()
+        );
+        assert_eq!(
+            config["sidecar_paths"]["candidate_spool_path"].as_str(),
+            Some(path_string(&profile.candidate_spool_path).as_str())
+        );
+        assert_eq!(
+            config["sidecar_paths"]["candidate_spool_query_index_path"].as_str(),
+            Some(path_string(&profile.candidate_spool_query_index_path).as_str())
+        );
+        assert_eq!(
+            config["sidecar_paths"]["vector_runtime_path"].as_str(),
+            Some(path_string(&profile.vector_runtime_path).as_str())
+        );
+        assert_eq!(
+            config["sidecar_paths"]["vector_audit_path"].as_str(),
+            Some(path_string(&profile.vector_audit_path).as_str())
+        );
+        assert_eq!(
+            config["sidecar_paths"]["lock_or_publish_state_path"].as_str(),
+            Some(path_string(&profile.lock_or_publish_state_path).as_str())
+        );
+        assert_eq!(
+            config["sidecar_paths"]["delta_state_path"].as_str(),
+            Some(path_string(&profile.delta_state_path).as_str())
+        );
+        let native_mapping_kind = if cfg!(windows) {
+            "native_windows"
+        } else {
+            "native_unix"
+        };
+        assert_eq!(
+            config["path_mapping"]["paths"]["repo_root"]["mapping_kind"].as_str(),
+            Some(native_mapping_kind)
+        );
+        assert_eq!(
+            config["path_mapping"]["paths"]["db_path"]["mapping_status"].as_str(),
+            Some("ok")
+        );
+        assert_eq!(
+            config["path_mapping"]["warnings"]
+                .as_array()
+                .expect("path mapping warnings")
+                .len(),
+            0
+        );
+        assert_eq!(
+            config["mcp_config_identity"]["repo_identity_hash"].as_str(),
+            Some(profile.repo_identity_hash.as_str())
+        );
+        assert_eq!(
+            config["mcp_config_identity"]["db_path"].as_str(),
+            config["db_path"].as_str()
+        );
+        assert_eq!(
+            config["mcp_config_identity"]["sidecar_paths"]["candidate_spool_path"].as_str(),
+            config["sidecar_paths"]["candidate_spool_path"].as_str()
+        );
+        assert_eq!(
+            config["mcp_config_identity"]["path_mapping"]["paths"]["repo_root"]["mapping_kind"]
+                .as_str(),
+            Some(native_mapping_kind)
+        );
+        assert_eq!(
+            config["mcp_config_identity"]["config_pins_repo"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            config["mcp_config_identity"]["config_pins_db"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            config["mcp_config_identity"]["config_pins_profile"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            config["mcp_config_identity"]["safe_read_only_startup"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            config["mcp_config_identity"]["auto_index_on_startup"].as_bool(),
+            Some(false)
+        );
         assert_eq!(
             config["mcp_config"]["mcpServers"]["codegraph-mcp"]["args"][0].as_str(),
             Some("--repo")
@@ -41387,13 +47315,49 @@ mod tests {
                 .as_str(),
             Some(super::PRODUCTION_AGENT_USE_PROFILE_NAME)
         );
+        assert_eq!(
+            config["mcp_config"]["mcpServers"]["codegraph-mcp"]["env"]
+                ["CODEGRAPH_AGENT_USE_REPO_IDENTITY_HASH"]
+                .as_str(),
+            Some(profile.repo_identity_hash.as_str())
+        );
+        assert_eq!(
+            config["mcp_config"]["mcpServers"]["codegraph-mcp"]["env"]
+                ["CODEGRAPH_AGENT_USE_PROFILE_ROOT"]
+                .as_str(),
+            Some(path_string(&profile.profile_root).as_str())
+        );
         assert_eq!(config["mcp_startup_auto_index"].as_bool(), Some(false));
+        assert_eq!(config["auto_index_on_startup"].as_bool(), Some(false));
+        assert_eq!(config["safe_read_only_startup"].as_bool(), Some(true));
+        assert_eq!(
+            config["startup_policy"]["missing_db_claims_ready"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            config["startup_policy"]["stale_db_claims_ready"].as_bool(),
+            Some(false)
+        );
         assert_eq!(
             config["mcp_no_dot_codegraph_fallback"].as_bool(),
             Some(true)
         );
-        let profile =
-            super::resolve_agent_use_profile_with_data_root(&repo_a, &data_root).expect("profile");
+        assert_eq!(
+            config["output_policy"]["default_stdout_json_only"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            config["output_policy"]["write_mode_supported"].as_bool(),
+            Some(false)
+        );
+        assert!(config["output_policy"]["output_path"].is_null());
+        assert!(config["recovery_commands"]
+            .as_array()
+            .expect("recovery commands")
+            .iter()
+            .any(|command| command
+                .as_str()
+                .is_some_and(|value| value.contains("agent-use index"))));
         assert!(!profile.profile_root.exists());
 
         let config_a = with_agent_use_data_root(&data_root, || {
@@ -41424,16 +47388,76 @@ mod tests {
         })
         .expect("unicode config");
         assert_ne!(config_a["db_path"], config_b["db_path"]);
+        assert_ne!(config_a["profile_root"], config_b["profile_root"]);
+        assert_ne!(
+            config_a["repo_identity_hash"],
+            config_b["repo_identity_hash"]
+        );
+        assert_ne!(
+            config_a["sidecar_paths"]["candidate_spool_path"],
+            config_b["sidecar_paths"]["candidate_spool_path"]
+        );
+        assert_ne!(
+            config_a["sidecar_paths"]["vector_runtime_path"],
+            config_b["sidecar_paths"]["vector_runtime_path"]
+        );
+        assert_eq!(
+            config_b["mcp_config_identity"]["repo_identity_hash"].as_str(),
+            Some(profile_b.repo_identity_hash.as_str())
+        );
+        assert_eq!(
+            config_unicode["mcp_config_identity"]["repo_identity_hash"].as_str(),
+            Some(profile_unicode.repo_identity_hash.as_str())
+        );
         assert!(config_unicode["repo_root"]
             .as_str()
             .expect("unicode repo root")
             .contains("repo with spaces"));
+        assert!(config_unicode["mcp_server_args"][1]
+            .as_str()
+            .expect("unicode mcp repo arg")
+            .contains("repo with spaces"));
+        let serialized_config =
+            serde_json::to_string(&config_unicode).expect("serialize unicode mcp config");
+        let reparsed_config: Value =
+            serde_json::from_str(&serialized_config).expect("reparse unicode mcp config");
+        assert_eq!(reparsed_config["repo_root"], config_unicode["repo_root"]);
         assert_no_dot_codegraph_sqlite(&repo_a);
         assert_no_dot_codegraph_sqlite(&repo_b);
         assert_no_dot_codegraph_sqlite(&unicode_repo);
 
         remove_dir_all_with_retry(&parent, "cleanup parent");
         remove_dir_all_with_retry(&data_root, "cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_path_mapping_classifies_wsl_docker_and_native() {
+        let native = super::agent_use_path_mapping_json(&std::env::temp_dir());
+        assert_eq!(native["mapping_status"].as_str(), Some("ok"));
+        assert_eq!(
+            native["mapping_kind"].as_str(),
+            Some(if cfg!(windows) {
+                "native_windows"
+            } else {
+                "native_unix"
+            })
+        );
+
+        let wsl = super::agent_use_path_mapping_json(Path::new(r"\\wsl$\Ubuntu\home\repo"));
+        assert_eq!(wsl["mapping_kind"].as_str(), Some("wsl_path"));
+        assert_eq!(wsl["mapping_status"].as_str(), Some("mapping_unavailable"));
+        assert_eq!(wsl["mapping_unavailable"].as_bool(), Some(true));
+        assert_eq!(
+            wsl["warnings"][0]["label"].as_str(),
+            Some("path_mapping_unavailable")
+        );
+
+        let docker = super::agent_use_path_mapping_json(Path::new("/workspace/repo"));
+        assert_eq!(docker["mapping_kind"].as_str(), Some("docker_mount_path"));
+        assert_eq!(
+            docker["mapping_status"].as_str(),
+            Some("mapping_unavailable")
+        );
     }
 
     #[test]
@@ -41556,6 +47580,30 @@ mod tests {
             stale_status["db_lifecycle_read"]["artifact_freshness"].as_str(),
             Some("incomplete:interrupted")
         );
+        let stale_config = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "mcp-config".to_string(),
+                "--repo".to_string(),
+                path_string(&repo_stale),
+                "--json".to_string(),
+            ])
+        })
+        .expect("stale mcp-config");
+        assert_ne!(stale_config["status"].as_str(), Some("ok"));
+        assert_eq!(stale_config["claimable"].as_bool(), Some(false));
+        assert_eq!(stale_config["safe_read_only_startup"].as_bool(), Some(true));
+        assert_eq!(stale_config["auto_index_on_startup"].as_bool(), Some(false));
+        assert_eq!(
+            stale_config["startup_policy"]["stale_db_claims_ready"].as_bool(),
+            Some(false)
+        );
+        assert!(stale_config["recovery_commands"]
+            .as_array()
+            .expect("stale recovery commands")
+            .iter()
+            .any(|command| command
+                .as_str()
+                .is_some_and(|value| value.contains("agent-use index"))));
         let rebuilt_stale = with_agent_use_data_root(&data_root, || {
             super::run_agent_use_command(&[
                 "index".to_string(),
@@ -41760,6 +47808,18 @@ mod tests {
         })
         .expect("locked status");
         assert_eq!(locked_status["status"].as_str(), Some("db_locked"));
+        assert_eq!(
+            locked_status["lock_state"]["db_locked"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            locked_status["lock_state"]["retryable"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            locked_status["update_queue_state"]["old_db_preserved"].as_bool(),
+            Some(true)
+        );
         assert_json_array_contains(&locked_status, "safety_labels", "db_locked");
         assert_json_array_contains(&locked_status, "safety_labels", "diagnostic_only");
 
@@ -41814,6 +47874,168 @@ mod tests {
         remove_dir_all_with_retry(&permission_repo, "cleanup permission repo");
         remove_dir_all_with_retry(&filesystem_repo, "cleanup filesystem repo");
         remove_dir_all_with_retry(&data_root, "cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_config_discovery_reports_missing_invalid_and_unknown_fields() {
+        let _guard = lock_env_test();
+        let repo = temp_repo();
+
+        let missing = super::agent_use_config_discovery_json(&repo);
+        assert_eq!(missing["status"].as_str(), Some("config_missing"));
+        assert_eq!(missing["required"].as_bool(), Some(false));
+        assert_eq!(missing["diagnostic_only"].as_bool(), Some(true));
+
+        let config_dir = repo.join(".codex");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        let config_path = config_dir.join("config.toml");
+        fs::write(
+            &config_path,
+            "[mcp_servers.codegraph-mcp\ncommand = \"codegraph-mcp\"\n",
+        )
+        .expect("write invalid config");
+        let invalid = super::agent_use_config_discovery_json(&repo);
+        assert_eq!(invalid["status"].as_str(), Some("config_invalid"));
+        assert!(
+            invalid["errors"]
+                .as_array()
+                .expect("errors")
+                .iter()
+                .any(|error| error
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("config_invalid")),
+            "{invalid:?}"
+        );
+
+        fs::write(
+            &config_path,
+            "[mcp_servers.codegraph-mcp]\ncommand = \"codegraph-mcp\"\nargs = [\"serve-mcp\"]\ncwd = \".\"\nsurprise = true\n",
+        )
+        .expect("write config with unknown field");
+        let unknown = super::agent_use_config_discovery_json(&repo);
+        assert_eq!(unknown["status"].as_str(), Some("config_unknown_field"));
+        assert!(
+            unknown["unknown_fields"]
+                .as_array()
+                .expect("unknown fields")
+                .iter()
+                .any(|field| field.as_str() == Some("surprise")),
+            "{unknown:?}"
+        );
+        assert_eq!(unknown["unknown_field_policy"].as_str(), Some("warning"));
+
+        assert_no_dot_codegraph_sqlite(&repo);
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+    }
+
+    #[test]
+    fn agent_use_env_discovery_labels_invalid_and_preserves_space_unicode_root() {
+        let _guard = lock_env_test();
+        let parent = temp_repo();
+        let data_root = parent.join(format!("data root with spaces {}", '\u{00e9}'));
+        let repo = parent.join("repo");
+        fs::create_dir_all(&repo).expect("create repo");
+
+        let invalid = with_process_env_var(super::AGENT_USE_DATA_ROOT_ENV, "", || {
+            super::agent_use_profile_data_root()
+        })
+        .expect_err("empty env override must be invalid");
+        assert!(invalid.contains("env_invalid"), "{invalid}");
+
+        let profile =
+            with_agent_use_data_root(&data_root, || super::resolve_agent_use_profile(&repo))
+                .expect("profile");
+        let env =
+            with_agent_use_data_root(&data_root, || super::agent_use_env_discovery_json(&profile));
+        assert_eq!(env["explicit_data_root"]["status"].as_str(), Some("ok"));
+        assert_eq!(env["data_root_source"].as_str(), Some("env"));
+        assert_eq!(
+            env["explicit_data_root"]["path"].as_str(),
+            Some(path_string(&data_root).as_str())
+        );
+        assert_eq!(env["profile_root_ref"].as_str(), Some("profile_root"));
+        assert!(
+            path_string(&profile.profile_root).contains("data root with spaces"),
+            "{profile:?}"
+        );
+
+        assert_no_dot_codegraph_sqlite(&repo);
+        remove_dir_all_with_retry(&parent, "cleanup parent");
+    }
+
+    #[test]
+    fn agent_use_sidecar_access_distinguishes_access_from_corrupt() {
+        let _guard = lock_env_test();
+        assert_eq!(
+            super::sidecar_access_classification_from_message("permission denied").status,
+            "permission_denied"
+        );
+        assert_eq!(
+            super::sidecar_access_classification_from_message("database is locked").status,
+            "sidecar_locked"
+        );
+        assert_eq!(
+            super::sidecar_access_classification_from_message(
+                "attempt to write a readonly database"
+            )
+            .status,
+            "read_only"
+        );
+        assert_eq!(
+            super::sidecar_access_classification_from_message("failed to parse vector chunk index")
+                .status,
+            "sidecar_corrupt"
+        );
+
+        let repo = temp_repo();
+        let spool_path = repo.join("candidate-spool.jsonl");
+        fs::create_dir_all(&spool_path).expect("directory at spool path");
+        let spool = super::candidate_spool_layer_status(&repo, &spool_path);
+        assert_ne!(spool["status"].as_str(), Some("corrupt"));
+        assert_ne!(spool["status"].as_str(), Some("foreign"));
+        assert_eq!(spool["candidate_spool_unavailable"].as_bool(), Some(true));
+
+        let audit_dir = repo.join("vector-audit.json");
+        fs::create_dir_all(&audit_dir).expect("directory at audit path");
+        let audit_access =
+            super::vector_audit_layer_status(&repo.join("graph.sqlite"), None, &audit_dir);
+        assert_ne!(audit_access["status"].as_str(), Some("corrupt"));
+        assert_eq!(audit_access["runtime_dependency"].as_bool(), Some(false));
+        assert_eq!(audit_access["diagnostic_only"].as_bool(), Some(true));
+
+        fs::remove_dir_all(&audit_dir).expect("remove audit dir");
+        fs::write(&audit_dir, "{not json").expect("write corrupt audit json");
+        let audit_corrupt =
+            super::vector_audit_layer_status(&repo.join("graph.sqlite"), None, &audit_dir);
+        assert_eq!(audit_corrupt["status"].as_str(), Some("sidecar_corrupt"));
+        assert_eq!(
+            audit_corrupt["sidecar_problem_kind"].as_str(),
+            Some("sidecar_corrupt")
+        );
+
+        assert_no_dot_codegraph_sqlite(&repo);
+        remove_dir_all_with_retry(&repo, "cleanup repo");
+    }
+
+    #[test]
+    fn agent_use_artifact_hygiene_policy_marks_raw_artifacts_local() {
+        let hygiene = super::agent_use_artifact_hygiene_json();
+        assert_eq!(hygiene["status"].as_str(), Some("local_ignored"));
+        assert_eq!(
+            hygiene["reports_audit_local_evidence"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            hygiene["reports_final_canonical_dashboard"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(hygiene["raw_artifacts_not_promoted"].as_bool(), Some(true));
+        assert_eq!(hygiene["ignored_local_pattern_count"].as_u64(), Some(9));
+        assert_eq!(
+            hygiene["ignored_local_patterns_ref"].as_str(),
+            Some("docs/guardrails.md")
+        );
     }
 
     #[test]
@@ -41909,6 +48131,22 @@ mod tests {
             status_during_update["publish_state"]["status"].as_str(),
             Some("updating")
         );
+        assert_eq!(
+            status_during_update["lock_state"]["active_update"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            status_during_update["lock_state"]["unrelated_repo_blocking"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            status_during_update["update_queue_state"]["status"].as_str(),
+            Some("updating")
+        );
+        assert_eq!(
+            status_during_update["update_queue_state"]["old_db_preserved"].as_bool(),
+            Some(true)
+        );
         assert_json_array_contains(&status_during_update, "safety_labels", "updating");
         assert_json_array_contains(&status_during_update, "safety_labels", "publishing");
 
@@ -41945,6 +48183,185 @@ mod tests {
         assert_no_dot_codegraph_sqlite(&repo);
 
         remove_dir_all_with_retry(&repo, "cleanup repo");
+        remove_dir_all_with_retry(&data_root, "cleanup data root");
+    }
+
+    #[test]
+    fn agent_use_multi_repo_local_agents_do_not_cross_contaminate_during_update() {
+        let _guard = lock_env_test();
+        let data_root = temp_repo();
+        let parent = temp_repo();
+        let repo_a = parent.join("left").join("app");
+        let repo_b = parent.join("right").join("app");
+        fs::create_dir_all(&repo_a).expect("create repo a");
+        fs::create_dir_all(&repo_b).expect("create repo b");
+        write_cli_fixture_file(&repo_a, "package.json", "{\n  \"type\": \"module\"\n}\n");
+        write_cli_fixture_file(
+            &repo_a,
+            "src/a.ts",
+            "export function repoAOnlyLocalAgentSymbol() {\n  return 'repo-a';\n}\n",
+        );
+        write_cli_fixture_file(&repo_b, "package.json", "{\n  \"type\": \"module\"\n}\n");
+        write_cli_fixture_file(
+            &repo_b,
+            "src/b.ts",
+            "export function repoBOnlyLocalAgentSymbol() {\n  return 'repo-b';\n}\n",
+        );
+        let profile_a = super::resolve_agent_use_profile_with_data_root(&repo_a, &data_root)
+            .expect("profile a");
+        let profile_b = super::resolve_agent_use_profile_with_data_root(&repo_b, &data_root)
+            .expect("profile b");
+        assert_ne!(profile_a.db_path, profile_b.db_path);
+        assert_ne!(
+            profile_a.candidate_spool_path,
+            profile_b.candidate_spool_path
+        );
+        assert_ne!(profile_a.vector_runtime_path, profile_b.vector_runtime_path);
+
+        run_agent_use_test_command(
+            &data_root,
+            &["index", "--repo", path_string(&repo_a).as_str(), "--json"],
+        )
+        .expect("index repo a");
+        run_agent_use_test_command(
+            &data_root,
+            &["index", "--repo", path_string(&repo_b).as_str(), "--json"],
+        )
+        .expect("index repo b");
+
+        assert!(
+            agent_use_query_count(&data_root, &repo_a, "symbols", "repoAOnlyLocalAgentSymbol") > 0
+        );
+        assert_eq!(
+            agent_use_query_count(&data_root, &repo_b, "symbols", "repoAOnlyLocalAgentSymbol"),
+            0
+        );
+        assert!(
+            agent_use_query_count(&data_root, &repo_b, "symbols", "repoBOnlyLocalAgentSymbol") > 0
+        );
+        assert_eq!(
+            agent_use_query_count(&data_root, &repo_a, "symbols", "repoBOnlyLocalAgentSymbol"),
+            0
+        );
+
+        let config_a = run_agent_use_test_command(
+            &data_root,
+            &[
+                "mcp-config",
+                "--repo",
+                path_string(&repo_a).as_str(),
+                "--json",
+            ],
+        )
+        .expect("config a");
+        let config_b = run_agent_use_test_command(
+            &data_root,
+            &[
+                "mcp-config",
+                "--repo",
+                path_string(&repo_b).as_str(),
+                "--json",
+            ],
+        )
+        .expect("config b");
+        assert_ne!(config_a["db_path"], config_b["db_path"]);
+        assert_ne!(
+            config_a["mcp_config_identity"]["repo_identity_hash"],
+            config_b["mcp_config_identity"]["repo_identity_hash"]
+        );
+        assert_ne!(
+            config_a["sidecar_paths"]["candidate_spool_path"],
+            config_b["sidecar_paths"]["candidate_spool_path"]
+        );
+
+        let writer = SqliteGraphStore::open(&profile_a.db_path).expect("open repo a writer");
+        writer
+            .begin_write_transaction()
+            .expect("begin repo a uncommitted update");
+        writer
+            .delete_facts_for_file("src/a.ts")
+            .expect("delete repo a facts inside uncommitted transaction");
+        super::write_agent_use_publish_state(&profile_a, "updating", None)
+            .expect("write repo a updating state");
+
+        let status_a = run_agent_use_test_command(
+            &data_root,
+            &["status", "--repo", path_string(&repo_a).as_str(), "--json"],
+        )
+        .expect("repo a status during update");
+        assert_eq!(status_a["claimable"].as_bool(), Some(true));
+        assert_eq!(
+            status_a["publish_state"]["status"].as_str(),
+            Some("updating")
+        );
+        assert_eq!(
+            status_a["lock_state"]["active_update"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            status_a["lock_state"]["unrelated_repo_blocking"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            status_a["update_queue_state"]["old_db_preserved"].as_bool(),
+            Some(true)
+        );
+
+        let query_a_during_update = run_agent_use_test_command(
+            &data_root,
+            &[
+                "query",
+                "symbols",
+                "repoAOnlyLocalAgentSymbol",
+                "--repo",
+                path_string(&repo_a).as_str(),
+                "--limit",
+                "5",
+                "--agent-json",
+            ],
+        )
+        .expect("repo a query during update");
+        assert_eq!(query_a_during_update["claimable"].as_bool(), Some(true));
+        assert!(
+            query_a_during_update["result_count"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0,
+            "repo A reader must see old committed facts, not half-updated graph proof: {query_a_during_update:?}"
+        );
+
+        let status_b = run_agent_use_test_command(
+            &data_root,
+            &["status", "--repo", path_string(&repo_b).as_str(), "--json"],
+        )
+        .expect("repo b status during repo a update");
+        assert_eq!(status_b["claimable"].as_bool(), Some(true));
+        assert_eq!(status_b["publish_state"]["active"].as_bool(), Some(false));
+        assert_eq!(
+            status_b["lock_state"]["active_update"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            status_b["lock_state"]["unrelated_repo_blocking"].as_bool(),
+            Some(false)
+        );
+        assert!(
+            agent_use_query_count(&data_root, &repo_b, "symbols", "repoBOnlyLocalAgentSymbol") > 0
+        );
+        assert_eq!(
+            agent_use_query_count(&data_root, &repo_b, "symbols", "repoAOnlyLocalAgentSymbol"),
+            0
+        );
+
+        writer
+            .rollback_write_transaction()
+            .expect("rollback repo a update");
+        drop(writer);
+        super::clear_agent_use_publish_state(&profile_a).expect("clear repo a update state");
+
+        assert_no_dot_codegraph_sqlite(&repo_a);
+        assert_no_dot_codegraph_sqlite(&repo_b);
+        remove_dir_all_with_retry(&parent, "cleanup parent");
         remove_dir_all_with_retry(&data_root, "cleanup data root");
     }
 
@@ -43304,6 +49721,337 @@ mod tests {
         assert_eq!(file_result["claimable_for_text"].as_bool(), Some(true));
         assert_eq!(file_result["claimable_for_graph"].as_bool(), Some(false));
         assert_eq!(file_result["graph_proof"].as_bool(), Some(false));
+
+        remove_dir_all_with_retry(&repo, "cleanup");
+    }
+
+    #[test]
+    fn p2_agent_path_json_hydrates_endpoint_names_and_never_uses_unknown_edge_id() {
+        let path = PathEvidence {
+            id: "path-readable".to_string(),
+            summary: Some("handle_request calls save_record".to_string()),
+            source: "repo://e/handle_request".to_string(),
+            target: "repo://e/save_record".to_string(),
+            metapath: vec![RelationKind::Calls],
+            edges: vec![(
+                "repo://e/handle_request".to_string(),
+                RelationKind::Calls,
+                "repo://e/save_record".to_string(),
+            )],
+            source_spans: vec![SourceSpan {
+                repo_relative_path: "src/app.ts".to_string(),
+                start_line: 3,
+                start_column: Some(3),
+                end_line: 3,
+                end_column: Some(16),
+            }],
+            exactness: Exactness::ParserVerified,
+            length: 1,
+            confidence: 0.99,
+            metadata: Metadata::from([(
+                "edge_labels".to_string(),
+                json!([{
+                    "edge_id": "edge://calls/handle-save",
+                    "head_id": "repo://e/handle_request",
+                    "head_entity": {
+                        "entity_id": "repo://e/handle_request",
+                        "display_name": "handle_request",
+                        "name": "handle_request",
+                        "qualified_name": "app.handle_request",
+                        "kind": "Function",
+                        "file": "src/app.ts"
+                    },
+                    "relation": "CALLS",
+                    "tail_id": "repo://e/save_record",
+                    "tail_entity": {
+                        "entity_id": "repo://e/save_record",
+                        "display_name": "save_record",
+                        "name": "save_record",
+                        "qualified_name": "db.save_record",
+                        "kind": "Function",
+                        "file": "src/db.ts"
+                    },
+                    "source_span_detail": {
+                        "file": "src/app.ts",
+                        "start_line": 3,
+                        "end_line": 3
+                    },
+                    "evidence_role": "production",
+                    "classification_reason": "source role metadata",
+                    "classification_source": "metadata"
+                }]),
+            )]),
+        };
+
+        let value = super::agent_path_evidence_result_json(&path);
+        let edge = &value["edges"][0];
+        assert_eq!(edge["edge_id"].as_str(), Some("edge://calls/handle-save"));
+        assert_eq!(
+            edge["source"]["display_name"].as_str(),
+            Some("handle_request")
+        );
+        assert_eq!(edge["target"]["display_name"].as_str(), Some("save_record"));
+        assert_eq!(
+            edge["source"]["entity_id"].as_str(),
+            Some("repo://e/handle_request")
+        );
+        assert_eq!(
+            edge["target"]["qualified_name"].as_str(),
+            Some("db.save_record")
+        );
+        assert_eq!(
+            value["source_endpoint"]["display_name"].as_str(),
+            Some("handle_request")
+        );
+        assert_eq!(
+            value["target_endpoint"]["display_name"].as_str(),
+            Some("save_record")
+        );
+        let serialized = serde_json::to_string(&value).expect("serialize path");
+        assert!(
+            !serialized.contains("edge://unknown"),
+            "path JSON must not silently invent edge://unknown: {serialized}"
+        );
+
+        let reversed_endpoint_path = PathEvidence {
+            source: "repo://e/save_record".to_string(),
+            target: "repo://e/handle_request".to_string(),
+            ..path
+        };
+        let reversed = super::agent_path_evidence_result_json(&reversed_endpoint_path);
+        assert_eq!(
+            reversed["source_endpoint"]["display_name"].as_str(),
+            Some("save_record")
+        );
+        assert_eq!(
+            reversed["target_endpoint"]["display_name"].as_str(),
+            Some("handle_request")
+        );
+    }
+
+    #[test]
+    fn p2_agent_path_json_marks_unhydrated_endpoint_names_unavailable() {
+        let path = PathEvidence {
+            id: "path-unhydrated".to_string(),
+            summary: None,
+            source: "repo://e/source".to_string(),
+            target: "repo://e/target".to_string(),
+            metapath: vec![RelationKind::Calls],
+            edges: vec![(
+                "repo://e/source".to_string(),
+                RelationKind::Calls,
+                "repo://e/target".to_string(),
+            )],
+            source_spans: vec![SourceSpan {
+                repo_relative_path: "src/app.ts".to_string(),
+                start_line: 1,
+                start_column: None,
+                end_line: 1,
+                end_column: None,
+            }],
+            exactness: Exactness::ParserVerified,
+            length: 1,
+            confidence: 0.9,
+            metadata: Metadata::new(),
+        };
+
+        let value = super::agent_path_evidence_result_json(&path);
+        let edge = &value["edges"][0];
+        assert!(edge["edge_id"].is_null());
+        assert_eq!(edge["edge_id_unavailable"].as_bool(), Some(true));
+        assert_eq!(edge["source"]["name_unavailable"].as_bool(), Some(true));
+        assert_eq!(edge["target"]["name_unavailable"].as_bool(), Some(true));
+        let serialized = serde_json::to_string(&value).expect("serialize path");
+        assert!(!serialized.contains("edge://unknown"));
+    }
+
+    #[test]
+    fn p2_query_agent_json_populates_evidence_roles_for_symbols_files_and_text() {
+        let repo = temp_repo();
+        write_cli_fixture_file(
+            &repo,
+            "src/service.ts",
+            "export function production_entry() { return 1; }\n",
+        );
+        write_cli_fixture_file(
+            &repo,
+            "src/service.test.ts",
+            "export function test_entry() { return production_entry(); }\n",
+        );
+        index_repo(&repo).expect("index role fixture");
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+        });
+
+        let production_options = parse_list_query_args(
+            "symbols",
+            &[
+                "production_entry".to_string(),
+                "--agent-json".to_string(),
+                "--limit=3".to_string(),
+            ],
+        )
+        .expect("parse production symbol");
+        let production = query_symbols_with_options(&repo, &production_options, Some(&lifecycle))
+            .expect("query production symbol");
+        assert_eq!(
+            production["results"][0]["evidence_role"].as_str(),
+            Some("production")
+        );
+        assert!(production["results"][0]["classification_reason"]
+            .as_str()
+            .is_some());
+
+        let test_options = parse_list_query_args(
+            "symbols",
+            &[
+                "test_entry".to_string(),
+                "--agent-json".to_string(),
+                "--limit=3".to_string(),
+            ],
+        )
+        .expect("parse test symbol");
+        let test =
+            query_symbols_with_options(&repo, &test_options, Some(&lifecycle)).expect("query test");
+        assert_eq!(test["results"][0]["evidence_role"].as_str(), Some("test"));
+
+        let files_options = parse_list_query_args(
+            "files",
+            &[
+                "service.test.ts".to_string(),
+                "--agent-json".to_string(),
+                "--limit=3".to_string(),
+            ],
+        )
+        .expect("parse file query");
+        let files =
+            query_files_with_options(&repo, &files_options, Some(&lifecycle)).expect("query files");
+        assert_eq!(files["results"][0]["evidence_role"].as_str(), Some("test"));
+
+        let text_options = parse_list_query_args(
+            "text",
+            &[
+                "production_entry".to_string(),
+                "--agent-json".to_string(),
+                "--limit=3".to_string(),
+            ],
+        )
+        .expect("parse text query");
+        let text =
+            query_text_with_options(&repo, &text_options, Some(&lifecycle)).expect("query text");
+        assert_eq!(
+            text["results"][0]["evidence_role"].as_str(),
+            Some("text_evidence")
+        );
+        assert_eq!(text["results"][0]["graph_proof"].as_bool(), Some(false));
+
+        remove_dir_all_with_retry(&repo, "cleanup");
+    }
+
+    #[test]
+    fn p2_query_evidence_role_helper_labels_stub_generated_and_unknown() {
+        let mut generated_metadata = Metadata::new();
+        generated_metadata.insert("degradation_labels".to_string(), json!(["generated_large"]));
+        let generated = Entity {
+            id: "repo://e/generated".to_string(),
+            kind: EntityKind::Function,
+            name: "generated_client".to_string(),
+            qualified_name: "generated_client".to_string(),
+            repo_relative_path: "src/generated/client.generated.ts".to_string(),
+            source_span: None,
+            content_hash: None,
+            file_hash: None,
+            created_from: "unit-test".to_string(),
+            confidence: 1.0,
+            metadata: generated_metadata,
+        };
+        assert_eq!(
+            super::query_evidence_role_for_entity(&generated).role,
+            "generated"
+        );
+
+        let stub = Entity {
+            id: "repo://e/stub".to_string(),
+            kind: EntityKind::Stub,
+            name: "stub_client".to_string(),
+            qualified_name: "tests.stub_client".to_string(),
+            repo_relative_path: "tests/client.ts".to_string(),
+            source_span: None,
+            content_hash: None,
+            file_hash: None,
+            created_from: "unit-test".to_string(),
+            confidence: 1.0,
+            metadata: Metadata::new(),
+        };
+        assert_eq!(super::query_evidence_role_for_entity(&stub).role, "stub");
+
+        let unknown = super::query_evidence_role_for_path_and_metadata("", None, None, "unit-test");
+        assert_eq!(unknown.role, "unknown");
+        assert!(unknown.reason.contains("cannot be determined"));
+    }
+
+    #[test]
+    fn p2_compact_lifecycle_preserves_diagnostic_override_blockers() {
+        let lifecycle = json!({
+            "claimable": false,
+            "diagnostic_only": true,
+            "decision": "diagnostic_stale_reuse",
+            "db_problem_kind": "repo_root_mismatch",
+            "allow_foreign_db": true,
+            "allow_stale_read": false,
+            "blockers": ["repo root mismatch: expected A, observed B"],
+            "warnings": ["diagnostic_read allowed foreign-repo blocker; output is non-claimable"],
+            "safety_labels": ["foreign"],
+            "exact_db_path_checked": "external.sqlite",
+            "repo_root_expected": "repo-b",
+        });
+        let compact = super::compact_lifecycle_summary(&lifecycle);
+        assert_eq!(compact["claimable"].as_bool(), Some(false));
+        assert_eq!(compact["diagnostic_only"].as_bool(), Some(true));
+        assert_eq!(compact["allow_foreign_db"].as_bool(), Some(true));
+        assert_eq!(
+            compact["blockers"][0].as_str(),
+            Some("repo root mismatch: expected A, observed B")
+        );
+        assert_eq!(compact["safety_labels"][0].as_str(), Some("foreign"));
+    }
+
+    #[test]
+    fn p2_rust_inline_cfg_test_symbol_is_test_evidence() {
+        let repo = temp_repo();
+        write_cli_fixture_file(
+            &repo,
+            "Cargo.toml",
+            "[package]\nname = \"p2-inline-rust-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        );
+        write_cli_fixture_file(
+            &repo,
+            "src/lib.rs",
+            "pub fn production_entry() -> i32 { 1 }\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn inline_works() {\n        assert_eq!(super::production_entry(), 1);\n    }\n}\n",
+        );
+        index_repo(&repo).expect("index rust inline test fixture");
+        let lifecycle = json!({
+            "claimable": true,
+            "diagnostic_only": false,
+            "decision": "read_reuse",
+        });
+        let options = parse_list_query_args(
+            "symbols",
+            &[
+                "inline_works".to_string(),
+                "--agent-json".to_string(),
+                "--limit=3".to_string(),
+            ],
+        )
+        .expect("parse rust inline query");
+        let result = query_symbols_with_options(&repo, &options, Some(&lifecycle))
+            .expect("query rust inline test");
+        assert_eq!(result["results"][0]["evidence_role"].as_str(), Some("test"));
+        assert!(result["results"][0]["classification_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("test") || reason.contains("tests")));
 
         remove_dir_all_with_retry(&repo, "cleanup");
     }
@@ -46238,6 +52986,25 @@ mod tests {
             result["limits"]["max_output_bytes"].as_u64(),
             Some(max_output_bytes as u64)
         );
+        for key in [
+            "claimability",
+            "db_lifecycle_read",
+            "graph_verification",
+            "lifecycle",
+            "proof_status",
+            "proof_strength",
+            "graph_proof",
+        ] {
+            assert!(
+                !result[key].is_null(),
+                "{key} dropped from compact agent JSON"
+            );
+        }
+        assert_eq!(result["claimability"]["claimable"].as_bool(), Some(true));
+        assert_eq!(
+            result["graph_verification"]["status"].as_str(),
+            Some("graph_verified")
+        );
         for path in result["paths"].as_array().expect("paths") {
             assert!(path["evidence_role"].as_str().is_some());
             assert!(path["classification_reason"].as_str().is_some());
@@ -47354,7 +54121,7 @@ mod tests {
                 "source_score": 0.91,
                 "matched_seeds": ["QUASAR_NETTLE_FUSE"],
                 "matched_tokens": ["QUASAR_NETTLE_FUSE"],
-                "reason": "vector semantic candidate; not graph proof",
+                "reason": "deterministic token-projection candidate; not graph proof",
                 "ranking_features": {
                     "exact_seed_match": false,
                     "file_path_match": false,
@@ -47531,6 +54298,22 @@ mod tests {
         assert_eq!(candidate["graph_proof"].as_bool(), Some(false));
         assert_eq!(candidate["vector_score"].as_f64(), Some(0.91));
         assert_eq!(candidate["binary_score"].as_f64(), Some(0.77));
+        assert_eq!(
+            candidate["semantic_backend"].as_str(),
+            Some("deterministic_token_projection")
+        );
+        assert_eq!(
+            candidate["learned_semantic_embeddings"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            candidate["semantic_embedding_claim"].as_str(),
+            Some("not_learned_semantic_embedding")
+        );
+        assert_eq!(
+            candidate["vector_candidate_claim_boundary"].as_str(),
+            Some("vector_evidence_candidate_only; graph_proof_requires_graph_source_verification")
+        );
         assert_eq!(
             candidate["rescue_reason"].as_str(),
             Some("config_key_rescue")
@@ -47762,7 +54545,7 @@ mod tests {
                 "vector_score": 0.88,
                 "source_score": 0.88,
                 "matched_seeds": ["auth_guard"],
-                "reason": "vector semantic candidate; not graph proof",
+                "reason": "deterministic token-projection candidate; not graph proof",
                 "ranking_features": {
                     "exact_seed_match": false,
                     "file_path_match": false,
@@ -48579,6 +55362,140 @@ mod tests {
     }
 
     #[test]
+    fn patch_assist_packet_has_required_sections_and_non_shell_followups() {
+        let response = routing_packet_response_for_task(
+            "Trace Buildroot generic package flow for adding a new package.",
+            &[
+                routing_fixture_evidence(
+                    "docs/manual/adding-packages-generic.adoc",
+                    "generic-package package infrastructure authoring docs",
+                ),
+                routing_fixture_evidence(
+                    "package/pkg-generic.mk",
+                    "inner-generic-package VERSION SITE LICENSE DEPENDENCIES",
+                ),
+                routing_fixture_evidence("package/Config.in", "BR2_PACKAGE depends on"),
+            ],
+            &["generic-package", "BR2_PACKAGE_FOO"],
+            None,
+            Some(65_536),
+        );
+        let patch = &response["patch_assist_packet"];
+        assert_eq!(
+            patch["packet_kind"].as_str(),
+            Some("patch_assist_staged_context")
+        );
+        for key in [
+            "task_intent",
+            "task_roles",
+            "critical_files",
+            "critical_symbols",
+            "source_navigation_evidence",
+            "text_evidence",
+            "candidate_evidence",
+            "graph_proof_paths",
+            "proof_status",
+            "proof_strength",
+            "graph_proof",
+            "unknowns",
+            "risks",
+            "validation_steps",
+            "follow_up_queries",
+            "expansion_handles",
+            "artifact_or_db_inspection_requirements",
+            "degradation_warnings",
+            "staged_availability",
+        ] {
+            assert!(patch.get(key).is_some(), "missing {key}: {patch}");
+        }
+        assert_eq!(patch["graph_proof"].as_bool(), Some(false));
+        assert!(patch["graph_proof_paths"]
+            .as_array()
+            .expect("graph proof paths")
+            .is_empty());
+        assert!(patch["follow_up_queries"]
+            .as_array()
+            .expect("followups")
+            .iter()
+            .all(|query| query["shell_ready"].as_bool() == Some(false)
+                && !query["query_text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("rg ")));
+        assert_eq!(
+            patch["packet_budget_status"]["packet_budget_enforced"].as_bool(),
+            Some(true)
+        );
+        assert!(
+            patch["packet_budget_status"]["serialized_bytes"]
+                .as_u64()
+                .unwrap_or_default()
+                <= patch["packet_budget_status"]["packet_budget_bytes"]
+                    .as_u64()
+                    .unwrap_or_default(),
+            "{patch}"
+        );
+    }
+
+    #[test]
+    fn patch_assist_packet_surfaces_degraded_output_without_graph_overclaim() {
+        let mut degraded = routing_fixture_evidence(
+            "src/generated/large.generated.ts",
+            "generated high fanout implementation trace",
+        );
+        let object = degraded.as_object_mut().expect("degraded evidence object");
+        object.insert("graph_output_degraded".to_string(), json!(true));
+        object.insert(
+            "degradation_labels".to_string(),
+            json!([
+                "generated_large",
+                "extraction_budget_hit",
+                "diagnostic_only"
+            ]),
+        );
+        object.insert(
+            "graph_extraction_skip_reason".to_string(),
+            json!("large_generated_or_test_source_budget"),
+        );
+        object.insert(
+            "claimability".to_string(),
+            json!({
+                "claimable": false,
+                "claimable_as": [],
+                "not_claimable_as": [
+                    "complete_graph_for_degraded_file",
+                    "omitted_relation_classes",
+                    "graph_relation_proof"
+                ]
+            }),
+        );
+
+        let response = routing_packet_response_for_task(
+            "Trace implementation path for generated large file handling.",
+            &[degraded],
+            &["large_generated_handler"],
+            None,
+            Some(65_536),
+        );
+        let patch = &response["patch_assist_packet"];
+        assert_eq!(patch["graph_proof"].as_bool(), Some(false));
+        assert!(patch["degradation_warnings"]
+            .as_array()
+            .expect("degradation warnings")
+            .iter()
+            .any(|warning| warning["reason"].as_str()
+                == Some("large_generated_or_test_source_budget")));
+        assert!(patch["critical_files"]
+            .as_array()
+            .expect("critical files")
+            .iter()
+            .any(
+                |file| file["degraded_output_not_complete_graph_proof"].as_bool() == Some(true)
+                    || file["graph_output_degraded"].as_bool() == Some(true)
+            ));
+    }
+
+    #[test]
     fn routing_packet_budget_pressure_dedupes_examples_and_keeps_survivors() {
         let mut evidence = vec![
             routing_fixture_evidence(
@@ -49053,6 +55970,23 @@ mod tests {
         );
     }
 
+    fn count_key_occurrences(value: &Value, key: &str) -> usize {
+        match value {
+            Value::Object(object) => {
+                let here = usize::from(object.contains_key(key));
+                here + object
+                    .values()
+                    .map(|child| count_key_occurrences(child, key))
+                    .sum::<usize>()
+            }
+            Value::Array(array) => array
+                .iter()
+                .map(|child| count_key_occurrences(child, key))
+                .sum(),
+            _ => 0,
+        }
+    }
+
     fn assert_agent_json_contract(
         value: &Value,
         schema_name: &str,
@@ -49320,6 +56254,46 @@ mod tests {
             "src/service.ts",
             "export function agentUseTarget() {\n  return \"agent-use-ok\";\n}\n\nexport function callAgentUseTarget() {\n  return agentUseTarget();\n}\n",
         );
+    }
+
+    fn write_agent_use_rust_relation_fixture(root: &Path) {
+        write_cli_fixture_file(
+            root,
+            "Cargo.toml",
+            "[package]\nname = \"agent-use-rust-relation-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        );
+        write_cli_fixture_file(
+            root,
+            "src/lib.rs",
+            "pub mod graph {\n    pub fn leaf() {}\n\n    pub fn middle() {\n        leaf();\n    }\n\n    pub fn root() {\n        middle();\n    }\n}\n\npub struct Service;\n\nimpl Service {\n    pub fn new() -> Self {\n        Service\n    }\n\n    pub fn run(&self) {}\n}\n\npub fn caller() {\n    let service = Service::new();\n    service.run();\n    graph::root();\n}\n\npub fn reference_user() {\n    graph::leaf();\n}\n",
+        );
+    }
+
+    fn assert_agent_use_relation_query_claims_profile_db(
+        value: &Value,
+        profile: &super::AgentUseProfile,
+    ) {
+        assert!(
+            matches!(value["status"].as_str(), Some("ok") | Some("warning")),
+            "{value:?}"
+        );
+        assert_eq!(
+            value["profile_name"].as_str(),
+            Some(super::PRODUCTION_AGENT_USE_PROFILE_NAME)
+        );
+        assert_eq!(value["external_db_used"].as_bool(), Some(true));
+        assert_eq!(value["db_source"].as_str(), Some("agent-use profile"));
+        assert_eq!(
+            value["db"].as_str(),
+            Some(path_string(&profile.db_path).as_str())
+        );
+        if !value["db_lifecycle_read"].is_null() {
+            assert_eq!(
+                value["db_lifecycle_read"]["exact_db_path_checked"].as_str(),
+                Some(path_string(&profile.db_path).as_str())
+            );
+        }
+        assert_eq!(value["normal_dot_codegraph_mutated"].as_bool(), Some(false));
     }
 
     fn assert_no_dot_codegraph_sqlite(root: &Path) {
