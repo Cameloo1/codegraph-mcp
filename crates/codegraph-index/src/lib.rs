@@ -136,9 +136,9 @@ const DEFAULT_RTDS_CLOSURE_MAX_DB_ROWS_HYDRATED: usize = 8_192;
 const DEFAULT_RTDS_CLOSURE_MAX_PER_RELATION: usize = 1_024;
 
 thread_local! {
-    static WRITE_PATH_CHAOS_FAILPOINT_OVERRIDE: RefCell<Option<String>> = RefCell::new(None);
-    static RTDS_CLOSURE_FAILPOINT_OVERRIDE: RefCell<Option<String>> = RefCell::new(None);
-    static RTDS_CLOSURE_BUDGET_OVERRIDE: RefCell<Option<RtdsDependencyClosureBudget>> = RefCell::new(None);
+    static WRITE_PATH_CHAOS_FAILPOINT_OVERRIDE: RefCell<Option<String>> = const { RefCell::new(None) };
+    static RTDS_CLOSURE_FAILPOINT_OVERRIDE: RefCell<Option<String>> = const { RefCell::new(None) };
+    static RTDS_CLOSURE_BUDGET_OVERRIDE: RefCell<Option<RtdsDependencyClosureBudget>> = const { RefCell::new(None) };
 }
 
 #[derive(Debug)]
@@ -725,17 +725,12 @@ pub struct CandidateSpoolSummary {
     pub selected_source_counts: BTreeMap<String, usize>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum CandidateSpoolPolicy {
     Off,
+    #[default]
     Bounded,
     Audit,
-}
-
-impl Default for CandidateSpoolPolicy {
-    fn default() -> Self {
-        Self::Bounded
-    }
 }
 
 impl CandidateSpoolPolicy {
@@ -832,19 +827,14 @@ pub struct CandidateSpoolIndexQueryResult {
     pub omitted_count: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DbLifecyclePolicy {
+    #[default]
     SafeAuto,
     FreshRebuild,
     IncrementalRequired,
     FailOnDbProblem,
     DiagnosticStaleReuse,
-}
-
-impl Default for DbLifecyclePolicy {
-    fn default() -> Self {
-        Self::SafeAuto
-    }
 }
 
 impl DbLifecyclePolicy {
@@ -1090,17 +1080,12 @@ pub struct StageProfileSummary {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum StorageMode {
+    #[default]
     Proof,
     Audit,
     Debug,
-}
-
-impl Default for StorageMode {
-    fn default() -> Self {
-        Self::Proof
-    }
 }
 
 impl StorageMode {
@@ -1140,16 +1125,11 @@ impl std::str::FromStr for StorageMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum IndexBuildMode {
+    #[default]
     ProofBuildOnly,
     ProofBuildPlusValidation,
-}
-
-impl Default for IndexBuildMode {
-    fn default() -> Self {
-        Self::ProofBuildOnly
-    }
 }
 
 impl IndexBuildMode {
@@ -1783,8 +1763,9 @@ pub struct PersistedVectorChunkIndex {
     pub chunks: Vec<VectorEmbeddingChunk>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VectorChunkArtifactFormat {
+    #[default]
     CompactJson,
     PrettyJson,
 }
@@ -1799,12 +1780,6 @@ impl VectorChunkArtifactFormat {
 
     const fn pretty(self) -> bool {
         matches!(self, Self::PrettyJson)
-    }
-}
-
-impl Default for VectorChunkArtifactFormat {
-    fn default() -> Self {
-        Self::CompactJson
     }
 }
 
@@ -3929,11 +3904,11 @@ fn index_repo_to_existing_db_with_options(
     reset_sqlite_profile();
     let mut phase_profile = IndexPhaseRecorder::default();
     let open_start = Instant::now();
-    let store = SqliteGraphStore::open(&db_path)?;
+    let store = SqliteGraphStore::open(db_path)?;
     phase_profile.add_duration("open_store", open_start.elapsed(), 1, 0);
     let mut summary = IndexSummary {
-        repo_root: path_string(&repo_root),
-        db_path: path_string(&db_path),
+        repo_root: path_string(repo_root),
+        db_path: path_string(db_path),
         db_lifecycle: None,
         build_mode: options.build_mode.as_str().to_string(),
         files_seen: 0,
@@ -3967,7 +3942,7 @@ fn index_repo_to_existing_db_with_options(
     };
 
     let discovery_start = Instant::now();
-    let scoped_files = collect_repo_files_with_scope(&repo_root, &options.scope)?;
+    let scoped_files = collect_repo_files_with_scope(repo_root, &options.scope)?;
     let files = scoped_files.files;
     summary.scope = Some(scoped_files.scope_report);
     initialize_candidate_spool(&mut summary, repo_root, db_path, &options)?;
@@ -3980,7 +3955,7 @@ fn index_repo_to_existing_db_with_options(
     for file_path in files {
         summary.files_seen += 1;
         summary.files_walked += 1;
-        let repo_relative_path = repo_relative_path(&repo_root, &file_path)?;
+        let repo_relative_path = repo_relative_path(repo_root, &file_path)?;
         if detect_language(&file_path).is_some() {
             source_candidates.push((file_path, repo_relative_path));
             continue;
@@ -4311,7 +4286,7 @@ fn index_repo_to_existing_db_with_options(
 
                 if existing_file.is_none() {
                     summary.files_renamed += manifest_diff.record_rename_matches(
-                        &repo_root,
+                        repo_root,
                         &candidate.repo_relative_path,
                         &hash,
                     );
@@ -4522,7 +4497,7 @@ fn index_repo_to_existing_db_with_options(
         }
         if existing_file.is_none() {
             summary.files_renamed +=
-                manifest_diff.record_rename_matches(&repo_root, &repo_relative_path, &hash);
+                manifest_diff.record_rename_matches(repo_root, &repo_relative_path, &hash);
         }
 
         hashed_candidates.push(HashedIndexCandidate {
@@ -6342,7 +6317,7 @@ fn unresolved_reference_for_edge(edge: &Edge) -> Option<LocalFactReference> {
 
 fn reference_display_name(reference_id: &str) -> String {
     reference_id
-        .rsplit(|character| character == '/' || character == ':')
+        .rsplit(['/', ':'])
         .next()
         .filter(|name| !name.is_empty())
         .unwrap_or(reference_id)
@@ -10955,7 +10930,7 @@ fn reduce_test_edges_from_workspace(
         let Some(source) = workspace.sources.get(repo_relative_path) else {
             continue;
         };
-        if source_may_have_test_relation(&source) {
+        if source_may_have_test_relation(source) {
             maybe_has_test_relation = true;
             break;
         }
@@ -11010,7 +10985,7 @@ fn reduce_test_edges_from_workspace(
                 continue;
             };
             let mock_entity = mock_entity_for(
-                &repo_relative_path,
+                repo_relative_path,
                 &mock.exported_name,
                 &mock.span,
                 file_hash,
@@ -19502,7 +19477,8 @@ fn select_vector_chunks_for_persistence(
     let per_directory_soft_cap = if top_dirs.is_empty() {
         max_chunks
     } else {
-        ((max_chunks + top_dirs.len() - 1) / top_dirs.len())
+        max_chunks
+            .div_ceil(top_dirs.len())
             .saturating_mul(2)
             .min(max_chunks)
             .max(1)
@@ -21130,7 +21106,7 @@ pub fn spool_target(value: i32) -> i32 {
             status.query_index_status.as_str(),
             "filesystem_inaccessible" | "permission_denied" | "sidecar_unavailable"
         ));
-        assert_eq!(status.stale, true);
+        assert!(status.stale);
         assert!(status
             .reason
             .as_deref()

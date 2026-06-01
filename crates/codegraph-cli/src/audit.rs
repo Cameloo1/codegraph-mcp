@@ -243,16 +243,12 @@ struct SamplePathsOptions {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 enum PathSampleMode {
+    #[default]
     Proof,
     Audit,
     Debug,
-}
-
-impl Default for PathSampleMode {
-    fn default() -> Self {
-        Self::Proof
-    }
 }
 
 impl PathSampleMode {
@@ -1055,7 +1051,7 @@ struct ScopeVisibilityStats {
     examples: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct ScopeAuditAggregate {
     paths_walked: u64,
     files_considered: u64,
@@ -1089,45 +1085,6 @@ struct ScopeAuditAggregate {
     kconfig: ScopeVisibilityStats,
     docs: ScopeVisibilityStats,
     configs: ScopeVisibilityStats,
-}
-
-impl Default for ScopeAuditAggregate {
-    fn default() -> Self {
-        Self {
-            paths_walked: 0,
-            files_considered: 0,
-            files_would_be_parsed: 0,
-            files_text_evidence_candidates: 0,
-            files_skipped: 0,
-            bytes_considered: 0,
-            bytes_included: 0,
-            bytes_excluded_files: 0,
-            directory_pruned_count: 0,
-            hard_excluded_directory_count: 0,
-            soft_excluded_path_count: 0,
-            warning_count: 0,
-            action_counts: BTreeMap::new(),
-            rule_counts: BTreeMap::new(),
-            language_counts: BTreeMap::new(),
-            included_bytes_by_top_level: BTreeMap::new(),
-            excluded_bytes_by_top_level: BTreeMap::new(),
-            included_files_by_directory: BTreeMap::new(),
-            excluded_files_by_directory: BTreeMap::new(),
-            extensions: BTreeMap::new(),
-            suspicious_included_dirs: BTreeMap::new(),
-            path_access_warning_counts: BTreeMap::new(),
-            hard_excluded_directory_hits: Vec::new(),
-            soft_excluded_warnings: Vec::new(),
-            warning_examples: Vec::new(),
-            path_access_warning_examples: Vec::new(),
-            included_examples: Vec::new(),
-            excluded_examples: Vec::new(),
-            makefile: ScopeVisibilityStats::default(),
-            kconfig: ScopeVisibilityStats::default(),
-            docs: ScopeVisibilityStats::default(),
-            configs: ScopeVisibilityStats::default(),
-        }
-    }
 }
 
 fn run_index_scope_command(args: &[String]) -> Result<Value, String> {
@@ -2132,7 +2089,7 @@ fn inspect_vector_chunks_artifact(
             "artifact_mtime_before": artifact_mtime_before,
             "artifact_mtime_after": artifact_mtime_after,
             "artifact_mutated_during_inspection": artifact_hash_before != artifact_hash_after || artifact_mtime_before != artifact_mtime_after,
-            "db": db_path.map(|path| vector_db_mutation_status(path)),
+            "db": db_path.map(vector_db_mutation_status),
         },
         "claim_boundaries": {
             "candidate_only": true,
@@ -2238,7 +2195,7 @@ fn vector_chunks_error_report(
             "extraction_version": Value::Null,
             "validity_status": validity_status,
             "reason": message,
-            "db_binding": db_path.map(|path| vector_db_binding_without_artifact(path)),
+            "db_binding": db_path.map(vector_db_binding_without_artifact),
         },
         "sample_chunks": [],
         "safety_conclusions": {
@@ -2259,7 +2216,7 @@ fn vector_chunks_error_report(
             "artifact_mtime_before": artifact_mtime_before,
             "artifact_mtime_after": artifact_mtime_after,
             "artifact_mutated_during_inspection": artifact_hash_before != artifact_hash_after || artifact_mtime_before != artifact_mtime_after,
-            "db": db_path.map(|path| vector_db_mutation_status(path)),
+            "db": db_path.map(vector_db_mutation_status),
         },
         "claim_boundaries": {
             "candidate_only": true,
@@ -2414,9 +2371,8 @@ fn classify_vector_artifact_kind(root: &Value, metadata: &Value, chunks: &[Value
     .into_iter()
     .flatten()
     {
-        match normalize_vector_artifact_kind(&value).as_deref() {
-            Some(kind) => return kind.to_string(),
-            None => {}
+        if let Some(kind) = normalize_vector_artifact_kind(&value) {
+            return kind.to_string();
         }
     }
     if vector_bool(metadata, root, &[&["diagnostic_only"]]).unwrap_or(false) {
@@ -2625,12 +2581,12 @@ fn vector_chunk_byte_accounting(
     let indexed_chunk_text_bytes = chunks
         .iter()
         .filter_map(|chunk| chunk.get("text").and_then(Value::as_str))
-        .map(|text| text.as_bytes().len() as u64)
+        .map(|text| text.len() as u64)
         .sum::<u64>();
     let selection_reason_bytes = chunks
         .iter()
         .filter_map(|chunk| chunk.get("selection_reason").and_then(Value::as_str))
-        .map(|text| text.as_bytes().len() as u64)
+        .map(|text| text.len() as u64)
         .sum::<u64>();
     let repeated_field_overhead = repeated_field_overhead_estimate(chunks);
     let estimated_f32_payload_bytes =
@@ -2811,7 +2767,7 @@ fn vector_artifact_brief(path: &Path) -> Value {
                 "chunk_count": parsed.chunks.len(),
                 "selection_reason_bytes": parsed.chunks.iter()
                     .filter_map(|chunk| chunk.get("selection_reason").and_then(Value::as_str))
-                    .map(|text| text.as_bytes().len() as u64)
+                    .map(|text| text.len() as u64)
                     .sum::<u64>(),
             })
         }
@@ -2832,7 +2788,7 @@ fn repeated_field_overhead_estimate(chunks: &[Value]) -> u64 {
         .iter()
         .filter_map(Value::as_object)
         .flat_map(|object| object.keys())
-        .map(|key| key.as_bytes().len() as u64 + 3)
+        .map(|key| key.len() as u64 + 3)
         .sum()
 }
 
@@ -3240,7 +3196,7 @@ fn vector_chunk_samples(chunks: &[Value], sample_limit: usize) -> Vec<Value> {
                 "requires_graph_verification": chunk_requires_graph_verification(chunk),
                 "text_preview": preview,
                 "text_preview_truncated": truncated,
-                "text_bytes": text.as_bytes().len(),
+                "text_bytes": text.len(),
                 "selection_score": chunk.get("selection_score").cloned().unwrap_or(Value::Null),
                 "selection_bucket": chunk.get("selection_bucket").cloned().unwrap_or(Value::Null),
                 "selection_reason": chunk.get("selection_reason").cloned().unwrap_or(Value::Null),
@@ -10703,7 +10659,7 @@ fn run_storage_micro_case(
         "index_bytes": index_bytes,
         "storage_audit_json": path_string(&storage_json),
         "storage_audit_markdown": path_string(&storage_md),
-        "case_log": path_string(&logs_dir.join(format!("{}.log.json", spec.name))),
+        "case_log": path_string(logs_dir.join(format!("{}.log.json", spec.name))),
         "normal_codegraph_db_exists_after_index": normal_db_after,
     });
     if let Some(object) = case.as_object_mut() {
@@ -11255,8 +11211,8 @@ fn run_storage_micro_context_pack_checks(
         "test_impact_evidence_roles": test_roles,
         "fallback_sources": collect_json_strings_by_key(&test_impact, "fallback_source"),
         "recommended_tests": collect_recommended_test_strings(&test_impact),
-        "production_log": path_string(&logs_dir.join("context_pack_inline_production.json")),
-        "test_impact_log": path_string(&logs_dir.join("context_pack_inline_test_impact.json")),
+        "production_log": path_string(logs_dir.join("context_pack_inline_production.json")),
+        "test_impact_log": path_string(logs_dir.join("context_pack_inline_test_impact.json")),
     }))
 }
 

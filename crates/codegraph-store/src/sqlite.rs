@@ -8837,7 +8837,7 @@ fn template_edges_for_instance(
     let entity_rows = template_entity_rows(connection, instance)?;
     let mut entity_id_by_local = BTreeMap::<i64, String>::new();
     for row in entity_rows {
-        let local_id = row.local_template_entity_id.clone();
+        let local_id = row.local_template_entity_id;
         let entity = synthesize_template_entity(instance, row);
         entity_id_by_local.insert(local_id, entity.id);
     }

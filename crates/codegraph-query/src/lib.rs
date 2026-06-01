@@ -8077,7 +8077,7 @@ fn selected_vector_candidates(
     let dropped = selected
         .iter()
         .skip(top_k)
-        .map(|candidate| vector_candidate_stage_id(candidate))
+        .map(vector_candidate_stage_id)
         .collect::<Vec<_>>();
     selected.truncate(top_k);
     for (index, candidate) in selected.iter_mut().enumerate() {
@@ -8315,8 +8315,8 @@ fn vector_candidate_document(candidate: &RetrievalCandidate) -> RetrievalDocumen
         .metadata
         .get("chunk_text")
         .and_then(|value| value.as_str())
-        .or_else(|| candidate.matched_query_text.as_deref())
-        .or_else(|| candidate.path.as_deref())
+        .or(candidate.matched_query_text.as_deref())
+        .or(candidate.path.as_deref())
         .unwrap_or(&candidate.candidate_id)
         .to_string();
     let mut document =
@@ -8612,7 +8612,7 @@ fn vector_text_fallback_snippet(candidate: &RetrievalCandidate) -> Option<Contex
         .metadata
         .get("chunk_text")
         .and_then(|value| value.as_str())
-        .or_else(|| candidate.matched_query_text.as_deref())
+        .or(candidate.matched_query_text.as_deref())
         .unwrap_or("")
         .to_string();
     Some(ContextSnippet {

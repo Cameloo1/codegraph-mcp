@@ -2975,7 +2975,11 @@ fn unresolved_calls_query_is_bounded_and_instrumented() {
     let snippet = &with_snippet["calls"].as_array().expect("snippet calls")[0]["source_snippet"];
     assert_eq!(snippet["requested"].as_bool(), Some(true));
     assert_eq!(snippet["loaded"].as_bool(), Some(true));
-    assert!(snippet["text"].as_str().expect("snippet text").trim().len() > 0);
+    assert!(!snippet["text"]
+        .as_str()
+        .expect("snippet text")
+        .trim()
+        .is_empty());
 
     fs::remove_dir_all(repo).expect("cleanup fixture workspace");
 }

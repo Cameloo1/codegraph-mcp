@@ -3584,30 +3584,20 @@ impl<'a> BasicEntityExtractor<'a> {
                     }
                 }
             }
-            "assignment_expression" | "augmented_assignment_expression" => {
-                if !node_untrusted {
-                    self.extract_assignment(node, scope_id, scope_name);
-                }
+            "assignment_expression" | "augmented_assignment_expression" if !node_untrusted => {
+                self.extract_assignment(node, scope_id, scope_name);
             }
-            "call_expression" => {
-                if !node_untrusted {
-                    self.extract_call(node, scope_id, scope_name);
-                }
+            "call_expression" if !node_untrusted => {
+                self.extract_call(node, scope_id, scope_name);
             }
-            "new_expression" => {
-                if !node_untrusted {
-                    self.extract_new_expression(node, scope_id, scope_name);
-                }
+            "new_expression" if !node_untrusted => {
+                self.extract_new_expression(node, scope_id, scope_name);
             }
-            "await_expression" => {
-                if !node_untrusted {
-                    self.extract_await_expression(node, scope_id, scope_name);
-                }
+            "await_expression" if !node_untrusted => {
+                self.extract_await_expression(node, scope_id, scope_name);
             }
-            "return_statement" => {
-                if !node_untrusted {
-                    self.extract_return(node, scope_id, scope_name);
-                }
+            "return_statement" if !node_untrusted => {
+                self.extract_return(node, scope_id, scope_name);
             }
             "import_statement" => {
                 if node_untrusted {
@@ -6324,7 +6314,7 @@ fn recover_c_like_function_declaration(
         .rev()
         .find(|part| looks_like_identifier(part))?
         .to_string();
-    if name.chars().any(|ch| ch.is_ascii_lowercase()) == false {
+    if !name.chars().any(|ch| ch.is_ascii_lowercase()) {
         return None;
     }
     let column = line.find(&name)?;
