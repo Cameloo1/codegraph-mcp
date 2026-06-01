@@ -892,12 +892,20 @@ fn bench_comprehensive_writes_machine_json_and_human_markdown() {
                 { "name": "idx_template_edges_head_relation", "object_type": "index", "row_count": null, "total_bytes": 50 }
             ],
             "aggregate_metrics": {
+                "edge_count": 3,
+                "proof_edge_count": 3,
+                "edge_table_payload_bytes": 240,
+                "edge_index_payload_bytes": 90,
+                "edge_table_plus_index_payload_bytes": 330,
+                "average_edge_payload_bytes_per_proof_edge": 80.0,
+                "average_edge_table_plus_index_payload_bytes_per_proof_edge": 110.0,
                 "average_database_bytes_per_edge": 100_000.0,
                 "average_edge_table_plus_index_bytes_per_edge": 100.0
             },
             "fts_storage": { "stores_source_snippets": false },
             "table_row_metrics": [
                 { "table": "entities", "average_total_bytes_per_row": 100.0 },
+                { "table": "edges", "average_total_bytes_per_row": 100.0, "average_payload_bytes_per_row": 80.0 },
                 { "table": "template_entities", "average_total_bytes_per_row": 100.0 },
                 { "table": "template_edges", "average_total_bytes_per_row": 100.0 },
                 { "table": "file_source_spans", "average_total_bytes_per_row": 100.0 },
@@ -907,6 +915,79 @@ fn bench_comprehensive_writes_machine_json_and_human_markdown() {
         .expect("storage JSON"),
     )
     .expect("write storage");
+
+    let update_integrity_path = artifact_dir.join("update_integrity.json");
+    fs::write(
+        &update_integrity_path,
+        serde_json::to_string_pretty(&json!({
+            "status": "passed",
+            "repos": [
+                {
+                    "name": "first_fixture",
+                    "iteration_results": [
+                        {
+                            "iteration": 1,
+                            "update": {
+                                "wall_ms": 100,
+                                "files_walked": 1,
+                                "files_read": 1,
+                                "files_hashed": 1,
+                                "files_parsed": 1,
+                                "entities_inserted": 1,
+                                "edges_inserted": 1,
+                                "dirty_path_evidence_count": 1,
+                                "integrity_status": "ok",
+                                "global_hash_check_ran": false,
+                                "profile": {
+                                    "spans": [
+                                        { "name": "lifecycle_preflight", "elapsed_ms": 10.0 },
+                                        { "name": "file_walk", "elapsed_ms": 0.0 },
+                                        { "name": "file_read", "elapsed_ms": 1.0 },
+                                        { "name": "file_hash", "elapsed_ms": 2.0 },
+                                        { "name": "parse", "elapsed_ms": 3.0 },
+                                        { "name": "stale_fact_delete", "elapsed_ms": 4.0 },
+                                        { "name": "stale_missing_manifest_scan", "elapsed_ms": 5.0 },
+                                        { "name": "entity_insert", "elapsed_ms": 6.0 },
+                                        { "name": "edge_insert", "elapsed_ms": 7.0 },
+                                        { "name": "path_evidence_insert", "elapsed_ms": 8.0 },
+                                        { "name": "transaction_commit", "elapsed_ms": 9.0 },
+                                        { "name": "wal_checkpoint", "elapsed_ms": 11.0 },
+                                        { "name": "cache_refresh", "elapsed_ms": 12.0 },
+                                        { "name": "graph_fact_hash", "elapsed_ms": 13.0 }
+                                    ]
+                                }
+                            },
+                            "restore": { "wall_ms": 90, "integrity_status": "ok" }
+                        }
+                    ]
+                },
+                {
+                    "name": "second_fixture",
+                    "iteration_results": [
+                        {
+                            "iteration": 1,
+                            "update": {
+                                "wall_ms": 740,
+                                "files_walked": 1,
+                                "files_read": 1,
+                                "files_hashed": 1,
+                                "files_parsed": 1,
+                                "entities_inserted": 2,
+                                "edges_inserted": 3,
+                                "dirty_path_evidence_count": 2,
+                                "integrity_status": "ok",
+                                "global_hash_check_ran": false,
+                                "profile": { "spans": [] }
+                            },
+                            "restore": { "wall_ms": 120, "integrity_status": "ok" }
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("update-integrity JSON"),
+    )
+    .expect("write update-integrity");
 
     let baseline_path = workspace.join("baseline.json");
     fs::write(
@@ -928,7 +1009,8 @@ fn bench_comprehensive_writes_machine_json_and_human_markdown() {
         &gate_path,
         serde_json::to_string_pretty(&json!({
             "artifacts": {
-                "proof_storage_json": proof_storage_path.to_string_lossy()
+                "proof_storage_json": proof_storage_path.to_string_lossy(),
+                "update_integrity_json": update_integrity_path.to_string_lossy()
             },
             "gates": {
                 "graph_truth": {
@@ -1224,6 +1306,48 @@ fn bench_comprehensive_writes_machine_json_and_human_markdown() {
             .iter()
             .any(|target| target.as_str() == Some("cold_build_result_claimable")));
     }
+    let update_metrics = summary["sections"]["single_file_update"]["metrics"]
+        .as_array()
+        .expect("single file update metrics");
+    let update_metric = |id: &str| {
+        update_metrics
+            .iter()
+            .find(|metric| metric["id"].as_str() == Some(id))
+            .unwrap_or_else(|| panic!("missing update metric {id}"))
+    };
+    assert_eq!(
+        update_metric("single_file_update_total_ms")["observed"].as_f64(),
+        Some(740.0),
+        "p95 should include detailed update iterations from every repo, not just the first"
+    );
+    assert_eq!(
+        update_metric("single_file_update_total_ms")["status"].as_str(),
+        Some("pass")
+    );
+    assert_eq!(
+        update_metric("update_lifecycle_preflight_ms")["observed"].as_f64(),
+        Some(10.0)
+    );
+    assert_eq!(
+        update_metric("update_stale_missing_manifest_scan_ms")["observed"].as_f64(),
+        Some(5.0)
+    );
+    assert_eq!(
+        update_metric("update_path_evidence_regeneration_time_ms")["observed"].as_f64(),
+        Some(8.0)
+    );
+    assert_eq!(
+        update_metric("update_wal_checkpoint_time_ms")["observed"].as_f64(),
+        Some(11.0)
+    );
+    assert_eq!(
+        update_metric("update_cache_refresh_time_ms")["observed"].as_f64(),
+        Some(12.0)
+    );
+    assert_eq!(
+        update_metric("update_graph_hash_update_time_ms")["observed"].as_f64(),
+        Some(13.0)
+    );
     let markdown =
         fs::read_to_string(output_dir.join("comprehensive_benchmark_latest.md")).expect("markdown");
     assert!(markdown.contains("Section 1 - Executive Verdict"));

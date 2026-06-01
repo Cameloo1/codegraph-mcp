@@ -33,11 +33,11 @@ use super::{
     query_files_with_options, query_symbols_with_options, query_text_with_options, regression_row,
     render_comprehensive_benchmark_markdown, resolve_context_edge_id, route_ui_request, run,
     run_doctor_command, run_status_command, run_update_integrity_repo, serve_ui_loop,
-    should_ignore_path, should_start_new_index_batch, update_changed_files_with_cache,
-    CallQueryDirection, CallRelationQueryOptions, IncrementalIndexCache, IndexOptions,
-    PendingIndexFile, QueryOutputMode, StorageMode, UiResponse, UpdateBenchmarkMode,
-    UpdateLoopKind, WatchDebouncer, BIN_NAME, DEFAULT_INDEX_BATCH_MAX_FILES,
-    DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, SCHEMA_VERSION,
+    should_ignore_path, should_start_new_index_batch, stage_update_integrity_mutation_repo,
+    update_changed_files_with_cache, CallQueryDirection, CallRelationQueryOptions,
+    IncrementalIndexCache, IndexOptions, PendingIndexFile, QueryOutputMode, StorageMode,
+    UiResponse, UpdateBenchmarkMode, UpdateLoopKind, WatchDebouncer, BIN_NAME,
+    DEFAULT_INDEX_BATCH_MAX_FILES, DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, SCHEMA_VERSION,
 };
 
 static TEMP_REPO_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1022,6 +1022,57 @@ fn update_integrity_report_marks_inspection_read_only_and_setup_mutations() {
     assert_eq!(
         result["cold"]["mutation_capable_operation"].as_str(),
         Some("index_repo_to_db_with_options")
+    );
+
+    remove_dir_all_with_retry(&workdir, "cleanup");
+}
+
+#[test]
+fn update_integrity_staged_update_workspace_rewrites_passport_scope() {
+    let workdir = temp_repo();
+    let repo = workdir.join("repo");
+    let db = workdir.join("fixture.sqlite");
+    let stage = workdir.join("staged_update");
+    fs::create_dir_all(repo.join("src")).expect("create src");
+    fs::write(
+        repo.join("src").join("auth.ts"),
+        "export function login() { return 'ok'; }\n",
+    )
+    .expect("write fixture");
+    let mutation_file = "src/auth.ts";
+    let staged_update_repo =
+        stage_update_integrity_mutation_repo(&repo, mutation_file, &stage).expect("stage update");
+
+    let result = run_update_integrity_repo(
+        "fixture",
+        &repo,
+        &db,
+        mutation_file,
+        1,
+        1,
+        UpdateBenchmarkMode::Fast,
+        UpdateLoopKind::Update,
+        None,
+        Some(&staged_update_repo),
+        None,
+    )
+    .expect("run staged update integrity fixture");
+
+    assert_eq!(result["status"].as_str(), Some("passed"));
+    assert_eq!(result["claimable"].as_bool(), Some(true));
+    assert_eq!(
+        result["update_repo_path"].as_str(),
+        Some(path_string(&staged_update_repo).as_str())
+    );
+    let update = &result["iteration_results"][0]["update"];
+    assert_eq!(update["claimable"].as_bool(), Some(true));
+    assert_eq!(
+        update["lifecycle_status"]["repo_match"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        update["lifecycle_status"]["repo_root_observed"].as_str(),
+        update["lifecycle_status"]["repo_root_expected"].as_str()
     );
 
     remove_dir_all_with_retry(&workdir, "cleanup");

@@ -5947,6 +5947,11 @@ fn build_stage_profile_summaries(profile: &IndexProfile) -> Vec<StageProfileSumm
     let specs = [
         ("scope_walk", &["file_walk"][..], ProfileSampleKind::None),
         (
+            "lifecycle_preflight",
+            &["lifecycle_preflight"][..],
+            ProfileSampleKind::None,
+        ),
+        (
             "metadata_hash",
             &["metadata_diff", "file_hash"][..],
             ProfileSampleKind::MetadataHash,
@@ -5992,6 +5997,26 @@ fn build_stage_profile_summaries(profile: &IndexProfile) -> Vec<StageProfileSumm
             "db_write",
             DB_WRITE_PROFILE_SPANS,
             ProfileSampleKind::DbWrite,
+        ),
+        (
+            "stale_missing_cleanup",
+            &["stale_missing_manifest_scan"][..],
+            ProfileSampleKind::None,
+        ),
+        (
+            "graph_hash_update",
+            &["graph_fact_hash"][..],
+            ProfileSampleKind::None,
+        ),
+        (
+            "cache_refresh",
+            &["cache_refresh"][..],
+            ProfileSampleKind::None,
+        ),
+        (
+            "wal_checkpoint",
+            &["wal_checkpoint"][..],
+            ProfileSampleKind::None,
         ),
         ("fts_build", &["fts_build"][..], ProfileSampleKind::None),
         (
@@ -6788,18 +6813,54 @@ fn upsert_index_state_to_writer(
     writer.upsert_repo_index_state(&state)
 }
 
-fn expected_db_passport(
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RepoGitIdentity {
+    git_remote: Option<String>,
+    worktree_root: Option<String>,
+    repo_head: Option<String>,
+}
+
+fn repo_git_identity(repo_root: &Path) -> RepoGitIdentity {
+    RepoGitIdentity {
+        git_remote: git_remote(repo_root),
+        worktree_root: git_worktree_root(repo_root).or_else(|| Some(path_string(repo_root))),
+        repo_head: git_head(repo_root),
+    }
+}
+
+fn expected_db_passport_with_identity(
     repo_root: &Path,
     options: &IndexOptions,
+    identity: &RepoGitIdentity,
 ) -> Result<ExpectedDbPassport, IndexError> {
     Ok(ExpectedDbPassport {
         canonical_repo_root: canonical_repo_root_string(repo_root)?,
         storage_mode: options.storage_mode.as_str().to_string(),
         index_scope_policy_hash: scope_policy_hash(&options.scope)?,
-        git_remote: git_remote(repo_root),
-        worktree_root: git_worktree_root(repo_root).or_else(|| Some(path_string(repo_root))),
-        repo_head: git_head(repo_root),
+        git_remote: identity.git_remote.clone(),
+        worktree_root: identity.worktree_root.clone(),
+        repo_head: identity.repo_head.clone(),
     })
+}
+
+fn expected_db_passport(
+    repo_root: &Path,
+    options: &IndexOptions,
+) -> Result<ExpectedDbPassport, IndexError> {
+    let identity = repo_git_identity(repo_root);
+    expected_db_passport_with_identity(repo_root, options, &identity)
+}
+
+fn inspect_repo_db_passport_with_identity(
+    repo_root: &Path,
+    db_path: &Path,
+    options: &IndexOptions,
+    identity: &RepoGitIdentity,
+) -> Result<DbPreflightReport, IndexError> {
+    let repo_root = resolve_repo_root_for_index(repo_root)?;
+    let db_path = normalize_db_path(&repo_root, db_path);
+    let expected = expected_db_passport_with_identity(&repo_root, options, identity)?;
+    Ok(inspect_db_preflight(&db_path, SCHEMA_VERSION, &expected))
 }
 
 pub fn inspect_repo_db_passport(
@@ -6808,9 +6869,8 @@ pub fn inspect_repo_db_passport(
     options: &IndexOptions,
 ) -> Result<DbPreflightReport, IndexError> {
     let repo_root = resolve_repo_root_for_index(repo_root)?;
-    let db_path = normalize_db_path(&repo_root, db_path);
-    let expected = expected_db_passport(&repo_root, options)?;
-    Ok(inspect_db_preflight(&db_path, SCHEMA_VERSION, &expected))
+    let identity = repo_git_identity(&repo_root);
+    inspect_repo_db_passport_with_identity(&repo_root, db_path, options, &identity)
 }
 
 pub fn inspect_db_lifecycle_preflight(
@@ -6820,7 +6880,14 @@ pub fn inspect_db_lifecycle_preflight(
 ) -> Result<DbLifecyclePreflight, IndexError> {
     let repo_root = resolve_repo_root_for_index(repo_root)?;
     let db_path = normalize_db_path(&repo_root, db_path);
-    let initial = inspect_repo_db_passport(&repo_root, &db_path, &IndexOptions::default())?;
+    let git_identity = repo_git_identity(&repo_root);
+    let default_options = IndexOptions::default();
+    let initial = inspect_repo_db_passport_with_identity(
+        &repo_root,
+        &db_path,
+        &default_options,
+        &git_identity,
+    )?;
     let Some(passport) = initial.passport.as_ref() else {
         return Ok(db_lifecycle_preflight_from_report(
             &repo_root,
@@ -6888,7 +6955,12 @@ pub fn inspect_db_lifecycle_preflight(
         }
     };
 
-    let report = inspect_repo_db_passport(&repo_root, &db_path, &options)?;
+    let report =
+        if lifecycle_default_report_can_be_reused(&initial, explicit_scope_policy.is_some()) {
+            initial
+        } else {
+            inspect_repo_db_passport_with_identity(&repo_root, &db_path, &options, &git_identity)?
+        };
     let scope_mismatch = if explicit_scope_policy.is_some()
         && report
             .reasons
@@ -6929,6 +7001,19 @@ pub fn inspect_db_lifecycle_preflight(
         explicit_scope_policy,
         effective_scope_policy,
     ))
+}
+
+fn lifecycle_default_report_can_be_reused(
+    initial: &DbPreflightReport,
+    explicit_scope_requested: bool,
+) -> bool {
+    if explicit_scope_requested {
+        return false;
+    }
+    !initial.reasons.iter().any(|reason| {
+        reason.contains("storage mode mismatch")
+            || reason.contains("index scope policy hash mismatch")
+    })
 }
 
 pub fn require_db_lifecycle_preflight(
@@ -9077,7 +9162,14 @@ pub fn update_changed_files_with_cache_to_db(
     if let Some(parent) = db_path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let lifecycle_preflight_start = Instant::now();
     let db_preflight = require_db_lifecycle_preflight(&repo_root, &db_path, None)?;
+    phase_profile.add_duration(
+        "lifecycle_preflight",
+        lifecycle_preflight_start.elapsed(),
+        1,
+        0,
+    );
     let update_scope = db_preflight
         .effective_scope_policy
         .clone()
@@ -9506,11 +9598,16 @@ pub fn update_changed_files_with_cache_to_db(
             phase_profile.add_duration("file_manifest_upsert", file_start.elapsed(), 1, 1);
             let source_text_start = Instant::now();
             tx.insert_file_text_after_file_delete(repo_relative_path, &source)?;
+            let source_text_evidence_count = insert_bounded_source_text_evidence_after_file_delete(
+                tx,
+                repo_relative_path,
+                &source,
+            )?;
             phase_profile.add_duration(
                 "source_text_evidence_upsert",
                 source_text_start.elapsed(),
                 1,
-                source.len() as u64,
+                source_text_evidence_count as u64,
             );
 
             let persisted_entity_ids = persisted_entity_ids(&extraction.entities, storage_mode);
@@ -14390,6 +14487,18 @@ fn persist_text_evidence_to_writer(
         writer.insert_snippet_text(&snippet.id, &snippet.span, &snippet.text)?;
     }
     Ok(())
+}
+
+fn insert_bounded_source_text_evidence_after_file_delete(
+    writer: &SqliteGraphStore,
+    repo_relative_path: &str,
+    source: &str,
+) -> Result<usize, StoreError> {
+    let evidence = build_text_evidence_index(repo_relative_path, source);
+    for snippet in &evidence.snippets {
+        writer.insert_snippet_text_after_file_delete(&snippet.id, &snippet.span, &snippet.text)?;
+    }
+    Ok(evidence.snippets.len())
 }
 
 fn delete_missing_files_with_hash(

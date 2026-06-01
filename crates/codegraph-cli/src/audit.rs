@@ -851,6 +851,7 @@ struct StorageCategoryBreakdown {
     dictionary_table_bytes: u64,
     unique_text_index_bytes: u64,
     edge_index_bytes: u64,
+    edge_index_payload_bytes: u64,
     fts_bytes: u64,
     source_span_bytes: u64,
     snippet_like_bytes: u64,
@@ -873,12 +874,16 @@ struct AggregateStorageMetrics {
     total_rows_observed: u64,
     edge_count: u64,
     proof_edge_count: u64,
+    heuristic_or_non_proof_edge_count: u64,
     structural_record_count: u64,
     callsite_record_count: u64,
     callsite_arg_record_count: u64,
     semantic_edge_count: u64,
     edge_table_bytes: u64,
+    edge_table_payload_bytes: u64,
     edge_index_bytes: u64,
+    edge_index_payload_bytes: u64,
+    edge_table_plus_index_payload_bytes: u64,
     structural_table_bytes: u64,
     callsite_table_bytes: u64,
     callsite_arg_table_bytes: u64,
@@ -886,9 +891,22 @@ struct AggregateStorageMetrics {
     average_database_bytes_per_semantic_edge: f64,
     average_edge_table_bytes_per_edge: f64,
     average_edge_table_plus_index_bytes_per_edge: f64,
+    average_edge_payload_bytes_per_proof_edge: f64,
+    average_edge_table_plus_index_payload_bytes_per_proof_edge: f64,
     source_span_count: u64,
     source_span_table_bytes: u64,
     average_source_span_bytes_per_row: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SourceSnippetStorageEvidence {
+    category: String,
+    table: String,
+    column: String,
+    row_count: u64,
+    bytes: u64,
+    allowed: bool,
+    explanation: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -897,6 +915,22 @@ struct FtsStorageMetric {
     row_count: u64,
     payload_bytes: u64,
     kind_counts: BTreeMap<String, u64>,
+    fts_contract: String,
+    fts_content_allowed: bool,
+    full_source_body_rows: u64,
+    full_source_body_bytes: u64,
+    file_title_only_rows: u64,
+    bounded_snippet_rows: u64,
+    bounded_snippet_bytes: u64,
+    oversized_snippet_rows: u64,
+    oversized_snippet_bytes: u64,
+    duplicate_large_snippet_rows: u64,
+    duplicate_large_snippet_bytes: u64,
+    source_span_metadata_rows: u64,
+    candidate_spool_payload_rows: u64,
+    audit_debug_artifact_rows: u64,
+    legacy_stale_table_rows: u64,
+    evidence: Vec<SourceSnippetStorageEvidence>,
     stores_source_snippets: bool,
 }
 
@@ -4357,7 +4391,7 @@ fn inspect_storage(db_path: &Path) -> Result<StorageInspection, String> {
             .collect::<HashMap<_, _>>();
         let categories = storage_category_breakdown(&objects);
         let table_row_metrics = table_row_metrics(&objects);
-        let aggregate_metrics = aggregate_storage_metrics(&objects, &file_family);
+        let aggregate_metrics = aggregate_storage_metrics(&connection, &objects, &file_family)?;
         let dictionary_metrics = dictionary_metrics(&connection, &object_bytes)?;
         let qualified_name_metric = qualified_name_metric(&connection, &object_bytes)?;
         let fts_storage = fts_storage_metric(&connection, &object_bytes)?;
@@ -5232,6 +5266,7 @@ fn storage_category_breakdown(objects: &[StorageObjectSize]) -> StorageCategoryB
         dictionary_table_bytes: 0,
         unique_text_index_bytes: 0,
         edge_index_bytes: 0,
+        edge_index_payload_bytes: 0,
         fts_bytes: 0,
         source_span_bytes: 0,
         snippet_like_bytes: 0,
@@ -5245,6 +5280,7 @@ fn storage_category_breakdown(objects: &[StorageObjectSize]) -> StorageCategoryB
         }
         if object.name.starts_with("idx_edges_") {
             categories.edge_index_bytes += object.total_bytes;
+            categories.edge_index_payload_bytes += object.payload_bytes;
         }
         if object.name.starts_with("stage0_fts") {
             categories.fts_bytes += object.total_bytes;
@@ -5285,9 +5321,10 @@ fn table_row_metrics(objects: &[StorageObjectSize]) -> Vec<TableRowMetric> {
 }
 
 fn aggregate_storage_metrics(
+    connection: &Connection,
     objects: &[StorageObjectSize],
     file_family: &FileFamilySize,
-) -> AggregateStorageMetrics {
+) -> Result<AggregateStorageMetrics, String> {
     let categories = storage_category_breakdown(objects);
     let table_count = objects
         .iter()
@@ -5304,6 +5341,8 @@ fn aggregate_storage_metrics(
         .sum();
     let edge = objects.iter().find(|object| object.name == "edges");
     let edge_count = edge.and_then(|object| object.row_count).unwrap_or(0);
+    let proof_edge_count = proof_grade_edge_count(connection)?.unwrap_or(edge_count);
+    let heuristic_or_non_proof_edge_count = edge_count.saturating_sub(proof_edge_count);
     let structural = objects
         .iter()
         .find(|object| object.name == "structural_relations");
@@ -5317,6 +5356,9 @@ fn aggregate_storage_metrics(
     let semantic_edge_count =
         edge_count + structural_record_count + callsite_record_count + callsite_arg_record_count;
     let edge_table_bytes = edge.map(|object| object.total_bytes).unwrap_or(0);
+    let edge_table_payload_bytes = edge.map(|object| object.payload_bytes).unwrap_or(0);
+    let edge_table_plus_index_payload_bytes =
+        edge_table_payload_bytes + categories.edge_index_payload_bytes;
     let structural_table_bytes = structural.map(|object| object.total_bytes).unwrap_or(0);
     let callsite_table_bytes = callsites.map(|object| object.total_bytes).unwrap_or(0);
     let callsite_arg_table_bytes = callsite_args.map(|object| object.total_bytes).unwrap_or(0);
@@ -5325,18 +5367,22 @@ fn aggregate_storage_metrics(
         .and_then(|object| object.row_count)
         .unwrap_or(0);
     let source_span_table_bytes = source_spans.map(|object| object.total_bytes).unwrap_or(0);
-    AggregateStorageMetrics {
+    Ok(AggregateStorageMetrics {
         table_count,
         index_count,
         total_rows_observed,
         edge_count,
-        proof_edge_count: edge_count,
+        proof_edge_count,
+        heuristic_or_non_proof_edge_count,
         structural_record_count,
         callsite_record_count,
         callsite_arg_record_count,
         semantic_edge_count,
         edge_table_bytes,
+        edge_table_payload_bytes,
         edge_index_bytes: categories.edge_index_bytes,
+        edge_index_payload_bytes: categories.edge_index_payload_bytes,
+        edge_table_plus_index_payload_bytes,
         structural_table_bytes,
         callsite_table_bytes,
         callsite_arg_table_bytes,
@@ -5350,13 +5396,44 @@ fn aggregate_storage_metrics(
             edge_table_bytes + categories.edge_index_bytes,
             edge_count,
         ),
+        average_edge_payload_bytes_per_proof_edge: average_bytes(
+            edge_table_payload_bytes,
+            proof_edge_count,
+        ),
+        average_edge_table_plus_index_payload_bytes_per_proof_edge: average_bytes(
+            edge_table_plus_index_payload_bytes,
+            proof_edge_count,
+        ),
         source_span_count,
         source_span_table_bytes,
         average_source_span_bytes_per_row: average_bytes(
             source_span_table_bytes,
             source_span_count,
         ),
+    })
+}
+
+fn proof_grade_edge_count(connection: &Connection) -> Result<Option<u64>, String> {
+    if !table_exists(connection, "edges")? || !table_exists(connection, "exactness_dict")? {
+        return Ok(None);
     }
+    if !table_column_exists(connection, "edges", "exactness_id")? {
+        return Ok(None);
+    }
+    let count = connection
+        .query_row(
+            "
+            SELECT COUNT(*)
+            FROM edges edge
+            JOIN exactness_dict exactness ON exactness.id = edge.exactness_id
+            WHERE exactness.value IN ('exact', 'compiler_verified', 'lsp_verified', 'parser_verified')
+            ",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| error.to_string())?
+        .max(0) as u64;
+    Ok(Some(count))
 }
 
 fn average_bytes(bytes: u64, rows: u64) -> f64 {
@@ -8704,10 +8781,13 @@ fn fts_storage_metric(
     connection: &Connection,
     object_bytes: &HashMap<String, u64>,
 ) -> Result<Option<FtsStorageMetric>, String> {
+    const BOUNDED_SNIPPET_MAX_BYTES: i64 = 512;
+    const DUPLICATE_LARGE_SNIPPET_MIN_BYTES: i64 = 256;
+
     if !table_exists(connection, "stage0_fts")? {
         return Ok(None);
     }
-    let row_count = row_count(connection, "stage0_fts").unwrap_or(0);
+    let fts_row_count = row_count(connection, "stage0_fts").unwrap_or(0);
     let payload_bytes = connection
         .query_row(
             "SELECT COALESCE(SUM(length(id) + length(repo_relative_path) + length(title) + length(body)), 0) FROM stage0_fts",
@@ -8729,17 +8809,245 @@ fn fts_storage_metric(
         let (kind, count) = row.map_err(|error| error.to_string())?;
         kind_counts.insert(kind, count);
     }
+    let (
+        full_source_body_rows,
+        full_source_body_bytes,
+        file_title_only_rows,
+        bounded_snippet_rows,
+        bounded_snippet_bytes,
+        oversized_snippet_rows,
+        oversized_snippet_bytes,
+    ) = connection
+        .query_row(
+            "
+            SELECT
+                COALESCE(SUM(CASE WHEN kind = 'file' AND length(COALESCE(body, '')) > 0 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN kind = 'file' AND length(COALESCE(body, '')) > 0 THEN length(COALESCE(body, '')) ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN kind = 'file' AND length(COALESCE(body, '')) = 0 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN kind = 'snippet' AND line IS NOT NULL AND length(COALESCE(body, '')) > 0 AND length(COALESCE(body, '')) <= ?1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN kind = 'snippet' AND line IS NOT NULL AND length(COALESCE(body, '')) > 0 AND length(COALESCE(body, '')) <= ?1 THEN length(COALESCE(body, '')) ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN kind = 'snippet' AND (line IS NULL OR length(COALESCE(body, '')) > ?1) THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN kind = 'snippet' AND (line IS NULL OR length(COALESCE(body, '')) > ?1) THEN length(COALESCE(body, '')) ELSE 0 END), 0)
+            FROM stage0_fts
+            ",
+            [BOUNDED_SNIPPET_MAX_BYTES],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?.max(0) as u64,
+                    row.get::<_, i64>(1)?.max(0) as u64,
+                    row.get::<_, i64>(2)?.max(0) as u64,
+                    row.get::<_, i64>(3)?.max(0) as u64,
+                    row.get::<_, i64>(4)?.max(0) as u64,
+                    row.get::<_, i64>(5)?.max(0) as u64,
+                    row.get::<_, i64>(6)?.max(0) as u64,
+                ))
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    let (duplicate_large_snippet_rows, duplicate_large_snippet_bytes) = connection
+        .query_row(
+            "
+            SELECT COALESCE(SUM(cnt), 0), COALESCE(SUM(cnt * body_len), 0)
+            FROM (
+                SELECT COUNT(*) AS cnt, length(COALESCE(body, '')) AS body_len
+                FROM stage0_fts
+                WHERE kind = 'snippet'
+                  AND length(COALESCE(body, '')) > ?1
+                GROUP BY body
+                HAVING COUNT(*) > 1
+            )
+            ",
+            [DUPLICATE_LARGE_SNIPPET_MIN_BYTES],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?.max(0) as u64,
+                    row.get::<_, i64>(1)?.max(0) as u64,
+                ))
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    let source_span_metadata_rows = ["file_source_spans", "source_spans"]
+        .iter()
+        .filter_map(|table| {
+            if table_exists(connection, table).ok()? {
+                row_count(connection, table).ok()
+            } else {
+                None
+            }
+        })
+        .sum::<u64>();
+    let legacy_stale_table_rows = [
+        "ast_micro_edges",
+        "ast_micro_nodes",
+        "edge_features",
+        "evidence_features",
+        "local_flow_packets",
+        "routing_packet_handles",
+    ]
+    .iter()
+    .filter_map(|table| {
+        if table_exists(connection, table).ok()? {
+            row_count(connection, table).ok()
+        } else {
+            None
+        }
+    })
+    .sum::<u64>();
+    let audit_debug_artifact_rows = [
+        "bench_runs",
+        "bench_tasks",
+        "edge_debug_metadata",
+        "extraction_warnings",
+        "object_id_debug",
+        "path_evidence_debug_metadata",
+        "retrieval_traces",
+        "validation_findings",
+    ]
+    .iter()
+    .filter_map(|table| {
+        if table_exists(connection, table).ok()? {
+            row_count(connection, table).ok()
+        } else {
+            None
+        }
+    })
+    .sum::<u64>();
+    let candidate_spool_payload_rows = ["candidate_spool_records", "candidate_spool_terms"]
+        .iter()
+        .filter_map(|table| {
+            if table_exists(connection, table).ok()? {
+                row_count(connection, table).ok()
+            } else {
+                None
+            }
+        })
+        .sum::<u64>();
     let shadow_bytes = object_bytes
         .iter()
         .filter(|(name, _)| name.starts_with("stage0_fts"))
         .map(|(_, bytes)| *bytes)
         .sum();
+    let mut evidence = Vec::new();
+    evidence.push(SourceSnippetStorageEvidence {
+        category: "fts_content_contract".to_string(),
+        table: "stage0_fts".to_string(),
+        column: "title/body".to_string(),
+        row_count: fts_row_count,
+        bytes: payload_bytes,
+        allowed: true,
+        explanation: "FTS is allowed for path/title handles, entity metadata, and bounded line-bearing text-evidence snippets; it is not allowed to cache full source file bodies by default.".to_string(),
+    });
+    evidence.push(SourceSnippetStorageEvidence {
+        category: "full_source_body_storage".to_string(),
+        table: "stage0_fts".to_string(),
+        column: "body".to_string(),
+        row_count: full_source_body_rows,
+        bytes: full_source_body_bytes,
+        allowed: full_source_body_rows == 0,
+        explanation: "Rows with kind='file' must not store full source bodies; source text should be hydrated from file paths/spans when needed.".to_string(),
+    });
+    evidence.push(SourceSnippetStorageEvidence {
+        category: "file_path_title_fts".to_string(),
+        table: "stage0_fts".to_string(),
+        column: "title".to_string(),
+        row_count: file_title_only_rows,
+        bytes: 0,
+        allowed: true,
+        explanation: "Rows with kind='file' and empty body are file path/title search handles, not redundant source storage.".to_string(),
+    });
+    evidence.push(SourceSnippetStorageEvidence {
+        category: "bounded_text_evidence_snippets".to_string(),
+        table: "stage0_fts".to_string(),
+        column: "body".to_string(),
+        row_count: bounded_snippet_rows,
+        bytes: bounded_snippet_bytes,
+        allowed: true,
+        explanation: "Bounded line-bearing snippets are allowed Stage 0 source-text evidence and are not graph proof.".to_string(),
+    });
+    evidence.push(SourceSnippetStorageEvidence {
+        category: "oversized_or_unlocated_snippets".to_string(),
+        table: "stage0_fts".to_string(),
+        column: "body/line".to_string(),
+        row_count: oversized_snippet_rows,
+        bytes: oversized_snippet_bytes,
+        allowed: oversized_snippet_rows == 0,
+        explanation:
+            "Snippet rows must have line metadata and stay within the bounded snippet contract."
+                .to_string(),
+    });
+    evidence.push(SourceSnippetStorageEvidence {
+        category: "duplicate_large_snippets".to_string(),
+        table: "stage0_fts".to_string(),
+        column: "body".to_string(),
+        row_count: duplicate_large_snippet_rows,
+        bytes: duplicate_large_snippet_bytes,
+        allowed: duplicate_large_snippet_rows == 0,
+        explanation: "Large repeated snippet bodies are treated as redundant payload unless explicitly justified by a future storage contract.".to_string(),
+    });
+    evidence.push(SourceSnippetStorageEvidence {
+        category: "source_span_metadata".to_string(),
+        table: "file_source_spans/source_spans".to_string(),
+        column: "path/start/end".to_string(),
+        row_count: source_span_metadata_rows,
+        bytes: 0,
+        allowed: true,
+        explanation: "Source-span metadata is proof/hydration support and is not source snippet body storage.".to_string(),
+    });
+    evidence.push(SourceSnippetStorageEvidence {
+        category: "candidate_spool_payload".to_string(),
+        table: "candidate_spool_*".to_string(),
+        column: "payload".to_string(),
+        row_count: candidate_spool_payload_rows,
+        bytes: 0,
+        allowed: true,
+        explanation: "Candidate spool payloads are sidecar/candidate evidence and are not counted as graph DB source-snippet redundancy by this detector.".to_string(),
+    });
+    evidence.push(SourceSnippetStorageEvidence {
+        category: "audit_debug_artifacts".to_string(),
+        table: "audit/debug tables".to_string(),
+        column: "payload".to_string(),
+        row_count: audit_debug_artifact_rows,
+        bytes: 0,
+        allowed: true,
+        explanation:
+            "Audit/debug rows are classified separately from graph DB source-snippet redundancy."
+                .to_string(),
+    });
+    evidence.push(SourceSnippetStorageEvidence {
+        category: "legacy_stale_tables".to_string(),
+        table: "legacy/stale tables".to_string(),
+        column: "payload".to_string(),
+        row_count: legacy_stale_table_rows,
+        bytes: 0,
+        allowed: true,
+        explanation:
+            "Legacy/stale tables are classified separately from source snippet body storage."
+                .to_string(),
+    });
+    let stores_source_snippets =
+        full_source_body_rows > 0 || oversized_snippet_rows > 0 || duplicate_large_snippet_rows > 0;
     Ok(Some(FtsStorageMetric {
         total_bytes: shadow_bytes,
-        row_count,
+        row_count: fts_row_count,
         payload_bytes,
-        stores_source_snippets: kind_counts.get("snippet").copied().unwrap_or(0) > 0,
         kind_counts,
+        fts_contract: "content_fts_allows_path_title_entity_metadata_and_bounded_line_bearing_text_evidence_snippets; disallows full_source_body_rows, oversized_or_unlocated_snippets, and duplicate_large_snippets".to_string(),
+        fts_content_allowed: true,
+        full_source_body_rows,
+        full_source_body_bytes,
+        file_title_only_rows,
+        bounded_snippet_rows,
+        bounded_snippet_bytes,
+        oversized_snippet_rows,
+        oversized_snippet_bytes,
+        duplicate_large_snippet_rows,
+        duplicate_large_snippet_bytes,
+        source_span_metadata_rows,
+        candidate_spool_payload_rows,
+        audit_debug_artifact_rows,
+        legacy_stale_table_rows,
+        evidence,
+        stores_source_snippets,
     }))
 }
 
@@ -9507,11 +9815,13 @@ fn render_storage_markdown(report: &StorageInspection) -> String {
     }
     output.push_str("## Aggregate Metrics\n\n");
     output.push_str(&format!(
-        "- Tables: `{}`\n- Indexes: `{}`\n- Observed table rows: `{}`\n- Proof edge rows: `{}`\n- Structural relation rows: `{}`\n- Callsite rows: `{}`\n- Callsite argument rows: `{}`\n- Semantic edge/fact rows: `{}`\n- Average database bytes per proof edge: `{:.2}`\n- Average database bytes per semantic edge/fact: `{:.2}`\n- Average edge table bytes per proof edge: `{:.2}`\n- Average edge table plus edge-index bytes per proof edge: `{:.2}`\n- Source-span rows: `{}`\n- Average source-span table bytes per row: `{:.2}`\n\n",
+        "- Tables: `{}`\n- Indexes: `{}`\n- Observed table rows: `{}`\n- Physical edge rows: `{}`\n- Proof-grade edge rows: `{}`\n- Heuristic/non-proof edge rows: `{}`\n- Structural relation rows: `{}`\n- Callsite rows: `{}`\n- Callsite argument rows: `{}`\n- Semantic edge/fact rows: `{}`\n- Average database bytes per physical edge: `{:.2}`\n- Average database bytes per semantic edge/fact: `{:.2}`\n- Average allocated edge table bytes per physical edge: `{:.2}`\n- Average allocated edge table plus edge-index bytes per physical edge: `{:.2}`\n- Average edge payload bytes per proof-grade edge: `{:.2}`\n- Average edge table plus edge-index payload bytes per proof-grade edge: `{:.2}`\n- Source-span rows: `{}`\n- Average source-span table bytes per row: `{:.2}`\n\n",
         report.aggregate_metrics.table_count,
         report.aggregate_metrics.index_count,
         report.aggregate_metrics.total_rows_observed,
+        report.aggregate_metrics.edge_count,
         report.aggregate_metrics.proof_edge_count,
+        report.aggregate_metrics.heuristic_or_non_proof_edge_count,
         report.aggregate_metrics.structural_record_count,
         report.aggregate_metrics.callsite_record_count,
         report.aggregate_metrics.callsite_arg_record_count,
@@ -9520,6 +9830,10 @@ fn render_storage_markdown(report: &StorageInspection) -> String {
         report.aggregate_metrics.average_database_bytes_per_semantic_edge,
         report.aggregate_metrics.average_edge_table_bytes_per_edge,
         report.aggregate_metrics.average_edge_table_plus_index_bytes_per_edge,
+        report.aggregate_metrics.average_edge_payload_bytes_per_proof_edge,
+        report
+            .aggregate_metrics
+            .average_edge_table_plus_index_payload_bytes_per_proof_edge,
         report.aggregate_metrics.source_span_count,
         report.aggregate_metrics.average_source_span_bytes_per_row,
     ));
@@ -9527,10 +9841,11 @@ fn render_storage_markdown(report: &StorageInspection) -> String {
     output.push_str("| Category | Bytes |\n");
     output.push_str("| --- | ---: |\n");
     output.push_str(&format!(
-        "| Dictionary tables | {} |\n| Dictionary unique indexes | {} |\n| Edge indexes | {} |\n| Source-span table/index | {} |\n| FTS/shadow tables | {} |\n| Snippet-like objects | {} |\n\n",
+        "| Dictionary tables | {} |\n| Dictionary unique indexes | {} |\n| Edge indexes allocated | {} |\n| Edge indexes payload | {} |\n| Source-span table/index | {} |\n| FTS/shadow tables | {} |\n| Snippet-like objects | {} |\n\n",
         report.categories.dictionary_table_bytes,
         report.categories.unique_text_index_bytes,
         report.categories.edge_index_bytes,
+        report.categories.edge_index_payload_bytes,
         report.categories.source_span_bytes,
         report.categories.fts_bytes,
         report.categories.snippet_like_bytes,
@@ -9579,15 +9894,36 @@ fn render_storage_markdown(report: &StorageInspection) -> String {
     if let Some(metric) = &report.fts_storage {
         output.push_str("\n## FTS And Snippet Storage\n\n");
         output.push_str(&format!(
-            "- FTS total bytes: `{}`\n- FTS rows: `{}`\n- FTS payload bytes: `{}`\n- Stores source snippets: `{}`\n\n",
+            "- FTS total bytes: `{}`\n- FTS rows: `{}`\n- FTS payload bytes: `{}`\n- FTS content allowed: `{}`\n- Source snippet redundancy detected: `{}`\n- Full source body rows: `{}`\n- Bounded snippet rows: `{}`\n- Oversized/unlocated snippet rows: `{}`\n- Duplicate large snippet rows: `{}`\n- Contract: `{}`\n\n",
             metric.total_bytes,
             metric.row_count,
             metric.payload_bytes,
+            metric.fts_content_allowed,
             metric.stores_source_snippets,
+            metric.full_source_body_rows,
+            metric.bounded_snippet_rows,
+            metric.oversized_snippet_rows,
+            metric.duplicate_large_snippet_rows,
+            metric.fts_contract,
         ));
         output.push_str("| Kind | Rows |\n| --- | ---: |\n");
         for (kind, count) in &metric.kind_counts {
             output.push_str(&format!("| `{kind}` | {count} |\n"));
+        }
+        output.push_str("\n### Source Text Storage Evidence\n\n");
+        output.push_str("| Category | Table | Column | Rows | Bytes | Allowed | Explanation |\n");
+        output.push_str("| --- | --- | --- | ---: | ---: | --- | --- |\n");
+        for evidence in &metric.evidence {
+            output.push_str(&format!(
+                "| `{}` | `{}` | `{}` | {} | {} | `{}` | {} |\n",
+                evidence.category,
+                evidence.table,
+                evidence.column,
+                evidence.row_count,
+                evidence.bytes,
+                evidence.allowed,
+                evidence.explanation.replace('|', "\\|"),
+            ));
         }
     }
     if let Some(metric) = &report.edge_fact_mix {
@@ -12480,6 +12816,314 @@ mod tests {
         assert_eq!(before.main_db_mtime_unix_ms, after.main_db_mtime_unix_ms);
         assert_eq!(before.main_db_hash, after.main_db_hash);
         assert!(after.sidecars.is_empty());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    fn migrated_fts_metric_fixture(name: &str) -> (PathBuf, PathBuf) {
+        let root = temp_audit_dir(name);
+        let db = root.join("codegraph.sqlite");
+        let store = SqliteGraphStore::open(&db).expect("open migrated store");
+        drop(store);
+        (root, db)
+    }
+
+    fn load_fts_metric(db: &Path) -> FtsStorageMetric {
+        let connection = Connection::open(db).expect("open detector db");
+        fts_storage_metric(&connection, &HashMap::new())
+            .expect("fts metric")
+            .expect("stage0_fts metric")
+    }
+
+    fn insert_stage0_fts_row(
+        connection: &Connection,
+        kind: &str,
+        id: &str,
+        path: &str,
+        line: Option<i64>,
+        title: &str,
+        body: &str,
+    ) {
+        connection
+            .execute(
+                "INSERT INTO stage0_fts (kind, id, repo_relative_path, line, title, body)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![kind, id, path, line, title, body],
+            )
+            .expect("insert stage0_fts row");
+    }
+
+    fn storage_object(
+        name: &str,
+        object_type: &str,
+        row_count: Option<u64>,
+        total_bytes: u64,
+        payload_bytes: u64,
+    ) -> StorageObjectSize {
+        StorageObjectSize {
+            name: name.to_string(),
+            object_type: object_type.to_string(),
+            row_count,
+            pages: 1,
+            total_bytes,
+            payload_bytes,
+            unused_bytes: total_bytes.saturating_sub(payload_bytes),
+            percent_of_database_file: 0.0,
+        }
+    }
+
+    fn storage_file_family(total_bytes: u64) -> FileFamilySize {
+        FileFamilySize {
+            database_bytes: total_bytes,
+            wal_bytes: 0,
+            shm_bytes: 0,
+            total_bytes,
+        }
+    }
+
+    fn proof_edge_count_fixture() -> Connection {
+        let connection = Connection::open_in_memory().expect("open memory db");
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE exactness_dict (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE edges (id_key TEXT PRIMARY KEY, exactness_id INTEGER NOT NULL);
+                CREATE TABLE stage0_fts (kind TEXT, body TEXT);
+                CREATE TABLE path_evidence (id TEXT PRIMARY KEY);
+                CREATE TABLE candidate_spool_records (id TEXT PRIMARY KEY, payload_json TEXT NOT NULL);
+                INSERT INTO exactness_dict (id, value) VALUES
+                    (1, 'parser_verified'),
+                    (2, 'exact'),
+                    (3, 'compiler_verified'),
+                    (4, 'lsp_verified'),
+                    (5, 'static_heuristic'),
+                    (6, 'derived_from_verified_edges'),
+                    (7, 'inferred');
+                INSERT INTO edges (id_key, exactness_id) VALUES
+                    ('edge-parser', 1),
+                    ('edge-exact', 2),
+                    ('edge-compiler', 3),
+                    ('edge-lsp', 4),
+                    ('edge-heuristic', 5),
+                    ('edge-derived', 6),
+                    ('edge-inferred', 7);
+                INSERT INTO stage0_fts (kind, body) VALUES ('snippet', 'text evidence is not graph proof');
+                INSERT INTO path_evidence (id) VALUES ('source-navigation-only');
+                INSERT INTO candidate_spool_records (id, payload_json) VALUES ('candidate-1', '{}');
+                ",
+            )
+            .expect("create proof edge fixture");
+        connection
+    }
+
+    #[test]
+    fn storage_accounting_uses_payload_bytes_without_double_counting_indexes() {
+        let connection = proof_edge_count_fixture();
+        let objects = vec![
+            storage_object("edges", "table", Some(10), 4096, 500),
+            storage_object("idx_edges_head_relation", "index", None, 4096, 100),
+            storage_object("idx_edges_tail_relation", "index", None, 4096, 110),
+            storage_object("idx_edges_span_path", "index", None, 4096, 90),
+            storage_object("idx_entities_name", "index", None, 4096, 999),
+        ];
+        let metrics =
+            aggregate_storage_metrics(&connection, &objects, &storage_file_family(32_768))
+                .expect("aggregate metrics");
+
+        assert_eq!(metrics.edge_table_bytes, 4096);
+        assert_eq!(metrics.edge_index_bytes, 12_288);
+        assert_eq!(metrics.edge_table_payload_bytes, 500);
+        assert_eq!(metrics.edge_index_payload_bytes, 300);
+        assert_eq!(metrics.edge_table_plus_index_payload_bytes, 800);
+        assert_eq!(metrics.proof_edge_count, 4);
+        assert_eq!(metrics.average_edge_payload_bytes_per_proof_edge, 125.0);
+        assert_eq!(
+            metrics.average_edge_table_plus_index_payload_bytes_per_proof_edge,
+            200.0
+        );
+        assert_eq!(metrics.average_edge_table_plus_index_bytes_per_edge, 1638.4);
+    }
+
+    #[test]
+    fn proof_edge_count_excludes_text_candidate_source_navigation_and_heuristics() {
+        let connection = proof_edge_count_fixture();
+
+        let count = proof_grade_edge_count(&connection)
+            .expect("proof edge count")
+            .expect("proof edge count present");
+
+        assert_eq!(
+            count, 4,
+            "only exact/compiler/lsp/parser verified graph edges count; FTS, candidate spool, PathEvidence, heuristic, inferred, and derived cache rows do not"
+        );
+    }
+
+    #[test]
+    fn proof_edge_count_falls_back_when_exactness_metadata_is_absent() {
+        let connection = Connection::open_in_memory().expect("open memory db");
+        connection
+            .execute_batch("CREATE TABLE edges (id_key TEXT PRIMARY KEY);")
+            .expect("create legacy edge table");
+        let objects = vec![storage_object("edges", "table", Some(3), 4096, 240)];
+
+        let metrics =
+            aggregate_storage_metrics(&connection, &objects, &storage_file_family(16_384))
+                .expect("aggregate legacy metrics");
+
+        assert_eq!(metrics.edge_count, 3);
+        assert_eq!(metrics.proof_edge_count, 3);
+        assert_eq!(metrics.average_edge_payload_bytes_per_proof_edge, 80.0);
+    }
+
+    #[test]
+    fn fts_storage_detector_allows_bounded_text_evidence_snippets() {
+        let (root, db) = migrated_fts_metric_fixture("fts-bounded-snippet-pass");
+        let store = SqliteGraphStore::open(&db).expect("open store");
+        store
+            .upsert_file_text("docs/guide.md", "full body should not be stored")
+            .expect("upsert file text handle");
+        store
+            .upsert_snippet_text(
+                "text_evidence:docs/guide.md:3",
+                &SourceSpan::new("docs/guide.md", 3, 3),
+                "bounded line-bearing snippet",
+            )
+            .expect("upsert bounded snippet");
+        drop(store);
+
+        let metric = load_fts_metric(&db);
+
+        assert_eq!(metric.full_source_body_rows, 0);
+        assert_eq!(metric.file_title_only_rows, 1);
+        assert_eq!(metric.bounded_snippet_rows, 1);
+        assert_eq!(metric.oversized_snippet_rows, 0);
+        assert_eq!(metric.duplicate_large_snippet_rows, 0);
+        assert!(!metric.stores_source_snippets);
+        assert!(metric
+            .evidence
+            .iter()
+            .any(|entry| entry.category == "bounded_text_evidence_snippets" && entry.allowed));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn fts_storage_detector_flags_full_source_body_rows() {
+        let (root, db) = migrated_fts_metric_fixture("fts-full-source-body-fail");
+        {
+            let connection = Connection::open(&db).expect("open detector db");
+            insert_stage0_fts_row(
+                &connection,
+                "file",
+                "docs/guide.md",
+                "docs/guide.md",
+                None,
+                "docs/guide.md",
+                "line one\nline two\nline three",
+            );
+        }
+
+        let metric = load_fts_metric(&db);
+
+        assert_eq!(metric.full_source_body_rows, 1);
+        assert!(metric.full_source_body_bytes > 0);
+        assert!(metric.stores_source_snippets);
+        assert!(metric.evidence.iter().any(|entry| {
+            entry.category == "full_source_body_storage" && !entry.allowed && entry.row_count == 1
+        }));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn fts_storage_detector_flags_oversized_and_duplicate_large_snippets() {
+        let (root, db) = migrated_fts_metric_fixture("fts-large-snippet-fail");
+        let duplicate = "d".repeat(300);
+        let oversized = "x".repeat(600);
+        {
+            let connection = Connection::open(&db).expect("open detector db");
+            insert_stage0_fts_row(
+                &connection,
+                "snippet",
+                "snippet-a",
+                "docs/guide.md",
+                Some(10),
+                "docs/guide.md:10",
+                &duplicate,
+            );
+            insert_stage0_fts_row(
+                &connection,
+                "snippet",
+                "snippet-b",
+                "docs/guide.md",
+                Some(20),
+                "docs/guide.md:20",
+                &duplicate,
+            );
+            insert_stage0_fts_row(
+                &connection,
+                "snippet",
+                "snippet-c",
+                "docs/guide.md",
+                Some(30),
+                "docs/guide.md:30",
+                &oversized,
+            );
+        }
+
+        let metric = load_fts_metric(&db);
+
+        assert_eq!(metric.duplicate_large_snippet_rows, 2);
+        assert_eq!(metric.oversized_snippet_rows, 1);
+        assert!(metric.stores_source_snippets);
+        assert!(metric
+            .evidence
+            .iter()
+            .any(|entry| entry.category == "duplicate_large_snippets" && !entry.allowed));
+        assert!(metric.evidence.iter().any(|entry| {
+            entry.category == "oversized_or_unlocated_snippets" && !entry.allowed
+        }));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn fts_storage_detector_classifies_candidate_audit_and_span_metadata_separately() {
+        let (root, db) = migrated_fts_metric_fixture("fts-sidecar-audit-not-redundancy");
+        {
+            let connection = Connection::open(&db).expect("open detector db");
+            connection
+                .execute_batch(
+                    "
+                    CREATE TABLE IF NOT EXISTS candidate_spool_records (
+                        id TEXT PRIMARY KEY,
+                        payload_json TEXT NOT NULL
+                    );
+                    INSERT INTO candidate_spool_records (id, payload_json)
+                    VALUES ('candidate-1', '{\"snippet\":\"candidate payload\"}');
+                    INSERT INTO retrieval_traces (id, task, trace_json, created_at_unix_ms)
+                    VALUES ('trace-1', 'task', '{}', 1);
+                    INSERT INTO file_source_spans (file_id, span_id)
+                    VALUES ('docs/guide.md', 'span-1');
+                    ",
+                )
+                .expect("insert non-snippet classifications");
+        }
+
+        let metric = load_fts_metric(&db);
+
+        assert_eq!(metric.candidate_spool_payload_rows, 1);
+        assert_eq!(metric.audit_debug_artifact_rows, 1);
+        assert_eq!(metric.source_span_metadata_rows, 1);
+        assert!(!metric.stores_source_snippets);
+        assert!(metric
+            .evidence
+            .iter()
+            .any(|entry| entry.category == "candidate_spool_payload" && entry.allowed));
+        assert!(metric
+            .evidence
+            .iter()
+            .any(|entry| entry.category == "audit_debug_artifacts" && entry.allowed));
+        assert!(metric
+            .evidence
+            .iter()
+            .any(|entry| entry.category == "source_span_metadata" && entry.allowed));
         fs::remove_dir_all(root).expect("cleanup");
     }
 

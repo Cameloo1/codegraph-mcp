@@ -674,7 +674,7 @@ impl SqliteGraphStore {
         }
     }
 
-    pub fn insert_file_text(&self, repo_relative_path: &str, text: &str) -> StoreResult<()> {
+    pub fn insert_file_text(&self, repo_relative_path: &str, _text: &str) -> StoreResult<()> {
         insert_fts_row(
             &self.connection,
             TextSearchKind::File,
@@ -682,7 +682,7 @@ impl SqliteGraphStore {
             repo_relative_path,
             None,
             repo_relative_path,
-            text,
+            "",
         )
     }
 
@@ -860,7 +860,7 @@ impl SqliteGraphStore {
     pub fn insert_file_text_after_file_delete(
         &self,
         repo_relative_path: &str,
-        text: &str,
+        _text: &str,
     ) -> StoreResult<()> {
         insert_fts_row(
             &self.connection,
@@ -869,7 +869,7 @@ impl SqliteGraphStore {
             repo_relative_path,
             None,
             repo_relative_path,
-            text,
+            "",
         )
     }
 
@@ -2783,7 +2783,7 @@ impl GraphStore for SqliteGraphStore {
         count_rows(&self.connection, "files")
     }
 
-    fn upsert_file_text(&self, repo_relative_path: &str, text: &str) -> StoreResult<()> {
+    fn upsert_file_text(&self, repo_relative_path: &str, _text: &str) -> StoreResult<()> {
         upsert_fts_row(
             &self.connection,
             TextSearchKind::File,
@@ -2791,7 +2791,7 @@ impl GraphStore for SqliteGraphStore {
             repo_relative_path,
             None,
             repo_relative_path,
-            text,
+            "",
         )
     }
 
@@ -12954,10 +12954,22 @@ mod tests {
             "normalizeEmail handles password reset email casing",
         ));
 
+        let path_hits = ok(store.search_text("src auth", 10));
+
+        assert!(path_hits.iter().any(|hit| {
+            hit.kind == TextSearchKind::File && hit.repo_relative_path == "src/auth.ts"
+        }));
+        assert!(path_hits
+            .iter()
+            .filter(|hit| hit.kind == TextSearchKind::File)
+            .all(|hit| hit.text.is_empty()));
+
         let hits = ok(store.search_text("password reset normalizeEmail", 10));
 
-        assert!(hits.iter().any(|hit| {
-            hit.kind == TextSearchKind::File && hit.repo_relative_path == "src/auth.ts"
+        assert!(!hits.iter().any(|hit| {
+            hit.kind == TextSearchKind::File
+                && hit.repo_relative_path == "src/auth.ts"
+                && hit.text.contains("password reset flow")
         }));
         assert!(hits
             .iter()
