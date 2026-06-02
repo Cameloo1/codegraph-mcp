@@ -1528,6 +1528,7 @@ pub(crate) fn run_agent_use_watch_once_delta(
     };
     let new_fact_counts = agent_use_delta_fact_counts(&profile.db_path, &changed_paths_normalized)
         .unwrap_or_default();
+    let deleted_paths = agent_use_watch_deleted_paths(&summary);
     annotate_agent_use_output(
         &mut value,
         profile,
@@ -1560,6 +1561,15 @@ pub(crate) fn run_agent_use_watch_once_delta(
         );
         object.insert("auto_index_enabled".to_string(), json!(false));
         object.insert("changed_paths".to_string(), json!(changed_paths_normalized));
+        object.insert("deleted_paths".to_string(), json!(deleted_paths.clone()));
+        object.insert(
+            "deleted_path".to_string(),
+            if deleted_paths.len() == 1 {
+                json!(deleted_paths[0])
+            } else {
+                Value::Null
+            },
+        );
         object.insert("rejected_paths".to_string(), json!([]));
         object.insert("no_op_paths".to_string(), json!(no_op_paths));
         object.insert(
@@ -1693,6 +1703,24 @@ pub(crate) fn run_agent_use_watch_once_delta(
             )),
         );
         object.insert(
+            "binary_candidates_invalidated_or_not_applicable".to_string(),
+            agent_use_not_applicable_delta_action(
+                "binary_vector_candidates_are_request_time_context_candidates",
+            ),
+        );
+        object.insert(
+            "nuance_tokens_invalidated_or_not_applicable".to_string(),
+            agent_use_not_applicable_delta_action(
+                "nuance_rescue_candidates_are_request_time_context_candidates",
+            ),
+        );
+        object.insert(
+            "proof_path_caches_invalidated_or_not_applicable".to_string(),
+            agent_use_not_applicable_delta_action(
+                "stored_path_evidence_rows_are_the_current_proof_path_cache_surface",
+            ),
+        );
+        object.insert(
             "routing_handles_invalidated".to_string(),
             json!({
                 "action": if summary.files_indexed > 0 || summary.files_deleted > 0 || summary.files_renamed > 0 {
@@ -1726,6 +1754,14 @@ pub(crate) fn run_agent_use_watch_once_delta(
         object.insert(
             "degraded_relation_classes".to_string(),
             json!(summary.dependency_closure.degraded_relation_classes.clone()),
+        );
+        object.insert(
+            "graph_output_degraded_labels".to_string(),
+            json!(summary.graph_output_degraded_labels.clone()),
+        );
+        object.insert(
+            "graph_output_budget_hit".to_string(),
+            json!(!summary.graph_output_degraded_labels.is_empty()),
         );
         object.insert(
             "skipped_relation_classes".to_string(),
@@ -2564,6 +2600,15 @@ pub(crate) fn query_count_for_path(
         .map_err(|error| format!("agent-use delta fact count query failed for {path}: {error}"))
 }
 
+pub(crate) fn agent_use_watch_deleted_paths(summary: &IncrementalIndexSummary) -> Vec<String> {
+    summary
+        .path_cleanup_reasons
+        .iter()
+        .filter(|(_, reasons)| reasons.iter().any(|reason| reason == "deleted"))
+        .map(|(path, _)| path.clone())
+        .collect()
+}
+
 pub(crate) fn agent_use_watch_no_op_paths(summary: &IncrementalIndexSummary) -> Vec<String> {
     if !agent_use_watch_summary_has_fact_changes(summary)
         && (summary.files_metadata_unchanged > 0
@@ -2647,16 +2692,24 @@ pub(crate) fn agent_use_watch_freshness_json(
     staged_availability: &Value,
 ) -> Value {
     let graph_changed = agent_use_watch_summary_has_fact_changes(summary);
+    let path_evidence = match agent_use_path_evidence_delta_action(summary) {
+        "refreshed" => "rebuilt",
+        "invalidated" => "stale",
+        _ => "current",
+    };
     json!({
         "graph_db": "current",
         "files_facts": if graph_changed { "rebuilt" } else { "current" },
         "entities_edges_source_spans": if summary.files_parsed > 0 || summary.files_deleted > 0 || summary.files_renamed > 0 { "rebuilt" } else { "current" },
         "text_evidence": if summary.files_read > 0 || summary.files_deleted > 0 || summary.files_ignored > 0 { "rebuilt" } else { "current" },
-        "path_evidence": if summary.dirty_path_evidence_count > 0 { "rebuilt" } else { "current" },
+        "path_evidence": path_evidence,
         "candidate_spool": staged_availability.get("candidate_spool_status").cloned().unwrap_or_else(|| json!("unknown")),
         "candidate_spool_query_index": staged_availability.pointer("/layer_readiness/candidate_spool/query_index_status").cloned().unwrap_or_else(|| json!("unknown")),
         "vector_runtime_sidecar": staged_availability.get("vector_runtime_status").cloned().unwrap_or_else(|| json!("unknown")),
         "vector_audit_artifact": staged_availability.get("vector_audit_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "binary_candidate_records": "not_applicable",
+        "nuance_candidate_records": "not_applicable",
+        "proof_path_caches": "not_applicable",
         "routing_context_handles": if summary.files_indexed > 0 || summary.files_deleted > 0 || summary.files_renamed > 0 { "rebuilt" } else { "current" },
     })
 }
@@ -2675,6 +2728,15 @@ pub(crate) fn agent_use_layer_delta_action(status: Option<&str>) -> Value {
     json!({
         "action": action,
         "status": status,
+        "graph_proof": false,
+    })
+}
+
+pub(crate) fn agent_use_not_applicable_delta_action(reason: &'static str) -> Value {
+    json!({
+        "action": "not_applicable",
+        "status": "not_applicable",
+        "reason": reason,
         "graph_proof": false,
     })
 }

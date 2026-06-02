@@ -3483,6 +3483,7 @@ pub struct IncrementalIndexSummary {
     pub stale_facts_deleted_for_ignored_paths: usize,
     pub deleted_file_facts_removed: usize,
     pub path_cleanup_reasons: BTreeMap<String, Vec<String>>,
+    pub graph_output_degraded_labels: Vec<String>,
     pub global_hash_check_ran: bool,
     pub storage_audit_ran: bool,
     pub integrity_check_ran: bool,
@@ -9217,6 +9218,7 @@ pub fn update_changed_files_with_cache_to_db(
         stale_facts_deleted_for_ignored_paths: 0,
         deleted_file_facts_removed: 0,
         path_cleanup_reasons: BTreeMap::new(),
+        graph_output_degraded_labels: Vec::new(),
         global_hash_check_ran: false,
         storage_audit_ran: false,
         integrity_check_ran: false,
@@ -9547,6 +9549,84 @@ pub fn update_changed_files_with_cache_to_db(
                 &mut phase_profile,
             )?;
             write_path_chaos_failpoint("incremental_after_stale_cleanup_before_insert")?;
+            let graph_output_budgets = GraphOutputBudgets::default();
+            let source_role = classify_file_profile_source_role(
+                repo_relative_path,
+                Some(&source),
+                language.as_str(),
+            );
+            if let Some(policy) = pathological_file_policy_decision(
+                repo_relative_path,
+                &source_role,
+                source.len(),
+                &graph_output_budgets,
+            ) {
+                let mut metadata = file_manifest_metadata(modified_unix_nanos(&file_metadata));
+                metadata.insert(
+                    "parser_status".to_string(),
+                    "graph_extraction_skipped_budget".into(),
+                );
+                metadata.insert("claim_state".to_string(), "source_navigation_only".into());
+                metadata.insert("graph_extraction_skipped".to_string(), true.into());
+                metadata.insert(
+                    "graph_extraction_skip_reason".to_string(),
+                    policy.reason.clone().into(),
+                );
+                metadata.insert("graph_relation_claims".to_string(), json!([]));
+                metadata.insert("diagnostic_only".to_string(), json!(true));
+                metadata.insert(
+                    "degradation_labels".to_string(),
+                    json!(policy.labels.clone()),
+                );
+                metadata.insert(
+                    "graph_output_degradation_labels".to_string(),
+                    json!(policy.labels.clone()),
+                );
+                metadata.insert(
+                    "graph_output_budget_policy".to_string(),
+                    serde_json::to_value(&graph_output_budgets).unwrap_or(Value::Null),
+                );
+                let hit = graph_budget_hit_with_unit(
+                    repo_relative_path,
+                    "local_extraction",
+                    "source_bytes_per_file",
+                    source.len(),
+                    0,
+                    policy.budget,
+                    "bytes",
+                );
+                metadata.insert("graph_output_budget_hit".to_string(), json!(true));
+                metadata.insert("graph_output_budget_hits".to_string(), json!([hit]));
+                let file_start = Instant::now();
+                tx.upsert_file(&FileRecord {
+                    repo_relative_path: repo_relative_path.clone(),
+                    file_hash: hash.clone(),
+                    language: Some(language.as_str().to_string()),
+                    size_bytes,
+                    indexed_at_unix_ms: Some(indexed_at),
+                    metadata,
+                })?;
+                phase_profile.add_duration("file_manifest_upsert", file_start.elapsed(), 1, 1);
+                let source_text_start = Instant::now();
+                tx.insert_file_text_after_file_delete(repo_relative_path, &source)?;
+                let source_text_evidence_count =
+                    insert_bounded_source_text_evidence_after_file_delete(
+                        tx,
+                        repo_relative_path,
+                        &source,
+                    )?;
+                phase_profile.add_duration(
+                    "source_text_evidence_upsert",
+                    source_text_start.elapsed(),
+                    1,
+                    source_text_evidence_count as u64,
+                );
+                for label in policy.labels {
+                    push_unique_label(&mut summary.graph_output_degraded_labels, label);
+                }
+                summary.files_indexed += 1;
+                continue;
+            }
             summary.files_parsed += 1;
             let parse_start = Instant::now();
             let parsed = match parser.parse(repo_relative_path, &source) {
@@ -27794,6 +27874,80 @@ pub fn caller() {
         assert_eq!(cache_refresh.items, 0);
         assert!(login.is_empty());
         assert_eq!(register.len(), 1);
+        store.quick_integrity_gate().expect("update quick check");
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn incremental_large_test_source_degrades_before_graph_extraction() {
+        let repo = temp_repo("incremental-large-test-source");
+        let tests_dir = repo.join("tests");
+        fs::create_dir_all(&tests_dir).expect("tests dir");
+        let file = tests_dir.join("large_perf.test.ts");
+        fs::write(
+            &file,
+            "export function staleLargePerfSymbol() { return 'old'; }\n",
+        )
+        .expect("write initial large fixture");
+
+        let db = repo.join("target").join("large-source.sqlite");
+        index_repo_to_db(&repo, &db).expect("initial index");
+        let mut source = String::from("export function freshLargePerfSymbol() { return 'new'; }\n");
+        for index in 0..2_000 {
+            source.push_str(&format!(
+                "export const largePerfPadding{index} = '{}';\n",
+                "x".repeat(40)
+            ));
+        }
+        assert!(source.len() > DEFAULT_GRAPH_OUTPUT_MAX_GENERATED_TEST_SOURCE_BYTES_PER_FILE);
+        fs::write(&file, source).expect("write large fixture");
+
+        let summary =
+            update_changed_files_to_db(&repo, &[PathBuf::from("tests/large_perf.test.ts")], &db)
+                .expect("large fixture update");
+
+        assert_eq!(summary.files_indexed, 1);
+        assert_eq!(summary.files_read, 1);
+        assert_eq!(summary.files_hashed, 1);
+        assert_eq!(summary.files_parsed, 0);
+        assert_eq!(summary.entities, 0);
+        assert_eq!(summary.edges, 0);
+        assert!(summary
+            .graph_output_degraded_labels
+            .iter()
+            .any(|label| label == "test_fixture_large"));
+        assert!(summary
+            .graph_output_degraded_labels
+            .iter()
+            .any(|label| label == "graph_extraction_skipped_budget"));
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert!(
+            entities_by_kind_and_name(&store, EntityKind::Function, "staleLargePerfSymbol")
+                .is_empty()
+        );
+        assert!(
+            entities_by_kind_and_name(&store, EntityKind::Function, "freshLargePerfSymbol")
+                .is_empty()
+        );
+        let record = store
+            .get_file("tests/large_perf.test.ts")
+            .expect("file lookup")
+            .expect("file record");
+        assert_eq!(
+            record.metadata.get("parser_status").and_then(Value::as_str),
+            Some("graph_extraction_skipped_budget")
+        );
+        assert_eq!(
+            record.metadata.get("claim_state").and_then(Value::as_str),
+            Some("source_navigation_only")
+        );
+        assert!(metadata_labels_contain(
+            &record.metadata,
+            "graph_extraction_skipped_budget"
+        ));
         store.quick_integrity_gate().expect("update quick check");
 
         drop(store);

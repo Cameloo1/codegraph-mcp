@@ -5885,6 +5885,18 @@ fn agent_use_watch_once_dirty_sidecars_do_not_masquerade_as_fresh_context() {
     assert_eq!(changed["delta_state"].as_str(), Some("updated"));
     assert_eq!(changed["new_graph_valid"].as_bool(), Some(true));
     assert_eq!(changed["freshness"]["graph_db"].as_str(), Some("current"));
+    assert_eq!(
+        changed["freshness"]["binary_candidate_records"].as_str(),
+        Some("not_applicable")
+    );
+    assert_eq!(
+        changed["freshness"]["nuance_candidate_records"].as_str(),
+        Some("not_applicable")
+    );
+    assert_eq!(
+        changed["freshness"]["proof_path_caches"].as_str(),
+        Some("not_applicable")
+    );
     assert!(matches!(
         changed["path_evidence_invalidated"]["action"].as_str(),
         Some("refreshed") | Some("invalidated")
@@ -5900,6 +5912,22 @@ fn agent_use_watch_once_dirty_sidecars_do_not_masquerade_as_fresh_context() {
     assert_eq!(
         changed["vector_chunks_invalidated_or_rebuilt"]["action"].as_str(),
         Some("invalidated")
+    );
+    assert_eq!(
+        changed["binary_candidates_invalidated_or_not_applicable"]["status"].as_str(),
+        Some("not_applicable")
+    );
+    assert_eq!(
+        changed["nuance_tokens_invalidated_or_not_applicable"]["status"].as_str(),
+        Some("not_applicable")
+    );
+    assert_eq!(
+        changed["proof_path_caches_invalidated_or_not_applicable"]["status"].as_str(),
+        Some("not_applicable")
+    );
+    assert_eq!(
+        changed["nuance_tokens_invalidated_or_not_applicable"]["graph_proof"].as_bool(),
+        Some(false)
     );
     assert_eq!(
         changed["candidate_spool_invalidated_or_rebuilt"]["graph_proof"].as_bool(),
@@ -6020,6 +6048,10 @@ fn agent_use_watch_once_dirty_sidecars_do_not_masquerade_as_fresh_context() {
     assert_eq!(
         deleted["path_evidence_invalidated"]["action"].as_str(),
         Some("invalidated")
+    );
+    assert_eq!(
+        deleted["freshness"]["path_evidence"].as_str(),
+        Some("stale")
     );
     assert_eq!(
         path_evidence_total_count(&profile.db_path),
