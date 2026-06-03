@@ -70,6 +70,7 @@ pub trait GraphStore {
     fn get_edge(&self, id: &str) -> StoreResult<Option<Edge>>;
     fn delete_edge(&self, id: &str) -> StoreResult<bool>;
     fn list_edges(&self, limit: usize) -> StoreResult<Vec<Edge>>;
+    fn list_edges_by_file(&self, repo_relative_path: &str) -> StoreResult<Vec<Edge>>;
     fn count_edges(&self) -> StoreResult<u64>;
     fn find_edges_by_head_relation(
         &self,
@@ -92,6 +93,10 @@ pub trait GraphStore {
 
     fn upsert_source_span(&self, id: &str, span: &SourceSpan) -> StoreResult<()>;
     fn get_source_span(&self, id: &str) -> StoreResult<Option<SourceSpan>>;
+    fn list_source_spans_by_file(
+        &self,
+        repo_relative_path: &str,
+    ) -> StoreResult<Vec<(String, SourceSpan)>>;
     fn delete_source_span(&self, id: &str) -> StoreResult<bool>;
     fn upsert_snippet_text(&self, id: &str, span: &SourceSpan, text: &str) -> StoreResult<()>;
 
@@ -101,6 +106,10 @@ pub trait GraphStore {
 
     fn upsert_path_evidence(&self, path: &PathEvidence) -> StoreResult<()>;
     fn get_path_evidence(&self, id: &str) -> StoreResult<Option<PathEvidence>>;
+    fn list_path_evidence_by_file(
+        &self,
+        repo_relative_path: &str,
+    ) -> StoreResult<Vec<PathEvidence>>;
     fn delete_path_evidence(&self, id: &str) -> StoreResult<bool>;
     fn count_path_evidence(&self) -> StoreResult<u64>;
 
@@ -110,6 +119,10 @@ pub trait GraphStore {
 
     fn find_entities_by_exact_symbol(&self, symbol: &str) -> StoreResult<Vec<Entity>>;
     fn search_text(&self, query: &str, limit: usize) -> StoreResult<Vec<TextSearchHit>>;
+    fn list_text_search_hits_by_file(
+        &self,
+        repo_relative_path: &str,
+    ) -> StoreResult<Vec<TextSearchHit>>;
 
     fn upsert_retrieval_trace(&self, trace: &RetrievalTraceRecord) -> StoreResult<()>;
     fn get_retrieval_trace(&self, id: &str) -> StoreResult<Option<RetrievalTraceRecord>>;

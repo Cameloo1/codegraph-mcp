@@ -26,10 +26,13 @@ use std::{
 use codegraph_core::{
     classify_entity_source_role, normalize_repo_relative_path as normalize_graph_path,
     stable_edge_id, stable_entity_id_for_kind, Edge, EdgeClass, EdgeContext, Entity, EntityKind,
-    EvidenceRole, Exactness, FileRecord, Metadata, PathEvidence, RelationKind, RepoIndexState,
-    RetrievalCandidate, RetrievalCandidateLifecycleBinding, RetrievalCandidateLifecycleStatus,
-    RetrievalCandidateSource, RetrievalProofStatus, RetrievalVerificationStatus, SourceSpan,
-    VectorEmbeddingSource,
+    EvidenceRole, Exactness, FileRecord, Metadata, NormalizedClaimabilityMetadata,
+    NormalizedEdgeFact, NormalizedEntityFact, NormalizedFactEnvelope, NormalizedFactOmission,
+    NormalizedFileFact, NormalizedPathEvidenceFact, NormalizedSidecarFreshnessFact,
+    NormalizedSourceRoleFact, NormalizedSourceSpanFact, NormalizedTextEvidenceFact, PathEvidence,
+    RelationKind, RepoIndexState, RetrievalCandidate, RetrievalCandidateLifecycleBinding,
+    RetrievalCandidateLifecycleStatus, RetrievalCandidateSource, RetrievalProofStatus,
+    RetrievalVerificationStatus, SourceSpan, VectorEmbeddingSource,
 };
 use codegraph_parser::{
     content_hash, detect_language, extract_entities_and_relations, BasicExtraction, LanguageParser,
@@ -1307,6 +1310,3513 @@ struct TextEvidenceIndex {
     omitted_bytes: usize,
     indexed_lines: usize,
     total_lines: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NormalizedFactSnapshotOptions {
+    pub max_facts_per_path: usize,
+    pub include_text_evidence: bool,
+    pub include_path_evidence: bool,
+    pub include_sidecar_freshness: bool,
+}
+
+impl Default for NormalizedFactSnapshotOptions {
+    fn default() -> Self {
+        Self {
+            max_facts_per_path: 10_000,
+            include_text_evidence: true,
+            include_path_evidence: true,
+            include_sidecar_freshness: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NormalizedFactSnapshotFacts {
+    pub files: Vec<NormalizedFileFact>,
+    pub entities: Vec<NormalizedEntityFact>,
+    pub edges: Vec<NormalizedEdgeFact>,
+    pub source_spans: Vec<NormalizedSourceSpanFact>,
+    pub source_roles: Vec<NormalizedSourceRoleFact>,
+    pub text_evidence: Vec<NormalizedTextEvidenceFact>,
+    pub path_evidence: Vec<NormalizedPathEvidenceFact>,
+    pub sidecar_freshness: Vec<NormalizedSidecarFreshnessFact>,
+    pub envelopes: Vec<NormalizedFactEnvelope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NormalizedFactSnapshotPath {
+    pub repo_relative_path: String,
+    pub scope: String,
+    pub facts_seen: usize,
+    pub facts_omitted: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NormalizedFactSnapshot {
+    pub status: String,
+    pub repo_root: String,
+    pub db_path: String,
+    pub exact_db_path_checked: String,
+    pub changed_files: Vec<String>,
+    pub closure_files: Vec<String>,
+    pub snapshot_paths: Vec<NormalizedFactSnapshotPath>,
+    pub lifecycle: DbLifecycleSurfacePreflight,
+    pub claimable: bool,
+    pub diagnostic_only: bool,
+    pub read_only: bool,
+    pub bounded_to_changed_or_closure_files: bool,
+    pub full_scan_count: u64,
+    pub facts: NormalizedFactSnapshotFacts,
+    pub omission: NormalizedFactOmission,
+}
+
+pub const DEFAULT_ENTITY_SOURCE_ROLE_DELTA_TOP_LIMIT: usize = 10;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntitySourceRoleDeltaOptions {
+    pub max_items_per_category: usize,
+}
+
+impl Default for EntitySourceRoleDeltaOptions {
+    fn default() -> Self {
+        Self {
+            max_items_per_category: DEFAULT_ENTITY_SOURCE_ROLE_DELTA_TOP_LIMIT,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClosureDeltaSummary {
+    pub status: String,
+    pub scope_version: String,
+    pub changed_files: Vec<String>,
+    pub closure_files_considered: Vec<String>,
+    pub closure_files_updated: Vec<String>,
+    pub closure_edges_inspected: usize,
+    pub closure_relation_classes: Vec<String>,
+    pub closure_budget_hit: bool,
+    pub degraded_relation_classes: Vec<String>,
+    pub unsupported_relation_classes: Vec<String>,
+    pub closure_unknowns: Vec<String>,
+    pub no_silent_full_repo_fallback: bool,
+    pub fallback_avoided_reason: String,
+    pub manual_full_index_recommendation: Option<String>,
+    pub graph_proof: bool,
+    pub proof_strength: String,
+    pub reason: String,
+}
+
+impl Default for ClosureDeltaSummary {
+    fn default() -> Self {
+        Self {
+            status: "not_run".to_string(),
+            scope_version: "rtds_dependency_closure_v1".to_string(),
+            changed_files: Vec::new(),
+            closure_files_considered: Vec::new(),
+            closure_files_updated: Vec::new(),
+            closure_edges_inspected: 0,
+            closure_relation_classes: Vec::new(),
+            closure_budget_hit: false,
+            degraded_relation_classes: Vec::new(),
+            unsupported_relation_classes: Vec::new(),
+            closure_unknowns: Vec::new(),
+            no_silent_full_repo_fallback: true,
+            fallback_avoided_reason:
+                "bounded_dependency_closure_v1_does_not_silently_full_reindex".to_string(),
+            manual_full_index_recommendation: None,
+            graph_proof: false,
+            proof_strength: "dependency_closure_scope_metadata".to_string(),
+            reason:
+                "closure summary reports bounded dirty scope; graph proof still requires graph/source facts"
+                    .to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileRenameDeltaEntry {
+    pub rename_status: String,
+    pub old_path: Option<String>,
+    pub new_path: Option<String>,
+    pub old_file_identity_key: Option<String>,
+    pub new_file_identity_key: Option<String>,
+    pub content_hash_match: bool,
+    pub content_hash: Option<String>,
+    pub ambiguity: bool,
+    pub ambiguity_reason: Option<String>,
+    pub rename_confidence: String,
+    pub deterministic_reason: String,
+    pub fallback_add_remove: bool,
+    pub duplicate_content_paths_distinct: bool,
+    pub graph_proof: bool,
+    pub proof_strength: String,
+    pub evidence_kind: String,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EntityDeltaFactSummary {
+    pub stable_identity_key: String,
+    pub fact_hash: String,
+    pub entity_id: String,
+    pub entity_kind: EntityKind,
+    pub name: String,
+    pub qualified_name: String,
+    pub repo_relative_path: String,
+    pub source_span: Option<SourceSpan>,
+    pub source_role: EvidenceRole,
+    pub exactness: String,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub proof_strength: String,
+    pub lifecycle_status: String,
+}
+
+impl EntityDeltaFactSummary {
+    fn from_fact(fact: &NormalizedEntityFact) -> Self {
+        let proof_strength = normalized_proof_strength(&fact.claimability);
+        Self {
+            stable_identity_key: fact.stable_identity_key.clone(),
+            fact_hash: fact.fact_hash.clone(),
+            entity_id: fact.entity_id.clone(),
+            entity_kind: fact.entity_kind,
+            name: fact.name.clone(),
+            qualified_name: fact.qualified_name.clone(),
+            repo_relative_path: fact.repo_relative_path.clone(),
+            source_span: fact.source_span.clone(),
+            source_role: fact.source_role,
+            exactness: if fact.claimability.graph_proof {
+                "source_span_bound_graph_fact".to_string()
+            } else {
+                "diagnostic_non_graph_proof".to_string()
+            },
+            claimability: fact.claimability.clone(),
+            proof_strength,
+            lifecycle_status: fact.lifecycle.freshness_status.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EntityDeltaEntry {
+    pub stable_identity_key: String,
+    pub old_stable_identity_key: Option<String>,
+    pub new_stable_identity_key: Option<String>,
+    pub old: Option<EntityDeltaFactSummary>,
+    pub new: Option<EntityDeltaFactSummary>,
+    pub entity_kind: EntityKind,
+    pub name: String,
+    pub qualified_name: String,
+    pub repo_relative_path: String,
+    pub source_span: Option<SourceSpan>,
+    pub source_role: EvidenceRole,
+    pub exactness: String,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub proof_strength: String,
+    pub lifecycle_status: String,
+    pub change_kind: String,
+    pub reason: String,
+    pub warnings: Vec<String>,
+}
+
+impl EntityDeltaEntry {
+    fn added(fact: &NormalizedEntityFact) -> Self {
+        let summary = EntityDeltaFactSummary::from_fact(fact);
+        Self::from_summary(
+            summary.stable_identity_key.clone(),
+            None,
+            Some(summary.stable_identity_key.clone()),
+            None,
+            Some(summary),
+            "added",
+            "normalized entity fact was absent before update and present after update",
+            vec!["rename_correlation_unknown_without_rename_aware_identity".to_string()],
+        )
+    }
+
+    fn removed(fact: &NormalizedEntityFact) -> Self {
+        let summary = EntityDeltaFactSummary::from_fact(fact);
+        Self::from_summary(
+            summary.stable_identity_key.clone(),
+            Some(summary.stable_identity_key.clone()),
+            None,
+            Some(summary),
+            None,
+            "removed",
+            "normalized entity fact was present before update and absent after update",
+            vec!["rename_correlation_unknown_without_rename_aware_identity".to_string()],
+        )
+    }
+
+    fn changed(old: &NormalizedEntityFact, new: &NormalizedEntityFact, reason: String) -> Self {
+        let old_summary = EntityDeltaFactSummary::from_fact(old);
+        let new_summary = EntityDeltaFactSummary::from_fact(new);
+        Self::from_summary(
+            new_summary.stable_identity_key.clone(),
+            Some(old_summary.stable_identity_key.clone()),
+            Some(new_summary.stable_identity_key.clone()),
+            Some(old_summary),
+            Some(new_summary),
+            "changed",
+            reason,
+            Vec::new(),
+        )
+    }
+
+    fn from_summary(
+        stable_identity_key: String,
+        old_stable_identity_key: Option<String>,
+        new_stable_identity_key: Option<String>,
+        old: Option<EntityDeltaFactSummary>,
+        new: Option<EntityDeltaFactSummary>,
+        change_kind: &str,
+        reason: impl Into<String>,
+        warnings: Vec<String>,
+    ) -> Self {
+        let representative = new.as_ref().or(old.as_ref()).expect("entity summary");
+        let entity_kind = representative.entity_kind;
+        let name = representative.name.clone();
+        let qualified_name = representative.qualified_name.clone();
+        let repo_relative_path = representative.repo_relative_path.clone();
+        let source_span = representative.source_span.clone();
+        let source_role = representative.source_role;
+        let exactness = representative.exactness.clone();
+        let claimability = representative.claimability.clone();
+        let proof_strength = representative.proof_strength.clone();
+        let lifecycle_status = representative.lifecycle_status.clone();
+        Self {
+            stable_identity_key,
+            old_stable_identity_key,
+            new_stable_identity_key,
+            old,
+            new,
+            entity_kind,
+            name,
+            qualified_name,
+            repo_relative_path,
+            source_span,
+            source_role,
+            exactness,
+            claimability,
+            proof_strength,
+            lifecycle_status,
+            change_kind: change_kind.to_string(),
+            reason: reason.into(),
+            warnings,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceRoleDeltaFactSummary {
+    pub stable_identity_key: String,
+    pub fact_hash: String,
+    pub repo_relative_path: String,
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub source_role: EvidenceRole,
+    pub reason: String,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub proof_strength: String,
+    pub lifecycle_status: String,
+}
+
+impl SourceRoleDeltaFactSummary {
+    fn from_fact(fact: &NormalizedSourceRoleFact) -> Self {
+        Self {
+            stable_identity_key: fact.stable_identity_key.clone(),
+            fact_hash: fact.fact_hash.clone(),
+            repo_relative_path: fact.repo_relative_path.clone(),
+            subject_kind: fact.subject_kind.clone(),
+            subject_id: fact.subject_id.clone(),
+            source_role: fact.source_role,
+            reason: fact.reason.clone(),
+            claimability: fact.claimability.clone(),
+            proof_strength: normalized_proof_strength(&fact.claimability),
+            lifecycle_status: fact.lifecycle.freshness_status.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceRoleDeltaEntry {
+    pub stable_identity_key: String,
+    pub old: Option<SourceRoleDeltaFactSummary>,
+    pub new: Option<SourceRoleDeltaFactSummary>,
+    pub repo_relative_path: String,
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub old_source_role: Option<EvidenceRole>,
+    pub new_source_role: Option<EvidenceRole>,
+    pub change_kind: String,
+    pub reason: String,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub proof_strength: String,
+    pub lifecycle_status: String,
+    pub warnings: Vec<String>,
+}
+
+impl SourceRoleDeltaEntry {
+    fn added(new: &NormalizedSourceRoleFact) -> Self {
+        let new_summary = SourceRoleDeltaFactSummary::from_fact(new);
+        Self::from_summaries(
+            new_summary.stable_identity_key.clone(),
+            None,
+            Some(new_summary),
+            "source_role_added",
+            "source role fact was absent before update and present after update",
+            Vec::new(),
+        )
+    }
+
+    fn removed(old: &NormalizedSourceRoleFact) -> Self {
+        let old_summary = SourceRoleDeltaFactSummary::from_fact(old);
+        Self::from_summaries(
+            old_summary.stable_identity_key.clone(),
+            Some(old_summary),
+            None,
+            "source_role_removed",
+            "source role fact was present before update and absent after update",
+            Vec::new(),
+        )
+    }
+
+    fn changed(old: &NormalizedSourceRoleFact, new: &NormalizedSourceRoleFact) -> Self {
+        let old_summary = SourceRoleDeltaFactSummary::from_fact(old);
+        let new_summary = SourceRoleDeltaFactSummary::from_fact(new);
+        let reason = format!(
+            "source role changed from {} to {}; source role constrains claimability but is not standalone graph proof",
+            old_summary.source_role, new_summary.source_role
+        );
+        Self::from_summaries(
+            new_summary.stable_identity_key.clone(),
+            Some(old_summary),
+            Some(new_summary),
+            "source_role_changed",
+            reason,
+            Vec::new(),
+        )
+    }
+
+    fn from_summaries(
+        stable_identity_key: String,
+        old: Option<SourceRoleDeltaFactSummary>,
+        new: Option<SourceRoleDeltaFactSummary>,
+        change_kind: &str,
+        reason: impl Into<String>,
+        warnings: Vec<String>,
+    ) -> Self {
+        let representative = new.as_ref().or(old.as_ref()).expect("source role summary");
+        let repo_relative_path = representative.repo_relative_path.clone();
+        let subject_kind = representative.subject_kind.clone();
+        let subject_id = representative.subject_id.clone();
+        let claimability = representative.claimability.clone();
+        let proof_strength = representative.proof_strength.clone();
+        let lifecycle_status = representative.lifecycle_status.clone();
+        let old_source_role = old.as_ref().map(|summary| summary.source_role);
+        let new_source_role = new.as_ref().map(|summary| summary.source_role);
+        Self {
+            stable_identity_key,
+            old,
+            new,
+            repo_relative_path,
+            subject_kind,
+            subject_id,
+            old_source_role,
+            new_source_role,
+            change_kind: change_kind.to_string(),
+            reason: reason.into(),
+            claimability,
+            proof_strength,
+            lifecycle_status,
+            warnings,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EdgeDeltaEndpointSummary {
+    pub entity_id: String,
+    pub name: Option<String>,
+    pub qualified_name: Option<String>,
+    pub entity_kind: Option<EntityKind>,
+    pub repo_relative_path: Option<String>,
+    pub source_span: Option<SourceSpan>,
+    pub hydrated: bool,
+}
+
+impl EdgeDeltaEndpointSummary {
+    fn from_entity_id(
+        entity_id: &str,
+        entities_by_id: &BTreeMap<String, NormalizedEntityFact>,
+    ) -> Self {
+        if let Some(entity) = entities_by_id.get(entity_id) {
+            Self {
+                entity_id: entity_id.to_string(),
+                name: Some(entity.name.clone()),
+                qualified_name: Some(entity.qualified_name.clone()),
+                entity_kind: Some(entity.entity_kind),
+                repo_relative_path: Some(entity.repo_relative_path.clone()),
+                source_span: entity.source_span.clone(),
+                hydrated: true,
+            }
+        } else {
+            Self {
+                entity_id: entity_id.to_string(),
+                name: None,
+                qualified_name: None,
+                entity_kind: None,
+                repo_relative_path: None,
+                source_span: None,
+                hydrated: false,
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EdgeDeltaFactSummary {
+    pub stable_identity_key: String,
+    pub fact_hash: String,
+    pub edge_id: String,
+    pub source_entity_id: String,
+    pub target_entity_id: String,
+    pub source_endpoint: EdgeDeltaEndpointSummary,
+    pub target_endpoint: EdgeDeltaEndpointSummary,
+    pub relation: RelationKind,
+    pub relation_kind: String,
+    pub repo_relative_path: String,
+    pub source_span: SourceSpan,
+    pub exactness: Exactness,
+    pub exactness_label: String,
+    pub derived: bool,
+    pub provenance_edges: Vec<String>,
+    pub provenance_status: String,
+    pub source_role: EvidenceRole,
+    pub edge_class: String,
+    pub edge_context: String,
+    pub normalized_claimability: NormalizedClaimabilityMetadata,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub proof_strength: String,
+    pub lifecycle_status: String,
+    pub relation_support: String,
+    pub warnings: Vec<String>,
+}
+
+impl EdgeDeltaFactSummary {
+    fn from_fact(
+        fact: &NormalizedEdgeFact,
+        entities_by_id: &BTreeMap<String, NormalizedEntityFact>,
+    ) -> Self {
+        let mut warnings = normalized_edge_fact_warnings(fact);
+        let normalized_claimability = fact.claimability.clone();
+        let mut claimability = normalized_claimability.clone();
+        let relation_support = if edge_delta_relation_supported(fact.relation) {
+            "supported".to_string()
+        } else {
+            warnings.push("relation_class_unsupported_for_mvp3_2_edge_delta_gate".to_string());
+            claimability = NormalizedClaimabilityMetadata::graph_diagnostic(
+                "relation class is unsupported by the MVP3.2 edge-delta gate and is diagnostic, not graph-delta proof",
+            );
+            "unsupported_with_reason: relation class is not in the MVP3.2 edge-delta supported set"
+                .to_string()
+        };
+        let source_endpoint =
+            EdgeDeltaEndpointSummary::from_entity_id(&fact.source_entity_id, entities_by_id);
+        let target_endpoint =
+            EdgeDeltaEndpointSummary::from_entity_id(&fact.target_entity_id, entities_by_id);
+        if !source_endpoint.hydrated {
+            warnings.push("source_endpoint_name_unavailable_in_file_scoped_snapshot".to_string());
+        }
+        if !target_endpoint.hydrated {
+            warnings.push("target_endpoint_name_unavailable_in_file_scoped_snapshot".to_string());
+        }
+        Self {
+            stable_identity_key: fact.stable_identity_key.clone(),
+            fact_hash: fact.fact_hash.clone(),
+            edge_id: fact.edge_id.clone(),
+            source_entity_id: fact.source_entity_id.clone(),
+            target_entity_id: fact.target_entity_id.clone(),
+            source_endpoint,
+            target_endpoint,
+            relation: fact.relation,
+            relation_kind: fact.relation.to_string(),
+            repo_relative_path: fact.repo_relative_path.clone(),
+            source_span: fact.source_span.clone(),
+            exactness: fact.exactness,
+            exactness_label: fact.exactness.to_string(),
+            derived: fact.derived,
+            provenance_edges: fact.provenance_edges.clone(),
+            provenance_status: fact.provenance_status.clone(),
+            source_role: fact.source_role,
+            edge_class: fact.edge_class.clone(),
+            edge_context: fact.edge_context.to_string(),
+            normalized_claimability,
+            claimability: claimability.clone(),
+            proof_strength: normalized_proof_strength(&claimability),
+            lifecycle_status: fact.lifecycle.freshness_status.clone(),
+            relation_support,
+            warnings,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EdgeDeltaEntry {
+    pub stable_identity_key: String,
+    pub old_stable_identity_key: Option<String>,
+    pub new_stable_identity_key: Option<String>,
+    pub old: Option<EdgeDeltaFactSummary>,
+    pub new: Option<EdgeDeltaFactSummary>,
+    pub edge_id: String,
+    pub source_entity_id: String,
+    pub target_entity_id: String,
+    pub source_endpoint: EdgeDeltaEndpointSummary,
+    pub target_endpoint: EdgeDeltaEndpointSummary,
+    pub relation: RelationKind,
+    pub relation_kind: String,
+    pub repo_relative_path: String,
+    pub source_span: SourceSpan,
+    pub exactness: Exactness,
+    pub exactness_label: String,
+    pub derived: bool,
+    pub provenance_edges: Vec<String>,
+    pub provenance_status: String,
+    pub source_role: EvidenceRole,
+    pub edge_class: String,
+    pub edge_context: String,
+    pub normalized_claimability: NormalizedClaimabilityMetadata,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub proof_strength: String,
+    pub lifecycle_status: String,
+    pub relation_support: String,
+    pub change_kind: String,
+    pub reason: String,
+    pub warnings: Vec<String>,
+}
+
+impl EdgeDeltaEntry {
+    fn added(
+        fact: &NormalizedEdgeFact,
+        entities_by_id: &BTreeMap<String, NormalizedEntityFact>,
+    ) -> Self {
+        let summary = EdgeDeltaFactSummary::from_fact(fact, entities_by_id);
+        Self::from_summary(
+            summary.stable_identity_key.clone(),
+            None,
+            Some(summary.stable_identity_key.clone()),
+            None,
+            Some(summary),
+            "added",
+            "normalized edge fact was absent before update and present after update",
+        )
+    }
+
+    fn removed(
+        fact: &NormalizedEdgeFact,
+        entities_by_id: &BTreeMap<String, NormalizedEntityFact>,
+    ) -> Self {
+        let summary = EdgeDeltaFactSummary::from_fact(fact, entities_by_id);
+        Self::from_summary(
+            summary.stable_identity_key.clone(),
+            Some(summary.stable_identity_key.clone()),
+            None,
+            Some(summary),
+            None,
+            "removed",
+            "normalized edge fact was present before update and absent after update",
+        )
+    }
+
+    fn changed(
+        old: &NormalizedEdgeFact,
+        new: &NormalizedEdgeFact,
+        old_entities_by_id: &BTreeMap<String, NormalizedEntityFact>,
+        new_entities_by_id: &BTreeMap<String, NormalizedEntityFact>,
+        reason: String,
+    ) -> Self {
+        let old_summary = EdgeDeltaFactSummary::from_fact(old, old_entities_by_id);
+        let new_summary = EdgeDeltaFactSummary::from_fact(new, new_entities_by_id);
+        Self::from_summary(
+            new_summary.stable_identity_key.clone(),
+            Some(old_summary.stable_identity_key.clone()),
+            Some(new_summary.stable_identity_key.clone()),
+            Some(old_summary),
+            Some(new_summary),
+            "changed",
+            reason,
+        )
+    }
+
+    fn from_summary(
+        stable_identity_key: String,
+        old_stable_identity_key: Option<String>,
+        new_stable_identity_key: Option<String>,
+        old: Option<EdgeDeltaFactSummary>,
+        new: Option<EdgeDeltaFactSummary>,
+        change_kind: &str,
+        reason: impl Into<String>,
+    ) -> Self {
+        let representative = new.as_ref().or(old.as_ref()).expect("edge summary");
+        let mut warnings = representative.warnings.clone();
+        if let (Some(old_summary), Some(new_summary)) = (&old, &new) {
+            warnings.extend(old_summary.warnings.iter().cloned());
+            warnings.extend(new_summary.warnings.iter().cloned());
+            warnings.sort();
+            warnings.dedup();
+        }
+        let edge_id = representative.edge_id.clone();
+        let source_entity_id = representative.source_entity_id.clone();
+        let target_entity_id = representative.target_entity_id.clone();
+        let source_endpoint = representative.source_endpoint.clone();
+        let target_endpoint = representative.target_endpoint.clone();
+        let relation = representative.relation;
+        let relation_kind = representative.relation_kind.clone();
+        let repo_relative_path = representative.repo_relative_path.clone();
+        let source_span = representative.source_span.clone();
+        let exactness = representative.exactness;
+        let exactness_label = representative.exactness_label.clone();
+        let derived = representative.derived;
+        let provenance_edges = representative.provenance_edges.clone();
+        let provenance_status = representative.provenance_status.clone();
+        let source_role = representative.source_role;
+        let edge_class = representative.edge_class.clone();
+        let edge_context = representative.edge_context.clone();
+        let normalized_claimability = representative.normalized_claimability.clone();
+        let claimability = representative.claimability.clone();
+        let proof_strength = representative.proof_strength.clone();
+        let lifecycle_status = representative.lifecycle_status.clone();
+        let relation_support = representative.relation_support.clone();
+        Self {
+            stable_identity_key,
+            old_stable_identity_key,
+            new_stable_identity_key,
+            old,
+            new,
+            edge_id,
+            source_entity_id,
+            target_entity_id,
+            source_endpoint,
+            target_endpoint,
+            relation,
+            relation_kind,
+            repo_relative_path,
+            source_span,
+            exactness,
+            exactness_label,
+            derived,
+            provenance_edges,
+            provenance_status,
+            source_role,
+            edge_class,
+            edge_context,
+            normalized_claimability,
+            claimability,
+            proof_strength,
+            lifecycle_status,
+            relation_support,
+            change_kind: change_kind.to_string(),
+            reason: reason.into(),
+            warnings,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntitySourceRoleDeltaOmission {
+    pub truncated: bool,
+    pub max_items_per_category: usize,
+    pub entities_added_omitted: usize,
+    pub entities_removed_omitted: usize,
+    pub entities_changed_omitted: usize,
+    pub edges_added_omitted: usize,
+    pub edges_removed_omitted: usize,
+    pub edges_changed_omitted: usize,
+    pub source_spans_added_omitted: usize,
+    pub source_spans_removed_omitted: usize,
+    pub source_spans_changed_omitted: usize,
+    pub text_evidence_changed_omitted: usize,
+    pub path_evidence_invalidated_omitted: usize,
+    pub sidecar_freshness_changed_omitted: usize,
+    pub source_roles_changed_omitted: usize,
+    pub file_renames_detected_omitted: usize,
+    pub rename_ambiguities_omitted: usize,
+    pub expansion_handle: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphDeltaTimingMetrics {
+    pub diff_entities_ms: u128,
+    pub diff_edges_ms: u128,
+    pub diff_spans_ms: u128,
+    pub diff_text_evidence_ms: u128,
+    pub diff_sidecars_ms: u128,
+    pub diff_closure_ms: u128,
+    pub delta_total_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceSpanDeltaFactSummary {
+    pub stable_identity_key: String,
+    pub fact_hash: String,
+    pub source_span_id: String,
+    pub associated_fact_key: String,
+    pub associated_fact_kind: String,
+    pub associated_fact_claimable: bool,
+    pub repo_relative_path: String,
+    pub source_span: SourceSpan,
+    pub source_role: EvidenceRole,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub proof_strength: String,
+    pub lifecycle_status: String,
+}
+
+impl SourceSpanDeltaFactSummary {
+    fn from_fact(fact: &NormalizedSourceSpanFact, claimable_fact_keys: &BTreeSet<String>) -> Self {
+        let associated_fact_claimable = claimable_fact_keys.contains(&fact.associated_fact_key);
+        let claimability = if associated_fact_claimable && fact.claimability.graph_proof {
+            fact.claimability.clone()
+        } else {
+            NormalizedClaimabilityMetadata::non_graph_proof(
+                "source span deltas are graph proof only when attached to a claimable graph fact",
+            )
+        };
+        Self {
+            stable_identity_key: fact.stable_identity_key.clone(),
+            fact_hash: fact.fact_hash.clone(),
+            source_span_id: fact.source_span_id.clone(),
+            associated_fact_key: fact.associated_fact_key.clone(),
+            associated_fact_kind: fact.associated_fact_kind.clone(),
+            associated_fact_claimable,
+            repo_relative_path: fact.repo_relative_path.clone(),
+            source_span: fact.source_span.clone(),
+            source_role: fact.source_role,
+            proof_strength: normalized_proof_strength(&claimability),
+            claimability,
+            lifecycle_status: fact.lifecycle.freshness_status.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceSpanDeltaEntry {
+    pub stable_identity_key: String,
+    pub old_stable_identity_key: Option<String>,
+    pub new_stable_identity_key: Option<String>,
+    pub old: Option<SourceSpanDeltaFactSummary>,
+    pub new: Option<SourceSpanDeltaFactSummary>,
+    pub source_span_id: String,
+    pub associated_fact_key: String,
+    pub associated_fact_kind: String,
+    pub associated_fact_claimable: bool,
+    pub repo_relative_path: String,
+    pub old_span: Option<SourceSpan>,
+    pub new_span: Option<SourceSpan>,
+    pub source_role: EvidenceRole,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub proof_strength: String,
+    pub lifecycle_status: String,
+    pub change_kind: String,
+    pub reason: String,
+    pub warnings: Vec<String>,
+}
+
+impl SourceSpanDeltaEntry {
+    fn added(fact: &NormalizedSourceSpanFact, claimable_fact_keys: &BTreeSet<String>) -> Self {
+        let summary = SourceSpanDeltaFactSummary::from_fact(fact, claimable_fact_keys);
+        Self::from_summaries(
+            summary.stable_identity_key.clone(),
+            None,
+            Some(summary.stable_identity_key.clone()),
+            None,
+            Some(summary),
+            "added",
+            "source span fact was absent before update and present after update",
+        )
+    }
+
+    fn removed(fact: &NormalizedSourceSpanFact, claimable_fact_keys: &BTreeSet<String>) -> Self {
+        let summary = SourceSpanDeltaFactSummary::from_fact(fact, claimable_fact_keys);
+        Self::from_summaries(
+            summary.stable_identity_key.clone(),
+            Some(summary.stable_identity_key.clone()),
+            None,
+            Some(summary),
+            None,
+            "removed",
+            "source span fact was present before update and absent after update",
+        )
+    }
+
+    fn changed(
+        old: &NormalizedSourceSpanFact,
+        new: &NormalizedSourceSpanFact,
+        old_claimable_fact_keys: &BTreeSet<String>,
+        new_claimable_fact_keys: &BTreeSet<String>,
+    ) -> Self {
+        let old_summary = SourceSpanDeltaFactSummary::from_fact(old, old_claimable_fact_keys);
+        let new_summary = SourceSpanDeltaFactSummary::from_fact(new, new_claimable_fact_keys);
+        Self::from_summaries(
+            new_summary.stable_identity_key.clone(),
+            Some(old_summary.stable_identity_key.clone()),
+            Some(new_summary.stable_identity_key.clone()),
+            Some(old_summary),
+            Some(new_summary),
+            "changed",
+            source_span_change_reason(old, new),
+        )
+    }
+
+    fn from_summaries(
+        stable_identity_key: String,
+        old_stable_identity_key: Option<String>,
+        new_stable_identity_key: Option<String>,
+        old: Option<SourceSpanDeltaFactSummary>,
+        new: Option<SourceSpanDeltaFactSummary>,
+        change_kind: &str,
+        reason: impl Into<String>,
+    ) -> Self {
+        let representative = new.as_ref().or(old.as_ref()).expect("source span summary");
+        let associated_fact_claimable = old
+            .as_ref()
+            .map(|summary| summary.associated_fact_claimable)
+            .unwrap_or(false)
+            || new
+                .as_ref()
+                .map(|summary| summary.associated_fact_claimable)
+                .unwrap_or(false);
+        let mut claimability = representative.claimability.clone();
+        if !associated_fact_claimable {
+            claimability = NormalizedClaimabilityMetadata::non_graph_proof(
+                "source span delta is diagnostic because its associated fact is not claimable graph proof",
+            );
+        }
+        let old_span = old.as_ref().map(|summary| summary.source_span.clone());
+        let new_span = new.as_ref().map(|summary| summary.source_span.clone());
+        let mut warnings = Vec::new();
+        if !associated_fact_claimable {
+            warnings.push("source_span_associated_fact_not_claimable_graph_proof".to_string());
+        }
+        let source_span_id = representative.source_span_id.clone();
+        let associated_fact_key = representative.associated_fact_key.clone();
+        let associated_fact_kind = representative.associated_fact_kind.clone();
+        let repo_relative_path = representative.repo_relative_path.clone();
+        let source_role = representative.source_role;
+        let lifecycle_status = representative.lifecycle_status.clone();
+        let proof_strength = normalized_proof_strength(&claimability);
+        Self {
+            stable_identity_key,
+            old_stable_identity_key,
+            new_stable_identity_key,
+            old,
+            new,
+            source_span_id,
+            associated_fact_key,
+            associated_fact_kind,
+            associated_fact_claimable,
+            repo_relative_path,
+            old_span,
+            new_span,
+            source_role,
+            proof_strength,
+            claimability,
+            lifecycle_status,
+            change_kind: change_kind.to_string(),
+            reason: reason.into(),
+            warnings,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TextEvidenceDeltaFactSummary {
+    pub stable_identity_key: String,
+    pub fact_hash: String,
+    pub text_evidence_id: String,
+    pub text_kind: String,
+    pub repo_relative_path: String,
+    pub line: Option<u32>,
+    pub title: String,
+    pub text_hash: String,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub proof_strength: String,
+    pub graph_proof: bool,
+    pub lifecycle_status: String,
+}
+
+impl TextEvidenceDeltaFactSummary {
+    fn from_fact(fact: &NormalizedTextEvidenceFact) -> Self {
+        Self {
+            stable_identity_key: fact.stable_identity_key.clone(),
+            fact_hash: fact.fact_hash.clone(),
+            text_evidence_id: fact.text_evidence_id.clone(),
+            text_kind: fact.text_kind.clone(),
+            repo_relative_path: fact.repo_relative_path.clone(),
+            line: fact.line,
+            title: fact.title.clone(),
+            text_hash: fact.text_hash.clone(),
+            claimability: fact.claimability.clone(),
+            proof_strength: "text_evidence".to_string(),
+            graph_proof: false,
+            lifecycle_status: fact.lifecycle.freshness_status.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TextEvidenceDeltaEntry {
+    pub stable_identity_key: String,
+    pub old: Option<TextEvidenceDeltaFactSummary>,
+    pub new: Option<TextEvidenceDeltaFactSummary>,
+    pub repo_relative_path: String,
+    pub text_evidence_id: String,
+    pub text_kind: String,
+    pub old_text_hash: Option<String>,
+    pub new_text_hash: Option<String>,
+    pub line: Option<u32>,
+    pub title: String,
+    pub proof_strength: String,
+    pub graph_proof: bool,
+    pub change_kind: String,
+    pub reason: String,
+}
+
+impl TextEvidenceDeltaEntry {
+    fn added(fact: &NormalizedTextEvidenceFact) -> Self {
+        let summary = TextEvidenceDeltaFactSummary::from_fact(fact);
+        Self::from_summaries(
+            summary.stable_identity_key.clone(),
+            None,
+            Some(summary),
+            "added",
+            "text evidence was absent before update and present after update",
+        )
+    }
+
+    fn removed(fact: &NormalizedTextEvidenceFact) -> Self {
+        let summary = TextEvidenceDeltaFactSummary::from_fact(fact);
+        Self::from_summaries(
+            summary.stable_identity_key.clone(),
+            Some(summary),
+            None,
+            "removed",
+            "text evidence was present before update and absent after update",
+        )
+    }
+
+    fn changed(old: &NormalizedTextEvidenceFact, new: &NormalizedTextEvidenceFact) -> Self {
+        let old_summary = TextEvidenceDeltaFactSummary::from_fact(old);
+        let new_summary = TextEvidenceDeltaFactSummary::from_fact(new);
+        Self::from_summaries(
+            new_summary.stable_identity_key.clone(),
+            Some(old_summary),
+            Some(new_summary),
+            "changed",
+            "text evidence hash changed; this is source-text evidence, not broken graph behavior",
+        )
+    }
+
+    fn from_summaries(
+        stable_identity_key: String,
+        old: Option<TextEvidenceDeltaFactSummary>,
+        new: Option<TextEvidenceDeltaFactSummary>,
+        change_kind: &str,
+        reason: impl Into<String>,
+    ) -> Self {
+        let representative = new
+            .as_ref()
+            .or(old.as_ref())
+            .expect("text evidence summary");
+        let repo_relative_path = representative.repo_relative_path.clone();
+        let text_evidence_id = representative.text_evidence_id.clone();
+        let text_kind = representative.text_kind.clone();
+        let line = representative.line;
+        let title = representative.title.clone();
+        Self {
+            stable_identity_key,
+            old_text_hash: old.as_ref().map(|summary| summary.text_hash.clone()),
+            new_text_hash: new.as_ref().map(|summary| summary.text_hash.clone()),
+            old,
+            new,
+            repo_relative_path,
+            text_evidence_id,
+            text_kind,
+            line,
+            title,
+            proof_strength: "text_evidence".to_string(),
+            graph_proof: false,
+            change_kind: change_kind.to_string(),
+            reason: reason.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PathEvidenceDeltaFactSummary {
+    pub stable_identity_key: String,
+    pub fact_hash: String,
+    pub path_evidence_id: String,
+    pub repo_relative_path: String,
+    pub source: String,
+    pub target: String,
+    pub metapath: Vec<RelationKind>,
+    pub source_spans: Vec<SourceSpan>,
+    pub exactness: Exactness,
+    pub exactness_label: String,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub proof_strength: String,
+    pub freshness_status: String,
+}
+
+impl PathEvidenceDeltaFactSummary {
+    fn from_fact(fact: &NormalizedPathEvidenceFact) -> Self {
+        Self {
+            stable_identity_key: fact.stable_identity_key.clone(),
+            fact_hash: fact.fact_hash.clone(),
+            path_evidence_id: fact.path_evidence_id.clone(),
+            repo_relative_path: fact.repo_relative_path.clone(),
+            source: fact.source.clone(),
+            target: fact.target.clone(),
+            metapath: fact.metapath.clone(),
+            source_spans: fact.source_spans.clone(),
+            exactness: fact.exactness,
+            exactness_label: fact.exactness.to_string(),
+            claimability: fact.claimability.clone(),
+            proof_strength: "path_evidence_freshness".to_string(),
+            freshness_status: fact.lifecycle.freshness_status.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PathEvidenceDeltaEntry {
+    pub stable_identity_key: String,
+    pub old: Option<PathEvidenceDeltaFactSummary>,
+    pub new: Option<PathEvidenceDeltaFactSummary>,
+    pub affected_path: String,
+    pub affected_fact_key: Option<String>,
+    pub old_freshness: Option<String>,
+    pub new_freshness: Option<String>,
+    pub invalidation_reason: String,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub proof_strength: String,
+    pub graph_proof: bool,
+    pub change_kind: String,
+}
+
+impl PathEvidenceDeltaEntry {
+    fn added(fact: &NormalizedPathEvidenceFact) -> Self {
+        let summary = PathEvidenceDeltaFactSummary::from_fact(fact);
+        Self::from_summaries(
+            summary.stable_identity_key.clone(),
+            None,
+            Some(summary),
+            "refreshed",
+            "PathEvidence was refreshed for the changed path; it remains validation support, not graph proof",
+        )
+    }
+
+    fn removed(fact: &NormalizedPathEvidenceFact) -> Self {
+        let summary = PathEvidenceDeltaFactSummary::from_fact(fact);
+        Self::from_summaries(
+            summary.stable_identity_key.clone(),
+            Some(summary),
+            None,
+            "invalidated",
+            "PathEvidence was invalidated because the changed path removed its prior cached evidence",
+        )
+    }
+
+    fn changed(old: &NormalizedPathEvidenceFact, new: &NormalizedPathEvidenceFact) -> Self {
+        let old_summary = PathEvidenceDeltaFactSummary::from_fact(old);
+        let new_summary = PathEvidenceDeltaFactSummary::from_fact(new);
+        Self::from_summaries(
+            new_summary.stable_identity_key.clone(),
+            Some(old_summary),
+            Some(new_summary),
+            "refreshed",
+            "PathEvidence content changed; cached path evidence must be graph/source verified before proof use",
+        )
+    }
+
+    fn from_summaries(
+        stable_identity_key: String,
+        old: Option<PathEvidenceDeltaFactSummary>,
+        new: Option<PathEvidenceDeltaFactSummary>,
+        change_kind: &str,
+        invalidation_reason: impl Into<String>,
+    ) -> Self {
+        let representative = new
+            .as_ref()
+            .or(old.as_ref())
+            .expect("path evidence summary");
+        Self {
+            stable_identity_key,
+            affected_path: representative.repo_relative_path.clone(),
+            affected_fact_key: Some(representative.path_evidence_id.clone()),
+            old_freshness: old.as_ref().map(|summary| summary.freshness_status.clone()),
+            new_freshness: new.as_ref().map(|summary| summary.freshness_status.clone()),
+            old,
+            new,
+            invalidation_reason: invalidation_reason.into(),
+            claimability: NormalizedClaimabilityMetadata::non_graph_proof(
+                "PathEvidence freshness is validation support and not graph proof",
+            ),
+            proof_strength: "path_evidence_freshness".to_string(),
+            graph_proof: false,
+            change_kind: change_kind.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FreshnessLayerDelta {
+    pub layer: String,
+    pub action: String,
+    pub old_status: String,
+    pub new_status: String,
+    pub graph_proof: bool,
+    pub proof_strength: String,
+    pub classification: String,
+    pub source_binding_id: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProofLadderChange {
+    pub evidence_kind: String,
+    pub changed: bool,
+    pub status: String,
+    pub graph_proof: bool,
+    pub proof_strength: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EntitySourceRoleDeltaReport {
+    pub status: String,
+    pub ready_to_report: bool,
+    pub old_snapshot_status: String,
+    pub new_snapshot_status: String,
+    pub snapshot_bounded_to_changed_or_closure_files: bool,
+    pub snapshot_read_only: bool,
+    pub claimable: bool,
+    pub diagnostic_only: bool,
+    pub graph_delta_schema_version: String,
+    pub entities_added_count: usize,
+    pub entities_removed_count: usize,
+    pub entities_changed_count: usize,
+    pub edges_added_count: usize,
+    pub edges_removed_count: usize,
+    pub edges_changed_count: usize,
+    pub source_roles_changed_count: usize,
+    pub source_spans_added_count: usize,
+    pub source_spans_removed_count: usize,
+    pub source_spans_changed_count: usize,
+    pub text_evidence_changed_count: usize,
+    pub path_evidence_invalidated_count: usize,
+    pub sidecar_freshness_changed_count: usize,
+    pub entities_added: Vec<EntityDeltaEntry>,
+    pub entities_removed: Vec<EntityDeltaEntry>,
+    pub entities_changed: Vec<EntityDeltaEntry>,
+    pub edges_added: Vec<EdgeDeltaEntry>,
+    pub edges_removed: Vec<EdgeDeltaEntry>,
+    pub edges_changed: Vec<EdgeDeltaEntry>,
+    pub source_spans_added: Vec<SourceSpanDeltaEntry>,
+    pub source_spans_removed: Vec<SourceSpanDeltaEntry>,
+    pub source_spans_changed: Vec<SourceSpanDeltaEntry>,
+    pub text_evidence_changed: Vec<TextEvidenceDeltaEntry>,
+    pub path_evidence_invalidated: Vec<PathEvidenceDeltaEntry>,
+    pub sidecar_freshness_changed: Vec<FreshnessLayerDelta>,
+    pub candidate_spool_invalidated_or_refreshed: FreshnessLayerDelta,
+    pub candidate_query_index_invalidated_or_refreshed: FreshnessLayerDelta,
+    pub vector_chunks_invalidated: FreshnessLayerDelta,
+    pub vector_runtime_status_changed: FreshnessLayerDelta,
+    pub vector_audit_status_changed: FreshnessLayerDelta,
+    pub nuance_tokens_invalidated: FreshnessLayerDelta,
+    pub routing_handles_invalidated: FreshnessLayerDelta,
+    pub proof_ladder_changes: BTreeMap<String, ProofLadderChange>,
+    pub file_renames_detected: Vec<FileRenameDeltaEntry>,
+    pub rename_ambiguities: Vec<FileRenameDeltaEntry>,
+    pub closure_delta_summary: ClosureDeltaSummary,
+    pub closure_files_updated: Vec<String>,
+    pub closure_budget_hit: bool,
+    pub closure_unsupported_relation_classes: Vec<String>,
+    pub closure_degraded_relation_classes: Vec<String>,
+    pub closure_unknowns: Vec<String>,
+    pub relation_kind_counts: BTreeMap<String, usize>,
+    pub exactness_counts: BTreeMap<String, usize>,
+    pub derived_counts: BTreeMap<String, usize>,
+    pub source_role_counts: BTreeMap<String, usize>,
+    pub degraded_relation_classes: BTreeMap<String, usize>,
+    pub unsupported_relation_classes: BTreeMap<String, usize>,
+    pub source_roles_changed: Vec<SourceRoleDeltaEntry>,
+    pub text_evidence_not_graph_entity_delta: bool,
+    pub text_candidate_evidence_not_graph_delta: bool,
+    pub source_navigation_only_not_graph_entity_delta: bool,
+    pub same_name_symbols_distinct: bool,
+    pub endpoint_names_hydrated_where_available: bool,
+    pub same_name_targets_distinct: bool,
+    pub exactness_preserved: bool,
+    pub derived_edges_require_provenance: bool,
+    pub heuristic_unsupported_edges_not_overclaimed: bool,
+    pub test_mock_edges_preserved: bool,
+    pub source_spans_present_for_claimable_entity_deltas: bool,
+    pub source_spans_present_for_claimable_edge_deltas: bool,
+    pub source_spans_changed_reported: bool,
+    pub text_evidence_changed_reported: bool,
+    pub path_evidence_invalidated_reported: bool,
+    pub candidate_freshness_delta_reported: bool,
+    pub vector_freshness_delta_reported: bool,
+    pub nuance_freshness_delta_reported_or_not_applicable: bool,
+    pub routing_handle_delta_reported_or_not_applicable: bool,
+    pub proof_ladder_changes_reported: bool,
+    pub freshness_delta_not_graph_proof: bool,
+    pub access_vs_corrupt_classification_safe: bool,
+    pub stale_sidecars_not_used_as_fresh: bool,
+    pub rename_detection_status: String,
+    pub rename_aware_delta_supported: bool,
+    pub rename_unknown_when_ambiguous: bool,
+    pub closure_delta_supported: bool,
+    pub closure_budget_hit_degraded: bool,
+    pub unsupported_relation_unknown_not_proof: bool,
+    pub duplicate_content_paths_distinct: bool,
+    pub no_silent_full_repo_fallback: bool,
+    pub source_spans_and_provenance_preserved: bool,
+    pub old_good_db_preserved: bool,
+    pub claim_boundaries_preserved: bool,
+    pub public_claim: bool,
+    pub timings: GraphDeltaTimingMetrics,
+    pub omission: EntitySourceRoleDeltaOmission,
+    pub warnings: Vec<String>,
+}
+
+impl EntitySourceRoleDeltaReport {
+    pub fn apply_dependency_closure_summary(&mut self, closure: &RtdsDependencyClosureSummary) {
+        let unsupported_relation_classes = closure_unsupported_relation_classes(closure);
+        self.closure_delta_summary = ClosureDeltaSummary {
+            status: closure.status.clone(),
+            scope_version: closure.scope_version.clone(),
+            changed_files: closure.requested_changed_files.clone(),
+            closure_files_considered: closure.closure_files_considered.clone(),
+            closure_files_updated: closure.closure_files_updated.clone(),
+            closure_edges_inspected: closure.closure_edges_inspected,
+            closure_relation_classes: closure.closure_relation_classes.clone(),
+            closure_budget_hit: closure.closure_budget_hit,
+            degraded_relation_classes: closure.degraded_relation_classes.clone(),
+            unsupported_relation_classes: unsupported_relation_classes.clone(),
+            closure_unknowns: closure.closure_unknowns.clone(),
+            no_silent_full_repo_fallback: closure.full_repo_fallback_avoided,
+            fallback_avoided_reason: closure.fallback_avoided_reason.clone(),
+            manual_full_index_recommendation: closure.manual_full_index_recommendation.clone(),
+            graph_proof: false,
+            proof_strength: "dependency_closure_scope_metadata".to_string(),
+            reason: "RTDS closure metadata bounds which files were considered or updated; unsupported and degraded closure classes are diagnostics, not graph proof".to_string(),
+        };
+        self.closure_files_updated = closure.closure_files_updated.clone();
+        self.closure_budget_hit = closure.closure_budget_hit;
+        self.closure_unsupported_relation_classes = unsupported_relation_classes;
+        self.closure_degraded_relation_classes = closure.degraded_relation_classes.clone();
+        self.closure_unknowns = closure.closure_unknowns.clone();
+        self.closure_delta_supported = closure.status == "ready_with_dependency_closure"
+            || !closure.closure_relation_classes.is_empty()
+            || closure.closure_files_considered.len() > closure.requested_changed_files.len();
+        self.closure_budget_hit_degraded =
+            !closure.closure_budget_hit || closure.status == "degraded";
+        self.unsupported_relation_unknown_not_proof = closure
+            .closure_unknowns
+            .iter()
+            .filter(|unknown| unknown.starts_with("unsupported_relation_class:"))
+            .all(|unknown| {
+                let relation = unknown.trim_start_matches("unsupported_relation_class:");
+                self.closure_unsupported_relation_classes
+                    .iter()
+                    .any(|class| class == relation)
+            });
+        self.no_silent_full_repo_fallback = closure.full_repo_fallback_avoided;
+    }
+}
+
+fn closure_delta_summary_from_snapshots(
+    old: &NormalizedFactSnapshot,
+    new: &NormalizedFactSnapshot,
+) -> ClosureDeltaSummary {
+    let mut changed_files = old
+        .changed_files
+        .iter()
+        .chain(new.changed_files.iter())
+        .map(|path| normalize_graph_path(path))
+        .collect::<Vec<_>>();
+    sort_dedup_strings(&mut changed_files);
+    let mut closure_files_considered = old
+        .closure_files
+        .iter()
+        .chain(new.closure_files.iter())
+        .map(|path| normalize_graph_path(path))
+        .collect::<Vec<_>>();
+    sort_dedup_strings(&mut closure_files_considered);
+    ClosureDeltaSummary {
+        changed_files,
+        closure_files_considered,
+        ..ClosureDeltaSummary::default()
+    }
+}
+
+fn closure_unsupported_relation_classes(closure: &RtdsDependencyClosureSummary) -> Vec<String> {
+    let mut unsupported = closure.skipped_relation_classes.clone();
+    for unknown in &closure.closure_unknowns {
+        if let Some(relation) = unknown.strip_prefix("unsupported_relation_class:") {
+            unsupported.push(relation.to_string());
+        }
+    }
+    sort_dedup_strings(&mut unsupported);
+    unsupported
+}
+
+fn classify_file_rename_delta_entries(
+    old_files: &[NormalizedFileFact],
+    new_files: &[NormalizedFileFact],
+) -> (Vec<FileRenameDeltaEntry>, Vec<FileRenameDeltaEntry>, bool) {
+    let old_by_path = old_files
+        .iter()
+        .map(|fact| (normalize_graph_path(&fact.repo_relative_path), fact))
+        .collect::<BTreeMap<_, _>>();
+    let new_by_path = new_files
+        .iter()
+        .map(|fact| (normalize_graph_path(&fact.repo_relative_path), fact))
+        .collect::<BTreeMap<_, _>>();
+    let removed = old_by_path
+        .iter()
+        .filter(|(path, _)| !new_by_path.contains_key(*path))
+        .map(|(_, fact)| *fact)
+        .collect::<Vec<_>>();
+    let added = new_by_path
+        .iter()
+        .filter(|(path, _)| !old_by_path.contains_key(*path))
+        .map(|(_, fact)| *fact)
+        .collect::<Vec<_>>();
+    let duplicate_content_paths_distinct =
+        duplicate_content_paths_have_distinct_identity(old_files, new_files);
+    if removed.is_empty() || added.is_empty() {
+        return (Vec::new(), Vec::new(), duplicate_content_paths_distinct);
+    }
+
+    let mut removed_by_hash = BTreeMap::<String, Vec<&NormalizedFileFact>>::new();
+    let mut added_by_hash = BTreeMap::<String, Vec<&NormalizedFileFact>>::new();
+    for fact in &removed {
+        if let Some(hash) = fact.content_hash.as_ref().filter(|hash| !hash.is_empty()) {
+            removed_by_hash.entry(hash.clone()).or_default().push(*fact);
+        }
+    }
+    for fact in &added {
+        if let Some(hash) = fact.content_hash.as_ref().filter(|hash| !hash.is_empty()) {
+            added_by_hash.entry(hash.clone()).or_default().push(*fact);
+        }
+    }
+
+    let mut detected = Vec::new();
+    let mut ambiguities = Vec::new();
+    let mut matched_old_paths = BTreeSet::<String>::new();
+    let mut matched_new_paths = BTreeSet::<String>::new();
+    let mut content_hashes = removed_by_hash
+        .keys()
+        .chain(added_by_hash.keys())
+        .cloned()
+        .collect::<Vec<_>>();
+    sort_dedup_strings(&mut content_hashes);
+    for hash in content_hashes {
+        let old_candidates = removed_by_hash.get(&hash).cloned().unwrap_or_default();
+        let new_candidates = added_by_hash.get(&hash).cloned().unwrap_or_default();
+        if old_candidates.is_empty() || new_candidates.is_empty() {
+            continue;
+        }
+        if old_candidates.len() == 1 && new_candidates.len() == 1 {
+            let old_fact = old_candidates[0];
+            let new_fact = new_candidates[0];
+            matched_old_paths.insert(normalize_graph_path(&old_fact.repo_relative_path));
+            matched_new_paths.insert(normalize_graph_path(&new_fact.repo_relative_path));
+            detected.push(file_rename_delta_entry(
+                "detected",
+                Some(old_fact),
+                Some(new_fact),
+                true,
+                Some(hash),
+                false,
+                None,
+                "deterministic",
+                "unique removed path and unique added path share the same content hash; file identity remains path-aware",
+                false,
+                duplicate_content_paths_distinct,
+            ));
+        } else {
+            let old_fact = old_candidates.first().copied();
+            let new_fact = new_candidates.first().copied();
+            if let Some(fact) = old_fact {
+                matched_old_paths.insert(normalize_graph_path(&fact.repo_relative_path));
+            }
+            if let Some(fact) = new_fact {
+                matched_new_paths.insert(normalize_graph_path(&fact.repo_relative_path));
+            }
+            ambiguities.push(file_rename_delta_entry(
+                "unknown",
+                old_fact,
+                new_fact,
+                true,
+                Some(hash),
+                true,
+                Some(format!(
+                    "content hash matched {} removed path(s) and {} added path(s)",
+                    old_candidates.len(),
+                    new_candidates.len()
+                )),
+                "unknown",
+                "duplicate content makes rename correlation ambiguous; represent as remove+add",
+                true,
+                duplicate_content_paths_distinct,
+            ));
+        }
+    }
+
+    for old_fact in &removed {
+        let old_path = normalize_graph_path(&old_fact.repo_relative_path);
+        if matched_old_paths.contains(&old_path) {
+            continue;
+        }
+        if added.iter().any(|new_fact| {
+            !matched_new_paths.contains(&normalize_graph_path(&new_fact.repo_relative_path))
+        }) {
+            ambiguities.push(file_rename_delta_entry(
+                "unknown",
+                Some(old_fact),
+                None,
+                false,
+                old_fact.content_hash.clone(),
+                true,
+                Some("no unique added path with matching content hash".to_string()),
+                "unknown",
+                "rename cannot be proven with current file-manifest signals; represent as remove+add",
+                true,
+                duplicate_content_paths_distinct,
+            ));
+        }
+    }
+    for new_fact in &added {
+        let new_path = normalize_graph_path(&new_fact.repo_relative_path);
+        if matched_new_paths.contains(&new_path) {
+            continue;
+        }
+        if removed.iter().any(|old_fact| {
+            !matched_old_paths.contains(&normalize_graph_path(&old_fact.repo_relative_path))
+        }) {
+            ambiguities.push(file_rename_delta_entry(
+                "unknown",
+                None,
+                Some(new_fact),
+                false,
+                new_fact.content_hash.clone(),
+                true,
+                Some("no unique removed path with matching content hash".to_string()),
+                "unknown",
+                "rename cannot be proven with current file-manifest signals; represent as remove+add",
+                true,
+                duplicate_content_paths_distinct,
+            ));
+        }
+    }
+    (detected, ambiguities, duplicate_content_paths_distinct)
+}
+
+fn file_rename_delta_entry(
+    rename_status: &str,
+    old: Option<&NormalizedFileFact>,
+    new: Option<&NormalizedFileFact>,
+    content_hash_match: bool,
+    content_hash: Option<String>,
+    ambiguity: bool,
+    ambiguity_reason: Option<String>,
+    rename_confidence: &str,
+    deterministic_reason: &str,
+    fallback_add_remove: bool,
+    duplicate_content_paths_distinct: bool,
+) -> FileRenameDeltaEntry {
+    let evidence_kind = match (
+        old.and_then(|fact| fact.language.as_deref()),
+        new.and_then(|fact| fact.language.as_deref()),
+    ) {
+        (None, None) => "text_or_non_parser_file_manifest",
+        _ => "source_file_manifest",
+    };
+    let mut warnings = vec![
+        "file identity remains path-aware; content hash is only rename-assist evidence".to_string(),
+        "rename evidence is not graph-relation proof".to_string(),
+    ];
+    if fallback_add_remove {
+        warnings.push("fallback_add_remove_for_unproven_rename".to_string());
+    }
+    FileRenameDeltaEntry {
+        rename_status: rename_status.to_string(),
+        old_path: old.map(|fact| normalize_graph_path(&fact.repo_relative_path)),
+        new_path: new.map(|fact| normalize_graph_path(&fact.repo_relative_path)),
+        old_file_identity_key: old.map(|fact| fact.stable_identity_key.clone()),
+        new_file_identity_key: new.map(|fact| fact.stable_identity_key.clone()),
+        content_hash_match,
+        content_hash,
+        ambiguity,
+        ambiguity_reason,
+        rename_confidence: rename_confidence.to_string(),
+        deterministic_reason: deterministic_reason.to_string(),
+        fallback_add_remove,
+        duplicate_content_paths_distinct,
+        graph_proof: false,
+        proof_strength: "file_manifest_lifecycle".to_string(),
+        evidence_kind: evidence_kind.to_string(),
+        warnings,
+    }
+}
+
+fn duplicate_content_paths_have_distinct_identity(
+    old_files: &[NormalizedFileFact],
+    new_files: &[NormalizedFileFact],
+) -> bool {
+    let mut by_hash = BTreeMap::<String, Vec<&NormalizedFileFact>>::new();
+    for fact in old_files.iter().chain(new_files.iter()) {
+        if let Some(hash) = fact.content_hash.as_ref().filter(|hash| !hash.is_empty()) {
+            by_hash.entry(hash.clone()).or_default().push(fact);
+        }
+    }
+    by_hash.values().all(|facts| {
+        let path_count = facts
+            .iter()
+            .map(|fact| normalize_graph_path(&fact.repo_relative_path))
+            .collect::<BTreeSet<_>>()
+            .len();
+        if path_count < 2 {
+            return true;
+        }
+        let identity_count = facts
+            .iter()
+            .map(|fact| fact.stable_identity_key.clone())
+            .collect::<BTreeSet<_>>()
+            .len();
+        identity_count == path_count
+    })
+}
+
+pub fn compute_entity_source_role_delta(
+    old: &NormalizedFactSnapshot,
+    new: &NormalizedFactSnapshot,
+    options: EntitySourceRoleDeltaOptions,
+) -> EntitySourceRoleDeltaReport {
+    let delta_total_start = Instant::now();
+
+    let diff_entities_start = Instant::now();
+    let mut old_entities = graph_delta_entities(&old.facts.entities);
+    let mut new_entities = graph_delta_entities(&new.facts.entities);
+    old_entities.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    new_entities.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+
+    let (entities_added_all, entities_removed_all, entities_changed_all) =
+        classify_entity_delta_entries(&old_entities, &new_entities);
+    let source_roles_changed_all =
+        classify_source_role_delta_entries(&old.facts.source_roles, &new.facts.source_roles);
+    let diff_entities_ms = diff_entities_start.elapsed().as_millis();
+
+    let diff_edges_start = Instant::now();
+    let old_entities_by_id = normalized_entities_by_id(&old.facts.entities);
+    let new_entities_by_id = normalized_entities_by_id(&new.facts.entities);
+    let (edges_added_all, edges_removed_all, edges_changed_all) = classify_edge_delta_entries(
+        &old.facts.edges,
+        &new.facts.edges,
+        &old_entities_by_id,
+        &new_entities_by_id,
+    );
+    let relation_kind_counts =
+        edge_relation_kind_counts(&edges_added_all, &edges_removed_all, &edges_changed_all);
+    let exactness_counts =
+        edge_exactness_counts(&edges_added_all, &edges_removed_all, &edges_changed_all);
+    let derived_counts =
+        edge_derived_counts(&edges_added_all, &edges_removed_all, &edges_changed_all);
+    let source_role_counts =
+        edge_source_role_counts(&edges_added_all, &edges_removed_all, &edges_changed_all);
+    let degraded_relation_classes =
+        edge_degraded_relation_classes(&edges_added_all, &edges_removed_all, &edges_changed_all);
+    let unsupported_relation_classes =
+        edge_unsupported_relation_classes(&edges_added_all, &edges_removed_all, &edges_changed_all);
+    let diff_edges_ms = diff_edges_start.elapsed().as_millis();
+
+    let diff_spans_start = Instant::now();
+    let old_claimable_fact_keys = claimable_graph_fact_keys(old);
+    let new_claimable_fact_keys = claimable_graph_fact_keys(new);
+    let (source_spans_added_all, source_spans_removed_all, source_spans_changed_all) =
+        classify_source_span_delta_entries(
+            &old.facts.source_spans,
+            &new.facts.source_spans,
+            &old_claimable_fact_keys,
+            &new_claimable_fact_keys,
+        );
+    let diff_spans_ms = diff_spans_start.elapsed().as_millis();
+
+    let diff_text_evidence_start = Instant::now();
+    let text_evidence_changed_all =
+        classify_text_evidence_delta_entries(&old.facts.text_evidence, &new.facts.text_evidence);
+    let diff_text_evidence_ms = diff_text_evidence_start.elapsed().as_millis();
+
+    let diff_sidecars_start = Instant::now();
+    let path_evidence_invalidated_all =
+        classify_path_evidence_delta_entries(&old.facts.path_evidence, &new.facts.path_evidence);
+    let sidecar_freshness_changed_all = classify_sidecar_freshness_delta_entries(
+        &old.facts.sidecar_freshness,
+        &new.facts.sidecar_freshness,
+    );
+    let candidate_spool_invalidated_or_refreshed = sidecar_layer_delta(
+        "candidate_spool",
+        &old.facts.sidecar_freshness,
+        &new.facts.sidecar_freshness,
+    );
+    let candidate_query_index_invalidated_or_refreshed = sidecar_layer_delta(
+        "candidate_query_index",
+        &old.facts.sidecar_freshness,
+        &new.facts.sidecar_freshness,
+    );
+    let vector_chunks_invalidated = sidecar_layer_delta(
+        "vector_chunks",
+        &old.facts.sidecar_freshness,
+        &new.facts.sidecar_freshness,
+    );
+    let vector_runtime_status_changed = sidecar_layer_delta(
+        "vector_runtime",
+        &old.facts.sidecar_freshness,
+        &new.facts.sidecar_freshness,
+    );
+    let vector_audit_status_changed = sidecar_layer_delta(
+        "vector_audit",
+        &old.facts.sidecar_freshness,
+        &new.facts.sidecar_freshness,
+    );
+    let nuance_tokens_invalidated = sidecar_layer_delta(
+        "nuance_tokens",
+        &old.facts.sidecar_freshness,
+        &new.facts.sidecar_freshness,
+    );
+    let routing_handles_invalidated = sidecar_layer_delta(
+        "routing_handles",
+        &old.facts.sidecar_freshness,
+        &new.facts.sidecar_freshness,
+    );
+    let proof_ladder_changes = proof_ladder_changes_for_delta(
+        &entities_added_all,
+        &entities_removed_all,
+        &entities_changed_all,
+        &edges_added_all,
+        &edges_removed_all,
+        &edges_changed_all,
+        &source_spans_added_all,
+        &source_spans_removed_all,
+        &source_spans_changed_all,
+        &text_evidence_changed_all,
+        &candidate_spool_invalidated_or_refreshed,
+        &candidate_query_index_invalidated_or_refreshed,
+        &vector_chunks_invalidated,
+        &nuance_tokens_invalidated,
+    );
+    let diff_sidecars_ms = diff_sidecars_start.elapsed().as_millis();
+    let (file_renames_detected_all, rename_ambiguities_all, duplicate_content_paths_distinct) =
+        classify_file_rename_delta_entries(&old.facts.files, &new.facts.files);
+    let rename_unknown_when_ambiguous = rename_ambiguities_all
+        .iter()
+        .all(|entry| entry.rename_status == "unknown" && entry.fallback_add_remove);
+
+    let max_items = options.max_items_per_category;
+    let entities_added_omitted = omitted_after_limit(entities_added_all.len(), max_items);
+    let entities_removed_omitted = omitted_after_limit(entities_removed_all.len(), max_items);
+    let entities_changed_omitted = omitted_after_limit(entities_changed_all.len(), max_items);
+    let edges_added_omitted = omitted_after_limit(edges_added_all.len(), max_items);
+    let edges_removed_omitted = omitted_after_limit(edges_removed_all.len(), max_items);
+    let edges_changed_omitted = omitted_after_limit(edges_changed_all.len(), max_items);
+    let source_spans_added_omitted = omitted_after_limit(source_spans_added_all.len(), max_items);
+    let source_spans_removed_omitted =
+        omitted_after_limit(source_spans_removed_all.len(), max_items);
+    let source_spans_changed_omitted =
+        omitted_after_limit(source_spans_changed_all.len(), max_items);
+    let text_evidence_changed_omitted =
+        omitted_after_limit(text_evidence_changed_all.len(), max_items);
+    let path_evidence_invalidated_omitted =
+        omitted_after_limit(path_evidence_invalidated_all.len(), max_items);
+    let sidecar_freshness_changed_omitted =
+        omitted_after_limit(sidecar_freshness_changed_all.len(), max_items);
+    let source_roles_changed_omitted =
+        omitted_after_limit(source_roles_changed_all.len(), max_items);
+    let file_renames_detected_omitted =
+        omitted_after_limit(file_renames_detected_all.len(), max_items);
+    let rename_ambiguities_omitted = omitted_after_limit(rename_ambiguities_all.len(), max_items);
+    let truncated = entities_added_omitted
+        + entities_removed_omitted
+        + entities_changed_omitted
+        + edges_added_omitted
+        + edges_removed_omitted
+        + edges_changed_omitted
+        + source_spans_added_omitted
+        + source_spans_removed_omitted
+        + source_spans_changed_omitted
+        + text_evidence_changed_omitted
+        + path_evidence_invalidated_omitted
+        + sidecar_freshness_changed_omitted
+        + source_roles_changed_omitted
+        + file_renames_detected_omitted
+        + rename_ambiguities_omitted
+        > 0;
+    let exactness_preserved =
+        edge_delta_exactness_preserved(&edges_added_all, &edges_removed_all, &edges_changed_all);
+    let derived_edges_require_provenance = edge_delta_derived_edges_require_provenance(
+        &edges_added_all,
+        &edges_removed_all,
+        &edges_changed_all,
+    );
+    let heuristic_unsupported_edges_not_overclaimed =
+        edge_delta_heuristic_unsupported_not_overclaimed(
+            &edges_added_all,
+            &edges_removed_all,
+            &edges_changed_all,
+        );
+    let test_mock_edges_preserved = test_mock_edge_deltas_preserve_roles(
+        &edges_added_all,
+        &edges_removed_all,
+        &edges_changed_all,
+    );
+    let source_spans_present_for_claimable_edge_deltas = claimable_edge_deltas_have_source_spans(
+        &edges_added_all,
+        &edges_removed_all,
+        &edges_changed_all,
+    );
+
+    let claimable = old.claimable && new.claimable;
+    let diagnostic_only = !claimable || old.diagnostic_only || new.diagnostic_only;
+    EntitySourceRoleDeltaReport {
+        status: if claimable {
+            "complete".to_string()
+        } else {
+            "diagnostic_only".to_string()
+        },
+        ready_to_report: claimable,
+        old_snapshot_status: old.status.clone(),
+        new_snapshot_status: new.status.clone(),
+        snapshot_bounded_to_changed_or_closure_files: old.bounded_to_changed_or_closure_files
+            && new.bounded_to_changed_or_closure_files,
+        snapshot_read_only: old.read_only && new.read_only,
+        claimable,
+        diagnostic_only,
+        graph_delta_schema_version: "mvp3_graph_delta_closure_rename_v1".to_string(),
+        entities_added_count: entities_added_all.len(),
+        entities_removed_count: entities_removed_all.len(),
+        entities_changed_count: entities_changed_all.len(),
+        edges_added_count: edges_added_all.len(),
+        edges_removed_count: edges_removed_all.len(),
+        edges_changed_count: edges_changed_all.len(),
+        source_roles_changed_count: source_roles_changed_all.len(),
+        source_spans_added_count: source_spans_added_all.len(),
+        source_spans_removed_count: source_spans_removed_all.len(),
+        source_spans_changed_count: source_spans_changed_all.len(),
+        text_evidence_changed_count: text_evidence_changed_all.len(),
+        path_evidence_invalidated_count: path_evidence_invalidated_all.len(),
+        sidecar_freshness_changed_count: sidecar_freshness_changed_all.len(),
+        entities_added: take_delta_items(entities_added_all, max_items),
+        entities_removed: take_delta_items(entities_removed_all, max_items),
+        entities_changed: take_delta_items(entities_changed_all, max_items),
+        edges_added: take_delta_items(edges_added_all, max_items),
+        edges_removed: take_delta_items(edges_removed_all, max_items),
+        edges_changed: take_delta_items(edges_changed_all, max_items),
+        source_spans_added: take_delta_items(source_spans_added_all, max_items),
+        source_spans_removed: take_delta_items(source_spans_removed_all, max_items),
+        source_spans_changed: take_delta_items(source_spans_changed_all, max_items),
+        text_evidence_changed: take_delta_items(text_evidence_changed_all, max_items),
+        path_evidence_invalidated: take_delta_items(path_evidence_invalidated_all, max_items),
+        sidecar_freshness_changed: take_delta_items(sidecar_freshness_changed_all, max_items),
+        candidate_spool_invalidated_or_refreshed,
+        candidate_query_index_invalidated_or_refreshed,
+        vector_chunks_invalidated,
+        vector_runtime_status_changed,
+        vector_audit_status_changed,
+        nuance_tokens_invalidated,
+        routing_handles_invalidated,
+        proof_ladder_changes,
+        file_renames_detected: take_delta_items(file_renames_detected_all, max_items),
+        rename_ambiguities: take_delta_items(rename_ambiguities_all, max_items),
+        closure_delta_summary: closure_delta_summary_from_snapshots(old, new),
+        closure_files_updated: Vec::new(),
+        closure_budget_hit: false,
+        closure_unsupported_relation_classes: Vec::new(),
+        closure_degraded_relation_classes: Vec::new(),
+        closure_unknowns: Vec::new(),
+        relation_kind_counts,
+        exactness_counts,
+        derived_counts,
+        source_role_counts,
+        degraded_relation_classes,
+        unsupported_relation_classes,
+        source_roles_changed: take_delta_items(source_roles_changed_all, max_items),
+        text_evidence_not_graph_entity_delta: true,
+        text_candidate_evidence_not_graph_delta: true,
+        source_navigation_only_not_graph_entity_delta: true,
+        same_name_symbols_distinct: true,
+        endpoint_names_hydrated_where_available: true,
+        same_name_targets_distinct: true,
+        exactness_preserved,
+        derived_edges_require_provenance,
+        heuristic_unsupported_edges_not_overclaimed,
+        test_mock_edges_preserved,
+        source_spans_present_for_claimable_entity_deltas: claimable_entity_deltas_have_source_spans(
+            &old_entities,
+            &new_entities,
+        ),
+        source_spans_present_for_claimable_edge_deltas,
+        source_spans_changed_reported: true,
+        text_evidence_changed_reported: true,
+        path_evidence_invalidated_reported: true,
+        candidate_freshness_delta_reported: true,
+        vector_freshness_delta_reported: true,
+        nuance_freshness_delta_reported_or_not_applicable: true,
+        routing_handle_delta_reported_or_not_applicable: true,
+        proof_ladder_changes_reported: true,
+        freshness_delta_not_graph_proof: true,
+        access_vs_corrupt_classification_safe: access_vs_corrupt_classification_safe(),
+        stale_sidecars_not_used_as_fresh: stale_sidecars_not_used_as_fresh(
+            &old.facts.sidecar_freshness,
+            &new.facts.sidecar_freshness,
+        ),
+        rename_detection_status: if !old.facts.files.is_empty() || !new.facts.files.is_empty() {
+            if !duplicate_content_paths_distinct {
+                "supported_with_diagnostic:duplicate content identity violation detected"
+                    .to_string()
+            } else if !rename_unknown_when_ambiguous {
+                "supported_with_diagnostic:ambiguous rename did not fall back cleanly".to_string()
+            } else {
+                "supported".to_string()
+            }
+        } else {
+            "supported_no_file_manifest_delta".to_string()
+        },
+        rename_aware_delta_supported: true,
+        rename_unknown_when_ambiguous,
+        closure_delta_supported: false,
+        closure_budget_hit_degraded: true,
+        unsupported_relation_unknown_not_proof: true,
+        duplicate_content_paths_distinct,
+        no_silent_full_repo_fallback: true,
+        source_spans_and_provenance_preserved: source_spans_present_for_claimable_edge_deltas
+            && derived_edges_require_provenance,
+        old_good_db_preserved: true,
+        claim_boundaries_preserved: true,
+        public_claim: false,
+        timings: GraphDeltaTimingMetrics {
+            diff_entities_ms,
+            diff_edges_ms,
+            diff_spans_ms,
+            diff_text_evidence_ms,
+            diff_sidecars_ms,
+            diff_closure_ms: 0,
+            delta_total_ms: delta_total_start.elapsed().as_millis(),
+        },
+        omission: EntitySourceRoleDeltaOmission {
+            truncated,
+            max_items_per_category: max_items,
+            entities_added_omitted,
+            entities_removed_omitted,
+            entities_changed_omitted,
+            edges_added_omitted,
+            edges_removed_omitted,
+            edges_changed_omitted,
+            source_spans_added_omitted,
+            source_spans_removed_omitted,
+            source_spans_changed_omitted,
+            text_evidence_changed_omitted,
+            path_evidence_invalidated_omitted,
+            sidecar_freshness_changed_omitted,
+            source_roles_changed_omitted,
+            file_renames_detected_omitted,
+            rename_ambiguities_omitted,
+            expansion_handle: truncated
+                .then(|| "rerun with --audit-json for full local delta list".to_string()),
+        },
+        warnings: if diagnostic_only {
+            vec![
+                "one or both normalized snapshots were non-claimable; delta is diagnostic only"
+                    .to_string(),
+            ]
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+fn claimable_graph_fact_keys(snapshot: &NormalizedFactSnapshot) -> BTreeSet<String> {
+    snapshot
+        .facts
+        .entities
+        .iter()
+        .filter(|fact| fact.claimability.graph_proof && fact.claimability.claimable)
+        .map(|fact| fact.stable_identity_key.clone())
+        .chain(
+            snapshot
+                .facts
+                .edges
+                .iter()
+                .filter(|fact| fact.claimability.graph_proof && fact.claimability.claimable)
+                .map(|fact| fact.stable_identity_key.clone()),
+        )
+        .collect()
+}
+
+fn classify_source_span_delta_entries(
+    old_spans: &[NormalizedSourceSpanFact],
+    new_spans: &[NormalizedSourceSpanFact],
+    old_claimable_fact_keys: &BTreeSet<String>,
+    new_claimable_fact_keys: &BTreeSet<String>,
+) -> (
+    Vec<SourceSpanDeltaEntry>,
+    Vec<SourceSpanDeltaEntry>,
+    Vec<SourceSpanDeltaEntry>,
+) {
+    let old_by_key = old_spans
+        .iter()
+        .map(|fact| (fact.stable_identity_key.clone(), fact))
+        .collect::<BTreeMap<_, _>>();
+    let new_by_key = new_spans
+        .iter()
+        .map(|fact| (fact.stable_identity_key.clone(), fact))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut added_facts = BTreeMap::<String, &NormalizedSourceSpanFact>::new();
+    let mut removed_facts = BTreeMap::<String, &NormalizedSourceSpanFact>::new();
+    let mut changed = Vec::new();
+
+    for (key, new_fact) in &new_by_key {
+        match old_by_key.get(key) {
+            None => {
+                added_facts.insert(key.clone(), new_fact);
+            }
+            Some(old_fact) if old_fact.fact_hash != new_fact.fact_hash => {
+                changed.push(SourceSpanDeltaEntry::changed(
+                    old_fact,
+                    new_fact,
+                    old_claimable_fact_keys,
+                    new_claimable_fact_keys,
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    for (key, old_fact) in &old_by_key {
+        if !new_by_key.contains_key(key) {
+            removed_facts.insert(key.clone(), old_fact);
+        }
+    }
+
+    let old_correspondence =
+        unique_source_span_correspondence_index(removed_facts.values().copied());
+    let new_correspondence = unique_source_span_correspondence_index(added_facts.values().copied());
+    let mut converted_added = BTreeSet::new();
+    let mut converted_removed = BTreeSet::new();
+    for (key, old_fact) in old_correspondence {
+        let Some(new_fact) = new_correspondence.get(&key) else {
+            continue;
+        };
+        if converted_removed.contains(&old_fact.stable_identity_key)
+            || converted_added.contains(&new_fact.stable_identity_key)
+        {
+            continue;
+        }
+        changed.push(SourceSpanDeltaEntry::changed(
+            old_fact,
+            new_fact,
+            old_claimable_fact_keys,
+            new_claimable_fact_keys,
+        ));
+        converted_removed.insert(old_fact.stable_identity_key.clone());
+        converted_added.insert(new_fact.stable_identity_key.clone());
+    }
+
+    let mut added = added_facts
+        .into_iter()
+        .filter(|(key, _)| !converted_added.contains(key))
+        .map(|(_, fact)| SourceSpanDeltaEntry::added(fact, new_claimable_fact_keys))
+        .collect::<Vec<_>>();
+    let mut removed = removed_facts
+        .into_iter()
+        .filter(|(key, _)| !converted_removed.contains(key))
+        .map(|(_, fact)| SourceSpanDeltaEntry::removed(fact, old_claimable_fact_keys))
+        .collect::<Vec<_>>();
+    added.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    removed.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    changed.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    (added, removed, changed)
+}
+
+fn unique_source_span_correspondence_index<'a, I>(
+    spans: I,
+) -> BTreeMap<String, &'a NormalizedSourceSpanFact>
+where
+    I: IntoIterator<Item = &'a NormalizedSourceSpanFact>,
+{
+    let mut grouped = BTreeMap::<String, Vec<&NormalizedSourceSpanFact>>::new();
+    for span in spans {
+        grouped
+            .entry(source_span_correspondence_key(span))
+            .or_default()
+            .push(span);
+    }
+    grouped
+        .into_iter()
+        .filter_map(|(key, mut values)| {
+            if values.len() == 1 {
+                Some((key, values.remove(0)))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn source_span_correspondence_key(span: &NormalizedSourceSpanFact) -> String {
+    [
+        span.repo_relative_path.as_str(),
+        span.source_span_id.as_str(),
+        span.associated_fact_kind.as_str(),
+    ]
+    .join("\0")
+}
+
+fn source_span_change_reason(
+    old: &NormalizedSourceSpanFact,
+    new: &NormalizedSourceSpanFact,
+) -> String {
+    let mut reasons = Vec::new();
+    if old.source_span != new.source_span {
+        reasons.push("source_span_changed");
+    }
+    if old.associated_fact_key != new.associated_fact_key {
+        reasons.push("associated_fact_key_changed");
+    }
+    if old.associated_fact_kind != new.associated_fact_kind {
+        reasons.push("associated_fact_kind_changed");
+    }
+    if old.source_role != new.source_role {
+        reasons.push("source_role_changed");
+    }
+    if old.lifecycle != new.lifecycle {
+        reasons.push("lifecycle_changed");
+    }
+    if reasons.is_empty() {
+        "normalized_source_span_fact_hash_changed".to_string()
+    } else {
+        reasons.join("+")
+    }
+}
+
+fn classify_text_evidence_delta_entries(
+    old_text: &[NormalizedTextEvidenceFact],
+    new_text: &[NormalizedTextEvidenceFact],
+) -> Vec<TextEvidenceDeltaEntry> {
+    let old_by_key = old_text
+        .iter()
+        .map(|fact| (fact.stable_identity_key.clone(), fact))
+        .collect::<BTreeMap<_, _>>();
+    let new_by_key = new_text
+        .iter()
+        .map(|fact| (fact.stable_identity_key.clone(), fact))
+        .collect::<BTreeMap<_, _>>();
+    let mut entries = Vec::new();
+    for (key, new_fact) in &new_by_key {
+        match old_by_key.get(key) {
+            None => entries.push(TextEvidenceDeltaEntry::added(new_fact)),
+            Some(old_fact) if old_fact.fact_hash != new_fact.fact_hash => {
+                entries.push(TextEvidenceDeltaEntry::changed(old_fact, new_fact));
+            }
+            Some(_) => {}
+        }
+    }
+    for (key, old_fact) in &old_by_key {
+        if !new_by_key.contains_key(key) {
+            entries.push(TextEvidenceDeltaEntry::removed(old_fact));
+        }
+    }
+    entries.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    entries
+}
+
+fn classify_path_evidence_delta_entries(
+    old_paths: &[NormalizedPathEvidenceFact],
+    new_paths: &[NormalizedPathEvidenceFact],
+) -> Vec<PathEvidenceDeltaEntry> {
+    let old_by_key = old_paths
+        .iter()
+        .map(|fact| (fact.stable_identity_key.clone(), fact))
+        .collect::<BTreeMap<_, _>>();
+    let new_by_key = new_paths
+        .iter()
+        .map(|fact| (fact.stable_identity_key.clone(), fact))
+        .collect::<BTreeMap<_, _>>();
+    let mut entries = Vec::new();
+    for (key, new_fact) in &new_by_key {
+        match old_by_key.get(key) {
+            None => entries.push(PathEvidenceDeltaEntry::added(new_fact)),
+            Some(old_fact) if old_fact.fact_hash != new_fact.fact_hash => {
+                entries.push(PathEvidenceDeltaEntry::changed(old_fact, new_fact));
+            }
+            Some(_) => {}
+        }
+    }
+    for (key, old_fact) in &old_by_key {
+        if !new_by_key.contains_key(key) {
+            entries.push(PathEvidenceDeltaEntry::removed(old_fact));
+        }
+    }
+    entries.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    entries
+}
+
+fn classify_sidecar_freshness_delta_entries(
+    old_sidecars: &[NormalizedSidecarFreshnessFact],
+    new_sidecars: &[NormalizedSidecarFreshnessFact],
+) -> Vec<FreshnessLayerDelta> {
+    [
+        "candidate_spool",
+        "candidate_query_index",
+        "vector_chunks",
+        "vector_runtime",
+        "vector_audit",
+        "nuance_tokens",
+        "routing_handles",
+        "path_evidence",
+    ]
+    .into_iter()
+    .map(|layer| sidecar_layer_delta(layer, old_sidecars, new_sidecars))
+    .filter(|entry| {
+        entry.old_status != entry.new_status
+            || matches!(
+                entry.action.as_str(),
+                "invalidated" | "refreshed" | "absent" | "not_applicable" | "diagnostic_error"
+            )
+    })
+    .collect()
+}
+
+fn sidecar_layer_delta(
+    layer: &str,
+    old_sidecars: &[NormalizedSidecarFreshnessFact],
+    new_sidecars: &[NormalizedSidecarFreshnessFact],
+) -> FreshnessLayerDelta {
+    let old_fact = representative_sidecar_layer_fact(layer, old_sidecars);
+    let new_fact = representative_sidecar_layer_fact(layer, new_sidecars);
+    let old_status = old_fact
+        .map(|fact| fact.freshness_status.clone())
+        .unwrap_or_else(|| "absent".to_string());
+    let new_status = new_fact
+        .map(|fact| fact.freshness_status.clone())
+        .unwrap_or_else(|| "absent".to_string());
+    let action = sidecar_status_delta_action(&old_status, &new_status);
+    let classification = sidecar_status_classification(&new_status).to_string();
+    let source_binding_id = new_fact
+        .and_then(|fact| fact.source_binding_id.clone())
+        .or_else(|| old_fact.and_then(|fact| fact.source_binding_id.clone()));
+    FreshnessLayerDelta {
+        layer: layer.to_string(),
+        action: action.to_string(),
+        old_status,
+        new_status,
+        graph_proof: false,
+        proof_strength: if layer.contains("candidate") {
+            "candidate_evidence".to_string()
+        } else if layer.contains("vector") {
+            "vector_evidence".to_string()
+        } else if layer.contains("nuance") {
+            "nuance_evidence".to_string()
+        } else if layer.contains("routing") {
+            "routing_handle_freshness".to_string()
+        } else {
+            "freshness_state".to_string()
+        },
+        classification,
+        source_binding_id,
+        reason: "sidecar freshness deltas are candidate/provenance state and are not graph proof"
+            .to_string(),
+    }
+}
+
+fn representative_sidecar_layer_fact<'a>(
+    layer: &str,
+    sidecars: &'a [NormalizedSidecarFreshnessFact],
+) -> Option<&'a NormalizedSidecarFreshnessFact> {
+    sidecars
+        .iter()
+        .find(|fact| fact.sidecar_layer == layer)
+        .or_else(|| {
+            sidecars
+                .iter()
+                .find(|fact| fact.sidecar_layer.starts_with(layer))
+        })
+}
+
+fn sidecar_status_delta_action(old_status: &str, new_status: &str) -> &'static str {
+    if new_status == "not_applicable" {
+        "not_applicable"
+    } else if new_status == "absent" {
+        "absent"
+    } else if matches!(new_status, "stale" | "superseded_by_graph_db") {
+        "invalidated"
+    } else if matches!(new_status, "rebuilt" | "ready" | "current") && old_status != new_status {
+        "refreshed"
+    } else if matches!(
+        new_status,
+        "corrupt"
+            | "query_index_corrupt"
+            | "permission_denied"
+            | "filesystem_inaccessible"
+            | "sidecar_unavailable"
+    ) {
+        "diagnostic_error"
+    } else {
+        "status_checked"
+    }
+}
+
+fn sidecar_status_classification(status: &str) -> &'static str {
+    match status {
+        "permission_denied" => "permission_denied",
+        "filesystem_inaccessible" | "sidecar_unavailable" => "filesystem_inaccessible",
+        "corrupt" | "query_index_corrupt" => "corrupt",
+        "stale" | "superseded_by_graph_db" => "stale",
+        "missing" | "no_spool" | "query_index_missing" | "absent" => "absent",
+        "not_applicable" => "not_applicable",
+        _ => "diagnostic",
+    }
+}
+
+fn access_vs_corrupt_classification_safe() -> bool {
+    sidecar_status_classification("permission_denied") == "permission_denied"
+        && sidecar_status_classification("filesystem_inaccessible") == "filesystem_inaccessible"
+        && sidecar_status_classification("corrupt") == "corrupt"
+        && sidecar_status_classification("query_index_corrupt") == "corrupt"
+}
+
+fn stale_sidecars_not_used_as_fresh(
+    old_sidecars: &[NormalizedSidecarFreshnessFact],
+    new_sidecars: &[NormalizedSidecarFreshnessFact],
+) -> bool {
+    old_sidecars.iter().chain(new_sidecars).all(|fact| {
+        !matches!(
+            fact.freshness_status.as_str(),
+            "stale" | "superseded_by_graph_db"
+        ) || !fact.claimability.graph_proof
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn proof_ladder_changes_for_delta(
+    entities_added: &[EntityDeltaEntry],
+    entities_removed: &[EntityDeltaEntry],
+    entities_changed: &[EntityDeltaEntry],
+    edges_added: &[EdgeDeltaEntry],
+    edges_removed: &[EdgeDeltaEntry],
+    edges_changed: &[EdgeDeltaEntry],
+    source_spans_added: &[SourceSpanDeltaEntry],
+    source_spans_removed: &[SourceSpanDeltaEntry],
+    source_spans_changed: &[SourceSpanDeltaEntry],
+    text_evidence_changed: &[TextEvidenceDeltaEntry],
+    candidate_spool: &FreshnessLayerDelta,
+    candidate_query_index: &FreshnessLayerDelta,
+    vector_chunks: &FreshnessLayerDelta,
+    nuance_tokens: &FreshnessLayerDelta,
+) -> BTreeMap<String, ProofLadderChange> {
+    let mut changes = BTreeMap::new();
+    let symbol_changed =
+        !entities_added.is_empty() || !entities_removed.is_empty() || !entities_changed.is_empty();
+    let relation_changed =
+        !edges_added.is_empty() || !edges_removed.is_empty() || !edges_changed.is_empty();
+    let source_span_changed = !source_spans_added.is_empty()
+        || !source_spans_removed.is_empty()
+        || !source_spans_changed.is_empty();
+    let text_changed = !text_evidence_changed.is_empty();
+    let candidate_changed = [
+        candidate_spool,
+        candidate_query_index,
+        vector_chunks,
+        nuance_tokens,
+    ]
+    .iter()
+    .any(|entry| entry.action != "status_checked");
+
+    changes.insert(
+        "text_evidence".to_string(),
+        proof_ladder_change(
+            "text_evidence",
+            text_changed,
+            "source_text_evidence",
+            false,
+            "text_evidence",
+            "text evidence may support no-proof fallback but is not graph proof",
+        ),
+    );
+    changes.insert(
+        "symbol_evidence".to_string(),
+        proof_ladder_change(
+            "symbol_evidence",
+            symbol_changed || source_span_changed,
+            "graph_fact_when_source_span_bound",
+            true,
+            "graph_source_span_proof",
+            "symbol evidence is proof only when the associated normalized graph fact is claimable",
+        ),
+    );
+    changes.insert(
+        "candidate_evidence".to_string(),
+        proof_ladder_change(
+            "candidate_evidence",
+            candidate_changed,
+            "freshness_state",
+            false,
+            "candidate_evidence",
+            "candidate, vector, nuance, and routing freshness is not graph proof",
+        ),
+    );
+    changes.insert(
+        "source_navigation_evidence".to_string(),
+        proof_ladder_change(
+            "source_navigation_evidence",
+            false,
+            "diagnostic_or_not_applicable",
+            false,
+            "source_navigation_evidence",
+            "source-navigation-only records are diagnostic unless graph/source verification proves a graph fact",
+        ),
+    );
+    changes.insert(
+        "graph_relation_proof".to_string(),
+        proof_ladder_change(
+            "graph_relation_proof",
+            relation_changed,
+            "graph_relation_proof",
+            true,
+            "graph_source_span_proof",
+            "relation proof requires a claimable normalized edge with source span and provenance where derived",
+        ),
+    );
+
+    if edge_delta_contains_relation(edges_added, edges_removed, edges_changed, |relation| {
+        matches!(relation, RelationKind::Mutates | RelationKind::MayMutate)
+    }) {
+        changes.insert(
+            "mutation_proof".to_string(),
+            proof_ladder_change(
+                "mutation_proof",
+                true,
+                "supported_relation_present",
+                true,
+                "graph_source_span_proof",
+                "mutation proof is emitted only when supported mutation relations are present",
+            ),
+        );
+    }
+    if edge_delta_contains_relation(edges_added, edges_removed, edges_changed, |relation| {
+        matches!(relation, RelationKind::FlowsTo)
+    }) {
+        changes.insert(
+            "flow_proof".to_string(),
+            proof_ladder_change(
+                "flow_proof",
+                true,
+                "supported_relation_present",
+                true,
+                "graph_source_span_proof",
+                "flow proof is emitted only when supported flow relations are present",
+            ),
+        );
+    }
+    changes
+}
+
+fn proof_ladder_change(
+    evidence_kind: &str,
+    changed: bool,
+    status: &str,
+    graph_proof: bool,
+    proof_strength: &str,
+    reason: &str,
+) -> ProofLadderChange {
+    ProofLadderChange {
+        evidence_kind: evidence_kind.to_string(),
+        changed,
+        status: status.to_string(),
+        graph_proof,
+        proof_strength: proof_strength.to_string(),
+        reason: reason.to_string(),
+    }
+}
+
+fn edge_delta_contains_relation(
+    added: &[EdgeDeltaEntry],
+    removed: &[EdgeDeltaEntry],
+    changed: &[EdgeDeltaEntry],
+    predicate: fn(RelationKind) -> bool,
+) -> bool {
+    added
+        .iter()
+        .chain(removed)
+        .chain(changed)
+        .any(|entry| predicate(entry.relation))
+}
+
+fn graph_delta_entities(facts: &[NormalizedEntityFact]) -> Vec<NormalizedEntityFact> {
+    facts
+        .iter()
+        .filter(|fact| fact.claimability.graph_proof && fact.source_span.is_some())
+        .cloned()
+        .collect()
+}
+
+fn normalized_entities_by_id(
+    entities: &[NormalizedEntityFact],
+) -> BTreeMap<String, NormalizedEntityFact> {
+    let mut by_id = BTreeMap::new();
+    for entity in entities {
+        by_id
+            .entry(entity.entity_id.clone())
+            .or_insert_with(|| entity.clone());
+    }
+    by_id
+}
+
+fn classify_entity_delta_entries(
+    old_entities: &[NormalizedEntityFact],
+    new_entities: &[NormalizedEntityFact],
+) -> (
+    Vec<EntityDeltaEntry>,
+    Vec<EntityDeltaEntry>,
+    Vec<EntityDeltaEntry>,
+) {
+    let old_by_key = old_entities
+        .iter()
+        .map(|fact| (fact.stable_identity_key.clone(), fact))
+        .collect::<BTreeMap<_, _>>();
+    let new_by_key = new_entities
+        .iter()
+        .map(|fact| (fact.stable_identity_key.clone(), fact))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    let mut changed = Vec::new();
+    let mut added_keys = BTreeSet::new();
+    let mut removed_keys = BTreeSet::new();
+
+    for (key, new_fact) in &new_by_key {
+        match old_by_key.get(key) {
+            None => {
+                added.push(EntityDeltaEntry::added(new_fact));
+                added_keys.insert(key.clone());
+            }
+            Some(old_fact) if old_fact.fact_hash != new_fact.fact_hash => {
+                changed.push(EntityDeltaEntry::changed(
+                    old_fact,
+                    new_fact,
+                    entity_change_reason(old_fact, new_fact),
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    for (key, old_fact) in &old_by_key {
+        if !new_by_key.contains_key(key) {
+            removed.push(EntityDeltaEntry::removed(old_fact));
+            removed_keys.insert(key.clone());
+        }
+    }
+
+    let old_correspondence = unique_entity_correspondence_index(old_entities);
+    let new_correspondence = unique_entity_correspondence_index(new_entities);
+    let mut converted_added = BTreeSet::new();
+    let mut converted_removed = BTreeSet::new();
+    for (key, old_fact) in old_correspondence {
+        let Some(new_fact) = new_correspondence.get(&key) else {
+            continue;
+        };
+        if old_fact.stable_identity_key == new_fact.stable_identity_key {
+            continue;
+        }
+        if !removed_keys.contains(&old_fact.stable_identity_key)
+            || !added_keys.contains(&new_fact.stable_identity_key)
+        {
+            continue;
+        }
+        changed.push(EntityDeltaEntry::changed(
+            old_fact,
+            new_fact,
+            entity_change_reason(old_fact, new_fact),
+        ));
+        converted_removed.insert(old_fact.stable_identity_key.clone());
+        converted_added.insert(new_fact.stable_identity_key.clone());
+    }
+
+    added.retain(|entry| !converted_added.contains(&entry.stable_identity_key));
+    removed.retain(|entry| !converted_removed.contains(&entry.stable_identity_key));
+    added.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    removed.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    changed.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    (added, removed, changed)
+}
+
+fn unique_entity_correspondence_index(
+    entities: &[NormalizedEntityFact],
+) -> BTreeMap<String, &NormalizedEntityFact> {
+    let mut grouped = BTreeMap::<String, Vec<&NormalizedEntityFact>>::new();
+    for entity in entities {
+        grouped
+            .entry(entity_correspondence_key(entity))
+            .or_default()
+            .push(entity);
+    }
+    grouped
+        .into_iter()
+        .filter_map(|(key, mut values)| {
+            if values.len() == 1 {
+                Some((key, values.remove(0)))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn entity_correspondence_key(entity: &NormalizedEntityFact) -> String {
+    [
+        entity.repo_relative_path.as_str(),
+        entity.entity_kind.as_str(),
+        entity.name.as_str(),
+    ]
+    .join("\0")
+}
+
+fn entity_change_reason(old: &NormalizedEntityFact, new: &NormalizedEntityFact) -> String {
+    let mut reasons = Vec::new();
+    if old.source_span != new.source_span {
+        reasons.push("source_span_changed");
+    }
+    if old.qualified_name != new.qualified_name {
+        reasons.push("qualified_name_changed");
+    }
+    if old.source_role != new.source_role {
+        reasons.push("source_role_changed");
+    }
+    if old.claimability != new.claimability {
+        reasons.push("claimability_changed");
+    }
+    if old.lifecycle != new.lifecycle {
+        reasons.push("lifecycle_changed");
+    }
+    if old.content_hash != new.content_hash || old.file_hash != new.file_hash {
+        reasons.push("content_or_file_hash_changed");
+    }
+    if reasons.is_empty() {
+        "normalized_entity_fact_hash_changed".to_string()
+    } else {
+        reasons.join("+")
+    }
+}
+
+fn classify_edge_delta_entries(
+    old_edges: &[NormalizedEdgeFact],
+    new_edges: &[NormalizedEdgeFact],
+    old_entities_by_id: &BTreeMap<String, NormalizedEntityFact>,
+    new_entities_by_id: &BTreeMap<String, NormalizedEntityFact>,
+) -> (
+    Vec<EdgeDeltaEntry>,
+    Vec<EdgeDeltaEntry>,
+    Vec<EdgeDeltaEntry>,
+) {
+    let old_by_key = old_edges
+        .iter()
+        .map(|fact| (fact.stable_identity_key.clone(), fact))
+        .collect::<BTreeMap<_, _>>();
+    let new_by_key = new_edges
+        .iter()
+        .map(|fact| (fact.stable_identity_key.clone(), fact))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut added_facts = BTreeMap::<String, &NormalizedEdgeFact>::new();
+    let mut removed_facts = BTreeMap::<String, &NormalizedEdgeFact>::new();
+    let mut changed = Vec::new();
+
+    for (key, new_fact) in &new_by_key {
+        match old_by_key.get(key) {
+            None => {
+                added_facts.insert(key.clone(), new_fact);
+            }
+            Some(old_fact) if old_fact.fact_hash != new_fact.fact_hash => {
+                changed.push(EdgeDeltaEntry::changed(
+                    old_fact,
+                    new_fact,
+                    old_entities_by_id,
+                    new_entities_by_id,
+                    edge_change_reason(old_fact, new_fact),
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    for (key, old_fact) in &old_by_key {
+        if !new_by_key.contains_key(key) {
+            removed_facts.insert(key.clone(), old_fact);
+        }
+    }
+
+    let mut converted_added = BTreeSet::new();
+    let mut converted_removed = BTreeSet::new();
+    convert_unique_edge_correspondence(
+        &removed_facts,
+        &added_facts,
+        old_entities_by_id,
+        new_entities_by_id,
+        &mut converted_removed,
+        &mut converted_added,
+        &mut changed,
+        edge_correspondence_endpoint_relation_key,
+    );
+    convert_unique_edge_correspondence(
+        &removed_facts,
+        &added_facts,
+        old_entities_by_id,
+        new_entities_by_id,
+        &mut converted_removed,
+        &mut converted_added,
+        &mut changed,
+        edge_correspondence_source_relation_span_key,
+    );
+    convert_unique_edge_correspondence(
+        &removed_facts,
+        &added_facts,
+        old_entities_by_id,
+        new_entities_by_id,
+        &mut converted_removed,
+        &mut converted_added,
+        &mut changed,
+        edge_correspondence_source_target_span_key,
+    );
+
+    let mut added = added_facts
+        .into_iter()
+        .filter(|(key, _)| !converted_added.contains(key))
+        .map(|(_, fact)| EdgeDeltaEntry::added(fact, new_entities_by_id))
+        .collect::<Vec<_>>();
+    let mut removed = removed_facts
+        .into_iter()
+        .filter(|(key, _)| !converted_removed.contains(key))
+        .map(|(_, fact)| EdgeDeltaEntry::removed(fact, old_entities_by_id))
+        .collect::<Vec<_>>();
+    added.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    removed.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    changed.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    (added, removed, changed)
+}
+
+fn convert_unique_edge_correspondence(
+    removed_facts: &BTreeMap<String, &NormalizedEdgeFact>,
+    added_facts: &BTreeMap<String, &NormalizedEdgeFact>,
+    old_entities_by_id: &BTreeMap<String, NormalizedEntityFact>,
+    new_entities_by_id: &BTreeMap<String, NormalizedEntityFact>,
+    converted_removed: &mut BTreeSet<String>,
+    converted_added: &mut BTreeSet<String>,
+    changed: &mut Vec<EdgeDeltaEntry>,
+    key_fn: fn(&NormalizedEdgeFact) -> String,
+) {
+    let old_correspondence =
+        unique_edge_correspondence_index(removed_facts.values().copied(), key_fn);
+    let new_correspondence =
+        unique_edge_correspondence_index(added_facts.values().copied(), key_fn);
+    for (key, old_fact) in old_correspondence {
+        let Some(new_fact) = new_correspondence.get(&key) else {
+            continue;
+        };
+        if converted_removed.contains(&old_fact.stable_identity_key)
+            || converted_added.contains(&new_fact.stable_identity_key)
+        {
+            continue;
+        }
+        changed.push(EdgeDeltaEntry::changed(
+            old_fact,
+            new_fact,
+            old_entities_by_id,
+            new_entities_by_id,
+            edge_change_reason(old_fact, new_fact),
+        ));
+        converted_removed.insert(old_fact.stable_identity_key.clone());
+        converted_added.insert(new_fact.stable_identity_key.clone());
+    }
+}
+
+fn unique_edge_correspondence_index<'a, I>(
+    edges: I,
+    key_fn: fn(&NormalizedEdgeFact) -> String,
+) -> BTreeMap<String, &'a NormalizedEdgeFact>
+where
+    I: IntoIterator<Item = &'a NormalizedEdgeFact>,
+{
+    let mut grouped = BTreeMap::<String, Vec<&NormalizedEdgeFact>>::new();
+    for edge in edges {
+        grouped.entry(key_fn(edge)).or_default().push(edge);
+    }
+    grouped
+        .into_iter()
+        .filter_map(|(key, mut values)| {
+            if values.len() == 1 {
+                Some((key, values.remove(0)))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn edge_correspondence_endpoint_relation_key(edge: &NormalizedEdgeFact) -> String {
+    [
+        edge.repo_relative_path.as_str(),
+        edge.source_entity_id.as_str(),
+        edge.target_entity_id.as_str(),
+        edge.relation.as_str(),
+    ]
+    .join("\0")
+}
+
+fn edge_correspondence_source_relation_span_key(edge: &NormalizedEdgeFact) -> String {
+    let span_key = edge_delta_span_key(&edge.source_span);
+    [
+        edge.repo_relative_path.as_str(),
+        edge.source_entity_id.as_str(),
+        edge.relation.as_str(),
+        span_key.as_str(),
+    ]
+    .join("\0")
+}
+
+fn edge_correspondence_source_target_span_key(edge: &NormalizedEdgeFact) -> String {
+    let span_key = edge_delta_span_key(&edge.source_span);
+    [
+        edge.repo_relative_path.as_str(),
+        edge.source_entity_id.as_str(),
+        edge.target_entity_id.as_str(),
+        span_key.as_str(),
+    ]
+    .join("\0")
+}
+
+fn edge_delta_span_key(span: &SourceSpan) -> String {
+    format!(
+        "{}:{}:{}-{}:{}",
+        normalize_graph_path(&span.repo_relative_path),
+        span.start_line,
+        span.start_column.unwrap_or(0),
+        span.end_line,
+        span.end_column.unwrap_or(0)
+    )
+}
+
+fn edge_change_reason(old: &NormalizedEdgeFact, new: &NormalizedEdgeFact) -> String {
+    let mut reasons = Vec::new();
+    if old.source_entity_id != new.source_entity_id {
+        reasons.push("source_endpoint_changed");
+    }
+    if old.target_entity_id != new.target_entity_id {
+        reasons.push("target_endpoint_changed");
+    }
+    if old.relation != new.relation {
+        reasons.push("relation_kind_changed");
+    }
+    if old.exactness != new.exactness {
+        reasons.push("exactness_changed");
+    }
+    if old.derived != new.derived {
+        reasons.push("derived_flag_changed");
+    }
+    if old.provenance_edges != new.provenance_edges
+        || old.provenance_status != new.provenance_status
+    {
+        reasons.push("provenance_changed");
+    }
+    if old.source_span != new.source_span {
+        reasons.push("source_span_changed");
+    }
+    if old.source_role != new.source_role {
+        reasons.push("source_role_changed");
+    }
+    if old.edge_class != new.edge_class || old.edge_context != new.edge_context {
+        reasons.push("edge_class_or_context_changed");
+    }
+    if old.claimability != new.claimability {
+        reasons.push("claimability_changed");
+    }
+    if old.lifecycle != new.lifecycle {
+        reasons.push("lifecycle_changed");
+    }
+    if reasons.is_empty() {
+        "normalized_edge_fact_hash_changed".to_string()
+    } else {
+        reasons.join("+")
+    }
+}
+
+fn normalized_edge_fact_warnings(fact: &NormalizedEdgeFact) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if fact.derived && fact.provenance_edges.is_empty() {
+        warnings.push("derived_edge_missing_provenance_not_claimable".to_string());
+    }
+    if edge_delta_exactness_is_heuristic_or_runtime(fact.exactness) {
+        warnings.push("heuristic_or_runtime_edge_not_claimable_graph_proof".to_string());
+    }
+    if !fact.claimability.graph_proof || !fact.claimability.claimable {
+        warnings.push("edge_delta_is_diagnostic_not_blocking_proof".to_string());
+    }
+    warnings.sort();
+    warnings.dedup();
+    warnings
+}
+
+fn edge_delta_relation_supported(relation: RelationKind) -> bool {
+    matches!(
+        relation,
+        RelationKind::Calls
+            | RelationKind::Callee
+            | RelationKind::Imports
+            | RelationKind::Exports
+            | RelationKind::Reads
+            | RelationKind::Writes
+            | RelationKind::FlowsTo
+            | RelationKind::MayMutate
+            | RelationKind::Mutates
+            | RelationKind::Tests
+            | RelationKind::Asserts
+            | RelationKind::Mocks
+            | RelationKind::Stubs
+            | RelationKind::Contains
+            | RelationKind::DefinedIn
+            | RelationKind::Declares
+            | RelationKind::Defines
+    )
+}
+
+fn edge_delta_exactness_is_heuristic_or_runtime(exactness: Exactness) -> bool {
+    matches!(
+        exactness,
+        Exactness::StaticHeuristic | Exactness::DynamicTrace | Exactness::Inferred
+    )
+}
+
+fn edge_relation_kind_counts(
+    added: &[EdgeDeltaEntry],
+    removed: &[EdgeDeltaEntry],
+    changed: &[EdgeDeltaEntry],
+) -> BTreeMap<String, usize> {
+    count_edge_delta_labels(added, removed, changed, |entry| entry.relation_kind.clone())
+}
+
+fn edge_exactness_counts(
+    added: &[EdgeDeltaEntry],
+    removed: &[EdgeDeltaEntry],
+    changed: &[EdgeDeltaEntry],
+) -> BTreeMap<String, usize> {
+    count_edge_delta_labels(added, removed, changed, |entry| {
+        entry.exactness_label.clone()
+    })
+}
+
+fn edge_derived_counts(
+    added: &[EdgeDeltaEntry],
+    removed: &[EdgeDeltaEntry],
+    changed: &[EdgeDeltaEntry],
+) -> BTreeMap<String, usize> {
+    count_edge_delta_labels(added, removed, changed, |entry| {
+        if entry.derived {
+            "derived".to_string()
+        } else {
+            "base".to_string()
+        }
+    })
+}
+
+fn edge_source_role_counts(
+    added: &[EdgeDeltaEntry],
+    removed: &[EdgeDeltaEntry],
+    changed: &[EdgeDeltaEntry],
+) -> BTreeMap<String, usize> {
+    count_edge_delta_labels(added, removed, changed, |entry| {
+        entry.source_role.as_str().to_string()
+    })
+}
+
+fn count_edge_delta_labels(
+    added: &[EdgeDeltaEntry],
+    removed: &[EdgeDeltaEntry],
+    changed: &[EdgeDeltaEntry],
+    label: fn(&EdgeDeltaEntry) -> String,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for entry in added.iter().chain(removed).chain(changed) {
+        *counts.entry(label(entry)).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn edge_degraded_relation_classes(
+    added: &[EdgeDeltaEntry],
+    removed: &[EdgeDeltaEntry],
+    changed: &[EdgeDeltaEntry],
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for entry in added.iter().chain(removed).chain(changed) {
+        if !entry.claimability.graph_proof || !entry.claimability.claimable {
+            *counts.entry(entry.relation_kind.clone()).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+fn edge_unsupported_relation_classes(
+    added: &[EdgeDeltaEntry],
+    removed: &[EdgeDeltaEntry],
+    changed: &[EdgeDeltaEntry],
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for entry in added.iter().chain(removed).chain(changed) {
+        if !edge_delta_relation_supported(entry.relation) {
+            *counts.entry(entry.relation_kind.clone()).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+fn edge_delta_exactness_preserved(
+    added: &[EdgeDeltaEntry],
+    removed: &[EdgeDeltaEntry],
+    changed: &[EdgeDeltaEntry],
+) -> bool {
+    added
+        .iter()
+        .chain(removed)
+        .chain(changed)
+        .all(|entry| !entry.exactness_label.is_empty())
+}
+
+fn edge_delta_derived_edges_require_provenance(
+    added: &[EdgeDeltaEntry],
+    removed: &[EdgeDeltaEntry],
+    changed: &[EdgeDeltaEntry],
+) -> bool {
+    added.iter().chain(removed).chain(changed).all(|entry| {
+        if entry.derived && entry.provenance_edges.is_empty() {
+            !entry.claimability.graph_proof
+                && !entry.claimability.claimable
+                && entry
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("missing_provenance"))
+        } else {
+            true
+        }
+    })
+}
+
+fn edge_delta_heuristic_unsupported_not_overclaimed(
+    added: &[EdgeDeltaEntry],
+    removed: &[EdgeDeltaEntry],
+    changed: &[EdgeDeltaEntry],
+) -> bool {
+    added.iter().chain(removed).chain(changed).all(|entry| {
+        let heuristic = edge_delta_exactness_is_heuristic_or_runtime(entry.exactness);
+        let unsupported = !edge_delta_relation_supported(entry.relation);
+        if heuristic {
+            !entry.claimability.graph_proof && !entry.claimability.claimable
+        } else if unsupported {
+            !entry.claimability.graph_proof
+                && !entry.claimability.claimable
+                && entry
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("unsupported"))
+        } else {
+            true
+        }
+    })
+}
+
+fn test_mock_edge_deltas_preserve_roles(
+    added: &[EdgeDeltaEntry],
+    removed: &[EdgeDeltaEntry],
+    changed: &[EdgeDeltaEntry],
+) -> bool {
+    added.iter().chain(removed).chain(changed).all(|entry| {
+        if matches!(
+            entry.relation,
+            RelationKind::Tests | RelationKind::Asserts | RelationKind::Mocks | RelationKind::Stubs
+        ) {
+            matches!(entry.source_role, EvidenceRole::Test | EvidenceRole::Mock)
+        } else {
+            true
+        }
+    })
+}
+
+fn claimable_edge_deltas_have_source_spans(
+    added: &[EdgeDeltaEntry],
+    removed: &[EdgeDeltaEntry],
+    changed: &[EdgeDeltaEntry],
+) -> bool {
+    added
+        .iter()
+        .chain(removed)
+        .chain(changed)
+        .filter(|entry| entry.claimability.claimable && entry.claimability.graph_proof)
+        .all(|entry| !entry.source_span.repo_relative_path.is_empty())
+}
+
+fn classify_source_role_delta_entries(
+    old_roles: &[NormalizedSourceRoleFact],
+    new_roles: &[NormalizedSourceRoleFact],
+) -> Vec<SourceRoleDeltaEntry> {
+    let old_by_key = old_roles
+        .iter()
+        .map(|fact| (fact.stable_identity_key.clone(), fact))
+        .collect::<BTreeMap<_, _>>();
+    let new_by_key = new_roles
+        .iter()
+        .map(|fact| (fact.stable_identity_key.clone(), fact))
+        .collect::<BTreeMap<_, _>>();
+    let mut changed = Vec::new();
+    for (key, new_fact) in &new_by_key {
+        match old_by_key.get(key) {
+            None => changed.push(SourceRoleDeltaEntry::added(new_fact)),
+            Some(old_fact) if old_fact.fact_hash != new_fact.fact_hash => {
+                changed.push(SourceRoleDeltaEntry::changed(old_fact, new_fact));
+            }
+            Some(_) => {}
+        }
+    }
+    for (key, old_fact) in &old_by_key {
+        if !new_by_key.contains_key(key) {
+            changed.push(SourceRoleDeltaEntry::removed(old_fact));
+        }
+    }
+    changed.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    changed
+}
+
+fn normalized_proof_strength(claimability: &NormalizedClaimabilityMetadata) -> String {
+    if claimability.graph_proof && claimability.claimable {
+        "graph_source_span_proof".to_string()
+    } else if claimability.graph_proof {
+        "diagnostic_graph_fact".to_string()
+    } else {
+        "non_graph_proof".to_string()
+    }
+}
+
+fn claimable_entity_deltas_have_source_spans(
+    old_entities: &[NormalizedEntityFact],
+    new_entities: &[NormalizedEntityFact],
+) -> bool {
+    old_entities
+        .iter()
+        .chain(new_entities)
+        .filter(|entity| entity.claimability.claimable && entity.claimability.graph_proof)
+        .all(|entity| entity.source_span.is_some())
+}
+
+fn omitted_after_limit(total: usize, limit: usize) -> usize {
+    if limit == usize::MAX {
+        0
+    } else {
+        total.saturating_sub(limit)
+    }
+}
+
+fn take_delta_items<T>(items: Vec<T>, limit: usize) -> Vec<T> {
+    if limit == usize::MAX {
+        items
+    } else {
+        items.into_iter().take(limit).collect()
+    }
+}
+
+pub fn snapshot_normalized_changed_facts_to_db(
+    repo_path: &Path,
+    changed_paths: &[PathBuf],
+    db_path: &Path,
+) -> Result<NormalizedFactSnapshot, IndexError> {
+    snapshot_normalized_facts_for_paths_to_db(
+        repo_path,
+        changed_paths,
+        &[],
+        db_path,
+        NormalizedFactSnapshotOptions::default(),
+    )
+}
+
+pub fn snapshot_normalized_facts_for_paths_to_db(
+    repo_path: &Path,
+    changed_paths: &[PathBuf],
+    closure_paths: &[PathBuf],
+    db_path: &Path,
+    options: NormalizedFactSnapshotOptions,
+) -> Result<NormalizedFactSnapshot, IndexError> {
+    let repo_root = resolve_repo_root_for_index(repo_path)?;
+    let changed_normalized =
+        normalize_paths_for_normalized_fact_snapshot(&repo_root, changed_paths)?;
+    let closure_normalized =
+        normalize_paths_for_normalized_fact_snapshot(&repo_root, closure_paths)?;
+    let exact_db_path = normalize_db_path(&repo_root, db_path);
+    let lifecycle = inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
+        repo_root: repo_root.clone(),
+        db_path: exact_db_path.clone(),
+        surface_name: "graph_delta.normalized_fact_snapshot".to_string(),
+        operation_kind: DbLifecycleOperationKind::NormalRead,
+        allow_stale_read: false,
+        allow_foreign_repo: false,
+        required_storage_mode: Some(StorageMode::Proof),
+        expected_scope: None,
+    })?;
+    if !lifecycle.safe_to_read || !lifecycle.claimable {
+        return Err(IndexError::Message(format!(
+            "normalized fact snapshot refused non-claimable DB at {}: {}",
+            exact_db_path.display(),
+            lifecycle.blockers.join("; ")
+        )));
+    }
+
+    let store = SqliteGraphStore::open_read_only(&exact_db_path)?;
+
+    let mut path_scope = BTreeMap::<String, String>::new();
+    for repo_relative_path in &changed_normalized {
+        path_scope.insert(
+            normalize_graph_path(repo_relative_path),
+            "changed".to_string(),
+        );
+    }
+    for repo_relative_path in &closure_normalized {
+        path_scope
+            .entry(normalize_graph_path(repo_relative_path))
+            .or_insert_with(|| "closure".to_string());
+    }
+
+    let mut facts = NormalizedFactSnapshotFacts::default();
+    let mut snapshot_paths = Vec::new();
+    let mut total_omitted = 0usize;
+    let mut truncated = false;
+    for (repo_relative_path, scope) in path_scope {
+        let mut path_budget = SnapshotPathBudget::new(options.max_facts_per_path);
+        collect_normalized_facts_for_path(
+            &store,
+            &repo_relative_path,
+            &scope,
+            &options,
+            &mut path_budget,
+            &mut facts,
+        )?;
+        total_omitted += path_budget.omitted;
+        truncated |= path_budget.omitted > 0;
+        snapshot_paths.push(NormalizedFactSnapshotPath {
+            repo_relative_path,
+            scope,
+            facts_seen: path_budget.seen,
+            facts_omitted: path_budget.omitted,
+        });
+    }
+
+    let changed_files = changed_normalized
+        .into_iter()
+        .map(normalize_graph_path)
+        .collect::<Vec<_>>();
+    let closure_files = closure_normalized
+        .into_iter()
+        .map(normalize_graph_path)
+        .collect::<Vec<_>>();
+
+    Ok(NormalizedFactSnapshot {
+        status: "complete".to_string(),
+        repo_root: path_string(&repo_root),
+        db_path: path_string(&exact_db_path),
+        exact_db_path_checked: lifecycle.exact_db_path_checked.clone(),
+        changed_files,
+        closure_files,
+        snapshot_paths,
+        claimable: lifecycle.claimable,
+        diagnostic_only: lifecycle.diagnostic_only,
+        lifecycle,
+        read_only: true,
+        bounded_to_changed_or_closure_files: true,
+        full_scan_count: 0,
+        facts,
+        omission: NormalizedFactOmission {
+            truncated,
+            omitted_count: total_omitted,
+            limit: Some(options.max_facts_per_path),
+            reason: truncated.then(|| {
+                "normalized fact snapshot exceeded max_facts_per_path; omitted facts are not implied absent"
+                    .to_string()
+            }),
+        },
+    })
+}
+
+fn normalize_paths_for_normalized_fact_snapshot(
+    repo_root: &Path,
+    paths: &[PathBuf],
+) -> Result<Vec<String>, IndexError> {
+    let mut normalized = paths
+        .iter()
+        .map(|path| {
+            normalize_changed_path(repo_root, path)
+                .map(|(_, repo_relative_path)| repo_relative_path)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    normalized.sort_by(|left, right| {
+        platform_path_identity_key(left).cmp(&platform_path_identity_key(right))
+    });
+    normalized.dedup_by(|left, right| {
+        platform_path_identity_key(left) == platform_path_identity_key(right)
+    });
+    Ok(normalized)
+}
+
+struct SnapshotPathBudget {
+    limit: usize,
+    seen: usize,
+    omitted: usize,
+}
+
+impl SnapshotPathBudget {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            seen: 0,
+            omitted: 0,
+        }
+    }
+
+    fn take(&mut self) -> bool {
+        self.seen += 1;
+        if self.limit == 0 || self.seen > self.limit {
+            self.omitted += 1;
+            false
+        } else {
+            true
+        }
+    }
+}
+
+fn collect_normalized_facts_for_path(
+    store: &SqliteGraphStore,
+    repo_relative_path: &str,
+    scope: &str,
+    options: &NormalizedFactSnapshotOptions,
+    budget: &mut SnapshotPathBudget,
+    facts: &mut NormalizedFactSnapshotFacts,
+) -> Result<(), IndexError> {
+    let source_role = store
+        .get_file(repo_relative_path)?
+        .as_ref()
+        .map(|file| NormalizedFileFact::from_file(file).source_role)
+        .unwrap_or(EvidenceRole::Unknown);
+
+    if let Some(file) = store.get_file(repo_relative_path)? {
+        push_fact(
+            budget,
+            facts,
+            NormalizedFileFact::from_file(&file),
+            |facts, fact| facts.files.push(fact),
+        );
+        push_fact(
+            budget,
+            facts,
+            NormalizedSourceRoleFact::new(
+                repo_relative_path,
+                "file",
+                repo_relative_path,
+                source_role,
+                "file manifest source role",
+            ),
+            |facts, fact| facts.source_roles.push(fact),
+        );
+    }
+
+    for entity in store.list_entities_by_file(repo_relative_path)? {
+        let fact = NormalizedEntityFact::from_entity(&entity);
+        let entity_source_role = fact.source_role;
+        let entity_key = fact.stable_identity_key.clone();
+        let entity_id = fact.entity_id.clone();
+        push_fact(budget, facts, fact, |facts, fact| facts.entities.push(fact));
+        push_fact(
+            budget,
+            facts,
+            NormalizedSourceRoleFact::new(
+                repo_relative_path,
+                "entity",
+                entity_id,
+                entity_source_role,
+                "entity source role",
+            ),
+            |facts, fact| facts.source_roles.push(fact),
+        );
+        if let Some(span) = entity.source_span {
+            let span_id = entity.id.clone();
+            push_fact(
+                budget,
+                facts,
+                NormalizedSourceSpanFact::new(
+                    span_id,
+                    entity_key,
+                    "entity",
+                    span,
+                    entity_source_role,
+                ),
+                |facts, fact| facts.source_spans.push(fact),
+            );
+        }
+    }
+
+    for edge in store.list_edges_by_file(repo_relative_path)? {
+        let fact = NormalizedEdgeFact::from_edge(&edge);
+        let edge_source_role = fact.source_role;
+        let edge_key = fact.stable_identity_key.clone();
+        let edge_id = fact.edge_id.clone();
+        push_fact(budget, facts, fact, |facts, fact| facts.edges.push(fact));
+        push_fact(
+            budget,
+            facts,
+            NormalizedSourceRoleFact::new(
+                repo_relative_path,
+                "edge",
+                edge_id.clone(),
+                edge_source_role,
+                "edge source role",
+            ),
+            |facts, fact| facts.source_roles.push(fact),
+        );
+        push_fact(
+            budget,
+            facts,
+            NormalizedSourceSpanFact::new(
+                edge_id,
+                edge_key,
+                "edge",
+                edge.source_span,
+                edge_source_role,
+            ),
+            |facts, fact| facts.source_spans.push(fact),
+        );
+    }
+
+    for (span_id, span) in store.list_source_spans_by_file(repo_relative_path)? {
+        push_fact(
+            budget,
+            facts,
+            NormalizedSourceSpanFact::new(
+                span_id.clone(),
+                span_id,
+                "source_span_row",
+                span,
+                source_role,
+            ),
+            |facts, fact| facts.source_spans.push(fact),
+        );
+    }
+
+    if options.include_text_evidence {
+        for hit in store.list_text_search_hits_by_file(repo_relative_path)? {
+            push_fact(
+                budget,
+                facts,
+                NormalizedTextEvidenceFact::new(
+                    &hit.repo_relative_path,
+                    hit.id,
+                    hit.kind.as_str(),
+                    hit.line,
+                    hit.title,
+                    hit.text,
+                ),
+                |facts, fact| facts.text_evidence.push(fact),
+            );
+        }
+    }
+
+    if options.include_path_evidence {
+        let path_evidence = store.list_path_evidence_by_file(repo_relative_path)?;
+        for path in &path_evidence {
+            push_fact(
+                budget,
+                facts,
+                NormalizedPathEvidenceFact::from_path_evidence(repo_relative_path, path),
+                |facts, fact| facts.path_evidence.push(fact),
+            );
+        }
+        if options.include_sidecar_freshness {
+            push_fact(
+                budget,
+                facts,
+                NormalizedSidecarFreshnessFact::new(
+                    repo_relative_path,
+                    "path_evidence",
+                    Some(repo_relative_path.to_string()),
+                    if path_evidence.is_empty() {
+                        "absent"
+                    } else {
+                        "current"
+                    },
+                    None,
+                ),
+                |facts, fact| facts.sidecar_freshness.push(fact),
+            );
+        }
+    }
+
+    if options.include_sidecar_freshness {
+        for layer in [
+            "candidate_spool",
+            "candidate_query_index",
+            "vector_chunks",
+            "vector_runtime",
+            "vector_audit",
+            "nuance_tokens",
+            "routing_handles",
+        ] {
+            push_fact(
+                budget,
+                facts,
+                NormalizedSidecarFreshnessFact::new(
+                    repo_relative_path,
+                    layer,
+                    Some(format!("{scope}:{repo_relative_path}")),
+                    "not_captured_by_graph_snapshot",
+                    Some(
+                        "runtime sidecar freshness is diagnostic metadata and not graph proof"
+                            .to_string(),
+                    ),
+                ),
+                |facts, fact| facts.sidecar_freshness.push(fact),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn push_fact<T>(
+    budget: &mut SnapshotPathBudget,
+    facts: &mut NormalizedFactSnapshotFacts,
+    fact: T,
+    push: impl FnOnce(&mut NormalizedFactSnapshotFacts, T),
+) where
+    for<'a> NormalizedFactEnvelope: From<&'a T>,
+{
+    if budget.take() {
+        facts.envelopes.push(NormalizedFactEnvelope::from(&fact));
+        push(facts, fact);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -9137,6 +12647,38 @@ pub fn update_changed_files_to_db(
 ) -> Result<IncrementalIndexSummary, IndexError> {
     let mut cache = IncrementalIndexCache::new(256)?;
     update_changed_files_with_cache_to_db(repo_path, changed_paths, db_path, &mut cache)
+}
+
+pub fn rtds_dependency_closure_for_changed_paths_to_db(
+    repo_path: &Path,
+    changed_paths: &[PathBuf],
+    db_path: &Path,
+) -> Result<RtdsDependencyClosureSummary, IndexError> {
+    let repo_root = resolve_repo_root_for_index(repo_path)?;
+    let exact_db_path = normalize_db_path(&repo_root, db_path);
+    let lifecycle = inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
+        repo_root: repo_root.clone(),
+        db_path: exact_db_path.clone(),
+        surface_name: "rtds.dependency_closure.read_scope".to_string(),
+        operation_kind: DbLifecycleOperationKind::NormalRead,
+        allow_stale_read: false,
+        allow_foreign_repo: false,
+        required_storage_mode: Some(StorageMode::Proof),
+        expected_scope: None,
+    })?;
+    if !lifecycle.safe_to_read || !lifecycle.claimable {
+        return Err(IndexError::Message(format!(
+            "RTDS dependency closure refused non-claimable DB at {}: {}",
+            exact_db_path.display(),
+            lifecycle.blockers.join("; ")
+        )));
+    }
+    let store = SqliteGraphStore::open_read_only(&exact_db_path)?;
+    let requested = changed_paths
+        .iter()
+        .map(|path| normalize_changed_path(&repo_root, path))
+        .collect::<Result<Vec<_>, _>>()?;
+    rtds_dependency_closure_for_changed_paths(&repo_root, &store, &requested)
 }
 
 pub fn update_changed_files_with_cache(
@@ -25276,7 +28818,7 @@ pub fn caller() {
     }
 
     #[test]
-    #[ignore = "audit gap: same-content rename detection and old/new identity mapping are not implemented yet"]
+    #[ignore = "audit gap: full-reindex semantic entity-id preservation or persisted mapping is outside the packet-level rename delta surface"]
     fn audit_rename_same_content_preserves_semantic_identity_or_records_mapping() {
         let repo = temp_repo("rename-identity");
         fs::write(
@@ -28099,6 +31641,1475 @@ pub fn caller() {
     }
 
     #[test]
+    fn normalized_fact_snapshot_preserves_identity_and_non_graph_boundaries() {
+        let repo = temp_repo("normalized-snapshot-identity");
+        write_test_file(
+            &repo,
+            "src/a.ts",
+            "export function shared() { return 1; }\n\
+             export function callShared() { return shared(); }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/b.ts",
+            "export function shared() { return 1; }\n\
+             export function callShared() { return shared(); }\n",
+        );
+        write_test_file(
+            &repo,
+            "tests/a.test.ts",
+            "export function shared() { return 2; }\n",
+        );
+        write_test_file(
+            &repo,
+            "docs/README.md",
+            "Snapshot text evidence is diagnostic, not graph proof.\n",
+        );
+        let db = repo.join("target").join("normalized-snapshot.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        let snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &[
+                PathBuf::from("src/a.ts"),
+                PathBuf::from("src/b.ts"),
+                PathBuf::from("tests/a.test.ts"),
+                PathBuf::from("docs/README.md"),
+            ],
+            &[],
+            &db,
+            NormalizedFactSnapshotOptions::default(),
+        )
+        .expect("snapshot");
+
+        assert_eq!(snapshot.status, "complete");
+        assert!(snapshot.read_only);
+        assert!(snapshot.bounded_to_changed_or_closure_files);
+        assert_eq!(snapshot.full_scan_count, 0);
+        assert_eq!(snapshot.changed_files.len(), 4);
+        assert!(!repo.join(".codegraph").exists());
+
+        let shared_entities = snapshot
+            .facts
+            .entities
+            .iter()
+            .filter(|entity| entity.name == "shared")
+            .collect::<Vec<_>>();
+        assert!(
+            shared_entities.len() >= 3,
+            "expected shared symbol in two source files plus test file: {shared_entities:?}"
+        );
+        let shared_keys = shared_entities
+            .iter()
+            .map(|entity| entity.stable_identity_key.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            shared_keys.len(),
+            shared_entities.len(),
+            "same-name symbols across files must not collapse"
+        );
+
+        let a_file = snapshot
+            .facts
+            .files
+            .iter()
+            .find(|file| file.repo_relative_path == "src/a.ts")
+            .expect("a file fact");
+        let b_file = snapshot
+            .facts
+            .files
+            .iter()
+            .find(|file| file.repo_relative_path == "src/b.ts")
+            .expect("b file fact");
+        assert_eq!(a_file.content_hash, b_file.content_hash);
+        assert_ne!(a_file.stable_identity_key, b_file.stable_identity_key);
+
+        assert!(snapshot.facts.entities.iter().any(|entity| {
+            entity.repo_relative_path == "tests/a.test.ts"
+                && entity.name == "shared"
+                && entity.source_role == EvidenceRole::Test
+        }));
+        assert!(snapshot
+            .facts
+            .text_evidence
+            .iter()
+            .any(|fact| fact.repo_relative_path == "docs/README.md"
+                && !fact.claimability.graph_proof
+                && !fact.claimability.claimable));
+        assert!(snapshot
+            .facts
+            .sidecar_freshness
+            .iter()
+            .all(|fact| !fact.claimability.graph_proof));
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn normalized_fact_snapshot_supports_old_and_new_file_scoped_state() {
+        let repo = temp_repo("normalized-snapshot-old-new");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function oldName() { return 1; }\n",
+        );
+        let db = repo.join("target").join("normalized-old-new.sqlite");
+        index_repo_to_db(&repo, &db).expect("index old");
+
+        let old_snapshot =
+            snapshot_normalized_changed_facts_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+                .expect("old snapshot");
+        assert!(old_snapshot
+            .facts
+            .entities
+            .iter()
+            .any(|entity| entity.name == "oldName"));
+
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function newName() { return 2; }\n",
+        );
+        update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            .expect("hot update");
+        let new_snapshot =
+            snapshot_normalized_changed_facts_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+                .expect("new snapshot");
+
+        assert!(new_snapshot
+            .facts
+            .entities
+            .iter()
+            .any(|entity| entity.name == "newName"));
+        assert!(!new_snapshot
+            .facts
+            .entities
+            .iter()
+            .any(|entity| entity.name == "oldName"));
+        assert_eq!(new_snapshot.snapshot_paths.len(), 1);
+        assert_eq!(
+            new_snapshot.snapshot_paths[0].repo_relative_path,
+            "src/service.ts"
+        );
+        assert_eq!(new_snapshot.full_scan_count, 0);
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn entity_source_role_delta_reports_added_removed_changed_and_distinct_same_names() {
+        let repo = temp_repo("entity-source-role-delta-entities");
+        write_test_file(
+            &repo,
+            "src/a.ts",
+            "export function sharedDeltaName() { return 1; }\n\
+             export function removedDeltaName() { return 2; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/b.ts",
+            "export function sharedDeltaName() { return 3; }\n",
+        );
+        let db = repo.join("target").join("entity-delta.sqlite");
+        index_repo_to_db(&repo, &db).expect("index old");
+
+        let old_snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &[PathBuf::from("src/a.ts"), PathBuf::from("src/b.ts")],
+            &[],
+            &db,
+            NormalizedFactSnapshotOptions::default(),
+        )
+        .expect("old snapshot");
+
+        write_test_file(
+            &repo,
+            "src/a.ts",
+            "\nexport function sharedDeltaName() { return 10; }\n\
+             export function addedDeltaName() { return 4; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/b.ts",
+            "\nexport function sharedDeltaName() { return 30; }\n",
+        );
+        update_changed_files_to_db(
+            &repo,
+            &[PathBuf::from("src/a.ts"), PathBuf::from("src/b.ts")],
+            &db,
+        )
+        .expect("hot update");
+        let new_snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &[PathBuf::from("src/a.ts"), PathBuf::from("src/b.ts")],
+            &[],
+            &db,
+            NormalizedFactSnapshotOptions::default(),
+        )
+        .expect("new snapshot");
+
+        let delta = compute_entity_source_role_delta(
+            &old_snapshot,
+            &new_snapshot,
+            EntitySourceRoleDeltaOptions {
+                max_items_per_category: usize::MAX,
+            },
+        );
+
+        assert_eq!(delta.status, "complete");
+        assert!(delta.snapshot_read_only);
+        assert!(delta.snapshot_bounded_to_changed_or_closure_files);
+        assert!(delta.entities_added.iter().any(|entry| {
+            entry.name == "addedDeltaName"
+                && entry
+                    .new
+                    .as_ref()
+                    .is_some_and(|new| new.source_span.is_some())
+        }));
+        assert!(delta
+            .entities_removed
+            .iter()
+            .any(|entry| entry.name == "removedDeltaName"));
+        let shared_changed = delta
+            .entities_changed
+            .iter()
+            .filter(|entry| entry.name == "sharedDeltaName")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            shared_changed.len(),
+            2,
+            "same-name symbols in two files must stay path-distinct: {shared_changed:?}"
+        );
+        let changed_keys = shared_changed
+            .iter()
+            .map(|entry| entry.stable_identity_key.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(changed_keys.len(), shared_changed.len());
+        assert!(shared_changed
+            .iter()
+            .all(|entry| entry.reason.contains("source_span_changed")));
+        assert!(delta.source_spans_present_for_claimable_entity_deltas);
+        assert!(delta.text_evidence_not_graph_entity_delta);
+        assert!(delta.source_navigation_only_not_graph_entity_delta);
+        assert!(delta.claim_boundaries_preserved);
+        assert!(!delta.public_claim);
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn entity_source_role_delta_reports_source_role_changes_without_promotion() {
+        let repo = temp_repo("entity-source-role-delta-role");
+        write_test_file(
+            &repo,
+            "src/lib.rs",
+            "pub fn production_entry() -> i32 {\n    1\n}\n",
+        );
+        let db = repo.join("target").join("role-delta.sqlite");
+        index_repo_to_db(&repo, &db).expect("index old");
+
+        let old_snapshot =
+            snapshot_normalized_changed_facts_to_db(&repo, &[PathBuf::from("src/lib.rs")], &db)
+                .expect("old snapshot");
+        write_test_file(
+            &repo,
+            "src/lib.rs",
+            "pub fn production_entry() -> i32 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn inline_delta_test_case() {\n        assert_eq!(production_entry(), 1);\n    }\n}\n",
+        );
+        update_changed_files_to_db(&repo, &[PathBuf::from("src/lib.rs")], &db).expect("hot update");
+        let new_snapshot =
+            snapshot_normalized_changed_facts_to_db(&repo, &[PathBuf::from("src/lib.rs")], &db)
+                .expect("new snapshot");
+        let delta = compute_entity_source_role_delta(
+            &old_snapshot,
+            &new_snapshot,
+            EntitySourceRoleDeltaOptions {
+                max_items_per_category: usize::MAX,
+            },
+        );
+
+        assert!(
+            delta.source_roles_changed_count > 0,
+            "inline test addition should update source-role facts: {delta:?}"
+        );
+        assert!(delta.source_roles_changed.iter().any(|entry| {
+            entry.repo_relative_path == "src/lib.rs"
+                && entry.new_source_role == Some(EvidenceRole::Test)
+                && !entry.claimability.graph_proof
+        }));
+        assert!(delta.entities_added.iter().any(|entry| {
+            entry.name == "inline_delta_test_case" && entry.source_role == EvidenceRole::Test
+        }));
+        assert!(delta.claim_boundaries_preserved);
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn entity_source_role_delta_excludes_text_evidence_from_graph_entities() {
+        let repo = temp_repo("entity-source-role-delta-text");
+        write_test_file(&repo, "docs/README.md", "old text evidence only\n");
+        let db = repo.join("target").join("text-delta.sqlite");
+        index_repo_to_db(&repo, &db).expect("index old");
+
+        let mut old_snapshot =
+            snapshot_normalized_changed_facts_to_db(&repo, &[PathBuf::from("docs/README.md")], &db)
+                .expect("old snapshot");
+        old_snapshot
+            .facts
+            .entities
+            .push(NormalizedEntityFact::from_entity(&Entity {
+                id: stable_entity_id_for_kind(
+                    "docs/README.md",
+                    EntityKind::Function,
+                    "source_navigation_only",
+                    None,
+                ),
+                kind: EntityKind::Function,
+                name: "source_navigation_only".to_string(),
+                qualified_name: "source_navigation_only".to_string(),
+                repo_relative_path: "docs/README.md".to_string(),
+                source_span: None,
+                content_hash: None,
+                file_hash: None,
+                created_from: "source_navigation_diagnostic_fixture".to_string(),
+                confidence: 0.0,
+                metadata: Metadata::default(),
+            }));
+        write_test_file(&repo, "docs/README.md", "new text evidence only\n");
+        update_changed_files_to_db(&repo, &[PathBuf::from("docs/README.md")], &db)
+            .expect("hot update");
+        let new_snapshot =
+            snapshot_normalized_changed_facts_to_db(&repo, &[PathBuf::from("docs/README.md")], &db)
+                .expect("new snapshot");
+        let delta = compute_entity_source_role_delta(
+            &old_snapshot,
+            &new_snapshot,
+            EntitySourceRoleDeltaOptions::default(),
+        );
+
+        assert_eq!(delta.entities_added_count, 0);
+        assert_eq!(delta.entities_removed_count, 0);
+        assert_eq!(delta.entities_changed_count, 0);
+        assert_eq!(delta.edges_added_count, 0);
+        assert_eq!(delta.edges_removed_count, 0);
+        assert_eq!(delta.edges_changed_count, 0);
+        assert!(delta.text_evidence_not_graph_entity_delta);
+        assert!(delta.text_candidate_evidence_not_graph_delta);
+        assert!(delta.source_navigation_only_not_graph_entity_delta);
+        assert!(delta.claim_boundaries_preserved);
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn rename_aware_delta_supported_for_unique_content_hash_match() {
+        let repo = temp_repo("graph-delta-rename-unique");
+        write_test_file(
+            &repo,
+            "src/old_name.ts",
+            "export function movedSymbol() { return 'ok'; }\n",
+        );
+        let db = repo.join("target").join("rename.sqlite");
+        index_repo_to_db(&repo, &db).expect("index old");
+        let old_snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &[
+                PathBuf::from("src/old_name.ts"),
+                PathBuf::from("src/new_name.ts"),
+            ],
+            &[],
+            &db,
+            NormalizedFactSnapshotOptions::default(),
+        )
+        .expect("old snapshot");
+
+        fs::rename(repo.join("src/old_name.ts"), repo.join("src/new_name.ts"))
+            .expect("rename file");
+        update_changed_files_to_db(
+            &repo,
+            &[
+                PathBuf::from("src/old_name.ts"),
+                PathBuf::from("src/new_name.ts"),
+            ],
+            &db,
+        )
+        .expect("rename update");
+        let new_snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &[
+                PathBuf::from("src/old_name.ts"),
+                PathBuf::from("src/new_name.ts"),
+            ],
+            &[],
+            &db,
+            NormalizedFactSnapshotOptions::default(),
+        )
+        .expect("new snapshot");
+        let delta = compute_entity_source_role_delta(
+            &old_snapshot,
+            &new_snapshot,
+            EntitySourceRoleDeltaOptions {
+                max_items_per_category: usize::MAX,
+            },
+        );
+
+        assert!(delta.rename_aware_delta_supported);
+        assert_eq!(delta.rename_detection_status, "supported");
+        assert!(delta.rename_ambiguities.is_empty(), "{delta:?}");
+        let rename = delta
+            .file_renames_detected
+            .iter()
+            .find(|entry| {
+                entry.old_path.as_deref() == Some("src/old_name.ts")
+                    && entry.new_path.as_deref() == Some("src/new_name.ts")
+            })
+            .expect("deterministic rename entry");
+        assert_eq!(rename.rename_status, "detected");
+        assert!(rename.content_hash_match);
+        assert!(!rename.ambiguity);
+        assert!(!rename.fallback_add_remove);
+        assert_eq!(rename.graph_proof, false);
+        assert_ne!(rename.old_file_identity_key, rename.new_file_identity_key);
+        assert!(delta.duplicate_content_paths_distinct);
+        assert!(delta.entities_removed.iter().any(|entry| {
+            entry.repo_relative_path == "src/old_name.ts" && entry.name == "movedSymbol"
+        }));
+        assert!(delta.entities_added.iter().any(|entry| {
+            entry.repo_relative_path == "src/new_name.ts" && entry.name == "movedSymbol"
+        }));
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn rename_unknown_when_ambiguous_and_duplicate_content_paths_distinct() {
+        let repo = temp_repo("graph-delta-rename-ambiguous");
+        let source = "export function sameContentRename() { return 'same'; }\n";
+        write_test_file(&repo, "src/old_a.ts", source);
+        write_test_file(&repo, "src/old_b.ts", source);
+        let db = repo.join("target").join("rename-ambiguous.sqlite");
+        index_repo_to_db(&repo, &db).expect("index old");
+        let old_snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &[
+                PathBuf::from("src/old_a.ts"),
+                PathBuf::from("src/old_b.ts"),
+                PathBuf::from("src/new.ts"),
+            ],
+            &[],
+            &db,
+            NormalizedFactSnapshotOptions::default(),
+        )
+        .expect("old snapshot");
+
+        fs::remove_file(repo.join("src/old_a.ts")).expect("remove old a");
+        fs::remove_file(repo.join("src/old_b.ts")).expect("remove old b");
+        write_test_file(&repo, "src/new.ts", source);
+        update_changed_files_to_db(
+            &repo,
+            &[
+                PathBuf::from("src/old_a.ts"),
+                PathBuf::from("src/old_b.ts"),
+                PathBuf::from("src/new.ts"),
+            ],
+            &db,
+        )
+        .expect("ambiguous rename update");
+        let new_snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &[
+                PathBuf::from("src/old_a.ts"),
+                PathBuf::from("src/old_b.ts"),
+                PathBuf::from("src/new.ts"),
+            ],
+            &[],
+            &db,
+            NormalizedFactSnapshotOptions::default(),
+        )
+        .expect("new snapshot");
+        let delta = compute_entity_source_role_delta(
+            &old_snapshot,
+            &new_snapshot,
+            EntitySourceRoleDeltaOptions {
+                max_items_per_category: usize::MAX,
+            },
+        );
+
+        assert!(delta.rename_aware_delta_supported);
+        assert!(delta.rename_unknown_when_ambiguous, "{delta:?}");
+        assert!(delta.duplicate_content_paths_distinct);
+        assert!(delta.file_renames_detected.is_empty(), "{delta:?}");
+        let ambiguity = delta
+            .rename_ambiguities
+            .iter()
+            .find(|entry| entry.ambiguity && entry.fallback_add_remove)
+            .expect("ambiguous fallback entry");
+        assert_eq!(ambiguity.rename_status, "unknown");
+        assert!(ambiguity.content_hash_match);
+        assert_eq!(ambiguity.graph_proof, false);
+        assert!(ambiguity
+            .ambiguity_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("2 removed path")));
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn text_evidence_rename_remains_non_graph_proof() {
+        let repo = temp_repo("graph-delta-text-rename");
+        write_test_file(&repo, "docs/old.md", "same text evidence rename\n");
+        let db = repo.join("target").join("text-rename.sqlite");
+        index_repo_to_db(&repo, &db).expect("index old");
+        let old_snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &[PathBuf::from("docs/old.md"), PathBuf::from("docs/new.md")],
+            &[],
+            &db,
+            NormalizedFactSnapshotOptions::default(),
+        )
+        .expect("old snapshot");
+
+        fs::rename(repo.join("docs/old.md"), repo.join("docs/new.md")).expect("rename docs");
+        update_changed_files_to_db(
+            &repo,
+            &[PathBuf::from("docs/old.md"), PathBuf::from("docs/new.md")],
+            &db,
+        )
+        .expect("text rename update");
+        let new_snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &[PathBuf::from("docs/old.md"), PathBuf::from("docs/new.md")],
+            &[],
+            &db,
+            NormalizedFactSnapshotOptions::default(),
+        )
+        .expect("new snapshot");
+        let delta = compute_entity_source_role_delta(
+            &old_snapshot,
+            &new_snapshot,
+            EntitySourceRoleDeltaOptions {
+                max_items_per_category: usize::MAX,
+            },
+        );
+
+        let rename = delta
+            .file_renames_detected
+            .iter()
+            .find(|entry| {
+                entry.old_path.as_deref() == Some("docs/old.md")
+                    && entry.new_path.as_deref() == Some("docs/new.md")
+            })
+            .expect("text rename entry");
+        assert_eq!(rename.rename_status, "detected");
+        assert_eq!(rename.evidence_kind, "text_or_non_parser_file_manifest");
+        assert_eq!(rename.graph_proof, false);
+        assert_eq!(rename.proof_strength, "file_manifest_lifecycle");
+        assert!(delta.text_evidence_not_graph_entity_delta);
+        assert!(delta.claim_boundaries_preserved);
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn span_text_path_sidecar_delta_reports_non_graph_layers_without_promotion() {
+        let repo = temp_repo("span-text-path-sidecar-delta");
+        let db = repo.join("target").join("span-text-path-sidecar.sqlite");
+        let mut old_snapshot = edge_delta_seed_snapshot(&repo, &db, "src/service.ts");
+        let mut new_snapshot = old_snapshot.clone();
+
+        let old_entity = edge_delta_entity_fact(
+            "src/service.ts",
+            "entity://span/changed",
+            "changed_span_target",
+            1,
+            EvidenceRole::Production,
+        );
+        let new_entity = edge_delta_entity_fact(
+            "src/service.ts",
+            "entity://span/changed",
+            "changed_span_target",
+            3,
+            EvidenceRole::Production,
+        );
+        let old_entity_span = old_entity.source_span.clone().expect("old span");
+        let new_entity_span = new_entity.source_span.clone().expect("new span");
+        old_snapshot.facts.entities = vec![old_entity.clone()];
+        new_snapshot.facts.entities = vec![new_entity.clone()];
+        old_snapshot.facts.edges.clear();
+        new_snapshot.facts.edges.clear();
+        old_snapshot.facts.source_spans = vec![
+            NormalizedSourceSpanFact::new(
+                old_entity.entity_id.clone(),
+                old_entity.stable_identity_key.clone(),
+                "entity",
+                old_entity_span,
+                EvidenceRole::Production,
+            ),
+            NormalizedSourceSpanFact::new(
+                "source-navigation-only",
+                "source-navigation-diagnostic",
+                "source_navigation",
+                SourceSpan::with_columns("src/service.ts", 10, 1, 10, 8),
+                EvidenceRole::Production,
+            ),
+        ];
+        new_snapshot.facts.source_spans = vec![
+            NormalizedSourceSpanFact::new(
+                new_entity.entity_id.clone(),
+                new_entity.stable_identity_key.clone(),
+                "entity",
+                new_entity_span,
+                EvidenceRole::Production,
+            ),
+            NormalizedSourceSpanFact::new(
+                "source-navigation-only",
+                "source-navigation-diagnostic",
+                "source_navigation",
+                SourceSpan::with_columns("src/service.ts", 11, 1, 11, 8),
+                EvidenceRole::Production,
+            ),
+        ];
+        old_snapshot.facts.text_evidence = vec![NormalizedTextEvidenceFact::new(
+            "docs/README.md",
+            "readme:1",
+            "markdown",
+            Some(1),
+            "README",
+            "old text delta token",
+        )];
+        new_snapshot.facts.text_evidence = vec![NormalizedTextEvidenceFact::new(
+            "docs/README.md",
+            "readme:1",
+            "markdown",
+            Some(1),
+            "README",
+            "new text delta token",
+        )];
+        old_snapshot.facts.path_evidence = vec![NormalizedPathEvidenceFact::from_path_evidence(
+            "src/service.ts",
+            &PathEvidence {
+                id: "path://old".to_string(),
+                summary: None,
+                source: old_entity.entity_id.clone(),
+                target: new_entity.entity_id.clone(),
+                metapath: vec![RelationKind::Calls],
+                edges: Vec::new(),
+                source_spans: vec![SourceSpan::with_columns("src/service.ts", 1, 1, 1, 24)],
+                exactness: Exactness::ParserVerified,
+                length: 1,
+                confidence: 1.0,
+                metadata: Metadata::default(),
+            },
+        )];
+        new_snapshot.facts.path_evidence.clear();
+        old_snapshot.facts.sidecar_freshness = vec![
+            NormalizedSidecarFreshnessFact::new(
+                "src/service.ts",
+                "candidate_spool",
+                Some("src/service.ts".to_string()),
+                "current",
+                None,
+            ),
+            NormalizedSidecarFreshnessFact::new(
+                "src/service.ts",
+                "vector_chunks",
+                Some("src/service.ts".to_string()),
+                "current",
+                None,
+            ),
+        ];
+        new_snapshot.facts.sidecar_freshness = vec![
+            NormalizedSidecarFreshnessFact::new(
+                "src/service.ts",
+                "candidate_spool",
+                Some("src/service.ts".to_string()),
+                "stale",
+                Some("changed_file_invalidated_candidate_spool".to_string()),
+            ),
+            NormalizedSidecarFreshnessFact::new(
+                "src/service.ts",
+                "vector_chunks",
+                Some("src/service.ts".to_string()),
+                "stale",
+                Some("changed_file_invalidated_vector_chunks".to_string()),
+            ),
+            NormalizedSidecarFreshnessFact::new(
+                "src/service.ts",
+                "vector_runtime",
+                Some("src/service.ts".to_string()),
+                "filesystem_inaccessible",
+                Some("sidecar directory unavailable".to_string()),
+            ),
+        ];
+
+        let delta = compute_entity_source_role_delta(
+            &old_snapshot,
+            &new_snapshot,
+            EntitySourceRoleDeltaOptions {
+                max_items_per_category: usize::MAX,
+            },
+        );
+
+        assert_eq!(delta.source_spans_changed_count, 2, "{delta:?}");
+        assert!(delta.source_spans_changed.iter().any(|entry| {
+            entry.associated_fact_kind == "entity"
+                && entry.associated_fact_claimable
+                && entry.claimability.graph_proof
+                && entry.reason.contains("source_span_changed")
+        }));
+        assert!(delta.source_spans_changed.iter().any(|entry| {
+            entry.associated_fact_kind == "source_navigation"
+                && !entry.associated_fact_claimable
+                && !entry.claimability.graph_proof
+                && entry
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("not_claimable"))
+        }));
+        assert_eq!(delta.text_evidence_changed_count, 1);
+        assert!(delta
+            .text_evidence_changed
+            .iter()
+            .all(|entry| !entry.graph_proof && entry.proof_strength == "text_evidence"));
+        assert_eq!(delta.path_evidence_invalidated_count, 1);
+        assert!(delta
+            .path_evidence_invalidated
+            .iter()
+            .all(|entry| !entry.graph_proof
+                && entry.change_kind == "invalidated"
+                && entry.affected_path == "src/service.ts"));
+        assert_eq!(
+            delta.candidate_spool_invalidated_or_refreshed.action,
+            "invalidated"
+        );
+        assert_eq!(delta.vector_chunks_invalidated.action, "invalidated");
+        assert_eq!(
+            delta.vector_runtime_status_changed.classification,
+            "filesystem_inaccessible"
+        );
+        assert!(!delta.candidate_spool_invalidated_or_refreshed.graph_proof);
+        assert!(!delta.vector_chunks_invalidated.graph_proof);
+        assert!(delta.proof_ladder_changes["text_evidence"].changed);
+        assert!(delta.proof_ladder_changes["symbol_evidence"].changed);
+        assert!(delta.proof_ladder_changes["candidate_evidence"].changed);
+        assert!(!delta.proof_ladder_changes.contains_key("mutation_proof"));
+        assert!(!delta.proof_ladder_changes.contains_key("flow_proof"));
+        assert!(delta.freshness_delta_not_graph_proof);
+        assert!(delta.access_vs_corrupt_classification_safe);
+        assert!(delta.stale_sidecars_not_used_as_fresh);
+        assert!(delta.claim_boundaries_preserved);
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn span_text_path_sidecar_delta_reports_deleted_and_renamed_source_spans() {
+        let repo = temp_repo("span-text-path-sidecar-deleted-renamed");
+        let db = repo.join("target").join("span-deleted-renamed.sqlite");
+        let mut old_snapshot = edge_delta_seed_snapshot(&repo, &db, "src/deleted.ts");
+        let mut new_snapshot = old_snapshot.clone();
+
+        let deleted = edge_delta_entity_fact(
+            "src/deleted.ts",
+            "entity://deleted/function",
+            "deleted_symbol",
+            1,
+            EvidenceRole::Production,
+        );
+        let old_renamed = edge_delta_entity_fact(
+            "src/old_name.ts",
+            "entity://renamed/function",
+            "renamed_symbol",
+            1,
+            EvidenceRole::Production,
+        );
+        let new_renamed = edge_delta_entity_fact(
+            "src/new_name.ts",
+            "entity://renamed/function",
+            "renamed_symbol",
+            1,
+            EvidenceRole::Production,
+        );
+        old_snapshot.facts.entities = vec![deleted.clone(), old_renamed.clone()];
+        new_snapshot.facts.entities = vec![new_renamed.clone()];
+        old_snapshot.facts.edges.clear();
+        new_snapshot.facts.edges.clear();
+        old_snapshot.facts.source_spans = vec![
+            NormalizedSourceSpanFact::new(
+                deleted.entity_id.clone(),
+                deleted.stable_identity_key.clone(),
+                "entity",
+                deleted.source_span.clone().expect("deleted span"),
+                EvidenceRole::Production,
+            ),
+            NormalizedSourceSpanFact::new(
+                old_renamed.entity_id.clone(),
+                old_renamed.stable_identity_key.clone(),
+                "entity",
+                old_renamed.source_span.clone().expect("old renamed span"),
+                EvidenceRole::Production,
+            ),
+        ];
+        new_snapshot.facts.source_spans = vec![NormalizedSourceSpanFact::new(
+            new_renamed.entity_id.clone(),
+            new_renamed.stable_identity_key.clone(),
+            "entity",
+            new_renamed.source_span.clone().expect("new renamed span"),
+            EvidenceRole::Production,
+        )];
+
+        let delta = compute_entity_source_role_delta(
+            &old_snapshot,
+            &new_snapshot,
+            EntitySourceRoleDeltaOptions {
+                max_items_per_category: usize::MAX,
+            },
+        );
+
+        assert!(delta
+            .source_spans_removed
+            .iter()
+            .any(|entry| entry.repo_relative_path == "src/deleted.ts"
+                && entry.change_kind == "removed"
+                && entry.claimability.graph_proof));
+        assert!(delta
+            .source_spans_removed
+            .iter()
+            .any(|entry| entry.repo_relative_path == "src/old_name.ts"));
+        assert!(delta
+            .source_spans_added
+            .iter()
+            .any(|entry| entry.repo_relative_path == "src/new_name.ts"));
+        assert!(delta.source_spans_changed_reported);
+        assert!(delta.claim_boundaries_preserved);
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    fn edge_delta_entity_fact(
+        path: &str,
+        id: &str,
+        name: &str,
+        line: u32,
+        role: EvidenceRole,
+    ) -> NormalizedEntityFact {
+        let mut metadata = Metadata::new();
+        metadata.insert(
+            "source_role".to_string(),
+            serde_json::Value::String(role.as_str().to_string()),
+        );
+        NormalizedEntityFact::from_entity(&Entity {
+            id: id.to_string(),
+            kind: EntityKind::Function,
+            name: name.to_string(),
+            qualified_name: format!("{path}::{name}"),
+            repo_relative_path: path.to_string(),
+            source_span: Some(SourceSpan::with_columns(path, line, 1, line, 24)),
+            content_hash: Some(content_hash(name)),
+            file_hash: Some(content_hash(path)),
+            created_from: "edge_delta_fixture".to_string(),
+            confidence: 1.0,
+            metadata,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn edge_delta_edge_fact(
+        path: &str,
+        edge_id: &str,
+        source_entity_id: &str,
+        target_entity_id: &str,
+        relation: RelationKind,
+        exactness: Exactness,
+        line: u32,
+        derived: bool,
+        provenance_edges: Vec<String>,
+        role: EvidenceRole,
+    ) -> NormalizedEdgeFact {
+        let mut metadata = Metadata::new();
+        metadata.insert(
+            "source_role".to_string(),
+            serde_json::Value::String(role.as_str().to_string()),
+        );
+        let context = match role {
+            EvidenceRole::Production => EdgeContext::Production,
+            EvidenceRole::Test => EdgeContext::Test,
+            EvidenceRole::Mock => EdgeContext::Mock,
+            EvidenceRole::Mixed => EdgeContext::Mixed,
+            EvidenceRole::Unknown => EdgeContext::Unknown,
+        };
+        let edge_class = if derived {
+            EdgeClass::Derived
+        } else if matches!(
+            exactness,
+            Exactness::StaticHeuristic | Exactness::DynamicTrace | Exactness::Inferred
+        ) {
+            EdgeClass::BaseHeuristic
+        } else if matches!(relation, RelationKind::Tests | RelationKind::Asserts) {
+            EdgeClass::Test
+        } else if matches!(relation, RelationKind::Mocks | RelationKind::Stubs) {
+            EdgeClass::Mock
+        } else {
+            EdgeClass::BaseExact
+        };
+        NormalizedEdgeFact::from_edge(&Edge {
+            id: edge_id.to_string(),
+            head_id: source_entity_id.to_string(),
+            relation,
+            tail_id: target_entity_id.to_string(),
+            source_span: SourceSpan::with_columns(path, line, 3, line, 28),
+            repo_commit: None,
+            file_hash: Some(content_hash(edge_id)),
+            extractor: "edge_delta_fixture".to_string(),
+            confidence: 1.0,
+            exactness,
+            edge_class,
+            context,
+            derived,
+            provenance_edges,
+            metadata,
+        })
+    }
+
+    fn edge_delta_seed_snapshot(repo: &Path, db: &Path, path: &str) -> NormalizedFactSnapshot {
+        write_test_file(repo, path, "export function anchor() { return 1; }\n");
+        index_repo_to_db(repo, db).expect("index edge delta seed");
+        snapshot_normalized_changed_facts_to_db(repo, &[PathBuf::from(path)], db)
+            .expect("seed snapshot")
+    }
+
+    #[test]
+    fn entity_source_role_delta_reports_edge_add_remove_change_with_exact_metadata() {
+        let repo = temp_repo("entity-source-role-delta-edges-exact");
+        let db = repo.join("target").join("edge-delta.sqlite");
+        let mut old_snapshot = edge_delta_seed_snapshot(&repo, &db, "src/service.ts");
+        let mut new_snapshot = old_snapshot.clone();
+
+        let caller = edge_delta_entity_fact(
+            "src/service.ts",
+            "entity://service/caller",
+            "caller",
+            1,
+            EvidenceRole::Production,
+        );
+        let old_target = edge_delta_entity_fact(
+            "src/service.ts",
+            "entity://service/old-target",
+            "oldTarget",
+            2,
+            EvidenceRole::Production,
+        );
+        let new_target = edge_delta_entity_fact(
+            "src/service.ts",
+            "entity://service/new-target",
+            "newTarget",
+            3,
+            EvidenceRole::Production,
+        );
+        let stable_target = edge_delta_entity_fact(
+            "src/service.ts",
+            "entity://service/stable-target",
+            "stableTarget",
+            4,
+            EvidenceRole::Production,
+        );
+        old_snapshot.facts.entities =
+            vec![caller.clone(), old_target.clone(), stable_target.clone()];
+        new_snapshot.facts.entities = vec![caller.clone(), new_target, stable_target.clone()];
+        old_snapshot.facts.edges = vec![
+            edge_delta_edge_fact(
+                "src/service.ts",
+                "edge://calls/removed",
+                &caller.entity_id,
+                &old_target.entity_id,
+                RelationKind::Calls,
+                Exactness::ParserVerified,
+                5,
+                false,
+                Vec::new(),
+                EvidenceRole::Production,
+            ),
+            edge_delta_edge_fact(
+                "src/service.ts",
+                "edge://calls/moved-old",
+                &caller.entity_id,
+                &stable_target.entity_id,
+                RelationKind::Calls,
+                Exactness::ParserVerified,
+                6,
+                false,
+                Vec::new(),
+                EvidenceRole::Production,
+            ),
+        ];
+        new_snapshot.facts.edges = vec![
+            edge_delta_edge_fact(
+                "src/service.ts",
+                "edge://calls/added",
+                &caller.entity_id,
+                "entity://service/new-target",
+                RelationKind::Calls,
+                Exactness::ParserVerified,
+                7,
+                false,
+                Vec::new(),
+                EvidenceRole::Production,
+            ),
+            edge_delta_edge_fact(
+                "src/service.ts",
+                "edge://calls/moved-new",
+                &caller.entity_id,
+                &stable_target.entity_id,
+                RelationKind::Calls,
+                Exactness::ParserVerified,
+                9,
+                false,
+                Vec::new(),
+                EvidenceRole::Production,
+            ),
+        ];
+
+        let delta = compute_entity_source_role_delta(
+            &old_snapshot,
+            &new_snapshot,
+            EntitySourceRoleDeltaOptions {
+                max_items_per_category: usize::MAX,
+            },
+        );
+
+        assert_eq!(delta.edges_added_count, 1, "{delta:?}");
+        assert_eq!(delta.edges_removed_count, 1, "{delta:?}");
+        assert_eq!(delta.edges_changed_count, 1, "{delta:?}");
+        assert!(delta
+            .edges_added
+            .iter()
+            .any(|entry| entry.relation == RelationKind::Calls
+                && entry.target_entity_id == "entity://service/new-target"
+                && entry.exactness == Exactness::ParserVerified
+                && entry.source_span.repo_relative_path == "src/service.ts"));
+        assert!(delta.edges_removed.iter().any(|entry| {
+            entry.relation == RelationKind::Calls && entry.target_entity_id == old_target.entity_id
+        }));
+        assert!(delta.edges_changed.iter().any(|entry| {
+            entry.reason.contains("source_span_changed")
+                && entry.relation == RelationKind::Calls
+                && entry.source_endpoint.name.as_deref() == Some("caller")
+                && entry.target_endpoint.name.as_deref() == Some("stableTarget")
+        }));
+        assert_eq!(delta.relation_kind_counts.get("CALLS").copied(), Some(3));
+        assert_eq!(
+            delta.exactness_counts.get("parser_verified").copied(),
+            Some(3)
+        );
+        assert_eq!(delta.derived_counts.get("base").copied(), Some(3));
+        assert_eq!(delta.source_role_counts.get("production").copied(), Some(3));
+        assert!(delta.exactness_preserved);
+        assert!(delta.endpoint_names_hydrated_where_available);
+        assert!(delta.source_spans_present_for_claimable_edge_deltas);
+        assert!(delta.claim_boundaries_preserved);
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn entity_source_role_delta_reports_import_change_and_same_name_targets_distinct() {
+        let repo = temp_repo("entity-source-role-delta-import-same-name");
+        let db = repo.join("target").join("edge-import.sqlite");
+        let mut old_snapshot = edge_delta_seed_snapshot(&repo, &db, "src/importer.ts");
+        let mut new_snapshot = old_snapshot.clone();
+
+        let importer = edge_delta_entity_fact(
+            "src/importer.ts",
+            "entity://importer/source",
+            "importer",
+            1,
+            EvidenceRole::Production,
+        );
+        let old_module = edge_delta_entity_fact(
+            "src/old.ts",
+            "entity://old/module",
+            "moduleValue",
+            1,
+            EvidenceRole::Production,
+        );
+        let new_module = edge_delta_entity_fact(
+            "src/new.ts",
+            "entity://new/module",
+            "moduleValue",
+            1,
+            EvidenceRole::Production,
+        );
+        let same_name_left = edge_delta_entity_fact(
+            "src/left.ts",
+            "entity://left/target",
+            "sameTarget",
+            1,
+            EvidenceRole::Production,
+        );
+        let same_name_right = edge_delta_entity_fact(
+            "src/right.ts",
+            "entity://right/target",
+            "sameTarget",
+            1,
+            EvidenceRole::Production,
+        );
+        old_snapshot.facts.entities = vec![importer.clone(), old_module.clone()];
+        new_snapshot.facts.entities = vec![
+            importer.clone(),
+            new_module.clone(),
+            same_name_left.clone(),
+            same_name_right.clone(),
+        ];
+        old_snapshot.facts.edges = vec![edge_delta_edge_fact(
+            "src/importer.ts",
+            "edge://imports/old",
+            &importer.entity_id,
+            &old_module.entity_id,
+            RelationKind::Imports,
+            Exactness::ParserVerified,
+            1,
+            false,
+            Vec::new(),
+            EvidenceRole::Production,
+        )];
+        new_snapshot.facts.edges = vec![
+            edge_delta_edge_fact(
+                "src/importer.ts",
+                "edge://imports/new",
+                &importer.entity_id,
+                &new_module.entity_id,
+                RelationKind::Imports,
+                Exactness::ParserVerified,
+                1,
+                false,
+                Vec::new(),
+                EvidenceRole::Production,
+            ),
+            edge_delta_edge_fact(
+                "src/importer.ts",
+                "edge://same-name/left",
+                &importer.entity_id,
+                &same_name_left.entity_id,
+                RelationKind::Calls,
+                Exactness::ParserVerified,
+                5,
+                false,
+                Vec::new(),
+                EvidenceRole::Production,
+            ),
+            edge_delta_edge_fact(
+                "src/importer.ts",
+                "edge://same-name/right",
+                &importer.entity_id,
+                &same_name_right.entity_id,
+                RelationKind::Calls,
+                Exactness::ParserVerified,
+                6,
+                false,
+                Vec::new(),
+                EvidenceRole::Production,
+            ),
+        ];
+
+        let delta = compute_entity_source_role_delta(
+            &old_snapshot,
+            &new_snapshot,
+            EntitySourceRoleDeltaOptions {
+                max_items_per_category: usize::MAX,
+            },
+        );
+
+        assert!(delta.edges_changed.iter().any(|entry| {
+            entry.relation == RelationKind::Imports
+                && entry.reason.contains("target_endpoint_changed")
+                && entry.old.as_ref().is_some_and(|old| {
+                    old.target_endpoint.qualified_name.as_deref() == Some("src/old.ts::moduleValue")
+                })
+                && entry.new.as_ref().is_some_and(|new| {
+                    new.target_endpoint.qualified_name.as_deref() == Some("src/new.ts::moduleValue")
+                })
+        }));
+        let same_name_target_ids = delta
+            .edges_added
+            .iter()
+            .filter(|entry| entry.target_endpoint.name.as_deref() == Some("sameTarget"))
+            .map(|entry| entry.target_entity_id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(same_name_target_ids.len(), 2);
+        assert!(delta.same_name_targets_distinct);
+        assert_eq!(delta.relation_kind_counts.get("IMPORTS").copied(), Some(1));
+        assert_eq!(delta.relation_kind_counts.get("CALLS").copied(), Some(2));
+        assert!(delta.unsupported_relation_classes.is_empty());
+        assert!(delta.claim_boundaries_preserved);
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn entity_source_role_delta_preserves_provenance_heuristic_and_test_mock_boundaries() {
+        let repo = temp_repo("entity-source-role-delta-edge-boundaries");
+        let db = repo.join("target").join("edge-boundaries.sqlite");
+        let mut old_snapshot = edge_delta_seed_snapshot(&repo, &db, "src/graph.ts");
+        let mut new_snapshot = old_snapshot.clone();
+
+        let source = edge_delta_entity_fact(
+            "src/graph.ts",
+            "entity://graph/source",
+            "source",
+            1,
+            EvidenceRole::Production,
+        );
+        let target = edge_delta_entity_fact(
+            "src/graph.ts",
+            "entity://graph/target",
+            "target",
+            2,
+            EvidenceRole::Production,
+        );
+        let test_source = edge_delta_entity_fact(
+            "tests/graph.test.ts",
+            "entity://tests/source",
+            "sourceTest",
+            1,
+            EvidenceRole::Test,
+        );
+        let mock_target = edge_delta_entity_fact(
+            "tests/graph.test.ts",
+            "entity://tests/mock-target",
+            "mockTarget",
+            2,
+            EvidenceRole::Mock,
+        );
+        old_snapshot.facts.entities = vec![source.clone(), target.clone()];
+        new_snapshot.facts.entities =
+            vec![source.clone(), target.clone(), test_source, mock_target];
+        old_snapshot.facts.edges = vec![edge_delta_edge_fact(
+            "src/graph.ts",
+            "edge://derived/old",
+            &source.entity_id,
+            &target.entity_id,
+            RelationKind::MayMutate,
+            Exactness::DerivedFromVerifiedEdges,
+            3,
+            true,
+            vec!["edge://base/old".to_string()],
+            EvidenceRole::Production,
+        )];
+        new_snapshot.facts.edges = vec![
+            edge_delta_edge_fact(
+                "src/graph.ts",
+                "edge://derived/new",
+                &source.entity_id,
+                &target.entity_id,
+                RelationKind::MayMutate,
+                Exactness::DerivedFromVerifiedEdges,
+                3,
+                true,
+                vec!["edge://base/new".to_string()],
+                EvidenceRole::Production,
+            ),
+            edge_delta_edge_fact(
+                "src/graph.ts",
+                "edge://derived/missing-provenance",
+                &source.entity_id,
+                &target.entity_id,
+                RelationKind::MayMutate,
+                Exactness::DerivedFromVerifiedEdges,
+                4,
+                true,
+                Vec::new(),
+                EvidenceRole::Production,
+            ),
+            edge_delta_edge_fact(
+                "src/graph.ts",
+                "edge://heuristic/unsupported",
+                &source.entity_id,
+                &target.entity_id,
+                RelationKind::Authorizes,
+                Exactness::StaticHeuristic,
+                5,
+                false,
+                Vec::new(),
+                EvidenceRole::Production,
+            ),
+            edge_delta_edge_fact(
+                "tests/graph.test.ts",
+                "edge://test/asserts",
+                "entity://tests/source",
+                &target.entity_id,
+                RelationKind::Asserts,
+                Exactness::ParserVerified,
+                1,
+                false,
+                Vec::new(),
+                EvidenceRole::Test,
+            ),
+            edge_delta_edge_fact(
+                "tests/graph.test.ts",
+                "edge://mock/stubs",
+                "entity://tests/source",
+                "entity://tests/mock-target",
+                RelationKind::Mocks,
+                Exactness::ParserVerified,
+                2,
+                false,
+                Vec::new(),
+                EvidenceRole::Mock,
+            ),
+        ];
+
+        let delta = compute_entity_source_role_delta(
+            &old_snapshot,
+            &new_snapshot,
+            EntitySourceRoleDeltaOptions {
+                max_items_per_category: usize::MAX,
+            },
+        );
+
+        assert!(delta.edges_changed.iter().any(|entry| {
+            entry.relation == RelationKind::MayMutate
+                && entry.derived
+                && entry.reason.contains("provenance_changed")
+                && entry.provenance_status == "derived_with_provenance"
+                && entry.claimability.graph_proof
+        }));
+        let missing_provenance = delta
+            .edges_added
+            .iter()
+            .find(|entry| entry.edge_id == "edge://derived/missing-provenance")
+            .expect("missing provenance edge");
+        assert!(missing_provenance.derived);
+        assert!(!missing_provenance.claimability.graph_proof);
+        assert!(missing_provenance
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("missing_provenance")));
+
+        let heuristic = delta
+            .edges_added
+            .iter()
+            .find(|entry| entry.edge_id == "edge://heuristic/unsupported")
+            .expect("heuristic edge");
+        assert_eq!(heuristic.relation, RelationKind::Authorizes);
+        assert_eq!(heuristic.exactness, Exactness::StaticHeuristic);
+        assert!(!heuristic.claimability.graph_proof);
+        assert!(heuristic
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("unsupported")));
+
+        assert!(delta.derived_edges_require_provenance);
+        assert!(delta.heuristic_unsupported_edges_not_overclaimed);
+        assert!(delta.test_mock_edges_preserved);
+        assert_eq!(
+            delta.degraded_relation_classes.get("MAY_MUTATE").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            delta
+                .unsupported_relation_classes
+                .get("AUTHORIZES")
+                .copied(),
+            Some(1)
+        );
+        assert!(delta.source_role_counts.get("test").copied().unwrap_or(0) >= 1);
+        assert!(delta.source_role_counts.get("mock").copied().unwrap_or(0) >= 1);
+        assert!(delta.text_candidate_evidence_not_graph_delta);
+        assert!(delta.claim_boundaries_preserved);
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn normalized_fact_snapshot_is_read_only_and_bounded_to_changed_files() {
+        let repo = temp_repo("normalized-snapshot-read-only");
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function helper() { return 1; }\n\
+             export function login() { return helper(); }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/other.ts",
+            "export function other() { return 3; }\n",
+        );
+        let db = repo.join("target").join("normalized-read-only.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        let before_hash = semantic_graph_fact_hash(&db);
+
+        let snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &[PathBuf::from("src/auth.ts")],
+            &[PathBuf::from("src/other.ts")],
+            &db,
+            NormalizedFactSnapshotOptions {
+                max_facts_per_path: 2,
+                ..NormalizedFactSnapshotOptions::default()
+            },
+        )
+        .expect("bounded snapshot");
+
+        assert_eq!(semantic_graph_fact_hash(&db), before_hash);
+        assert!(snapshot.read_only);
+        assert_eq!(snapshot.changed_files, vec!["src/auth.ts".to_string()]);
+        assert_eq!(snapshot.closure_files, vec!["src/other.ts".to_string()]);
+        assert_eq!(snapshot.full_scan_count, 0);
+        assert!(snapshot.omission.truncated);
+        assert!(snapshot.omission.omitted_count > 0);
+        assert!(snapshot.snapshot_paths.iter().all(|path| {
+            path.repo_relative_path == "src/auth.ts" || path.repo_relative_path == "src/other.ts"
+        }));
+        assert!(!snapshot
+            .facts
+            .entities
+            .iter()
+            .any(|entity| entity.repo_relative_path != "src/auth.ts"
+                && entity.repo_relative_path != "src/other.ts"));
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn normalized_fact_snapshot_refuses_non_claimable_db() {
+        let repo = temp_repo("normalized-snapshot-stale-db");
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function login() { return 1; }\n",
+        );
+        let db = repo.join("target").join("schema-only.sqlite");
+        fs::create_dir_all(db.parent().expect("db parent")).expect("create db parent");
+        drop(SqliteGraphStore::open(&db).expect("schema-only store"));
+
+        let error =
+            snapshot_normalized_changed_facts_to_db(&repo, &[PathBuf::from("src/auth.ts")], &db)
+                .expect_err("schema-only DB without passport must be refused");
+        assert!(
+            error.to_string().contains("refused non-claimable DB"),
+            "{error}"
+        );
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
     fn write_path_incremental_failpoints_roll_back_changed_file() {
         for failpoint in [
             "incremental_before_stale_cleanup",
@@ -28806,6 +33817,14 @@ pub fn caller() {
                 })
                 .expect("insert unsupported proof relation");
         }
+        let old_snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &[PathBuf::from("src/policy.ts")],
+            &[PathBuf::from("src/route.ts")],
+            &db,
+            NormalizedFactSnapshotOptions::default(),
+        )
+        .expect("old snapshot");
 
         write_test_file(
             &repo,
@@ -28814,6 +33833,22 @@ pub fn caller() {
         );
         let summary = update_changed_files_to_db(&repo, &[PathBuf::from("src/policy.ts")], &db)
             .expect("delta update");
+        let new_snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &[PathBuf::from("src/policy.ts")],
+            &[PathBuf::from("src/route.ts")],
+            &db,
+            NormalizedFactSnapshotOptions::default(),
+        )
+        .expect("new snapshot");
+        let mut delta = compute_entity_source_role_delta(
+            &old_snapshot,
+            &new_snapshot,
+            EntitySourceRoleDeltaOptions {
+                max_items_per_category: usize::MAX,
+            },
+        );
+        delta.apply_dependency_closure_summary(&summary.dependency_closure);
 
         assert!(summary
             .dependency_closure
@@ -28824,6 +33859,14 @@ pub fn caller() {
             .skipped_relation_classes
             .contains(&"AUTHORIZES".to_string()));
         assert_eq!(summary.dependency_closure.status, "degraded");
+        assert!(delta.unsupported_relation_unknown_not_proof);
+        assert!(delta
+            .closure_unsupported_relation_classes
+            .contains(&"AUTHORIZES".to_string()));
+        assert_eq!(
+            delta.closure_delta_summary.graph_proof, false,
+            "closure metadata is not graph proof"
+        );
 
         fs::remove_dir_all(repo).expect("cleanup");
     }

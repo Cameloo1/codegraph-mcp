@@ -3428,7 +3428,7 @@ fn agent_use_watch_once_updates_external_profile_db_without_dot_codegraph() {
     write_cli_fixture_file(
         &repo,
         "src/service.js",
-        "export function newAgentUseTarget() {\n  return \"delta-ok\";\n}\n",
+        "export function newAgentUseTarget() {\n  return \"delta-ok\";\n}\n\nexport function callNewAgentUseTarget() {\n  return newAgentUseTarget();\n}\n",
     );
 
     let watch = with_agent_use_data_root(&data_root, || {
@@ -3482,6 +3482,277 @@ fn agent_use_watch_once_updates_external_profile_db_without_dot_codegraph() {
         watch["entities_added"].as_u64().unwrap_or_default() > 0,
         "{watch:?}"
     );
+    assert!(
+        watch["entities_removed"].as_u64().unwrap_or_default() > 0,
+        "{watch:?}"
+    );
+    assert_eq!(
+        watch["graph_delta"]["schema_version"].as_str(),
+        Some("mvp3_graph_delta_closure_rename_v1")
+    );
+    assert_eq!(watch["graph_delta"]["status"].as_str(), Some("complete"));
+    assert_eq!(watch["graph_delta"]["claimable"].as_bool(), Some(true));
+    assert_eq!(
+        watch["graph_delta"]["snapshot_read_only"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["snapshot_bounded_to_changed_or_closure_files"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["entities_added_count"].as_u64(),
+        watch["entities_added"].as_u64()
+    );
+    assert_eq!(
+        watch["graph_delta"]["entities_removed_count"].as_u64(),
+        watch["entities_removed"].as_u64()
+    );
+    assert_eq!(
+        watch["graph_delta"]["edges_added_count"].as_u64(),
+        watch["edges_added"].as_u64()
+    );
+    assert_eq!(
+        watch["graph_delta"]["edges_removed_count"].as_u64(),
+        watch["edges_removed"].as_u64()
+    );
+    assert_eq!(
+        watch["graph_delta"]["edges_changed_count"].as_u64(),
+        watch["edges_changed"].as_u64()
+    );
+    assert!(
+        watch["graph_delta"]["edges_added_count"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0,
+        "{watch:?}"
+    );
+    assert!(
+        watch["graph_delta"]["edges_removed_count"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0,
+        "{watch:?}"
+    );
+    assert_eq!(
+        watch["graph_delta"]["source_spans_changed_reported"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["text_evidence_changed_reported"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["path_evidence_invalidated_reported"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["candidate_freshness_delta_reported"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["vector_freshness_delta_reported"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["proof_ladder_changes_reported"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["freshness_delta_not_graph_proof"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["access_vs_corrupt_classification_safe"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["stale_sidecars_not_used_as_fresh"].as_bool(),
+        Some(true)
+    );
+    assert!(
+        watch["graph_delta"]["source_spans_added_count"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0,
+        "{watch:?}"
+    );
+    assert!(
+        watch["graph_delta"]["source_spans_added"]
+            .as_array()
+            .expect("source span additions")
+            .iter()
+            .any(
+                |entry| entry["associated_fact_kind"].as_str() == Some("entity")
+                    && entry["new_span"].is_object()
+                    && entry["claimability"]["graph_proof"].as_bool() == Some(true)
+            ),
+        "{watch:?}"
+    );
+    assert!(
+        watch["graph_delta"]["text_evidence_changed"]
+            .as_array()
+            .expect("text evidence deltas")
+            .iter()
+            .all(|entry| entry["graph_proof"].as_bool() == Some(false)),
+        "{watch:?}"
+    );
+    assert_eq!(
+        watch["graph_delta"]["candidate_spool_invalidated_or_refreshed"]["graph_proof"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        watch["graph_delta"]["vector_chunks_invalidated"]["graph_proof"].as_bool(),
+        Some(false)
+    );
+    assert!(
+        watch["graph_delta"]["proof_ladder_changes"]["text_evidence"].is_object(),
+        "{watch:?}"
+    );
+    assert_eq!(
+        watch["candidate_spool_invalidated_or_refreshed"]["graph_proof"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        watch["candidate_query_index_invalidated_or_refreshed"]["graph_proof"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        watch["vector_chunks_invalidated"]["graph_proof"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        watch["routing_handles_invalidated_or_not_applicable"]["graph_proof"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        watch["graph_delta"]["text_evidence_not_graph_entity_delta"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["text_candidate_evidence_not_graph_delta"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["source_navigation_only_not_graph_entity_delta"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["source_spans_present_for_claimable_entity_deltas"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["source_spans_present_for_claimable_edge_deltas"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["exactness_preserved"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["derived_edges_require_provenance"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["heuristic_unsupported_edges_not_overclaimed"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["endpoint_names_hydrated_where_available"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["same_name_targets_distinct"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["claim_boundaries_preserved"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(watch["graph_delta"]["public_claim"].as_bool(), Some(false));
+    assert!(
+        watch["graph_delta"]["entities_added"]
+            .as_array()
+            .expect("added deltas")
+            .iter()
+            .any(|entry| entry["new"]["source_span"].is_object()
+                && entry["claimability"]["graph_proof"].as_bool() == Some(true)),
+        "{watch:?}"
+    );
+    assert!(
+        watch["graph_delta"]["entities_removed"]
+            .as_array()
+            .expect("removed deltas")
+            .iter()
+            .any(|entry| entry["old"]["source_span"].is_object()
+                && entry["claimability"]["graph_proof"].as_bool() == Some(true)),
+        "{watch:?}"
+    );
+    assert!(
+        watch["graph_delta"]["edges_added"]
+            .as_array()
+            .expect("added edge deltas")
+            .iter()
+            .any(|entry| entry["source_span"].is_object()
+                && entry["relation_kind"].as_str().is_some()
+                && entry["exactness_label"].as_str().is_some()
+                && entry["source_endpoint"]["hydrated"].as_bool().is_some()),
+        "{watch:?}"
+    );
+    assert!(
+        watch["graph_delta"]["edges_removed"]
+            .as_array()
+            .expect("removed edge deltas")
+            .iter()
+            .any(|entry| entry["source_span"].is_object()
+                && entry["relation_kind"].as_str().is_some()),
+        "{watch:?}"
+    );
+    assert!(watch["graph_delta"]["relation_kind_counts"].is_object());
+    assert!(watch["graph_delta"]["exactness_counts"].is_object());
+    assert!(watch["graph_delta"]["derived_counts"].is_object());
+    assert!(watch["graph_delta"]["source_role_counts"].is_object());
+    assert!(watch["graph_delta"]["degraded_relation_classes"].is_object());
+    assert!(watch["graph_delta"]["unsupported_relation_classes"].is_object());
+    assert!(watch["graph_delta"]["summary"].is_object(), "{watch:?}");
+    assert_eq!(
+        watch["graph_delta"]["summary"]["entity_delta_count"].as_u64(),
+        Some(
+            watch["entities_added"].as_u64().unwrap_or_default()
+                + watch["entities_removed"].as_u64().unwrap_or_default()
+                + watch["entities_changed"].as_u64().unwrap_or_default()
+        )
+    );
+    assert_eq!(watch["delta_packet_compact_default"].as_bool(), Some(true));
+    assert_eq!(
+        watch["graph_delta_packet_budget"]["critical_safety_fields_preserved"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta_packet_budget"]["full_graph_dump_default"].as_bool(),
+        Some(false)
+    );
+    assert!(watch["graph_delta"]["packet_budget"].is_object());
+    assert!(watch["graph_delta"]["timings"].is_object());
+    for key in [
+        "total_update_plus_delta_ms",
+        "hot_path_update_ms",
+        "snapshot_old_ms",
+        "snapshot_new_ms",
+        "diff_entities_ms",
+        "diff_edges_ms",
+        "diff_spans_ms",
+        "diff_text_evidence_ms",
+        "diff_sidecars_ms",
+        "diff_closure_ms",
+        "packet_serialize_ms",
+        "delta_total_ms",
+    ] {
+        assert!(
+            watch["timings"]["graph_delta"][key].as_u64().is_some(),
+            "missing graph delta timing {key}: {watch:?}"
+        );
+    }
     assert!(
         watch["source_spans_added"].as_u64().unwrap_or_default() > 0,
         "{watch:?}"
@@ -3639,6 +3910,193 @@ fn agent_use_watch_once_updates_external_profile_db_without_dot_codegraph() {
         unchanged["result_count"].as_u64().unwrap_or_default() > 0,
         "unchanged file facts should remain available: {unchanged:?}"
     );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn agent_use_watch_once_delta_packet_budget_compact_audit_and_noop() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+
+    let old_source = (0..16)
+        .map(|index| {
+            format!("export function oldBudgetSymbol{index}() {{\n  return {index};\n}}\n")
+        })
+        .collect::<String>();
+    write_cli_fixture_file(&repo, "src/budget.js", &old_source);
+
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    let compact_source = (0..16)
+        .map(|index| {
+            format!("export function compactBudgetSymbol{index}() {{\n  return {index};\n}}\n")
+        })
+        .collect::<String>();
+    write_cli_fixture_file(&repo, "src/budget.js", &compact_source);
+    let compact = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "watch".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--once".to_string(),
+            "--changed".to_string(),
+            "src/budget.js".to_string(),
+            "--json".to_string(),
+        ])
+    })
+    .expect("compact watch");
+
+    assert_eq!(compact["status"].as_str(), Some("updated"));
+    assert_eq!(
+        compact["delta_packet_compact_default"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(compact["graph_delta_detail_mode"].as_str(), Some("compact"));
+    assert_eq!(
+        compact["graph_delta"]["omission"]["truncated"].as_bool(),
+        Some(true),
+        "{compact:?}"
+    );
+    assert!(
+        compact["graph_delta"]["omitted_count"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0,
+        "{compact:?}"
+    );
+    assert_eq!(
+        compact["graph_delta"]["expansion_handle_count"].as_u64(),
+        Some(1)
+    );
+    assert!(
+        compact["graph_delta"]["truncated_sections"]
+            .as_array()
+            .is_some_and(|sections| !sections.is_empty()),
+        "{compact:?}"
+    );
+    assert!(
+        compact["graph_delta"]["entities_added"]
+            .as_array()
+            .is_some_and(|entries| entries.len() <= 10),
+        "{compact:?}"
+    );
+    assert_eq!(
+        compact["graph_delta_packet_budget"]["critical_safety_fields_preserved"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        compact["graph_delta_packet_budget"]["full_graph_dump_default"].as_bool(),
+        Some(false)
+    );
+    assert!(compact["status"].is_string());
+    assert!(compact["changed_paths"].is_array());
+    assert!(compact["graph_delta"]["summary"].is_object());
+    assert!(compact["claimability"].is_object());
+    assert!(compact["watch_db"].is_object());
+    assert!(compact["graph_delta"]["proof_ladder_changes"].is_object());
+    assert!(compact["warnings"].is_array());
+    for key in [
+        "total_update_plus_delta_ms",
+        "hot_path_update_ms",
+        "snapshot_old_ms",
+        "snapshot_new_ms",
+        "diff_entities_ms",
+        "diff_edges_ms",
+        "diff_spans_ms",
+        "diff_text_evidence_ms",
+        "diff_sidecars_ms",
+        "diff_closure_ms",
+        "packet_serialize_ms",
+        "delta_total_ms",
+    ] {
+        assert!(
+            compact["timings"]["graph_delta"][key].as_u64().is_some(),
+            "missing graph delta timing {key}: {compact:?}"
+        );
+    }
+
+    let no_op = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "watch".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--once".to_string(),
+            "--changed".to_string(),
+            "src/budget.js".to_string(),
+            "--json".to_string(),
+        ])
+    })
+    .expect("no-op watch");
+    assert_eq!(no_op["status"].as_str(), Some("no_op"), "{no_op:?}");
+    assert_eq!(no_op["files_read"].as_u64(), Some(0));
+    assert_eq!(no_op["files_hashed"].as_u64(), Some(0));
+    assert_eq!(no_op["files_parsed"].as_u64(), Some(0));
+    assert_eq!(
+        no_op["graph_delta"]["summary"]["entity_delta_count"].as_u64(),
+        Some(0)
+    );
+    assert_eq!(
+        no_op["graph_delta"]["summary"]["edge_delta_count"].as_u64(),
+        Some(0)
+    );
+    assert_eq!(
+        no_op["graph_delta"]["summary"]["source_span_delta_count"].as_u64(),
+        Some(0)
+    );
+
+    let audit_source = (0..16)
+        .map(|index| {
+            format!("export function auditBudgetSymbol{index}() {{\n  return {index};\n}}\n")
+        })
+        .collect::<String>();
+    write_cli_fixture_file(&repo, "src/budget.js", &audit_source);
+    let audit = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "watch".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--once".to_string(),
+            "--changed".to_string(),
+            "src/budget.js".to_string(),
+            "--json".to_string(),
+            "--audit-json".to_string(),
+        ])
+    })
+    .expect("audit watch");
+
+    assert_eq!(audit["status"].as_str(), Some("updated"));
+    assert_eq!(audit["graph_delta_detail_mode"].as_str(), Some("audit"));
+    assert_eq!(audit["delta_packet_compact_default"].as_bool(), Some(false));
+    assert_eq!(
+        audit["graph_delta"]["omission"]["truncated"].as_bool(),
+        Some(false),
+        "{audit:?}"
+    );
+    assert_eq!(audit["graph_delta"]["omitted_count"].as_u64(), Some(0));
+    assert_eq!(
+        audit["graph_delta"]["expansion_handle_count"].as_u64(),
+        Some(0)
+    );
+    assert!(
+        audit["graph_delta"]["entities_added"]
+            .as_array()
+            .is_some_and(|entries| entries.len() > 10),
+        "{audit:?}"
+    );
+    assert_eq!(audit["normal_dot_codegraph_mutated"].as_bool(), Some(false));
+    assert_no_dot_codegraph_sqlite(&repo);
 
     remove_dir_all_with_retry(&repo, "cleanup repo");
     remove_dir_all_with_retry(&data_root, "cleanup data root");
@@ -3926,6 +4384,98 @@ fn agent_use_persistent_watch_ignored_and_many_change_events_are_safe() {
 }
 
 #[test]
+fn agent_use_watch_once_graph_delta_reports_exact_dependency_closure_summary() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(
+        &repo,
+        "src/service.js",
+        "export function closureTarget() {\n  return \"old\";\n}\n",
+    );
+    write_cli_fixture_file(
+        &repo,
+        "src/consumer.js",
+        "import { closureTarget } from './service';\n\
+         export function runClosureConsumer() {\n  return closureTarget();\n}\n",
+    );
+
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    write_cli_fixture_file(
+        &repo,
+        "src/service.js",
+        "export function closureTarget() {\n  return \"new\";\n}\n",
+    );
+    let watch = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "watch".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--once".to_string(),
+            "--changed".to_string(),
+            "src/service.js".to_string(),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use exact closure watch");
+
+    assert_eq!(watch["status"].as_str(), Some("updated"));
+    assert_eq!(watch["no_full_repo_fallback"].as_bool(), Some(true));
+    assert_eq!(
+        watch["graph_delta"]["schema_version"].as_str(),
+        Some("mvp3_graph_delta_closure_rename_v1")
+    );
+    assert_eq!(
+        watch["graph_delta"]["closure_delta_supported"].as_bool(),
+        Some(true),
+        "{watch:?}"
+    );
+    assert_eq!(
+        watch["graph_delta"]["no_silent_full_repo_fallback"].as_bool(),
+        Some(true)
+    );
+    assert!(
+        watch["graph_delta"]["closure_delta_summary"]["closure_files_considered"]
+            .as_array()
+            .expect("closure files")
+            .iter()
+            .any(|path| path.as_str() == Some("src/consumer.js")),
+        "{watch:?}"
+    );
+    assert!(
+        watch["graph_delta"]["closure_delta_summary"]["closure_relation_classes"]
+            .as_array()
+            .expect("closure relation classes")
+            .iter()
+            .any(|class| class.as_str() == Some("direct_static_importer")
+                || class.as_str() == Some("deleted_or_changed_callable_reference")),
+        "{watch:?}"
+    );
+    assert_eq!(
+        watch["graph_delta"]["closure_delta_summary"]["graph_proof"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        watch["graph_delta"]["unsupported_relation_unknown_not_proof"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(watch["normal_dot_codegraph_mutated"].as_bool(), Some(false));
+    assert_no_dot_codegraph_sqlite(&repo);
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
 fn agent_use_watch_once_over_budget_dependency_closure_reports_degraded() {
     let _guard = lock_env_test();
     let data_root = temp_repo();
@@ -3978,6 +4528,22 @@ fn agent_use_watch_once_over_budget_dependency_closure_reports_degraded() {
     assert_eq!(watch["delta_state"].as_str(), Some("degraded"));
     assert_eq!(watch["closure_budget_hit"].as_bool(), Some(true));
     assert_eq!(watch["no_full_repo_fallback"].as_bool(), Some(true));
+    assert_eq!(
+        watch["graph_delta"]["closure_budget_hit"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["closure_budget_hit_degraded"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["graph_delta"]["closure_delta_summary"]["status"].as_str(),
+        Some("degraded")
+    );
+    assert_eq!(
+        watch["graph_delta"]["closure_delta_summary"]["no_silent_full_repo_fallback"].as_bool(),
+        Some(true)
+    );
     assert_eq!(watch["files_walked"].as_u64(), Some(1));
     assert!(watch["degraded_relation_classes"]
         .as_array()

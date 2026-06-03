@@ -11,10 +11,12 @@
 mod ids;
 mod kinds;
 mod model;
+mod normalized;
 mod validation;
 
 pub use ids::{
     normalize_repo_relative_path, stable_edge_id, stable_entity_id, stable_entity_id_for_kind,
+    stable_fact_hash, stable_fact_identity_key,
 };
 pub use kinds::{
     EdgeClass, EdgeContext, EntityKind, EvidenceRole, Exactness, ParseEnumError, RelationKind,
@@ -26,6 +28,13 @@ pub use model::{
     PathEvidence, RepoIndexState, RetrievalCandidate, RetrievalCandidateLifecycleBinding,
     RetrievalCandidateLifecycleStatus, RetrievalCandidateSource, RetrievalProofStatus,
     RetrievalVerificationStatus, SourceSpan, VectorEmbeddingSource,
+};
+pub use normalized::{
+    classify_normalized_fact_changes, NormalizedClaimabilityMetadata, NormalizedEdgeFact,
+    NormalizedEntityFact, NormalizedFactChangeSet, NormalizedFactEnvelope, NormalizedFactKind,
+    NormalizedFactOmission, NormalizedFileFact, NormalizedLifecycleMetadata,
+    NormalizedPathEvidenceFact, NormalizedSidecarFreshnessFact, NormalizedSourceRoleFact,
+    NormalizedSourceSpanFact, NormalizedTextEvidenceFact, NORMALIZED_FACT_SCHEMA_VERSION,
 };
 pub use validation::{relation_allows, RelationEndpointClass};
 

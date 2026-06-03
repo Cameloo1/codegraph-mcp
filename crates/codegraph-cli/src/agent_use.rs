@@ -9,10 +9,11 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use notify::{RecursiveMode, Watcher};
-use rusqlite::Connection;
 use serde_json::{json, Value};
 
 use crate::*;
+
+const AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT: usize = 3;
 
 pub(crate) fn run_agent_use_command(args: &[String]) -> Result<Value, String> {
     let Some(subcommand) = args.first() else {
@@ -53,6 +54,14 @@ impl AgentUseDetailMode {
         !matches!(self, AgentUseDetailMode::Compact)
     }
 
+    fn label(self) -> &'static str {
+        match self {
+            AgentUseDetailMode::Compact => "compact",
+            AgentUseDetailMode::Explain => "explain",
+            AgentUseDetailMode::Audit => "audit",
+        }
+    }
+
     fn default_max_output_bytes(self) -> usize {
         if self.preserves_full_details() {
             DEFAULT_AGENT_USE_EXPLAIN_MAX_OUTPUT_BYTES
@@ -74,6 +83,7 @@ pub(crate) struct AgentUseWatchOptions {
     once: bool,
     changed_paths: Vec<PathBuf>,
     test_events: Vec<PathBuf>,
+    detail_mode: AgentUseDetailMode,
     debounce: Duration,
     max_updates: Option<usize>,
     idle_timeout: Option<Duration>,
@@ -219,6 +229,7 @@ pub(crate) fn parse_agent_use_watch_args(args: &[String]) -> Result<AgentUseWatc
     let mut once = false;
     let mut changed_paths = Vec::new();
     let mut test_events = Vec::new();
+    let mut detail_mode = AgentUseDetailMode::Compact;
     let mut debounce = Duration::from_millis(AGENT_USE_WATCH_DEFAULT_DEBOUNCE_MS);
     let mut max_updates = None;
     let mut idle_timeout = None;
@@ -229,6 +240,11 @@ pub(crate) fn parse_agent_use_watch_args(args: &[String]) -> Result<AgentUseWatc
     while index < args.len() {
         match args[index].as_str() {
             "--json" | "--agent-json" | "--agent_json" => {}
+            "--explain" | "--debug" => detail_mode = AgentUseDetailMode::Explain,
+            "--verbose" if detail_mode == AgentUseDetailMode::Compact => {
+                detail_mode = AgentUseDetailMode::Explain
+            }
+            "--audit-json" | "--audit_json" => detail_mode = AgentUseDetailMode::Audit,
             "--repo" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -324,6 +340,7 @@ pub(crate) fn parse_agent_use_watch_args(args: &[String]) -> Result<AgentUseWatc
         once,
         changed_paths,
         test_events,
+        detail_mode,
         debounce,
         max_updates,
         idle_timeout,
@@ -1404,6 +1421,7 @@ pub(crate) fn run_agent_use_watch_command(args: &[String]) -> Result<Value, Stri
         return run_agent_use_watch_once_delta(
             &profile,
             options.changed_paths,
+            options.detail_mode,
             normal_dot_codegraph_existed_before,
         );
     }
@@ -1419,11 +1437,14 @@ pub(crate) fn run_agent_use_watch_command(args: &[String]) -> Result<Value, Stri
 pub(crate) fn run_agent_use_watch_once_delta(
     profile: &AgentUseProfile,
     changed_paths: Vec<PathBuf>,
+    detail_mode: AgentUseDetailMode,
     normal_dot_codegraph_existed_before: bool,
 ) -> Result<Value, String> {
+    let total_update_plus_delta_start = Instant::now();
     let normal_dot_codegraph = profile.repo_root.join(".codegraph");
     let requested_changed_paths =
         agent_use_report_changed_paths(&profile.repo_root, &changed_paths);
+    let preflight_start = Instant::now();
     let preflight = inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
         repo_root: profile.repo_root.clone(),
         db_path: profile.db_path.clone(),
@@ -1435,6 +1456,7 @@ pub(crate) fn run_agent_use_watch_once_delta(
         expected_scope: Some(profile.scope_policy.clone()),
     })
     .map_err(|error| error.to_string())?;
+    let preflight_ms = preflight_start.elapsed().as_millis();
 
     if !preflight.safe_to_write {
         return Ok(agent_use_watch_unavailable_json(
@@ -1454,9 +1476,43 @@ pub(crate) fn run_agent_use_watch_once_delta(
         ));
     }
 
-    let old_fact_counts =
-        agent_use_delta_fact_counts(&profile.db_path, &requested_changed_paths).unwrap_or_default();
+    let snapshot_options = NormalizedFactSnapshotOptions {
+        include_text_evidence: true,
+        include_path_evidence: true,
+        include_sidecar_freshness: true,
+        ..NormalizedFactSnapshotOptions::default()
+    };
+    let dependency_closure_start = Instant::now();
+    let pre_update_dependency_closure = rtds_dependency_closure_for_changed_paths_to_db(
+        &profile.repo_root,
+        &changed_paths,
+        &profile.db_path,
+    )
+    .map_err(|error| format!("old RTDS dependency closure snapshot failed: {error}"))?;
+    let pre_update_dependency_closure_ms = dependency_closure_start.elapsed().as_millis();
+    let pre_update_requested_set = pre_update_dependency_closure
+        .requested_changed_files
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let pre_update_closure_paths = pre_update_dependency_closure
+        .closure_files_considered
+        .iter()
+        .filter(|path| !pre_update_requested_set.contains(*path))
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    let old_snapshot_start = Instant::now();
+    let old_graph_delta_snapshot = snapshot_normalized_facts_for_paths_to_db(
+        &profile.repo_root,
+        &changed_paths,
+        &pre_update_closure_paths,
+        &profile.db_path,
+        snapshot_options.clone(),
+    )
+    .map_err(|error| format!("old normalized graph delta snapshot failed: {error}"))?;
+    let snapshot_old_ms = old_snapshot_start.elapsed().as_millis();
     write_agent_use_publish_state(profile, "updating", None)?;
+    let hot_path_update_start = Instant::now();
     let summary = match update_changed_files_to_db(
         &profile.repo_root,
         &changed_paths,
@@ -1493,6 +1549,7 @@ pub(crate) fn run_agent_use_watch_once_delta(
             return Err(message);
         }
     };
+    let hot_path_update_ms = hot_path_update_start.elapsed().as_millis();
     let mut value = serde_json::to_value(&summary).map_err(|error| error.to_string())?;
 
     let lifecycle = watch_update_lifecycle_metadata(
@@ -1526,8 +1583,56 @@ pub(crate) fn run_agent_use_watch_once_delta(
     } else {
         summary.changed_files.clone()
     };
-    let new_fact_counts = agent_use_delta_fact_counts(&profile.db_path, &changed_paths_normalized)
-        .unwrap_or_default();
+    let delta_requested_paths = if summary
+        .dependency_closure
+        .requested_changed_files
+        .is_empty()
+    {
+        changed_paths_normalized.clone()
+    } else {
+        summary.dependency_closure.requested_changed_files.clone()
+    };
+    let delta_requested_set = delta_requested_paths
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let delta_changed_paths = delta_requested_paths
+        .iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    let delta_closure_paths = summary
+        .dependency_closure
+        .closure_files_updated
+        .iter()
+        .filter(|path| !delta_requested_set.contains(*path))
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    let new_snapshot_start = Instant::now();
+    let new_graph_delta_snapshot = snapshot_normalized_facts_for_paths_to_db(
+        &profile.repo_root,
+        &delta_changed_paths,
+        &delta_closure_paths,
+        &profile.db_path,
+        snapshot_options,
+    )
+    .map_err(|error| format!("new normalized graph delta snapshot failed: {error}"))?;
+    let snapshot_new_ms = new_snapshot_start.elapsed().as_millis();
+    let graph_delta_options = EntitySourceRoleDeltaOptions {
+        max_items_per_category: if detail_mode.preserves_full_details() {
+            usize::MAX
+        } else {
+            AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT
+        },
+    };
+    let delta_compute_start = Instant::now();
+    let mut entity_source_role_delta = compute_entity_source_role_delta(
+        &old_graph_delta_snapshot,
+        &new_graph_delta_snapshot,
+        graph_delta_options,
+    );
+    entity_source_role_delta.apply_dependency_closure_summary(&summary.dependency_closure);
+    let delta_compute_ms = delta_compute_start.elapsed().as_millis();
+    entity_source_role_delta.timings.diff_closure_ms = pre_update_dependency_closure_ms;
     let deleted_paths = agent_use_watch_deleted_paths(&summary);
     annotate_agent_use_output(
         &mut value,
@@ -1540,6 +1645,21 @@ pub(crate) fn run_agent_use_watch_once_delta(
         let no_op_paths = agent_use_watch_no_op_paths(&summary);
         let status = agent_use_watch_status(&summary, &no_op_paths);
         let delta_state = agent_use_watch_delta_state(&summary, &no_op_paths);
+        let graph_delta_packet_start = Instant::now();
+        let graph_delta_json = agent_use_graph_delta_json(&entity_source_role_delta);
+        let graph_delta_packet_serialize_ms = graph_delta_packet_start.elapsed().as_millis();
+        let graph_delta_packet_budget =
+            agent_use_graph_delta_packet_budget_json(&entity_source_role_delta);
+        let graph_delta_timing_json = agent_use_graph_delta_timing_json(
+            &entity_source_role_delta,
+            hot_path_update_ms,
+            snapshot_old_ms,
+            snapshot_new_ms,
+            pre_update_dependency_closure_ms,
+            graph_delta_packet_serialize_ms,
+            delta_compute_ms,
+            total_update_plus_delta_start.elapsed().as_millis(),
+        );
         object.insert("command".to_string(), json!("watch"));
         object.insert("subcommand".to_string(), json!("once"));
         object.insert("watch_mode".to_string(), json!("once_changed"));
@@ -1645,41 +1765,80 @@ pub(crate) fn run_agent_use_watch_once_delta(
         );
         object.insert(
             "entities_added".to_string(),
-            json!(new_fact_counts.entities),
+            json!(entity_source_role_delta.entities_added_count),
         );
         object.insert(
             "entities_removed".to_string(),
-            json!(old_fact_counts.entities),
+            json!(entity_source_role_delta.entities_removed_count),
         );
-        object.insert("entities_changed".to_string(), json!(summary.entities));
-        object.insert("edges_added".to_string(), json!(new_fact_counts.edges));
-        object.insert("edges_removed".to_string(), json!(old_fact_counts.edges));
-        object.insert("edges_changed".to_string(), json!(summary.edges));
+        object.insert(
+            "entities_changed".to_string(),
+            json!(entity_source_role_delta.entities_changed_count),
+        );
+        object.insert(
+            "source_roles_changed".to_string(),
+            json!(entity_source_role_delta.source_roles_changed_count),
+        );
+        object.insert("graph_delta".to_string(), graph_delta_json);
+        object.insert(
+            "graph_delta_detail_mode".to_string(),
+            json!(detail_mode.label()),
+        );
+        object.insert(
+            "delta_packet_compact_default".to_string(),
+            json!(matches!(detail_mode, AgentUseDetailMode::Compact)),
+        );
+        object.insert(
+            "graph_delta_packet_budget".to_string(),
+            graph_delta_packet_budget.clone(),
+        );
+        object.insert(
+            "edges_added".to_string(),
+            json!(entity_source_role_delta.edges_added_count),
+        );
+        object.insert(
+            "edges_removed".to_string(),
+            json!(entity_source_role_delta.edges_removed_count),
+        );
+        object.insert(
+            "edges_changed".to_string(),
+            json!(entity_source_role_delta.edges_changed_count),
+        );
         object.insert(
             "source_spans_added".to_string(),
-            json!(new_fact_counts.source_spans),
+            json!(entity_source_role_delta.source_spans_added_count),
         );
         object.insert(
             "source_spans_removed".to_string(),
-            json!(old_fact_counts.source_spans),
+            json!(entity_source_role_delta.source_spans_removed_count),
         );
         object.insert(
             "source_spans_changed".to_string(),
-            json!(new_fact_counts.source_spans + old_fact_counts.source_spans),
+            json!(entity_source_role_delta.source_spans_changed_count),
         );
         object.insert(
             "text_evidence_changed".to_string(),
-            json!(summary.files_indexed > 0 && summary.files_read > 0),
+            json!(entity_source_role_delta.text_evidence_changed_count > 0),
         );
         object.insert(
             "path_evidence_invalidated".to_string(),
             json!({
                 "action": agent_use_path_evidence_delta_action(&summary),
                 "dirty_path_evidence_count": summary.dirty_path_evidence_count,
+                "delta_count": entity_source_role_delta.path_evidence_invalidated_count,
+                "graph_proof": false,
             }),
         );
         object.insert(
             "candidate_spool_invalidated_or_rebuilt".to_string(),
+            json!(agent_use_layer_delta_action(
+                staged_availability
+                    .get("candidate_spool_status")
+                    .and_then(Value::as_str),
+            )),
+        );
+        object.insert(
+            "candidate_spool_invalidated_or_refreshed".to_string(),
             json!(agent_use_layer_delta_action(
                 staged_availability
                     .get("candidate_spool_status")
@@ -1695,10 +1854,42 @@ pub(crate) fn run_agent_use_watch_once_delta(
             )),
         );
         object.insert(
+            "candidate_query_index_invalidated_or_refreshed".to_string(),
+            json!(agent_use_layer_delta_action(
+                staged_availability
+                    .pointer("/layer_readiness/candidate_spool/query_index_status")
+                    .and_then(Value::as_str),
+            )),
+        );
+        object.insert(
             "vector_chunks_invalidated_or_rebuilt".to_string(),
             json!(agent_use_layer_delta_action(
                 staged_availability
                     .get("vector_runtime_status")
+                    .and_then(Value::as_str),
+            )),
+        );
+        object.insert(
+            "vector_chunks_invalidated".to_string(),
+            json!(agent_use_layer_delta_action(
+                staged_availability
+                    .get("vector_runtime_status")
+                    .and_then(Value::as_str),
+            )),
+        );
+        object.insert(
+            "vector_runtime_status_changed".to_string(),
+            json!(agent_use_layer_delta_action(
+                staged_availability
+                    .get("vector_runtime_status")
+                    .and_then(Value::as_str),
+            )),
+        );
+        object.insert(
+            "vector_audit_status_changed".to_string(),
+            json!(agent_use_layer_delta_action(
+                staged_availability
+                    .get("vector_audit_status")
                     .and_then(Value::as_str),
             )),
         );
@@ -1710,6 +1901,12 @@ pub(crate) fn run_agent_use_watch_once_delta(
         );
         object.insert(
             "nuance_tokens_invalidated_or_not_applicable".to_string(),
+            agent_use_not_applicable_delta_action(
+                "nuance_rescue_candidates_are_request_time_context_candidates",
+            ),
+        );
+        object.insert(
+            "nuance_tokens_invalidated".to_string(),
             agent_use_not_applicable_delta_action(
                 "nuance_rescue_candidates_are_request_time_context_candidates",
             ),
@@ -1730,6 +1927,34 @@ pub(crate) fn run_agent_use_watch_once_delta(
                 },
                 "scope": "sparse_sidecar_handles",
             }),
+        );
+        object.insert(
+            "routing_handles_invalidated_or_not_applicable".to_string(),
+            json!({
+                "action": if summary.files_indexed > 0 || summary.files_deleted > 0 || summary.files_renamed > 0 {
+                    "dirty_file_cleanup"
+                } else {
+                    "unchanged"
+                },
+                "scope": "sparse_sidecar_handles",
+                "graph_proof": false,
+            }),
+        );
+        object.insert(
+            "proof_ladder_changes".to_string(),
+            json!(entity_source_role_delta.proof_ladder_changes),
+        );
+        object.insert(
+            "file_renames_detected".to_string(),
+            json!(entity_source_role_delta.file_renames_detected.clone()),
+        );
+        object.insert(
+            "rename_ambiguities".to_string(),
+            json!(entity_source_role_delta.rename_ambiguities.clone()),
+        );
+        object.insert(
+            "closure_delta_summary".to_string(),
+            json!(entity_source_role_delta.closure_delta_summary.clone()),
         );
         object.insert(
             "closure_files_considered".to_string(),
@@ -1754,6 +1979,12 @@ pub(crate) fn run_agent_use_watch_once_delta(
         object.insert(
             "degraded_relation_classes".to_string(),
             json!(summary.dependency_closure.degraded_relation_classes.clone()),
+        );
+        object.insert(
+            "unsupported_relation_classes".to_string(),
+            json!(entity_source_role_delta
+                .closure_unsupported_relation_classes
+                .clone()),
         );
         object.insert(
             "graph_output_degraded_labels".to_string(),
@@ -1793,6 +2024,8 @@ pub(crate) fn run_agent_use_watch_once_delta(
         object.insert(
             "timings".to_string(),
             json!({
+                "total_update_plus_delta_ms": graph_delta_timing_json["total_update_plus_delta_ms"].clone(),
+                "preflight_ms": preflight_ms,
                 "total_wall_ms": summary.profile.as_ref().map(|profile| profile.total_wall_ms),
                 "file_read_ms": profile_span_ms(summary.profile.as_ref(), "file_read"),
                 "file_hash_ms": profile_span_ms(summary.profile.as_ref(), "file_hash"),
@@ -1800,6 +2033,7 @@ pub(crate) fn run_agent_use_watch_once_delta(
                 "stale_delete_ms": profile_span_ms(summary.profile.as_ref(), "stale_fact_delete"),
                 "transaction_commit_ms": profile_span_ms(summary.profile.as_ref(), "transaction_commit"),
                 "path_evidence_regeneration_ms": profile_span_ms(summary.profile.as_ref(), "refresh_path_evidence"),
+                "graph_delta": graph_delta_timing_json,
             }),
         );
         object.insert(
@@ -1952,6 +2186,7 @@ pub(crate) fn run_agent_use_persistent_watch_command(
                 match agent_use_watch_once_delta_with_lock_retry(
                     &profile,
                     ready,
+                    options.detail_mode,
                     normal_dot_codegraph_existed_before,
                     options.lock_retries,
                     options.lock_retry,
@@ -2027,6 +2262,7 @@ pub(crate) fn run_agent_use_persistent_watch_command(
 pub(crate) fn agent_use_watch_once_delta_with_lock_retry(
     profile: &AgentUseProfile,
     changed_paths: Vec<PathBuf>,
+    detail_mode: AgentUseDetailMode,
     normal_dot_codegraph_existed_before: bool,
     lock_retries: usize,
     lock_retry: Duration,
@@ -2035,6 +2271,7 @@ pub(crate) fn agent_use_watch_once_delta_with_lock_retry(
         run_agent_use_watch_once_delta(
             profile,
             changed_paths.clone(),
+            detail_mode,
             normal_dot_codegraph_existed_before,
         )
     })
@@ -2312,13 +2549,6 @@ pub(crate) fn agent_use_persistent_watch_status_json(
     })
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct AgentUseDeltaFactCounts {
-    entities: u64,
-    edges: u64,
-    source_spans: u64,
-}
-
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AgentUseWatchPathPreflight {
     accepted_paths: Vec<String>,
@@ -2489,8 +2719,15 @@ pub(crate) fn agent_use_watch_rejected_paths_json(
         "path_evidence_invalidated": {
             "action": "unchanged",
             "dirty_path_evidence_count": 0,
+            "delta_count": 0,
+            "graph_proof": false,
         },
         "candidate_spool_invalidated_or_rebuilt": {
+            "action": "unchanged",
+            "status": "not_checked",
+            "graph_proof": false,
+        },
+        "candidate_spool_invalidated_or_refreshed": {
             "action": "unchanged",
             "status": "not_checked",
             "graph_proof": false,
@@ -2500,15 +2737,47 @@ pub(crate) fn agent_use_watch_rejected_paths_json(
             "status": "not_checked",
             "graph_proof": false,
         },
+        "candidate_query_index_invalidated_or_refreshed": {
+            "action": "unchanged",
+            "status": "not_checked",
+            "graph_proof": false,
+        },
         "vector_chunks_invalidated_or_rebuilt": {
             "action": "unchanged",
             "status": "not_checked",
+            "graph_proof": false,
+        },
+        "vector_chunks_invalidated": {
+            "action": "unchanged",
+            "status": "not_checked",
+            "graph_proof": false,
+        },
+        "vector_runtime_status_changed": {
+            "action": "unchanged",
+            "status": "not_checked",
+            "graph_proof": false,
+        },
+        "vector_audit_status_changed": {
+            "action": "unchanged",
+            "status": "not_checked",
+            "graph_proof": false,
+        },
+        "nuance_tokens_invalidated": {
+            "action": "not_applicable",
+            "status": "not_applicable",
+            "reason": "nuance_rescue_candidates_are_request_time_context_candidates",
             "graph_proof": false,
         },
         "routing_handles_invalidated": {
             "action": "unchanged",
             "scope": "none",
         },
+        "routing_handles_invalidated_or_not_applicable": {
+            "action": "unchanged",
+            "scope": "none",
+            "graph_proof": false,
+        },
+        "proof_ladder_changes": {},
         "closure_files_considered": [],
         "closure_budget_hit": false,
         "degraded_relation_classes": [],
@@ -2551,53 +2820,6 @@ pub(crate) fn agent_use_watch_rejected_paths_json(
         &staged_availability,
     );
     value
-}
-
-pub(crate) fn agent_use_delta_fact_counts(
-    db_path: &Path,
-    changed_paths: &[String],
-) -> Result<AgentUseDeltaFactCounts, String> {
-    let connection = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| {
-            format!(
-                "agent-use delta fact count failed to open {}: {error}",
-                db_path.display()
-            )
-        })?;
-    let mut counts = AgentUseDeltaFactCounts::default();
-    for path in changed_paths {
-        counts.entities += query_count_for_path(
-            &connection,
-            "SELECT COUNT(*) FROM entities e JOIN path_dict p ON p.id = e.path_id WHERE p.value = ?1",
-            path,
-        )?;
-        counts.edges += query_count_for_path(
-            &connection,
-            "SELECT COUNT(*) FROM edges e JOIN path_dict p ON p.id = e.span_path_id WHERE p.value = ?1",
-            path,
-        )?;
-        counts.source_spans += query_count_for_path(
-            &connection,
-            "SELECT COUNT(*) FROM entities e JOIN path_dict p ON p.id = COALESCE(e.span_path_id, e.path_id) WHERE p.value = ?1 AND e.start_line IS NOT NULL AND e.end_line IS NOT NULL",
-            path,
-        )?;
-        counts.source_spans += query_count_for_path(
-            &connection,
-            "SELECT COUNT(*) FROM edges e JOIN path_dict p ON p.id = e.span_path_id WHERE p.value = ?1",
-            path,
-        )?;
-    }
-    Ok(counts)
-}
-
-pub(crate) fn query_count_for_path(
-    connection: &Connection,
-    sql: &str,
-    path: &str,
-) -> Result<u64, String> {
-    connection
-        .query_row(sql, params![path], |row| row.get::<_, u64>(0))
-        .map_err(|error| format!("agent-use delta fact count query failed for {path}: {error}"))
 }
 
 pub(crate) fn agent_use_watch_deleted_paths(summary: &IncrementalIndexSummary) -> Vec<String> {
@@ -2658,6 +2880,278 @@ pub(crate) fn agent_use_watch_delta_state(
     } else {
         "updated"
     }
+}
+
+fn graph_delta_freshness_layer_changed(delta: &FreshnessLayerDelta) -> bool {
+    delta.action != "unchanged" || delta.old_status != delta.new_status
+}
+
+fn agent_use_graph_delta_freshness_delta_count(delta: &EntitySourceRoleDeltaReport) -> usize {
+    delta.path_evidence_invalidated_count
+        + delta.sidecar_freshness_changed_count
+        + usize::from(graph_delta_freshness_layer_changed(
+            &delta.candidate_spool_invalidated_or_refreshed,
+        ))
+        + usize::from(graph_delta_freshness_layer_changed(
+            &delta.candidate_query_index_invalidated_or_refreshed,
+        ))
+        + usize::from(graph_delta_freshness_layer_changed(
+            &delta.vector_chunks_invalidated,
+        ))
+        + usize::from(graph_delta_freshness_layer_changed(
+            &delta.vector_runtime_status_changed,
+        ))
+        + usize::from(graph_delta_freshness_layer_changed(
+            &delta.vector_audit_status_changed,
+        ))
+        + usize::from(graph_delta_freshness_layer_changed(
+            &delta.nuance_tokens_invalidated,
+        ))
+        + usize::from(graph_delta_freshness_layer_changed(
+            &delta.routing_handles_invalidated,
+        ))
+}
+
+fn agent_use_graph_delta_omitted_count(delta: &EntitySourceRoleDeltaReport) -> usize {
+    let omission = &delta.omission;
+    omission.entities_added_omitted
+        + omission.entities_removed_omitted
+        + omission.entities_changed_omitted
+        + omission.edges_added_omitted
+        + omission.edges_removed_omitted
+        + omission.edges_changed_omitted
+        + omission.source_spans_added_omitted
+        + omission.source_spans_removed_omitted
+        + omission.source_spans_changed_omitted
+        + omission.text_evidence_changed_omitted
+        + omission.path_evidence_invalidated_omitted
+        + omission.sidecar_freshness_changed_omitted
+        + omission.source_roles_changed_omitted
+        + omission.file_renames_detected_omitted
+        + omission.rename_ambiguities_omitted
+}
+
+fn agent_use_graph_delta_truncated_sections(
+    delta: &EntitySourceRoleDeltaReport,
+) -> Vec<&'static str> {
+    let omission = &delta.omission;
+    let mut sections = Vec::new();
+    if omission.entities_added_omitted > 0 {
+        sections.push("entities_added");
+    }
+    if omission.entities_removed_omitted > 0 {
+        sections.push("entities_removed");
+    }
+    if omission.entities_changed_omitted > 0 {
+        sections.push("entities_changed");
+    }
+    if omission.edges_added_omitted > 0 {
+        sections.push("edges_added");
+    }
+    if omission.edges_removed_omitted > 0 {
+        sections.push("edges_removed");
+    }
+    if omission.edges_changed_omitted > 0 {
+        sections.push("edges_changed");
+    }
+    if omission.source_spans_added_omitted > 0 {
+        sections.push("source_spans_added");
+    }
+    if omission.source_spans_removed_omitted > 0 {
+        sections.push("source_spans_removed");
+    }
+    if omission.source_spans_changed_omitted > 0 {
+        sections.push("source_spans_changed");
+    }
+    if omission.text_evidence_changed_omitted > 0 {
+        sections.push("text_evidence_changed");
+    }
+    if omission.path_evidence_invalidated_omitted > 0 {
+        sections.push("path_evidence_invalidated");
+    }
+    if omission.sidecar_freshness_changed_omitted > 0 {
+        sections.push("sidecar_freshness_changed");
+    }
+    if omission.source_roles_changed_omitted > 0 {
+        sections.push("source_roles_changed");
+    }
+    if omission.file_renames_detected_omitted > 0 {
+        sections.push("file_renames_detected");
+    }
+    if omission.rename_ambiguities_omitted > 0 {
+        sections.push("rename_ambiguities");
+    }
+    sections
+}
+
+fn agent_use_graph_delta_summary_json(delta: &EntitySourceRoleDeltaReport) -> Value {
+    json!({
+        "entity_delta_count": delta.entities_added_count + delta.entities_removed_count + delta.entities_changed_count,
+        "edge_delta_count": delta.edges_added_count + delta.edges_removed_count + delta.edges_changed_count,
+        "source_span_delta_count": delta.source_spans_added_count + delta.source_spans_removed_count + delta.source_spans_changed_count,
+        "source_role_delta_count": delta.source_roles_changed_count,
+        "text_evidence_delta_count": delta.text_evidence_changed_count,
+        "freshness_delta_count": agent_use_graph_delta_freshness_delta_count(delta),
+        "closure_files_considered": delta.closure_delta_summary.closure_files_considered.len(),
+        "closure_budget_hit": delta.closure_budget_hit,
+    })
+}
+
+pub(crate) fn agent_use_graph_delta_packet_budget_json(
+    delta: &EntitySourceRoleDeltaReport,
+) -> Value {
+    let truncated_sections = agent_use_graph_delta_truncated_sections(delta);
+    json!({
+        "default_compact": true,
+        "summaries_first": true,
+        "top_changed_facts_with_spans": true,
+        "omitted_count": agent_use_graph_delta_omitted_count(delta),
+        "truncated_sections": truncated_sections,
+        "expansion_handle": delta.omission.expansion_handle,
+        "expansion_handle_count": usize::from(delta.omission.expansion_handle.is_some()),
+        "critical_safety_fields_preserved": true,
+        "critical_safety_fields": [
+            "status",
+            "changed_files",
+            "graph_delta.summary",
+            "claimability",
+            "lifecycle",
+            "proof_ladder_changes",
+            "stale_or_unsafe_blockers",
+            "warnings_unknowns"
+        ],
+        "full_graph_dump_default": false,
+        "full_detail_requires": "explain_or_audit_mode",
+    })
+}
+
+pub(crate) fn agent_use_graph_delta_timing_json(
+    delta: &EntitySourceRoleDeltaReport,
+    hot_path_update_ms: u128,
+    snapshot_old_ms: u128,
+    snapshot_new_ms: u128,
+    diff_closure_ms: u128,
+    packet_serialize_ms: u128,
+    delta_total_ms: u128,
+    total_update_plus_delta_ms: u128,
+) -> Value {
+    json!({
+        "total_update_plus_delta_ms": total_update_plus_delta_ms,
+        "hot_path_update_ms": hot_path_update_ms,
+        "snapshot_old_ms": snapshot_old_ms,
+        "snapshot_new_ms": snapshot_new_ms,
+        "diff_entities_ms": delta.timings.diff_entities_ms,
+        "diff_edges_ms": delta.timings.diff_edges_ms,
+        "diff_spans_ms": delta.timings.diff_spans_ms,
+        "diff_text_evidence_ms": delta.timings.diff_text_evidence_ms,
+        "diff_sidecars_ms": delta.timings.diff_sidecars_ms,
+        "diff_closure_ms": diff_closure_ms,
+        "packet_serialize_ms": packet_serialize_ms,
+        "delta_total_ms": delta_total_ms,
+    })
+}
+
+pub(crate) fn agent_use_graph_delta_json(delta: &EntitySourceRoleDeltaReport) -> Value {
+    json!({
+        "schema_version": delta.graph_delta_schema_version,
+        "status": delta.status,
+        "ready_to_report": delta.ready_to_report,
+        "claimable": delta.claimable,
+        "diagnostic_only": delta.diagnostic_only,
+        "summary": agent_use_graph_delta_summary_json(delta),
+        "snapshot_read_only": delta.snapshot_read_only,
+        "snapshot_bounded_to_changed_or_closure_files": delta.snapshot_bounded_to_changed_or_closure_files,
+        "entities_added_count": delta.entities_added_count,
+        "entities_removed_count": delta.entities_removed_count,
+        "entities_changed_count": delta.entities_changed_count,
+        "edges_added_count": delta.edges_added_count,
+        "edges_removed_count": delta.edges_removed_count,
+        "edges_changed_count": delta.edges_changed_count,
+        "source_roles_changed_count": delta.source_roles_changed_count,
+        "source_spans_added_count": delta.source_spans_added_count,
+        "source_spans_removed_count": delta.source_spans_removed_count,
+        "source_spans_changed_count": delta.source_spans_changed_count,
+        "text_evidence_changed_count": delta.text_evidence_changed_count,
+        "path_evidence_invalidated_count": delta.path_evidence_invalidated_count,
+        "sidecar_freshness_changed_count": delta.sidecar_freshness_changed_count,
+        "entities_added": delta.entities_added,
+        "entities_removed": delta.entities_removed,
+        "entities_changed": delta.entities_changed,
+        "edges_added": delta.edges_added,
+        "edges_removed": delta.edges_removed,
+        "edges_changed": delta.edges_changed,
+        "source_spans_added": delta.source_spans_added,
+        "source_spans_removed": delta.source_spans_removed,
+        "source_spans_changed": delta.source_spans_changed,
+        "text_evidence_changed": delta.text_evidence_changed,
+        "path_evidence_invalidated": delta.path_evidence_invalidated,
+        "sidecar_freshness_changed": delta.sidecar_freshness_changed,
+        "candidate_spool_invalidated_or_refreshed": delta.candidate_spool_invalidated_or_refreshed,
+        "candidate_query_index_invalidated_or_refreshed": delta.candidate_query_index_invalidated_or_refreshed,
+        "vector_chunks_invalidated": delta.vector_chunks_invalidated,
+        "vector_runtime_status_changed": delta.vector_runtime_status_changed,
+        "vector_audit_status_changed": delta.vector_audit_status_changed,
+        "nuance_tokens_invalidated": delta.nuance_tokens_invalidated,
+        "routing_handles_invalidated": delta.routing_handles_invalidated,
+        "proof_ladder_changes": delta.proof_ladder_changes,
+        "file_renames_detected": delta.file_renames_detected,
+        "rename_ambiguities": delta.rename_ambiguities,
+        "closure_delta_summary": delta.closure_delta_summary,
+        "closure_files_updated": delta.closure_files_updated,
+        "closure_budget_hit": delta.closure_budget_hit,
+        "closure_unsupported_relation_classes": delta.closure_unsupported_relation_classes,
+        "closure_degraded_relation_classes": delta.closure_degraded_relation_classes,
+        "closure_unknowns": delta.closure_unknowns,
+        "relation_kind_counts": delta.relation_kind_counts,
+        "exactness_counts": delta.exactness_counts,
+        "derived_counts": delta.derived_counts,
+        "source_role_counts": delta.source_role_counts,
+        "degraded_relation_classes": delta.degraded_relation_classes,
+        "unsupported_relation_classes": delta.unsupported_relation_classes,
+        "source_roles_changed": delta.source_roles_changed,
+        "timings": delta.timings.clone(),
+        "packet_budget": agent_use_graph_delta_packet_budget_json(delta),
+        "omitted_count": agent_use_graph_delta_omitted_count(delta),
+        "truncated_sections": agent_use_graph_delta_truncated_sections(delta),
+        "expansion_handle_count": usize::from(delta.omission.expansion_handle.is_some()),
+        "omission": delta.omission,
+        "rename_detection_status": delta.rename_detection_status,
+        "text_evidence_not_graph_entity_delta": delta.text_evidence_not_graph_entity_delta,
+        "text_candidate_evidence_not_graph_delta": delta.text_candidate_evidence_not_graph_delta,
+        "source_navigation_only_not_graph_entity_delta": delta.source_navigation_only_not_graph_entity_delta,
+        "same_name_symbols_distinct": delta.same_name_symbols_distinct,
+        "endpoint_names_hydrated_where_available": delta.endpoint_names_hydrated_where_available,
+        "same_name_targets_distinct": delta.same_name_targets_distinct,
+        "exactness_preserved": delta.exactness_preserved,
+        "derived_edges_require_provenance": delta.derived_edges_require_provenance,
+        "heuristic_unsupported_edges_not_overclaimed": delta.heuristic_unsupported_edges_not_overclaimed,
+        "test_mock_edges_preserved": delta.test_mock_edges_preserved,
+        "source_spans_present_for_claimable_entity_deltas": delta.source_spans_present_for_claimable_entity_deltas,
+        "source_spans_present_for_claimable_edge_deltas": delta.source_spans_present_for_claimable_edge_deltas,
+        "source_spans_changed_reported": delta.source_spans_changed_reported,
+        "text_evidence_changed_reported": delta.text_evidence_changed_reported,
+        "path_evidence_invalidated_reported": delta.path_evidence_invalidated_reported,
+        "candidate_freshness_delta_reported": delta.candidate_freshness_delta_reported,
+        "vector_freshness_delta_reported": delta.vector_freshness_delta_reported,
+        "nuance_freshness_delta_reported_or_not_applicable": delta.nuance_freshness_delta_reported_or_not_applicable,
+        "routing_handle_delta_reported_or_not_applicable": delta.routing_handle_delta_reported_or_not_applicable,
+        "proof_ladder_changes_reported": delta.proof_ladder_changes_reported,
+        "freshness_delta_not_graph_proof": delta.freshness_delta_not_graph_proof,
+        "access_vs_corrupt_classification_safe": delta.access_vs_corrupt_classification_safe,
+        "stale_sidecars_not_used_as_fresh": delta.stale_sidecars_not_used_as_fresh,
+        "rename_aware_delta_supported": delta.rename_aware_delta_supported,
+        "rename_unknown_when_ambiguous": delta.rename_unknown_when_ambiguous,
+        "closure_delta_supported": delta.closure_delta_supported,
+        "closure_budget_hit_degraded": delta.closure_budget_hit_degraded,
+        "unsupported_relation_unknown_not_proof": delta.unsupported_relation_unknown_not_proof,
+        "duplicate_content_paths_distinct": delta.duplicate_content_paths_distinct,
+        "no_silent_full_repo_fallback": delta.no_silent_full_repo_fallback,
+        "source_spans_and_provenance_preserved": delta.source_spans_and_provenance_preserved,
+        "old_good_db_preserved": delta.old_good_db_preserved,
+        "claim_boundaries_preserved": delta.claim_boundaries_preserved,
+        "public_claim": delta.public_claim,
+        "warnings": delta.warnings,
+    })
 }
 
 pub(crate) fn agent_use_watch_dependency_closure_degraded(
@@ -3535,15 +4029,30 @@ pub(crate) fn agent_use_compact_delta_summary(value: &Value) -> Value {
         "text_evidence_changed",
         "path_evidence_invalidated",
         "candidate_spool_invalidated_or_rebuilt",
+        "candidate_spool_invalidated_or_refreshed",
         "candidate_query_index_invalidated_or_rebuilt",
+        "candidate_query_index_invalidated_or_refreshed",
         "vector_chunks_invalidated_or_rebuilt",
+        "vector_chunks_invalidated",
+        "vector_runtime_status_changed",
+        "vector_audit_status_changed",
+        "nuance_tokens_invalidated",
         "routing_handles_invalidated",
+        "routing_handles_invalidated_or_not_applicable",
+        "proof_ladder_changes",
+        "file_renames_detected",
+        "rename_ambiguities",
+        "closure_delta_summary",
         "closure_files_considered",
         "closure_files_updated",
         "closure_edges_inspected",
         "closure_relation_classes",
         "closure_budget_hit",
         "degraded_relation_classes",
+        "unsupported_relation_classes",
+        "graph_delta_detail_mode",
+        "delta_packet_compact_default",
+        "graph_delta_packet_budget",
         "timings",
         "old_graph_valid",
         "new_graph_valid",
@@ -4508,8 +5017,15 @@ pub(crate) fn agent_use_watch_unavailable_json(
         "path_evidence_invalidated": {
             "action": "unchanged",
             "dirty_path_evidence_count": 0,
+            "delta_count": 0,
+            "graph_proof": false,
         },
         "candidate_spool_invalidated_or_rebuilt": {
+            "action": "unchanged",
+            "status": "not_checked",
+            "graph_proof": false,
+        },
+        "candidate_spool_invalidated_or_refreshed": {
             "action": "unchanged",
             "status": "not_checked",
             "graph_proof": false,
@@ -4519,15 +5035,47 @@ pub(crate) fn agent_use_watch_unavailable_json(
             "status": "not_checked",
             "graph_proof": false,
         },
+        "candidate_query_index_invalidated_or_refreshed": {
+            "action": "unchanged",
+            "status": "not_checked",
+            "graph_proof": false,
+        },
         "vector_chunks_invalidated_or_rebuilt": {
             "action": "unchanged",
             "status": "not_checked",
+            "graph_proof": false,
+        },
+        "vector_chunks_invalidated": {
+            "action": "unchanged",
+            "status": "not_checked",
+            "graph_proof": false,
+        },
+        "vector_runtime_status_changed": {
+            "action": "unchanged",
+            "status": "not_checked",
+            "graph_proof": false,
+        },
+        "vector_audit_status_changed": {
+            "action": "unchanged",
+            "status": "not_checked",
+            "graph_proof": false,
+        },
+        "nuance_tokens_invalidated": {
+            "action": "not_applicable",
+            "status": "not_applicable",
+            "reason": "nuance_rescue_candidates_are_request_time_context_candidates",
             "graph_proof": false,
         },
         "routing_handles_invalidated": {
             "action": "unchanged",
             "scope": "none",
         },
+        "routing_handles_invalidated_or_not_applicable": {
+            "action": "unchanged",
+            "scope": "none",
+            "graph_proof": false,
+        },
+        "proof_ladder_changes": {},
         "closure_files_considered": [],
         "closure_budget_hit": false,
         "degraded_relation_classes": [],

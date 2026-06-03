@@ -2491,6 +2491,28 @@ impl GraphStore for SqliteGraphStore {
         Ok(edges)
     }
 
+    fn list_edges_by_file(&self, repo_relative_path: &str) -> StoreResult<Vec<Edge>> {
+        let repo_relative_path = normalize_repo_relative_path(repo_relative_path);
+        let mut edge_ids = edge_ids_for_file_map(&self.connection, &repo_relative_path)?;
+        if edge_ids.is_empty() {
+            if let Some(path_id) = lookup_path(&self.connection, &repo_relative_path)? {
+                edge_ids = edge_ids_touching_path(&self.connection, path_id)?;
+            }
+        }
+        edge_ids.sort();
+        edge_ids.dedup();
+
+        let mut edges = Vec::new();
+        for edge_id in edge_ids {
+            if let Some(edge) = self.get_edge(&edge_id)? {
+                edges.push(edge);
+            }
+        }
+        dedupe_edges(&mut edges);
+        edges.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(edges)
+    }
+
     fn count_edges(&self) -> StoreResult<u64> {
         Ok(count_rows(&self.connection, "edges")?
             + compact_fact_row_count(&self.connection)?
@@ -2834,6 +2856,40 @@ impl GraphStore for SqliteGraphStore {
             .map_err(StoreError::from)
     }
 
+    fn list_source_spans_by_file(
+        &self,
+        repo_relative_path: &str,
+    ) -> StoreResult<Vec<(String, SourceSpan)>> {
+        let repo_relative_path = normalize_repo_relative_path(repo_relative_path);
+        let mut span_ids = source_span_ids_for_file_map(&self.connection, &repo_relative_path)?;
+        if span_ids.is_empty() {
+            if let Some(path_id) = lookup_path(&self.connection, &repo_relative_path)? {
+                let mut statement = self.connection.prepare_cached(
+                    "
+                    SELECT COALESCE(object_id_lookup.value, 'span-key:' || source_spans.id_key)
+                    FROM source_spans
+                    LEFT JOIN object_id_lookup ON object_id_lookup.id = source_spans.id_key
+                    WHERE source_spans.path_id = ?1
+                    ORDER BY source_spans.id_key
+                    ",
+                )?;
+                let rows = statement.query_map([path_id], |row| row.get(0))?;
+                span_ids = collect_rows(rows)?;
+            }
+        }
+        span_ids.sort();
+        span_ids.dedup();
+
+        let mut spans = Vec::new();
+        for span_id in span_ids {
+            if let Some(span) = self.get_source_span(&span_id)? {
+                spans.push((span_id, span));
+            }
+        }
+        spans.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(spans)
+    }
+
     fn delete_source_span(&self, id: &str) -> StoreResult<bool> {
         delete_fts_row(&self.connection, TextSearchKind::Snippet, id)?;
         self.connection
@@ -2981,6 +3037,24 @@ impl GraphStore for SqliteGraphStore {
             .map_err(StoreError::from)
     }
 
+    fn list_path_evidence_by_file(
+        &self,
+        repo_relative_path: &str,
+    ) -> StoreResult<Vec<PathEvidence>> {
+        let repo_relative_path = normalize_repo_relative_path(repo_relative_path);
+        let mut statement = self.connection.prepare_cached(
+            "
+            SELECT path_evidence.*
+            FROM file_path_evidence
+            JOIN path_evidence ON path_evidence.id = file_path_evidence.path_id
+            WHERE file_path_evidence.file_id = ?1
+            ORDER BY path_evidence.id
+            ",
+        )?;
+        let rows = statement.query_map([repo_relative_path], path_evidence_from_row)?;
+        collect_rows(rows)
+    }
+
     fn delete_path_evidence(&self, id: &str) -> StoreResult<bool> {
         let changed = delete_by_id(&self.connection, "path_evidence", id)?;
         delete_path_evidence_materialized_rows(&self.connection, id)?;
@@ -3076,6 +3150,58 @@ impl GraphStore for SqliteGraphStore {
         )?;
         let rows = statement.query_map(params![query, limit as i64], text_search_hit_from_row)?;
         collect_rows(rows)
+    }
+
+    fn list_text_search_hits_by_file(
+        &self,
+        repo_relative_path: &str,
+    ) -> StoreResult<Vec<TextSearchHit>> {
+        let repo_relative_path = normalize_repo_relative_path(repo_relative_path);
+        let rowids = fts_rowids_for_file(&self.connection, &repo_relative_path)?;
+        if rowids.is_empty() {
+            let mut statement = self.connection.prepare(
+                "
+                SELECT kind, id, repo_relative_path, line, title, body,
+                       0.0 AS rank
+                FROM stage0_fts
+                WHERE repo_relative_path = ?1
+                ORDER BY kind, id, line
+                ",
+            )?;
+            let rows = statement.query_map([repo_relative_path], text_search_hit_from_row)?;
+            return collect_rows(rows);
+        }
+
+        let mut hits = Vec::new();
+        let mut statement = self.connection.prepare_cached(
+            "
+            SELECT kind, id, repo_relative_path, line, title, body,
+                   0.0 AS rank
+            FROM stage0_fts
+            WHERE rowid = ?1
+            ",
+        )?;
+        for rowid in rowids {
+            if let Some(hit) = statement
+                .query_row([rowid], text_search_hit_from_row)
+                .optional()?
+            {
+                hits.push(hit);
+            }
+        }
+        hits.sort_by(|left, right| {
+            (
+                left.kind.as_str(),
+                left.id.as_str(),
+                left.line.unwrap_or_default(),
+            )
+                .cmp(&(
+                    right.kind.as_str(),
+                    right.id.as_str(),
+                    right.line.unwrap_or_default(),
+                ))
+        });
+        Ok(hits)
     }
 
     fn upsert_retrieval_trace(&self, trace: &RetrievalTraceRecord) -> StoreResult<()> {

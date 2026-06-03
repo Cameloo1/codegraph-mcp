@@ -5,7 +5,7 @@
 //! is introduced.
 
 #![forbid(unsafe_code)]
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 
 use std::{
     cell::Cell,
@@ -38,22 +38,25 @@ use codegraph_core::{
 pub use codegraph_index::{
     add_index_profile_span_ms_to_summary, build_vector_chunk_index_artifacts_for_repo,
     build_vector_chunk_index_json_for_repo, candidate_spool_index_status_for_repo,
-    candidate_spool_query_index_path, collect_repo_files, default_db_path, graph_fact_hash,
-    index_repo, index_repo_to_db_with_options, index_repo_with_options,
-    inspect_db_lifecycle_preflight, inspect_db_lifecycle_surface_preflight,
-    inspect_repo_db_passport, load_vector_chunk_index_json, normalize_changed_path,
-    parse_extract_pending_files, query_candidate_spool_index_for_repo,
+    candidate_spool_query_index_path, collect_repo_files, compute_entity_source_role_delta,
+    default_db_path, graph_fact_hash, index_repo, index_repo_to_db_with_options,
+    index_repo_with_options, inspect_db_lifecycle_preflight,
+    inspect_db_lifecycle_surface_preflight, inspect_repo_db_passport, load_vector_chunk_index_json,
+    normalize_changed_path, parse_extract_pending_files, query_candidate_spool_index_for_repo,
     rebuild_candidate_spool_query_index_for_repo, refresh_index_profile_derived_fields,
-    require_reusable_db_passport, scope_policy_hash, should_ignore_path,
-    should_start_new_index_batch, update_changed_files, update_changed_files_to_db,
+    require_reusable_db_passport, rtds_dependency_closure_for_changed_paths_to_db,
+    scope_policy_hash, should_ignore_path, should_start_new_index_batch,
+    snapshot_normalized_facts_for_paths_to_db, update_changed_files, update_changed_files_to_db,
     update_changed_files_with_cache, update_changed_files_with_cache_to_db,
     validate_vector_chunk_source_bindings, vector_chunk_search_hit_to_retrieval_candidate,
     CandidateSpoolIndexLoad, CandidateSpoolIndexQueryResult, CandidateSpoolPolicy,
     DbLifecycleOperationKind, DbLifecyclePolicy, DbLifecyclePreflight, DbLifecycleSurfacePreflight,
-    DbLifecycleSurfacePreflightRequest, IncrementalIndexCache, IncrementalIndexSummary,
-    IndexBuildMode, IndexError, IndexIssue, IndexOptions, IndexProfile, IndexScopeOptions,
-    IndexSummary, LocalFactBundle, PendingIndexFile, StorageMode, VectorChunkArtifactFormat,
-    VectorChunkIndexArtifactOptions, VectorChunkIndexBuildOptions, DEFAULT_INDEX_BATCH_MAX_FILES,
+    DbLifecycleSurfacePreflightRequest, EntitySourceRoleDeltaOptions, EntitySourceRoleDeltaReport,
+    FreshnessLayerDelta, IncrementalIndexCache, IncrementalIndexSummary, IndexBuildMode,
+    IndexError, IndexIssue, IndexOptions, IndexProfile, IndexScopeOptions, IndexSummary,
+    LocalFactBundle, NormalizedFactSnapshotOptions, PendingIndexFile, StorageMode,
+    VectorChunkArtifactFormat, VectorChunkIndexArtifactOptions, VectorChunkIndexBuildOptions,
+    DEFAULT_ENTITY_SOURCE_ROLE_DELTA_TOP_LIMIT, DEFAULT_INDEX_BATCH_MAX_FILES,
     DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY,
     INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES, SCOPE_POLICY_KIND_DEFAULT_WITH_OVERRIDES,
     SCOPE_TRUTH_STATUS_OVERRIDE_ONLY, UNBOUNDED_STORE_READ_LIMIT,
