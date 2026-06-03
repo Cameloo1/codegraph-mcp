@@ -262,6 +262,49 @@ pub(crate) fn entity_metadata_search_text(entity: &Entity) -> String {
         .join(" ")
 }
 
+/// Honesty disclosure for the agent-use bounded read path.
+///
+/// Under `agent-use`, the Stage-0 FTS store holds no full source body — file
+/// rows match on path only, and content recall flows exclusively through
+/// indexed entity text and snippet spans (the deliberate DB-only,
+/// `AGENT_USE_DISK_FALLBACK_MAX_FILES = 0` determinism contract). That means
+/// `query text` / `query files` are NOT an exhaustive grep: imports, top-level
+/// comments, license headers, non-entity constants outside any entity span, and
+/// text-evidence lines beyond the per-file snippet cap are not matchable here.
+/// This signal tells a consuming agent to fall back to a full-text search (e.g.
+/// ripgrep) when it needs exhaustive content coverage rather than over-trusting
+/// an empty result as "definitely absent".
+fn bounded_recall_scope_disclosure() -> Value {
+    json!({
+        "exhaustive": false,
+        "scope": "entity_and_snippet_spans",
+        "excludes": [
+            "imports",
+            "top_level_comments",
+            "license_headers",
+            "non_entity_constants_outside_entity_spans",
+            "text_evidence_lines_beyond_snippet_cap",
+        ],
+        "reason": "agent-use bounded read path stores no full source body in SQLite; file FTS rows match path only",
+        "recommended_fallback": "use full-text search (e.g. ripgrep) for exhaustive content matches; an empty result here is not proof of absence",
+    })
+}
+
+/// Attach the bounded-recall disclosure to a response object, but only when the
+/// agent-use bounded read path is active. Non-bounded callers (which still have
+/// the on-demand source-scan backstop) keep exhaustive recall and get no signal.
+fn attach_recall_scope_disclosure(response: &mut Value) {
+    if !agent_use_bounded_read_path_enabled() {
+        return;
+    }
+    if let Some(object) = response.as_object_mut() {
+        object.insert(
+            "recall_scope".to_string(),
+            bounded_recall_scope_disclosure(),
+        );
+    }
+}
+
 pub(crate) fn query_text_with_options(
     repo_root: &Path,
     options: &QueryListOptions,
@@ -288,7 +331,7 @@ pub(crate) fn query_text_with_options(
     if options.output_mode.is_compact() {
         let (hits, truncation) = truncate_for_agent(hits, options.limit);
         let results = hits.iter().map(agent_text_hit_json).collect::<Vec<_>>();
-        return Ok(canonical_agent_query_response(
+        let mut response = canonical_agent_query_response(
             "query_text_agent_json",
             "query text",
             repo_root,
@@ -305,12 +348,14 @@ pub(crate) fn query_text_with_options(
             Vec::new(),
             options.output_mode,
             agent_timings_json(started),
-        ));
+        );
+        attach_recall_scope_disclosure(&mut response);
+        return Ok(response);
     }
 
     hits.truncate(options.limit);
 
-    Ok(json!({
+    let mut response = json!({
         "status": "ok",
         "query": options.query,
         "result_count": hits.len(),
@@ -322,7 +367,9 @@ pub(crate) fn query_text_with_options(
         "explain": options.explain,
         "hits": hits,
         "proof": "Text query uses SQLite FTS when present and falls back to bounded on-demand source scanning over indexed files.",
-    }))
+    });
+    attach_recall_scope_disclosure(&mut response);
+    Ok(response)
 }
 
 pub(crate) fn source_scan_text_hits(
@@ -439,7 +486,7 @@ pub(crate) fn query_files_with_options(
     if options.output_mode.is_compact() {
         let (hits, truncation) = truncate_for_agent(hits, options.limit);
         let results = hits.iter().map(agent_file_hit_json).collect::<Vec<_>>();
-        return Ok(canonical_agent_query_response(
+        let mut response = canonical_agent_query_response(
             "query_files_agent_json",
             "query files",
             repo_root,
@@ -456,12 +503,14 @@ pub(crate) fn query_files_with_options(
             Vec::new(),
             options.output_mode,
             agent_timings_json(started),
-        ));
+        );
+        attach_recall_scope_disclosure(&mut response);
+        return Ok(response);
     }
 
     hits.truncate(options.limit);
 
-    Ok(json!({
+    let mut response = json!({
         "status": "ok",
         "query": options.query,
         "result_count": hits.len(),
@@ -473,7 +522,9 @@ pub(crate) fn query_files_with_options(
         "explain": options.explain,
         "hits": hits,
         "proof": "File query combines SQLite FTS file-path rows with repo-relative path matching.",
-    }))
+    });
+    attach_recall_scope_disclosure(&mut response);
+    Ok(response)
 }
 
 pub(crate) fn split_file_query_aliases(query: &str) -> BTreeSet<String> {

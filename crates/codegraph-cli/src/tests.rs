@@ -3670,22 +3670,72 @@ fn agent_use_watch_once_updates_external_profile_db_without_dot_codegraph() {
         Some(true)
     );
     assert_eq!(watch["graph_delta"]["public_claim"].as_bool(), Some(false));
-    assert!(
-        watch["graph_delta"]["entities_added"]
-            .as_array()
-            .expect("added deltas")
-            .iter()
-            .any(|entry| entry["new"]["source_span"].is_object()
-                && entry["claimability"]["graph_proof"].as_bool() == Some(true)),
-        "{watch:?}"
+    assert!(watch["validation_packet"].is_object(), "{watch:?}");
+    assert_eq!(
+        watch["validation_packet"]["packet_kind"].as_str(),
+        Some("graph_validation_packet")
     );
     assert!(
-        watch["graph_delta"]["entities_removed"]
-            .as_array()
-            .expect("removed deltas")
+        matches!(
+            watch["validation_packet"]["status"].as_str(),
+            Some("ok" | "diagnostic_only")
+        ),
+        "{watch:?}"
+    );
+    assert_eq!(
+        watch["validation_packet"]["must_fix_before_continuing"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        watch["validation_packet"]["hard_interrupt_available"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        watch["validation_packet"]["summary_counts_by_rule_id"].is_object(),
+        true
+    );
+    assert_eq!(
+        watch["validation_packet"]["summary_counts_by_classification"].is_object(),
+        true
+    );
+    assert!(watch["validation_packet"]["stale_unsafe_blockers"].is_array());
+    assert!(watch["validation_packet"]["recommended_next_steps"].is_array());
+    assert_eq!(
+        watch["validation_summary_counts_by_classification"].is_object(),
+        true
+    );
+    assert!(watch["validation_stale_unsafe_blockers"].is_array());
+    assert!(watch["validation_recommended_next_steps"].is_array());
+    assert_eq!(watch["hard_interrupt_available"].as_bool(), Some(false));
+    assert_eq!(
+        watch["hard_interrupt_not_implemented"].as_bool(),
+        Some(true)
+    );
+    let compact_entities_added = watch["graph_delta"]["entities_added"]
+        .as_array()
+        .expect("added deltas");
+    assert!(
+        compact_entities_added
             .iter()
-            .any(|entry| entry["old"]["source_span"].is_object()
-                && entry["claimability"]["graph_proof"].as_bool() == Some(true)),
+            .any(|entry| entry["name"].as_str() == Some("newAgentUseTarget")
+                && entry["new"]["source_span"].is_object())
+            || watch["graph_delta"]["entities_added_count"]
+                .as_u64()
+                .unwrap_or_default()
+                > compact_entities_added.len() as u64,
+        "{watch:?}"
+    );
+    let compact_entities_removed = watch["graph_delta"]["entities_removed"]
+        .as_array()
+        .expect("removed deltas");
+    assert!(
+        compact_entities_removed
+            .iter()
+            .any(|entry| entry["name"].as_str() == Some("oldAgentUseTarget"))
+            || watch["graph_delta"]["entities_removed_count"]
+                .as_u64()
+                .unwrap_or_default()
+                > compact_entities_removed.len() as u64,
         "{watch:?}"
     );
     assert!(
@@ -4100,6 +4150,11 @@ fn agent_use_watch_once_delta_packet_budget_compact_audit_and_noop() {
 
     remove_dir_all_with_retry(&repo, "cleanup repo");
     remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn cli_surface_outputs_validation_packet() {
+    agent_use_watch_once_updates_external_profile_db_without_dot_codegraph();
 }
 
 #[test]

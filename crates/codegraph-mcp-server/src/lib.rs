@@ -1101,6 +1101,12 @@ impl McpServer {
         Ok(json!({
             "status": "updated",
             "summary": summary,
+            "validation_packet_status": "not_applicable",
+            "validation_findings_status": "not_applicable",
+            "validation_findings_reason": "MVP3.3 validation packets are emitted by the canonical production agent-use watch --once --changed JSON surface; raw MCP update_changed_files calls the shared indexer only.",
+            "canonical_validation_surface": "codegraph-mcp agent-use watch --repo <repo> --once --changed <path> --json",
+            "hard_interrupt_available": false,
+            "hard_interrupt_not_implemented": true,
             "note": "Changed-file updates use the shared compact indexer path and prune stale facts before localized re-indexing.",
         }))
     }
@@ -6828,6 +6834,57 @@ mod tests {
         assert!(symbol["hits"][0]["entity"]["resource_links"]["source_span"]
             .as_str()
             .is_some_and(|uri| uri.starts_with("codegraph://source-span/")));
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mcp_surface_outputs_validation_findings_or_not_applicable() {
+        let repo = fixture_repo();
+        let db_path = repo.join("external-db").join("mcp-validation.sqlite");
+        fs::create_dir_all(db_path.parent().expect("db parent")).expect("create db parent");
+        let server = McpServer::new(
+            McpServerConfig::for_repo(&repo)
+                .with_db_path(&db_path)
+                .without_trace(),
+        );
+        ok(server.call_tool(
+            "codegraph.index_repo",
+            &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
+        ));
+        fs::write(
+            repo.join("src").join("auth.ts"),
+            "export function login(email: string) {\n  return email.trim();\n}\n",
+        )
+        .expect("modify fixture source");
+
+        let result = ok(server.call_tool(
+            "codegraph.update_changed_files",
+            &json!({
+                "repo": path_string(&repo),
+                "db_path": path_string(&db_path),
+                "files": ["src/auth.ts"]
+            }),
+        ));
+
+        assert_eq!(result["status"].as_str(), Some("updated"));
+        assert_eq!(
+            result["validation_findings_status"].as_str(),
+            Some("not_applicable")
+        );
+        assert_eq!(
+            result["canonical_validation_surface"].as_str(),
+            Some("codegraph-mcp agent-use watch --repo <repo> --once --changed <path> --json")
+        );
+        assert_eq!(result["hard_interrupt_available"].as_bool(), Some(false));
+        assert_eq!(
+            result["hard_interrupt_not_implemented"].as_bool(),
+            Some(true)
+        );
+        assert!(
+            !repo.join(".codegraph").exists(),
+            "MCP validation mapping test must not mutate normal .codegraph"
+        );
 
         fs::remove_dir_all(repo).expect("cleanup");
     }

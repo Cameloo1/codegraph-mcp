@@ -16,6 +16,7 @@ Schema files live in `docs/schemas/agent-json/`:
 - `callers_callees_agent_json.schema.json`
 - `status_compact_json.schema.json`
 - `doctor_compact_json.schema.json`
+- `validation_packet_agent_json.schema.json`
 - `common.schema.json`
 
 ## Versioning

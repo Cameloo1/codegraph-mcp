@@ -3,7 +3,7 @@
 //!
 //! Extracted verbatim from `lib.rs` (F4 module split); behavior unchanged.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -14,6 +14,67 @@ use serde_json::{json, Value};
 use crate::*;
 
 const AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT: usize = 3;
+const CG_MVP3_CALLS_DANGLING_TARGET: &str = "CG_MVP3_CALLS_DANGLING_TARGET";
+const CG_MVP3_CALLS_REMOVED_CALLEE_STILL_REFERENCED: &str =
+    "CG_MVP3_CALLS_REMOVED_CALLEE_STILL_REFERENCED";
+const CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED: &str = "CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED";
+const CG_MVP3_CALLS_TARGET_ROLE_MISMATCH: &str = "CG_MVP3_CALLS_TARGET_ROLE_MISMATCH";
+const CG_MVP3_CALLS_MISSING_SOURCE_SPAN: &str = "CG_MVP3_CALLS_MISSING_SOURCE_SPAN";
+const CG_MVP3_CALLS_DERIVED_MISSING_PROVENANCE: &str = "CG_MVP3_CALLS_DERIVED_MISSING_PROVENANCE";
+const CG_MVP3_IMPORTS_DANGLING_TARGET: &str = "CG_MVP3_IMPORTS_DANGLING_TARGET";
+const CG_MVP3_IMPORTS_DELETED_EXPORT_STILL_IMPORTED: &str =
+    "CG_MVP3_IMPORTS_DELETED_EXPORT_STILL_IMPORTED";
+const CG_MVP3_IMPORTS_RENAMED_TARGET_NOT_UPDATED: &str =
+    "CG_MVP3_IMPORTS_RENAMED_TARGET_NOT_UPDATED";
+const CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH: &str = "CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH";
+const CG_MVP3_IMPORTS_TARGET_ROLE_MISMATCH: &str = "CG_MVP3_IMPORTS_TARGET_ROLE_MISMATCH";
+const CG_MVP3_IMPORTS_MISSING_SOURCE_SPAN: &str = "CG_MVP3_IMPORTS_MISSING_SOURCE_SPAN";
+const CG_MVP3_IMPORTS_DERIVED_MISSING_PROVENANCE: &str =
+    "CG_MVP3_IMPORTS_DERIVED_MISSING_PROVENANCE";
+const CG_MVP3_PROOF_EDGE_MISSING_SOURCE_SPAN: &str = "CG_MVP3_PROOF_EDGE_MISSING_SOURCE_SPAN";
+const CG_MVP3_CLAIMABLE_ENTITY_MISSING_SOURCE_SPAN: &str =
+    "CG_MVP3_CLAIMABLE_ENTITY_MISSING_SOURCE_SPAN";
+const CG_MVP3_DERIVED_EDGE_MISSING_PROVENANCE: &str = "CG_MVP3_DERIVED_EDGE_MISSING_PROVENANCE";
+const CG_MVP3_DB_LIFECYCLE_MISMATCH_AFTER_UPDATE: &str =
+    "CG_MVP3_DB_LIFECYCLE_MISMATCH_AFTER_UPDATE";
+const CG_MVP3_STALE_OR_FOREIGN_DB_VALIDATION_ATTEMPT: &str =
+    "CG_MVP3_STALE_OR_FOREIGN_DB_VALIDATION_ATTEMPT";
+const CG_MVP3_TEMP_DB_CLAIMABLE: &str = "CG_MVP3_TEMP_DB_CLAIMABLE";
+const CG_MVP3_OLD_GOOD_DB_NOT_PRESERVED: &str = "CG_MVP3_OLD_GOOD_DB_NOT_PRESERVED";
+const CG_MVP3_CORRUPT_OR_INCOMPLETE_UPDATE_TRANSACTION: &str =
+    "CG_MVP3_CORRUPT_OR_INCOMPLETE_UPDATE_TRANSACTION";
+const CG_MVP3_QUERY_DURING_UPDATE_UNSAFE: &str = "CG_MVP3_QUERY_DURING_UPDATE_UNSAFE";
+const CG_MVP3_SIDECAR_CORRUPT_VS_INACCESSIBLE_MISCLASSIFIED: &str =
+    "CG_MVP3_SIDECAR_CORRUPT_VS_INACCESSIBLE_MISCLASSIFIED";
+const CG_MVP3_SOURCE_ROLE_TEST_EVIDENCE_IN_PRODUCTION_PROOF: &str =
+    "CG_MVP3_SOURCE_ROLE_TEST_EVIDENCE_IN_PRODUCTION_PROOF";
+const CG_MVP3_SOURCE_ROLE_MOCK_EVIDENCE_IN_PRODUCTION_PROOF: &str =
+    "CG_MVP3_SOURCE_ROLE_MOCK_EVIDENCE_IN_PRODUCTION_PROOF";
+const CG_MVP3_SOURCE_ROLE_STUB_EVIDENCE_IN_PRODUCTION_PROOF: &str =
+    "CG_MVP3_SOURCE_ROLE_STUB_EVIDENCE_IN_PRODUCTION_PROOF";
+const CG_MVP3_SOURCE_ROLE_INLINE_TEST_PROMOTED_TO_PRODUCTION: &str =
+    "CG_MVP3_SOURCE_ROLE_INLINE_TEST_PROMOTED_TO_PRODUCTION";
+const CG_MVP3_SOURCE_ROLE_GENERATED_EVIDENCE_AS_PRODUCTION_PROOF: &str =
+    "CG_MVP3_SOURCE_ROLE_GENERATED_EVIDENCE_AS_PRODUCTION_PROOF";
+const CG_MVP3_TESTS_DANGLING_TARGET: &str = "CG_MVP3_TESTS_DANGLING_TARGET";
+const CG_MVP3_ASSERTS_DANGLING_TARGET: &str = "CG_MVP3_ASSERTS_DANGLING_TARGET";
+const CG_MVP3_OPTIONAL_TEST_TARGET_MISSING: &str = "CG_MVP3_OPTIONAL_TEST_TARGET_MISSING";
+const CG_MVP3_UNSUPPORTED_TEST_RELATION_UNKNOWN: &str = "CG_MVP3_UNSUPPORTED_TEST_RELATION_UNKNOWN";
+const CG_MVP3_READS_DANGLING_SYMBOL: &str = "CG_MVP3_READS_DANGLING_SYMBOL";
+const CG_MVP3_WRITES_DANGLING_SYMBOL: &str = "CG_MVP3_WRITES_DANGLING_SYMBOL";
+const CG_MVP3_READS_WRITES_TARGET_ROLE_MISMATCH: &str = "CG_MVP3_READS_WRITES_TARGET_ROLE_MISMATCH";
+const CG_MVP3_READS_WRITES_MISSING_SOURCE_SPAN: &str = "CG_MVP3_READS_WRITES_MISSING_SOURCE_SPAN";
+const CG_MVP3_READS_WRITES_DERIVED_MISSING_PROVENANCE: &str =
+    "CG_MVP3_READS_WRITES_DERIVED_MISSING_PROVENANCE";
+const CG_MVP3_ROUTE_HANDLER_DANGLING_TARGET: &str = "CG_MVP3_ROUTE_HANDLER_DANGLING_TARGET";
+const CG_MVP3_ROUTE_HANDLER_RENAMED_NOT_UPDATED: &str = "CG_MVP3_ROUTE_HANDLER_RENAMED_NOT_UPDATED";
+const CG_MVP3_ROUTE_COMPUTED_UNKNOWN: &str = "CG_MVP3_ROUTE_COMPUTED_UNKNOWN";
+const CG_MVP3_ROUTE_UNSUPPORTED_FRAMEWORK_UNKNOWN: &str =
+    "CG_MVP3_ROUTE_UNSUPPORTED_FRAMEWORK_UNKNOWN";
+const CG_MVP3_CONFIG_PACKAGE_EXACT_MISMATCH: &str = "CG_MVP3_CONFIG_PACKAGE_EXACT_MISMATCH";
+const CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING: &str = "CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING";
+const CG_MVP3_CONFIG_PACKAGE_UNSUPPORTED_UNKNOWN: &str =
+    "CG_MVP3_CONFIG_PACKAGE_UNSUPPORTED_UNKNOWN";
 
 pub(crate) fn run_agent_use_command(args: &[String]) -> Result<Value, String> {
     let Some(subcommand) = args.first() else {
@@ -1617,20 +1678,31 @@ pub(crate) fn run_agent_use_watch_once_delta(
     )
     .map_err(|error| format!("new normalized graph delta snapshot failed: {error}"))?;
     let snapshot_new_ms = new_snapshot_start.elapsed().as_millis();
-    let graph_delta_options = EntitySourceRoleDeltaOptions {
-        max_items_per_category: if detail_mode.preserves_full_details() {
-            usize::MAX
-        } else {
-            AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT
-        },
-    };
     let delta_compute_start = Instant::now();
-    let mut entity_source_role_delta = compute_entity_source_role_delta(
+    let mut validation_entity_source_role_delta = compute_entity_source_role_delta(
         &old_graph_delta_snapshot,
         &new_graph_delta_snapshot,
-        graph_delta_options,
+        EntitySourceRoleDeltaOptions {
+            max_items_per_category: usize::MAX,
+        },
     );
-    entity_source_role_delta.apply_dependency_closure_summary(&summary.dependency_closure);
+    validation_entity_source_role_delta
+        .apply_dependency_closure_summary(&summary.dependency_closure);
+    validation_entity_source_role_delta.timings.diff_closure_ms = pre_update_dependency_closure_ms;
+    let mut entity_source_role_delta = if detail_mode.preserves_full_details() {
+        validation_entity_source_role_delta.clone()
+    } else {
+        let mut compact_delta = compute_entity_source_role_delta(
+            &old_graph_delta_snapshot,
+            &new_graph_delta_snapshot,
+            EntitySourceRoleDeltaOptions {
+                max_items_per_category: AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT,
+            },
+        );
+        compact_delta.apply_dependency_closure_summary(&summary.dependency_closure);
+        compact_delta.timings = validation_entity_source_role_delta.timings.clone();
+        compact_delta
+    };
     let delta_compute_ms = delta_compute_start.elapsed().as_millis();
     entity_source_role_delta.timings.diff_closure_ms = pre_update_dependency_closure_ms;
     let deleted_paths = agent_use_watch_deleted_paths(&summary);
@@ -1660,6 +1732,18 @@ pub(crate) fn run_agent_use_watch_once_delta(
             delta_compute_ms,
             total_update_plus_delta_start.elapsed().as_millis(),
         );
+        let validation_packet = agent_use_exact_calls_validation_packet(
+            profile,
+            &post_preflight,
+            &validation_entity_source_role_delta,
+            graph_delta_json.clone(),
+            changed_paths_normalized.clone(),
+        )?;
+        let validation_packet_json = if detail_mode.preserves_full_details() {
+            serde_json::to_value(&validation_packet).map_err(|error| error.to_string())?
+        } else {
+            validation_packet.compact_agent_json(AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT)
+        };
         object.insert("command".to_string(), json!("watch"));
         object.insert("subcommand".to_string(), json!("once"));
         object.insert("watch_mode".to_string(), json!("once_changed"));
@@ -1780,6 +1864,52 @@ pub(crate) fn run_agent_use_watch_once_delta(
             json!(entity_source_role_delta.source_roles_changed_count),
         );
         object.insert("graph_delta".to_string(), graph_delta_json);
+        object.insert(
+            "validation_packet".to_string(),
+            validation_packet_json.clone(),
+        );
+        object.insert(
+            "validation_status".to_string(),
+            validation_packet_json["status"].clone(),
+        );
+        object.insert(
+            "validation_must_fix_before_continuing".to_string(),
+            validation_packet_json["must_fix_before_continuing"].clone(),
+        );
+        object.insert(
+            "validation_summary_counts_by_rule_id".to_string(),
+            validation_packet_json["summary_counts_by_rule_id"].clone(),
+        );
+        object.insert(
+            "validation_summary_counts_by_classification".to_string(),
+            validation_packet_json["summary_counts_by_classification"].clone(),
+        );
+        object.insert(
+            "validation_summary_counts_by_relation_kind".to_string(),
+            validation_packet_json["summary_counts_by_relation_kind"].clone(),
+        );
+        object.insert(
+            "validation_stale_unsafe_blockers".to_string(),
+            validation_packet_json["stale_unsafe_blockers"].clone(),
+        );
+        object.insert(
+            "validation_recommended_next_steps".to_string(),
+            validation_packet_json["recommended_next_steps"].clone(),
+        );
+        object.insert(
+            "validation_blocking_error_count".to_string(),
+            json!(validation_packet.blocking_errors.len()),
+        );
+        object.insert(
+            "validation_warning_count".to_string(),
+            json!(validation_packet.warnings.len()),
+        );
+        object.insert(
+            "validation_unknown_count".to_string(),
+            json!(validation_packet.unknowns.len()),
+        );
+        object.insert("hard_interrupt_available".to_string(), json!(false));
+        object.insert("hard_interrupt_not_implemented".to_string(), json!(true));
         object.insert(
             "graph_delta_detail_mode".to_string(),
             json!(detail_mode.label()),
@@ -2061,6 +2191,6932 @@ pub(crate) fn run_agent_use_watch_once_delta(
     add_agent_use_rtds_freshness_fields(&mut value, profile, &post_preflight, &staged_availability);
     persist_agent_use_last_delta_state(&mut value, profile, "agent-use.watch.once");
     Ok(value)
+}
+
+pub(crate) fn agent_use_exact_calls_validation_packet(
+    profile: &AgentUseProfile,
+    preflight: &DbLifecyclePreflight,
+    delta: &EntitySourceRoleDeltaReport,
+    graph_delta: Value,
+    changed_files: Vec<String>,
+) -> Result<ValidationPacket, String> {
+    let mut rules = agent_use_exact_calls_validation_rules();
+    rules.extend(agent_use_exact_imports_validation_rules());
+    rules.extend(agent_use_proof_integrity_validation_rules());
+    rules.extend(agent_use_source_role_tests_validation_rules());
+    rules.extend(agent_use_activation_gated_contract_validation_rules());
+    let lifecycle = agent_use_validation_lifecycle_from_read_preflight(preflight);
+    let claimability = json!({
+        "claimable": lifecycle.claimable,
+        "current": lifecycle.current,
+        "diagnostic_only": !lifecycle.is_claimable_current(),
+        "non_claimable_reason": lifecycle.non_claimable_reason,
+        "db_problem_kind": preflight.db_problem_kind.clone(),
+        "blockers": preflight.blockers.clone(),
+        "exact_db_path_checked": preflight.exact_db_path_checked.clone(),
+    });
+    let lifecycle_json = json!({
+        "claimable": lifecycle.claimable,
+        "current": lifecycle.current,
+        "stale": lifecycle.stale,
+        "foreign": lifecycle.foreign,
+        "schema_mismatched": lifecycle.schema_mismatched,
+        "dirty": lifecycle.dirty,
+        "partial": lifecycle.partial,
+        "non_claimable_reason": lifecycle.non_claimable_reason,
+        "preflight_safe": preflight.safe,
+        "schema_status": preflight.schema_status.clone(),
+        "passport_status": preflight.db_health.passport_status.clone(),
+        "exact_db_path_checked": preflight.exact_db_path_checked.clone(),
+    });
+    let rule_by_id = rules
+        .iter()
+        .map(|rule| (rule.validation_rule_id.as_str(), rule))
+        .collect::<BTreeMap<_, _>>();
+    let mut findings = agent_use_collect_lifecycle_integrity_findings(
+        profile,
+        &rule_by_id,
+        lifecycle.clone(),
+        preflight,
+        delta,
+    );
+    if !lifecycle.is_claimable_current() {
+        let packet = ValidationPacket::new(
+            changed_files,
+            graph_delta,
+            findings,
+            rules,
+            Vec::new(),
+            claimability,
+            json!(delta.proof_ladder_changes),
+            lifecycle_json,
+        );
+        return Ok(agent_use_attach_activation_gated_contract_metadata(
+            packet, delta,
+        ));
+    }
+
+    let store = SqliteGraphStore::open_read_only(&profile.db_path)
+        .map_err(|error| format!("open validation DB read-only failed: {error}"))?;
+    let renamed_old_paths = delta
+        .file_renames_detected
+        .iter()
+        .filter_map(|entry| entry.old_path.as_ref())
+        .map(|path| normalize_repo_relative_path(path))
+        .collect::<BTreeSet<_>>();
+    let ambiguous_rename_old_paths = delta
+        .rename_ambiguities
+        .iter()
+        .filter_map(|entry| entry.old_path.as_ref())
+        .map(|path| normalize_repo_relative_path(path))
+        .collect::<BTreeSet<_>>();
+    let removed_entity_paths_by_id = delta
+        .entities_removed
+        .iter()
+        .filter_map(|entry| {
+            agent_use_entity_delta_id(entry).map(|entity_id| {
+                (
+                    entity_id,
+                    normalize_repo_relative_path(&entry.repo_relative_path),
+                )
+            })
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let mut seen_edge_rule = BTreeSet::<String>::new();
+    agent_use_collect_proof_integrity_findings(
+        profile,
+        &store,
+        &rule_by_id,
+        lifecycle.clone(),
+        delta,
+        &changed_files,
+        &mut findings,
+        &mut seen_edge_rule,
+    )?;
+    agent_use_collect_source_role_tests_findings(
+        profile,
+        &store,
+        &rule_by_id,
+        lifecycle.clone(),
+        delta,
+        &changed_files,
+        &mut findings,
+        &mut seen_edge_rule,
+    )?;
+    agent_use_collect_activation_gated_contract_findings(
+        profile,
+        &store,
+        &rule_by_id,
+        lifecycle.clone(),
+        delta,
+        &changed_files,
+        &renamed_old_paths,
+        &removed_entity_paths_by_id,
+        &mut findings,
+        &mut seen_edge_rule,
+    )?;
+
+    for removed in delta
+        .entities_removed
+        .iter()
+        .filter(|entry| exact_calls_target_entity_kind(entry.entity_kind))
+    {
+        let Some(removed_entity_id) = agent_use_entity_delta_id(removed) else {
+            continue;
+        };
+        let incoming = store
+            .find_edges_by_tail_relation(&removed_entity_id, RelationKind::Calls)
+            .map_err(|error| format!("read incoming CALLS edges failed: {error}"))?;
+        for edge in incoming {
+            let rule_id = if renamed_old_paths
+                .contains(&normalize_repo_relative_path(&removed.repo_relative_path))
+            {
+                CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED
+            } else {
+                CG_MVP3_CALLS_REMOVED_CALLEE_STILL_REFERENCED
+            };
+            agent_use_validate_current_calls_edge(
+                profile,
+                &store,
+                &rule_by_id,
+                lifecycle.clone(),
+                &edge,
+                Some(json!(removed)),
+                Some(rule_id),
+                &mut findings,
+                &mut seen_edge_rule,
+            )?;
+        }
+    }
+
+    for entry in delta
+        .edges_removed
+        .iter()
+        .filter(|entry| entry.relation == RelationKind::Calls)
+    {
+        let target_path = entry
+            .target_endpoint
+            .repo_relative_path
+            .as_deref()
+            .map(normalize_repo_relative_path)
+            .unwrap_or_else(|| normalize_repo_relative_path(&entry.repo_relative_path));
+        let target_removed_or_renamed = removed_entity_paths_by_id
+            .contains_key(&entry.target_entity_id)
+            || renamed_old_paths.contains(&target_path);
+        if !target_removed_or_renamed {
+            continue;
+        }
+        let rule_id = if renamed_old_paths.contains(&target_path) {
+            CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED
+        } else {
+            CG_MVP3_CALLS_REMOVED_CALLEE_STILL_REFERENCED
+        };
+        agent_use_validate_removed_calls_delta_edge(
+            profile,
+            &store,
+            &rule_by_id,
+            lifecycle.clone(),
+            entry,
+            rule_id,
+            &mut findings,
+            &mut seen_edge_rule,
+        )?;
+    }
+
+    for entry in delta
+        .edges_added
+        .iter()
+        .chain(delta.edges_changed.iter())
+        .filter(|entry| entry.relation == RelationKind::Calls)
+    {
+        if !agent_use_exactness_is_proof_grade(entry.exactness) {
+            findings.push(agent_use_calls_boundary_diagnostic(
+                rule_by_id[CG_MVP3_CALLS_DANGLING_TARGET],
+                lifecycle.clone(),
+                json!(entry),
+                "non-exact CALLS delta is diagnostic only and cannot block",
+            ));
+            continue;
+        }
+        let Some(edge) = store
+            .get_edge(&entry.edge_id)
+            .map_err(|error| format!("read CALLS edge failed: {error}"))?
+        else {
+            continue;
+        };
+        agent_use_validate_current_calls_edge(
+            profile,
+            &store,
+            &rule_by_id,
+            lifecycle.clone(),
+            &edge,
+            Some(json!(entry)),
+            Some(CG_MVP3_CALLS_DANGLING_TARGET),
+            &mut findings,
+            &mut seen_edge_rule,
+        )?;
+    }
+
+    let mut scan_paths = changed_files
+        .iter()
+        .chain(delta.closure_files_updated.iter())
+        .map(|path| normalize_repo_relative_path(path))
+        .collect::<Vec<_>>();
+    scan_paths.sort();
+    scan_paths.dedup();
+    for path in scan_paths {
+        let edges = store
+            .list_edges_by_file(&path)
+            .map_err(|error| format!("read changed-file CALLS edges failed: {error}"))?;
+        for edge in edges
+            .into_iter()
+            .filter(|edge| edge.relation == RelationKind::Calls)
+        {
+            let missing_target_rule_id = agent_use_missing_target_rule_for_current_edge(
+                &edge,
+                &removed_entity_paths_by_id,
+                &renamed_old_paths,
+            );
+            agent_use_validate_current_calls_edge(
+                profile,
+                &store,
+                &rule_by_id,
+                lifecycle.clone(),
+                &edge,
+                Some(json!({
+                    "source": "changed_or_closure_file_current_edges",
+                    "repo_relative_path": path,
+                })),
+                Some(missing_target_rule_id),
+                &mut findings,
+                &mut seen_edge_rule,
+            )?;
+        }
+    }
+
+    agent_use_collect_exact_imports_findings(
+        profile,
+        &store,
+        &rule_by_id,
+        lifecycle.clone(),
+        delta,
+        &changed_files,
+        &renamed_old_paths,
+        &ambiguous_rename_old_paths,
+        &removed_entity_paths_by_id,
+        &mut findings,
+        &mut seen_edge_rule,
+    )?;
+
+    for path in ambiguous_rename_old_paths {
+        findings.push(agent_use_calls_boundary_unknown(
+            rule_by_id[CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED],
+            lifecycle.clone(),
+            json!({
+                "rename_status": "unknown",
+                "old_path": path,
+                "ambiguity": true,
+            }),
+            "ambiguous rename cannot be promoted to exact dangling CALLS proof",
+        ));
+    }
+    if !renamed_old_paths.is_empty()
+        && !findings
+            .iter()
+            .any(|finding| finding.validation_rule_id == CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED)
+    {
+        for path in renamed_old_paths {
+            findings.push(agent_use_calls_boundary_unknown(
+                rule_by_id[CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED],
+                lifecycle.clone(),
+                json!({
+                    "rename_status": "detected",
+                    "old_path": path,
+                    "file_renames_detected": &delta.file_renames_detected,
+                    "reason": "rename was detected from file lifecycle evidence, but no exact stale CALLS edge could be graph/source reverified",
+                }),
+                "renamed callee validation is unknown because file rename evidence alone is not graph-relation proof",
+            ));
+        }
+    }
+
+    let packet = ValidationPacket::new(
+        changed_files,
+        graph_delta,
+        findings,
+        rules,
+        Vec::new(),
+        claimability,
+        json!(delta.proof_ladder_changes),
+        lifecycle_json,
+    );
+    Ok(agent_use_attach_activation_gated_contract_metadata(
+        packet, delta,
+    ))
+}
+
+fn agent_use_exact_calls_validation_rules() -> Vec<ValidationRule> {
+    let mut missing_source_span = ValidationRule::exact_blocking(
+        CG_MVP3_CALLS_MISSING_SOURCE_SPAN,
+        ValidationRuleKind::ProofIntegrity,
+        Some(RelationKind::Calls),
+        "claimable CALLS proof edges must carry a current source span",
+        "Regenerate the CALLS edge with a valid source span or downgrade the edge.",
+    );
+    missing_source_span.proof_requirement = ValidationProofRequirement::ReverifiedGraphIntegrity;
+    missing_source_span.source_role_requirement = ValidationSourceRoleRequirement::RolePreserved;
+
+    let mut missing_provenance = ValidationRule::exact_blocking(
+        CG_MVP3_CALLS_DERIVED_MISSING_PROVENANCE,
+        ValidationRuleKind::ProofIntegrity,
+        Some(RelationKind::Calls),
+        "derived CALLS proof edges must carry provenance",
+        "Attach provenance edges or downgrade the derived CALLS fact.",
+    );
+    missing_provenance.proof_requirement = ValidationProofRequirement::ReverifiedGraphIntegrity;
+    missing_provenance.provenance_requirement =
+        ValidationProvenanceRequirement::RequiredForDerivedEdges;
+    missing_provenance.source_span_requirement =
+        ValidationSourceSpanRequirement::RequiredForClaimableGraphFact;
+    missing_provenance.source_role_requirement = ValidationSourceRoleRequirement::RolePreserved;
+
+    vec![
+        ValidationRule::exact_blocking(
+            CG_MVP3_CALLS_DANGLING_TARGET,
+            ValidationRuleKind::DanglingTarget,
+            Some(RelationKind::Calls),
+            "new exact CALLS edges must resolve to a current target entity",
+            "Define the missing callee or update the exact call relation.",
+        ),
+        ValidationRule::exact_blocking(
+            CG_MVP3_CALLS_REMOVED_CALLEE_STILL_REFERENCED,
+            ValidationRuleKind::DanglingTarget,
+            Some(RelationKind::Calls),
+            "removed exact callees must not remain referenced by fresh CALLS edges",
+            "Update the caller or restore the removed callee.",
+        ),
+        ValidationRule::exact_blocking(
+            CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED,
+            ValidationRuleKind::BrokenContract,
+            Some(RelationKind::Calls),
+            "renamed exact callees must not leave fresh CALLS edges pointing at the old target",
+            "Retarget the caller to the renamed callee or represent the change as unknown.",
+        ),
+        ValidationRule::exact_blocking(
+            CG_MVP3_CALLS_TARGET_ROLE_MISMATCH,
+            ValidationRuleKind::SourceRoleBoundary,
+            Some(RelationKind::Calls),
+            "production CALLS proof must not resolve only to test, mock, or stub targets",
+            "Retarget the production caller or mark the evidence as test/mock only.",
+        ),
+        missing_source_span,
+        missing_provenance,
+    ]
+}
+
+fn agent_use_exact_imports_validation_rules() -> Vec<ValidationRule> {
+    let mut missing_source_span = ValidationRule::exact_blocking(
+        CG_MVP3_IMPORTS_MISSING_SOURCE_SPAN,
+        ValidationRuleKind::ProofIntegrity,
+        Some(RelationKind::Imports),
+        "claimable import proof edges must carry a current source span",
+        "Regenerate the import edge with a valid source span or downgrade the edge.",
+    );
+    missing_source_span.proof_requirement = ValidationProofRequirement::ReverifiedGraphIntegrity;
+    missing_source_span.source_role_requirement = ValidationSourceRoleRequirement::RolePreserved;
+
+    let mut missing_provenance = ValidationRule::exact_blocking(
+        CG_MVP3_IMPORTS_DERIVED_MISSING_PROVENANCE,
+        ValidationRuleKind::ProofIntegrity,
+        Some(RelationKind::Imports),
+        "derived import proof edges must carry provenance",
+        "Attach provenance edges or downgrade the derived import fact.",
+    );
+    missing_provenance.proof_requirement = ValidationProofRequirement::ReverifiedGraphIntegrity;
+    missing_provenance.provenance_requirement =
+        ValidationProvenanceRequirement::RequiredForDerivedEdges;
+    missing_provenance.source_span_requirement =
+        ValidationSourceSpanRequirement::RequiredForClaimableGraphFact;
+    missing_provenance.source_role_requirement = ValidationSourceRoleRequirement::RolePreserved;
+
+    vec![
+        ValidationRule::exact_blocking(
+            CG_MVP3_IMPORTS_DANGLING_TARGET,
+            ValidationRuleKind::DanglingTarget,
+            Some(RelationKind::Imports),
+            "new exact IMPORTS edges must resolve to a current import target entity",
+            "Define the imported target or update the exact import relation.",
+        ),
+        ValidationRule::exact_blocking(
+            CG_MVP3_IMPORTS_DELETED_EXPORT_STILL_IMPORTED,
+            ValidationRuleKind::DanglingTarget,
+            Some(RelationKind::Imports),
+            "deleted exact exported targets must not remain imported",
+            "Update the import, restore the exported target, or downgrade non-exact evidence.",
+        ),
+        ValidationRule::exact_blocking(
+            CG_MVP3_IMPORTS_RENAMED_TARGET_NOT_UPDATED,
+            ValidationRuleKind::BrokenContract,
+            Some(RelationKind::Imports),
+            "renamed exact import targets must not leave imports pointing at the old target",
+            "Retarget the import to the renamed module or symbol, or report the rename as unknown.",
+        ),
+        ValidationRule::exact_blocking(
+            CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH,
+            ValidationRuleKind::BrokenContract,
+            Some(RelationKind::AliasedBy),
+            "exact import alias edges must resolve to their current target",
+            "Update the alias import or restore the aliased target.",
+        ),
+        ValidationRule::exact_blocking(
+            CG_MVP3_IMPORTS_TARGET_ROLE_MISMATCH,
+            ValidationRuleKind::SourceRoleBoundary,
+            Some(RelationKind::Imports),
+            "production import proof must not resolve only to test, mock, or stub targets",
+            "Move the target into production evidence, update the import, or mark the relation as test/mock evidence.",
+        ),
+        missing_source_span,
+        missing_provenance,
+    ]
+}
+
+fn agent_use_proof_integrity_validation_rules() -> Vec<ValidationRule> {
+    let mut edge_missing_span = ValidationRule::exact_blocking(
+        CG_MVP3_PROOF_EDGE_MISSING_SOURCE_SPAN,
+        ValidationRuleKind::ProofIntegrity,
+        None,
+        "claimable graph-proof edges must carry a current source span",
+        "Regenerate the edge with a valid source span or downgrade the edge to diagnostic evidence.",
+    );
+    edge_missing_span.proof_requirement = ValidationProofRequirement::ReverifiedGraphIntegrity;
+    edge_missing_span.source_role_requirement = ValidationSourceRoleRequirement::RolePreserved;
+
+    let mut entity_missing_span = ValidationRule::exact_blocking(
+        CG_MVP3_CLAIMABLE_ENTITY_MISSING_SOURCE_SPAN,
+        ValidationRuleKind::ProofIntegrity,
+        None,
+        "claimable source-bound entities must carry a current source span when the entity kind requires one",
+        "Regenerate the entity with a valid source span or mark this entity kind as diagnostic/span-optional.",
+    );
+    entity_missing_span.proof_requirement = ValidationProofRequirement::ReverifiedGraphIntegrity;
+    entity_missing_span.source_role_requirement = ValidationSourceRoleRequirement::RolePreserved;
+
+    let mut derived_missing_provenance = ValidationRule::exact_blocking(
+        CG_MVP3_DERIVED_EDGE_MISSING_PROVENANCE,
+        ValidationRuleKind::ProofIntegrity,
+        None,
+        "derived graph-proof edges must carry provenance",
+        "Attach provenance edges or downgrade the derived edge to diagnostic evidence.",
+    );
+    derived_missing_provenance.proof_requirement =
+        ValidationProofRequirement::ReverifiedGraphIntegrity;
+    derived_missing_provenance.provenance_requirement =
+        ValidationProvenanceRequirement::RequiredForDerivedEdges;
+    derived_missing_provenance.source_span_requirement =
+        ValidationSourceSpanRequirement::RequiredForClaimableGraphFact;
+    derived_missing_provenance.source_role_requirement =
+        ValidationSourceRoleRequirement::RolePreserved;
+
+    let mut lifecycle_rules = [
+        (
+            CG_MVP3_DB_LIFECYCLE_MISMATCH_AFTER_UPDATE,
+            "validation lifecycle must match the exact DB path opened and updated",
+            "Reject the packet, rerun lifecycle preflight for the exact DB path, and retry the update.",
+        ),
+        (
+            CG_MVP3_STALE_OR_FOREIGN_DB_VALIDATION_ATTEMPT,
+            "stale, foreign, partial, or schema-mismatched DB states must not produce claimable validation",
+            "Reindex or select the correct external profile DB before attempting claimable validation.",
+        ),
+        (
+            CG_MVP3_TEMP_DB_CLAIMABLE,
+            "temporary or publish-stage DB files must never be claimable",
+            "Keep the old-good DB visible and publish only after the final DB is complete.",
+        ),
+        (
+            CG_MVP3_OLD_GOOD_DB_NOT_PRESERVED,
+            "failed updates must preserve the old-good claimable DB",
+            "Abort the update, restore the old-good DB, and rerun the changed-file update.",
+        ),
+        (
+            CG_MVP3_CORRUPT_OR_INCOMPLETE_UPDATE_TRANSACTION,
+            "corrupt or incomplete update transactions must block claimable validation",
+            "Discard the incomplete update state and rebuild or retry through the lifecycle-safe update path.",
+        ),
+        (
+            CG_MVP3_QUERY_DURING_UPDATE_UNSAFE,
+            "query and context reads during publish/update must use old-good or non-claimable state only",
+            "Wait for publish completion or serve only the old-good DB with non-claimable update diagnostics.",
+        ),
+        (
+            CG_MVP3_SIDECAR_CORRUPT_VS_INACCESSIBLE_MISCLASSIFIED,
+            "sidecar access failures must not be misclassified as corruption without corruption proof",
+            "Classify inaccessible sidecars separately and keep sidecar freshness diagnostic-only.",
+        ),
+    ]
+    .into_iter()
+    .map(|(rule_id, invariant, docs_summary)| {
+        let mut rule = ValidationRule::exact_blocking(
+            rule_id,
+            ValidationRuleKind::LifecycleIntegrity,
+            None,
+            invariant,
+            docs_summary,
+        );
+        rule.proof_requirement = ValidationProofRequirement::ReverifiedGraphIntegrity;
+        rule.source_span_requirement = ValidationSourceSpanRequirement::NotApplicable;
+        rule.provenance_requirement = ValidationProvenanceRequirement::NotApplicable;
+        rule.source_role_requirement = ValidationSourceRoleRequirement::NotApplicable;
+        rule.lifecycle_requirement = ValidationLifecycleRequirement::ClaimableCurrentDb;
+        rule.activation_condition =
+            "claimable current DB lifecycle plus reverified validation-state invariant".to_string();
+        rule
+    })
+    .collect::<Vec<_>>();
+
+    let mut rules = vec![
+        edge_missing_span,
+        entity_missing_span,
+        derived_missing_provenance,
+    ];
+    rules.append(&mut lifecycle_rules);
+    rules
+}
+
+fn agent_use_source_role_tests_validation_rules() -> Vec<ValidationRule> {
+    let source_role_rules = [
+        (
+            CG_MVP3_SOURCE_ROLE_TEST_EVIDENCE_IN_PRODUCTION_PROOF,
+            "production proof paths must not include test evidence",
+            "Keep test evidence out of production proof or mark the relation as test-impact evidence.",
+        ),
+        (
+            CG_MVP3_SOURCE_ROLE_MOCK_EVIDENCE_IN_PRODUCTION_PROOF,
+            "production proof paths must not include mock evidence",
+            "Keep mock evidence out of production proof or mark the relation as mock/test evidence.",
+        ),
+        (
+            CG_MVP3_SOURCE_ROLE_STUB_EVIDENCE_IN_PRODUCTION_PROOF,
+            "production proof paths must not include stub evidence",
+            "Keep stub evidence out of production proof or mark the relation as stub/test evidence.",
+        ),
+        (
+            CG_MVP3_SOURCE_ROLE_INLINE_TEST_PROMOTED_TO_PRODUCTION,
+            "inline test modules must not be emitted as production proof",
+            "Preserve inline test source-role metadata and exclude inline tests from production proof.",
+        ),
+        (
+            CG_MVP3_SOURCE_ROLE_GENERATED_EVIDENCE_AS_PRODUCTION_PROOF,
+            "generated or degraded evidence must not be treated as production graph proof",
+            "Exclude generated evidence from production proof or downgrade it to diagnostic evidence.",
+        ),
+    ]
+    .into_iter()
+    .map(|(rule_id, invariant, docs_summary)| {
+        let mut rule = ValidationRule::exact_blocking(
+            rule_id,
+            ValidationRuleKind::SourceRoleBoundary,
+            None,
+            invariant,
+            docs_summary,
+        );
+        rule.activation_condition =
+            "claimable exact edge treated as production plus source-role re-verification"
+                .to_string();
+        rule
+    })
+    .collect::<Vec<_>>();
+
+    let tests_dangling = ValidationRule::exact_blocking(
+        CG_MVP3_TESTS_DANGLING_TARGET,
+        ValidationRuleKind::DanglingTarget,
+        Some(RelationKind::Tests),
+        "exact TESTS edges must resolve to a current test target",
+        "Restore the tested target, update the TESTS relation, or downgrade unsupported evidence.",
+    );
+    let mut asserts_dangling = ValidationRule::exact_blocking(
+        CG_MVP3_ASSERTS_DANGLING_TARGET,
+        ValidationRuleKind::DanglingTarget,
+        Some(RelationKind::Asserts),
+        "exact ASSERTS edges must resolve to a current assertion target",
+        "Restore the assertion target, update the ASSERTS relation, or downgrade unsupported evidence.",
+    );
+    asserts_dangling.supported_relation_status = SupportedRelationStatus::ExactWarningCandidate;
+    let mut optional_missing = ValidationRule::exact_blocking(
+        CG_MVP3_OPTIONAL_TEST_TARGET_MISSING,
+        ValidationRuleKind::DanglingTarget,
+        Some(RelationKind::Tests),
+        "optional test targets may be absent but must be reported as warning evidence",
+        "Keep the optional test target warning explicit and do not promote it to production proof.",
+    );
+    optional_missing.supported_relation_status = SupportedRelationStatus::ExactWarningCandidate;
+    let mut unsupported_tests = ValidationRule::exact_blocking(
+        CG_MVP3_UNSUPPORTED_TEST_RELATION_UNKNOWN,
+        ValidationRuleKind::UnsupportedRelationBoundary,
+        None,
+        "unsupported TESTS/ASSERTS/MOCKS/STUBS evidence must stay unknown or diagnostic",
+        "Do not block or claim graph proof for unsupported or heuristic test relation evidence.",
+    );
+    unsupported_tests.supported_relation_status = SupportedRelationStatus::Unsupported;
+    unsupported_tests.default_classification_when_unsupported = ValidationClassification::Unknown;
+    unsupported_tests.activation_condition =
+        "TESTS/ASSERTS/MOCKS/STUBS relation evidence is unsupported, heuristic, or not exact"
+            .to_string();
+
+    let mut rules = source_role_rules;
+    rules.push(tests_dangling);
+    rules.push(asserts_dangling);
+    rules.push(optional_missing);
+    rules.push(unsupported_tests);
+    rules
+}
+
+fn agent_use_activation_gated_contract_validation_rules() -> Vec<ValidationRule> {
+    let mut reads_missing = ValidationRule::exact_blocking(
+        CG_MVP3_READS_DANGLING_SYMBOL,
+        ValidationRuleKind::DanglingTarget,
+        Some(RelationKind::Reads),
+        "exact READS edges must resolve to a current symbol entity",
+        "Restore the read symbol, update the READS relation, or downgrade unsupported evidence.",
+    );
+    reads_missing.activation_condition =
+        agent_use_strict_activation_gate_condition("READS").to_string();
+
+    let mut writes_missing = ValidationRule::exact_blocking(
+        CG_MVP3_WRITES_DANGLING_SYMBOL,
+        ValidationRuleKind::DanglingTarget,
+        Some(RelationKind::Writes),
+        "exact WRITES edges must resolve to a current symbol entity",
+        "Restore the written symbol, update the WRITES relation, or downgrade unsupported evidence.",
+    );
+    writes_missing.activation_condition =
+        agent_use_strict_activation_gate_condition("WRITES").to_string();
+
+    let mut reads_writes_role = ValidationRule::exact_blocking(
+        CG_MVP3_READS_WRITES_TARGET_ROLE_MISMATCH,
+        ValidationRuleKind::SourceRoleBoundary,
+        None,
+        "production READS/WRITES proof must not resolve only to test, mock, or stub targets",
+        "Retarget the production access, move the target into production evidence, or mark the relation as test/mock evidence.",
+    );
+    reads_writes_role.activation_condition =
+        agent_use_strict_activation_gate_condition("READS/WRITES").to_string();
+
+    let mut reads_writes_missing_span = ValidationRule::exact_blocking(
+        CG_MVP3_READS_WRITES_MISSING_SOURCE_SPAN,
+        ValidationRuleKind::ProofIntegrity,
+        None,
+        "claimable READS/WRITES proof edges must carry a current source span",
+        "Regenerate the READS/WRITES edge with a valid source span or downgrade the edge.",
+    );
+    reads_writes_missing_span.proof_requirement =
+        ValidationProofRequirement::ReverifiedGraphIntegrity;
+    reads_writes_missing_span.source_role_requirement =
+        ValidationSourceRoleRequirement::RolePreserved;
+    reads_writes_missing_span.activation_condition =
+        agent_use_strict_activation_gate_condition("READS/WRITES source span").to_string();
+
+    let mut reads_writes_missing_provenance = ValidationRule::exact_blocking(
+        CG_MVP3_READS_WRITES_DERIVED_MISSING_PROVENANCE,
+        ValidationRuleKind::ProofIntegrity,
+        None,
+        "derived READS/WRITES proof edges must carry provenance",
+        "Attach provenance edges or downgrade the derived READS/WRITES fact.",
+    );
+    reads_writes_missing_provenance.proof_requirement =
+        ValidationProofRequirement::ReverifiedGraphIntegrity;
+    reads_writes_missing_provenance.provenance_requirement =
+        ValidationProvenanceRequirement::RequiredForDerivedEdges;
+    reads_writes_missing_provenance.source_role_requirement =
+        ValidationSourceRoleRequirement::RolePreserved;
+    reads_writes_missing_provenance.activation_condition =
+        agent_use_strict_activation_gate_condition("derived READS/WRITES provenance").to_string();
+
+    let mut route_missing = ValidationRule::exact_blocking(
+        CG_MVP3_ROUTE_HANDLER_DANGLING_TARGET,
+        ValidationRuleKind::DanglingTarget,
+        Some(RelationKind::Handles),
+        "exact route/handler edges must resolve to a current handler or endpoint target",
+        "Restore the handler/endpoint, update the route relation, or downgrade unsupported evidence.",
+    );
+    route_missing.activation_condition =
+        agent_use_strict_activation_gate_condition("literal route/handler").to_string();
+
+    let mut route_renamed = ValidationRule::exact_blocking(
+        CG_MVP3_ROUTE_HANDLER_RENAMED_NOT_UPDATED,
+        ValidationRuleKind::BrokenContract,
+        Some(RelationKind::Handles),
+        "renamed exact route handlers must not leave fresh route edges pointing at old targets",
+        "Retarget the route handler or represent the rename as unknown when path identity is ambiguous.",
+    );
+    route_renamed.activation_condition =
+        agent_use_strict_activation_gate_condition("renamed literal route/handler").to_string();
+
+    let mut route_computed = ValidationRule::exact_blocking(
+        CG_MVP3_ROUTE_COMPUTED_UNKNOWN,
+        ValidationRuleKind::UnsupportedRelationBoundary,
+        Some(RelationKind::Handles),
+        "computed route or handler evidence must stay unknown unless exact graph/source proof exists",
+        "Report computed routes as unknown/diagnostic until an exact source-spanned route relation is available.",
+    );
+    route_computed.supported_relation_status = SupportedRelationStatus::Unsupported;
+    route_computed.default_classification_when_unsupported = ValidationClassification::Unknown;
+    route_computed.proof_requirement = ValidationProofRequirement::NotGraphProof;
+    route_computed.activation_condition =
+        "computed route/handler evidence, heuristic handler edge, or non-exact route adapter"
+            .to_string();
+
+    let mut unsupported_framework = ValidationRule::exact_blocking(
+        CG_MVP3_ROUTE_UNSUPPORTED_FRAMEWORK_UNKNOWN,
+        ValidationRuleKind::UnsupportedRelationBoundary,
+        Some(RelationKind::Handles),
+        "unsupported route frameworks must stay unknown rather than blocking proof",
+        "Add fixture-backed exact relation support before making unsupported framework route failures blocking.",
+    );
+    unsupported_framework.supported_relation_status = SupportedRelationStatus::Unsupported;
+    unsupported_framework.default_classification_when_unsupported =
+        ValidationClassification::Unknown;
+    unsupported_framework.proof_requirement = ValidationProofRequirement::NotGraphProof;
+    unsupported_framework.activation_condition =
+        "route framework relation class is unsupported, convention-only, or lacks exact source-spanned evidence"
+            .to_string();
+
+    let mut config_exact = ValidationRule::exact_blocking(
+        CG_MVP3_CONFIG_PACKAGE_EXACT_MISMATCH,
+        ValidationRuleKind::BrokenContract,
+        Some(RelationKind::Configures),
+        "Config.in/package mismatch may block only when exact graph/source Configures proof exists",
+        "Add fixture-backed exact Config.in/package graph relation support before blocking.",
+    );
+    config_exact.supported_relation_status = SupportedRelationStatus::Unsupported;
+    config_exact.default_classification_when_unsupported = ValidationClassification::Unknown;
+    config_exact.proof_requirement = ValidationProofRequirement::NotGraphProof;
+    config_exact.activation_condition =
+        "not activated: current Config.in/package support is text evidence only".to_string();
+
+    let mut config_text = ValidationRule::exact_blocking(
+        CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING,
+        ValidationRuleKind::UnsupportedRelationBoundary,
+        None,
+        "Config.in/package/build-system text evidence is warning-only by default",
+        "Use text evidence as no-proof fallback context; do not invent graph edges from text-only package evidence.",
+    );
+    config_text.supported_relation_status = SupportedRelationStatus::ExactWarningCandidate;
+    config_text.proof_requirement = ValidationProofRequirement::NotGraphProof;
+    config_text.source_span_requirement = ValidationSourceSpanRequirement::Optional;
+    config_text.provenance_requirement = ValidationProvenanceRequirement::NotApplicable;
+    config_text.source_role_requirement = ValidationSourceRoleRequirement::NotApplicable;
+    config_text.lifecycle_requirement = ValidationLifecycleRequirement::DiagnosticReadOnly;
+    config_text.activation_condition =
+        "Stage 0 text evidence changed for Config.in, package metadata, or build-system text"
+            .to_string();
+
+    let mut config_unsupported = ValidationRule::exact_blocking(
+        CG_MVP3_CONFIG_PACKAGE_UNSUPPORTED_UNKNOWN,
+        ValidationRuleKind::UnsupportedRelationBoundary,
+        None,
+        "unsupported Config.in/package relation classes must stay unknown rather than blocking",
+        "Keep unsupported package/build-system relation classes explicit until exact graph/source support exists.",
+    );
+    config_unsupported.supported_relation_status = SupportedRelationStatus::Unsupported;
+    config_unsupported.default_classification_when_unsupported = ValidationClassification::Unknown;
+    config_unsupported.proof_requirement = ValidationProofRequirement::NotGraphProof;
+    config_unsupported.activation_condition =
+        "package/build-system exact relation class is unsupported or not fixture-backed"
+            .to_string();
+
+    vec![
+        reads_missing,
+        writes_missing,
+        reads_writes_role,
+        reads_writes_missing_span,
+        reads_writes_missing_provenance,
+        route_missing,
+        route_renamed,
+        route_computed,
+        unsupported_framework,
+        config_exact,
+        config_text,
+        config_unsupported,
+    ]
+}
+
+fn agent_use_strict_activation_gate_condition(relation_family: &str) -> &'static str {
+    match relation_family {
+        "READS" => "READS relation exists as exact graph/source proof; target identity deterministic; source span present; source role valid; DB lifecycle claimable/current; relation class activated by parser/schema; source span re-verification succeeds",
+        "WRITES" => "WRITES relation exists as exact graph/source proof; target identity deterministic; source span present; source role valid; DB lifecycle claimable/current; relation class activated by parser/schema; source span re-verification succeeds",
+        "READS/WRITES" => "READS/WRITES relation exists as exact graph/source proof; target identity deterministic; source span present; source role valid; DB lifecycle claimable/current; relation class activated by parser/schema; source span re-verification succeeds",
+        "READS/WRITES source span" => "READS/WRITES edge is claimable graph proof and graph/source integrity re-verification proves the required source span is missing",
+        "derived READS/WRITES provenance" => "derived READS/WRITES edge is claimable graph proof and graph/source integrity re-verification proves required provenance is missing",
+        "literal route/handler" => "route/handler relation exists as exact source-spanned graph proof for a literal route or direct handler; target identity deterministic; source role valid; DB lifecycle claimable/current; source span re-verification succeeds",
+        "renamed literal route/handler" => "rename evidence plus exact source-spanned route/handler graph relation can be reverified against current source and target identity remains path-aware",
+        _ => "exact source-spanned relation plus graph/source re-verification",
+    }
+}
+
+fn agent_use_attach_activation_gated_contract_metadata(
+    mut packet: ValidationPacket,
+    delta: &EntitySourceRoleDeltaReport,
+) -> ValidationPacket {
+    packet.relation_family_status = agent_use_relation_family_status_json();
+    packet.activation_gate_state = agent_use_activation_gate_state_json(delta);
+    packet
+}
+
+fn agent_use_relation_family_status_json() -> Value {
+    json!({
+        "reads_writes": {
+            "status": "exact_blocking_candidate",
+            "relation_kinds": ["READS", "WRITES"],
+            "activated": true,
+            "unsupported_or_dynamic_behavior": "unknown_not_blocking",
+            "blocking_requires": [
+                "exact_graph_source_relation",
+                "deterministic_target_identity",
+                "current_source_span",
+                "valid_source_role",
+                "claimable_current_lifecycle",
+                "activated_parser_schema_relation",
+                "source_span_reverification"
+            ]
+        },
+        "route_handler": {
+            "status": "exact_blocking_candidate",
+            "relation_kinds": ["HANDLES", "EXPOSES"],
+            "activated": true,
+            "activation_scope": "literal route or direct handler edges only",
+            "computed_routes": "unknown_not_blocking",
+            "unsupported_frameworks": "unknown_not_blocking"
+        },
+        "config_package": {
+            "status": "text_evidence_only",
+            "exact_graph_mismatch": "unsupported_unknown_until_fixture_backed",
+            "text_evidence_warning_only": true,
+            "graph_proof": false
+        },
+        "package_build_system_text_evidence": {
+            "status": "text_evidence_only",
+            "files": [".mk", "Config.in", ".adoc", ".md", "shell/support scripts"],
+            "graph_proof": false,
+            "blocking": false
+        },
+        "unsupported_relation_families": [
+            "computed_reads_writes",
+            "computed_routes",
+            "framework_convention_routes",
+            "exact_config_package_graph_mismatch"
+        ]
+    })
+}
+
+fn agent_use_activation_gate_state_json(delta: &EntitySourceRoleDeltaReport) -> Value {
+    json!({
+        "gate_version": "mvp3_3_activation_gated_contract_checks_v1",
+        "blocking_gate_requirements": {
+            "relation_exists_as_exact_graph_source_proof": true,
+            "target_identity_deterministic": true,
+            "source_span_required": true,
+            "source_role_valid_for_validation_mode": true,
+            "lifecycle_claimable_current": true,
+            "relation_class_activated_by_frontend_schema": true,
+            "source_span_reverification_required": true,
+            "non_graph_evidence_blocking_allowed": false
+        },
+        "changed_files": delta.closure_delta_summary.changed_files,
+        "closure_files_updated": delta.closure_files_updated,
+        "text_evidence_changed_count": delta.text_evidence_changed_count,
+        "text_evidence_not_graph_entity_delta": delta.text_evidence_not_graph_entity_delta,
+        "text_candidate_evidence_not_graph_delta": delta.text_candidate_evidence_not_graph_delta,
+        "source_navigation_only_not_graph_entity_delta": delta.source_navigation_only_not_graph_entity_delta,
+        "unsupported_relation_classes": delta.unsupported_relation_classes,
+        "degraded_relation_classes": delta.degraded_relation_classes,
+        "hard_interrupt_not_implemented": true
+    })
+}
+
+fn agent_use_collect_lifecycle_integrity_findings(
+    profile: &AgentUseProfile,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    preflight: &DbLifecyclePreflight,
+    delta: &EntitySourceRoleDeltaReport,
+) -> Vec<ValidationFinding> {
+    let mut findings = Vec::new();
+    let expected_db_path = profile.db_path.display().to_string();
+    if preflight.exact_db_path_checked != expected_db_path {
+        agent_use_push_lifecycle_integrity_finding(
+            &mut findings,
+            rule_by_id[CG_MVP3_DB_LIFECYCLE_MISMATCH_AFTER_UPDATE],
+            lifecycle.clone(),
+            json!({
+                "expected_db_path": expected_db_path,
+                "exact_db_path_checked": preflight.exact_db_path_checked.clone(),
+            }),
+            "validation preflight did not check the same DB path as the profile DB path",
+        );
+    }
+
+    if !preflight.safe || !lifecycle.is_claimable_current() {
+        agent_use_push_lifecycle_integrity_finding(
+            &mut findings,
+            rule_by_id[CG_MVP3_STALE_OR_FOREIGN_DB_VALIDATION_ATTEMPT],
+            lifecycle.clone(),
+            json!({
+                "safe": preflight.safe,
+                "db_problem_kind": preflight.db_problem_kind.clone(),
+                "schema_status": preflight.schema_status.clone(),
+                "passport_status": preflight.db_health.passport_status.clone(),
+                "blockers": preflight.blockers.clone(),
+            }),
+            "validation attempted against a DB lifecycle state that is not claimable current",
+        );
+    }
+
+    let publish_state = agent_use_publish_state_json(profile);
+    let publish_active = publish_state
+        .get("publishing")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let publish_status = publish_state
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("idle");
+    if publish_active && matches!(publish_status, "updating" | "publishing") {
+        agent_use_push_lifecycle_integrity_finding(
+            &mut findings,
+            rule_by_id[CG_MVP3_QUERY_DURING_UPDATE_UNSAFE],
+            lifecycle.clone(),
+            publish_state.clone(),
+            "validation observed an active update/publish state that must not be served as claimable query context",
+        );
+    }
+
+    if agent_use_db_path_looks_like_publish_temp(&profile.db_path)
+        && lifecycle.is_claimable_current()
+    {
+        agent_use_push_lifecycle_integrity_finding(
+            &mut findings,
+            rule_by_id[CG_MVP3_TEMP_DB_CLAIMABLE],
+            lifecycle.clone(),
+            json!({
+                "db_path": profile.db_path.display().to_string(),
+                "reason": "profile DB path has a publish/temp DB filename pattern",
+            }),
+            "a publish/temp DB path was claimable",
+        );
+    }
+
+    if agent_use_update_state_mentions_corrupt_or_incomplete(delta, preflight) {
+        agent_use_push_lifecycle_integrity_finding(
+            &mut findings,
+            rule_by_id[CG_MVP3_CORRUPT_OR_INCOMPLETE_UPDATE_TRANSACTION],
+            lifecycle.clone(),
+            json!({
+                "delta_status": delta.status.clone(),
+                "old_snapshot_status": delta.old_snapshot_status.clone(),
+                "new_snapshot_status": delta.new_snapshot_status.clone(),
+                "passport_status": preflight.db_health.passport_status.clone(),
+                "db_health_reasons": preflight.db_health.reasons.clone(),
+            }),
+            "validation observed corrupt, interrupted, partial, or incomplete update state",
+        );
+    }
+
+    if !delta.old_good_db_preserved {
+        agent_use_push_lifecycle_integrity_finding(
+            &mut findings,
+            rule_by_id[CG_MVP3_OLD_GOOD_DB_NOT_PRESERVED],
+            lifecycle.clone(),
+            json!({
+                "old_good_db_preserved": delta.old_good_db_preserved,
+                "delta_status": delta.status.clone(),
+            }),
+            "graph delta reported that the old-good DB was not preserved",
+        );
+    }
+
+    if !delta.access_vs_corrupt_classification_safe {
+        agent_use_push_lifecycle_integrity_finding(
+            &mut findings,
+            rule_by_id[CG_MVP3_SIDECAR_CORRUPT_VS_INACCESSIBLE_MISCLASSIFIED],
+            lifecycle,
+            json!({
+                "access_vs_corrupt_classification_safe": delta.access_vs_corrupt_classification_safe,
+                "sidecar_freshness_changed": delta.sidecar_freshness_changed.clone(),
+            }),
+            "sidecar access/corrupt classification was not safe",
+        );
+    }
+
+    findings
+}
+
+fn agent_use_collect_proof_integrity_findings(
+    profile: &AgentUseProfile,
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    delta: &EntitySourceRoleDeltaReport,
+    changed_files: &[String],
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    let mut scan_paths = changed_files
+        .iter()
+        .chain(delta.closure_files_updated.iter())
+        .map(|path| normalize_repo_relative_path(path))
+        .collect::<Vec<_>>();
+    scan_paths.sort();
+    scan_paths.dedup();
+
+    for path in scan_paths {
+        let edges = store
+            .list_edges_by_file(&path)
+            .map_err(|error| format!("read changed-file proof-integrity edges failed: {error}"))?;
+        for edge in edges {
+            agent_use_validate_current_proof_edge_integrity(
+                profile,
+                rule_by_id,
+                lifecycle.clone(),
+                &edge,
+                Some(json!({
+                    "source": "changed_or_closure_file_current_edges",
+                    "repo_relative_path": path,
+                })),
+                findings,
+                seen_edge_rule,
+            );
+        }
+
+        let entities = store.list_entities_by_file(&path).map_err(|error| {
+            format!("read changed-file proof-integrity entities failed: {error}")
+        })?;
+        for entity in entities {
+            agent_use_validate_current_entity_integrity(
+                profile,
+                rule_by_id,
+                lifecycle.clone(),
+                &entity,
+                Some(json!({
+                    "source": "changed_or_closure_file_current_entities",
+                    "repo_relative_path": path,
+                })),
+                findings,
+            );
+        }
+    }
+
+    for edge_delta in delta.edges_added.iter().chain(delta.edges_changed.iter()) {
+        if !agent_use_edge_delta_claimable_graph_proof(edge_delta) {
+            continue;
+        }
+        if !edge_delta.source_span.repo_relative_path.trim().is_empty()
+            && !(edge_delta.derived && edge_delta.provenance_edges.is_empty())
+        {
+            continue;
+        }
+        if let Some(edge) = store
+            .get_edge(&edge_delta.edge_id)
+            .map_err(|error| format!("read proof-integrity delta edge failed: {error}"))?
+        {
+            agent_use_validate_current_proof_edge_integrity(
+                profile,
+                rule_by_id,
+                lifecycle.clone(),
+                &edge,
+                Some(json!(edge_delta)),
+                findings,
+                seen_edge_rule,
+            );
+        } else {
+            agent_use_push_edge_delta_integrity_finding(
+                findings,
+                rule_by_id,
+                lifecycle.clone(),
+                edge_delta,
+            );
+        }
+    }
+
+    for entity_delta in delta
+        .entities_added
+        .iter()
+        .chain(delta.entities_changed.iter())
+    {
+        if !entity_delta.claimability.claimable || !entity_delta.claimability.graph_proof {
+            continue;
+        }
+        if entity_delta.source_span.is_some() {
+            continue;
+        }
+        agent_use_push_entity_delta_integrity_finding(
+            findings,
+            rule_by_id[CG_MVP3_CLAIMABLE_ENTITY_MISSING_SOURCE_SPAN],
+            lifecycle.clone(),
+            entity_delta,
+        );
+    }
+
+    Ok(())
+}
+
+fn agent_use_collect_source_role_tests_findings(
+    profile: &AgentUseProfile,
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    delta: &EntitySourceRoleDeltaReport,
+    changed_files: &[String],
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    let mut scan_paths = changed_files
+        .iter()
+        .chain(delta.closure_files_updated.iter())
+        .map(|path| normalize_repo_relative_path(path))
+        .collect::<Vec<_>>();
+    scan_paths.sort();
+    scan_paths.dedup();
+
+    for path in scan_paths {
+        let edges = store
+            .list_edges_by_file(&path)
+            .map_err(|error| format!("read changed-file source-role edges failed: {error}"))?;
+        for edge in edges {
+            agent_use_validate_current_source_role_boundary_edge(
+                profile,
+                store,
+                rule_by_id,
+                lifecycle.clone(),
+                &edge,
+                Some(json!({
+                    "source": "changed_or_closure_file_source_role_edges",
+                    "repo_relative_path": path,
+                })),
+                findings,
+                seen_edge_rule,
+            )?;
+            agent_use_validate_current_tests_relation_edge(
+                profile,
+                store,
+                rule_by_id,
+                lifecycle.clone(),
+                &edge,
+                Some(json!({
+                    "source": "changed_or_closure_file_tests_relation_edges",
+                    "repo_relative_path": path,
+                })),
+                findings,
+                seen_edge_rule,
+            )?;
+        }
+    }
+
+    for entry in delta.edges_added.iter().chain(delta.edges_changed.iter()) {
+        let Some(edge) = store
+            .get_edge(&entry.edge_id)
+            .map_err(|error| format!("read source-role/test delta edge failed: {error}"))?
+        else {
+            continue;
+        };
+        agent_use_validate_current_source_role_boundary_edge(
+            profile,
+            store,
+            rule_by_id,
+            lifecycle.clone(),
+            &edge,
+            Some(json!(entry)),
+            findings,
+            seen_edge_rule,
+        )?;
+        agent_use_validate_current_tests_relation_edge(
+            profile,
+            store,
+            rule_by_id,
+            lifecycle.clone(),
+            &edge,
+            Some(json!(entry)),
+            findings,
+            seen_edge_rule,
+        )?;
+    }
+
+    for entry in delta.source_roles_changed.iter() {
+        if entry.old_source_role == Some(EvidenceRole::Production)
+            && matches!(
+                entry.new_source_role,
+                Some(EvidenceRole::Test | EvidenceRole::Mock | EvidenceRole::Mixed)
+            )
+        {
+            findings.push(agent_use_source_role_delta_diagnostic(
+                rule_by_id[CG_MVP3_SOURCE_ROLE_TEST_EVIDENCE_IN_PRODUCTION_PROOF],
+                lifecycle.clone(),
+                json!(entry),
+                "source role changed away from production; production validation must respect the new role",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn agent_use_collect_activation_gated_contract_findings(
+    profile: &AgentUseProfile,
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    delta: &EntitySourceRoleDeltaReport,
+    changed_files: &[String],
+    renamed_old_paths: &BTreeSet<String>,
+    removed_entity_paths_by_id: &BTreeMap<String, String>,
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    for removed_entity_id in removed_entity_paths_by_id.keys() {
+        for relation in [
+            RelationKind::Reads,
+            RelationKind::Writes,
+            RelationKind::Handles,
+            RelationKind::Exposes,
+        ] {
+            let incoming = store
+                .find_edges_by_tail_relation(removed_entity_id, relation)
+                .map_err(|error| format!("read incoming {relation} edges failed: {error}"))?;
+            for edge in incoming {
+                agent_use_validate_current_activation_gated_contract_edge(
+                    profile,
+                    store,
+                    rule_by_id,
+                    lifecycle.clone(),
+                    &edge,
+                    Some(json!({
+                        "source": "removed_target_current_incoming_edges",
+                        "removed_entity_id": removed_entity_id,
+                        "removed_entity_path": removed_entity_paths_by_id.get(removed_entity_id),
+                    })),
+                    renamed_old_paths,
+                    removed_entity_paths_by_id,
+                    findings,
+                    seen_edge_rule,
+                )?;
+            }
+        }
+    }
+
+    for entry in delta
+        .edges_added
+        .iter()
+        .chain(delta.edges_changed.iter())
+        .filter(|entry| agent_use_activation_gated_contract_relation(entry.relation))
+    {
+        let Some(edge) = store
+            .get_edge(&entry.edge_id)
+            .map_err(|error| format!("read activation-gated delta edge failed: {error}"))?
+        else {
+            continue;
+        };
+        agent_use_validate_current_activation_gated_contract_edge(
+            profile,
+            store,
+            rule_by_id,
+            lifecycle.clone(),
+            &edge,
+            Some(json!(entry)),
+            renamed_old_paths,
+            removed_entity_paths_by_id,
+            findings,
+            seen_edge_rule,
+        )?;
+    }
+
+    let mut scan_paths = changed_files
+        .iter()
+        .chain(delta.closure_files_updated.iter())
+        .map(|path| normalize_repo_relative_path(path))
+        .collect::<Vec<_>>();
+    scan_paths.sort();
+    scan_paths.dedup();
+    for path in scan_paths {
+        let edges = store
+            .list_edges_by_file(&path)
+            .map_err(|error| format!("read activation-gated changed-file edges failed: {error}"))?;
+        for edge in edges
+            .into_iter()
+            .filter(|edge| agent_use_activation_gated_contract_relation(edge.relation))
+        {
+            agent_use_validate_current_activation_gated_contract_edge(
+                profile,
+                store,
+                rule_by_id,
+                lifecycle.clone(),
+                &edge,
+                Some(json!({
+                    "source": "changed_or_closure_file_activation_gated_edges",
+                    "repo_relative_path": path,
+                })),
+                renamed_old_paths,
+                removed_entity_paths_by_id,
+                findings,
+                seen_edge_rule,
+            )?;
+        }
+    }
+
+    let mut warned_text_paths = BTreeSet::<String>::new();
+    for entry in delta.text_evidence_changed.iter() {
+        let path = normalize_repo_relative_path(&entry.repo_relative_path);
+        if !agent_use_path_is_config_package_text_evidence(&path)
+            || !warned_text_paths.insert(path.clone())
+        {
+            continue;
+        }
+        findings.push(agent_use_config_package_text_evidence_warning(
+            rule_by_id[CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING],
+            lifecycle.clone(),
+            &path,
+            json!(entry),
+            "Config.in/package/build-system text evidence changed; this is warning/no-proof fallback context, not broken graph proof",
+        ));
+    }
+
+    Ok(())
+}
+
+fn agent_use_activation_gated_contract_relation(relation: RelationKind) -> bool {
+    matches!(
+        relation,
+        RelationKind::Reads | RelationKind::Writes | RelationKind::Handles | RelationKind::Exposes
+    )
+}
+
+fn agent_use_validate_current_activation_gated_contract_edge(
+    profile: &AgentUseProfile,
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    edge: &Edge,
+    affected_delta: Option<Value>,
+    renamed_old_paths: &BTreeSet<String>,
+    removed_entity_paths_by_id: &BTreeMap<String, String>,
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    match edge.relation {
+        RelationKind::Reads | RelationKind::Writes => agent_use_validate_current_reads_writes_edge(
+            profile,
+            store,
+            rule_by_id,
+            lifecycle,
+            edge,
+            affected_delta,
+            findings,
+            seen_edge_rule,
+        ),
+        RelationKind::Handles | RelationKind::Exposes => {
+            let preferred_rule_id = agent_use_route_missing_target_rule_for_current_edge(
+                edge,
+                removed_entity_paths_by_id,
+                renamed_old_paths,
+            );
+            agent_use_validate_current_route_handler_edge(
+                profile,
+                store,
+                rule_by_id,
+                lifecycle,
+                edge,
+                affected_delta,
+                preferred_rule_id,
+                findings,
+                seen_edge_rule,
+            )
+        }
+        _ => Ok(()),
+    }
+}
+
+fn agent_use_validate_current_reads_writes_edge(
+    profile: &AgentUseProfile,
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    edge: &Edge,
+    affected_delta: Option<Value>,
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    if !matches!(edge.relation, RelationKind::Reads | RelationKind::Writes) {
+        return Ok(());
+    }
+
+    let span_check = agent_use_reverify_edge_source_span(&profile.repo_root, edge);
+    if span_check.is_err() {
+        agent_use_push_relation_contract_finding(
+            findings,
+            seen_edge_rule,
+            rule_by_id[CG_MVP3_READS_WRITES_MISSING_SOURCE_SPAN],
+            edge,
+            None,
+            affected_delta.clone(),
+            agent_use_graph_integrity_input(
+                lifecycle.clone(),
+                edge,
+                true,
+                false,
+                false,
+                true,
+                span_check.as_ref().err().cloned().unwrap_or_else(|| {
+                    "READS/WRITES source span failed graph/source recheck".to_string()
+                }),
+            ),
+            "claimable exact READS/WRITES edge does not have a current valid source span",
+            "Regenerate the READS/WRITES edge from source or downgrade the edge to diagnostic evidence.",
+        );
+        return Ok(());
+    }
+
+    if edge.derived && edge.provenance_edges.is_empty() {
+        agent_use_push_relation_contract_finding(
+            findings,
+            seen_edge_rule,
+            rule_by_id[CG_MVP3_READS_WRITES_DERIVED_MISSING_PROVENANCE],
+            edge,
+            None,
+            affected_delta.clone(),
+            agent_use_graph_integrity_input(
+                lifecycle.clone(),
+                edge,
+                false,
+                true,
+                true,
+                false,
+                "derived exact READS/WRITES edge is missing provenance_edges",
+            ),
+            "derived exact READS/WRITES edge lacks required provenance",
+            "Attach provenance edge IDs or downgrade the derived READS/WRITES fact.",
+        );
+        return Ok(());
+    }
+
+    let missing_rule_id = match edge.relation {
+        RelationKind::Reads => CG_MVP3_READS_DANGLING_SYMBOL,
+        RelationKind::Writes => CG_MVP3_WRITES_DANGLING_SYMBOL,
+        _ => unreachable!("filtered READS/WRITES relation"),
+    };
+
+    if !agent_use_exactness_is_proof_grade(edge.exactness) {
+        findings.push(agent_use_relation_contract_unknown(
+            rule_by_id[missing_rule_id],
+            lifecycle,
+            edge,
+            affected_delta.unwrap_or_else(|| json!(agent_use_generic_validation_edge_json(edge))),
+            "dynamic, computed, heuristic, or unsupported READS/WRITES evidence is unknown and cannot block",
+        ));
+        return Ok(());
+    }
+
+    let target = store
+        .get_entity(&edge.tail_id)
+        .map_err(|error| format!("read READS/WRITES target entity failed: {error}"))?;
+    let source_role = classify_edge_evidence_role(edge).role;
+    let head_role = store
+        .get_entity(&edge.head_id)
+        .map_err(|error| format!("read READS/WRITES source entity failed: {error}"))?
+        .as_ref()
+        .map(classify_entity_source_role)
+        .map(|decision| decision.role)
+        .unwrap_or(source_role);
+    let production_source = source_role.is_production() || head_role.is_production();
+
+    if target.is_none() {
+        agent_use_push_relation_contract_finding(
+            findings,
+            seen_edge_rule,
+            rule_by_id[missing_rule_id],
+            edge,
+            None,
+            affected_delta,
+            agent_use_graph_source_input(
+                lifecycle,
+                edge,
+                production_source,
+                "current exact READS/WRITES edge was reverified from store/source and its target symbol entity is absent",
+            ),
+            "exact READS/WRITES edge points to a missing symbol entity",
+            "Restore the symbol, update the access relation, or downgrade non-exact evidence.",
+        );
+        return Ok(());
+    }
+
+    let target = target.expect("checked target presence");
+    let target_role = classify_entity_source_role(&target).role;
+    if production_source && matches!(target_role, EvidenceRole::Test | EvidenceRole::Mock) {
+        agent_use_push_relation_contract_finding(
+            findings,
+            seen_edge_rule,
+            rule_by_id[CG_MVP3_READS_WRITES_TARGET_ROLE_MISMATCH],
+            edge,
+            Some(&target),
+            affected_delta,
+            agent_use_graph_source_input(
+                lifecycle,
+                edge,
+                true,
+                "production exact READS/WRITES edge was reverified from store/source and resolves only to non-production target evidence",
+            ),
+            "production exact READS/WRITES edge resolves to test/mock/stub target evidence",
+            "Move the target into production evidence, update the access relation, or mark this relation as test/mock evidence.",
+        );
+    }
+
+    Ok(())
+}
+
+fn agent_use_validate_current_route_handler_edge(
+    profile: &AgentUseProfile,
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    edge: &Edge,
+    affected_delta: Option<Value>,
+    preferred_missing_target_rule_id: &'static str,
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    if !matches!(edge.relation, RelationKind::Handles | RelationKind::Exposes) {
+        return Ok(());
+    }
+
+    let span_check = agent_use_reverify_edge_source_span(&profile.repo_root, edge);
+    if span_check.is_err() {
+        findings.push(agent_use_relation_contract_unknown(
+            rule_by_id[CG_MVP3_ROUTE_COMPUTED_UNKNOWN],
+            lifecycle,
+            edge,
+            affected_delta.unwrap_or_else(|| json!(agent_use_generic_validation_edge_json(edge))),
+            "route/handler edge cannot block because its source span could not be reverified",
+        ));
+        return Ok(());
+    }
+
+    if !agent_use_exactness_is_proof_grade(edge.exactness) {
+        findings.push(agent_use_relation_contract_unknown(
+            rule_by_id[CG_MVP3_ROUTE_COMPUTED_UNKNOWN],
+            lifecycle,
+            edge,
+            affected_delta.unwrap_or_else(|| json!(agent_use_generic_validation_edge_json(edge))),
+            "computed, convention-only, or heuristic route/handler evidence is unknown rather than blocking proof",
+        ));
+        return Ok(());
+    }
+
+    let target = store
+        .get_entity(&edge.tail_id)
+        .map_err(|error| format!("read route/handler target entity failed: {error}"))?;
+    let source_role = classify_edge_evidence_role(edge).role;
+    let head_role = store
+        .get_entity(&edge.head_id)
+        .map_err(|error| format!("read route/handler source entity failed: {error}"))?
+        .as_ref()
+        .map(classify_entity_source_role)
+        .map(|decision| decision.role)
+        .unwrap_or(source_role);
+    let source_role_allowed = source_role.is_production() || head_role.is_production();
+
+    if target.is_none() {
+        agent_use_push_relation_contract_finding(
+            findings,
+            seen_edge_rule,
+            rule_by_id[preferred_missing_target_rule_id],
+            edge,
+            None,
+            affected_delta,
+            agent_use_graph_source_input(
+                lifecycle,
+                edge,
+                source_role_allowed,
+                "current exact route/handler edge was reverified from store/source and its target entity is absent",
+            ),
+            "exact route/handler edge points to a missing target entity",
+            "Restore the handler/endpoint, update the route relation, or downgrade unsupported evidence.",
+        );
+    }
+
+    Ok(())
+}
+
+fn agent_use_route_missing_target_rule_for_current_edge(
+    edge: &Edge,
+    removed_entity_paths_by_id: &BTreeMap<String, String>,
+    renamed_old_paths: &BTreeSet<String>,
+) -> &'static str {
+    if let Some(path) = removed_entity_paths_by_id.get(&edge.tail_id) {
+        if renamed_old_paths.contains(path) {
+            return CG_MVP3_ROUTE_HANDLER_RENAMED_NOT_UPDATED;
+        }
+    }
+    CG_MVP3_ROUTE_HANDLER_DANGLING_TARGET
+}
+
+fn agent_use_push_relation_contract_finding(
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+    rule: &ValidationRule,
+    edge: &Edge,
+    target: Option<&Entity>,
+    affected_delta: Option<Value>,
+    input: ValidationReverificationInput,
+    reason: &str,
+    recommended_fix: &str,
+) {
+    let key = format!("{}:{}", rule.validation_rule_id, edge.id);
+    if !seen_edge_rule.insert(key) {
+        return;
+    }
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/activation-gated/{}/{}",
+            rule.validation_rule_id, edge.id
+        ),
+        input,
+    );
+    finding.affected_delta = affected_delta.unwrap_or(Value::Null);
+    finding.affected_edge = agent_use_generic_validation_edge_json(edge);
+    finding.affected_entity = target
+        .map(|entity| serde_json::to_value(entity).unwrap_or(Value::Null))
+        .unwrap_or_else(|| {
+            json!({
+                "entity_id": edge.tail_id,
+                "missing": true,
+            })
+        });
+    finding.affected_file = Some(normalize_repo_relative_path(
+        &edge.source_span.repo_relative_path,
+    ));
+    finding.source_span = Some(edge.source_span.clone());
+    finding.source_role = Some(classify_edge_evidence_role(edge).role);
+    finding.relation_kind = Some(edge.relation);
+    finding.exactness = Some(edge.exactness);
+    finding.provenance = json!({
+        "derived": edge.derived,
+        "provenance_edges": edge.provenance_edges,
+        "provenance_required": edge.derived,
+        "provenance_present": !edge.derived || !edge.provenance_edges.is_empty(),
+    });
+    finding.reason = reason.to_string();
+    finding.recommended_fix = Some(recommended_fix.to_string());
+    finding.suggested_next_steps = vec![recommended_fix.to_string()];
+    finding.expansion_handle = Some(format!("validation_packet:edge:{}", edge.id));
+    findings.push(finding);
+}
+
+fn agent_use_relation_contract_unknown(
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    edge: &Edge,
+    affected_delta: Value,
+    reason: &str,
+) -> ValidationFinding {
+    let mut input = ValidationReverificationInput::exact_graph_source(
+        lifecycle,
+        format!("evidence://activation-gated/{}", edge.id),
+        reason,
+    );
+    input.relation_supported = false;
+    input.relation_exact = false;
+    input.graph_source_relation_reverified = false;
+    input.unsupported_relation = true;
+    input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+        ValidationEvidenceKind::Diagnostic,
+        format!("diagnostic://activation-gated/{}", edge.id),
+        reason,
+    )];
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/activation-gated/unknown/{:016x}",
+            agent_use_validation_stable_u64(&format!("{}:{reason}", edge.id))
+        ),
+        input,
+    );
+    finding.affected_delta = affected_delta;
+    finding.affected_edge = agent_use_generic_validation_edge_json(edge);
+    finding.affected_file = Some(normalize_repo_relative_path(
+        &edge.source_span.repo_relative_path,
+    ));
+    finding.source_span = Some(edge.source_span.clone());
+    finding.source_role = Some(classify_edge_evidence_role(edge).role);
+    finding.relation_kind = Some(edge.relation);
+    finding.exactness = Some(edge.exactness);
+    finding.reason = reason.to_string();
+    finding
+}
+
+fn agent_use_config_package_text_evidence_warning(
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    repo_relative_path: &str,
+    affected_delta: Value,
+    reason: &str,
+) -> ValidationFinding {
+    let evidence_id = format!("text://{repo_relative_path}");
+    let mut input =
+        ValidationReverificationInput::exact_graph_source(lifecycle, evidence_id.clone(), reason);
+    input.relation_exact = false;
+    input.graph_source_relation_reverified = false;
+    input.source_span_required = false;
+    input.source_span_present = false;
+    input.provenance_required = false;
+    input.provenance_present = true;
+    input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+        ValidationEvidenceKind::TextEvidence,
+        evidence_id,
+        reason,
+    )];
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/config-package/text-warning/{:016x}",
+            agent_use_validation_stable_u64(repo_relative_path)
+        ),
+        input,
+    );
+    finding.classification = ValidationClassification::Warn;
+    finding.blocking_level = ValidationBlockingLevel::Warning;
+    finding.proof_status = ValidationProofStatus::NotGraphProof;
+    finding.proof_level = "not_graph_proof".to_string();
+    finding.proof_strength = "text_evidence_warning".to_string();
+    finding.affected_delta = affected_delta;
+    finding.affected_file = Some(normalize_repo_relative_path(repo_relative_path));
+    finding.source_span = None;
+    finding.source_role = Some(EvidenceRole::Unknown);
+    finding.relation_kind = None;
+    finding.exactness = None;
+    finding.provenance = json!({
+        "required": false,
+        "present": false,
+        "text_evidence_only": true,
+    });
+    finding.old_fact_claim_state = "text_evidence_only".to_string();
+    finding.new_fact_claim_state = "text_evidence_only".to_string();
+    finding.reverified_graph_source_proof = false;
+    finding.reason = reason.to_string();
+    finding.recommended_fix = Some(
+        "Use text evidence as no-proof context; do not promote it to graph proof.".to_string(),
+    );
+    finding.suggested_next_steps = vec![
+        "Use text evidence as no-proof context; do not promote it to graph proof.".to_string(),
+    ];
+    finding.diagnostics = vec!["text_evidence_not_graph_proof".to_string()];
+    finding
+}
+
+#[cfg(test)]
+fn agent_use_config_package_unsupported_unknown(
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    affected_delta: Value,
+    reason: &str,
+) -> ValidationFinding {
+    let mut input = ValidationReverificationInput::exact_graph_source(
+        lifecycle,
+        "diagnostic://config-package-unsupported",
+        reason,
+    );
+    input.relation_supported = false;
+    input.relation_exact = false;
+    input.graph_source_relation_reverified = false;
+    input.unsupported_relation = true;
+    input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+        ValidationEvidenceKind::Diagnostic,
+        "diagnostic://config-package-unsupported",
+        reason,
+    )];
+    let mut finding =
+        classify_validation_finding(rule, "finding://mvp3_3/config-package/unsupported", input);
+    finding.affected_delta = affected_delta;
+    finding.reason = reason.to_string();
+    finding
+}
+
+fn agent_use_path_is_config_package_text_evidence(path: &str) -> bool {
+    let normalized = normalize_repo_relative_path(path);
+    let lower = normalized.to_ascii_lowercase();
+    let file_name = lower.rsplit('/').next().unwrap_or(lower.as_str());
+    lower.ends_with(".mk")
+        || lower.ends_with(".adoc")
+        || lower.ends_with(".asciidoc")
+        || lower.ends_with(".md")
+        || lower.ends_with(".markdown")
+        || lower.ends_with(".sh")
+        || file_name == "config.in"
+        || file_name == "kconfig"
+        || file_name.starts_with("kconfig.")
+        || lower.contains("/kconfig/")
+        || (lower.starts_with("package/")
+            && (lower.ends_with(".hash") || lower.ends_with(".mk") || file_name == "config.in"))
+        || ((lower.starts_with("support/scripts/") || lower.starts_with("support/download/"))
+            && !file_name.contains('.'))
+}
+
+fn agent_use_validate_current_source_role_boundary_edge(
+    profile: &AgentUseProfile,
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    edge: &Edge,
+    affected_delta: Option<Value>,
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    if !agent_use_edge_can_be_claimable_graph_proof(edge)
+        || !agent_use_exactness_is_proof_grade(edge.exactness)
+    {
+        return Ok(());
+    }
+    if agent_use_reverify_edge_source_span(&profile.repo_root, edge).is_err() {
+        return Ok(());
+    }
+    if !agent_use_edge_treated_as_production_proof(edge) {
+        return Ok(());
+    }
+
+    let head = store
+        .get_entity(&edge.head_id)
+        .map_err(|error| format!("read source-role edge head failed: {error}"))?;
+    let tail = store
+        .get_entity(&edge.tail_id)
+        .map_err(|error| format!("read source-role edge tail failed: {error}"))?;
+    let Some(boundary) =
+        agent_use_source_role_boundary_for_edge(edge, head.as_ref(), tail.as_ref())
+    else {
+        return Ok(());
+    };
+
+    let rule = rule_by_id[boundary.rule_id];
+    agent_use_push_source_role_finding(
+        findings,
+        seen_edge_rule,
+        rule,
+        lifecycle,
+        edge,
+        head.as_ref(),
+        tail.as_ref(),
+        affected_delta,
+        boundary.source_role,
+        boundary.reason,
+        boundary.recommended_fix,
+    );
+    Ok(())
+}
+
+fn agent_use_validate_current_tests_relation_edge(
+    profile: &AgentUseProfile,
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    edge: &Edge,
+    affected_delta: Option<Value>,
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    if !agent_use_tests_relation(edge.relation) {
+        return Ok(());
+    }
+
+    if !agent_use_exactness_is_proof_grade(edge.exactness) {
+        findings.push(agent_use_tests_relation_unknown(
+            rule_by_id[CG_MVP3_UNSUPPORTED_TEST_RELATION_UNKNOWN],
+            lifecycle,
+            edge,
+            affected_delta.unwrap_or_else(|| json!(agent_use_generic_validation_edge_json(edge))),
+            "TESTS/ASSERTS/MOCKS/STUBS evidence is heuristic or unsupported, so it is unknown rather than blocking proof",
+        ));
+        return Ok(());
+    }
+
+    if agent_use_reverify_edge_source_span(&profile.repo_root, edge).is_err() {
+        return Ok(());
+    }
+
+    let target = store
+        .get_entity(&edge.tail_id)
+        .map_err(|error| format!("read TESTS-family target failed: {error}"))?;
+    if target.is_some() {
+        return Ok(());
+    }
+
+    let rule_id = if agent_use_edge_has_optional_test_target(edge) {
+        CG_MVP3_OPTIONAL_TEST_TARGET_MISSING
+    } else {
+        match edge.relation {
+            RelationKind::Tests => CG_MVP3_TESTS_DANGLING_TARGET,
+            RelationKind::Asserts => CG_MVP3_ASSERTS_DANGLING_TARGET,
+            RelationKind::Mocks | RelationKind::Stubs => CG_MVP3_OPTIONAL_TEST_TARGET_MISSING,
+            _ => CG_MVP3_UNSUPPORTED_TEST_RELATION_UNKNOWN,
+        }
+    };
+    let rule = rule_by_id[rule_id];
+    agent_use_push_tests_relation_finding(
+        findings,
+        seen_edge_rule,
+        rule,
+        edge,
+        affected_delta,
+        agent_use_graph_source_input(
+            lifecycle,
+            edge,
+            true,
+            "exact TESTS-family edge was reverified from graph/source and its target entity is absent",
+        ),
+        if rule_id == CG_MVP3_OPTIONAL_TEST_TARGET_MISSING {
+            "optional TESTS-family target is missing"
+        } else {
+            "exact TESTS-family edge points to a missing target entity"
+        },
+        if rule_id == CG_MVP3_OPTIONAL_TEST_TARGET_MISSING {
+            "Keep the missing optional test target as a warning and do not promote it to production proof."
+        } else {
+            "Restore the test target, update the relation, or downgrade unsupported evidence."
+        },
+    );
+    Ok(())
+}
+
+fn agent_use_validate_current_proof_edge_integrity(
+    profile: &AgentUseProfile,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    edge: &Edge,
+    affected_delta: Option<Value>,
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+) {
+    if !agent_use_edge_can_be_claimable_graph_proof(edge) {
+        return;
+    }
+
+    let span_check = agent_use_reverify_edge_source_span(&profile.repo_root, edge);
+    if span_check.is_err() {
+        let reason = span_check
+            .as_ref()
+            .err()
+            .cloned()
+            .unwrap_or_else(|| "edge source span failed graph/source recheck".to_string());
+        agent_use_push_proof_edge_integrity_finding(
+            findings,
+            seen_edge_rule,
+            rule_by_id[CG_MVP3_PROOF_EDGE_MISSING_SOURCE_SPAN],
+            edge,
+            affected_delta.clone(),
+            agent_use_graph_integrity_input(
+                lifecycle.clone(),
+                edge,
+                true,
+                false,
+                false,
+                true,
+                reason,
+            ),
+            "claimable graph-proof edge does not have a current valid source span",
+            "Regenerate the edge from source or downgrade it to diagnostic evidence.",
+        );
+        return;
+    }
+
+    if edge.derived && edge.provenance_edges.is_empty() {
+        agent_use_push_proof_edge_integrity_finding(
+            findings,
+            seen_edge_rule,
+            rule_by_id[CG_MVP3_DERIVED_EDGE_MISSING_PROVENANCE],
+            edge,
+            affected_delta,
+            agent_use_graph_integrity_input(
+                lifecycle,
+                edge,
+                false,
+                true,
+                true,
+                false,
+                "derived graph-proof edge is missing provenance_edges",
+            ),
+            "derived graph-proof edge lacks required provenance",
+            "Attach provenance edge IDs or downgrade the derived edge.",
+        );
+    }
+}
+
+fn agent_use_validate_current_entity_integrity(
+    profile: &AgentUseProfile,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    entity: &Entity,
+    affected_delta: Option<Value>,
+    findings: &mut Vec<ValidationFinding>,
+) {
+    if !agent_use_entity_can_be_claimable_graph_proof(entity) {
+        return;
+    }
+    let span_required = agent_use_entity_kind_requires_source_span(entity.kind);
+    let span_check = entity
+        .source_span
+        .as_ref()
+        .map(|span| {
+            agent_use_reverify_source_span_text(
+                &profile.repo_root,
+                span,
+                "claimable entity graph proof",
+            )
+        })
+        .unwrap_or_else(|| Err("claimable entity has no source span".to_string()));
+    if span_check.is_ok() {
+        return;
+    }
+
+    let reason = span_check
+        .err()
+        .unwrap_or_else(|| "entity source span failed graph/source recheck".to_string());
+    let rule = rule_by_id[CG_MVP3_CLAIMABLE_ENTITY_MISSING_SOURCE_SPAN];
+    let input = if span_required {
+        agent_use_entity_graph_integrity_input(lifecycle, entity, true, false, reason.clone())
+    } else {
+        agent_use_entity_optional_span_diagnostic_input(lifecycle, entity, reason.clone())
+    };
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/proof_integrity/{}/{}",
+            rule.validation_rule_id, entity.id
+        ),
+        input,
+    );
+    finding.affected_delta = affected_delta.unwrap_or(Value::Null);
+    finding.affected_entity = serde_json::to_value(entity).unwrap_or(Value::Null);
+    finding.affected_file = Some(normalize_repo_relative_path(&entity.repo_relative_path));
+    finding.source_span = entity.source_span.clone();
+    finding.source_role = Some(classify_entity_source_role(entity).role);
+    finding.reason = if span_required {
+        "claimable source-bound entity does not have a current valid source span".to_string()
+    } else {
+        "claimable entity kind has optional source spans; missing/invalid span is diagnostic only"
+            .to_string()
+    };
+    finding.recommended_fix = Some(
+        "Regenerate the entity from source or keep this entity kind/span state diagnostic-only."
+            .to_string(),
+    );
+    finding.expansion_handle = Some(format!("validation_packet:entity:{}", entity.id));
+    findings.push(finding);
+}
+
+fn agent_use_push_lifecycle_integrity_finding(
+    findings: &mut Vec<ValidationFinding>,
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    affected_delta: Value,
+    reason: &str,
+) {
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/lifecycle/{}/{:016x}",
+            rule.validation_rule_id,
+            agent_use_validation_stable_u64(reason)
+        ),
+        agent_use_lifecycle_integrity_input(lifecycle, rule.validation_rule_id.clone(), reason),
+    );
+    finding.affected_delta = affected_delta;
+    finding.reason = reason.to_string();
+    finding.recommended_fix = Some(rule.docs_summary.clone());
+    finding.suggested_next_steps = vec![rule.docs_summary.clone()];
+    findings.push(finding);
+}
+
+fn agent_use_push_proof_edge_integrity_finding(
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+    rule: &ValidationRule,
+    edge: &Edge,
+    affected_delta: Option<Value>,
+    input: ValidationReverificationInput,
+    reason: &str,
+    recommended_fix: &str,
+) {
+    let key = format!("{}:{}", rule.validation_rule_id, edge.id);
+    if !seen_edge_rule.insert(key) {
+        return;
+    }
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/proof_integrity/{}/{}",
+            rule.validation_rule_id, edge.id
+        ),
+        input,
+    );
+    finding.affected_delta = affected_delta.unwrap_or(Value::Null);
+    finding.affected_edge = agent_use_generic_validation_edge_json(edge);
+    finding.affected_file = Some(normalize_repo_relative_path(
+        &edge.source_span.repo_relative_path,
+    ));
+    finding.source_span = Some(edge.source_span.clone());
+    finding.source_role = Some(classify_edge_evidence_role(edge).role);
+    finding.relation_kind = Some(edge.relation);
+    finding.exactness = Some(edge.exactness);
+    finding.provenance = json!({
+        "derived": edge.derived,
+        "provenance_edges": edge.provenance_edges,
+        "provenance_required": edge.derived,
+        "provenance_present": !edge.derived || !edge.provenance_edges.is_empty(),
+    });
+    finding.reason = reason.to_string();
+    finding.recommended_fix = Some(recommended_fix.to_string());
+    finding.suggested_next_steps = vec![recommended_fix.to_string()];
+    finding.expansion_handle = Some(format!("validation_packet:edge:{}", edge.id));
+    findings.push(finding);
+}
+
+fn agent_use_push_edge_delta_integrity_finding(
+    findings: &mut Vec<ValidationFinding>,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    edge_delta: &codegraph_index::EdgeDeltaEntry,
+) {
+    let (
+        rule_id,
+        source_span_required,
+        source_span_present,
+        provenance_required,
+        provenance_present,
+        reason,
+    ) = if edge_delta.derived && edge_delta.provenance_edges.is_empty() {
+        (
+                CG_MVP3_DERIVED_EDGE_MISSING_PROVENANCE,
+                false,
+                true,
+                true,
+                false,
+                "claimable derived edge delta is missing provenance and current edge row was unavailable",
+            )
+    } else {
+        (
+            CG_MVP3_PROOF_EDGE_MISSING_SOURCE_SPAN,
+            true,
+            false,
+            false,
+            true,
+            "claimable edge delta is missing source span and current edge row was unavailable",
+        )
+    };
+    let rule = rule_by_id[rule_id];
+    let mut input =
+        agent_use_lifecycle_integrity_input(lifecycle, edge_delta.edge_id.clone(), reason);
+    input.source_span_required = source_span_required;
+    input.source_span_present = source_span_present;
+    input.provenance_required = provenance_required;
+    input.provenance_present = provenance_present;
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/proof_integrity_delta/{}/{}",
+            rule.validation_rule_id, edge_delta.edge_id
+        ),
+        input,
+    );
+    finding.affected_delta = json!(edge_delta);
+    finding.affected_edge = json!(edge_delta);
+    finding.affected_file = Some(normalize_repo_relative_path(&edge_delta.repo_relative_path));
+    finding.source_span = Some(edge_delta.source_span.clone());
+    finding.source_role = Some(edge_delta.source_role);
+    finding.relation_kind = Some(edge_delta.relation);
+    finding.exactness = Some(edge_delta.exactness);
+    finding.reason = reason.to_string();
+    findings.push(finding);
+}
+
+fn agent_use_push_entity_delta_integrity_finding(
+    findings: &mut Vec<ValidationFinding>,
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    entity_delta: &codegraph_index::EntityDeltaEntry,
+) {
+    let span_required = agent_use_entity_kind_requires_source_span(entity_delta.entity_kind);
+    let evidence_id = entity_delta
+        .new
+        .as_ref()
+        .or(entity_delta.old.as_ref())
+        .map(|summary| summary.entity_id.clone())
+        .unwrap_or_else(|| entity_delta.stable_identity_key.clone());
+    let mut input = agent_use_lifecycle_integrity_input(
+        lifecycle,
+        evidence_id.clone(),
+        "claimable entity delta is missing source span",
+    );
+    input.source_span_required = span_required;
+    input.source_span_present = false;
+    if !span_required {
+        input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+            ValidationEvidenceKind::Diagnostic,
+            evidence_id,
+            "entity kind source span is optional; missing span is diagnostic",
+        )];
+        input.integrity_issue_present = false;
+    }
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/proof_integrity_entity_delta/{}/{}",
+            rule.validation_rule_id, entity_delta.stable_identity_key
+        ),
+        input,
+    );
+    finding.affected_delta = json!(entity_delta);
+    finding.affected_entity = json!(entity_delta);
+    finding.affected_file = Some(normalize_repo_relative_path(
+        &entity_delta.repo_relative_path,
+    ));
+    finding.source_span = entity_delta.source_span.clone();
+    finding.source_role = Some(entity_delta.source_role);
+    finding.reason = if span_required {
+        "claimable source-bound entity delta is missing source span".to_string()
+    } else {
+        "claimable entity delta has optional source span; missing span is diagnostic".to_string()
+    };
+    findings.push(finding);
+}
+
+fn agent_use_validate_current_calls_edge(
+    profile: &AgentUseProfile,
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    edge: &Edge,
+    affected_delta: Option<Value>,
+    preferred_missing_target_rule_id: Option<&str>,
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    if edge.relation != RelationKind::Calls {
+        return Ok(());
+    }
+    let span_check = agent_use_reverify_edge_source_span(&profile.repo_root, edge);
+    if span_check.is_err() {
+        let rule = rule_by_id[CG_MVP3_CALLS_MISSING_SOURCE_SPAN];
+        agent_use_push_calls_finding(
+            findings,
+            seen_edge_rule,
+            rule,
+            edge,
+            None,
+            affected_delta.clone(),
+            agent_use_graph_integrity_input(
+                lifecycle.clone(),
+                edge,
+                true,
+                false,
+                false,
+                true,
+                span_check
+                    .as_ref()
+                    .err()
+                    .cloned()
+                    .unwrap_or_else(|| "CALLS source span failed graph/source recheck".to_string()),
+            ),
+            "claimable exact CALLS edge does not have a current valid source span",
+            "Regenerate the CALLS edge from source or downgrade the edge to diagnostic evidence.",
+        );
+        return Ok(());
+    }
+
+    if edge.derived && edge.provenance_edges.is_empty() {
+        let rule = rule_by_id[CG_MVP3_CALLS_DERIVED_MISSING_PROVENANCE];
+        agent_use_push_calls_finding(
+            findings,
+            seen_edge_rule,
+            rule,
+            edge,
+            None,
+            affected_delta.clone(),
+            agent_use_graph_integrity_input(
+                lifecycle.clone(),
+                edge,
+                false,
+                true,
+                true,
+                false,
+                "derived exact CALLS edge is missing provenance_edges",
+            ),
+            "derived exact CALLS edge lacks required provenance",
+            "Attach provenance edge IDs or downgrade the derived CALLS fact.",
+        );
+        return Ok(());
+    }
+
+    if !agent_use_exactness_is_proof_grade(edge.exactness) {
+        let rule = rule_by_id[CG_MVP3_CALLS_DANGLING_TARGET];
+        findings.push(agent_use_calls_boundary_diagnostic(
+            rule,
+            lifecycle,
+            affected_delta.unwrap_or_else(|| json!(agent_use_validation_edge_json(edge, None))),
+            "heuristic, dynamic, inferred, or unresolved CALLS evidence is diagnostic only",
+        ));
+        return Ok(());
+    }
+
+    let target = store
+        .get_entity(&edge.tail_id)
+        .map_err(|error| format!("read CALLS target entity failed: {error}"))?;
+    let source_role = classify_edge_evidence_role(edge).role;
+    let caller_role = store
+        .get_entity(&edge.head_id)
+        .map_err(|error| format!("read CALLS caller entity failed: {error}"))?
+        .as_ref()
+        .map(classify_entity_source_role)
+        .map(|decision| decision.role)
+        .unwrap_or(source_role);
+    let production_source = source_role.is_production() || caller_role.is_production();
+
+    if target.is_none() {
+        let rule =
+            rule_by_id[preferred_missing_target_rule_id.unwrap_or(CG_MVP3_CALLS_DANGLING_TARGET)];
+        agent_use_push_calls_finding(
+            findings,
+            seen_edge_rule,
+            rule,
+            edge,
+            None,
+            affected_delta,
+            agent_use_graph_source_input(
+                lifecycle,
+                edge,
+                production_source,
+                "current exact CALLS edge was reverified from store/source and its target entity is absent",
+            ),
+            "exact CALLS edge points to a missing callee entity",
+            "Update the caller target, restore the callee, or downgrade non-exact evidence.",
+        );
+        return Ok(());
+    }
+
+    let target = target.expect("checked target presence");
+    let target_role = classify_entity_source_role(&target).role;
+    if production_source && matches!(target_role, EvidenceRole::Test | EvidenceRole::Mock) {
+        let rule = rule_by_id[CG_MVP3_CALLS_TARGET_ROLE_MISMATCH];
+        agent_use_push_calls_finding(
+            findings,
+            seen_edge_rule,
+            rule,
+            edge,
+            Some(&target),
+            affected_delta,
+            agent_use_graph_source_input(
+                lifecycle,
+                edge,
+                true,
+                "production exact CALLS edge was reverified from store/source and resolves only to non-production target evidence",
+            ),
+            "production exact CALLS edge resolves to test/mock/stub target evidence",
+            "Move the target into production evidence, update the caller, or mark this relation as test/mock evidence.",
+        );
+    }
+
+    Ok(())
+}
+
+fn agent_use_collect_exact_imports_findings(
+    profile: &AgentUseProfile,
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    delta: &EntitySourceRoleDeltaReport,
+    changed_files: &[String],
+    renamed_old_paths: &BTreeSet<String>,
+    ambiguous_rename_old_paths: &BTreeSet<String>,
+    removed_entity_paths_by_id: &BTreeMap<String, String>,
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    for removed in delta
+        .entities_removed
+        .iter()
+        .filter(|entry| exact_import_target_entity_kind(entry.entity_kind))
+    {
+        let Some(removed_entity_id) = agent_use_entity_delta_id(removed) else {
+            continue;
+        };
+        let incoming_imports = store
+            .find_edges_by_tail_relation(&removed_entity_id, RelationKind::Imports)
+            .map_err(|error| format!("read incoming IMPORTS edges failed: {error}"))?;
+        for edge in incoming_imports {
+            let rule_id = if renamed_old_paths
+                .contains(&normalize_repo_relative_path(&removed.repo_relative_path))
+            {
+                CG_MVP3_IMPORTS_RENAMED_TARGET_NOT_UPDATED
+            } else {
+                CG_MVP3_IMPORTS_DELETED_EXPORT_STILL_IMPORTED
+            };
+            agent_use_validate_current_import_edge(
+                profile,
+                store,
+                rule_by_id,
+                lifecycle.clone(),
+                &edge,
+                Some(json!(removed)),
+                Some(rule_id),
+                findings,
+                seen_edge_rule,
+            )?;
+        }
+
+        let alias_edges = store
+            .find_edges_by_head_relation(&removed_entity_id, RelationKind::AliasedBy)
+            .map_err(|error| format!("read exact import alias edges failed: {error}"))?;
+        for edge in alias_edges {
+            agent_use_validate_current_import_edge(
+                profile,
+                store,
+                rule_by_id,
+                lifecycle.clone(),
+                &edge,
+                Some(json!(removed)),
+                Some(CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH),
+                findings,
+                seen_edge_rule,
+            )?;
+        }
+    }
+
+    for entry in delta
+        .edges_removed
+        .iter()
+        .filter(|entry| agent_use_import_validation_relation(entry.relation))
+    {
+        let target_id = agent_use_import_delta_target_id(entry);
+        let target_path = agent_use_import_delta_target_path(entry);
+        let target_removed_or_renamed = removed_entity_paths_by_id.contains_key(target_id)
+            || renamed_old_paths.contains(&target_path);
+        if !target_removed_or_renamed {
+            continue;
+        }
+        let rule_id = if entry.relation == RelationKind::AliasedBy {
+            CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH
+        } else if renamed_old_paths.contains(&target_path) {
+            CG_MVP3_IMPORTS_RENAMED_TARGET_NOT_UPDATED
+        } else {
+            CG_MVP3_IMPORTS_DELETED_EXPORT_STILL_IMPORTED
+        };
+        agent_use_validate_removed_import_delta_edge(
+            profile,
+            store,
+            rule_by_id,
+            lifecycle.clone(),
+            entry,
+            rule_id,
+            findings,
+            seen_edge_rule,
+        )?;
+    }
+
+    for entry in delta
+        .edges_added
+        .iter()
+        .chain(delta.edges_changed.iter())
+        .filter(|entry| agent_use_import_validation_relation(entry.relation))
+    {
+        if !agent_use_exactness_is_proof_grade(entry.exactness) {
+            findings.push(agent_use_import_boundary_diagnostic(
+                rule_by_id[CG_MVP3_IMPORTS_DANGLING_TARGET],
+                lifecycle.clone(),
+                json!(entry),
+                "non-exact import delta is diagnostic only and cannot block",
+            ));
+            continue;
+        }
+        let Some(edge) = store
+            .get_edge(&entry.edge_id)
+            .map_err(|error| format!("read import edge failed: {error}"))?
+        else {
+            continue;
+        };
+        let missing_rule_id = if edge.relation == RelationKind::AliasedBy {
+            CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH
+        } else {
+            CG_MVP3_IMPORTS_DANGLING_TARGET
+        };
+        agent_use_validate_current_import_edge(
+            profile,
+            store,
+            rule_by_id,
+            lifecycle.clone(),
+            &edge,
+            Some(json!(entry)),
+            Some(missing_rule_id),
+            findings,
+            seen_edge_rule,
+        )?;
+    }
+
+    let mut scan_paths = changed_files
+        .iter()
+        .chain(delta.closure_files_updated.iter())
+        .map(|path| normalize_repo_relative_path(path))
+        .collect::<Vec<_>>();
+    scan_paths.sort();
+    scan_paths.dedup();
+    for path in scan_paths {
+        let edges = store
+            .list_edges_by_file(&path)
+            .map_err(|error| format!("read changed-file import edges failed: {error}"))?;
+        for edge in edges
+            .into_iter()
+            .filter(|edge| agent_use_import_validation_relation(edge.relation))
+        {
+            let missing_target_rule_id = agent_use_missing_import_target_rule_for_current_edge(
+                &edge,
+                removed_entity_paths_by_id,
+                renamed_old_paths,
+            );
+            agent_use_validate_current_import_edge(
+                profile,
+                store,
+                rule_by_id,
+                lifecycle.clone(),
+                &edge,
+                Some(json!({
+                    "source": "changed_or_closure_file_current_import_edges",
+                    "repo_relative_path": path,
+                })),
+                Some(missing_target_rule_id),
+                findings,
+                seen_edge_rule,
+            )?;
+        }
+    }
+
+    for path in ambiguous_rename_old_paths {
+        findings.push(agent_use_import_boundary_unknown(
+            rule_by_id[CG_MVP3_IMPORTS_RENAMED_TARGET_NOT_UPDATED],
+            lifecycle.clone(),
+            json!({
+                "rename_status": "unknown",
+                "old_path": path,
+                "ambiguity": true,
+            }),
+            "ambiguous rename cannot be promoted to exact dangling IMPORTS proof",
+        ));
+    }
+    if !renamed_old_paths.is_empty()
+        && !findings
+            .iter()
+            .any(|finding| finding.validation_rule_id == CG_MVP3_IMPORTS_RENAMED_TARGET_NOT_UPDATED)
+    {
+        for path in renamed_old_paths {
+            findings.push(agent_use_import_boundary_unknown(
+                rule_by_id[CG_MVP3_IMPORTS_RENAMED_TARGET_NOT_UPDATED],
+                lifecycle.clone(),
+                json!({
+                    "rename_status": "detected",
+                    "old_path": path,
+                    "file_renames_detected": &delta.file_renames_detected,
+                    "reason": "rename was detected from file lifecycle evidence, but no exact stale import edge could be graph/source reverified",
+                }),
+                "renamed import target validation is unknown because file rename evidence alone is not graph-relation proof",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn agent_use_validate_current_import_edge(
+    profile: &AgentUseProfile,
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    edge: &Edge,
+    affected_delta: Option<Value>,
+    preferred_missing_target_rule_id: Option<&str>,
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    if !agent_use_import_validation_relation(edge.relation) {
+        return Ok(());
+    }
+    let span_check = agent_use_reverify_edge_source_span(&profile.repo_root, edge);
+    if span_check.is_err() {
+        let rule = rule_by_id[CG_MVP3_IMPORTS_MISSING_SOURCE_SPAN];
+        agent_use_push_import_finding(
+            findings,
+            seen_edge_rule,
+            rule,
+            edge,
+            None,
+            affected_delta.clone(),
+            agent_use_graph_integrity_input(
+                lifecycle.clone(),
+                edge,
+                true,
+                false,
+                false,
+                true,
+                span_check.as_ref().err().cloned().unwrap_or_else(|| {
+                    "import source span failed graph/source recheck".to_string()
+                }),
+            ),
+            "claimable exact import edge does not have a current valid source span",
+            "Regenerate the import edge from source or downgrade the edge to diagnostic evidence.",
+        );
+        return Ok(());
+    }
+
+    if edge.derived && edge.provenance_edges.is_empty() {
+        let rule = rule_by_id[CG_MVP3_IMPORTS_DERIVED_MISSING_PROVENANCE];
+        agent_use_push_import_finding(
+            findings,
+            seen_edge_rule,
+            rule,
+            edge,
+            None,
+            affected_delta.clone(),
+            agent_use_graph_integrity_input(
+                lifecycle.clone(),
+                edge,
+                false,
+                true,
+                true,
+                false,
+                "derived exact import edge is missing provenance_edges",
+            ),
+            "derived exact import edge lacks required provenance",
+            "Attach provenance edge IDs or downgrade the derived import fact.",
+        );
+        return Ok(());
+    }
+
+    if !agent_use_exactness_is_proof_grade(edge.exactness) {
+        let rule = rule_by_id[CG_MVP3_IMPORTS_DANGLING_TARGET];
+        findings.push(agent_use_import_boundary_diagnostic(
+            rule,
+            lifecycle,
+            affected_delta.unwrap_or_else(|| json!(agent_use_validation_edge_json(edge, None))),
+            "computed, dynamic, heuristic, inferred, or unresolved import evidence is diagnostic only",
+        ));
+        return Ok(());
+    }
+
+    let target_id = agent_use_import_edge_target_id(edge);
+    let target = store
+        .get_entity(target_id)
+        .map_err(|error| format!("read import target entity failed: {error}"))?;
+    let importer_id = agent_use_import_edge_importer_id(edge);
+    let source_role = classify_edge_evidence_role(edge).role;
+    let importer_role = store
+        .get_entity(importer_id)
+        .map_err(|error| format!("read importing entity failed: {error}"))?
+        .as_ref()
+        .map(classify_entity_source_role)
+        .map(|decision| decision.role)
+        .unwrap_or(source_role);
+    let production_source = source_role.is_production() || importer_role.is_production();
+
+    if target.is_none() {
+        let default_rule_id = if edge.relation == RelationKind::AliasedBy {
+            CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH
+        } else {
+            CG_MVP3_IMPORTS_DANGLING_TARGET
+        };
+        let rule = rule_by_id[preferred_missing_target_rule_id.unwrap_or(default_rule_id)];
+        agent_use_push_import_finding(
+            findings,
+            seen_edge_rule,
+            rule,
+            edge,
+            None,
+            affected_delta,
+            agent_use_graph_source_input(
+                lifecycle,
+                edge,
+                production_source,
+                "current exact import edge was reverified from store/source and its target entity is absent",
+            ),
+            "exact import edge points to a missing target entity",
+            "Update the import target, restore the exported declaration, or downgrade non-exact evidence.",
+        );
+        return Ok(());
+    }
+
+    let target = target.expect("checked target presence");
+    let target_role = classify_entity_source_role(&target).role;
+    if production_source && matches!(target_role, EvidenceRole::Test | EvidenceRole::Mock) {
+        let rule = rule_by_id[CG_MVP3_IMPORTS_TARGET_ROLE_MISMATCH];
+        agent_use_push_import_finding(
+            findings,
+            seen_edge_rule,
+            rule,
+            edge,
+            Some(&target),
+            affected_delta,
+            agent_use_graph_source_input(
+                lifecycle,
+                edge,
+                true,
+                "production exact import edge was reverified from store/source and resolves only to non-production target evidence",
+            ),
+            "production exact import edge resolves to test/mock/stub target evidence",
+            "Move the imported target into production evidence, update the import, or mark this relation as test/mock evidence.",
+        );
+    }
+
+    Ok(())
+}
+
+fn agent_use_validate_removed_calls_delta_edge(
+    profile: &AgentUseProfile,
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    entry: &codegraph_index::EdgeDeltaEntry,
+    rule_id: &'static str,
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    let rule = rule_by_id[rule_id];
+    if !agent_use_exactness_is_proof_grade(entry.exactness) {
+        findings.push(agent_use_calls_boundary_diagnostic(
+            rule,
+            lifecycle,
+            json!(entry),
+            "removed non-exact CALLS delta is diagnostic only and cannot block",
+        ));
+        return Ok(());
+    }
+
+    let edge = agent_use_calls_edge_from_delta_entry(entry);
+    let span_text = match agent_use_reverify_edge_source_span_text(&profile.repo_root, &edge) {
+        Ok(span_text) => span_text,
+        Err(error) => {
+            findings.push(agent_use_calls_boundary_unknown(
+                rule,
+                lifecycle,
+                json!({
+                    "removed_calls_delta": entry,
+                    "source_span_recheck_error": error,
+                }),
+                "removed exact CALLS delta cannot block because the current source span could not be reverified",
+            ));
+            return Ok(());
+        }
+    };
+
+    if !agent_use_removed_calls_delta_span_still_names_target(&span_text, entry) {
+        findings.push(agent_use_calls_boundary_diagnostic(
+            rule,
+            lifecycle,
+            json!({
+                "removed_calls_delta": entry,
+                "source_span_text": span_text,
+            }),
+            "removed exact CALLS delta source span no longer names the old callee, so it is not blocking proof",
+        ));
+        return Ok(());
+    }
+
+    agent_use_validate_current_calls_edge(
+        profile,
+        store,
+        rule_by_id,
+        lifecycle,
+        &edge,
+        Some(json!(entry)),
+        Some(rule_id),
+        findings,
+        seen_edge_rule,
+    )
+}
+
+fn agent_use_missing_target_rule_for_current_edge(
+    edge: &Edge,
+    removed_entity_paths_by_id: &BTreeMap<String, String>,
+    renamed_old_paths: &BTreeSet<String>,
+) -> &'static str {
+    if let Some(path) = removed_entity_paths_by_id.get(&edge.tail_id) {
+        if renamed_old_paths.contains(path) {
+            return CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED;
+        }
+        return CG_MVP3_CALLS_REMOVED_CALLEE_STILL_REFERENCED;
+    }
+    CG_MVP3_CALLS_DANGLING_TARGET
+}
+
+fn agent_use_calls_edge_from_delta_entry(entry: &codegraph_index::EdgeDeltaEntry) -> Edge {
+    Edge {
+        id: entry.edge_id.clone(),
+        head_id: entry.source_entity_id.clone(),
+        relation: entry.relation,
+        tail_id: entry.target_entity_id.clone(),
+        source_span: entry.source_span.clone(),
+        repo_commit: None,
+        file_hash: None,
+        extractor: "agent_use_graph_delta_validation".to_string(),
+        confidence: 1.0,
+        exactness: entry.exactness,
+        edge_class: entry.edge_class.parse().unwrap_or(EdgeClass::Unknown),
+        context: entry.edge_context.parse().unwrap_or(EdgeContext::Unknown),
+        derived: entry.derived,
+        provenance_edges: entry.provenance_edges.clone(),
+        metadata: Default::default(),
+    }
+}
+
+fn agent_use_removed_calls_delta_span_still_names_target(
+    span_text: &str,
+    entry: &codegraph_index::EdgeDeltaEntry,
+) -> bool {
+    let mut target_tokens = Vec::new();
+    if let Some(name) = entry.target_endpoint.name.as_deref() {
+        target_tokens.push(name.to_string());
+    }
+    if let Some(qualified_name) = entry.target_endpoint.qualified_name.as_deref() {
+        target_tokens.extend(
+            qualified_name
+                .split([':', '.', '/', '\\'])
+                .filter(|token| !token.is_empty())
+                .map(ToOwned::to_owned),
+        );
+    }
+    target_tokens.extend(
+        entry
+            .target_entity_id
+            .split([':', '.', '/', '\\'])
+            .filter(|token| !token.is_empty())
+            .map(ToOwned::to_owned),
+    );
+    target_tokens.sort();
+    target_tokens.dedup();
+    target_tokens
+        .iter()
+        .any(|token| token.len() >= 2 && span_text.contains(token))
+}
+
+fn agent_use_validate_removed_import_delta_edge(
+    profile: &AgentUseProfile,
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    entry: &codegraph_index::EdgeDeltaEntry,
+    rule_id: &'static str,
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    let rule = rule_by_id[rule_id];
+    if !agent_use_exactness_is_proof_grade(entry.exactness) {
+        findings.push(agent_use_import_boundary_diagnostic(
+            rule,
+            lifecycle,
+            json!(entry),
+            "removed non-exact import delta is diagnostic only and cannot block",
+        ));
+        return Ok(());
+    }
+
+    let edge = agent_use_validation_edge_from_delta_entry(entry);
+    let span_text = match agent_use_reverify_edge_source_span_text(&profile.repo_root, &edge) {
+        Ok(span_text) => span_text,
+        Err(error) => {
+            findings.push(agent_use_import_boundary_unknown(
+                rule,
+                lifecycle,
+                json!({
+                    "removed_import_delta": entry,
+                    "source_span_recheck_error": error,
+                }),
+                "removed exact import delta cannot block because the current source span could not be reverified",
+            ));
+            return Ok(());
+        }
+    };
+
+    if !agent_use_removed_import_delta_span_still_names_target(&span_text, entry) {
+        findings.push(agent_use_import_boundary_diagnostic(
+            rule,
+            lifecycle,
+            json!({
+                "removed_import_delta": entry,
+                "source_span_text": span_text,
+            }),
+            "removed exact import delta source span no longer names the old import target, so it is not blocking proof",
+        ));
+        return Ok(());
+    }
+
+    agent_use_validate_current_import_edge(
+        profile,
+        store,
+        rule_by_id,
+        lifecycle,
+        &edge,
+        Some(json!(entry)),
+        Some(rule_id),
+        findings,
+        seen_edge_rule,
+    )
+}
+
+fn agent_use_import_validation_relation(relation: RelationKind) -> bool {
+    matches!(relation, RelationKind::Imports | RelationKind::AliasedBy)
+}
+
+fn agent_use_import_edge_target_id(edge: &Edge) -> &str {
+    if edge.relation == RelationKind::AliasedBy {
+        &edge.head_id
+    } else {
+        &edge.tail_id
+    }
+}
+
+fn agent_use_import_edge_importer_id(edge: &Edge) -> &str {
+    if edge.relation == RelationKind::AliasedBy {
+        &edge.tail_id
+    } else {
+        &edge.head_id
+    }
+}
+
+fn agent_use_import_delta_target_id(entry: &codegraph_index::EdgeDeltaEntry) -> &str {
+    if entry.relation == RelationKind::AliasedBy {
+        &entry.source_entity_id
+    } else {
+        &entry.target_entity_id
+    }
+}
+
+fn agent_use_import_delta_target_path(entry: &codegraph_index::EdgeDeltaEntry) -> String {
+    let endpoint = if entry.relation == RelationKind::AliasedBy {
+        &entry.source_endpoint
+    } else {
+        &entry.target_endpoint
+    };
+    endpoint
+        .repo_relative_path
+        .as_deref()
+        .map(normalize_repo_relative_path)
+        .unwrap_or_else(|| normalize_repo_relative_path(&entry.repo_relative_path))
+}
+
+fn agent_use_missing_import_target_rule_for_current_edge(
+    edge: &Edge,
+    removed_entity_paths_by_id: &BTreeMap<String, String>,
+    renamed_old_paths: &BTreeSet<String>,
+) -> &'static str {
+    if edge.relation == RelationKind::AliasedBy {
+        return CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH;
+    }
+    if let Some(path) = removed_entity_paths_by_id.get(agent_use_import_edge_target_id(edge)) {
+        if renamed_old_paths.contains(path) {
+            return CG_MVP3_IMPORTS_RENAMED_TARGET_NOT_UPDATED;
+        }
+        return CG_MVP3_IMPORTS_DELETED_EXPORT_STILL_IMPORTED;
+    }
+    CG_MVP3_IMPORTS_DANGLING_TARGET
+}
+
+fn agent_use_validation_edge_from_delta_entry(entry: &codegraph_index::EdgeDeltaEntry) -> Edge {
+    Edge {
+        id: entry.edge_id.clone(),
+        head_id: entry.source_entity_id.clone(),
+        relation: entry.relation,
+        tail_id: entry.target_entity_id.clone(),
+        source_span: entry.source_span.clone(),
+        repo_commit: None,
+        file_hash: None,
+        extractor: "agent_use_graph_delta_validation".to_string(),
+        confidence: 1.0,
+        exactness: entry.exactness,
+        edge_class: entry.edge_class.parse().unwrap_or(EdgeClass::Unknown),
+        context: entry.edge_context.parse().unwrap_or(EdgeContext::Unknown),
+        derived: entry.derived,
+        provenance_edges: entry.provenance_edges.clone(),
+        metadata: Default::default(),
+    }
+}
+
+fn agent_use_removed_import_delta_span_still_names_target(
+    span_text: &str,
+    entry: &codegraph_index::EdgeDeltaEntry,
+) -> bool {
+    let endpoint = if entry.relation == RelationKind::AliasedBy {
+        &entry.source_endpoint
+    } else {
+        &entry.target_endpoint
+    };
+    let mut target_tokens = Vec::new();
+    if let Some(name) = endpoint.name.as_deref() {
+        target_tokens.push(name.to_string());
+    }
+    if let Some(qualified_name) = endpoint.qualified_name.as_deref() {
+        target_tokens.extend(
+            qualified_name
+                .split([':', '.', '/', '\\'])
+                .filter(|token| !token.is_empty())
+                .map(ToOwned::to_owned),
+        );
+    }
+    if let Some(path) = endpoint.repo_relative_path.as_deref() {
+        let normalized = normalize_repo_relative_path(path);
+        target_tokens.extend(
+            normalized
+                .split(['/', '\\', '.'])
+                .filter(|token| !token.is_empty())
+                .map(ToOwned::to_owned),
+        );
+        if let Some(stem) = Path::new(&normalized)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+        {
+            target_tokens.push(stem.to_string());
+        }
+    }
+    target_tokens.extend(
+        agent_use_import_delta_target_id(entry)
+            .split([':', '.', '/', '\\'])
+            .filter(|token| !token.is_empty())
+            .map(ToOwned::to_owned),
+    );
+    target_tokens.sort();
+    target_tokens.dedup();
+    target_tokens
+        .iter()
+        .any(|token| token.len() >= 2 && span_text.contains(token))
+}
+
+struct AgentUseSourceRoleBoundary {
+    rule_id: &'static str,
+    source_role: EvidenceRole,
+    reason: &'static str,
+    recommended_fix: &'static str,
+}
+
+fn agent_use_source_role_boundary_for_edge(
+    edge: &Edge,
+    head: Option<&Entity>,
+    tail: Option<&Entity>,
+) -> Option<AgentUseSourceRoleBoundary> {
+    if edge_generated_or_degraded(edge)
+        || head.is_some_and(entity_generated_or_degraded)
+        || tail.is_some_and(entity_generated_or_degraded)
+    {
+        return Some(AgentUseSourceRoleBoundary {
+            rule_id: CG_MVP3_SOURCE_ROLE_GENERATED_EVIDENCE_AS_PRODUCTION_PROOF,
+            source_role: EvidenceRole::Unknown,
+            reason: "production proof edge uses generated or degraded evidence",
+            recommended_fix:
+                "Exclude generated evidence from production proof or downgrade it to diagnostic evidence.",
+        });
+    }
+    if head.is_some_and(agent_use_entity_is_inline_test)
+        || tail.is_some_and(agent_use_entity_is_inline_test)
+    {
+        return Some(AgentUseSourceRoleBoundary {
+            rule_id: CG_MVP3_SOURCE_ROLE_INLINE_TEST_PROMOTED_TO_PRODUCTION,
+            source_role: EvidenceRole::Test,
+            reason: "inline test module evidence is being treated as production proof",
+            recommended_fix:
+                "Preserve inline test source-role metadata and exclude inline tests from production proof.",
+        });
+    }
+    if edge.relation == RelationKind::Stubs
+        || path_or_symbol_looks_stub(&edge.head_id)
+        || path_or_symbol_looks_stub(&edge.tail_id)
+        || head.is_some_and(agent_use_entity_is_stub_like)
+        || tail.is_some_and(agent_use_entity_is_stub_like)
+    {
+        return Some(AgentUseSourceRoleBoundary {
+            rule_id: CG_MVP3_SOURCE_ROLE_STUB_EVIDENCE_IN_PRODUCTION_PROOF,
+            source_role: EvidenceRole::Mock,
+            reason: "production proof edge includes stub evidence",
+            recommended_fix:
+                "Keep stub evidence out of production proof or mark the relation as stub/test evidence.",
+        });
+    }
+    if edge.relation == RelationKind::Mocks
+        || path_or_symbol_looks_mock(&edge.head_id)
+        || path_or_symbol_looks_mock(&edge.tail_id)
+        || head.is_some_and(agent_use_entity_is_mock_like)
+        || tail.is_some_and(agent_use_entity_is_mock_like)
+    {
+        return Some(AgentUseSourceRoleBoundary {
+            rule_id: CG_MVP3_SOURCE_ROLE_MOCK_EVIDENCE_IN_PRODUCTION_PROOF,
+            source_role: EvidenceRole::Mock,
+            reason: "production proof edge includes mock evidence",
+            recommended_fix:
+                "Keep mock evidence out of production proof or mark the relation as mock/test evidence.",
+        });
+    }
+    if agent_use_relation_is_test_evidence(edge.relation)
+        || path_looks_test(&edge.source_span.repo_relative_path)
+        || head.is_some_and(agent_use_entity_is_test_like)
+        || tail.is_some_and(agent_use_entity_is_test_like)
+    {
+        return Some(AgentUseSourceRoleBoundary {
+            rule_id: CG_MVP3_SOURCE_ROLE_TEST_EVIDENCE_IN_PRODUCTION_PROOF,
+            source_role: EvidenceRole::Test,
+            reason: "production proof edge includes test evidence",
+            recommended_fix:
+                "Keep test evidence out of production proof or mark the relation as test-impact evidence.",
+        });
+    }
+    None
+}
+
+fn agent_use_edge_treated_as_production_proof(edge: &Edge) -> bool {
+    query_evidence_role_for_edge(edge).role == "production"
+        || edge.context == EdgeContext::Production
+        || metadata_has_any_label(Some(&edge.metadata), &["production"])
+}
+
+fn agent_use_relation_is_test_evidence(relation: RelationKind) -> bool {
+    matches!(
+        relation,
+        RelationKind::Tests
+            | RelationKind::Asserts
+            | RelationKind::Covers
+            | RelationKind::FixturesFor
+    )
+}
+
+fn agent_use_tests_relation(relation: RelationKind) -> bool {
+    matches!(
+        relation,
+        RelationKind::Tests | RelationKind::Asserts | RelationKind::Mocks | RelationKind::Stubs
+    )
+}
+
+fn agent_use_edge_has_optional_test_target(edge: &Edge) -> bool {
+    metadata_has_any_label(
+        Some(&edge.metadata),
+        &["optional_test_target", "optional target", "optional_target"],
+    )
+}
+
+fn agent_use_entity_is_inline_test(entity: &Entity) -> bool {
+    !path_looks_test(&entity.repo_relative_path)
+        && (matches!(
+            entity.kind,
+            EntityKind::TestSuite | EntityKind::TestCase | EntityKind::Assertion
+        ) || agent_use_qualified_name_contains_test_module(&entity.qualified_name))
+}
+
+fn agent_use_entity_is_test_like(entity: &Entity) -> bool {
+    matches!(
+        entity.kind,
+        EntityKind::TestFile | EntityKind::TestSuite | EntityKind::TestCase | EntityKind::Assertion
+    ) || path_looks_test(&entity.repo_relative_path)
+        || agent_use_qualified_name_contains_test_module(&entity.qualified_name)
+}
+
+fn agent_use_entity_is_mock_like(entity: &Entity) -> bool {
+    matches!(entity.kind, EntityKind::Mock) || path_or_symbol_looks_mock(&entity.qualified_name)
+}
+
+fn agent_use_entity_is_stub_like(entity: &Entity) -> bool {
+    matches!(entity.kind, EntityKind::Stub) || path_or_symbol_looks_stub(&entity.qualified_name)
+}
+
+fn agent_use_qualified_name_contains_test_module(value: &str) -> bool {
+    let normalized = value.replace('\\', "/").to_ascii_lowercase();
+    normalized == "tests"
+        || normalized == "test"
+        || normalized.starts_with("tests.")
+        || normalized.starts_with("test.")
+        || normalized.contains(".tests.")
+        || normalized.contains(".test.")
+        || normalized.contains("::tests::")
+        || normalized.ends_with(".tests")
+        || normalized.ends_with("::tests")
+}
+
+fn agent_use_push_source_role_finding(
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    edge: &Edge,
+    head: Option<&Entity>,
+    tail: Option<&Entity>,
+    affected_delta: Option<Value>,
+    source_role: EvidenceRole,
+    reason: &str,
+    recommended_fix: &str,
+) {
+    let key = format!("{}:{}", rule.validation_rule_id, edge.id);
+    if !seen_edge_rule.insert(key) {
+        return;
+    }
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/source-role/{}/{}",
+            rule.validation_rule_id, edge.id
+        ),
+        agent_use_graph_source_input(lifecycle, edge, true, reason),
+    );
+    finding.affected_delta = affected_delta.unwrap_or(Value::Null);
+    finding.affected_edge = agent_use_generic_validation_edge_json(edge);
+    finding.affected_entity = json!({
+        "head": head,
+        "tail": tail,
+        "head_source_role": head.map(|entity| query_evidence_role_for_entity(entity).role),
+        "tail_source_role": tail.map(|entity| query_evidence_role_for_entity(entity).role),
+    });
+    finding.affected_file = Some(normalize_repo_relative_path(
+        &edge.source_span.repo_relative_path,
+    ));
+    finding.source_span = Some(edge.source_span.clone());
+    finding.source_role = Some(source_role);
+    finding.relation_kind = Some(edge.relation);
+    finding.exactness = Some(edge.exactness);
+    finding.provenance = json!({
+        "derived": edge.derived,
+        "provenance_edges": edge.provenance_edges,
+        "provenance_required": edge.derived,
+        "provenance_present": !edge.derived || !edge.provenance_edges.is_empty(),
+    });
+    finding.reason = reason.to_string();
+    finding.recommended_fix = Some(recommended_fix.to_string());
+    finding.suggested_next_steps = vec![recommended_fix.to_string()];
+    finding.expansion_handle = Some(format!("validation_packet:edge:{}", edge.id));
+    findings.push(finding);
+}
+
+fn agent_use_push_tests_relation_finding(
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+    rule: &ValidationRule,
+    edge: &Edge,
+    affected_delta: Option<Value>,
+    input: ValidationReverificationInput,
+    reason: &str,
+    recommended_fix: &str,
+) {
+    let key = format!("{}:{}", rule.validation_rule_id, edge.id);
+    if !seen_edge_rule.insert(key) {
+        return;
+    }
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/tests-relation/{}/{}",
+            rule.validation_rule_id, edge.id
+        ),
+        input,
+    );
+    finding.affected_delta = affected_delta.unwrap_or(Value::Null);
+    finding.affected_edge = agent_use_generic_validation_edge_json(edge);
+    finding.affected_entity = json!({
+        "entity_id": edge.tail_id,
+        "missing": true,
+    });
+    finding.affected_file = Some(normalize_repo_relative_path(
+        &edge.source_span.repo_relative_path,
+    ));
+    finding.source_span = Some(edge.source_span.clone());
+    finding.source_role = Some(classify_edge_evidence_role(edge).role);
+    finding.relation_kind = Some(edge.relation);
+    finding.exactness = Some(edge.exactness);
+    finding.provenance = json!({
+        "derived": edge.derived,
+        "provenance_edges": edge.provenance_edges,
+        "provenance_required": edge.derived,
+        "provenance_present": !edge.derived || !edge.provenance_edges.is_empty(),
+    });
+    finding.reason = reason.to_string();
+    finding.recommended_fix = Some(recommended_fix.to_string());
+    finding.suggested_next_steps = vec![recommended_fix.to_string()];
+    finding.expansion_handle = Some(format!("validation_packet:edge:{}", edge.id));
+    findings.push(finding);
+}
+
+fn agent_use_tests_relation_unknown(
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    edge: &Edge,
+    affected_delta: Value,
+    reason: &str,
+) -> ValidationFinding {
+    let mut input = ValidationReverificationInput::exact_graph_source(
+        lifecycle,
+        "evidence://tests-relation-unsupported",
+        reason,
+    );
+    input.relation_supported = false;
+    input.relation_exact = false;
+    input.graph_source_relation_reverified = false;
+    input.unsupported_relation = true;
+    input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+        ValidationEvidenceKind::Diagnostic,
+        "evidence://tests-relation-unsupported",
+        reason,
+    )];
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/tests-relation/unknown/{:016x}",
+            agent_use_validation_stable_u64(&format!("{}:{reason}", edge.id))
+        ),
+        input,
+    );
+    finding.affected_delta = affected_delta;
+    finding.affected_edge = agent_use_generic_validation_edge_json(edge);
+    finding.affected_file = Some(normalize_repo_relative_path(
+        &edge.source_span.repo_relative_path,
+    ));
+    finding.source_span = Some(edge.source_span.clone());
+    finding.source_role = Some(classify_edge_evidence_role(edge).role);
+    finding.relation_kind = Some(edge.relation);
+    finding.exactness = Some(edge.exactness);
+    finding.reason = reason.to_string();
+    finding
+}
+
+fn agent_use_source_role_delta_diagnostic(
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    affected_delta: Value,
+    reason: &str,
+) -> ValidationFinding {
+    let mut input = ValidationReverificationInput::exact_graph_source(
+        lifecycle,
+        "evidence://source-role-delta",
+        reason,
+    );
+    input.relation_exact = false;
+    input.graph_source_relation_reverified = false;
+    input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+        ValidationEvidenceKind::Diagnostic,
+        "evidence://source-role-delta",
+        reason,
+    )];
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/source-role/delta/{:016x}",
+            agent_use_validation_stable_u64(reason)
+        ),
+        input,
+    );
+    finding.affected_delta = affected_delta;
+    finding.reason = reason.to_string();
+    finding
+}
+
+fn agent_use_push_calls_finding(
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+    rule: &ValidationRule,
+    edge: &Edge,
+    target: Option<&Entity>,
+    affected_delta: Option<Value>,
+    input: ValidationReverificationInput,
+    reason: &str,
+    recommended_fix: &str,
+) {
+    let key = format!("{}:{}", rule.validation_rule_id, edge.id);
+    if !seen_edge_rule.insert(key) {
+        return;
+    }
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/calls/{}/{}",
+            rule.validation_rule_id, edge.id
+        ),
+        input,
+    );
+    finding.affected_delta = affected_delta.unwrap_or(Value::Null);
+    finding.affected_edge = agent_use_validation_edge_json(edge, target);
+    finding.affected_entity = target
+        .map(|entity| serde_json::to_value(entity).unwrap_or(Value::Null))
+        .unwrap_or_else(|| {
+            json!({
+                "entity_id": edge.tail_id,
+                "missing": true,
+            })
+        });
+    finding.affected_file = Some(normalize_repo_relative_path(
+        &edge.source_span.repo_relative_path,
+    ));
+    finding.source_span = Some(edge.source_span.clone());
+    finding.source_role = Some(classify_edge_evidence_role(edge).role);
+    finding.relation_kind = Some(edge.relation);
+    finding.exactness = Some(edge.exactness);
+    finding.provenance = json!({
+        "derived": edge.derived,
+        "provenance_edges": edge.provenance_edges,
+        "provenance_required": edge.derived,
+        "provenance_present": !edge.derived || !edge.provenance_edges.is_empty(),
+    });
+    finding.reason = reason.to_string();
+    finding.recommended_fix = Some(recommended_fix.to_string());
+    finding.suggested_next_steps = vec![recommended_fix.to_string()];
+    finding.expansion_handle = Some(format!("validation_packet:edge:{}", edge.id));
+    findings.push(finding);
+}
+
+fn agent_use_push_import_finding(
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+    rule: &ValidationRule,
+    edge: &Edge,
+    target: Option<&Entity>,
+    affected_delta: Option<Value>,
+    input: ValidationReverificationInput,
+    reason: &str,
+    recommended_fix: &str,
+) {
+    let key = format!("{}:{}", rule.validation_rule_id, edge.id);
+    if !seen_edge_rule.insert(key) {
+        return;
+    }
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/imports/{}/{}",
+            rule.validation_rule_id, edge.id
+        ),
+        input,
+    );
+    finding.affected_delta = affected_delta.unwrap_or(Value::Null);
+    finding.affected_edge = agent_use_import_validation_edge_json(edge, target);
+    finding.affected_entity = target
+        .map(|entity| serde_json::to_value(entity).unwrap_or(Value::Null))
+        .unwrap_or_else(|| {
+            json!({
+                "entity_id": agent_use_import_edge_target_id(edge),
+                "missing": true,
+            })
+        });
+    finding.affected_file = Some(normalize_repo_relative_path(
+        &edge.source_span.repo_relative_path,
+    ));
+    finding.source_span = Some(edge.source_span.clone());
+    finding.source_role = Some(classify_edge_evidence_role(edge).role);
+    finding.relation_kind = Some(edge.relation);
+    finding.exactness = Some(edge.exactness);
+    finding.provenance = json!({
+        "derived": edge.derived,
+        "provenance_edges": edge.provenance_edges,
+        "provenance_required": edge.derived,
+        "provenance_present": !edge.derived || !edge.provenance_edges.is_empty(),
+    });
+    finding.reason = reason.to_string();
+    finding.recommended_fix = Some(recommended_fix.to_string());
+    finding.suggested_next_steps = vec![recommended_fix.to_string()];
+    finding.expansion_handle = Some(format!("validation_packet:edge:{}", edge.id));
+    findings.push(finding);
+}
+
+fn agent_use_graph_source_input(
+    lifecycle: ValidationLifecycleState,
+    edge: &Edge,
+    source_role_allowed: bool,
+    reason: impl Into<String>,
+) -> ValidationReverificationInput {
+    let reason = reason.into();
+    let mut input = ValidationReverificationInput::exact_graph_source(
+        lifecycle,
+        edge.id.clone(),
+        reason.clone(),
+    );
+    input.source_role_allowed = source_role_allowed;
+    input.provenance_required = edge.derived;
+    input.provenance_present = !edge.derived || !edge.provenance_edges.is_empty();
+    input.reason = reason;
+    input
+}
+
+fn agent_use_graph_integrity_input(
+    lifecycle: ValidationLifecycleState,
+    edge: &Edge,
+    source_span_required: bool,
+    provenance_required: bool,
+    source_span_present: bool,
+    provenance_present: bool,
+    reason: impl Into<String>,
+) -> ValidationReverificationInput {
+    let reason = reason.into();
+    ValidationReverificationInput {
+        lifecycle,
+        relation_supported: true,
+        relation_exact: true,
+        graph_source_relation_reverified: false,
+        integrity_condition_reverified: true,
+        integrity_issue_present: (source_span_required && !source_span_present)
+            || (provenance_required && !provenance_present),
+        source_span_required,
+        source_span_present,
+        provenance_required,
+        provenance_present,
+        source_role_allowed: true,
+        over_budget: false,
+        unsupported_relation: false,
+        evidence_items: vec![ValidationEvidenceItem::graph_integrity(
+            edge.id.clone(),
+            reason.clone(),
+        )],
+        reason,
+    }
+}
+
+fn agent_use_lifecycle_integrity_input(
+    lifecycle: ValidationLifecycleState,
+    evidence_id: impl Into<String>,
+    reason: impl Into<String>,
+) -> ValidationReverificationInput {
+    let reason = reason.into();
+    ValidationReverificationInput {
+        lifecycle,
+        relation_supported: true,
+        relation_exact: true,
+        graph_source_relation_reverified: false,
+        integrity_condition_reverified: true,
+        integrity_issue_present: true,
+        source_span_required: false,
+        source_span_present: true,
+        provenance_required: false,
+        provenance_present: true,
+        source_role_allowed: true,
+        over_budget: false,
+        unsupported_relation: false,
+        evidence_items: vec![ValidationEvidenceItem::graph_integrity(
+            evidence_id,
+            reason.clone(),
+        )],
+        reason,
+    }
+}
+
+fn agent_use_entity_graph_integrity_input(
+    lifecycle: ValidationLifecycleState,
+    entity: &Entity,
+    source_span_required: bool,
+    source_span_present: bool,
+    reason: impl Into<String>,
+) -> ValidationReverificationInput {
+    let mut input = agent_use_lifecycle_integrity_input(lifecycle, entity.id.clone(), reason);
+    input.source_span_required = source_span_required;
+    input.source_span_present = source_span_present;
+    input.integrity_issue_present = source_span_required && !source_span_present;
+    input
+}
+
+fn agent_use_entity_optional_span_diagnostic_input(
+    lifecycle: ValidationLifecycleState,
+    entity: &Entity,
+    reason: impl Into<String>,
+) -> ValidationReverificationInput {
+    let reason = reason.into();
+    ValidationReverificationInput {
+        lifecycle,
+        relation_supported: true,
+        relation_exact: false,
+        graph_source_relation_reverified: false,
+        integrity_condition_reverified: true,
+        integrity_issue_present: false,
+        source_span_required: false,
+        source_span_present: false,
+        provenance_required: false,
+        provenance_present: true,
+        source_role_allowed: true,
+        over_budget: false,
+        unsupported_relation: false,
+        evidence_items: vec![ValidationEvidenceItem::non_graph(
+            ValidationEvidenceKind::Diagnostic,
+            entity.id.clone(),
+            reason.clone(),
+        )],
+        reason,
+    }
+}
+
+fn agent_use_calls_boundary_diagnostic(
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    affected_delta: Value,
+    reason: &str,
+) -> ValidationFinding {
+    let mut input = ValidationReverificationInput::exact_graph_source(
+        lifecycle,
+        "evidence://calls-diagnostic",
+        reason,
+    );
+    input.relation_exact = false;
+    input.graph_source_relation_reverified = false;
+    input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+        ValidationEvidenceKind::Diagnostic,
+        "evidence://calls-diagnostic",
+        reason,
+    )];
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/calls/diagnostic/{:016x}",
+            agent_use_validation_stable_u64(reason)
+        ),
+        input,
+    );
+    finding.affected_delta = affected_delta;
+    finding.reason = reason.to_string();
+    finding
+}
+
+fn agent_use_calls_boundary_unknown(
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    affected_delta: Value,
+    reason: &str,
+) -> ValidationFinding {
+    let mut input = ValidationReverificationInput::exact_graph_source(
+        lifecycle,
+        "evidence://calls-unknown",
+        reason,
+    );
+    input.relation_exact = false;
+    input.graph_source_relation_reverified = false;
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/calls/unknown/{:016x}",
+            agent_use_validation_stable_u64(reason)
+        ),
+        input,
+    );
+    finding.affected_delta = affected_delta;
+    finding.reason = reason.to_string();
+    finding
+}
+
+fn agent_use_import_boundary_diagnostic(
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    affected_delta: Value,
+    reason: &str,
+) -> ValidationFinding {
+    let mut input = ValidationReverificationInput::exact_graph_source(
+        lifecycle,
+        "evidence://imports-diagnostic",
+        reason,
+    );
+    input.relation_exact = false;
+    input.graph_source_relation_reverified = false;
+    input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+        ValidationEvidenceKind::Diagnostic,
+        "evidence://imports-diagnostic",
+        reason,
+    )];
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/imports/diagnostic/{:016x}",
+            agent_use_validation_stable_u64(reason)
+        ),
+        input,
+    );
+    finding.affected_delta = affected_delta;
+    finding.reason = reason.to_string();
+    finding
+}
+
+fn agent_use_import_boundary_unknown(
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    affected_delta: Value,
+    reason: &str,
+) -> ValidationFinding {
+    let mut input = ValidationReverificationInput::exact_graph_source(
+        lifecycle,
+        "evidence://imports-unknown",
+        reason,
+    );
+    input.relation_exact = false;
+    input.graph_source_relation_reverified = false;
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_3/imports/unknown/{:016x}",
+            agent_use_validation_stable_u64(reason)
+        ),
+        input,
+    );
+    finding.affected_delta = affected_delta;
+    finding.reason = reason.to_string();
+    finding
+}
+
+fn agent_use_validation_edge_json(edge: &Edge, target: Option<&Entity>) -> Value {
+    json!({
+        "edge_id": edge.id,
+        "relation_kind": edge.relation,
+        "caller": edge.head_id,
+        "callee": edge.tail_id,
+        "target_present": target.is_some(),
+        "target": target,
+        "file": normalize_repo_relative_path(&edge.source_span.repo_relative_path),
+        "source_span": edge.source_span,
+        "source_role": classify_edge_evidence_role(edge).role,
+        "exactness": edge.exactness,
+        "derived": edge.derived,
+        "provenance_edges": edge.provenance_edges,
+        "edge_class": edge.edge_class,
+        "edge_context": edge.context,
+    })
+}
+
+fn agent_use_import_validation_edge_json(edge: &Edge, target: Option<&Entity>) -> Value {
+    json!({
+        "edge_id": edge.id,
+        "relation_kind": edge.relation,
+        "importing_entity": agent_use_import_edge_importer_id(edge),
+        "import_target": agent_use_import_edge_target_id(edge),
+        "target_present": target.is_some(),
+        "target": target,
+        "file": normalize_repo_relative_path(&edge.source_span.repo_relative_path),
+        "source_span": edge.source_span,
+        "source_role": classify_edge_evidence_role(edge).role,
+        "exactness": edge.exactness,
+        "derived": edge.derived,
+        "provenance_edges": edge.provenance_edges,
+        "edge_class": edge.edge_class,
+        "edge_context": edge.context,
+    })
+}
+
+fn agent_use_generic_validation_edge_json(edge: &Edge) -> Value {
+    json!({
+        "edge_id": edge.id,
+        "relation_kind": edge.relation,
+        "source_entity_id": edge.head_id,
+        "target_entity_id": edge.tail_id,
+        "file": normalize_repo_relative_path(&edge.source_span.repo_relative_path),
+        "source_span": edge.source_span,
+        "source_role": classify_edge_evidence_role(edge).role,
+        "exactness": edge.exactness,
+        "derived": edge.derived,
+        "provenance_edges": edge.provenance_edges,
+        "edge_class": edge.edge_class,
+        "edge_context": edge.context,
+    })
+}
+
+fn agent_use_validation_lifecycle_from_read_preflight(
+    preflight: &DbLifecyclePreflight,
+) -> ValidationLifecycleState {
+    if preflight.safe {
+        return ValidationLifecycleState::claimable_current();
+    }
+    let kind = preflight
+        .db_problem_kind
+        .as_deref()
+        .unwrap_or("non_claimable");
+    ValidationLifecycleState {
+        claimable: false,
+        current: false,
+        stale: matches!(
+            kind,
+            "repo_head_mismatch" | "scope_mismatch" | "storage_mismatch"
+        ) || preflight
+            .blockers
+            .iter()
+            .any(|blocker| lifecycle_blocker_is_stale_or_missing_passport(blocker)),
+        foreign: kind == "repo_root_mismatch"
+            || preflight
+                .blockers
+                .iter()
+                .any(|blocker| lifecycle_blocker_is_foreign_repo(blocker)),
+        schema_mismatched: preflight.schema_status != "ok",
+        dirty: preflight
+            .db_health
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("interrupted") || reason.contains("dirty")),
+        partial: preflight
+            .db_health
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("partial") || reason.contains("incomplete")),
+        non_claimable_reason: Some(
+            preflight
+                .blockers
+                .first()
+                .cloned()
+                .or_else(|| preflight.db_problem_kind.clone())
+                .unwrap_or_else(|| "db_lifecycle_not_claimable_current".to_string()),
+        ),
+    }
+}
+
+fn agent_use_exactness_is_proof_grade(exactness: Exactness) -> bool {
+    matches!(
+        exactness,
+        Exactness::Exact
+            | Exactness::CompilerVerified
+            | Exactness::LspVerified
+            | Exactness::ParserVerified
+    )
+}
+
+fn agent_use_edge_can_be_claimable_graph_proof(edge: &Edge) -> bool {
+    agent_use_exactness_is_proof_grade(edge.exactness)
+        || edge.exactness == Exactness::DerivedFromVerifiedEdges
+        || edge.derived
+}
+
+fn agent_use_edge_delta_claimable_graph_proof(edge: &codegraph_index::EdgeDeltaEntry) -> bool {
+    edge.claimability.claimable
+        && edge.claimability.graph_proof
+        && (agent_use_exactness_is_proof_grade(edge.exactness)
+            || edge.exactness == Exactness::DerivedFromVerifiedEdges
+            || edge.derived)
+}
+
+fn agent_use_entity_can_be_claimable_graph_proof(entity: &Entity) -> bool {
+    !matches!(entity.kind, EntityKind::PathEvidence)
+}
+
+fn agent_use_entity_kind_requires_source_span(kind: EntityKind) -> bool {
+    !matches!(
+        kind,
+        EntityKind::Repository
+            | EntityKind::Package
+            | EntityKind::Directory
+            | EntityKind::File
+            | EntityKind::Module
+            | EntityKind::Database
+            | EntityKind::Table
+            | EntityKind::Column
+            | EntityKind::Dependency
+            | EntityKind::PathEvidence
+            | EntityKind::DerivedClosureEdge
+    )
+}
+
+fn agent_use_update_state_mentions_corrupt_or_incomplete(
+    delta: &EntitySourceRoleDeltaReport,
+    preflight: &DbLifecyclePreflight,
+) -> bool {
+    let mut labels = vec![
+        delta.status.as_str(),
+        delta.old_snapshot_status.as_str(),
+        delta.new_snapshot_status.as_str(),
+        preflight.db_health.passport_status.as_str(),
+    ];
+    labels.extend(preflight.db_health.reasons.iter().map(String::as_str));
+    labels.iter().any(|label| {
+        let lower = label.to_ascii_lowercase();
+        lower.contains("corrupt")
+            || lower.contains("incomplete")
+            || lower.contains("partial")
+            || lower.contains("interrupted")
+    })
+}
+
+fn agent_use_db_path_looks_like_publish_temp(db_path: &Path) -> bool {
+    db_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            let lower = name.to_ascii_lowercase();
+            lower.ends_with(".tmp")
+                || lower.contains(".tmp.")
+                || lower.contains("publish-temp")
+                || lower.contains("partial")
+        })
+        .unwrap_or(false)
+}
+
+fn exact_calls_target_entity_kind(kind: EntityKind) -> bool {
+    matches!(
+        kind,
+        EntityKind::Function
+            | EntityKind::Method
+            | EntityKind::Constructor
+            | EntityKind::TestCase
+            | EntityKind::Mock
+            | EntityKind::Stub
+    )
+}
+
+fn exact_import_target_entity_kind(kind: EntityKind) -> bool {
+    matches!(
+        kind,
+        EntityKind::File
+            | EntityKind::Module
+            | EntityKind::Function
+            | EntityKind::Method
+            | EntityKind::Class
+            | EntityKind::Interface
+            | EntityKind::Trait
+            | EntityKind::Enum
+            | EntityKind::Type
+            | EntityKind::GenericType
+            | EntityKind::LocalVariable
+            | EntityKind::GlobalVariable
+            | EntityKind::Export
+            | EntityKind::Import
+            | EntityKind::Table
+            | EntityKind::TestCase
+            | EntityKind::Mock
+            | EntityKind::Stub
+    )
+}
+
+fn agent_use_entity_delta_id(entry: &codegraph_index::EntityDeltaEntry) -> Option<String> {
+    entry
+        .new
+        .as_ref()
+        .or(entry.old.as_ref())
+        .map(|summary| summary.entity_id.clone())
+}
+
+fn agent_use_reverify_edge_source_span(repo_root: &Path, edge: &Edge) -> Result<(), String> {
+    agent_use_reverify_edge_source_span_text(repo_root, edge).map(|_| ())
+}
+
+fn agent_use_reverify_edge_source_span_text(
+    repo_root: &Path,
+    edge: &Edge,
+) -> Result<String, String> {
+    agent_use_reverify_source_span_text(repo_root, &edge.source_span, "claimable graph edge proof")
+}
+
+fn agent_use_reverify_source_span_text(
+    repo_root: &Path,
+    span: &SourceSpan,
+    column_requirement_reason: &str,
+) -> Result<String, String> {
+    let repo_relative_path = normalize_repo_relative_path(&span.repo_relative_path);
+    if repo_relative_path.trim().is_empty()
+        || repo_relative_path.contains(':')
+        || Path::new(&repo_relative_path)
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("source span path is not a safe repo-relative path".to_string());
+    }
+    if span.start_line == 0 || span.end_line == 0 || span.end_line < span.start_line {
+        return Err("source span line coordinates are missing or invalid".to_string());
+    }
+    let (Some(start_column), Some(end_column)) = (span.start_column, span.end_column) else {
+        return Err(format!(
+            "source span columns are required for {column_requirement_reason}"
+        ));
+    };
+    if start_column == 0 || end_column == 0 {
+        return Err("source span columns must be one-based".to_string());
+    }
+    let source_path =
+        repo_root.join(repo_relative_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let source = std::fs::read_to_string(&source_path)
+        .map_err(|error| format!("source span file could not be read: {error}"))?;
+    let lines = source.lines().collect::<Vec<_>>();
+    let start = span.start_line.saturating_sub(1) as usize;
+    let mut end = span.end_line.saturating_sub(1) as usize;
+    if end == lines.len() && span.end_column == Some(1) && start < lines.len() {
+        end = lines.len().saturating_sub(1);
+    }
+    if start >= lines.len() || end >= lines.len() {
+        return Err("source span line is outside the current source file".to_string());
+    }
+    let snippet = if start == end {
+        let line = lines[start];
+        let start_index = start_column.saturating_sub(1) as usize;
+        let end_index = end_column.saturating_sub(1) as usize;
+        if start_index >= line.len() || end_index > line.len() || end_index <= start_index {
+            return Err("source span columns are outside the current source line".to_string());
+        }
+        line.get(start_index..end_index)
+            .ok_or_else(|| "source span columns split a UTF-8 codepoint".to_string())?
+            .to_string()
+    } else {
+        lines[start..=end].join("\n")
+    };
+    if snippet.trim().is_empty() {
+        return Err("source span resolves to empty source text".to_string());
+    }
+    Ok(snippet)
+}
+
+fn agent_use_validation_stable_u64(input: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+#[cfg(test)]
+mod exact_calls_validation_tests {
+    use super::*;
+    use codegraph_core::ValidationClassification;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn test_repo() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let counter = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let repo = std::env::temp_dir().join(format!(
+            "codegraph-exact-calls-validation-{}-{nanos}-{counter}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(repo.join("src")).expect("create test repo");
+        repo
+    }
+
+    fn write_source(repo: &Path, path: &str, source: &str) {
+        let full = repo.join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).expect("create source parent");
+        }
+        std::fs::write(full, source).expect("write source");
+    }
+
+    fn test_store(repo: &Path) -> SqliteGraphStore {
+        SqliteGraphStore::open(&repo.join("validation.sqlite")).expect("open validation DB")
+    }
+
+    fn cleanup_repo(repo: PathBuf) {
+        for attempt in 0..20 {
+            match std::fs::remove_dir_all(&repo) {
+                Ok(()) => return,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(_) => {
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        25 * (attempt + 1).min(10),
+                    ));
+                }
+            }
+        }
+        std::fs::remove_dir_all(&repo).expect("cleanup");
+    }
+
+    fn rules() -> Vec<ValidationRule> {
+        let mut rules = agent_use_exact_calls_validation_rules();
+        rules.extend(agent_use_exact_imports_validation_rules());
+        rules.extend(agent_use_proof_integrity_validation_rules());
+        rules.extend(agent_use_source_role_tests_validation_rules());
+        rules.extend(agent_use_activation_gated_contract_validation_rules());
+        rules
+    }
+
+    fn rule_map(rules: &[ValidationRule]) -> BTreeMap<&str, &ValidationRule> {
+        rules
+            .iter()
+            .map(|rule| (rule.validation_rule_id.as_str(), rule))
+            .collect()
+    }
+
+    fn function_entity(path: &str, name: &str, line: u32) -> Entity {
+        let mut metadata = Metadata::default();
+        metadata.insert("source_role".to_string(), json!("production"));
+        metadata.insert("source_role_reason".to_string(), json!("test fixture"));
+        Entity {
+            id: format!("entity://{path}/{name}"),
+            kind: EntityKind::Function,
+            name: name.to_string(),
+            qualified_name: name.to_string(),
+            repo_relative_path: path.to_string(),
+            source_span: Some(SourceSpan::with_columns(path, line, 1, line, 12)),
+            content_hash: None,
+            file_hash: None,
+            created_from: "exact-calls-validation-test".to_string(),
+            confidence: 1.0,
+            metadata,
+        }
+    }
+
+    fn test_entity(path: &str, name: &str, line: u32) -> Entity {
+        let mut entity = function_entity(path, name, line);
+        entity.kind = EntityKind::TestCase;
+        entity.metadata = Metadata::default();
+        entity
+            .metadata
+            .insert("source_role".to_string(), json!("test"));
+        entity
+            .metadata
+            .insert("source_role_reason".to_string(), json!("test fixture"));
+        entity
+    }
+
+    fn mock_entity(path: &str, name: &str, line: u32) -> Entity {
+        let mut entity = function_entity(path, name, line);
+        entity.kind = EntityKind::Mock;
+        entity.metadata = Metadata::default();
+        entity
+            .metadata
+            .insert("source_role".to_string(), json!("mock"));
+        entity
+    }
+
+    fn stub_entity(path: &str, name: &str, line: u32) -> Entity {
+        let mut entity = function_entity(path, name, line);
+        entity.kind = EntityKind::Stub;
+        entity.metadata = Metadata::default();
+        entity
+            .metadata
+            .insert("source_role".to_string(), json!("stub"));
+        entity
+    }
+
+    fn inline_test_entity(path: &str, name: &str, line: u32) -> Entity {
+        let mut entity = test_entity(path, name, line);
+        entity.qualified_name = format!("crate::tests::{name}");
+        entity
+            .metadata
+            .insert("source_role".to_string(), json!("production"));
+        entity.metadata.insert(
+            "source_role_reason".to_string(),
+            json!("bad fixture metadata"),
+        );
+        entity
+    }
+
+    fn calls_edge(head: &Entity, tail_id: &str, span: SourceSpan) -> Edge {
+        Edge {
+            id: stable_edge_id(&head.id, RelationKind::Calls, tail_id, &span),
+            head_id: head.id.clone(),
+            relation: RelationKind::Calls,
+            tail_id: tail_id.to_string(),
+            source_span: span,
+            repo_commit: None,
+            file_hash: None,
+            extractor: "exact-calls-validation-test".to_string(),
+            confidence: 1.0,
+            exactness: Exactness::ParserVerified,
+            edge_class: EdgeClass::BaseExact,
+            context: EdgeContext::Production,
+            derived: false,
+            provenance_edges: Vec::new(),
+            metadata: Default::default(),
+        }
+    }
+
+    fn relation_edge(
+        head: &Entity,
+        relation: RelationKind,
+        tail_id: &str,
+        span: SourceSpan,
+        exactness: Exactness,
+        role: EvidenceRole,
+    ) -> Edge {
+        let mut metadata = Metadata::default();
+        metadata.insert("source_role".to_string(), json!(role.as_str()));
+        let context = match role {
+            EvidenceRole::Production => EdgeContext::Production,
+            EvidenceRole::Test => EdgeContext::Test,
+            EvidenceRole::Mock => EdgeContext::Mock,
+            EvidenceRole::Mixed => EdgeContext::Mixed,
+            EvidenceRole::Unknown => EdgeContext::Unknown,
+        };
+        Edge {
+            id: stable_edge_id(&head.id, relation, tail_id, &span),
+            head_id: head.id.clone(),
+            relation,
+            tail_id: tail_id.to_string(),
+            source_span: span,
+            repo_commit: None,
+            file_hash: None,
+            extractor: "source-role-tests-validation-test".to_string(),
+            confidence: 1.0,
+            exactness,
+            edge_class: if matches!(relation, RelationKind::Mocks | RelationKind::Stubs) {
+                EdgeClass::Mock
+            } else if matches!(relation, RelationKind::Tests | RelationKind::Asserts) {
+                EdgeClass::Test
+            } else {
+                EdgeClass::BaseExact
+            },
+            context,
+            derived: false,
+            provenance_edges: Vec::new(),
+            metadata,
+        }
+    }
+
+    fn file_entity(path: &str) -> Entity {
+        let mut metadata = Metadata::default();
+        metadata.insert("source_role".to_string(), json!("production"));
+        Entity {
+            id: format!("entity://{path}"),
+            kind: EntityKind::File,
+            name: path.to_string(),
+            qualified_name: path.to_string(),
+            repo_relative_path: path.to_string(),
+            source_span: Some(SourceSpan::with_columns(path, 1, 1, 1, 1)),
+            content_hash: None,
+            file_hash: None,
+            created_from: "exact-imports-validation-test".to_string(),
+            confidence: 1.0,
+            metadata,
+        }
+    }
+
+    fn import_entity(path: &str, name: &str, line: u32) -> Entity {
+        let mut entity = function_entity(path, name, line);
+        entity.kind = EntityKind::Import;
+        entity.qualified_name = format!("{path}.import:{name}");
+        entity.id = format!("entity://{path}/import/{name}");
+        entity
+    }
+
+    fn route_entity(path: &str, name: &str, line: u32) -> Entity {
+        let mut entity = function_entity(path, name, line);
+        entity.kind = EntityKind::Route;
+        entity.qualified_name = format!("{path}.route:{name}");
+        entity.id = format!("entity://{path}/route/{name}");
+        entity
+    }
+
+    fn imports_edge(head: &Entity, tail_id: &str, span: SourceSpan) -> Edge {
+        Edge {
+            id: stable_edge_id(&head.id, RelationKind::Imports, tail_id, &span),
+            head_id: head.id.clone(),
+            relation: RelationKind::Imports,
+            tail_id: tail_id.to_string(),
+            source_span: span,
+            repo_commit: None,
+            file_hash: None,
+            extractor: "exact-imports-validation-test".to_string(),
+            confidence: 1.0,
+            exactness: Exactness::ParserVerified,
+            edge_class: EdgeClass::BaseExact,
+            context: EdgeContext::Production,
+            derived: false,
+            provenance_edges: Vec::new(),
+            metadata: Default::default(),
+        }
+    }
+
+    fn alias_edge(target: &Entity, import_alias: &Entity, span: SourceSpan) -> Edge {
+        Edge {
+            id: stable_edge_id(&target.id, RelationKind::AliasedBy, &import_alias.id, &span),
+            head_id: target.id.clone(),
+            relation: RelationKind::AliasedBy,
+            tail_id: import_alias.id.clone(),
+            source_span: span,
+            repo_commit: None,
+            file_hash: None,
+            extractor: "exact-imports-validation-test".to_string(),
+            confidence: 1.0,
+            exactness: Exactness::ParserVerified,
+            edge_class: EdgeClass::BaseExact,
+            context: EdgeContext::Production,
+            derived: false,
+            provenance_edges: Vec::new(),
+            metadata: Default::default(),
+        }
+    }
+
+    fn test_profile(repo: &Path) -> AgentUseProfile {
+        AgentUseProfile {
+            profile_name: "test".to_string(),
+            repo_root: repo.to_path_buf(),
+            repo_identity_label: "test".to_string(),
+            repo_identity_hash: "test".to_string(),
+            profile_root: repo.join("profile"),
+            db_path: repo.join("validation.sqlite"),
+            candidate_spool_path: repo.join("candidate.jsonl"),
+            candidate_spool_query_index_path: repo.join("candidate.sqlite"),
+            vector_runtime_path: repo.join("vector-runtime.json"),
+            vector_audit_path: repo.join("vector-audit.json"),
+            lock_or_publish_state_path: repo.join("publish-state.json"),
+            delta_state_path: repo.join("delta-state.json"),
+            lifecycle_expectations: Vec::new(),
+            recovery_commands: Vec::new(),
+            mcp_args: Vec::new(),
+            binary_profile: "test".to_string(),
+            scope_policy: IndexScopeOptions::default(),
+        }
+    }
+
+    fn run_proof_integrity_for_paths(
+        repo: &Path,
+        store: &SqliteGraphStore,
+        paths: &[&str],
+        lifecycle: ValidationLifecycleState,
+    ) -> Vec<ValidationFinding> {
+        let rules = rules();
+        let rule_by_id = rule_map(&rules);
+        let profile = test_profile(repo);
+        let mut findings = Vec::new();
+        let mut seen = BTreeSet::new();
+        for path in paths {
+            for edge in store.list_edges_by_file(path).expect("list proof edges") {
+                agent_use_validate_current_proof_edge_integrity(
+                    &profile,
+                    &rule_by_id,
+                    lifecycle.clone(),
+                    &edge,
+                    Some(json!({"test_delta": true, "repo_relative_path": path})),
+                    &mut findings,
+                    &mut seen,
+                );
+            }
+            for entity in store
+                .list_entities_by_file(path)
+                .expect("list proof entities")
+            {
+                agent_use_validate_current_entity_integrity(
+                    &profile,
+                    &rule_by_id,
+                    lifecycle.clone(),
+                    &entity,
+                    Some(json!({"test_delta": true, "repo_relative_path": path})),
+                    &mut findings,
+                );
+            }
+        }
+        findings
+    }
+
+    fn proof_integrity_rule(rule_id: &str) -> ValidationRule {
+        agent_use_proof_integrity_validation_rules()
+            .into_iter()
+            .find(|rule| rule.validation_rule_id == rule_id)
+            .expect("proof-integrity rule")
+    }
+
+    fn lifecycle_integrity_finding(
+        rule_id: &str,
+        lifecycle: ValidationLifecycleState,
+        reason: &str,
+    ) -> ValidationFinding {
+        let rule = proof_integrity_rule(rule_id);
+        classify_validation_finding(
+            &rule,
+            format!("finding://test/{rule_id}"),
+            agent_use_lifecycle_integrity_input(lifecycle, format!("evidence://{rule_id}"), reason),
+        )
+    }
+
+    fn run_edge_validation(
+        repo: &Path,
+        store: &SqliteGraphStore,
+        edge: &Edge,
+        lifecycle: ValidationLifecycleState,
+    ) -> Vec<ValidationFinding> {
+        run_edge_validation_with_rule(
+            repo,
+            store,
+            edge,
+            lifecycle,
+            Some(CG_MVP3_CALLS_DANGLING_TARGET),
+        )
+    }
+
+    fn run_edge_validation_with_rule(
+        repo: &Path,
+        store: &SqliteGraphStore,
+        edge: &Edge,
+        lifecycle: ValidationLifecycleState,
+        preferred_rule_id: Option<&str>,
+    ) -> Vec<ValidationFinding> {
+        let rules = rules();
+        let rule_by_id = rule_map(&rules);
+        let profile = AgentUseProfile {
+            profile_name: "test".to_string(),
+            repo_root: repo.to_path_buf(),
+            repo_identity_label: "test".to_string(),
+            repo_identity_hash: "test".to_string(),
+            profile_root: repo.join("profile"),
+            db_path: repo.join("validation.sqlite"),
+            candidate_spool_path: repo.join("candidate.jsonl"),
+            candidate_spool_query_index_path: repo.join("candidate.sqlite"),
+            vector_runtime_path: repo.join("vector-runtime.json"),
+            vector_audit_path: repo.join("vector-audit.json"),
+            lock_or_publish_state_path: repo.join("publish-state.json"),
+            delta_state_path: repo.join("delta-state.json"),
+            lifecycle_expectations: Vec::new(),
+            recovery_commands: Vec::new(),
+            mcp_args: Vec::new(),
+            binary_profile: "test".to_string(),
+            scope_policy: IndexScopeOptions::default(),
+        };
+        let mut findings = Vec::new();
+        let mut seen = BTreeSet::new();
+        agent_use_validate_current_calls_edge(
+            &profile,
+            store,
+            &rule_by_id,
+            lifecycle,
+            edge,
+            Some(json!({"test_delta": true})),
+            preferred_rule_id,
+            &mut findings,
+            &mut seen,
+        )
+        .expect("validate edge");
+        findings
+    }
+
+    fn run_import_edge_validation_with_rule(
+        repo: &Path,
+        store: &SqliteGraphStore,
+        edge: &Edge,
+        lifecycle: ValidationLifecycleState,
+        preferred_rule_id: Option<&str>,
+    ) -> Vec<ValidationFinding> {
+        let rules = rules();
+        let rule_by_id = rule_map(&rules);
+        let profile = AgentUseProfile {
+            profile_name: "test".to_string(),
+            repo_root: repo.to_path_buf(),
+            repo_identity_label: "test".to_string(),
+            repo_identity_hash: "test".to_string(),
+            profile_root: repo.join("profile"),
+            db_path: repo.join("validation.sqlite"),
+            candidate_spool_path: repo.join("candidate.jsonl"),
+            candidate_spool_query_index_path: repo.join("candidate.sqlite"),
+            vector_runtime_path: repo.join("vector-runtime.json"),
+            vector_audit_path: repo.join("vector-audit.json"),
+            lock_or_publish_state_path: repo.join("publish-state.json"),
+            delta_state_path: repo.join("delta-state.json"),
+            lifecycle_expectations: Vec::new(),
+            recovery_commands: Vec::new(),
+            mcp_args: Vec::new(),
+            binary_profile: "test".to_string(),
+            scope_policy: IndexScopeOptions::default(),
+        };
+        let mut findings = Vec::new();
+        let mut seen = BTreeSet::new();
+        agent_use_validate_current_import_edge(
+            &profile,
+            store,
+            &rule_by_id,
+            lifecycle,
+            edge,
+            Some(json!({"test_delta": true})),
+            preferred_rule_id,
+            &mut findings,
+            &mut seen,
+        )
+        .expect("validate import edge");
+        findings
+    }
+
+    fn run_source_role_validation(
+        repo: &Path,
+        store: &SqliteGraphStore,
+        edge: &Edge,
+        lifecycle: ValidationLifecycleState,
+    ) -> Vec<ValidationFinding> {
+        let rules = rules();
+        let rule_by_id = rule_map(&rules);
+        let profile = test_profile(repo);
+        let mut findings = Vec::new();
+        let mut seen = BTreeSet::new();
+        agent_use_validate_current_source_role_boundary_edge(
+            &profile,
+            store,
+            &rule_by_id,
+            lifecycle,
+            edge,
+            Some(json!({"test_delta": true})),
+            &mut findings,
+            &mut seen,
+        )
+        .expect("validate source role edge");
+        findings
+    }
+
+    fn run_tests_relation_validation(
+        repo: &Path,
+        store: &SqliteGraphStore,
+        edge: &Edge,
+        lifecycle: ValidationLifecycleState,
+    ) -> Vec<ValidationFinding> {
+        let rules = rules();
+        let rule_by_id = rule_map(&rules);
+        let profile = test_profile(repo);
+        let mut findings = Vec::new();
+        let mut seen = BTreeSet::new();
+        agent_use_validate_current_tests_relation_edge(
+            &profile,
+            store,
+            &rule_by_id,
+            lifecycle,
+            edge,
+            Some(json!({"test_delta": true})),
+            &mut findings,
+            &mut seen,
+        )
+        .expect("validate TESTS-family edge");
+        findings
+    }
+
+    fn run_activation_gated_contract_validation(
+        repo: &Path,
+        store: &SqliteGraphStore,
+        edge: &Edge,
+        lifecycle: ValidationLifecycleState,
+    ) -> Vec<ValidationFinding> {
+        let rules = rules();
+        let rule_by_id = rule_map(&rules);
+        let profile = test_profile(repo);
+        let mut findings = Vec::new();
+        let mut seen = BTreeSet::new();
+        agent_use_validate_current_activation_gated_contract_edge(
+            &profile,
+            store,
+            &rule_by_id,
+            lifecycle,
+            edge,
+            Some(json!({"test_delta": true})),
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &mut findings,
+            &mut seen,
+        )
+        .expect("validate activation-gated contract edge");
+        findings
+    }
+
+    fn assert_no_blocking_findings(label: &str, findings: &[ValidationFinding]) {
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.classification != ValidationClassification::Block),
+            "{label} unexpectedly blocked: {findings:?}"
+        );
+        assert!(
+            findings
+                .iter()
+                .all(|finding| !finding.reverified_graph_source_proof),
+            "{label} unexpectedly claimed graph/source proof: {findings:?}"
+        );
+    }
+
+    fn rule_by_id_owned(rule_id: &str) -> ValidationRule {
+        rules()
+            .into_iter()
+            .find(|rule| rule.validation_rule_id == rule_id)
+            .unwrap_or_else(|| panic!("missing validation rule {rule_id}"))
+    }
+
+    #[test]
+    fn exact_reads_writes_checks_activation_gated() {
+        let rules = agent_use_activation_gated_contract_validation_rules();
+        let reads = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP3_READS_DANGLING_SYMBOL)
+            .expect("READS rule");
+        let writes = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP3_WRITES_DANGLING_SYMBOL)
+            .expect("WRITES rule");
+        assert_eq!(
+            reads.supported_relation_status,
+            SupportedRelationStatus::ExactBlockingCandidate
+        );
+        assert_eq!(
+            writes.supported_relation_status,
+            SupportedRelationStatus::ExactBlockingCandidate
+        );
+        assert!(reads
+            .activation_condition
+            .contains("source span re-verification"));
+        let status = agent_use_relation_family_status_json();
+        assert_eq!(
+            status["reads_writes"]["status"].as_str(),
+            Some("exact_blocking_candidate")
+        );
+        assert_eq!(status["reads_writes"]["activated"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn exact_reads_missing_target_blocks_if_supported() {
+        let repo = test_repo();
+        write_source(&repo, "src/access.ts", "let x = missingSymbol;\n");
+        let store = test_store(&repo);
+        let reader = function_entity("src/access.ts", "reader", 1);
+        store.upsert_entity(&reader).expect("reader");
+        let edge = relation_edge(
+            &reader,
+            RelationKind::Reads,
+            "entity://src/access.ts/missingSymbol",
+            SourceSpan::with_columns("src/access.ts", 1, 9, 1, 22),
+            Exactness::ParserVerified,
+            EvidenceRole::Production,
+        );
+
+        let findings = run_activation_gated_contract_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP3_READS_DANGLING_SYMBOL)
+            .expect("READS dangling finding");
+        assert_eq!(finding.classification, ValidationClassification::Block);
+        assert_eq!(finding.relation_kind, Some(RelationKind::Reads));
+        assert!(finding.reverified_graph_source_proof);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn exact_writes_missing_target_blocks_if_supported() {
+        let repo = test_repo();
+        write_source(&repo, "src/access.ts", "missingSymbol = 1;\n");
+        let store = test_store(&repo);
+        let writer = function_entity("src/access.ts", "writer", 1);
+        store.upsert_entity(&writer).expect("writer");
+        let edge = relation_edge(
+            &writer,
+            RelationKind::Writes,
+            "entity://src/access.ts/missingSymbol",
+            SourceSpan::with_columns("src/access.ts", 1, 1, 1, 14),
+            Exactness::ParserVerified,
+            EvidenceRole::Production,
+        );
+
+        let findings = run_activation_gated_contract_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP3_WRITES_DANGLING_SYMBOL)
+            .expect("WRITES dangling finding");
+        assert_eq!(finding.classification, ValidationClassification::Block);
+        assert_eq!(finding.relation_kind, Some(RelationKind::Writes));
+        assert!(finding.reverified_graph_source_proof);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn computed_dynamic_reads_writes_unknown_not_blocking() {
+        let repo = test_repo();
+        write_source(&repo, "src/access.ts", "value = bag[key];\n");
+        let store = test_store(&repo);
+        let reader = function_entity("src/access.ts", "reader", 1);
+        store.upsert_entity(&reader).expect("reader");
+        let edge = relation_edge(
+            &reader,
+            RelationKind::Reads,
+            "entity://dynamic/key",
+            SourceSpan::with_columns("src/access.ts", 1, 9, 1, 17),
+            Exactness::StaticHeuristic,
+            EvidenceRole::Production,
+        );
+
+        let findings = run_activation_gated_contract_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP3_READS_DANGLING_SYMBOL)
+            .expect("dynamic READS unknown");
+        assert_eq!(finding.classification, ValidationClassification::Unknown);
+        assert_ne!(finding.blocking_level, ValidationBlockingLevel::Blocking);
+        assert!(!finding.reverified_graph_source_proof);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn exact_route_handler_checks_activation_gated() {
+        let rules = agent_use_activation_gated_contract_validation_rules();
+        let route = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP3_ROUTE_HANDLER_DANGLING_TARGET)
+            .expect("route handler rule");
+        assert_eq!(
+            route.supported_relation_status,
+            SupportedRelationStatus::ExactBlockingCandidate
+        );
+        assert!(route.activation_condition.contains("literal route"));
+        let status = agent_use_relation_family_status_json();
+        assert_eq!(
+            status["route_handler"]["status"].as_str(),
+            Some("exact_blocking_candidate")
+        );
+        assert_eq!(
+            status["route_handler"]["computed_routes"].as_str(),
+            Some("unknown_not_blocking")
+        );
+    }
+
+    #[test]
+    fn exact_route_handler_missing_blocks_if_supported() {
+        let repo = test_repo();
+        write_source(&repo, "src/routes.ts", "app.get('/x', missingHandler);\n");
+        let store = test_store(&repo);
+        let route = route_entity("src/routes.ts", "GET /x", 1);
+        store.upsert_entity(&route).expect("route");
+        let edge = relation_edge(
+            &route,
+            RelationKind::Handles,
+            "entity://src/routes.ts/missingHandler",
+            SourceSpan::with_columns("src/routes.ts", 1, 1, 1, 30),
+            Exactness::ParserVerified,
+            EvidenceRole::Production,
+        );
+
+        let findings = run_activation_gated_contract_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP3_ROUTE_HANDLER_DANGLING_TARGET)
+            .expect("route handler dangling finding");
+        assert_eq!(finding.classification, ValidationClassification::Block);
+        assert_eq!(finding.relation_kind, Some(RelationKind::Handles));
+        assert!(finding.reverified_graph_source_proof);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn framework_convention_route_unknown_not_blocking() {
+        let repo = test_repo();
+        write_source(&repo, "src/routes.ts", "frameworkConventionRoute('/x');\n");
+        let store = test_store(&repo);
+        let route = route_entity("src/routes.ts", "GET /x", 1);
+        store.upsert_entity(&route).expect("route");
+        let edge = relation_edge(
+            &route,
+            RelationKind::Handles,
+            "entity://framework/convention/handler",
+            SourceSpan::with_columns("src/routes.ts", 1, 1, 1, 31),
+            Exactness::StaticHeuristic,
+            EvidenceRole::Production,
+        );
+
+        let findings = run_activation_gated_contract_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP3_ROUTE_COMPUTED_UNKNOWN)
+            .expect("route unknown finding");
+        assert_eq!(finding.classification, ValidationClassification::Unknown);
+        assert!(!finding.reverified_graph_source_proof);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn config_package_text_evidence_warning_only_by_default() {
+        let rules = rules();
+        let rule = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING)
+            .expect("config text rule");
+        let finding = agent_use_config_package_text_evidence_warning(
+            rule,
+            ValidationLifecycleState::claimable_current(),
+            "package/foo/Config.in",
+            json!({"text_evidence_id": "text_evidence:package/foo/Config.in:1"}),
+            "Config.in text evidence changed",
+        );
+        assert_eq!(finding.classification, ValidationClassification::Warn);
+        assert_eq!(finding.proof_status, ValidationProofStatus::NotGraphProof);
+        assert!(!finding.reverified_graph_source_proof);
+        assert!(finding.evidence_items.iter().all(|item| item.evidence_kind
+            == ValidationEvidenceKind::TextEvidence
+            && !item.graph_proof));
+    }
+
+    #[test]
+    fn exact_config_package_mismatch_blocks_only_if_supported() {
+        let rules = rules();
+        let rule = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP3_CONFIG_PACKAGE_EXACT_MISMATCH)
+            .expect("config exact rule");
+        assert_eq!(
+            rule.supported_relation_status,
+            SupportedRelationStatus::Unsupported
+        );
+        let finding = agent_use_config_package_unsupported_unknown(
+            rule,
+            ValidationLifecycleState::claimable_current(),
+            json!({"relation_family": "config_package"}),
+            "exact Config.in/package graph mismatch is not fixture-backed in the current frontend",
+        );
+        assert_ne!(finding.classification, ValidationClassification::Block);
+        assert!(!finding.reverified_graph_source_proof);
+    }
+
+    #[test]
+    fn unsupported_relation_classes_unknown_not_blocking() {
+        let rules = rules();
+        let rule = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP3_ROUTE_UNSUPPORTED_FRAMEWORK_UNKNOWN)
+            .expect("unsupported route rule");
+        let repo = test_repo();
+        write_source(&repo, "src/routes.ts", "conventionRoute('/x');\n");
+        let store = test_store(&repo);
+        let route = route_entity("src/routes.ts", "GET /x", 1);
+        let edge = relation_edge(
+            &route,
+            RelationKind::Handles,
+            "entity://unsupported/framework",
+            SourceSpan::with_columns("src/routes.ts", 1, 1, 1, 22),
+            Exactness::StaticHeuristic,
+            EvidenceRole::Production,
+        );
+        let finding = agent_use_relation_contract_unknown(
+            rule,
+            ValidationLifecycleState::claimable_current(),
+            &edge,
+            json!({"framework": "unsupported"}),
+            "unsupported framework route relation is unknown, not proof",
+        );
+        assert_eq!(finding.classification, ValidationClassification::Unknown);
+        assert_ne!(finding.blocking_level, ValidationBlockingLevel::Blocking);
+        assert!(!finding.reverified_graph_source_proof);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn no_new_relation_support_claim_without_fixtures() {
+        let status = agent_use_relation_family_status_json();
+        assert_eq!(
+            status["config_package"]["exact_graph_mismatch"].as_str(),
+            Some("unsupported_unknown_until_fixture_backed")
+        );
+        let rules = agent_use_activation_gated_contract_validation_rules();
+        let config_exact = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP3_CONFIG_PACKAGE_EXACT_MISMATCH)
+            .expect("config exact rule");
+        assert_eq!(
+            config_exact.supported_relation_status,
+            SupportedRelationStatus::Unsupported
+        );
+    }
+
+    #[test]
+    fn no_text_candidate_vector_evidence_promoted_to_graph_proof() {
+        let rules = rules();
+        let rule = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP3_READS_DANGLING_SYMBOL)
+            .expect("READS rule");
+        for evidence_kind in [
+            ValidationEvidenceKind::TextEvidence,
+            ValidationEvidenceKind::Candidate,
+            ValidationEvidenceKind::Vector,
+            ValidationEvidenceKind::SourceNavigation,
+        ] {
+            let mut input = ValidationReverificationInput::exact_graph_source(
+                ValidationLifecycleState::claimable_current(),
+                "evidence://non-graph-reads",
+                "non-graph evidence cannot prove a READS dangling symbol",
+            );
+            input.graph_source_relation_reverified = false;
+            input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+                evidence_kind,
+                "evidence://non-graph-reads",
+                "non-graph evidence cannot prove a READS dangling symbol",
+            )];
+            let finding = classify_validation_finding(
+                rule,
+                format!("finding://reads/non-graph/{evidence_kind:?}"),
+                input,
+            );
+            assert_ne!(finding.classification, ValidationClassification::Block);
+            assert!(!finding.reverified_graph_source_proof);
+            assert!(finding.evidence_items.iter().all(|item| !item.graph_proof));
+        }
+    }
+
+    #[test]
+    fn activation_gated_contract_checks_no_dot_codegraph_mutation() {
+        let repo = test_repo();
+        write_source(&repo, "src/access.ts", "missingSymbol = 1;\n");
+        let store = test_store(&repo);
+        let writer = function_entity("src/access.ts", "writer", 1);
+        store.upsert_entity(&writer).expect("writer");
+        let edge = relation_edge(
+            &writer,
+            RelationKind::Writes,
+            "entity://src/access.ts/missingSymbol",
+            SourceSpan::with_columns("src/access.ts", 1, 1, 1, 14),
+            Exactness::ParserVerified,
+            EvidenceRole::Production,
+        );
+
+        let _findings = run_activation_gated_contract_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        assert!(!repo.join(".codegraph").exists());
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn heuristic_dynamic_calls_not_blocking() {
+        let repo = test_repo();
+        write_source(&repo, "src/caller.ts", "client[method](); callback();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        store.upsert_entity(&caller).expect("caller");
+        let mut edge = calls_edge(
+            &caller,
+            "entity://runtime/dynamic-dispatch",
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 17),
+        );
+        edge.exactness = Exactness::StaticHeuristic;
+        edge.edge_class = EdgeClass::BaseHeuristic;
+
+        let findings = run_edge_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        assert_no_blocking_findings("heuristic dynamic call", &findings);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn computed_imports_not_blocking() {
+        let repo = test_repo();
+        write_source(&repo, "src/importer.ts", "import('./' + name);\n");
+        let store = test_store(&repo);
+        let importer = file_entity("src/importer.ts");
+        store.upsert_entity(&importer).expect("importer");
+        let mut edge = imports_edge(
+            &importer,
+            "entity://runtime/computed-import",
+            SourceSpan::with_columns("src/importer.ts", 1, 1, 1, 21),
+        );
+        edge.exactness = Exactness::StaticHeuristic;
+        edge.edge_class = EdgeClass::BaseHeuristic;
+
+        let findings = run_import_edge_validation_with_rule(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+            Some(CG_MVP3_IMPORTS_DANGLING_TARGET),
+        );
+
+        assert_no_blocking_findings("computed import", &findings);
+        assert!(findings.iter().any(|finding| {
+            finding.validation_rule_id == CG_MVP3_IMPORTS_DANGLING_TARGET
+                && matches!(
+                    finding.classification,
+                    ValidationClassification::Diagnostic
+                        | ValidationClassification::Unknown
+                        | ValidationClassification::Unsupported
+                )
+                && !finding.reverified_graph_source_proof
+        }));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn macro_preprocessor_unsupported_not_blocking() {
+        let rule = rule_by_id_owned(CG_MVP3_CALLS_DANGLING_TARGET);
+        let finding = agent_use_calls_boundary_unknown(
+            &rule,
+            ValidationLifecycleState::claimable_current(),
+            json!({
+                "language": "rust_or_c_family",
+                "relation_kind": "CALLS",
+                "macro_or_preprocessor_relation": true,
+            }),
+            "macro/preprocessor-generated call lacks expansion proof",
+        );
+
+        assert_no_blocking_findings("macro/preprocessor call", &[finding]);
+    }
+
+    #[test]
+    fn framework_convention_only_not_blocking() {
+        let repo = test_repo();
+        write_source(&repo, "src/routes.ts", "export const GET = handler;\n");
+        let store = test_store(&repo);
+        let route = route_entity("src/routes.ts", "GET /convention", 1);
+        store.upsert_entity(&route).expect("route");
+        let edge = relation_edge(
+            &route,
+            RelationKind::Handles,
+            "entity://framework/convention/handler",
+            SourceSpan::with_columns("src/routes.ts", 1, 1, 1, 27),
+            Exactness::StaticHeuristic,
+            EvidenceRole::Production,
+        );
+
+        let findings = run_activation_gated_contract_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        assert_no_blocking_findings("framework convention route", &findings);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn text_only_relation_not_blocking() {
+        let rule = rule_by_id_owned(CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING);
+        let finding = agent_use_config_package_text_evidence_warning(
+            &rule,
+            ValidationLifecycleState::claimable_current(),
+            "docs/relations.md",
+            json!({"text_evidence_id": "text://docs/relations.md:1"}),
+            "docs mention a function/import, but text evidence is not graph proof",
+        );
+
+        assert_eq!(finding.classification, ValidationClassification::Warn);
+        assert_eq!(finding.proof_status, ValidationProofStatus::NotGraphProof);
+        assert_no_blocking_findings("text-only relation", &[finding]);
+    }
+
+    #[test]
+    fn candidate_vector_source_navigation_not_blocking() {
+        let rule = rule_by_id_owned(CG_MVP3_CALLS_DANGLING_TARGET);
+        let mut findings = Vec::new();
+        for evidence_kind in [
+            ValidationEvidenceKind::Candidate,
+            ValidationEvidenceKind::Vector,
+            ValidationEvidenceKind::SourceNavigation,
+        ] {
+            let mut input = ValidationReverificationInput::exact_graph_source(
+                ValidationLifecycleState::claimable_current(),
+                format!("evidence://{evidence_kind:?}"),
+                "suggested relation is not graph/source proof",
+            );
+            input.graph_source_relation_reverified = false;
+            input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+                evidence_kind,
+                format!("evidence://{evidence_kind:?}"),
+                "suggested relation is not graph/source proof",
+            )];
+            findings.push(classify_validation_finding(
+                &rule,
+                format!("finding://adversarial/{evidence_kind:?}"),
+                input,
+            ));
+        }
+
+        assert_no_blocking_findings("candidate/vector/source-navigation relation", &findings);
+    }
+
+    #[test]
+    fn unsupported_language_frontend_unknown_not_blocking() {
+        let call_rule = rule_by_id_owned(CG_MVP3_CALLS_DANGLING_TARGET);
+        let import_rule = rule_by_id_owned(CG_MVP3_IMPORTS_DANGLING_TARGET);
+        let findings = vec![
+            agent_use_calls_boundary_unknown(
+                &call_rule,
+                ValidationLifecycleState::claimable_current(),
+                json!({"language": "secondary_frontend_without_exact_calls"}),
+                "unsupported frontend cannot produce exact CALLS proof",
+            ),
+            agent_use_import_boundary_unknown(
+                &import_rule,
+                ValidationLifecycleState::claimable_current(),
+                json!({"language": "secondary_frontend_without_exact_import_resolution"}),
+                "unsupported frontend cannot produce exact IMPORTS target proof",
+            ),
+        ];
+
+        assert_no_blocking_findings("unsupported language frontend", &findings);
+    }
+
+    #[test]
+    fn runtime_only_dependency_unknown_not_blocking() {
+        let rule = rule_by_id_owned(CG_MVP3_IMPORTS_DANGLING_TARGET);
+        let finding = agent_use_import_boundary_unknown(
+            &rule,
+            ValidationLifecycleState::claimable_current(),
+            json!({
+                "runtime_only": true,
+                "selector": "process.env.PLUGIN",
+                "relation_kind": "IMPORTS",
+            }),
+            "runtime environment or plugin loader selects the target",
+        );
+
+        assert_no_blocking_findings("runtime-only dependency", &[finding]);
+    }
+
+    #[test]
+    fn ambiguous_rename_not_blocking() {
+        let rule = rule_by_id_owned(CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED);
+        let finding = agent_use_calls_boundary_unknown(
+            &rule,
+            ValidationLifecycleState::claimable_current(),
+            json!({
+                "rename_status": "unknown",
+                "ambiguity": "duplicate_content_paths",
+                "fallback_add_remove": true,
+            }),
+            "duplicate-content rename is ambiguous and cannot prove stale CALLS target",
+        );
+
+        assert_no_blocking_findings("ambiguous duplicate-content rename", &[finding]);
+    }
+
+    #[test]
+    fn over_budget_closure_not_blocking() {
+        let rule = rule_by_id_owned(CG_MVP3_CALLS_DANGLING_TARGET);
+        let mut input = ValidationReverificationInput::exact_graph_source(
+            ValidationLifecycleState::claimable_current(),
+            "evidence://over-budget-closure",
+            "closure budget hit before deterministic validation could complete",
+        );
+        input.over_budget = true;
+
+        let finding = classify_validation_finding(&rule, "finding://over-budget-closure", input);
+
+        assert_eq!(finding.classification, ValidationClassification::Degraded);
+        assert_ne!(finding.blocking_level, ValidationBlockingLevel::Blocking);
+        assert!(!finding.reverified_graph_source_proof);
+    }
+
+    #[test]
+    fn stale_sidecar_not_blocking_graph_error() {
+        let rule = rule_by_id_owned(CG_MVP3_CALLS_DANGLING_TARGET);
+        let mut input = ValidationReverificationInput::exact_graph_source(
+            ValidationLifecycleState::claimable_current(),
+            "vector://stale-sidecar",
+            "stale sidecar freshness is provenance state, not broken graph behavior",
+        );
+        input.graph_source_relation_reverified = false;
+        input.evidence_items = vec![
+            ValidationEvidenceItem::non_graph(
+                ValidationEvidenceKind::Vector,
+                "vector://stale-sidecar",
+                "stale vector chunks are not graph proof",
+            ),
+            ValidationEvidenceItem::non_graph(
+                ValidationEvidenceKind::Candidate,
+                "candidate://stale-sidecar",
+                "stale candidate spool is not graph proof",
+            ),
+        ];
+
+        let finding = classify_validation_finding(&rule, "finding://stale-sidecar", input);
+
+        assert_no_blocking_findings("stale sidecar freshness", &[finding]);
+    }
+
+    #[test]
+    fn compact_omitted_detail_not_blocking() {
+        let rule = rule_by_id_owned(CG_MVP3_CALLS_DANGLING_TARGET);
+        let findings = (0..5)
+            .map(|index| {
+                agent_use_calls_boundary_diagnostic(
+                    &rule,
+                    ValidationLifecycleState::claimable_current(),
+                    json!({"candidate_index": index}),
+                    "compact packet candidate detail remains diagnostic",
+                )
+            })
+            .collect::<Vec<_>>();
+        let packet = ValidationPacket::new(
+            vec!["src/caller.ts".to_string()],
+            json!({"summary": {"adversarial_fixture_count": findings.len()}}),
+            findings,
+            vec![rule],
+            Vec::new(),
+            json!({"claimable": true}),
+            json!({}),
+            json!({"claimable": true, "current": true}),
+        );
+
+        let compact = packet.compact_agent_json(1);
+
+        assert_eq!(compact["must_fix_before_continuing"].as_bool(), Some(false));
+        assert!(compact["blocking_errors"].as_array().unwrap().is_empty());
+        assert!(compact["omitted_count"].as_u64().unwrap_or_default() > 0);
+        assert!(ValidationPacket::critical_safety_fields_preserved_in(
+            &compact
+        ));
+    }
+
+    #[test]
+    fn no_false_blocking_findings_in_adversarial_matrix() {
+        let call_rule = rule_by_id_owned(CG_MVP3_CALLS_DANGLING_TARGET);
+        let import_rule = rule_by_id_owned(CG_MVP3_IMPORTS_DANGLING_TARGET);
+        let route_rule = rule_by_id_owned(CG_MVP3_ROUTE_UNSUPPORTED_FRAMEWORK_UNKNOWN);
+        let config_rule = rule_by_id_owned(CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING);
+
+        let mut findings = Vec::new();
+        findings.push(agent_use_calls_boundary_unknown(
+            &call_rule,
+            ValidationLifecycleState::claimable_current(),
+            json!({"category": "heuristic_dynamic_call"}),
+            "dynamic dispatch is heuristic",
+        ));
+        findings.push(agent_use_import_boundary_unknown(
+            &import_rule,
+            ValidationLifecycleState::claimable_current(),
+            json!({"category": "computed_import"}),
+            "computed import path is runtime-only",
+        ));
+        findings.push(agent_use_relation_contract_unknown(
+            &route_rule,
+            ValidationLifecycleState::claimable_current(),
+            &relation_edge(
+                &route_entity("src/routes.ts", "GET /convention", 1),
+                RelationKind::Handles,
+                "entity://framework/convention/handler",
+                SourceSpan::with_columns("src/routes.ts", 1, 1, 1, 12),
+                Exactness::StaticHeuristic,
+                EvidenceRole::Production,
+            ),
+            json!({"category": "framework_convention"}),
+            "framework convention-only route is unknown",
+        ));
+        findings.push(agent_use_config_package_text_evidence_warning(
+            &config_rule,
+            ValidationLifecycleState::claimable_current(),
+            "package/foo/Config.in",
+            json!({"category": "text_only_config"}),
+            "Config/package text evidence is warning-only",
+        ));
+
+        for evidence_kind in [
+            ValidationEvidenceKind::Candidate,
+            ValidationEvidenceKind::Vector,
+            ValidationEvidenceKind::SourceNavigation,
+        ] {
+            let mut input = ValidationReverificationInput::exact_graph_source(
+                ValidationLifecycleState::claimable_current(),
+                format!("evidence://matrix/{evidence_kind:?}"),
+                "adversarial non-graph evidence",
+            );
+            input.graph_source_relation_reverified = false;
+            input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+                evidence_kind,
+                format!("evidence://matrix/{evidence_kind:?}"),
+                "adversarial non-graph evidence",
+            )];
+            findings.push(classify_validation_finding(
+                &call_rule,
+                format!("finding://matrix/{evidence_kind:?}"),
+                input,
+            ));
+        }
+
+        assert_eq!(findings.len(), 7);
+        assert_no_blocking_findings("adversarial false-positive matrix", &findings);
+    }
+
+    #[test]
+    fn exact_calls_dangling_target_blocked() {
+        let repo = test_repo();
+        write_source(&repo, "src/caller.ts", "missingTarget();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        store.upsert_entity(&caller).expect("caller");
+        let edge = calls_edge(
+            &caller,
+            "entity://src/service.ts/missingTarget",
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 16),
+        );
+
+        let findings = run_edge_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        let blocking = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP3_CALLS_DANGLING_TARGET)
+            .expect("dangling finding");
+        assert_eq!(blocking.classification, ValidationClassification::Block);
+        assert_eq!(blocking.relation_kind, Some(RelationKind::Calls));
+        assert_eq!(blocking.exactness, Some(Exactness::ParserVerified));
+        assert!(blocking.source_span.is_some());
+        assert!(blocking.reverified_graph_source_proof);
+        assert!(blocking.reason.contains("missing callee"));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn production_to_test_target_role_mismatch_blocked() {
+        let repo = test_repo();
+        write_source(&repo, "src/caller.ts", "testOnlyTarget();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        let target = test_entity("src/caller.ts", "testOnlyTarget", 1);
+        store.upsert_entity(&caller).expect("caller");
+        store.upsert_entity(&target).expect("target");
+        let edge = calls_edge(
+            &caller,
+            &target.id,
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 17),
+        );
+
+        let findings = run_edge_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        let blocking = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP3_CALLS_TARGET_ROLE_MISMATCH)
+            .expect("role mismatch finding");
+        assert_eq!(blocking.classification, ValidationClassification::Block);
+        assert_eq!(blocking.source_role, Some(EvidenceRole::Production));
+        assert!(blocking.reverified_graph_source_proof);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn test_mock_leakage_into_production_blocks() {
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/caller.ts",
+            "testOnlyTarget(); mockTarget(); stubTarget();\n",
+        );
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        let test_target = test_entity("tests/service.test.ts", "testOnlyTarget", 1);
+        let mock_target = mock_entity("tests/mock_service.ts", "mockTarget", 1);
+        let stub_target = stub_entity("tests/stub_service.ts", "stubTarget", 1);
+        for entity in [&caller, &test_target, &mock_target, &stub_target] {
+            store.upsert_entity(entity).expect("entity");
+        }
+
+        let test_edge = calls_edge(
+            &caller,
+            &test_target.id,
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 17),
+        );
+        let mock_edge = calls_edge(
+            &caller,
+            &mock_target.id,
+            SourceSpan::with_columns("src/caller.ts", 1, 19, 1, 31),
+        );
+        let stub_edge = calls_edge(
+            &caller,
+            &stub_target.id,
+            SourceSpan::with_columns("src/caller.ts", 1, 33, 1, 43),
+        );
+
+        let test_findings = run_source_role_validation(
+            &repo,
+            &store,
+            &test_edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+        let mock_findings = run_source_role_validation(
+            &repo,
+            &store,
+            &mock_edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+        let stub_findings = run_source_role_validation(
+            &repo,
+            &store,
+            &stub_edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        assert!(test_findings.iter().any(|finding| {
+            finding.validation_rule_id == CG_MVP3_SOURCE_ROLE_TEST_EVIDENCE_IN_PRODUCTION_PROOF
+                && finding.classification == ValidationClassification::Block
+        }));
+        assert!(mock_findings.iter().any(|finding| {
+            finding.validation_rule_id == CG_MVP3_SOURCE_ROLE_MOCK_EVIDENCE_IN_PRODUCTION_PROOF
+                && finding.classification == ValidationClassification::Block
+        }));
+        assert!(stub_findings.iter().any(|finding| {
+            finding.validation_rule_id == CG_MVP3_SOURCE_ROLE_STUB_EVIDENCE_IN_PRODUCTION_PROOF
+                && finding.classification == ValidationClassification::Block
+        }));
+        assert!(!repo.join(".codegraph").exists());
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn inline_test_not_promoted_to_production() {
+        let repo = test_repo();
+        write_source(&repo, "src/lib.rs", "inline_case();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/lib.rs", "caller", 1);
+        let inline_test = inline_test_entity("src/lib.rs", "inline_case", 1);
+        store.upsert_entity(&caller).expect("caller");
+        store.upsert_entity(&inline_test).expect("inline test");
+        let edge = calls_edge(
+            &caller,
+            &inline_test.id,
+            SourceSpan::with_columns("src/lib.rs", 1, 1, 1, 14),
+        );
+
+        let findings = run_source_role_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        let blocking = findings
+            .iter()
+            .find(|finding| {
+                finding.validation_rule_id == CG_MVP3_SOURCE_ROLE_INLINE_TEST_PROMOTED_TO_PRODUCTION
+            })
+            .expect("inline test source-role finding");
+        assert_eq!(blocking.classification, ValidationClassification::Block);
+        assert_eq!(blocking.source_role, Some(EvidenceRole::Test));
+        assert!(blocking.reverified_graph_source_proof);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn same_symbol_production_and_test_distinct() {
+        let repo = test_repo();
+        write_source(&repo, "src/caller.ts", "sharedSymbol();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        let prod_target = function_entity("src/service.ts", "sharedSymbol", 1);
+        let test_target = test_entity("tests/service.test.ts", "sharedSymbol", 1);
+        store.upsert_entity(&caller).expect("caller");
+        store.upsert_entity(&prod_target).expect("prod target");
+        store.upsert_entity(&test_target).expect("test target");
+        let prod_edge = calls_edge(
+            &caller,
+            &prod_target.id,
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 15),
+        );
+        let test_edge = calls_edge(
+            &caller,
+            &test_target.id,
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 15),
+        );
+
+        let prod_findings = run_source_role_validation(
+            &repo,
+            &store,
+            &prod_edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+        let test_findings = run_source_role_validation(
+            &repo,
+            &store,
+            &test_edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        assert!(prod_findings.is_empty(), "{prod_findings:?}");
+        assert!(test_findings.iter().any(|finding| {
+            finding.validation_rule_id == CG_MVP3_SOURCE_ROLE_TEST_EVIDENCE_IN_PRODUCTION_PROOF
+                && finding.classification == ValidationClassification::Block
+        }));
+        assert_ne!(prod_target.id, test_target.id);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn production_to_test_target_role_mismatch_blocks() {
+        let repo = test_repo();
+        write_source(&repo, "src/caller.ts", "testOnlyTarget();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        let target = test_entity("tests/service.test.ts", "testOnlyTarget", 1);
+        store.upsert_entity(&caller).expect("caller");
+        store.upsert_entity(&target).expect("target");
+        let edge = calls_edge(
+            &caller,
+            &target.id,
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 17),
+        );
+
+        let findings = run_source_role_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        assert!(findings.iter().any(|finding| {
+            finding.validation_rule_id == CG_MVP3_SOURCE_ROLE_TEST_EVIDENCE_IN_PRODUCTION_PROOF
+                && finding.classification == ValidationClassification::Block
+        }));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn generated_evidence_not_production_proof() {
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/generated/client.generated.ts",
+            "generatedTarget();\n",
+        );
+        let store = test_store(&repo);
+        let caller = function_entity("src/generated/client.generated.ts", "caller", 1);
+        let target = function_entity("src/service.ts", "generatedTarget", 1);
+        store.upsert_entity(&caller).expect("caller");
+        store.upsert_entity(&target).expect("target");
+        let edge = calls_edge(
+            &caller,
+            &target.id,
+            SourceSpan::with_columns("src/generated/client.generated.ts", 1, 1, 1, 18),
+        );
+
+        let findings = run_source_role_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        assert!(findings.iter().any(|finding| {
+            finding.validation_rule_id == CG_MVP3_SOURCE_ROLE_GENERATED_EVIDENCE_AS_PRODUCTION_PROOF
+                && finding.classification == ValidationClassification::Block
+        }));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn exact_tests_missing_target_classified() {
+        let repo = test_repo();
+        write_source(&repo, "tests/service.test.ts", "testedTarget();\n");
+        let store = test_store(&repo);
+        let test_case = test_entity("tests/service.test.ts", "tests behavior", 1);
+        store.upsert_entity(&test_case).expect("test case");
+        let edge = relation_edge(
+            &test_case,
+            RelationKind::Tests,
+            "entity://src/service.ts/testedTarget",
+            SourceSpan::with_columns("tests/service.test.ts", 1, 1, 1, 15),
+            Exactness::ParserVerified,
+            EvidenceRole::Test,
+        );
+
+        let findings = run_tests_relation_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP3_TESTS_DANGLING_TARGET)
+            .expect("TESTS dangling finding");
+        assert_eq!(finding.classification, ValidationClassification::Block);
+        assert_eq!(finding.relation_kind, Some(RelationKind::Tests));
+        assert!(finding.reverified_graph_source_proof);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn optional_test_target_missing_warns() {
+        let repo = test_repo();
+        write_source(&repo, "tests/service.test.ts", "optionalTarget();\n");
+        let store = test_store(&repo);
+        let test_case = test_entity("tests/service.test.ts", "optional behavior", 1);
+        store.upsert_entity(&test_case).expect("test case");
+        let mut edge = relation_edge(
+            &test_case,
+            RelationKind::Tests,
+            "entity://src/service.ts/optionalTarget",
+            SourceSpan::with_columns("tests/service.test.ts", 1, 1, 1, 17),
+            Exactness::ParserVerified,
+            EvidenceRole::Test,
+        );
+        edge.metadata.insert(
+            "optional_test_target".to_string(),
+            json!("optional_test_target"),
+        );
+
+        let findings = run_tests_relation_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        let warning = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP3_OPTIONAL_TEST_TARGET_MISSING)
+            .expect("optional warning");
+        assert_eq!(warning.classification, ValidationClassification::Warn);
+        assert_eq!(warning.blocking_level, ValidationBlockingLevel::Warning);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn unsupported_tests_relation_unknown_not_blocking() {
+        let repo = test_repo();
+        write_source(&repo, "tests/service.test.ts", "heuristicTarget();\n");
+        let store = test_store(&repo);
+        let test_case = test_entity("tests/service.test.ts", "heuristic behavior", 1);
+        store.upsert_entity(&test_case).expect("test case");
+        let edge = relation_edge(
+            &test_case,
+            RelationKind::Tests,
+            "entity://src/service.ts/heuristicTarget",
+            SourceSpan::with_columns("tests/service.test.ts", 1, 1, 1, 18),
+            Exactness::StaticHeuristic,
+            EvidenceRole::Test,
+        );
+
+        let findings = run_tests_relation_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        let unknown = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP3_UNSUPPORTED_TEST_RELATION_UNKNOWN)
+            .expect("unsupported relation finding");
+        assert_eq!(unknown.classification, ValidationClassification::Unknown);
+        assert_ne!(unknown.blocking_level, ValidationBlockingLevel::Blocking);
+        assert!(!unknown.reverified_graph_source_proof);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn text_only_test_mention_not_tests_proof() {
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/caller.ts",
+            "// text says TESTS missingTarget\nprodTarget();\n",
+        );
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 2);
+        let target = function_entity("src/service.ts", "prodTarget", 1);
+        store.upsert_entity(&caller).expect("caller");
+        store.upsert_entity(&target).expect("target");
+        let edge = calls_edge(
+            &caller,
+            &target.id,
+            SourceSpan::with_columns("src/caller.ts", 2, 1, 2, 13),
+        );
+
+        let findings = run_tests_relation_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        assert!(findings.is_empty(), "{findings:?}");
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn source_role_changed_reported_and_respected() {
+        let repo = test_repo();
+        write_source(&repo, "src/caller.ts", "testOnlyTarget();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        let target = test_entity("tests/service.test.ts", "testOnlyTarget", 1);
+        store.upsert_entity(&caller).expect("caller");
+        store.upsert_entity(&target).expect("target");
+        let edge = calls_edge(
+            &caller,
+            &target.id,
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 17),
+        );
+
+        let findings = run_source_role_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        let blocking = findings
+            .iter()
+            .find(|finding| {
+                finding.validation_rule_id == CG_MVP3_SOURCE_ROLE_TEST_EVIDENCE_IN_PRODUCTION_PROOF
+            })
+            .expect("source role respected");
+        assert_eq!(blocking.classification, ValidationClassification::Block);
+        assert_eq!(blocking.source_role, Some(EvidenceRole::Test));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn stale_db_cannot_produce_blocking_source_role_finding() {
+        let repo = test_repo();
+        write_source(&repo, "src/caller.ts", "testOnlyTarget();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        let target = test_entity("tests/service.test.ts", "testOnlyTarget", 1);
+        store.upsert_entity(&caller).expect("caller");
+        store.upsert_entity(&target).expect("target");
+        let edge = calls_edge(
+            &caller,
+            &target.id,
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 17),
+        );
+
+        let findings = run_source_role_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::stale_non_claimable("repo_head_mismatch"),
+        );
+
+        assert!(findings.iter().all(|finding| {
+            finding.classification != ValidationClassification::Block
+                && !finding.reverified_graph_source_proof
+        }));
+        assert!(!repo.join(".codegraph").exists());
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn removed_callee_detected() {
+        let repo = test_repo();
+        write_source(&repo, "src/caller.ts", "removedTarget();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        store.upsert_entity(&caller).expect("caller");
+        let edge = calls_edge(
+            &caller,
+            "entity://src/service.ts/removedTarget",
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 16),
+        );
+
+        let findings = run_edge_validation_with_rule(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+            Some(CG_MVP3_CALLS_REMOVED_CALLEE_STILL_REFERENCED),
+        );
+
+        assert!(findings.iter().any(|finding| {
+            finding.validation_rule_id == CG_MVP3_CALLS_REMOVED_CALLEE_STILL_REFERENCED
+                && finding.classification == ValidationClassification::Block
+        }));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn renamed_callee_detected_or_unknown_when_ambiguous() {
+        let repo = test_repo();
+        write_source(&repo, "src/caller.ts", "oldName();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        store.upsert_entity(&caller).expect("caller");
+        let edge = calls_edge(
+            &caller,
+            "entity://src/old.ts/oldName",
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 10),
+        );
+
+        let findings = run_edge_validation_with_rule(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+            Some(CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED),
+        );
+
+        assert!(findings.iter().any(|finding| {
+            finding.validation_rule_id == CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED
+                && finding.classification == ValidationClassification::Block
+        }));
+
+        let rules = rules();
+        let rule = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED)
+            .expect("rename rule");
+        let ambiguous = agent_use_calls_boundary_unknown(
+            rule,
+            ValidationLifecycleState::claimable_current(),
+            json!({"rename_status": "unknown", "ambiguity": true}),
+            "ambiguous rename cannot be exact CALLS proof",
+        );
+        assert_ne!(ambiguous.classification, ValidationClassification::Block);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn exact_imports_dangling_target_blocked() {
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/consumer.ts",
+            "import { missingExport } from './service';\n",
+        );
+        let store = test_store(&repo);
+        let importer = file_entity("src/consumer.ts");
+        store.upsert_entity(&importer).expect("importer");
+        let edge = imports_edge(
+            &importer,
+            "entity://src/service.ts/missingExport",
+            SourceSpan::with_columns("src/consumer.ts", 1, 1, 1, 43),
+        );
+
+        let findings = run_import_edge_validation_with_rule(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+            Some(CG_MVP3_IMPORTS_DANGLING_TARGET),
+        );
+
+        let blocking = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP3_IMPORTS_DANGLING_TARGET)
+            .expect("dangling import finding");
+        assert_eq!(blocking.classification, ValidationClassification::Block);
+        assert_eq!(blocking.relation_kind, Some(RelationKind::Imports));
+        assert!(blocking.source_span.is_some());
+        assert!(blocking.reverified_graph_source_proof);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn deleted_export_still_imported_detected() {
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/consumer.ts",
+            "import { removedExport } from './service';\n",
+        );
+        let store = test_store(&repo);
+        let importer = file_entity("src/consumer.ts");
+        store.upsert_entity(&importer).expect("importer");
+        let edge = imports_edge(
+            &importer,
+            "entity://src/service.ts/removedExport",
+            SourceSpan::with_columns("src/consumer.ts", 1, 1, 1, 43),
+        );
+
+        let findings = run_import_edge_validation_with_rule(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+            Some(CG_MVP3_IMPORTS_DELETED_EXPORT_STILL_IMPORTED),
+        );
+
+        assert!(findings.iter().any(|finding| {
+            finding.validation_rule_id == CG_MVP3_IMPORTS_DELETED_EXPORT_STILL_IMPORTED
+                && finding.classification == ValidationClassification::Block
+        }));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn renamed_import_target_detected_or_unknown() {
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/consumer.ts",
+            "import { renamedExport } from './old_name';\n",
+        );
+        let store = test_store(&repo);
+        let importer = file_entity("src/consumer.ts");
+        store.upsert_entity(&importer).expect("importer");
+        let edge = imports_edge(
+            &importer,
+            "entity://src/old_name.ts/renamedExport",
+            SourceSpan::with_columns("src/consumer.ts", 1, 1, 1, 44),
+        );
+
+        let findings = run_import_edge_validation_with_rule(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+            Some(CG_MVP3_IMPORTS_RENAMED_TARGET_NOT_UPDATED),
+        );
+
+        assert!(findings.iter().any(|finding| {
+            finding.validation_rule_id == CG_MVP3_IMPORTS_RENAMED_TARGET_NOT_UPDATED
+                && finding.classification == ValidationClassification::Block
+        }));
+
+        let rules = rules();
+        let rule = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP3_IMPORTS_RENAMED_TARGET_NOT_UPDATED)
+            .expect("rename import rule");
+        let ambiguous = agent_use_import_boundary_unknown(
+            rule,
+            ValidationLifecycleState::claimable_current(),
+            json!({"rename_status": "unknown", "ambiguity": true}),
+            "ambiguous rename cannot be exact IMPORTS proof",
+        );
+        assert_ne!(ambiguous.classification, ValidationClassification::Block);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn import_alias_mismatch_detected_or_unknown() {
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/consumer.ts",
+            "import { target as aliasTarget } from './service';\n",
+        );
+        let store = test_store(&repo);
+        let target = function_entity("src/service.ts", "target", 1);
+        let import_alias = import_entity("src/consumer.ts", "aliasTarget", 1);
+        store.upsert_entity(&import_alias).expect("alias");
+        let edge = alias_edge(
+            &target,
+            &import_alias,
+            SourceSpan::with_columns("src/consumer.ts", 1, 1, 1, 51),
+        );
+
+        let findings = run_import_edge_validation_with_rule(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+            Some(CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH),
+        );
+
+        assert!(findings.iter().any(|finding| {
+            finding.validation_rule_id == CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH
+                && finding.classification == ValidationClassification::Block
+        }));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn production_to_test_import_target_blocked() {
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/consumer.ts",
+            "import { testOnly } from './test_helper';\n",
+        );
+        let store = test_store(&repo);
+        let importer = file_entity("src/consumer.ts");
+        let target = test_entity("tests/test_helper.ts", "testOnly", 1);
+        store.upsert_entity(&importer).expect("importer");
+        store.upsert_entity(&target).expect("target");
+        let edge = imports_edge(
+            &importer,
+            &target.id,
+            SourceSpan::with_columns("src/consumer.ts", 1, 1, 1, 42),
+        );
+
+        let findings = run_import_edge_validation_with_rule(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+            Some(CG_MVP3_IMPORTS_DANGLING_TARGET),
+        );
+
+        let blocking = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP3_IMPORTS_TARGET_ROLE_MISMATCH)
+            .expect("import role mismatch finding");
+        assert_eq!(blocking.classification, ValidationClassification::Block);
+        assert!(blocking.reverified_graph_source_proof);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn computed_dynamic_imports_warn_or_unknown() {
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/dynamic.ts",
+            "export async function load(name: string) { return import(name); }\n",
+        );
+        let store = test_store(&repo);
+        let importer = function_entity("src/dynamic.ts", "load", 1);
+        let target = import_entity("src/dynamic.ts", "dynamic_import:name", 1);
+        store.upsert_entity(&importer).expect("importer");
+        store.upsert_entity(&target).expect("target");
+        let mut edge = imports_edge(
+            &importer,
+            &target.id,
+            SourceSpan::with_columns("src/dynamic.ts", 1, 52, 1, 64),
+        );
+        edge.exactness = Exactness::StaticHeuristic;
+        edge.edge_class = EdgeClass::BaseHeuristic;
+        edge.context = EdgeContext::Unknown;
+
+        let findings = run_import_edge_validation_with_rule(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+            Some(CG_MVP3_IMPORTS_DANGLING_TARGET),
+        );
+
+        assert!(findings.iter().all(|finding| {
+            finding.classification != ValidationClassification::Block
+                && !finding.reverified_graph_source_proof
+        }));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn blocking_imports_have_source_spans() {
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/consumer.ts",
+            "import { missingExport } from './service';\n",
+        );
+        let store = test_store(&repo);
+        let importer = file_entity("src/consumer.ts");
+        store.upsert_entity(&importer).expect("importer");
+        let edge = imports_edge(
+            &importer,
+            "entity://missing",
+            SourceSpan::with_columns("src/consumer.ts", 1, 1, 1, 43),
+        );
+
+        let findings = run_import_edge_validation_with_rule(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+            Some(CG_MVP3_IMPORTS_DANGLING_TARGET),
+        );
+
+        assert!(findings
+            .iter()
+            .filter(|finding| finding.classification == ValidationClassification::Block)
+            .all(|finding| finding.source_span.is_some()));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn blocking_imports_reverified_from_graph_source() {
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/consumer.ts",
+            "import { missingExport } from './service';\n",
+        );
+        let store = test_store(&repo);
+        let importer = file_entity("src/consumer.ts");
+        store.upsert_entity(&importer).expect("importer");
+        let edge = imports_edge(
+            &importer,
+            "entity://missing",
+            SourceSpan::with_columns("src/consumer.ts", 1, 1, 1, 43),
+        );
+
+        let findings = run_import_edge_validation_with_rule(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+            Some(CG_MVP3_IMPORTS_DANGLING_TARGET),
+        );
+
+        assert!(findings
+            .iter()
+            .any(|finding| finding.reverified_graph_source_proof));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn derived_import_missing_provenance_blocked_or_integrity_finding() {
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/consumer.ts",
+            "import { target } from './service';\n",
+        );
+        let store = test_store(&repo);
+        let importer = file_entity("src/consumer.ts");
+        let target = function_entity("src/service.ts", "target", 1);
+        store.upsert_entity(&importer).expect("importer");
+        store.upsert_entity(&target).expect("target");
+        let mut edge = imports_edge(
+            &importer,
+            &target.id,
+            SourceSpan::with_columns("src/consumer.ts", 1, 1, 1, 36),
+        );
+        edge.derived = true;
+        edge.provenance_edges = Vec::new();
+
+        let findings = run_import_edge_validation_with_rule(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+            Some(CG_MVP3_IMPORTS_DANGLING_TARGET),
+        );
+
+        assert!(findings.iter().any(|finding| {
+            finding.validation_rule_id == CG_MVP3_IMPORTS_DERIVED_MISSING_PROVENANCE
+                && finding.classification == ValidationClassification::Block
+        }));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn text_candidate_vector_source_navigation_imports_not_blocking() {
+        let rules = rules();
+        let rule = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP3_IMPORTS_DANGLING_TARGET)
+            .expect("import rule");
+        for (kind, evidence_id) in [
+            (ValidationEvidenceKind::TextEvidence, "text://import"),
+            (ValidationEvidenceKind::Candidate, "candidate://import"),
+            (ValidationEvidenceKind::Vector, "vector://import"),
+            (
+                ValidationEvidenceKind::SourceNavigation,
+                "source-navigation://import",
+            ),
+        ] {
+            let mut input = ValidationReverificationInput::exact_graph_source(
+                ValidationLifecycleState::claimable_current(),
+                evidence_id,
+                "non-graph evidence cannot prove exact import failure",
+            );
+            input.graph_source_relation_reverified = false;
+            input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+                kind,
+                evidence_id,
+                "non-graph evidence cannot prove exact import failure",
+            )];
+            let finding = classify_validation_finding(
+                rule,
+                format!("finding://imports/non-graph/{evidence_id}"),
+                input,
+            );
+            assert_ne!(finding.classification, ValidationClassification::Block);
+            assert!(!finding.reverified_graph_source_proof);
+        }
+    }
+
+    #[test]
+    fn unsupported_language_import_unknown_not_blocking() {
+        let rules = rules();
+        let rule = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP3_IMPORTS_DANGLING_TARGET)
+            .expect("import rule");
+        let mut input = ValidationReverificationInput::exact_graph_source(
+            ValidationLifecycleState::claimable_current(),
+            "edge://unsupported-import",
+            "unsupported frontend cannot produce exact import proof",
+        );
+        input.relation_supported = false;
+        input.unsupported_relation = true;
+        input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+            ValidationEvidenceKind::Diagnostic,
+            "diagnostic://unsupported-import",
+            "unsupported frontend import pattern",
+        )];
+        let finding = classify_validation_finding(rule, "finding://unsupported-import", input);
+        assert_ne!(finding.classification, ValidationClassification::Block);
+        assert!(!finding.reverified_graph_source_proof);
+    }
+
+    #[test]
+    fn stale_db_cannot_produce_blocking_imports_finding() {
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/consumer.ts",
+            "import { missingExport } from './service';\n",
+        );
+        let store = test_store(&repo);
+        let importer = file_entity("src/consumer.ts");
+        store.upsert_entity(&importer).expect("importer");
+        let edge = imports_edge(
+            &importer,
+            "entity://missing",
+            SourceSpan::with_columns("src/consumer.ts", 1, 1, 1, 43),
+        );
+
+        let findings = run_import_edge_validation_with_rule(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::stale_non_claimable("stale_db"),
+            Some(CG_MVP3_IMPORTS_DANGLING_TARGET),
+        );
+
+        assert!(findings
+            .iter()
+            .all(|finding| finding.classification != ValidationClassification::Block));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn exact_imports_no_dot_codegraph_mutation() {
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/consumer.ts",
+            "import { missingExport } from './service';\n",
+        );
+        let store = test_store(&repo);
+        let importer = file_entity("src/consumer.ts");
+        store.upsert_entity(&importer).expect("importer");
+        let edge = imports_edge(
+            &importer,
+            "entity://missing",
+            SourceSpan::with_columns("src/consumer.ts", 1, 1, 1, 43),
+        );
+
+        let _findings = run_import_edge_validation_with_rule(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+            Some(CG_MVP3_IMPORTS_DANGLING_TARGET),
+        );
+
+        assert!(!repo.join(".codegraph").exists());
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn blocking_calls_have_source_spans() {
+        let repo = test_repo();
+        write_source(&repo, "src/caller.ts", "missingTarget();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        store.upsert_entity(&caller).expect("caller");
+        let edge = calls_edge(
+            &caller,
+            "entity://missing",
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 16),
+        );
+
+        let findings = run_edge_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        assert!(findings
+            .iter()
+            .filter(|finding| finding.classification == ValidationClassification::Block)
+            .all(|finding| finding.source_span.is_some()));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn blocking_calls_reverified_from_graph_source() {
+        let repo = test_repo();
+        write_source(&repo, "src/caller.ts", "missingTarget();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        store.upsert_entity(&caller).expect("caller");
+        let edge = calls_edge(
+            &caller,
+            "entity://missing",
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 16),
+        );
+
+        let findings = run_edge_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        assert!(findings
+            .iter()
+            .filter(|finding| finding.classification == ValidationClassification::Block)
+            .all(|finding| finding.reverified_graph_source_proof));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn derived_calls_missing_provenance_blocked_or_integrity_finding() {
+        let repo = test_repo();
+        write_source(&repo, "src/caller.ts", "missingTarget();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        store.upsert_entity(&caller).expect("caller");
+        let mut edge = calls_edge(
+            &caller,
+            "entity://missing",
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 16),
+        );
+        edge.derived = true;
+        edge.exactness = Exactness::DerivedFromVerifiedEdges;
+        edge.edge_class = EdgeClass::Derived;
+
+        let findings = run_edge_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP3_CALLS_DERIVED_MISSING_PROVENANCE)
+            .expect("missing provenance finding");
+        assert_eq!(finding.classification, ValidationClassification::Block);
+        assert_eq!(
+            finding.provenance["provenance_present"].as_bool(),
+            Some(false)
+        );
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn dynamic_macro_trait_calls_not_overclaimed() {
+        let repo = test_repo();
+        write_source(&repo, "src/caller.ts", "client[method]();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        store.upsert_entity(&caller).expect("caller");
+        let mut edge = calls_edge(
+            &caller,
+            "entity://dynamic",
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 17),
+        );
+        edge.exactness = Exactness::StaticHeuristic;
+        edge.edge_class = EdgeClass::BaseHeuristic;
+
+        let findings = run_edge_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        assert!(findings
+            .iter()
+            .all(|finding| finding.classification != ValidationClassification::Block));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn text_candidate_vector_source_navigation_calls_not_blocking() {
+        let rules = rules();
+        let rule = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP3_CALLS_DANGLING_TARGET)
+            .expect("rule");
+        for evidence_kind in [
+            ValidationEvidenceKind::TextEvidence,
+            ValidationEvidenceKind::Candidate,
+            ValidationEvidenceKind::Vector,
+            ValidationEvidenceKind::SourceNavigation,
+        ] {
+            let mut input = ValidationReverificationInput::exact_graph_source(
+                ValidationLifecycleState::claimable_current(),
+                "evidence://non-graph",
+                "non-graph evidence cannot prove exact CALLS failure",
+            );
+            input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+                evidence_kind,
+                "evidence://non-graph",
+                "non-graph evidence cannot prove exact CALLS failure",
+            )];
+            let finding = classify_validation_finding(
+                rule,
+                format!("finding://non-graph/{evidence_kind:?}"),
+                input,
+            );
+            assert_ne!(finding.classification, ValidationClassification::Block);
+            assert!(!finding.reverified_graph_source_proof);
+        }
+    }
+
+    #[test]
+    fn unsupported_language_call_unknown_not_blocking() {
+        let rules = rules();
+        let rule = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP3_CALLS_DANGLING_TARGET)
+            .expect("rule");
+        let finding = agent_use_calls_boundary_unknown(
+            rule,
+            ValidationLifecycleState::claimable_current(),
+            json!({
+                "language": "unsupported_fixture_language",
+                "relation_kind": "CALLS",
+                "support": "unsupported",
+            }),
+            "unsupported frontend cannot produce exact CALLS proof",
+        );
+        assert_ne!(finding.classification, ValidationClassification::Block);
+        assert!(!finding.reverified_graph_source_proof);
+    }
+
+    #[test]
+    fn stale_db_cannot_produce_blocking_calls_finding() {
+        let repo = test_repo();
+        write_source(&repo, "src/caller.ts", "missingTarget();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        store.upsert_entity(&caller).expect("caller");
+        let edge = calls_edge(
+            &caller,
+            "entity://missing",
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 16),
+        );
+
+        let findings = run_edge_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::stale_non_claimable("repo_head_mismatch"),
+        );
+
+        assert!(findings
+            .iter()
+            .all(|finding| finding.classification != ValidationClassification::Block));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn no_false_positive_from_comments_or_strings() {
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/caller.ts",
+            "const text = \"missingTarget()\";\n// missingTarget();\n",
+        );
+        let store = test_store(&repo);
+        let rules = rules();
+        let rule_by_id = rule_map(&rules);
+        let profile = AgentUseProfile {
+            profile_name: "test".to_string(),
+            repo_root: repo.clone(),
+            repo_identity_label: "test".to_string(),
+            repo_identity_hash: "test".to_string(),
+            profile_root: repo.join("profile"),
+            db_path: repo.join("validation.sqlite"),
+            candidate_spool_path: repo.join("candidate.jsonl"),
+            candidate_spool_query_index_path: repo.join("candidate.sqlite"),
+            vector_runtime_path: repo.join("vector-runtime.json"),
+            vector_audit_path: repo.join("vector-audit.json"),
+            lock_or_publish_state_path: repo.join("publish-state.json"),
+            delta_state_path: repo.join("delta-state.json"),
+            lifecycle_expectations: Vec::new(),
+            recovery_commands: Vec::new(),
+            mcp_args: Vec::new(),
+            binary_profile: "test".to_string(),
+            scope_policy: IndexScopeOptions::default(),
+        };
+        let mut findings = Vec::new();
+        let mut seen = BTreeSet::new();
+        for edge in store
+            .list_edges_by_file("src/caller.ts")
+            .expect("list edges")
+        {
+            agent_use_validate_current_calls_edge(
+                &profile,
+                &store,
+                &rule_by_id,
+                ValidationLifecycleState::claimable_current(),
+                &edge,
+                None,
+                Some(CG_MVP3_CALLS_DANGLING_TARGET),
+                &mut findings,
+                &mut seen,
+            )
+            .expect("validate edge");
+        }
+        assert!(findings.is_empty());
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn proof_edge_missing_source_span_blocks() {
+        let repo = test_repo();
+        write_source(&repo, "src/caller.ts", "missingTarget();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        store.upsert_entity(&caller).expect("caller");
+        let edge = calls_edge(
+            &caller,
+            "entity://missing",
+            SourceSpan::with_columns("src/caller.ts", 99, 1, 99, 16),
+        );
+        store.upsert_edge(&edge).expect("edge");
+
+        let findings = run_proof_integrity_for_paths(
+            &repo,
+            &store,
+            &["src/caller.ts"],
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP3_PROOF_EDGE_MISSING_SOURCE_SPAN)
+            .expect("generic missing span finding");
+        assert_eq!(finding.classification, ValidationClassification::Block);
+        assert_eq!(
+            finding.proof_status,
+            ValidationProofStatus::MissingRequiredSourceSpan
+        );
+        assert_eq!(finding.relation_kind, Some(RelationKind::Calls));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn source_span_eof_sentinel_does_not_block() {
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/module.ts",
+            "export const a = 1;\nexport const b = 2;\n",
+        );
+        let store = test_store(&repo);
+        let module = file_entity("src/module.ts");
+        let target = function_entity("src/module.ts", "target", 1);
+        store.upsert_entity(&module).expect("module");
+        store.upsert_entity(&target).expect("target");
+        let edge = Edge {
+            id: stable_edge_id(
+                &module.id,
+                RelationKind::Defines,
+                &target.id,
+                &SourceSpan::with_columns("src/module.ts", 1, 1, 3, 1),
+            ),
+            head_id: module.id.clone(),
+            relation: RelationKind::Defines,
+            tail_id: target.id.clone(),
+            source_span: SourceSpan::with_columns("src/module.ts", 1, 1, 3, 1),
+            repo_commit: None,
+            file_hash: None,
+            extractor: "exact-calls-validation-test".to_string(),
+            confidence: 1.0,
+            exactness: Exactness::ParserVerified,
+            edge_class: EdgeClass::BaseExact,
+            context: EdgeContext::Production,
+            derived: false,
+            provenance_edges: Vec::new(),
+            metadata: Default::default(),
+        };
+        store.upsert_edge(&edge).expect("edge");
+
+        let findings = run_proof_integrity_for_paths(
+            &repo,
+            &store,
+            &["src/module.ts"],
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        assert!(!findings.iter().any(|finding| {
+            finding.validation_rule_id == CG_MVP3_PROOF_EDGE_MISSING_SOURCE_SPAN
+                && finding.classification == ValidationClassification::Block
+        }));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn claimable_entity_missing_source_span_blocks_or_diagnostic_if_entity_span_optional() {
+        let repo = test_repo();
+        write_source(&repo, "src/service.ts", "export function service() {}\n");
+        let store = test_store(&repo);
+        let mut service = function_entity("src/service.ts", "service", 1);
+        service.source_span = None;
+        store.upsert_entity(&service).expect("service");
+
+        let findings = run_proof_integrity_for_paths(
+            &repo,
+            &store,
+            &["src/service.ts"],
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        let finding = findings
+            .iter()
+            .find(|finding| {
+                finding.validation_rule_id == CG_MVP3_CLAIMABLE_ENTITY_MISSING_SOURCE_SPAN
+            })
+            .expect("entity missing span finding");
+        assert_eq!(finding.classification, ValidationClassification::Block);
+        assert_eq!(
+            finding.proof_status,
+            ValidationProofStatus::MissingRequiredSourceSpan
+        );
+
+        let mut file = file_entity("src/service.ts");
+        file.id = "entity://src/service.ts/file-optional".to_string();
+        file.source_span = None;
+        store.upsert_entity(&file).expect("file entity");
+        let findings = run_proof_integrity_for_paths(
+            &repo,
+            &store,
+            &["src/service.ts"],
+            ValidationLifecycleState::claimable_current(),
+        );
+        let optional = findings
+            .iter()
+            .find(|finding| {
+                finding.validation_rule_id == CG_MVP3_CLAIMABLE_ENTITY_MISSING_SOURCE_SPAN
+                    && finding.affected_entity["id"]
+                        .as_str()
+                        .is_some_and(|id| id.ends_with("file-optional"))
+            })
+            .expect("optional entity diagnostic");
+        assert_ne!(optional.classification, ValidationClassification::Block);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn derived_edge_missing_provenance_blocks() {
+        let repo = test_repo();
+        write_source(&repo, "src/caller.ts", "missingTarget();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        store.upsert_entity(&caller).expect("caller");
+        let mut edge = calls_edge(
+            &caller,
+            "entity://missing",
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 16),
+        );
+        edge.derived = true;
+        edge.exactness = Exactness::DerivedFromVerifiedEdges;
+        edge.edge_class = EdgeClass::Derived;
+        let rules = rules();
+        let rule_by_id = rule_map(&rules);
+        let profile = test_profile(&repo);
+        let mut findings = Vec::new();
+        let mut seen = BTreeSet::new();
+        agent_use_validate_current_proof_edge_integrity(
+            &profile,
+            &rule_by_id,
+            ValidationLifecycleState::claimable_current(),
+            &edge,
+            Some(json!({"test_delta": true})),
+            &mut findings,
+            &mut seen,
+        );
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP3_DERIVED_EDGE_MISSING_PROVENANCE)
+            .expect("generic missing provenance finding");
+        assert_eq!(finding.classification, ValidationClassification::Block);
+        assert_eq!(
+            finding.proof_status,
+            ValidationProofStatus::MissingRequiredProvenance
+        );
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn db_lifecycle_mismatch_blocks() {
+        let finding = lifecycle_integrity_finding(
+            CG_MVP3_DB_LIFECYCLE_MISMATCH_AFTER_UPDATE,
+            ValidationLifecycleState::claimable_current(),
+            "validation preflight opened a different DB path than the update path",
+        );
+        assert_eq!(finding.classification, ValidationClassification::Block);
+        assert_eq!(
+            finding.proof_status,
+            ValidationProofStatus::ReverifiedGraphIntegrity
+        );
+    }
+
+    #[test]
+    fn stale_db_validation_non_claimable() {
+        let finding = lifecycle_integrity_finding(
+            CG_MVP3_STALE_OR_FOREIGN_DB_VALIDATION_ATTEMPT,
+            ValidationLifecycleState::stale_non_claimable("repo_head_mismatch"),
+            "stale DB validation attempt must be diagnostic only",
+        );
+        assert_ne!(finding.classification, ValidationClassification::Block);
+        assert_eq!(
+            finding.proof_status,
+            ValidationProofStatus::StaleOrNonClaimableDb
+        );
+    }
+
+    #[test]
+    fn foreign_db_validation_non_claimable() {
+        let mut lifecycle = ValidationLifecycleState::stale_non_claimable("repo_root_mismatch");
+        lifecycle.stale = false;
+        lifecycle.foreign = true;
+        let finding = lifecycle_integrity_finding(
+            CG_MVP3_STALE_OR_FOREIGN_DB_VALIDATION_ATTEMPT,
+            lifecycle,
+            "foreign DB validation attempt must be diagnostic only",
+        );
+        assert_ne!(finding.classification, ValidationClassification::Block);
+        assert_eq!(
+            finding.proof_status,
+            ValidationProofStatus::StaleOrNonClaimableDb
+        );
+    }
+
+    #[test]
+    fn schema_mismatch_validation_non_claimable() {
+        let mut lifecycle = ValidationLifecycleState::stale_non_claimable("schema_mismatch");
+        lifecycle.stale = false;
+        lifecycle.schema_mismatched = true;
+        let finding = lifecycle_integrity_finding(
+            CG_MVP3_STALE_OR_FOREIGN_DB_VALIDATION_ATTEMPT,
+            lifecycle,
+            "schema mismatched DB validation attempt must be diagnostic only",
+        );
+        assert_ne!(finding.classification, ValidationClassification::Block);
+        assert_eq!(
+            finding.proof_status,
+            ValidationProofStatus::StaleOrNonClaimableDb
+        );
+    }
+
+    #[test]
+    fn temp_db_never_claimable() {
+        let finding = lifecycle_integrity_finding(
+            CG_MVP3_TEMP_DB_CLAIMABLE,
+            ValidationLifecycleState::claimable_current(),
+            "temporary DB path was marked claimable",
+        );
+        assert_eq!(finding.classification, ValidationClassification::Block);
+    }
+
+    #[test]
+    fn old_good_db_preserved_on_failure() {
+        let finding = lifecycle_integrity_finding(
+            CG_MVP3_OLD_GOOD_DB_NOT_PRESERVED,
+            ValidationLifecycleState::claimable_current(),
+            "failed update did not preserve old-good DB",
+        );
+        assert_eq!(finding.classification, ValidationClassification::Block);
+    }
+
+    #[test]
+    fn corrupt_incomplete_update_blocks_validation() {
+        let finding = lifecycle_integrity_finding(
+            CG_MVP3_CORRUPT_OR_INCOMPLETE_UPDATE_TRANSACTION,
+            ValidationLifecycleState::claimable_current(),
+            "incomplete update transaction was presented as claimable",
+        );
+        assert_eq!(finding.classification, ValidationClassification::Block);
+    }
+
+    #[test]
+    fn query_context_during_update_safe() {
+        let finding = lifecycle_integrity_finding(
+            CG_MVP3_QUERY_DURING_UPDATE_UNSAFE,
+            ValidationLifecycleState::claimable_current(),
+            "query/context attempted to serve active update DB as claimable",
+        );
+        assert_eq!(finding.classification, ValidationClassification::Block);
+
+        let stale = lifecycle_integrity_finding(
+            CG_MVP3_QUERY_DURING_UPDATE_UNSAFE,
+            ValidationLifecycleState::stale_non_claimable("publish_state_updating"),
+            "query/context during update is non-claimable",
+        );
+        assert_ne!(stale.classification, ValidationClassification::Block);
+    }
+
+    #[test]
+    fn sidecar_access_vs_corrupt_classification_safe() {
+        let finding = lifecycle_integrity_finding(
+            CG_MVP3_SIDECAR_CORRUPT_VS_INACCESSIBLE_MISCLASSIFIED,
+            ValidationLifecycleState::claimable_current(),
+            "sidecar access failure was mislabeled as corrupt",
+        );
+        assert_eq!(finding.classification, ValidationClassification::Block);
+        assert_eq!(
+            finding.proof_status,
+            ValidationProofStatus::ReverifiedGraphIntegrity
+        );
+    }
+
+    #[test]
+    fn diagnostic_only_not_graph_proof() {
+        let rule = proof_integrity_rule(CG_MVP3_PROOF_EDGE_MISSING_SOURCE_SPAN);
+        let mut input = ValidationReverificationInput::exact_graph_source(
+            ValidationLifecycleState::claimable_current(),
+            "evidence://text",
+            "text evidence cannot prove graph proof integrity",
+        );
+        input.graph_source_relation_reverified = false;
+        input.integrity_condition_reverified = true;
+        input.integrity_issue_present = true;
+        input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+            ValidationEvidenceKind::TextEvidence,
+            "evidence://text",
+            "text evidence is not graph proof",
+        )];
+        let finding = classify_validation_finding(&rule, "finding://diagnostic-only", input);
+        assert_ne!(finding.classification, ValidationClassification::Block);
+        assert!(!finding.reverified_graph_source_proof);
+        assert_eq!(finding.proof_status, ValidationProofStatus::NotGraphProof);
+    }
+
+    #[test]
+    fn no_dot_codegraph_mutation() {
+        let repo = test_repo();
+        write_source(&repo, "src/caller.ts", "missingTarget();\n");
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.ts", "caller", 1);
+        store.upsert_entity(&caller).expect("caller");
+        let edge = calls_edge(
+            &caller,
+            "entity://missing",
+            SourceSpan::with_columns("src/caller.ts", 1, 1, 1, 16),
+        );
+        let normal_dot_codegraph = repo.join(".codegraph");
+        assert!(!normal_dot_codegraph.exists());
+
+        let _findings = run_edge_validation(
+            &repo,
+            &store,
+            &edge,
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        assert!(!normal_dot_codegraph.exists());
+        drop(store);
+        cleanup_repo(repo);
+    }
 }
 
 pub(crate) fn run_agent_use_persistent_watch_command(

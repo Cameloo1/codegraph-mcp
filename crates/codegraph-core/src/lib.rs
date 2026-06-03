@@ -36,7 +36,17 @@ pub use normalized::{
     NormalizedPathEvidenceFact, NormalizedSidecarFreshnessFact, NormalizedSourceRoleFact,
     NormalizedSourceSpanFact, NormalizedTextEvidenceFact, NORMALIZED_FACT_SCHEMA_VERSION,
 };
-pub use validation::{relation_allows, RelationEndpointClass};
+pub use validation::{
+    classify_validation_finding, relation_allows, reverify_validation_graph_source_contract,
+    RelationEndpointClass, SupportedRelationStatus, ValidationBlockingLevel,
+    ValidationClassification, ValidationEvidenceItem, ValidationEvidenceKind, ValidationFinding,
+    ValidationLifecycleRequirement, ValidationLifecycleState, ValidationPacket,
+    ValidationPacketKind, ValidationPacketStatus, ValidationProofRequirement,
+    ValidationProofStatus, ValidationProvenanceRequirement, ValidationReverification,
+    ValidationReverificationInput, ValidationRule, ValidationRuleKind,
+    ValidationSourceRoleRequirement, ValidationSourceSpanRequirement,
+    VALIDATION_PACKET_SCHEMA_VERSION,
+};
 
 #[cfg(test)]
 mod tests {

@@ -29,11 +29,17 @@ use codegraph_bench::{
     TwoLayerBenchOptions,
 };
 use codegraph_core::{
-    classify_edge_evidence_role, classify_entity_source_role, combine_evidence_roles,
-    stable_edge_id, ContextPacket, ContextSnippet, Edge, Entity, EntityKind, EvidenceRole,
+    classify_edge_evidence_role, classify_entity_source_role, classify_validation_finding,
+    combine_evidence_roles, normalize_repo_relative_path, stable_edge_id, ContextPacket,
+    ContextSnippet, Edge, EdgeClass, EdgeContext, Entity, EntityKind, EvidenceRole,
     EvidenceRoleDecision, Exactness, FileRecord, Metadata, PathEvidence, RelationKind,
     RepoIndexState, RetrievalCandidate, RetrievalCandidateSource, RetrievalProofStatus,
-    RetrievalVerificationStatus, SourceSpan, VectorEmbeddingSource,
+    RetrievalVerificationStatus, SourceSpan, SupportedRelationStatus, ValidationBlockingLevel,
+    ValidationClassification, ValidationEvidenceItem, ValidationEvidenceKind, ValidationFinding,
+    ValidationLifecycleRequirement, ValidationLifecycleState, ValidationPacket,
+    ValidationProofRequirement, ValidationProofStatus, ValidationProvenanceRequirement,
+    ValidationReverificationInput, ValidationRule, ValidationRuleKind,
+    ValidationSourceRoleRequirement, ValidationSourceSpanRequirement, VectorEmbeddingSource,
 };
 pub use codegraph_index::{
     add_index_profile_span_ms_to_summary, build_vector_chunk_index_artifacts_for_repo,

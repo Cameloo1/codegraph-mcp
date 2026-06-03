@@ -102,6 +102,11 @@ codegraph-competitors/
 !/benchmarks/upstream/README.md
 !/benchmarks/upstream/pinned_sources.json
 !/benchmarks/upstream/.gitkeep
+/benchmarks/tracks/*/results/**
+/benchmarks/tracks/*/workspaces/**
+/benchmarks/tracks/*/upstream/*
+!/benchmarks/tracks/*/upstream/.gitkeep
+!/benchmarks/tracks/*/upstream/pinned_source.json
 /benchmarks/configs/*.local.toml
 *.predictions.jsonl
 *.patch
@@ -129,6 +134,7 @@ codegraph-competitors/
 !/fixtures/index_scope/generated_junk_repo/**
 
 # Internal planning/status docs not intended for the public repo
+/coordination/
 /MVP.md
 /MVP_2.md
 /MVP_2-new.md
