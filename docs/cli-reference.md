@@ -53,6 +53,10 @@ codegraph-mcp agent-use query path <source> <target> --repo <repo> `
 codegraph-mcp agent-use context-pack --repo <repo> `
   --task "Trace the change impact" `
   --agent-json
+
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed src\file.ts `
+  --agent-json
 ```
 
 Supported compact modes:
@@ -83,6 +87,8 @@ codegraph-mcp agent-use query path handle_request save_record --repo <repo> --li
 codegraph-mcp agent-use context-pack --repo <repo> --task "Trace the change impact" --agent-json
 codegraph-mcp agent-use mcp-config --repo <repo> --json
 codegraph-mcp agent-use watch --repo <repo> --once --changed src\file.ts --json
+codegraph-mcp agent-use validate-edit --repo <repo> --changed src\file.ts --agent-json
+codegraph-mcp agent-use validate-edit --repo <repo> --changed src\file.ts --changed src\helper.ts --fail-on-blocking --agent-json
 codegraph-mcp agent-use watch --repo <repo> --json
 ```
 
@@ -114,9 +120,32 @@ Relation and path agent JSON includes relation kind, exactness/provenance,
 source spans, evidence role, `proof_status`, and `proof_strength`;
 `graph_proof=true` is only for verified graph/source relation proof.
 
-`agent-use validate-edit` is deferred to MVP3. Do not treat the current RTDS
-surface as a compiler/test replacement or as a complete dangling-edge
-validation engine.
+`agent-use validate-edit` is the canonical agent/editor validation surface:
+
+```powershell
+codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> --agent-json
+```
+
+Repeat `--changed` for multi-file edits. Add `--fail-on-blocking` when a
+pre-commit or CI gate should return exit 2 for a hard interrupt while still
+printing stdout JSON. Use `--explain` or `--audit-json` only for richer
+diagnostic output. The top-level compatibility alias
+`codegraph-mcp validate-edit ...` is deferred; use the canonical `agent-use`
+command above.
+
+Exit 0 means validation completed and emitted JSON, even when the packet status
+is `blocking_graph_error`. With `--fail-on-blocking`, exit 2 means validation
+completed, stdout JSON was printed, and `hard_interrupt_available=true`. Other
+nonzero exits mean validation did not complete because of command, config,
+lifecycle, tool, runtime, or protocol failure. Agents should parse stdout JSON
+and must not infer proof from exit code alone.
+
+CodeGraph does not replace compilers, tests, type checkers, linters, runtime
+checks, or security review. Hard interrupts derive only from reverified
+graph/source proof or eligible integrity/lifecycle proof failures. Warning,
+unknown, unsupported, degraded, diagnostic-only, text, candidate, vector, and
+source-navigation evidence do not interrupt by default; unsafe DB state is a
+lifecycle blocker, not source-code proof.
 
 Staged candidate spool and runtime vector sidecar output is candidate context,
 not graph proof. Optional audit artifacts are diagnostic-only. Missing, stale,
@@ -271,6 +300,17 @@ Read paths run the DB passport/preflight guard. If the configured DB is from a
 different repo, stale scope, incompatible storage mode, failed run, corrupt
 file, or unknown old format, the command refuses to answer unless an explicit
 diagnostic stale-read override is used.
+
+`agent-use validate-edit --repo <repo> --changed <path> [--changed <path>...] [--agent-json|--explain|--audit-json] [--fail-on-blocking]`
+
+Runs the production-profile changed-file update and validation packet wrapper
+for an explicit post-edit file set. The command resolves the external
+`production-agent-use` DB, refuses direct `--db`, does not auto-index, does not
+fall back to repo-local `.codegraph`, and does not edit source files. Default
+validation results print JSON and exit 0. `--fail-on-blocking` exits 2 only
+when `hard_interrupt_available=true`, while still printing the JSON packet.
+Runtime/config/lifecycle failures that prevent validation are separate nonzero
+failures.
 
 `context --task <task> [--budget <tokens>] [--mode <mode>] [--seed <symbol>]`
 

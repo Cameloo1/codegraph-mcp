@@ -6,6 +6,7 @@
 //! repository operations are exposed.
 
 #![forbid(unsafe_code)]
+#![recursion_limit = "512"]
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -18,16 +19,26 @@ use std::{
 };
 
 use codegraph_core::{
-    ContextPacket, ContextSnippet, Edge, Entity, PathEvidence, RelationKind, RetrievalCandidate,
-    SourceSpan,
+    classify_edge_evidence_role, classify_entity_source_role, classify_validation_finding,
+    normalize_repo_relative_path, ContextPacket, ContextSnippet, Edge, Entity, EvidenceRole,
+    Exactness, PathEvidence, RelationKind, RetrievalCandidate, SourceSpan, SupportedRelationStatus,
+    ValidationBlockingLevel, ValidationClassification, ValidationEvidenceItem,
+    ValidationEvidenceKind, ValidationFinding, ValidationLifecycleRequirement,
+    ValidationLifecycleState, ValidationPacket, ValidationProofRequirement, ValidationProofStatus,
+    ValidationProvenanceRequirement, ValidationReverificationInput, ValidationRule,
+    ValidationRuleKind, ValidationSourceRoleRequirement, ValidationSourceSpanRequirement,
 };
 use codegraph_index::{
-    candidate_spool_index_status_for_repo, default_db_path, index_repo_to_db_with_options,
-    inspect_db_lifecycle_preflight, load_vector_chunk_index_json,
-    query_candidate_spool_index_for_repo, update_changed_files_to_db,
-    validate_vector_chunk_source_bindings, vector_chunk_search_hit_to_retrieval_candidate,
-    CandidateSpoolIndexLoad, CandidateSpoolIndexQueryResult, DbLifecyclePreflight, IndexOptions,
-    IndexScopeOptions, VectorChunkIndexBuildOptions, UNBOUNDED_STORE_READ_LIMIT,
+    candidate_spool_index_status_for_repo, compute_entity_source_role_delta, default_db_path,
+    index_repo_to_db_with_options, inspect_db_lifecycle_preflight, load_vector_chunk_index_json,
+    query_candidate_spool_index_for_repo, rtds_dependency_closure_for_changed_paths_to_db,
+    snapshot_normalized_facts_for_paths_to_db, update_changed_files_to_db,
+    validate_edit_changed_files_preflight_with_scope, validate_vector_chunk_source_bindings,
+    vector_chunk_search_hit_to_retrieval_candidate, CandidateSpoolIndexLoad,
+    CandidateSpoolIndexQueryResult, DbLifecyclePreflight, EdgeDeltaEntry,
+    EntitySourceRoleDeltaOptions, EntitySourceRoleDeltaReport, IndexOptions, IndexScopeOptions,
+    NormalizedFactSnapshotOptions, ValidateEditChangedFilesPreflight, VectorChunkIndexBuildOptions,
+    UNBOUNDED_STORE_READ_LIMIT, VALIDATE_EDIT_CHANGED_FILES_MAX,
 };
 use codegraph_parser::language_frontends;
 use codegraph_query::{
@@ -68,6 +79,15 @@ const MCP_CONTEXT_PACK_DOCUMENT_LIMIT: usize = 512;
 const MCP_CONTEXT_PACK_EDGE_LIMIT: usize = 4_096;
 const MCP_CONTEXT_PACK_SOURCE_FILE_LIMIT: usize = 64;
 const MCP_CONTEXT_PACK_SOURCE_BYTE_LIMIT: usize = 256 * 1024;
+const MCP_VALIDATE_EDIT_TOOL_NAME: &str = "codegraph.validate_edit";
+const MCP_VALIDATE_EDIT_SCHEMA_NAME: &str = "validate_edit_agent_json";
+const CG_MVP3_CALLS_DANGLING_TARGET: &str = "CG_MVP3_CALLS_DANGLING_TARGET";
+const CG_MVP3_IMPORTS_DANGLING_TARGET: &str = "CG_MVP3_IMPORTS_DANGLING_TARGET";
+const CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH: &str = "CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH";
+const CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING: &str = "CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING";
+const CG_MVP3_STALE_OR_FOREIGN_DB_VALIDATION_ATTEMPT: &str =
+    "CG_MVP3_STALE_OR_FOREIGN_DB_VALIDATION_ATTEMPT";
+const CG_MCP_VALIDATE_EDIT_REJECTED_PATHS: &str = "CG_MCP_VALIDATE_EDIT_REJECTED_PATHS";
 
 const MCP_RESOURCE_URIS: &[&str] = &[
     "codegraph://status",
@@ -93,6 +113,7 @@ const TOOL_NAMES: &[&str] = &[
     "codegraph.status",
     "codegraph.index_repo",
     "codegraph.update_changed_files",
+    MCP_VALIDATE_EDIT_TOOL_NAME,
     "codegraph.search_symbols",
     "codegraph.search_text",
     "codegraph.search_semantic",
@@ -408,6 +429,7 @@ impl McpServer {
             "codegraph.status" => self.status(args),
             "codegraph.index_repo" => self.index_repo(args),
             "codegraph.update_changed_files" => self.update_changed_files(args),
+            MCP_VALIDATE_EDIT_TOOL_NAME => self.validate_edit(args),
             "codegraph.search_symbols" => self.search_symbols(args),
             "codegraph.search_text" => self.search_text(args),
             "codegraph.search_semantic" => self.search_semantic(args),
@@ -1111,6 +1133,286 @@ impl McpServer {
         }))
     }
 
+    fn validate_edit(&self, args: &Map<String, Value>) -> Result<Value, ToolCallError> {
+        let total_start = Instant::now();
+        let repo_root = self.validate_edit_repo_root(args)?;
+        let (db_path, db_source, external_db_used) =
+            self.validate_edit_db_path(args, &repo_root)?;
+        let mode = mcp_validate_edit_mode(args)?;
+        let fail_on_blocking = optional_bool_arg(args, "fail_on_blocking")?.unwrap_or(false);
+        let expected_touched_files = optional_string_array(args, "expected_touched_files")?;
+        let task_id = optional_string(args, "task_id");
+        let edit_intent = optional_string(args, "edit_intent");
+        let max_output_bytes = optional_nullable_usize(args, "max_output_bytes")?;
+        let changed_files = required_validate_edit_changed_files(args)?;
+        let changed_paths = changed_files.iter().map(PathBuf::from).collect::<Vec<_>>();
+        let normal_dot_codegraph = repo_root.join(".codegraph");
+        let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
+        let explicit_scope = mcp_explicit_scope_policy(args)?;
+
+        let preflight_start = Instant::now();
+        let preflight = inspect_db_lifecycle_preflight(&repo_root, &db_path, explicit_scope)
+            .map_err(ToolCallError::from)?;
+        let preflight_ms = preflight_start.elapsed().as_millis();
+        let scope_policy = preflight
+            .effective_scope_policy
+            .clone()
+            .unwrap_or_else(IndexScopeOptions::default);
+        let path_preflight = validate_edit_changed_files_preflight_with_scope(
+            &repo_root,
+            &changed_paths,
+            &scope_policy,
+            VALIDATE_EDIT_CHANGED_FILES_MAX,
+        );
+
+        if !path_preflight.should_update {
+            let status = if path_preflight.rejected_paths.is_empty() {
+                "no_op"
+            } else {
+                "rejected"
+            };
+            let reason = if path_preflight.rejected_paths.is_empty() {
+                "changed_files were all duplicate/editor-temp/no-op inputs; no DB update ran"
+            } else {
+                "changed_files did not contain a usable in-repo updateable path; no DB update ran"
+            };
+            let packet = mcp_validate_edit_diagnostic_packet(
+                path_preflight.accepted_paths.clone(),
+                &db_path,
+                &preflight,
+                CG_MCP_VALIDATE_EDIT_REJECTED_PATHS,
+                reason,
+                json!(path_preflight.diagnostics.clone()),
+            );
+            let timings = json!({
+                "preflight_ms": preflight_ms,
+                "update_ms": 0,
+                "validation_ms": 0,
+                "total_ms": total_start.elapsed().as_millis(),
+            });
+            return mcp_validate_edit_response(
+                &repo_root,
+                &db_path,
+                &db_source,
+                external_db_used,
+                status,
+                &mode,
+                fail_on_blocking,
+                task_id,
+                edit_intent,
+                expected_touched_files,
+                max_output_bytes,
+                &path_preflight,
+                &preflight,
+                &packet,
+                Value::Null,
+                json!({}),
+                timings,
+                normal_dot_codegraph_existed_before != normal_dot_codegraph.exists(),
+            );
+        }
+
+        if !preflight.safe {
+            let packet = mcp_validate_edit_diagnostic_packet(
+                path_preflight.accepted_paths.clone(),
+                &db_path,
+                &preflight,
+                CG_MVP3_STALE_OR_FOREIGN_DB_VALIDATION_ATTEMPT,
+                "DB lifecycle preflight blocked validate-edit before update",
+                json!(preflight.blockers.clone()),
+            );
+            let timings = json!({
+                "preflight_ms": preflight_ms,
+                "update_ms": 0,
+                "validation_ms": 0,
+                "total_ms": total_start.elapsed().as_millis(),
+            });
+            return mcp_validate_edit_response(
+                &repo_root,
+                &db_path,
+                &db_source,
+                external_db_used,
+                "preflight_blocked",
+                &mode,
+                fail_on_blocking,
+                task_id,
+                edit_intent,
+                expected_touched_files,
+                max_output_bytes,
+                &path_preflight,
+                &preflight,
+                &packet,
+                Value::Null,
+                json!({}),
+                timings,
+                normal_dot_codegraph_existed_before != normal_dot_codegraph.exists(),
+            );
+        }
+
+        let update_start = Instant::now();
+        let update_paths = path_preflight.accepted_pathbufs(&repo_root);
+        let snapshot_options = NormalizedFactSnapshotOptions {
+            include_text_evidence: true,
+            include_path_evidence: true,
+            include_sidecar_freshness: true,
+            ..NormalizedFactSnapshotOptions::default()
+        };
+        let pre_update_dependency_closure_start = Instant::now();
+        let pre_update_dependency_closure =
+            rtds_dependency_closure_for_changed_paths_to_db(&repo_root, &update_paths, &db_path)
+                .map_err(ToolCallError::from)?;
+        let pre_update_dependency_closure_ms =
+            pre_update_dependency_closure_start.elapsed().as_millis();
+        let pre_update_requested_set = pre_update_dependency_closure
+            .requested_changed_files
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let pre_update_closure_paths = pre_update_dependency_closure
+            .closure_files_considered
+            .iter()
+            .filter(|path| !pre_update_requested_set.contains(*path))
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        let old_snapshot_start = Instant::now();
+        let old_graph_delta_snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo_root,
+            &update_paths,
+            &pre_update_closure_paths,
+            &db_path,
+            snapshot_options.clone(),
+        )
+        .map_err(ToolCallError::from)?;
+        let snapshot_old_ms = old_snapshot_start.elapsed().as_millis();
+
+        let summary = update_changed_files_to_db(&repo_root, &update_paths, &db_path)
+            .map_err(ToolCallError::from)?;
+        let update_ms = update_start.elapsed().as_millis();
+        let source_update = serde_json::to_value(&summary).map_err(|error| {
+            ToolCallError::new(
+                "serialization_failed",
+                format!("could not encode validate-edit update summary: {error}"),
+            )
+        })?;
+
+        let post_preflight_start = Instant::now();
+        let post_preflight = inspect_db_lifecycle_preflight(&repo_root, &db_path, None)
+            .map_err(ToolCallError::from)?;
+        let post_preflight_ms = post_preflight_start.elapsed().as_millis();
+
+        let validation_start = Instant::now();
+        let packet = if post_preflight.safe {
+            let delta_requested_paths = if summary
+                .dependency_closure
+                .requested_changed_files
+                .is_empty()
+            {
+                summary.changed_files.clone()
+            } else {
+                summary.dependency_closure.requested_changed_files.clone()
+            };
+            let delta_requested_set = delta_requested_paths
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let delta_changed_paths = delta_requested_paths
+                .iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>();
+            let delta_closure_paths = summary
+                .dependency_closure
+                .closure_files_updated
+                .iter()
+                .filter(|path| !delta_requested_set.contains(*path))
+                .map(PathBuf::from)
+                .collect::<Vec<_>>();
+            let new_snapshot_start = Instant::now();
+            let new_graph_delta_snapshot = snapshot_normalized_facts_for_paths_to_db(
+                &repo_root,
+                &delta_changed_paths,
+                &delta_closure_paths,
+                &db_path,
+                snapshot_options,
+            )
+            .map_err(ToolCallError::from)?;
+            let snapshot_new_ms = new_snapshot_start.elapsed().as_millis();
+            let delta_compute_start = Instant::now();
+            let mut graph_delta_report = compute_entity_source_role_delta(
+                &old_graph_delta_snapshot,
+                &new_graph_delta_snapshot,
+                EntitySourceRoleDeltaOptions {
+                    max_items_per_category: usize::MAX,
+                },
+            );
+            graph_delta_report.apply_dependency_closure_summary(&summary.dependency_closure);
+            graph_delta_report.timings.diff_closure_ms = pre_update_dependency_closure_ms;
+            let delta_compute_ms = delta_compute_start.elapsed().as_millis();
+            let store = SqliteGraphStore::open_read_only(&db_path).map_err(mcp_store_error)?;
+            mcp_validate_edit_validation_packet(
+                &repo_root,
+                &store,
+                path_preflight.accepted_paths.clone(),
+                &post_preflight,
+                source_update.clone(),
+                &graph_delta_report,
+                json!({
+                    "pre_update_dependency_closure_ms": pre_update_dependency_closure_ms,
+                    "snapshot_old_ms": snapshot_old_ms,
+                    "snapshot_new_ms": snapshot_new_ms,
+                    "delta_compute_ms": delta_compute_ms,
+                }),
+            )?
+        } else {
+            mcp_validate_edit_diagnostic_packet(
+                path_preflight.accepted_paths.clone(),
+                &db_path,
+                &post_preflight,
+                CG_MVP3_STALE_OR_FOREIGN_DB_VALIDATION_ATTEMPT,
+                "DB lifecycle preflight blocked validate-edit after update",
+                json!(post_preflight.blockers.clone()),
+            )
+        };
+        let validation_ms = validation_start.elapsed().as_millis();
+        let timings = json!({
+            "preflight_ms": preflight_ms,
+            "pre_update_dependency_closure_ms": pre_update_dependency_closure_ms,
+            "snapshot_old_ms": snapshot_old_ms,
+            "update_ms": update_ms,
+            "post_update_preflight_ms": post_preflight_ms,
+            "validation_ms": validation_ms,
+            "total_ms": total_start.elapsed().as_millis(),
+        });
+        let packet_status = serde_json::to_value(packet.status)
+            .ok()
+            .and_then(|value| value.as_str().map(ToString::to_string))
+            .unwrap_or_else(|| "unknown".to_string());
+        let status = if packet.hard_interrupt_available {
+            "blocking_graph_error".to_string()
+        } else {
+            packet_status
+        };
+        mcp_validate_edit_response(
+            &repo_root,
+            &db_path,
+            &db_source,
+            external_db_used,
+            &status,
+            &mode,
+            fail_on_blocking,
+            task_id,
+            edit_intent,
+            expected_touched_files,
+            max_output_bytes,
+            &path_preflight,
+            &post_preflight,
+            &packet,
+            source_update,
+            json!({}),
+            timings,
+            normal_dot_codegraph_existed_before != normal_dot_codegraph.exists(),
+        )
+    }
+
     fn search_symbols(&self, args: &Map<String, Value>) -> Result<Value, ToolCallError> {
         let query = required_string(args, "query")?;
         let limit = optional_limit(args)?;
@@ -1799,6 +2101,70 @@ impl McpServer {
             })
     }
 
+    fn validate_edit_repo_root(&self, args: &Map<String, Value>) -> Result<PathBuf, ToolCallError> {
+        let root = PathBuf::from(required_string(args, "repo")?);
+        if !root.exists() {
+            return Err(ToolCallError::new(
+                "repo_not_found",
+                format!("repository path does not exist: {}", root.display()),
+            ));
+        }
+        fs::canonicalize(&root).map_err(|error| {
+            ToolCallError::new(
+                "repo_not_found",
+                format!(
+                    "could not resolve repository path {}: {error}",
+                    root.display()
+                ),
+            )
+        })
+    }
+
+    fn validate_edit_db_path(
+        &self,
+        args: &Map<String, Value>,
+        repo_root: &Path,
+    ) -> Result<(PathBuf, String, bool), ToolCallError> {
+        if let Some(profile) = optional_string(args, "profile") {
+            if profile != PRODUCTION_AGENT_USE_PROFILE_NAME {
+                return Err(ToolCallError::new(
+                    "unsupported_profile",
+                    format!(
+                        "codegraph.validate_edit supports only profile={PRODUCTION_AGENT_USE_PROFILE_NAME}; got {profile}"
+                    ),
+                ));
+            }
+        }
+
+        if let Some(path) = optional_string(args, "db").or_else(|| optional_string(args, "db_path"))
+        {
+            let db_path = if Path::new(&path).is_absolute() {
+                PathBuf::from(path)
+            } else {
+                repo_root.join(path)
+            };
+            let external = mcp_db_path_outside_workspace(&db_path, repo_root);
+            return Ok((db_path, "explicit_db_argument".to_string(), external));
+        }
+
+        if paths_equivalent(repo_root, &self.config.repo_root)
+            && mcp_db_looks_like_agent_use_profile(&self.config.db_path)
+            && !paths_equivalent(&self.config.db_path, &default_db_path(repo_root))
+        {
+            let external = mcp_db_path_outside_workspace(&self.config.db_path, repo_root);
+            return Ok((
+                self.config.db_path.clone(),
+                "production_agent_use_profile".to_string(),
+                external,
+            ));
+        }
+
+        Err(ToolCallError::new(
+            "profile_db_unresolved",
+            "codegraph.validate_edit requires an explicit db/db_path or a configured production-agent-use profile DB; it never falls back to repo-local .codegraph",
+        ))
+    }
+
     fn open_store(&self, args: &Map<String, Value>) -> Result<SqliteGraphStore, ToolCallError> {
         let (store, _preflight) = self.open_store_with_preflight(args)?;
         Ok(store)
@@ -2083,6 +2449,10 @@ fn tool_definition(name: &str) -> Value {
             "Prune stale facts and re-index a supplied list of changed files.",
             repo_schema(vec![("files", "array", "Repository-relative file paths.")]),
         ),
+        MCP_VALIDATE_EDIT_TOOL_NAME => (
+            "Run changed-file update plus MCP validate-edit preflight over a production profile or explicit DB.",
+            validate_edit_schema(),
+        ),
         "codegraph.search_symbols" => (
             "Find indexed entities by exact symbol and FTS-backed symbol evidence.",
             search_schema(),
@@ -2125,13 +2495,18 @@ fn tool_definition(name: &str) -> Value {
 fn tool_annotations(name: &str) -> Value {
     let read_only = !matches!(
         name,
-        "codegraph.index_repo" | "codegraph.update_changed_files"
+        "codegraph.index_repo" | "codegraph.update_changed_files" | MCP_VALIDATE_EDIT_TOOL_NAME
     );
+    let idempotent = !matches!(name, MCP_VALIDATE_EDIT_TOOL_NAME);
     json!({
         "readOnlyHint": read_only,
         "destructiveHint": false,
-        "idempotentHint": true,
+        "idempotentHint": idempotent,
         "localOnly": true,
+        "sourceMutation": false,
+        "writesSourceFiles": false,
+        "startupAutoIndex": false,
+        "dotCodegraphFallback": false,
         "safety": mcp_safety_metadata(read_only),
     })
 }
@@ -2229,6 +2604,33 @@ fn output_schema_for_tool(name: &str) -> Value {
                 json!({"type": "string"}),
             );
             properties.insert("vector_audit_status".to_string(), json!({"type": "string"}));
+        }
+        MCP_VALIDATE_EDIT_TOOL_NAME => {
+            properties.insert("validation_packet".to_string(), json!({"type": "object"}));
+            properties.insert(
+                "hard_interrupt_available".to_string(),
+                json!({"type": "boolean"}),
+            );
+            properties.insert(
+                "hard_interrupt".to_string(),
+                json!({"type": ["object", "null"]}),
+            );
+            properties.insert(
+                "must_fix_before_continuing".to_string(),
+                json!({"type": "boolean"}),
+            );
+            properties.insert("changed_files".to_string(), json!({"type": "array"}));
+            properties.insert("rejected_paths".to_string(), json!({"type": "array"}));
+            properties.insert("no_op_paths".to_string(), json!({"type": "array"}));
+            properties.insert("warnings".to_string(), json!({"type": "array"}));
+            properties.insert("unknowns".to_string(), json!({"type": "array"}));
+            properties.insert("diagnostics".to_string(), json!({"type": "array"}));
+            properties.insert("claimability".to_string(), json!({"type": "object"}));
+            properties.insert("lifecycle".to_string(), json!({"type": "object"}));
+            properties.insert("recovery_commands".to_string(), json!({"type": "array"}));
+            properties.insert("omitted_count".to_string(), json!({"type": "integer"}));
+            properties.insert("expansion_handles".to_string(), json!({"type": "array"}));
+            properties.insert("timings".to_string(), json!({"type": "object"}));
         }
         _ => {}
     }
@@ -2336,6 +2738,62 @@ fn repo_schema(required: Vec<(&str, &str, &str)>) -> Value {
         "type": "object",
         "properties": properties,
         "required": required_names,
+        "additionalProperties": false,
+    })
+}
+
+fn validate_edit_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "repo": {
+                "type": "string",
+                "description": "Repository root. Required so validate-edit can resolve the intended production profile boundary."
+            },
+            "db": {
+                "type": ["string", "null"],
+                "description": "Explicit SQLite DB path. If omitted, the server must already be configured with a production-agent-use profile DB."
+            },
+            "db_path": {
+                "type": ["string", "null"],
+                "description": "Alias for db."
+            },
+            "profile": {
+                "type": ["string", "null"],
+                "enum": [PRODUCTION_AGENT_USE_PROFILE_NAME, null],
+                "description": "Optional profile name. Only production-agent-use is accepted."
+            },
+            "changed_files": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "description": "Changed repository-relative file paths to update and validate."
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["agent-json", "explain", "audit-json"],
+                "description": "Detail mode for the validation packet."
+            },
+            "fail_on_blocking": {
+                "type": "boolean",
+                "description": "Recorded in the packet; MCP validation blockers remain structured success responses."
+            },
+            "task_id": {
+                "type": ["string", "null"]
+            },
+            "edit_intent": {
+                "type": ["string", "null"]
+            },
+            "expected_touched_files": {
+                "type": "array",
+                "items": {"type": "string"}
+            },
+            "max_output_bytes": {
+                "type": ["integer", "null"],
+                "minimum": 1
+            }
+        },
+        "required": ["repo", "changed_files"],
         "additionalProperties": false,
     })
 }
@@ -2808,6 +3266,1092 @@ fn mcp_context_pack_response_mode(args: &Map<String, Value>) -> Result<String, T
             format!("response_mode must be compact, verbose, or explain; got {other}"),
         )),
     }
+}
+
+fn optional_nullable_usize(
+    args: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<usize>, ToolCallError> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .map(|number| Some(number as usize))
+            .ok_or_else(|| {
+                ToolCallError::new("invalid_input", format!("{key} must be an integer"))
+            }),
+    }
+}
+
+fn required_validate_edit_changed_files(
+    args: &Map<String, Value>,
+) -> Result<Vec<String>, ToolCallError> {
+    if args.contains_key("changed_files") {
+        required_string_array(args, "changed_files")
+    } else {
+        Err(ToolCallError::new(
+            "invalid_input",
+            "required string array argument missing or empty: changed_files",
+        ))
+    }
+}
+
+fn mcp_validate_edit_mode(args: &Map<String, Value>) -> Result<String, ToolCallError> {
+    match optional_string(args, "mode")
+        .unwrap_or_else(|| "agent-json".to_string())
+        .replace('_', "-")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "agent-json" | "json" | "compact" => Ok("agent-json".to_string()),
+        "explain" => Ok("explain".to_string()),
+        "audit-json" | "audit" => Ok("audit-json".to_string()),
+        other => Err(ToolCallError::new(
+            "invalid_input",
+            format!("mode must be agent-json, explain, or audit-json; got {other}"),
+        )),
+    }
+}
+
+fn mcp_validate_edit_validation_rules() -> Vec<ValidationRule> {
+    let mut rules = vec![
+        ValidationRule::exact_blocking(
+            CG_MVP3_CALLS_DANGLING_TARGET,
+            ValidationRuleKind::DanglingTarget,
+            Some(RelationKind::Calls),
+            "new exact CALLS edges must resolve to a current target entity",
+            "Define the missing callee or update the exact call relation.",
+        ),
+        ValidationRule::exact_blocking(
+            CG_MVP3_IMPORTS_DANGLING_TARGET,
+            ValidationRuleKind::DanglingTarget,
+            Some(RelationKind::Imports),
+            "new exact IMPORTS edges must resolve to a current import target entity",
+            "Define the imported target or update the exact import relation.",
+        ),
+        ValidationRule::exact_blocking(
+            CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH,
+            ValidationRuleKind::BrokenContract,
+            Some(RelationKind::AliasedBy),
+            "exact import alias edges must resolve to their current target",
+            "Update the alias import or restore the aliased target.",
+        ),
+    ];
+    let mut config_text = ValidationRule::exact_blocking(
+        CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING,
+        ValidationRuleKind::UnsupportedRelationBoundary,
+        None,
+        "Config.in/package/build-system text evidence is warning-only by default",
+        "Use text evidence as no-proof fallback context; do not invent graph edges from text-only package evidence.",
+    );
+    config_text.supported_relation_status = SupportedRelationStatus::ExactWarningCandidate;
+    config_text.proof_requirement = ValidationProofRequirement::NotGraphProof;
+    config_text.source_span_requirement = ValidationSourceSpanRequirement::Optional;
+    config_text.provenance_requirement = ValidationProvenanceRequirement::NotApplicable;
+    config_text.source_role_requirement = ValidationSourceRoleRequirement::NotApplicable;
+    config_text.lifecycle_requirement = ValidationLifecycleRequirement::DiagnosticReadOnly;
+    config_text.activation_condition =
+        "Stage 0 text evidence changed for Config.in, package metadata, or build-system text"
+            .to_string();
+    rules.push(config_text);
+    rules
+}
+
+fn mcp_validate_edit_validation_packet(
+    repo_root: &Path,
+    store: &SqliteGraphStore,
+    changed_files: Vec<String>,
+    preflight: &DbLifecyclePreflight,
+    graph_delta: Value,
+    delta: &EntitySourceRoleDeltaReport,
+    delta_metrics: Value,
+) -> Result<ValidationPacket, ToolCallError> {
+    let lifecycle = mcp_validate_edit_lifecycle_from_preflight(preflight);
+    let rules = mcp_validate_edit_validation_rules();
+    let mut findings =
+        mcp_validate_edit_collect_graph_findings(store, &changed_files, &rules, lifecycle.clone())?;
+    findings.extend(mcp_validate_edit_collect_delta_findings(
+        repo_root,
+        delta,
+        &rules,
+        lifecycle.clone(),
+    )?);
+    let mut packet = ValidationPacket::new(
+        changed_files,
+        json!({
+            "status": "updated",
+            "source_update_surface": "mcp_validate_edit_shared_indexer",
+            "summary": graph_delta,
+            "normalized_delta_summary": mcp_validate_edit_delta_summary_json(delta),
+            "delta_metrics": delta_metrics,
+        }),
+        findings,
+        rules,
+        Vec::new(),
+        mcp_validate_edit_claimability_json(preflight, &lifecycle),
+        mcp_validate_edit_proof_ladder_json(delta),
+        mcp_validate_edit_lifecycle_json(preflight, &lifecycle),
+    )
+    .with_eligible_hard_interrupts(format!("unix_ms:{}", unix_time_ms()));
+    packet.relation_family_status = json!({
+        "calls": "exact_dangling_and_removed_target_checked",
+        "imports": "exact_dangling_and_removed_target_checked",
+        "aliases": "exact_alias_target_checked",
+        "reads_writes_routes_tests_config": "not_checked_by_mcp_validate_edit_v1",
+    });
+    packet.activation_gate_state = json!({
+        "mcp_validate_edit": "enabled",
+        "editor_daemon_integration": "not_implemented",
+        "startup_auto_index": false,
+        "dot_codegraph_fallback": false,
+    });
+    Ok(packet)
+}
+
+fn mcp_validate_edit_delta_summary_json(delta: &EntitySourceRoleDeltaReport) -> Value {
+    json!({
+        "status": delta.status,
+        "ready_to_report": delta.ready_to_report,
+        "claimable": delta.claimable,
+        "diagnostic_only": delta.diagnostic_only,
+        "entities_added_count": delta.entities_added_count,
+        "entities_removed_count": delta.entities_removed_count,
+        "entities_changed_count": delta.entities_changed_count,
+        "edges_added_count": delta.edges_added_count,
+        "edges_removed_count": delta.edges_removed_count,
+        "edges_changed_count": delta.edges_changed_count,
+        "closure_files_updated": delta.closure_files_updated,
+        "closure_budget_hit": delta.closure_budget_hit,
+        "warnings": delta.warnings,
+        "omission": delta.omission,
+    })
+}
+
+fn mcp_validate_edit_proof_ladder_json(delta: &EntitySourceRoleDeltaReport) -> Value {
+    let mut proof_ladder =
+        serde_json::to_value(&delta.proof_ladder_changes).unwrap_or_else(|_| json!({}));
+    if let Some(object) = proof_ladder.as_object_mut() {
+        object.insert(
+            "graph_delta_surface".to_string(),
+            json!("changed_file_update_with_normalized_old_new_delta"),
+        );
+        object.insert("text_evidence_is_not_graph_proof".to_string(), json!(true));
+        object.insert("public_claim".to_string(), json!(false));
+    }
+    proof_ladder
+}
+
+fn mcp_validate_edit_collect_graph_findings(
+    store: &SqliteGraphStore,
+    changed_files: &[String],
+    rules: &[ValidationRule],
+    lifecycle: ValidationLifecycleState,
+) -> Result<Vec<ValidationFinding>, ToolCallError> {
+    let mut findings = Vec::new();
+    let mut seen_edge_rule = BTreeSet::new();
+    for changed_file in changed_files {
+        for edge in store
+            .list_edges_by_file(changed_file)
+            .map_err(mcp_store_error)?
+        {
+            let Some(rule) = mcp_validate_edit_rule_for_edge(&edge, rules) else {
+                continue;
+            };
+            if !mcp_validate_edit_exactness_is_proof_grade(edge.exactness) {
+                continue;
+            }
+            let target_id = mcp_validate_edit_edge_target_id(&edge).to_string();
+            let target = store.get_entity(&target_id).map_err(mcp_store_error)?;
+            if target.is_some() {
+                continue;
+            }
+            let key = format!("{}:{}", rule.validation_rule_id, edge.id);
+            if !seen_edge_rule.insert(key) {
+                continue;
+            }
+            let source_role_allowed =
+                mcp_validate_edit_source_role_allowed(store, &edge).map_err(mcp_store_error)?;
+            let reason = match edge.relation {
+                RelationKind::Calls => {
+                    "current exact CALLS edge was reverified from the store and its target entity is absent"
+                }
+                RelationKind::AliasedBy => {
+                    "current exact import alias edge was reverified from the store and its target entity is absent"
+                }
+                _ => {
+                    "current exact import edge was reverified from the store and its target entity is absent"
+                }
+            };
+            let mut input = ValidationReverificationInput::exact_graph_source(
+                lifecycle.clone(),
+                edge.id.clone(),
+                reason,
+            );
+            input.source_role_allowed = source_role_allowed;
+            input.provenance_required = edge.derived;
+            input.provenance_present = !edge.derived || !edge.provenance_edges.is_empty();
+            let mut finding = classify_validation_finding(
+                rule,
+                format!(
+                    "finding://mcp_validate_edit/{}/{}",
+                    rule.validation_rule_id, edge.id
+                ),
+                input,
+            );
+            finding.affected_edge =
+                mcp_validate_edit_validation_edge_json(&edge, &target_id, target.as_ref());
+            finding.affected_entity = json!({
+                "entity_id": target_id,
+                "missing": true,
+            });
+            let affected_file = normalize_repo_relative_path(&edge.source_span.repo_relative_path);
+            finding.file = Some(affected_file.clone());
+            finding.affected_file = Some(affected_file);
+            finding.source_span = Some(edge.source_span.clone());
+            finding.source_role = Some(classify_edge_evidence_role(&edge).role);
+            finding.relation_kind = Some(edge.relation);
+            finding.exactness = Some(edge.exactness);
+            finding.provenance = json!({
+                "derived": edge.derived,
+                "provenance_edges": edge.provenance_edges,
+                "provenance_required": edge.derived,
+                "provenance_present": !edge.derived || !edge.provenance_edges.is_empty(),
+            });
+            finding.recommended_fix = Some(rule.docs_summary.clone());
+            finding.suggested_next_steps = vec![rule.docs_summary.clone()];
+            finding.expansion_handle = Some(format!("validation_packet:edge:{}", edge.id));
+            findings.push(finding);
+        }
+    }
+    Ok(findings)
+}
+
+fn mcp_validate_edit_collect_delta_findings(
+    repo_root: &Path,
+    delta: &EntitySourceRoleDeltaReport,
+    rules: &[ValidationRule],
+    lifecycle: ValidationLifecycleState,
+) -> Result<Vec<ValidationFinding>, ToolCallError> {
+    if !lifecycle.is_claimable_current() {
+        return Ok(Vec::new());
+    }
+    let rule_by_id = rules
+        .iter()
+        .map(|rule| (rule.validation_rule_id.as_str(), rule))
+        .collect::<BTreeMap<_, _>>();
+    let removed_entity_ids = delta
+        .entities_removed
+        .iter()
+        .filter_map(mcp_validate_edit_entity_delta_id)
+        .collect::<BTreeSet<_>>();
+    let mut findings = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for entry in delta
+        .edges_removed
+        .iter()
+        .filter(|entry| mcp_validate_edit_delta_relation_supported(entry.relation))
+    {
+        if !mcp_validate_edit_exactness_is_proof_grade(entry.exactness) {
+            continue;
+        }
+        let target_id = mcp_validate_edit_delta_target_id(entry);
+        if !removed_entity_ids.contains(target_id) {
+            continue;
+        }
+        if !mcp_validate_edit_removed_delta_span_still_names_target(repo_root, entry)? {
+            continue;
+        }
+        let rule_id = match entry.relation {
+            RelationKind::Calls => CG_MVP3_CALLS_DANGLING_TARGET,
+            RelationKind::AliasedBy => CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH,
+            RelationKind::Imports => CG_MVP3_IMPORTS_DANGLING_TARGET,
+            _ => continue,
+        };
+        let Some(rule) = rule_by_id.get(rule_id).copied() else {
+            continue;
+        };
+        let key = format!("{}:{}", rule.validation_rule_id, entry.edge_id);
+        if !seen.insert(key) {
+            continue;
+        }
+        findings.push(mcp_validate_edit_delta_finding(
+            rule,
+            entry,
+            lifecycle.clone(),
+            target_id,
+        )?);
+    }
+
+    let mut warned_text_paths = BTreeSet::<String>::new();
+    for entry in &delta.text_evidence_changed {
+        let path = normalize_repo_relative_path(&entry.repo_relative_path);
+        if !mcp_validate_edit_path_is_config_package_text_evidence(&path)
+            || !warned_text_paths.insert(path.clone())
+        {
+            continue;
+        }
+        let Some(rule) = rule_by_id
+            .get(CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING)
+            .copied()
+        else {
+            continue;
+        };
+        let affected_delta = serde_json::to_value(entry).map_err(|error| {
+            ToolCallError::new(
+                "serialization_failed",
+                format!("could not encode validate-edit text warning: {error}"),
+            )
+        })?;
+        findings.push(mcp_validate_edit_text_evidence_warning(
+            rule,
+            lifecycle.clone(),
+            &path,
+            affected_delta,
+        ));
+    }
+
+    Ok(findings)
+}
+
+fn mcp_validate_edit_entity_delta_id(entry: &codegraph_index::EntityDeltaEntry) -> Option<String> {
+    entry
+        .old
+        .as_ref()
+        .map(|summary| summary.entity_id.clone())
+        .or_else(|| entry.new.as_ref().map(|summary| summary.entity_id.clone()))
+}
+
+fn mcp_validate_edit_delta_relation_supported(relation: RelationKind) -> bool {
+    matches!(
+        relation,
+        RelationKind::Calls | RelationKind::Imports | RelationKind::AliasedBy
+    )
+}
+
+fn mcp_validate_edit_delta_target_id(entry: &EdgeDeltaEntry) -> &str {
+    if entry.relation == RelationKind::AliasedBy {
+        &entry.source_entity_id
+    } else {
+        &entry.target_entity_id
+    }
+}
+
+fn mcp_validate_edit_delta_target_endpoint(
+    entry: &EdgeDeltaEntry,
+) -> &codegraph_index::EdgeDeltaEndpointSummary {
+    if entry.relation == RelationKind::AliasedBy {
+        &entry.source_endpoint
+    } else {
+        &entry.target_endpoint
+    }
+}
+
+fn mcp_validate_edit_path_is_config_package_text_evidence(path: &str) -> bool {
+    let normalized = normalize_repo_relative_path(path);
+    let lower = normalized.to_ascii_lowercase();
+    let file_name = lower.rsplit('/').next().unwrap_or(lower.as_str());
+    lower.ends_with(".mk")
+        || lower.ends_with(".adoc")
+        || lower.ends_with(".asciidoc")
+        || lower.ends_with(".md")
+        || lower.ends_with(".markdown")
+        || lower.ends_with(".sh")
+        || file_name == "config.in"
+        || file_name == "kconfig"
+        || file_name.starts_with("kconfig.")
+        || lower.contains("/kconfig/")
+        || (lower.starts_with("package/")
+            && (lower.ends_with(".hash") || lower.ends_with(".mk") || file_name == "config.in"))
+        || ((lower.starts_with("support/scripts/") || lower.starts_with("support/download/"))
+            && !file_name.contains('.'))
+}
+
+fn mcp_validate_edit_text_evidence_warning(
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    repo_relative_path: &str,
+    affected_delta: Value,
+) -> ValidationFinding {
+    let reason = "Config.in/package/build-system text evidence changed; this is warning/no-proof fallback context, not broken graph proof";
+    let evidence_id = format!("text://{repo_relative_path}");
+    let mut input =
+        ValidationReverificationInput::exact_graph_source(lifecycle, evidence_id.clone(), reason);
+    input.relation_exact = false;
+    input.graph_source_relation_reverified = false;
+    input.source_span_required = false;
+    input.source_span_present = false;
+    input.provenance_required = false;
+    input.provenance_present = true;
+    input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+        ValidationEvidenceKind::TextEvidence,
+        evidence_id,
+        reason,
+    )];
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mcp_validate_edit/config-package/text-warning/{:016x}",
+            mcp_validate_edit_stable_u64(repo_relative_path)
+        ),
+        input,
+    );
+    finding.classification = ValidationClassification::Warn;
+    finding.blocking_level = ValidationBlockingLevel::Warning;
+    finding.proof_status = ValidationProofStatus::NotGraphProof;
+    finding.proof_level = "not_graph_proof".to_string();
+    finding.proof_strength = "text_evidence_warning".to_string();
+    finding.affected_delta = affected_delta;
+    finding.affected_file = Some(normalize_repo_relative_path(repo_relative_path));
+    finding.source_span = None;
+    finding.source_role = Some(EvidenceRole::Unknown);
+    finding.relation_kind = None;
+    finding.exactness = None;
+    finding.provenance = json!({
+        "required": false,
+        "present": false,
+        "text_evidence_only": true,
+    });
+    finding.old_fact_claim_state = "text_evidence_only".to_string();
+    finding.new_fact_claim_state = "text_evidence_only".to_string();
+    finding.reverified_graph_source_proof = false;
+    finding.reason = reason.to_string();
+    finding.recommended_fix = Some(
+        "Use text evidence as no-proof context; do not promote it to graph proof.".to_string(),
+    );
+    finding.suggested_next_steps = vec![
+        "Use text evidence as no-proof context; do not promote it to graph proof.".to_string(),
+    ];
+    finding.diagnostics = vec!["text_evidence_not_graph_proof".to_string()];
+    finding
+}
+
+fn mcp_validate_edit_stable_u64(value: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in value.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn mcp_validate_edit_removed_delta_span_still_names_target(
+    repo_root: &Path,
+    entry: &EdgeDeltaEntry,
+) -> Result<bool, ToolCallError> {
+    let span_text = match mcp_validate_edit_source_span_text(repo_root, &entry.source_span) {
+        Ok(text) => text,
+        Err(_) => return Ok(false),
+    };
+    let endpoint = mcp_validate_edit_delta_target_endpoint(entry);
+    let mut target_tokens = Vec::new();
+    if let Some(name) = endpoint.name.as_deref() {
+        target_tokens.push(name.to_string());
+    }
+    if let Some(qualified_name) = endpoint.qualified_name.as_deref() {
+        target_tokens.extend(
+            qualified_name
+                .split([':', '.', '/', '\\'])
+                .filter(|token| !token.is_empty())
+                .map(ToOwned::to_owned),
+        );
+    }
+    if let Some(path) = endpoint.repo_relative_path.as_deref() {
+        let normalized = normalize_repo_relative_path(path);
+        target_tokens.extend(
+            normalized
+                .split(['/', '\\', '.'])
+                .filter(|token| !token.is_empty())
+                .map(ToOwned::to_owned),
+        );
+        if let Some(stem) = Path::new(&normalized)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+        {
+            target_tokens.push(stem.to_string());
+        }
+    }
+    target_tokens.extend(
+        mcp_validate_edit_delta_target_id(entry)
+            .split([':', '.', '/', '\\'])
+            .filter(|token| !token.is_empty())
+            .map(ToOwned::to_owned),
+    );
+    target_tokens.sort();
+    target_tokens.dedup();
+    Ok(target_tokens
+        .iter()
+        .any(|token| token.len() >= 2 && span_text.contains(token)))
+}
+
+fn mcp_validate_edit_source_span_text(
+    repo_root: &Path,
+    source_span: &SourceSpan,
+) -> Result<String, ToolCallError> {
+    let path = repo_root.join(&source_span.repo_relative_path);
+    let contents = fs::read_to_string(&path).map_err(|error| {
+        ToolCallError::new(
+            "source_span_recheck_failed",
+            format!("could not read source span {}: {error}", source_span),
+        )
+    })?;
+    let lines = contents.lines().collect::<Vec<_>>();
+    if source_span.start_line == 0 || source_span.end_line < source_span.start_line {
+        return Err(ToolCallError::new(
+            "source_span_recheck_failed",
+            format!("invalid source span {source_span}"),
+        ));
+    }
+    let start_index = source_span.start_line.saturating_sub(1) as usize;
+    let end_index = source_span.end_line.saturating_sub(1) as usize;
+    if start_index >= lines.len() {
+        return Err(ToolCallError::new(
+            "source_span_recheck_failed",
+            format!("source span {source_span} starts past end of file"),
+        ));
+    }
+    let end_index = end_index.min(lines.len().saturating_sub(1));
+    let mut selected = Vec::new();
+    for (offset, line) in lines[start_index..=end_index].iter().enumerate() {
+        let absolute_line_index = start_index + offset;
+        let mut chars = line.chars().collect::<Vec<_>>();
+        if absolute_line_index == start_index {
+            if let Some(start_column) = source_span.start_column {
+                let start_column = start_column.saturating_sub(1) as usize;
+                chars = chars.into_iter().skip(start_column).collect();
+            }
+        }
+        if absolute_line_index == end_index {
+            if let Some(end_column) = source_span.end_column {
+                let end_column = end_column.saturating_sub(1) as usize;
+                chars = chars.into_iter().take(end_column).collect();
+            }
+        }
+        selected.push(chars.into_iter().collect::<String>());
+    }
+    Ok(selected.join("\n"))
+}
+
+fn mcp_validate_edit_delta_finding(
+    rule: &ValidationRule,
+    entry: &EdgeDeltaEntry,
+    lifecycle: ValidationLifecycleState,
+    target_id: &str,
+) -> Result<ValidationFinding, ToolCallError> {
+    let reason = match entry.relation {
+        RelationKind::Calls => {
+            "removed exact CALLS delta was reverified against current source text and its target entity is absent"
+        }
+        RelationKind::AliasedBy => {
+            "removed exact import alias delta was reverified against current source text and its target entity is absent"
+        }
+        _ => {
+            "removed exact import delta was reverified against current source text and its target entity is absent"
+        }
+    };
+    let mut input =
+        ValidationReverificationInput::exact_graph_source(lifecycle, entry.edge_id.clone(), reason);
+    input.source_role_allowed = entry.source_role.is_production();
+    input.provenance_required = entry.derived;
+    input.provenance_present = !entry.derived || !entry.provenance_edges.is_empty();
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mcp_validate_edit/delta/{}/{}",
+            rule.validation_rule_id, entry.edge_id
+        ),
+        input,
+    );
+    let affected_delta = serde_json::to_value(entry).map_err(|error| {
+        ToolCallError::new(
+            "serialization_failed",
+            format!("could not encode validate-edit delta finding: {error}"),
+        )
+    })?;
+    finding.affected_delta = affected_delta;
+    finding.affected_edge = json!({
+        "edge_id": entry.edge_id,
+        "relation_kind": entry.relation,
+        "source_entity_id": entry.source_entity_id,
+        "target_entity_id": entry.target_entity_id,
+        "source_endpoint": entry.source_endpoint,
+        "target_endpoint": entry.target_endpoint,
+        "file": normalize_repo_relative_path(&entry.repo_relative_path),
+        "source_span": entry.source_span,
+        "source_role": entry.source_role,
+        "exactness": entry.exactness,
+        "derived": entry.derived,
+        "provenance_edges": entry.provenance_edges,
+        "edge_class": entry.edge_class,
+        "edge_context": entry.edge_context,
+    });
+    finding.affected_entity = json!({
+        "entity_id": target_id,
+        "missing": true,
+    });
+    let affected_file = normalize_repo_relative_path(&entry.repo_relative_path);
+    finding.file = Some(affected_file.clone());
+    finding.affected_file = Some(affected_file);
+    finding.source_span = Some(entry.source_span.clone());
+    finding.source_role = Some(entry.source_role);
+    finding.relation_kind = Some(entry.relation);
+    finding.exactness = Some(entry.exactness);
+    finding.provenance = json!({
+        "derived": entry.derived,
+        "provenance_edges": entry.provenance_edges,
+        "provenance_required": entry.derived,
+        "provenance_present": !entry.derived || !entry.provenance_edges.is_empty(),
+    });
+    finding.recommended_fix = Some(rule.docs_summary.clone());
+    finding.suggested_next_steps = vec![
+        rule.docs_summary.clone(),
+        "Rerun codegraph.validate_edit after fixing the source relation.".to_string(),
+    ];
+    finding.expansion_handle = Some(format!("validation_packet:delta_edge:{}", entry.edge_id));
+    Ok(finding)
+}
+
+fn mcp_validate_edit_rule_for_edge<'a>(
+    edge: &Edge,
+    rules: &'a [ValidationRule],
+) -> Option<&'a ValidationRule> {
+    let rule_id = match edge.relation {
+        RelationKind::Calls => CG_MVP3_CALLS_DANGLING_TARGET,
+        RelationKind::Imports => CG_MVP3_IMPORTS_DANGLING_TARGET,
+        RelationKind::AliasedBy => CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH,
+        _ => return None,
+    };
+    rules.iter().find(|rule| rule.validation_rule_id == rule_id)
+}
+
+fn mcp_validate_edit_edge_target_id(edge: &Edge) -> &str {
+    if edge.relation == RelationKind::AliasedBy {
+        &edge.head_id
+    } else {
+        &edge.tail_id
+    }
+}
+
+fn mcp_validate_edit_source_role_allowed(
+    store: &SqliteGraphStore,
+    edge: &Edge,
+) -> Result<bool, codegraph_store::StoreError> {
+    let edge_role = classify_edge_evidence_role(edge).role;
+    if edge_role.is_production() {
+        return Ok(true);
+    }
+    let head_role = store
+        .get_entity(&edge.head_id)?
+        .as_ref()
+        .map(classify_entity_source_role)
+        .map(|decision| decision.role)
+        .unwrap_or(edge_role);
+    Ok(head_role == EvidenceRole::Production)
+}
+
+fn mcp_validate_edit_exactness_is_proof_grade(exactness: Exactness) -> bool {
+    matches!(
+        exactness,
+        Exactness::Exact
+            | Exactness::CompilerVerified
+            | Exactness::LspVerified
+            | Exactness::ParserVerified
+    )
+}
+
+fn mcp_validate_edit_validation_edge_json(
+    edge: &Edge,
+    target_id: &str,
+    target: Option<&Entity>,
+) -> Value {
+    json!({
+        "edge_id": edge.id,
+        "relation_kind": edge.relation,
+        "source_entity_id": edge.head_id,
+        "target_entity_id": target_id,
+        "target_present": target.is_some(),
+        "target": target,
+        "file": normalize_repo_relative_path(&edge.source_span.repo_relative_path),
+        "source_span": edge.source_span,
+        "source_role": classify_edge_evidence_role(edge).role,
+        "exactness": edge.exactness,
+        "derived": edge.derived,
+        "provenance_edges": edge.provenance_edges,
+        "edge_class": edge.edge_class,
+        "edge_context": edge.context,
+    })
+}
+
+fn mcp_validate_edit_diagnostic_packet(
+    changed_files: Vec<String>,
+    db_path: &Path,
+    preflight: &DbLifecyclePreflight,
+    rule_id: &str,
+    reason: &str,
+    affected_delta: Value,
+) -> ValidationPacket {
+    let lifecycle = mcp_validate_edit_lifecycle_from_preflight(preflight);
+    let rule = ValidationRule::diagnostic(
+        rule_id,
+        "validate-edit requires claimable current DB state and in-repo changed paths",
+        "Resolve the validate-edit preflight blocker, then rerun the tool.",
+    );
+    let mut input = ValidationReverificationInput::exact_graph_source(
+        lifecycle.clone(),
+        path_string(db_path),
+        reason.to_string(),
+    );
+    input.graph_source_relation_reverified = false;
+    input.relation_exact = false;
+    input.source_span_required = false;
+    input.source_span_present = false;
+    input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+        ValidationEvidenceKind::Lifecycle,
+        path_string(db_path),
+        reason.to_string(),
+    )];
+    let mut finding = classify_validation_finding(
+        &rule,
+        format!("finding://mcp_validate_edit/preflight/{rule_id}"),
+        input,
+    );
+    finding.affected_delta = affected_delta;
+    finding.reason = reason.to_string();
+    finding.recommended_fix = Some(rule.docs_summary.clone());
+    finding.suggested_next_steps = vec![rule.docs_summary.clone()];
+    ValidationPacket::new(
+        changed_files,
+        json!({
+            "status": "not_run",
+            "source_update_surface": "mcp_validate_edit_shared_indexer",
+            "reason": reason,
+        }),
+        vec![finding],
+        vec![rule],
+        Vec::new(),
+        mcp_validate_edit_claimability_json(preflight, &lifecycle),
+        json!({
+            "graph_delta_surface": "not_run",
+            "text_evidence_is_not_graph_proof": true,
+            "public_claim": false,
+        }),
+        mcp_validate_edit_lifecycle_json(preflight, &lifecycle),
+    )
+}
+
+fn mcp_validate_edit_lifecycle_from_preflight(
+    preflight: &DbLifecyclePreflight,
+) -> ValidationLifecycleState {
+    if preflight.safe {
+        return ValidationLifecycleState::claimable_current();
+    }
+    let kind = preflight
+        .db_problem_kind
+        .as_deref()
+        .unwrap_or("non_claimable");
+    ValidationLifecycleState {
+        claimable: false,
+        current: false,
+        stale: matches!(
+            kind,
+            "repo_head_mismatch" | "scope_mismatch" | "storage_mismatch"
+        ) || preflight
+            .blockers
+            .iter()
+            .any(|blocker| blocker.contains("stale") || blocker.contains("passport")),
+        foreign: kind == "repo_root_mismatch"
+            || preflight
+                .blockers
+                .iter()
+                .any(|blocker| blocker.contains("foreign") || blocker.contains("repo root")),
+        schema_mismatched: preflight.schema_status != "ok",
+        dirty: preflight
+            .db_health
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("interrupted") || reason.contains("dirty")),
+        partial: preflight
+            .db_health
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("partial") || reason.contains("incomplete")),
+        non_claimable_reason: Some(
+            preflight
+                .blockers
+                .first()
+                .cloned()
+                .or_else(|| preflight.db_problem_kind.clone())
+                .unwrap_or_else(|| "db_lifecycle_not_claimable_current".to_string()),
+        ),
+    }
+}
+
+fn mcp_validate_edit_claimability_json(
+    preflight: &DbLifecyclePreflight,
+    lifecycle: &ValidationLifecycleState,
+) -> Value {
+    json!({
+        "claimable": lifecycle.claimable,
+        "current": lifecycle.current,
+        "diagnostic_only": !lifecycle.is_claimable_current(),
+        "candidate_only": false,
+        "graph_proof_available": lifecycle.is_claimable_current(),
+        "non_claimable_reason": lifecycle.non_claimable_reason,
+        "db_problem_kind": preflight.db_problem_kind.clone(),
+        "blockers": preflight.blockers.clone(),
+        "exact_db_path_checked": preflight.exact_db_path_checked.clone(),
+        "public_claim": false,
+    })
+}
+
+fn mcp_validate_edit_lifecycle_json(
+    preflight: &DbLifecyclePreflight,
+    lifecycle: &ValidationLifecycleState,
+) -> Value {
+    json!({
+        "claimable": lifecycle.claimable,
+        "current": lifecycle.current,
+        "stale": lifecycle.stale,
+        "foreign": lifecycle.foreign,
+        "schema_mismatched": lifecycle.schema_mismatched,
+        "dirty": lifecycle.dirty,
+        "partial": lifecycle.partial,
+        "non_claimable_reason": lifecycle.non_claimable_reason,
+        "preflight_safe": preflight.safe,
+        "schema_status": preflight.schema_status.clone(),
+        "passport_status": preflight.db_health.passport_status.clone(),
+        "path_access_status": preflight.path_access_status.clone(),
+        "exact_db_path_checked": preflight.exact_db_path_checked.clone(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mcp_validate_edit_response(
+    repo_root: &Path,
+    db_path: &Path,
+    db_source: &str,
+    external_db_used: bool,
+    status: &str,
+    mode: &str,
+    fail_on_blocking: bool,
+    task_id: Option<String>,
+    edit_intent: Option<String>,
+    expected_touched_files: Vec<String>,
+    max_output_bytes: Option<usize>,
+    path_preflight: &ValidateEditChangedFilesPreflight,
+    preflight: &DbLifecyclePreflight,
+    packet: &ValidationPacket,
+    source_update: Value,
+    extra_metrics: Value,
+    timings: Value,
+    normal_dot_codegraph_mutated: bool,
+) -> Result<Value, ToolCallError> {
+    let full_packet = serde_json::to_value(packet).map_err(|error| {
+        ToolCallError::new(
+            "serialization_failed",
+            format!("could not encode validation packet: {error}"),
+        )
+    })?;
+    let validation_packet = match mode {
+        "agent-json" => packet.compact_agent_json(3),
+        "explain" | "audit-json" => full_packet.clone(),
+        _ => full_packet.clone(),
+    };
+    let expected_missing =
+        mcp_validate_edit_expected_missing(&expected_touched_files, &path_preflight.accepted_paths);
+    let empty_args = Map::new();
+    let staged_availability =
+        mcp_staged_availability(repo_root, db_path, Some(preflight), &empty_args, None);
+    let rtds_freshness =
+        mcp_rtds_freshness_json(repo_root, db_path, Some(preflight), &staged_availability);
+    let mut response_warnings = full_packet
+        .get("warnings")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    response_warnings.extend(path_preflight.warnings.iter().cloned().map(Value::String));
+    let mut response_diagnostics = full_packet
+        .get("diagnostics")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    response_diagnostics.extend(
+        path_preflight
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| serde_json::to_value(diagnostic).ok()),
+    );
+    let mut value = json!({
+        "schema_version": 1,
+        "schema_name": MCP_VALIDATE_EDIT_SCHEMA_NAME,
+        "packet_kind": "validate_edit_packet",
+        "command": "validate-edit",
+        "command_namespace": "mcp",
+        "agent_use_command": "agent-use validate-edit",
+        "mcp_tool_name": MCP_VALIDATE_EDIT_TOOL_NAME,
+        "canonical_cli_surface": "codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> --agent-json",
+        "canonical_mcp_surface": "codegraph.validate_edit",
+        "compatibility_alias_status": "implemented_as_explicit_mcp_tool",
+        "status": status,
+        "repo": path_string(repo_root),
+        "repo_root": path_string(repo_root),
+        "db": path_string(db_path),
+        "db_path": path_string(db_path),
+        "resolved_db": path_string(db_path),
+        "db_source": db_source,
+        "profile_name": if mcp_db_looks_like_agent_use_profile(db_path) { PRODUCTION_AGENT_USE_PROFILE_NAME } else { "explicit-db" },
+        "uses_production_agent_use_resolver": db_source == "production_agent_use_profile",
+        "external_profile_db_used": db_source == "production_agent_use_profile" && external_db_used,
+        "external_db_used": external_db_used,
+        "mcp_uses_external_profile_or_explicit_db": true,
+        "no_dot_codegraph_fallback": true,
+        "normal_dot_codegraph_mutated": normal_dot_codegraph_mutated,
+        "startup_auto_index": false,
+        "public_claim": false,
+        "changed_files": path_preflight.accepted_paths.clone(),
+        "changed_paths": path_preflight.accepted_paths.clone(),
+        "normalized_changed_files": path_preflight.normalized_changed_files.clone(),
+        "changed_paths_requested": path_preflight.requested_paths.clone(),
+        "rejected_paths": path_preflight.rejected_paths.clone(),
+        "no_op_paths": path_preflight.no_op_paths.clone(),
+        "deleted_paths": path_preflight.deleted_paths.clone(),
+        "renamed_paths": path_preflight.renamed_paths.clone(),
+        "ignored_paths": path_preflight.ignored_paths.clone(),
+        "generated_paths": path_preflight.generated_paths.clone(),
+        "outside_repo_paths": path_preflight.outside_repo_paths.clone(),
+        "duplicate_paths": path_preflight.duplicate_paths.clone(),
+        "atomic_temp_paths": path_preflight.atomic_temp_paths.clone(),
+        "partial_input_failures_reported": path_preflight.partial_input_failures_reported,
+        "too_many_changed_files": path_preflight.too_many_changed_files,
+        "max_changed_files": path_preflight.max_changed_files,
+        "no_silent_path_drops": true,
+        "input_policy": path_preflight.input_policy.clone(),
+        "rename_policy": path_preflight.rename_policy.clone(),
+        "per_file_status": path_preflight.per_file_status.clone(),
+        "input_diagnostics": path_preflight.diagnostics.clone(),
+        "input_warnings": path_preflight.warnings.clone(),
+        "validation_packet": validation_packet,
+        "hard_interrupt_available": packet.hard_interrupt_available,
+        "hard_interrupt": packet.hard_interrupt.clone(),
+        "hard_interrupt_not_implemented": false,
+        "must_fix_before_continuing": packet.must_fix_before_continuing,
+        "validation_must_fix_before_continuing": packet.must_fix_before_continuing,
+        "validation_blocking_error_count": packet.blocking_errors.len(),
+        "validation_warning_count": packet.warnings.len(),
+        "validation_unknown_count": packet.unknowns.len(),
+        "warnings": response_warnings,
+        "unknowns": full_packet.get("unknowns").cloned().unwrap_or_else(|| json!([])),
+        "diagnostics": response_diagnostics,
+        "claimability": full_packet.get("claimability").cloned().unwrap_or_else(|| json!({})),
+        "lifecycle": full_packet.get("lifecycle").cloned().unwrap_or_else(|| json!({})),
+        "proof_ladder_changes": full_packet.get("proof_ladder_changes").cloned().unwrap_or_else(|| json!({})),
+        "db_lifecycle_read": mcp_db_lifecycle_preflight_json(preflight),
+        "staged_availability": staged_availability,
+        "rtds_freshness": rtds_freshness,
+        "profile_identity": mcp_profile_identity_json(repo_root, db_path),
+        "recovery_commands": mcp_agent_use_recovery_commands(repo_root),
+        "omitted_count": validation_packet.get("omitted_count").and_then(Value::as_u64).unwrap_or(packet.omitted_count as u64),
+        "expansion_handles": validation_packet.get("expansion_handles").cloned().unwrap_or_else(|| json!(packet.expansion_handles.clone())),
+        "timings": timings,
+        "command_rerun_hint": format!(
+            "codegraph-mcp agent-use validate-edit --repo \"{}\" --changed <path> --agent-json",
+            path_string(repo_root)
+        ),
+        "detail_mode": mode,
+        "compact_default": mode == "agent-json",
+        "fail_on_blocking": fail_on_blocking,
+        "fail_on_blocking_exit_code": 2,
+        "default_exit_zero_on_validation_blocker": true,
+        "json_printed_on_blocking": true,
+        "task_id": task_id,
+        "edit_intent": edit_intent,
+        "expected_touched_files": expected_touched_files,
+        "expected_touched_files_missing": expected_missing,
+        "source_update_status": source_update.get("status").cloned().unwrap_or_else(|| json!("not_run")),
+        "source_update_command": "mcp validate-edit shared indexer update",
+        "source_update_packet": if mode == "agent-json" { Value::Null } else { source_update.clone() },
+        "metrics": {
+            "files_walked": source_update.get("files_walked").cloned().unwrap_or_else(|| json!(0)),
+            "files_read": source_update.get("files_read").cloned().unwrap_or_else(|| json!(0)),
+            "files_hashed": source_update.get("files_hashed").cloned().unwrap_or_else(|| json!(0)),
+            "files_parsed": source_update.get("files_parsed").cloned().unwrap_or_else(|| json!(0)),
+            "facts_inserted": source_update.get("entities").cloned().unwrap_or_else(|| json!(0)),
+            "entities": source_update.get("entities").cloned().unwrap_or_else(|| json!(0)),
+            "edges": source_update.get("edges").cloned().unwrap_or_else(|| json!(0)),
+            "files_indexed": source_update.get("files_indexed").cloned().unwrap_or_else(|| json!(0)),
+            "extra": extra_metrics,
+        },
+    });
+    if let Some(max_output_bytes) = max_output_bytes {
+        value = mcp_validate_edit_apply_output_budget(value, packet, max_output_bytes)?;
+    }
+    Ok(value)
+}
+
+fn mcp_validate_edit_expected_missing(
+    expected_touched_files: &[String],
+    accepted_paths: &[String],
+) -> Vec<String> {
+    let accepted = accepted_paths
+        .iter()
+        .map(|path| normalize_repo_relative_path(path))
+        .collect::<BTreeSet<_>>();
+    expected_touched_files
+        .iter()
+        .filter_map(|path| {
+            let normalized = normalize_repo_relative_path(path);
+            (!accepted.contains(&normalized)).then_some(normalized)
+        })
+        .collect()
+}
+
+fn mcp_validate_edit_apply_output_budget(
+    mut value: Value,
+    packet: &ValidationPacket,
+    max_output_bytes: usize,
+) -> Result<Value, ToolCallError> {
+    let encoded_len = serde_json::to_string(&value)
+        .map_err(|error| ToolCallError::new("serialization_failed", error.to_string()))?
+        .len();
+    if encoded_len <= max_output_bytes {
+        return Ok(value);
+    }
+    let compact_packet = packet.compact_agent_json(1);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("output_truncated".to_string(), json!(true));
+        object.insert("max_output_bytes".to_string(), json!(max_output_bytes));
+        object.insert("pre_truncation_bytes".to_string(), json!(encoded_len));
+        object.insert("source_update_packet".to_string(), Value::Null);
+        object.insert("validation_packet".to_string(), compact_packet.clone());
+        object.insert(
+            "omitted_count".to_string(),
+            compact_packet
+                .get("omitted_count")
+                .cloned()
+                .unwrap_or_else(|| json!(packet.omitted_count)),
+        );
+        object.insert(
+            "expansion_handles".to_string(),
+            compact_packet
+                .get("expansion_handles")
+                .cloned()
+                .unwrap_or_else(|| json!(["validation_packet:full"])),
+        );
+        let after_len = serde_json::to_string(&Value::Object(object.clone()))
+            .map_err(|error| ToolCallError::new("serialization_failed", error.to_string()))?
+            .len();
+        if after_len > max_output_bytes {
+            object.insert(
+                "output_budget_status".to_string(),
+                json!("exceeded_after_safety_field_compaction"),
+            );
+            object.insert("post_truncation_bytes".to_string(), json!(after_len));
+        } else {
+            object.insert("output_budget_status".to_string(), json!("applied"));
+            object.insert("post_truncation_bytes".to_string(), json!(after_len));
+        }
+    }
+    Ok(value)
 }
 
 fn mcp_context_pack_compact_json(
@@ -6182,6 +7726,534 @@ mod tests {
             docs.contains("MCP startup does not surprise-index"),
             "docs must preserve no-auto-index lifecycle language"
         );
+    }
+
+    #[test]
+    fn mcp_validate_edit_tool_schema_and_metadata_match_contract() {
+        let server = McpServer::new(McpServerConfig::default());
+        let tool = server
+            .tool_definitions()
+            .into_iter()
+            .find(|tool| tool["name"].as_str() == Some(MCP_VALIDATE_EDIT_TOOL_NAME))
+            .expect("validate_edit tool definition");
+
+        assert_eq!(tool["annotations"]["readOnlyHint"].as_bool(), Some(false));
+        assert_eq!(
+            tool["annotations"]["destructiveHint"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(tool["annotations"]["sourceMutation"].as_bool(), Some(false));
+        assert_eq!(
+            tool["annotations"]["startupAutoIndex"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            tool["annotations"]["dotCodegraphFallback"].as_bool(),
+            Some(false)
+        );
+        let required = tool["inputSchema"]["required"]
+            .as_array()
+            .expect("required array");
+        assert!(required.iter().any(|field| field.as_str() == Some("repo")));
+        assert!(required
+            .iter()
+            .any(|field| field.as_str() == Some("changed_files")));
+        assert_eq!(
+            tool["inputSchema"]["properties"]["changed_files"]["minItems"].as_u64(),
+            Some(1)
+        );
+        assert!(tool["outputSchema"]["properties"]["validation_packet"].is_object());
+        assert!(tool["outputSchema"]["properties"]["hard_interrupt_available"].is_object());
+    }
+
+    #[test]
+    fn mcp_validate_edit_empty_changed_files_is_tool_error() {
+        let repo = fixture_repo();
+        let db_path = repo
+            .parent()
+            .expect("repo parent")
+            .join("profile-empty")
+            .join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+
+        let error = server
+            .call_tool(
+                MCP_VALIDATE_EDIT_TOOL_NAME,
+                &json!({
+                    "repo": path_string(&repo),
+                    "changed_files": [],
+                    "mode": "agent-json"
+                }),
+            )
+            .expect_err("empty changed_files is invalid input");
+        assert_eq!(error.code, "invalid_input");
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mcp_validate_edit_missing_profile_db_is_structured_success_without_dot_codegraph() {
+        let repo = fixture_repo();
+        let profile_root = repo
+            .parent()
+            .expect("repo parent")
+            .join("app-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        if profile_root.exists() {
+            fs::remove_dir_all(&profile_root).expect("remove stale profile");
+        }
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+
+        let response = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {
+                    "name": MCP_VALIDATE_EDIT_TOOL_NAME,
+                    "arguments": {
+                        "repo": path_string(&repo),
+                        "changed_files": ["src/auth.ts"],
+                        "mode": "agent-json"
+                    }
+                }
+            }))
+            .expect("tools/call response");
+        let result = &response["result"];
+        assert_eq!(result["isError"].as_bool(), Some(false));
+        let packet = &result["structuredContent"];
+        assert_eq!(packet["status"].as_str(), Some("preflight_blocked"));
+        assert_eq!(packet["no_dot_codegraph_fallback"].as_bool(), Some(true));
+        assert_eq!(packet["startup_auto_index"].as_bool(), Some(false));
+        assert_eq!(
+            packet["normal_dot_codegraph_mutated"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(false));
+        assert!(!repo.join(".codegraph").exists());
+        assert!(!db_path.exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mcp_validate_edit_rejects_outside_paths_as_structured_response() {
+        let repo = fixture_repo();
+        let profile_root = repo
+            .parent()
+            .expect("repo parent")
+            .join("app-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        if profile_root.exists() {
+            fs::remove_dir_all(&profile_root).expect("remove stale profile");
+        }
+        fs::create_dir_all(&profile_root).expect("profile root");
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+        ok(server.call_tool(
+            "codegraph.index_repo",
+            &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
+        ));
+
+        let packet = ok(server.call_tool(
+            MCP_VALIDATE_EDIT_TOOL_NAME,
+            &json!({
+                "repo": path_string(&repo),
+                "changed_files": ["..\\outside.ts"],
+                "mode": "audit-json"
+            }),
+        ));
+        assert_eq!(packet["status"].as_str(), Some("rejected"));
+        assert_eq!(
+            packet["rejected_paths"].as_array().expect("rejected").len(),
+            1
+        );
+        assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(false));
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
+    }
+
+    #[test]
+    fn mcp_validate_edit_modes_return_same_safety_fields() {
+        let repo = fixture_repo();
+        let profile_root = repo
+            .parent()
+            .expect("repo parent")
+            .join("app-cccccccccccccccccccccccccccccccc");
+        if profile_root.exists() {
+            fs::remove_dir_all(&profile_root).expect("remove stale profile");
+        }
+        fs::create_dir_all(&profile_root).expect("profile root");
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+        ok(server.call_tool(
+            "codegraph.index_repo",
+            &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
+        ));
+
+        for mode in ["agent-json", "explain", "audit-json"] {
+            let packet = ok(server.call_tool(
+                MCP_VALIDATE_EDIT_TOOL_NAME,
+                &json!({
+                    "repo": path_string(&repo),
+                    "changed_files": ["src/auth.ts"],
+                    "mode": mode,
+                    "expected_touched_files": ["src/auth.ts"]
+                }),
+            ));
+            assert_eq!(packet["detail_mode"].as_str(), Some(mode));
+            assert!(packet["validation_packet"]["status"].is_string());
+            assert!(packet["validation_packet"]["must_fix_before_continuing"].is_boolean());
+            assert!(packet["validation_packet"]["hard_interrupt_available"].is_boolean());
+            assert!(packet["claimability"].is_object());
+            assert!(packet["lifecycle"].is_object());
+            assert_eq!(
+                packet["expected_touched_files_missing"]
+                    .as_array()
+                    .expect("missing expected")
+                    .len(),
+                0
+            );
+        }
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
+    }
+
+    fn mcp_validate_edit_dangling_response(fail_on_blocking: bool) -> (Value, PathBuf, PathBuf) {
+        let repo = fixture_repo();
+        fs::write(
+            repo.join("src").join("dangling.ts"),
+            "export function danglingCaller() {\n  return 1;\n}\n",
+        )
+        .expect("write dangling source");
+        let profile_id = FIXTURE_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+        let profile_root = repo
+            .parent()
+            .expect("repo parent")
+            .join(format!("app-validate-edit-dangling-{profile_id}"));
+        if profile_root.exists() {
+            fs::remove_dir_all(&profile_root).expect("remove stale profile");
+        }
+        fs::create_dir_all(&profile_root).expect("profile root");
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+        ok(server.call_tool(
+            "codegraph.index_repo",
+            &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
+        ));
+        ok(server.call_tool(
+            MCP_VALIDATE_EDIT_TOOL_NAME,
+            &json!({
+                "repo": path_string(&repo),
+                "changed_files": ["src/dangling.ts"],
+                "mode": "agent-json"
+            }),
+        ));
+        let store = SqliteGraphStore::open(&db_path).expect("open validation DB");
+        let caller = mcp_test_function_entity(
+            "src/dangling.ts",
+            "danglingCaller",
+            "dangling.danglingCaller",
+            1,
+        );
+        let missing_target = mcp_test_function_entity(
+            "src/dangling.ts",
+            "missingTarget",
+            "dangling.missingTarget",
+            2,
+        );
+        store.upsert_entity(&caller).expect("upsert caller");
+        store
+            .upsert_edge(&mcp_test_call_edge(
+                &caller,
+                &missing_target,
+                "src/dangling.ts",
+                2,
+            ))
+            .expect("upsert dangling edge");
+        drop(store);
+
+        let response = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "tools/call",
+                "params": {
+                    "name": MCP_VALIDATE_EDIT_TOOL_NAME,
+                    "arguments": {
+                        "repo": path_string(&repo),
+                        "changed_files": ["src/dangling.ts"],
+                        "mode": "agent-json",
+                        "fail_on_blocking": fail_on_blocking
+                    }
+                }
+            }))
+            .expect("tools/call response");
+        (response, repo, profile_root)
+    }
+
+    #[test]
+    fn mcp_hard_interrupt_propagation_correct() {
+        let (response, repo, profile_root) = mcp_validate_edit_dangling_response(true);
+        let result = &response["result"];
+        assert_eq!(result["isError"].as_bool(), Some(false));
+        let packet = &result["structuredContent"];
+
+        assert_eq!(packet["status"].as_str(), Some("blocking_graph_error"));
+        assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(true));
+        assert_eq!(packet["must_fix_before_continuing"].as_bool(), Some(true));
+        assert_eq!(
+            packet["validation_packet"]["hard_interrupt_available"].as_bool(),
+            Some(true)
+        );
+        let rule_counts = &packet["validation_packet"]["summary_counts_by_rule_id"];
+        assert!(
+            rule_counts[CG_MVP3_CALLS_DANGLING_TARGET]
+                .as_u64()
+                .unwrap_or_default()
+                > 0,
+            "expected CALLS dangling rule count: {packet}"
+        );
+        let interrupt = &packet["hard_interrupt"];
+        let errors = interrupt["errors"]
+            .as_array()
+            .expect("hard interrupt errors");
+        assert!(!errors.is_empty(), "{packet}");
+        let first_error = &errors[0];
+        assert_eq!(
+            first_error["validation_rule_id"].as_str(),
+            Some(CG_MVP3_CALLS_DANGLING_TARGET)
+        );
+        assert!(first_error["source_span"].is_object(), "{packet}");
+        assert!(first_error["recommended_fix"]
+            .as_str()
+            .is_some_and(|fix| !fix.is_empty()));
+        assert!(first_error["suggested_next_steps"]
+            .as_array()
+            .is_some_and(|steps| !steps.is_empty()));
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
+    }
+
+    #[test]
+    fn mcp_validate_edit_release_source_fixture_hard_interrupts_without_seeded_store() {
+        let repo = fixture_repo();
+        fs::write(
+            repo.join("src").join("service.js"),
+            "export function removedTarget() {\n  return 1;\n}\n",
+        )
+        .expect("write service source");
+        fs::write(
+            repo.join("src").join("consumer.js"),
+            "import { removedTarget } from './service';\n\nexport function caller() {\n  return removedTarget();\n}\n",
+        )
+        .expect("write consumer source");
+        let profile_id = FIXTURE_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+        let profile_root = repo
+            .parent()
+            .expect("repo parent")
+            .join(format!("app-validate-edit-source-hard-{profile_id}"));
+        if profile_root.exists() {
+            fs::remove_dir_all(&profile_root).expect("remove stale profile");
+        }
+        fs::create_dir_all(&profile_root).expect("profile root");
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+
+        ok(server.call_tool(
+            "codegraph.index_repo",
+            &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
+        ));
+        fs::write(
+            repo.join("src").join("service.js"),
+            "export function keptTarget() {\n  return 1;\n}\n",
+        )
+        .expect("remove target source");
+
+        let response = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "tools/call",
+                "params": {
+                    "name": MCP_VALIDATE_EDIT_TOOL_NAME,
+                    "arguments": {
+                        "repo": path_string(&repo),
+                        "db_path": path_string(&db_path),
+                        "changed_files": ["src/service.js", "src/consumer.js"],
+                        "mode": "agent-json",
+                        "fail_on_blocking": true
+                    }
+                }
+            }))
+            .expect("tools/call response");
+        let result = &response["result"];
+        assert_eq!(result["isError"].as_bool(), Some(false));
+        let packet = &result["structuredContent"];
+        assert_eq!(packet["status"].as_str(), Some("blocking_graph_error"));
+        assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(true));
+        assert_eq!(packet["must_fix_before_continuing"].as_bool(), Some(true));
+        let errors = packet["hard_interrupt"]["errors"]
+            .as_array()
+            .expect("hard interrupt errors");
+        assert!(!errors.is_empty(), "{packet}");
+        assert!(
+            errors.iter().any(|error| {
+                error["validation_rule_id"].as_str() == Some(CG_MVP3_CALLS_DANGLING_TARGET)
+                    && error["source_span"].is_object()
+                    && error["recommended_fix"]
+                        .as_str()
+                        .is_some_and(|fix| !fix.is_empty())
+                    && error["suggested_next_steps"]
+                        .as_array()
+                        .is_some_and(|steps| !steps.is_empty())
+            }),
+            "{packet}"
+        );
+        assert_eq!(
+            packet["normal_dot_codegraph_mutated"].as_bool(),
+            Some(false)
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
+    }
+
+    #[test]
+    fn mcp_blocking_structured_success_response() {
+        let (response, repo, profile_root) = mcp_validate_edit_dangling_response(true);
+
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+        assert_eq!(
+            response["result"]["structuredContent"]["status"].as_str(),
+            Some("blocking_graph_error")
+        );
+        assert_eq!(
+            response["result"]["structuredContent"]["hard_interrupt_available"].as_bool(),
+            Some(true)
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
+    }
+
+    #[test]
+    fn mcp_tool_error_reserved_for_runtime_failure() {
+        let repo = fixture_repo();
+        let server = McpServer::new(McpServerConfig::for_repo(&repo));
+
+        let error = server
+            .call_tool(
+                MCP_VALIDATE_EDIT_TOOL_NAME,
+                &json!({
+                    "repo": path_string(&repo),
+                    "changed_files": ["src/auth.ts"],
+                    "mode": "invalid-mode"
+                }),
+            )
+            .expect_err("profile DB resolution failure is a tool error, not a validation packet");
+        assert_eq!(error.code, "profile_db_unresolved");
+        assert!(!error.message.contains("hard_interrupt"));
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn mcp_validate_edit_blocking_graph_error_is_structured_success() {
+        let repo = fixture_repo();
+        fs::write(
+            repo.join("src").join("dangling.ts"),
+            "export function danglingCaller() {\n  return 1;\n}\n",
+        )
+        .expect("write dangling source");
+        let profile_root = repo
+            .parent()
+            .expect("repo parent")
+            .join("app-dddddddddddddddddddddddddddddddd");
+        if profile_root.exists() {
+            fs::remove_dir_all(&profile_root).expect("remove stale profile");
+        }
+        fs::create_dir_all(&profile_root).expect("profile root");
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+        ok(server.call_tool(
+            "codegraph.index_repo",
+            &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
+        ));
+        ok(server.call_tool(
+            MCP_VALIDATE_EDIT_TOOL_NAME,
+            &json!({
+                "repo": path_string(&repo),
+                "changed_files": ["src/dangling.ts"],
+                "mode": "agent-json"
+            }),
+        ));
+        let store = SqliteGraphStore::open(&db_path).expect("open validation DB");
+        let caller = mcp_test_function_entity(
+            "src/dangling.ts",
+            "danglingCaller",
+            "dangling.danglingCaller",
+            1,
+        );
+        let missing_target = mcp_test_function_entity(
+            "src/dangling.ts",
+            "missingTarget",
+            "dangling.missingTarget",
+            2,
+        );
+        store.upsert_entity(&caller).expect("upsert caller");
+        store
+            .upsert_edge(&mcp_test_call_edge(
+                &caller,
+                &missing_target,
+                "src/dangling.ts",
+                2,
+            ))
+            .expect("upsert dangling edge");
+        drop(store);
+
+        let response = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "tools/call",
+                "params": {
+                    "name": MCP_VALIDATE_EDIT_TOOL_NAME,
+                    "arguments": {
+                        "repo": path_string(&repo),
+                        "changed_files": ["src/dangling.ts"],
+                        "mode": "agent-json",
+                        "fail_on_blocking": true
+                    }
+                }
+            }))
+            .expect("tools/call response");
+        let result = &response["result"];
+        assert_eq!(result["isError"].as_bool(), Some(false));
+        let packet = &result["structuredContent"];
+        assert_eq!(packet["status"].as_str(), Some("blocking_graph_error"));
+        assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(true));
+        assert_eq!(packet["must_fix_before_continuing"].as_bool(), Some(true));
+        let rule_counts = &packet["validation_packet"]["summary_counts_by_rule_id"];
+        let dangling_count = rule_counts[CG_MVP3_CALLS_DANGLING_TARGET]
+            .as_u64()
+            .unwrap_or(0)
+            + rule_counts[CG_MVP3_IMPORTS_DANGLING_TARGET]
+                .as_u64()
+                .unwrap_or(0)
+            + rule_counts[CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH]
+                .as_u64()
+                .unwrap_or(0);
+        assert!(
+            dangling_count > 0,
+            "expected exact dangling rule count: {packet}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
     }
 
     #[test]

@@ -79,7 +79,7 @@ const CG_MVP3_CONFIG_PACKAGE_UNSUPPORTED_UNKNOWN: &str =
 pub(crate) fn run_agent_use_command(args: &[String]) -> Result<Value, String> {
     let Some(subcommand) = args.first() else {
         return Err(
-            "Usage: codegraph-mcp agent-use <status|index|query|context-pack|mcp-config|watch> --repo <repo> --json"
+            "Usage: codegraph-mcp agent-use <status|index|query|context-pack|mcp-config|watch|validate-edit> --repo <repo> --json"
                 .to_string(),
         );
     };
@@ -90,8 +90,9 @@ pub(crate) fn run_agent_use_command(args: &[String]) -> Result<Value, String> {
         "context-pack" | "context" => run_agent_use_context_pack_command(&args[1..]),
         "mcp-config" | "mcp_config" => run_agent_use_mcp_config_command(&args[1..]),
         "watch" => run_agent_use_watch_command(&args[1..]),
+        "validate-edit" | "validate_edit" => run_agent_use_validate_edit_command(&args[1..]),
         other => Err(format!(
-            "unknown agent-use command: {other}; expected status, index, query, context-pack, mcp-config, or watch"
+            "unknown agent-use command: {other}; expected status, index, query, context-pack, mcp-config, watch, or validate-edit"
         )),
     }
 }
@@ -151,6 +152,18 @@ pub(crate) struct AgentUseWatchOptions {
     lock_retries: usize,
     lock_retry: Duration,
     max_batch_paths: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AgentUseValidateEditOptions {
+    repo: PathBuf,
+    changed_paths: Vec<PathBuf>,
+    detail_mode: AgentUseDetailMode,
+    max_output_bytes: Option<usize>,
+    fail_on_blocking: bool,
+    task_id: Option<String>,
+    edit_intent: Option<String>,
+    expected_touched_files: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -408,6 +421,156 @@ pub(crate) fn parse_agent_use_watch_args(args: &[String]) -> Result<AgentUseWatc
         lock_retries,
         lock_retry,
         max_batch_paths,
+    })
+}
+
+pub(crate) fn parse_agent_use_validate_edit_args(
+    args: &[String],
+) -> Result<AgentUseValidateEditOptions, String> {
+    let mut repo = None;
+    let mut changed_paths = Vec::new();
+    let mut detail_mode = AgentUseDetailMode::Compact;
+    let mut max_output_bytes = None;
+    let mut fail_on_blocking = false;
+    let mut task_id = None;
+    let mut edit_intent = None;
+    let mut expected_touched_files = Vec::new();
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" | "--agent-json" | "--agent_json" => {}
+            "--explain" | "--debug" => detail_mode = AgentUseDetailMode::Explain,
+            "--verbose" if detail_mode == AgentUseDetailMode::Compact => {
+                detail_mode = AgentUseDetailMode::Explain
+            }
+            "--audit-json" | "--audit_json" => detail_mode = AgentUseDetailMode::Audit,
+            "--repo" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--repo requires a path".to_string());
+                };
+                repo = Some(PathBuf::from(value));
+            }
+            "--changed" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--changed requires a path".to_string());
+                };
+                changed_paths.push(PathBuf::from(value));
+            }
+            "--task-id" | "--task_id" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--task-id requires a value".to_string());
+                };
+                task_id = Some(value.clone());
+            }
+            "--edit-intent" | "--edit_intent" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--edit-intent requires a value".to_string());
+                };
+                edit_intent = Some(value.clone());
+            }
+            "--expected-touched-file" | "--expected_touched_file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--expected-touched-file requires a path".to_string());
+                };
+                expected_touched_files.push(PathBuf::from(value));
+            }
+            "--max-output-bytes" | "--max-bytes" | "--max_output_bytes" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--max-output-bytes requires a value".to_string());
+                };
+                max_output_bytes = Some(parse_context_pack_max_output_bytes(value)?);
+            }
+            "--fail-on-blocking" | "--fail_on_blocking" => fail_on_blocking = true,
+            "--db" => {
+                return Err(
+                    "agent-use validate-edit owns DB resolution through the production profile; --db is not accepted"
+                        .to_string(),
+                );
+            }
+            "--mode" => {
+                return Err(
+                    "agent-use validate-edit does not accept --mode; use --agent-json/--json, --explain, or --audit-json"
+                        .to_string(),
+                );
+            }
+            value
+                if value.starts_with("--max-output-bytes=")
+                    || value.starts_with("--max-bytes=")
+                    || value.starts_with("--max_output_bytes=") =>
+            {
+                let value = value
+                    .split_once('=')
+                    .map(|(_, value)| value)
+                    .unwrap_or_default();
+                max_output_bytes = Some(parse_context_pack_max_output_bytes(value)?);
+            }
+            value if value.starts_with("--task-id=") || value.starts_with("--task_id=") => {
+                task_id = Some(
+                    value
+                        .split_once('=')
+                        .map(|(_, value)| value.to_string())
+                        .unwrap_or_default(),
+                );
+            }
+            value if value.starts_with("--edit-intent=") || value.starts_with("--edit_intent=") => {
+                edit_intent = Some(
+                    value
+                        .split_once('=')
+                        .map(|(_, value)| value.to_string())
+                        .unwrap_or_default(),
+                );
+            }
+            value
+                if value.starts_with("--expected-touched-file=")
+                    || value.starts_with("--expected_touched_file=") =>
+            {
+                let value = value
+                    .split_once('=')
+                    .map(|(_, value)| value)
+                    .unwrap_or_default();
+                expected_touched_files.push(PathBuf::from(value));
+            }
+            value if value.starts_with('-') => {
+                return Err(format!(
+                    "unknown agent-use validate-edit option: {value}; supported shape is `agent-use validate-edit --repo <repo> --changed <path> [--changed <path>] --agent-json`"
+                ));
+            }
+            value => {
+                if repo.is_some() {
+                    return Err(
+                        "Usage: codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> [--changed <path>] --agent-json"
+                            .to_string(),
+                    );
+                }
+                repo = Some(PathBuf::from(value));
+            }
+        }
+        index += 1;
+    }
+    let Some(repo) = repo else {
+        return Err(
+            "agent-use validate-edit requires --repo <repo> so the production profile can resolve the external DB"
+                .to_string(),
+        );
+    };
+    if changed_paths.is_empty() {
+        return Err("agent-use validate-edit requires at least one --changed <path>".to_string());
+    }
+    Ok(AgentUseValidateEditOptions {
+        repo,
+        changed_paths,
+        detail_mode,
+        max_output_bytes,
+        fail_on_blocking,
+        task_id,
+        edit_intent,
+        expected_touched_files,
     })
 }
 
@@ -1495,6 +1658,408 @@ pub(crate) fn run_agent_use_watch_command(args: &[String]) -> Result<Value, Stri
     run_agent_use_persistent_watch_command(options)
 }
 
+pub(crate) fn run_agent_use_validate_edit_command(args: &[String]) -> Result<Value, String> {
+    let options = parse_agent_use_validate_edit_args(args)?;
+    let profile = resolve_agent_use_profile(&options.repo)?;
+    let normal_dot_codegraph = profile.repo_root.join(".codegraph");
+    let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
+    let source_update = run_agent_use_watch_once_delta(
+        &profile,
+        options.changed_paths.clone(),
+        options.detail_mode,
+        normal_dot_codegraph_existed_before,
+    )?;
+    let mut packet = agent_use_validate_edit_packet_json(&profile, &options, source_update);
+    let max_output_bytes = options
+        .max_output_bytes
+        .unwrap_or_else(|| options.detail_mode.default_max_output_bytes());
+    agent_use_validate_edit_finalize_budget(&mut packet, options.detail_mode, max_output_bytes);
+    let must_exit_nonzero = options.fail_on_blocking
+        && packet
+            .get("must_fix_before_continuing")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    if must_exit_nonzero {
+        if let Some(object) = packet.as_object_mut() {
+            object.insert("_cli_exit_code".to_string(), json!(2));
+        }
+    }
+    Ok(packet)
+}
+
+pub(crate) fn run_validate_edit_alias_deferred_command(args: &[String]) -> Result<Value, String> {
+    let _ = args;
+    Err(serde_json::to_string(&json!({
+        "status": "error",
+        "error": "validate_edit_alias_deferred",
+        "message": "top-level validate-edit is deferred; use the canonical agent-use validate-edit surface",
+        "compatibility_alias_status": "deferred",
+        "canonical_cli_surface": format!("{BIN_NAME} agent-use validate-edit --repo <repo> --changed <path> --agent-json"),
+        "canonical_command": "agent-use validate-edit",
+        "accepted_shape": format!("{BIN_NAME} agent-use validate-edit --repo <repo> --changed <path> [--changed <path>] --agent-json"),
+        "public_claim": false,
+    }))
+    .unwrap_or_else(|_| {
+        "{\"status\":\"error\",\"error\":\"validate_edit_alias_deferred\"}".to_string()
+    }))
+}
+
+pub(crate) fn agent_use_validate_edit_packet_json(
+    profile: &AgentUseProfile,
+    options: &AgentUseValidateEditOptions,
+    source_update: Value,
+) -> Value {
+    let changed_files =
+        agent_use_validate_edit_changed_files(&profile.repo_root, options, &source_update);
+    let validation_packet =
+        agent_use_validate_edit_validation_packet(&source_update, &changed_files);
+    let validation_status = validation_packet
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("diagnostic_only");
+    let preflight_blocked = source_update.get("validation_packet").is_none();
+    let status = if preflight_blocked {
+        "preflight_blocked".to_string()
+    } else {
+        validation_status.to_string()
+    };
+    let must_fix_before_continuing = validation_packet
+        .get("must_fix_before_continuing")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || preflight_blocked;
+    let rejected_paths = source_update
+        .get("rejected_paths")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let no_op_paths = source_update
+        .get("no_op_paths")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let claimability = source_update
+        .get("claimability")
+        .cloned()
+        .or_else(|| validation_packet.get("claimability").cloned())
+        .unwrap_or_else(agent_use_validate_edit_default_non_claimable);
+    let lifecycle = source_update
+        .get("lifecycle")
+        .cloned()
+        .or_else(|| source_update.get("watch_db").cloned())
+        .or_else(|| validation_packet.get("lifecycle").cloned())
+        .unwrap_or_else(|| json!({"claimable": false, "diagnostic_only": true}));
+    let recovery_commands = source_update
+        .get("recovery_commands")
+        .cloned()
+        .unwrap_or_else(|| json!(profile.recovery_commands.clone()));
+    let expected_touched_files =
+        agent_use_report_changed_paths(&profile.repo_root, &options.expected_touched_files);
+    let changed_set = changed_files.iter().cloned().collect::<BTreeSet<_>>();
+    let expected_touched_files_missing = expected_touched_files
+        .iter()
+        .filter(|path| !changed_set.contains(*path))
+        .cloned()
+        .collect::<Vec<_>>();
+    let source_update_packet = if options.detail_mode.preserves_full_details() {
+        source_update.clone()
+    } else {
+        Value::Null
+    };
+    json!({
+        "schema_version": 1,
+        "schema_name": "validate_edit_agent_json",
+        "packet_kind": "validate_edit_packet",
+        "command": "validate-edit",
+        "command_namespace": "agent-use",
+        "agent_use_command": "agent-use validate-edit",
+        "canonical_cli_surface": format!("{BIN_NAME} agent-use validate-edit --repo <repo> --changed <path> --agent-json"),
+        "compatibility_alias_status": "deferred",
+        "status": status,
+        "repo": path_string(&profile.repo_root),
+        "repo_root": path_string(&profile.repo_root),
+        "db": path_string(&profile.db_path),
+        "db_path": path_string(&profile.db_path),
+        "resolved_db": path_string(&profile.db_path),
+        "db_source": "agent-use profile",
+        "profile_name": profile.profile_name.clone(),
+        "uses_production_agent_use_resolver": true,
+        "external_profile_db_used": true,
+        "external_db_used": true,
+        "no_dot_codegraph_fallback": true,
+        "normal_dot_codegraph_mutated": source_update.get("normal_dot_codegraph_mutated").cloned().unwrap_or_else(|| json!(false)),
+        "public_claim": false,
+        "changed_files": changed_files,
+        "changed_paths": source_update.get("changed_paths").cloned().unwrap_or_else(|| json!([])),
+        "normalized_changed_files": source_update.get("normalized_changed_files").cloned().unwrap_or_else(|| json!([])),
+        "changed_paths_requested": source_update.get("changed_paths_requested").cloned().unwrap_or_else(|| json!([])),
+        "rejected_paths": rejected_paths,
+        "no_op_paths": no_op_paths,
+        "deleted_paths": source_update.get("deleted_paths").cloned().unwrap_or_else(|| json!([])),
+        "renamed_paths": source_update.get("renamed_paths").cloned().unwrap_or_else(|| json!([])),
+        "ignored_paths": source_update.get("ignored_paths").cloned().unwrap_or_else(|| json!([])),
+        "generated_paths": source_update.get("generated_paths").cloned().unwrap_or_else(|| json!([])),
+        "outside_repo_paths": source_update.get("outside_repo_paths").cloned().unwrap_or_else(|| json!([])),
+        "duplicate_paths": source_update.get("duplicate_paths").cloned().unwrap_or_else(|| json!([])),
+        "atomic_temp_paths": source_update.get("atomic_temp_paths").cloned().unwrap_or_else(|| json!([])),
+        "partial_input_failures_reported": source_update.get("partial_input_failures_reported").cloned().unwrap_or_else(|| json!(false)),
+        "too_many_changed_files": source_update.get("too_many_changed_files").cloned().unwrap_or_else(|| json!(false)),
+        "max_changed_files": source_update.get("max_changed_files").cloned().unwrap_or_else(|| json!(AGENT_USE_WATCH_DEFAULT_MAX_BATCH_PATHS)),
+        "no_silent_path_drops": source_update.get("no_silent_path_drops").cloned().unwrap_or_else(|| json!(true)),
+        "input_policy": source_update.get("input_policy").cloned().unwrap_or_else(|| json!("run_unique_in_repo_updateable_paths; report_invalid_duplicate_noop_paths_explicitly")),
+        "rename_policy": source_update.get("rename_policy").cloned().unwrap_or_else(|| json!("explicit rename pairs are not part of the current API; pass old deleted path and new added path in the same changed set")),
+        "per_file_status": source_update.get("per_file_status").cloned().unwrap_or_else(|| json!([])),
+        "input_diagnostics": source_update.get("input_diagnostics").cloned().unwrap_or_else(|| json!([])),
+        "input_warnings": source_update.get("input_warnings").cloned().unwrap_or_else(|| json!([])),
+        "validation_packet": validation_packet,
+        "hard_interrupt_available": source_update
+            .get("hard_interrupt_available")
+            .cloned()
+            .or_else(|| source_update.pointer("/validation_packet/hard_interrupt_available").cloned())
+            .unwrap_or_else(|| json!(false)),
+        "hard_interrupt": source_update
+            .get("hard_interrupt")
+            .cloned()
+            .or_else(|| source_update.pointer("/validation_packet/hard_interrupt").cloned())
+            .unwrap_or(Value::Null),
+        "must_fix_before_continuing": must_fix_before_continuing,
+        "warnings": source_update
+            .pointer("/validation_packet/warnings")
+            .cloned()
+            .or_else(|| source_update.get("warnings").cloned())
+            .or_else(|| source_update.get("input_warnings").cloned())
+            .unwrap_or_else(|| json!([])),
+        "unknowns": source_update
+            .pointer("/validation_packet/unknowns")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+        "diagnostics": source_update
+            .pointer("/validation_packet/diagnostics")
+            .cloned()
+            .or_else(|| source_update.get("diagnostics").cloned())
+            .or_else(|| source_update.get("input_diagnostics").cloned())
+            .unwrap_or_else(|| json!([])),
+        "claimability": claimability,
+        "lifecycle": lifecycle,
+        "proof_ladder_changes": source_update
+            .pointer("/validation_packet/proof_ladder_changes")
+            .cloned()
+            .or_else(|| source_update.get("proof_ladder_changes").cloned())
+            .unwrap_or_else(|| json!({})),
+        "recovery_commands": recovery_commands,
+        "omitted_count": source_update
+            .pointer("/validation_packet/omitted_count")
+            .and_then(Value::as_u64)
+            .or_else(|| source_update.get("omitted_count").and_then(Value::as_u64))
+            .unwrap_or(0),
+        "expansion_handles": source_update
+            .pointer("/validation_packet/expansion_handles")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+        "timings": source_update
+            .get("timings")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "command_rerun_hint": agent_use_validate_edit_rerun_hint(profile, options),
+        "detail_mode": options.detail_mode.label(),
+        "compact_default": matches!(options.detail_mode, AgentUseDetailMode::Compact),
+        "fail_on_blocking": options.fail_on_blocking,
+        "fail_on_blocking_exit_code": 2,
+        "default_exit_zero_on_validation_blocker": true,
+        "json_printed_on_blocking": true,
+        "task_id": options.task_id.clone(),
+        "edit_intent": options.edit_intent.clone(),
+        "expected_touched_files": expected_touched_files,
+        "expected_touched_files_missing": expected_touched_files_missing,
+        "source_update_status": source_update.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+        "source_update_command": source_update.get("agent_use_command").cloned().unwrap_or_else(|| json!("agent-use watch")),
+        "source_update_packet": source_update_packet,
+        "metrics": {
+            "files_walked": source_update.get("files_walked").cloned().unwrap_or_else(|| json!(0)),
+            "files_read": source_update.get("files_read").cloned().unwrap_or_else(|| json!(0)),
+            "files_hashed": source_update.get("files_hashed").cloned().unwrap_or_else(|| json!(0)),
+            "files_parsed": source_update.get("files_parsed").cloned().unwrap_or_else(|| json!(0)),
+            "facts_deleted": source_update.get("facts_deleted").cloned().unwrap_or_else(|| json!(0)),
+            "facts_inserted": source_update.get("facts_inserted").cloned().unwrap_or_else(|| json!(0)),
+            "entities_added": source_update.get("entities_added").cloned().unwrap_or_else(|| json!(0)),
+            "entities_removed": source_update.get("entities_removed").cloned().unwrap_or_else(|| json!(0)),
+            "entities_changed": source_update.get("entities_changed").cloned().unwrap_or_else(|| json!(0)),
+            "edges_added": source_update.get("edges_added").cloned().unwrap_or_else(|| json!(0)),
+            "edges_removed": source_update.get("edges_removed").cloned().unwrap_or_else(|| json!(0)),
+            "edges_changed": source_update.get("edges_changed").cloned().unwrap_or_else(|| json!(0)),
+        },
+    })
+}
+
+fn agent_use_validate_edit_changed_files(
+    repo_root: &Path,
+    options: &AgentUseValidateEditOptions,
+    source_update: &Value,
+) -> Vec<String> {
+    source_update
+        .get("normalized_changed_files")
+        .or_else(|| source_update.get("changed_files"))
+        .or_else(|| source_update.get("changed_paths"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|items| !items.is_empty())
+        .unwrap_or_else(|| agent_use_report_changed_paths(repo_root, &options.changed_paths))
+}
+
+fn agent_use_validate_edit_validation_packet(
+    source_update: &Value,
+    changed_files: &[String],
+) -> Value {
+    if let Some(packet) = source_update
+        .get("validation_packet")
+        .filter(|packet| packet.is_object())
+    {
+        return packet.clone();
+    }
+    let claimability = source_update
+        .get("claimability")
+        .cloned()
+        .unwrap_or_else(agent_use_validate_edit_default_non_claimable);
+    let lifecycle = source_update
+        .get("lifecycle")
+        .cloned()
+        .or_else(|| source_update.get("watch_db").cloned())
+        .unwrap_or_else(|| json!({"claimable": false, "diagnostic_only": true}));
+    let stale_unsafe_blockers = agent_use_validate_edit_preflight_blockers(source_update);
+    let mut recommended_next_steps = source_update
+        .get("recovery_commands")
+        .and_then(Value::as_array)
+        .map(|commands| {
+            commands
+                .iter()
+                .filter_map(Value::as_str)
+                .take(3)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if recommended_next_steps.is_empty() {
+        recommended_next_steps.push(
+            "run agent-use index for this repo, then rerun agent-use validate-edit".to_string(),
+        );
+    }
+    json!({
+        "schema_version": 1,
+        "packet_kind": "graph_validation_packet",
+        "status": "diagnostic_only",
+        "must_fix_before_continuing": false,
+        "changed_files": changed_files,
+        "graph_delta": {},
+        "blocking_errors": [],
+        "warnings": [],
+        "unknowns": [],
+        "diagnostics": [],
+        "summary_counts_by_rule_id": {},
+        "summary_counts_by_classification": {},
+        "summary_counts_by_relation_kind": {},
+        "validation_rules_evaluated": [],
+        "validation_rules_skipped": [],
+        "relation_family_status": {},
+        "activation_gate_state": {},
+        "claimability": claimability,
+        "proof_ladder_changes": source_update.get("proof_ladder_changes").cloned().unwrap_or_else(|| json!({})),
+        "lifecycle": lifecycle,
+        "stale_unsafe_blockers": stale_unsafe_blockers,
+        "top_blocking_source_spans": [],
+        "recommended_next_steps": recommended_next_steps,
+        "hard_interrupt_available": false,
+        "hard_interrupt": Value::Null,
+        "omitted_count": 0,
+        "expansion_handles": [],
+    })
+}
+
+fn agent_use_validate_edit_preflight_blockers(source_update: &Value) -> Vec<String> {
+    let mut blockers = Vec::new();
+    for key in ["errors", "blockers"] {
+        if let Some(values) = source_update.get(key).and_then(Value::as_array) {
+            for value in values {
+                if let Some(message) = value.as_str() {
+                    blockers.push(message.to_string());
+                } else if !value.is_null() {
+                    blockers.push(value.to_string());
+                }
+            }
+        }
+    }
+    if blockers.is_empty() {
+        if let Some(reason) = source_update.get("reason").and_then(Value::as_str) {
+            blockers.push(reason.to_string());
+        } else if let Some(status) = source_update.get("status").and_then(Value::as_str) {
+            blockers.push(format!("validation_not_run:{status}"));
+        }
+    }
+    blockers.sort();
+    blockers.dedup();
+    blockers
+}
+
+fn agent_use_validate_edit_default_non_claimable() -> Value {
+    json!({
+        "claimable": false,
+        "diagnostic_only": true,
+        "candidate_only": false,
+        "graph_proof_available": false,
+        "graph_proof_only_from_graph_source_verification": true,
+        "text_evidence_is_not_graph_proof": true,
+        "vector_evidence_is_not_graph_proof": true,
+        "candidate_evidence_is_not_graph_proof": true,
+    })
+}
+
+fn agent_use_validate_edit_rerun_hint(
+    profile: &AgentUseProfile,
+    options: &AgentUseValidateEditOptions,
+) -> String {
+    let mut command = format!(
+        "{BIN_NAME} agent-use validate-edit --repo \"{}\"",
+        path_string(&profile.repo_root)
+    );
+    for changed_path in &options.changed_paths {
+        command.push_str(&format!(" --changed \"{}\"", path_string(changed_path)));
+    }
+    match options.detail_mode {
+        AgentUseDetailMode::Compact => command.push_str(" --agent-json"),
+        AgentUseDetailMode::Explain => command.push_str(" --explain"),
+        AgentUseDetailMode::Audit => command.push_str(" --audit-json"),
+    }
+    if options.fail_on_blocking {
+        command.push_str(" --fail-on-blocking");
+    }
+    command
+}
+
+fn agent_use_validate_edit_finalize_budget(
+    packet: &mut Value,
+    detail_mode: AgentUseDetailMode,
+    max_output_bytes: usize,
+) {
+    let output_bytes = serialized_json_len(packet);
+    if let Some(object) = packet.as_object_mut() {
+        object.insert(
+            "agent_json_budget".to_string(),
+            json!({
+                "mode": detail_mode.label(),
+                "max_output_bytes": max_output_bytes,
+                "output_bytes": output_bytes,
+                "truncated": false,
+                "omitted_count": object.get("omitted_count").and_then(Value::as_u64).unwrap_or(0),
+                "max_output_bytes_exceeded": output_bytes > max_output_bytes,
+                "required_safety_fields_preserved": true,
+            }),
+        );
+    }
+}
+
 pub(crate) fn run_agent_use_watch_once_delta(
     profile: &AgentUseProfile,
     changed_paths: Vec<PathBuf>,
@@ -1527,8 +2092,9 @@ pub(crate) fn run_agent_use_watch_once_delta(
             &changed_paths,
         ));
     }
-    let path_preflight = agent_use_watch_path_preflight(&profile.repo_root, &changed_paths);
-    if !path_preflight.rejected_paths.is_empty() {
+    let path_preflight =
+        agent_use_watch_path_preflight(&profile.repo_root, &changed_paths, &profile.scope_policy);
+    if !path_preflight.should_update {
         return Ok(agent_use_watch_rejected_paths_json(
             profile,
             &preflight,
@@ -1536,6 +2102,7 @@ pub(crate) fn run_agent_use_watch_once_delta(
             &path_preflight,
         ));
     }
+    let update_changed_paths = path_preflight.accepted_pathbufs(&profile.repo_root);
 
     let snapshot_options = NormalizedFactSnapshotOptions {
         include_text_evidence: true,
@@ -1546,7 +2113,7 @@ pub(crate) fn run_agent_use_watch_once_delta(
     let dependency_closure_start = Instant::now();
     let pre_update_dependency_closure = rtds_dependency_closure_for_changed_paths_to_db(
         &profile.repo_root,
-        &changed_paths,
+        &update_changed_paths,
         &profile.db_path,
     )
     .map_err(|error| format!("old RTDS dependency closure snapshot failed: {error}"))?;
@@ -1565,7 +2132,7 @@ pub(crate) fn run_agent_use_watch_once_delta(
     let old_snapshot_start = Instant::now();
     let old_graph_delta_snapshot = snapshot_normalized_facts_for_paths_to_db(
         &profile.repo_root,
-        &changed_paths,
+        &update_changed_paths,
         &pre_update_closure_paths,
         &profile.db_path,
         snapshot_options.clone(),
@@ -1576,7 +2143,7 @@ pub(crate) fn run_agent_use_watch_once_delta(
     let hot_path_update_start = Instant::now();
     let summary = match update_changed_files_to_db(
         &profile.repo_root,
-        &changed_paths,
+        &update_changed_paths,
         &profile.db_path,
     ) {
         Ok(summary) => {
@@ -1635,10 +2202,6 @@ pub(crate) fn run_agent_use_watch_once_delta(
         Some(&profile.vector_audit_path),
         None,
     );
-    let changed_paths_requested = changed_paths
-        .iter()
-        .map(|path| path_string(path))
-        .collect::<Vec<_>>();
     let changed_paths_normalized = if summary.changed_files.is_empty() {
         requested_changed_paths.clone()
     } else {
@@ -1714,7 +2277,8 @@ pub(crate) fn run_agent_use_watch_once_delta(
     );
     add_agent_use_durability_labels(&mut value, profile, &post_preflight, None);
     if let Some(object) = value.as_object_mut() {
-        let no_op_paths = agent_use_watch_no_op_paths(&summary);
+        let update_no_op_paths = agent_use_watch_no_op_paths(&summary);
+        let no_op_paths = path_preflight.merge_no_op_paths(&update_no_op_paths);
         let status = agent_use_watch_status(&summary, &no_op_paths);
         let delta_state = agent_use_watch_delta_state(&summary, &no_op_paths);
         let graph_delta_packet_start = Instant::now();
@@ -1765,6 +2329,7 @@ pub(crate) fn run_agent_use_watch_once_delta(
         );
         object.insert("auto_index_enabled".to_string(), json!(false));
         object.insert("changed_paths".to_string(), json!(changed_paths_normalized));
+        let deleted_paths = path_preflight.merge_deleted_paths(&deleted_paths);
         object.insert("deleted_paths".to_string(), json!(deleted_paths.clone()));
         object.insert(
             "deleted_path".to_string(),
@@ -1774,11 +2339,75 @@ pub(crate) fn run_agent_use_watch_once_delta(
                 Value::Null
             },
         );
-        object.insert("rejected_paths".to_string(), json!([]));
+        object.insert(
+            "normalized_changed_files".to_string(),
+            json!(path_preflight.normalized_changed_files.clone()),
+        );
+        object.insert(
+            "rejected_paths".to_string(),
+            json!(path_preflight.rejected_paths.clone()),
+        );
         object.insert("no_op_paths".to_string(), json!(no_op_paths));
         object.insert(
             "changed_paths_requested".to_string(),
-            json!(changed_paths_requested),
+            json!(path_preflight.requested_paths.clone()),
+        );
+        object.insert(
+            "ignored_paths".to_string(),
+            json!(path_preflight.ignored_paths.clone()),
+        );
+        object.insert(
+            "generated_paths".to_string(),
+            json!(path_preflight.generated_paths.clone()),
+        );
+        object.insert(
+            "outside_repo_paths".to_string(),
+            json!(path_preflight.outside_repo_paths.clone()),
+        );
+        object.insert(
+            "duplicate_paths".to_string(),
+            json!(path_preflight.duplicate_paths.clone()),
+        );
+        object.insert(
+            "renamed_paths".to_string(),
+            json!(path_preflight.renamed_paths.clone()),
+        );
+        object.insert(
+            "atomic_temp_paths".to_string(),
+            json!(path_preflight.atomic_temp_paths.clone()),
+        );
+        object.insert(
+            "partial_input_failures_reported".to_string(),
+            json!(path_preflight.partial_input_failures_reported),
+        );
+        object.insert(
+            "too_many_changed_files".to_string(),
+            json!(path_preflight.too_many_changed_files),
+        );
+        object.insert(
+            "max_changed_files".to_string(),
+            json!(path_preflight.max_changed_files),
+        );
+        object.insert("no_silent_path_drops".to_string(), json!(true));
+        object.insert(
+            "input_policy".to_string(),
+            json!(path_preflight.input_policy.clone()),
+        );
+        object.insert(
+            "rename_policy".to_string(),
+            json!(path_preflight.rename_policy.clone()),
+        );
+        object.insert(
+            "per_file_status".to_string(),
+            json!(path_preflight.per_file_status.clone()),
+        );
+        object.insert(
+            "input_diagnostics".to_string(),
+            json!(path_preflight.diagnostics.clone()),
+        );
+        object.insert(
+            "input_warnings".to_string(),
+            json!(path_preflight.warnings.clone()),
         );
         object.insert("watch_db".to_string(), lifecycle);
         object.insert(
@@ -6517,6 +7146,602 @@ mod exact_calls_validation_tests {
         }
     }
 
+    fn validate_edit_test_options(
+        repo: &Path,
+        detail_mode: AgentUseDetailMode,
+        fail_on_blocking: bool,
+    ) -> AgentUseValidateEditOptions {
+        AgentUseValidateEditOptions {
+            repo: repo.to_path_buf(),
+            changed_paths: vec![PathBuf::from("src/a.ts")],
+            detail_mode,
+            max_output_bytes: None,
+            fail_on_blocking,
+            task_id: Some("task-1".to_string()),
+            edit_intent: Some("validate interrupt propagation".to_string()),
+            expected_touched_files: vec![PathBuf::from("src/a.ts")],
+        }
+    }
+
+    fn validate_edit_block_error() -> Value {
+        json!({
+            "validation_rule_id": CG_MVP3_CALLS_DANGLING_TARGET,
+            "classification": "block",
+            "blocking_level": "blocking",
+            "relation_kind": "CALLS",
+            "reverified_graph_source_proof": true,
+            "source_span": {
+                "repo_relative_path": "src/a.ts",
+                "start_line": 2,
+                "start_col": 3,
+                "end_line": 2,
+                "end_col": 24
+            },
+            "recommended_fix": "Define the missing callee or update the exact call relation.",
+            "suggested_next_steps": [
+                "Fix the dangling CALLS edge.",
+                "Rerun validation with codegraph-mcp agent-use validate-edit --repo <repo> --changed src/a.ts --agent-json."
+            ]
+        })
+    }
+
+    fn validate_edit_blocking_source_update() -> Value {
+        let block_error = validate_edit_block_error();
+        json!({
+            "status": "updated",
+            "agent_use_command": "agent-use watch",
+            "changed_paths": ["src/a.ts"],
+            "normalized_changed_files": ["src/a.ts"],
+            "rejected_paths": [],
+            "no_op_paths": [],
+            "validation_packet": {
+                "schema_version": 1,
+                "packet_kind": "graph_validation_packet",
+                "status": "blocking_graph_error",
+                "must_fix_before_continuing": true,
+                "changed_files": ["src/a.ts"],
+                "graph_delta": {},
+                "blocking_errors": [block_error.clone()],
+                "warnings": [],
+                "unknowns": [],
+                "diagnostics": [],
+                "summary_counts_by_rule_id": {"CG_MVP3_CALLS_DANGLING_TARGET": 1},
+                "summary_counts_by_classification": {"block": 1},
+                "summary_counts_by_relation_kind": {"CALLS": 1},
+                "validation_rules_evaluated": [CG_MVP3_CALLS_DANGLING_TARGET],
+                "validation_rules_skipped": [],
+                "relation_family_status": {"calls": "exact_dangling_target_checked"},
+                "activation_gate_state": {"mvp3_validate_edit": "enabled"},
+                "claimability": {"claimable": true},
+                "proof_ladder_changes": {},
+                "lifecycle": {"claimable": true},
+                "stale_unsafe_blockers": [],
+                "top_blocking_source_spans": [block_error["source_span"].clone()],
+                "recommended_next_steps": [
+                    "Rerun validation with codegraph-mcp agent-use validate-edit --repo <repo> --changed src/a.ts --agent-json."
+                ],
+                "hard_interrupt_available": true,
+                "hard_interrupt": {
+                    "packet_kind": "hard_interrupt",
+                    "status": "blocking_graph_error",
+                    "must_fix_before_continuing": true,
+                    "hard_interrupt_available": true,
+                    "error_count": 1,
+                    "errors": [block_error],
+                    "summary": {
+                        "top_error_source_span": {
+                            "repo_relative_path": "src/a.ts",
+                            "start_line": 2,
+                            "start_col": 3,
+                            "end_line": 2,
+                            "end_col": 24
+                        },
+                        "top_error_recommended_fix": "Define the missing callee or update the exact call relation."
+                    },
+                    "omitted_count": 0,
+                    "expansion_handles": []
+                },
+                "omitted_count": 0,
+                "expansion_handles": []
+            },
+            "hard_interrupt_available": true,
+            "hard_interrupt": {
+                "packet_kind": "hard_interrupt",
+                "status": "blocking_graph_error",
+                "must_fix_before_continuing": true,
+                "hard_interrupt_available": true,
+                "error_count": 1,
+                "errors": [validate_edit_block_error()],
+                "omitted_count": 0,
+                "expansion_handles": []
+            },
+            "claimability": {"claimable": true},
+            "lifecycle": {"claimable": true},
+            "normal_dot_codegraph_mutated": false,
+            "timings": {"total_update_plus_delta_ms": 1}
+        })
+    }
+
+    fn validate_edit_non_interrupt_source_update() -> Value {
+        json!({
+            "status": "updated",
+            "agent_use_command": "agent-use watch",
+            "changed_paths": ["src/a.ts"],
+            "normalized_changed_files": ["src/a.ts"],
+            "validation_packet": {
+                "schema_version": 1,
+                "packet_kind": "graph_validation_packet",
+                "status": "warning",
+                "must_fix_before_continuing": false,
+                "changed_files": ["src/a.ts"],
+                "graph_delta": {},
+                "blocking_errors": [],
+                "warnings": [
+                    {
+                        "validation_rule_id": "CG_MVP3_DYNAMIC_CALL_UNKNOWN",
+                        "classification": "warning",
+                        "evidence_kind": "dynamic_call"
+                    },
+                    {
+                        "validation_rule_id": "CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING",
+                        "classification": "warning",
+                        "evidence_kind": "text_evidence",
+                        "graph_proof": false
+                    }
+                ],
+                "unknowns": [
+                    {
+                        "validation_rule_id": "CG_MVP3_COMPUTED_IMPORT_UNKNOWN",
+                        "classification": "unknown",
+                        "evidence_kind": "computed_import"
+                    }
+                ],
+                "diagnostics": [
+                    {
+                        "validation_rule_id": "CG_MVP3_STALE_SIDECAR_DIAGNOSTIC",
+                        "classification": "diagnostic_only",
+                        "evidence_kind": "stale_sidecar"
+                    }
+                ],
+                "summary_counts_by_rule_id": {
+                    "CG_MVP3_DYNAMIC_CALL_UNKNOWN": 1,
+                    "CG_MVP3_COMPUTED_IMPORT_UNKNOWN": 1,
+                    "CG_MVP3_STALE_SIDECAR_DIAGNOSTIC": 1
+                },
+                "summary_counts_by_classification": {
+                    "warning": 2,
+                    "unknown": 1,
+                    "diagnostic_only": 1
+                },
+                "summary_counts_by_relation_kind": {},
+                "validation_rules_evaluated": [],
+                "validation_rules_skipped": [],
+                "relation_family_status": {
+                    "dynamic_calls": "warning_only",
+                    "computed_imports": "unknown_only",
+                    "candidate_vector_source_navigation": "not_graph_proof"
+                },
+                "activation_gate_state": {},
+                "claimability": {"claimable": true},
+                "proof_ladder_changes": {
+                    "text_evidence": {"graph_proof": false},
+                    "candidate_evidence": {"graph_proof": false},
+                    "vector_evidence": {"graph_proof": false},
+                    "source_navigation": {"graph_proof": false}
+                },
+                "lifecycle": {"claimable": true},
+                "stale_unsafe_blockers": [],
+                "top_blocking_source_spans": [],
+                "recommended_next_steps": [],
+                "hard_interrupt_available": false,
+                "hard_interrupt": null,
+                "omitted_count": 0,
+                "expansion_handles": []
+            },
+            "hard_interrupt_available": false,
+            "hard_interrupt": null,
+            "claimability": {"claimable": true},
+            "lifecycle": {"claimable": true},
+            "normal_dot_codegraph_mutated": false
+        })
+    }
+
+    #[test]
+    fn validate_edit_args_parse_contract_flags() {
+        let args = vec![
+            "--repo".to_string(),
+            "C:/repo".to_string(),
+            "--changed".to_string(),
+            "src/a.ts".to_string(),
+            "--changed".to_string(),
+            "src/b.ts".to_string(),
+            "--agent-json".to_string(),
+            "--fail-on-blocking".to_string(),
+            "--task-id".to_string(),
+            "task-1".to_string(),
+            "--edit-intent=rename callee".to_string(),
+            "--expected-touched-file".to_string(),
+            "src/a.ts".to_string(),
+            "--max-output-bytes=8192".to_string(),
+        ];
+        let options = parse_agent_use_validate_edit_args(&args).expect("parse validate-edit");
+        assert_eq!(options.repo, PathBuf::from("C:/repo"));
+        assert_eq!(
+            options.changed_paths,
+            vec![PathBuf::from("src/a.ts"), PathBuf::from("src/b.ts")]
+        );
+        assert_eq!(options.detail_mode, AgentUseDetailMode::Compact);
+        assert_eq!(options.max_output_bytes, Some(8192));
+        assert!(options.fail_on_blocking);
+        assert_eq!(options.task_id.as_deref(), Some("task-1"));
+        assert_eq!(options.edit_intent.as_deref(), Some("rename callee"));
+        assert_eq!(
+            options.expected_touched_files,
+            vec![PathBuf::from("src/a.ts")]
+        );
+    }
+
+    #[test]
+    fn validate_edit_rejects_direct_db_and_mode() {
+        let db_error = parse_agent_use_validate_edit_args(&[
+            "--repo".to_string(),
+            ".".to_string(),
+            "--changed".to_string(),
+            "src/a.ts".to_string(),
+            "--db".to_string(),
+            "graph.db".to_string(),
+        ])
+        .expect_err("db is rejected");
+        assert!(db_error.contains("production profile"));
+
+        let mode_error = parse_agent_use_validate_edit_args(&[
+            "--repo".to_string(),
+            ".".to_string(),
+            "--changed".to_string(),
+            "src/a.ts".to_string(),
+            "--mode".to_string(),
+            "validate".to_string(),
+        ])
+        .expect_err("mode is rejected");
+        assert!(mode_error.contains("does not accept --mode"));
+    }
+
+    #[test]
+    fn validate_edit_alias_returns_targeted_deferred_error() {
+        let error = run_validate_edit_alias_deferred_command(&[]).expect_err("alias deferred");
+        let value: Value = serde_json::from_str(&error).expect("alias json error");
+        assert_eq!(value["status"].as_str(), Some("error"));
+        assert_eq!(
+            value["compatibility_alias_status"].as_str(),
+            Some("deferred")
+        );
+        assert_eq!(
+            value["canonical_command"].as_str(),
+            Some("agent-use validate-edit")
+        );
+    }
+
+    #[test]
+    fn validate_edit_packet_wraps_real_validation_packet() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = AgentUseValidateEditOptions {
+            repo: repo.clone(),
+            changed_paths: vec![PathBuf::from("src/a.ts")],
+            detail_mode: AgentUseDetailMode::Compact,
+            max_output_bytes: None,
+            fail_on_blocking: true,
+            task_id: Some("task-1".to_string()),
+            edit_intent: Some("rename".to_string()),
+            expected_touched_files: vec![PathBuf::from("src/a.ts")],
+        };
+        let source_update = json!({
+            "status": "updated",
+            "agent_use_command": "agent-use watch",
+            "changed_paths": ["src/a.ts"],
+            "rejected_paths": [],
+            "no_op_paths": [],
+            "validation_packet": {
+                "schema_version": 1,
+                "packet_kind": "graph_validation_packet",
+                "status": "blocking_graph_error",
+                "must_fix_before_continuing": true,
+                "changed_files": ["src/a.ts"],
+                "graph_delta": {},
+                "blocking_errors": [{"validation_rule_id": "CG_MVP3_CALLS_DANGLING_TARGET"}],
+                "warnings": [],
+                "unknowns": [],
+                "diagnostics": [],
+                "summary_counts_by_rule_id": {"CG_MVP3_CALLS_DANGLING_TARGET": 1},
+                "summary_counts_by_classification": {"block": 1},
+                "summary_counts_by_relation_kind": {"calls": 1},
+                "validation_rules_evaluated": [],
+                "validation_rules_skipped": [],
+                "relation_family_status": {},
+                "activation_gate_state": {},
+                "claimability": {"claimable": true},
+                "proof_ladder_changes": {},
+                "lifecycle": {"claimable": true},
+                "stale_unsafe_blockers": [],
+                "top_blocking_source_spans": [],
+                "recommended_next_steps": ["fix caller"],
+                "hard_interrupt_available": true,
+                "hard_interrupt": {"packet_kind": "hard_interrupt"},
+                "omitted_count": 0,
+                "expansion_handles": []
+            },
+            "hard_interrupt_available": true,
+            "hard_interrupt": {"packet_kind": "hard_interrupt"},
+            "claimability": {"claimable": true},
+            "lifecycle": {"claimable": true},
+            "recovery_commands": ["codegraph-mcp agent-use index --repo <repo> --json"],
+            "normal_dot_codegraph_mutated": false,
+            "timings": {"total_update_plus_delta_ms": 1}
+        });
+
+        let packet = agent_use_validate_edit_packet_json(&profile, &options, source_update);
+        assert_eq!(packet["packet_kind"].as_str(), Some("validate_edit_packet"));
+        assert_eq!(packet["status"].as_str(), Some("blocking_graph_error"));
+        assert_eq!(packet["must_fix_before_continuing"].as_bool(), Some(true));
+        assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(true));
+        assert_eq!(packet["external_profile_db_used"].as_bool(), Some(true));
+        assert_eq!(packet["no_dot_codegraph_fallback"].as_bool(), Some(true));
+        assert_eq!(packet["public_claim"].as_bool(), Some(false));
+        assert_eq!(
+            packet["expected_touched_files_missing"]
+                .as_array()
+                .expect("missing array")
+                .len(),
+            0
+        );
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn cli_hard_interrupt_propagation_correct() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_blocking_source_update(),
+        );
+
+        assert_eq!(packet["status"].as_str(), Some("blocking_graph_error"));
+        assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(true));
+        assert_eq!(packet["must_fix_before_continuing"].as_bool(), Some(true));
+        assert_eq!(
+            packet["validation_packet"]["hard_interrupt_available"].as_bool(),
+            Some(true)
+        );
+        let errors = packet["hard_interrupt"]["errors"]
+            .as_array()
+            .expect("hard interrupt errors");
+        assert_eq!(errors.len(), 1);
+        let error = &errors[0];
+        assert_eq!(
+            error["validation_rule_id"].as_str(),
+            Some(CG_MVP3_CALLS_DANGLING_TARGET)
+        );
+        assert!(error["source_span"].is_object(), "{packet:?}");
+        assert!(error["recommended_fix"]
+            .as_str()
+            .is_some_and(|fix| !fix.is_empty()));
+        let steps = error["suggested_next_steps"]
+            .as_array()
+            .expect("suggested next steps");
+        assert!(steps.iter().any(|step| {
+            step.as_str()
+                .is_some_and(|step| step.to_ascii_lowercase().contains("rerun validation"))
+        }));
+        assert_eq!(
+            packet["normal_dot_codegraph_mutated"].as_bool(),
+            Some(false)
+        );
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn non_interrupt_boundaries_preserved() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_non_interrupt_source_update(),
+        );
+
+        assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(false));
+        assert!(packet["hard_interrupt"].is_null(), "{packet:?}");
+        assert_eq!(packet["must_fix_before_continuing"].as_bool(), Some(false));
+        assert!(packet["warnings"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+        assert!(packet["unknowns"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+        assert!(packet["diagnostics"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+        assert_eq!(
+            packet["validation_packet"]["proof_ladder_changes"]["text_evidence"]["graph_proof"]
+                .as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            packet["validation_packet"]["proof_ladder_changes"]["candidate_evidence"]
+                ["graph_proof"]
+                .as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            packet["validation_packet"]["proof_ladder_changes"]["vector_evidence"]["graph_proof"]
+                .as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            packet["validation_packet"]["proof_ladder_changes"]["source_navigation"]["graph_proof"]
+                .as_bool(),
+            Some(false)
+        );
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn unsafe_db_states_do_not_create_fake_interrupts() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let source_update = json!({
+            "status": "stale",
+            "changed_paths": ["src/a.ts"],
+            "errors": ["repo_head_mismatch"],
+            "claimability": {
+                "claimable": false,
+                "diagnostic_only": true,
+                "graph_proof_available": false
+            },
+            "lifecycle": {
+                "claimable": false,
+                "diagnostic_only": true,
+                "blocker_class": "lifecycle"
+            },
+            "normal_dot_codegraph_mutated": false
+        });
+        let packet = agent_use_validate_edit_packet_json(&profile, &options, source_update);
+
+        assert_eq!(packet["status"].as_str(), Some("preflight_blocked"));
+        assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(false));
+        assert!(packet["hard_interrupt"].is_null(), "{packet:?}");
+        assert_eq!(
+            packet["validation_packet"]["status"].as_str(),
+            Some("diagnostic_only")
+        );
+        assert_eq!(
+            packet["validation_packet"]["hard_interrupt_available"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            packet["validation_packet"]["stale_unsafe_blockers"][0].as_str(),
+            Some("repo_head_mismatch")
+        );
+        assert_eq!(packet["claimability"]["claimable"].as_bool(), Some(false));
+        assert_eq!(
+            packet["normal_dot_codegraph_mutated"].as_bool(),
+            Some(false)
+        );
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn mixed_packet_interrupt_contains_only_block_errors() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, true);
+        let mut source_update = validate_edit_blocking_source_update();
+        source_update["validation_packet"]["warnings"] = json!([
+            {"validation_rule_id": "CG_MVP3_DYNAMIC_CALL_UNKNOWN", "classification": "warning"}
+        ]);
+        source_update["validation_packet"]["diagnostics"] = json!([
+            {"validation_rule_id": "CG_MVP3_STALE_SIDECAR_DIAGNOSTIC", "classification": "diagnostic_only"}
+        ]);
+        source_update["validation_packet"]["summary_counts_by_classification"] = json!({
+            "block": 1,
+            "warning": 1,
+            "diagnostic_only": 1
+        });
+
+        let packet = agent_use_validate_edit_packet_json(&profile, &options, source_update);
+        let interrupt_errors = packet["hard_interrupt"]["errors"]
+            .as_array()
+            .expect("interrupt errors");
+        assert_eq!(interrupt_errors.len(), 1, "{packet:?}");
+        assert!(interrupt_errors
+            .iter()
+            .all(|error| error["classification"].as_str() == Some("block")));
+        assert!(packet["warnings"]
+            .as_array()
+            .is_some_and(|items| items.len() == 1));
+        assert!(packet["diagnostics"]
+            .as_array()
+            .is_some_and(|items| items.len() == 1));
+        assert_eq!(
+            packet["validation_packet"]["summary_counts_by_classification"]["block"].as_u64(),
+            Some(1)
+        );
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn text_candidate_vector_source_navigation_not_interrupting() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_non_interrupt_source_update(),
+        );
+
+        assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(false));
+        assert!(packet["hard_interrupt"].is_null(), "{packet:?}");
+        for key in [
+            "text_evidence",
+            "candidate_evidence",
+            "vector_evidence",
+            "source_navigation",
+        ] {
+            assert_eq!(
+                packet["validation_packet"]["proof_ladder_changes"][key]["graph_proof"].as_bool(),
+                Some(false),
+                "{key} was promoted to graph proof: {packet:?}"
+            );
+        }
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn validate_edit_preflight_block_is_non_claimable_with_synthetic_packet() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = AgentUseValidateEditOptions {
+            repo: repo.clone(),
+            changed_paths: vec![PathBuf::from("src/a.ts")],
+            detail_mode: AgentUseDetailMode::Compact,
+            max_output_bytes: None,
+            fail_on_blocking: false,
+            task_id: None,
+            edit_intent: None,
+            expected_touched_files: Vec::new(),
+        };
+        let source_update = json!({
+            "status": "not_indexed",
+            "changed_paths": ["src/a.ts"],
+            "rejected_paths": [],
+            "no_op_paths": [],
+            "errors": ["db_missing"],
+            "claimability": {"claimable": false, "diagnostic_only": true},
+            "lifecycle": {"claimable": false, "diagnostic_only": true},
+            "normal_dot_codegraph_mutated": false
+        });
+
+        let packet = agent_use_validate_edit_packet_json(&profile, &options, source_update);
+        assert_eq!(packet["status"].as_str(), Some("preflight_blocked"));
+        assert_eq!(packet["must_fix_before_continuing"].as_bool(), Some(true));
+        assert_eq!(
+            packet["validation_packet"]["status"].as_str(),
+            Some("diagnostic_only")
+        );
+        assert_eq!(
+            packet["validation_packet"]["stale_unsafe_blockers"][0].as_str(),
+            Some("db_missing")
+        );
+        assert_eq!(packet["claimability"]["claimable"].as_bool(), Some(false));
+        cleanup_repo(repo);
+    }
+
     fn run_proof_integrity_for_paths(
         repo: &Path,
         store: &SqliteGraphStore,
@@ -9618,13 +10843,6 @@ pub(crate) fn agent_use_persistent_watch_status_json(
     })
 }
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct AgentUseWatchPathPreflight {
-    accepted_paths: Vec<String>,
-    rejected_paths: Vec<Value>,
-    requested_paths: Vec<String>,
-}
-
 pub(crate) fn agent_use_report_changed_paths(
     repo_root: &Path,
     changed_paths: &[PathBuf],
@@ -9666,47 +10884,21 @@ pub(crate) fn path_to_graph_report_string(path: &Path) -> String {
 pub(crate) fn agent_use_watch_path_preflight(
     repo_root: &Path,
     changed_paths: &[PathBuf],
-) -> AgentUseWatchPathPreflight {
-    let mut preflight = AgentUseWatchPathPreflight::default();
-    for changed_path in changed_paths {
-        let requested = path_to_graph_report_string(changed_path);
-        preflight.requested_paths.push(requested.clone());
-        match normalize_changed_path(repo_root, changed_path) {
-            Ok((_, repo_relative_path)) => {
-                if !preflight.accepted_paths.contains(&repo_relative_path) {
-                    preflight.accepted_paths.push(repo_relative_path);
-                }
-            }
-            Err(error) => {
-                let mapping_path = if changed_path.is_absolute() {
-                    changed_path.to_path_buf()
-                } else {
-                    repo_root.join(changed_path)
-                };
-                preflight.rejected_paths.push(json!({
-                    "path": requested,
-                    "requested_path": requested,
-                    "original_path": path_string(changed_path),
-                    "reason": "path_outside_repo",
-                    "status": "rejected",
-                    "read": false,
-                    "indexed": false,
-                    "path_mapping": agent_use_path_mapping_json(&mapping_path),
-                    "error": error.to_string(),
-                }));
-            }
-        }
-    }
-    preflight.accepted_paths.sort();
-    preflight.accepted_paths.dedup();
-    preflight
+    scope_policy: &IndexScopeOptions,
+) -> ValidateEditChangedFilesPreflight {
+    validate_edit_changed_files_preflight_with_scope(
+        repo_root,
+        changed_paths,
+        scope_policy,
+        AGENT_USE_WATCH_DEFAULT_MAX_BATCH_PATHS,
+    )
 }
 
 pub(crate) fn agent_use_watch_rejected_paths_json(
     profile: &AgentUseProfile,
     preflight: &DbLifecycleSurfacePreflight,
     normal_dot_codegraph_existed_before: bool,
-    path_preflight: &AgentUseWatchPathPreflight,
+    path_preflight: &ValidateEditChangedFilesPreflight,
 ) -> Value {
     let normal_dot_codegraph = profile.repo_root.join(".codegraph");
     let lifecycle = watch_lifecycle_status_json(preflight, &profile.db_path, false);
@@ -9721,8 +10913,25 @@ pub(crate) fn agent_use_watch_rejected_paths_json(
         Some(&profile.vector_audit_path),
         None,
     );
+    let rejected = !path_preflight.rejected_paths.is_empty();
+    let status = if rejected { "rejected" } else { "no_op" };
+    let reason = if rejected {
+        "no_updateable_changed_paths_after_input_preflight"
+    } else {
+        "changed_paths_are_noop_after_input_preflight"
+    };
+    let delta_state = if rejected { "blocked" } else { "ready" };
+    let publish_strategy = if rejected {
+        "no_update_when_changed_path_preflight_has_only_rejected_inputs"
+    } else {
+        "no_update_when_changed_path_preflight_has_only_noop_inputs"
+    };
+    let mut warnings = preflight.warnings.clone();
+    warnings.extend(path_preflight.warnings.clone());
+    warnings.sort();
+    warnings.dedup();
     let mut value = json!({
-        "status": "rejected",
+        "status": status,
         "command": "watch",
         "subcommand": "once",
         "command_namespace": "agent-use",
@@ -9737,7 +10946,7 @@ pub(crate) fn agent_use_watch_rejected_paths_json(
         "external_db_used": true,
         "claimable": false,
         "diagnostic_only": true,
-        "reason": "one_or_more_changed_paths_are_outside_repo",
+        "reason": reason,
         "path_access_status": preflight.path_access_status.clone(),
         "path_access_error": preflight.path_access_error.clone(),
         "db_problem_kind": preflight.db_problem_kind.clone(),
@@ -9748,8 +10957,8 @@ pub(crate) fn agent_use_watch_rejected_paths_json(
         "agent_use_watch_available": true,
         "agent_use_watch_status": "implemented_once_changed",
         "delta_sync_phase": "real_time_delta_sync",
-        "delta_sync_state": "blocked",
-        "delta_state": "blocked",
+        "delta_sync_state": delta_state,
+        "delta_state": delta_state,
         "auto_index_enabled": false,
         "validation_status": "not_applicable",
         "validation_must_fix_before_continuing": false,
@@ -9760,8 +10969,25 @@ pub(crate) fn agent_use_watch_rejected_paths_json(
         "hard_interrupt": Value::Null,
         "hard_interrupt_not_implemented": false,
         "changed_paths": path_preflight.accepted_paths.clone(),
+        "normalized_changed_files": path_preflight.normalized_changed_files.clone(),
         "rejected_paths": path_preflight.rejected_paths.clone(),
-        "no_op_paths": [],
+        "no_op_paths": path_preflight.no_op_paths.clone(),
+        "deleted_paths": path_preflight.deleted_paths.clone(),
+        "renamed_paths": path_preflight.renamed_paths.clone(),
+        "ignored_paths": path_preflight.ignored_paths.clone(),
+        "generated_paths": path_preflight.generated_paths.clone(),
+        "outside_repo_paths": path_preflight.outside_repo_paths.clone(),
+        "duplicate_paths": path_preflight.duplicate_paths.clone(),
+        "atomic_temp_paths": path_preflight.atomic_temp_paths.clone(),
+        "partial_input_failures_reported": path_preflight.partial_input_failures_reported,
+        "too_many_changed_files": path_preflight.too_many_changed_files,
+        "max_changed_files": path_preflight.max_changed_files,
+        "no_silent_path_drops": true,
+        "input_policy": path_preflight.input_policy.clone(),
+        "rename_policy": path_preflight.rename_policy.clone(),
+        "per_file_status": path_preflight.per_file_status.clone(),
+        "input_diagnostics": path_preflight.diagnostics.clone(),
+        "input_warnings": path_preflight.warnings.clone(),
         "changed_paths_requested": path_preflight.requested_paths.clone(),
         "old_graph_valid": preflight.safe_to_write,
         "new_graph_valid": preflight.safe_to_write,
@@ -9872,13 +11098,13 @@ pub(crate) fn agent_use_watch_rejected_paths_json(
         "recovery": agent_use_recovery_json(profile),
         "recovery_commands": profile.recovery_commands.clone(),
         "errors": path_preflight.rejected_paths.clone(),
-        "warnings": preflight.warnings.clone(),
+        "warnings": warnings,
         "normal_dot_codegraph_path": path_string(&normal_dot_codegraph),
         "normal_dot_codegraph_created": !normal_dot_codegraph_existed_before && normal_dot_codegraph.exists(),
         "normal_dot_codegraph_mutated": normal_dot_codegraph_existed_before != normal_dot_codegraph.exists(),
         "public_claim": false,
         "publish_safety": {
-            "strategy": "no_update_when_changed_path_is_outside_repo",
+            "strategy": publish_strategy,
             "old_good_read_visibility": "no delta transaction started",
             "partial_update_claimability": "not_applicable",
             "temp_db_claimability": "not_applicable_for_once_delta_update",

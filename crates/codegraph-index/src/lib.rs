@@ -56,13 +56,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub mod scope;
-use scope::{IndexScope, IndexScopeRuntimeReport, ScopeAction, ScopePathKind};
+use scope::{IndexScope, IndexScopeRuntimeReport, ScopeAction, ScopeClassification, ScopePathKind};
 pub use scope::{
     IndexScopeOptions, INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES,
     SCOPE_POLICY_KIND_DEFAULT_WITH_OVERRIDES, SCOPE_TRUTH_STATUS_OVERRIDE_ONLY,
 };
 
 pub const UNBOUNDED_STORE_READ_LIMIT: usize = 1_000_000;
+pub const VALIDATE_EDIT_CHANGED_FILES_MAX: usize = 256;
 const DERIVED_MUTATION_CLOSURE_MAX_OUTPUT_EDGES: usize = 100_000;
 const DERIVED_MUTATION_CLOSURE_MAX_WRITES_PER_CALLEE: usize = 64;
 const DERIVED_DATAFLOW_CLOSURE_MAX_OUTPUT_EDGES: usize = 100_000;
@@ -18678,6 +18679,388 @@ pub fn normalize_changed_path(root: &Path, path: &Path) -> Result<(PathBuf, Stri
     Ok((normalized, repo_relative_path))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidateEditPathMapping {
+    pub repo_root: String,
+    pub candidate_path: String,
+    pub normalized_path: Option<String>,
+    pub repo_relative_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidateEditChangedFileDiagnostic {
+    pub path: String,
+    pub requested_path: String,
+    pub original_path: String,
+    pub normalized_path: Option<String>,
+    pub reason: String,
+    pub status: String,
+    pub read: bool,
+    pub indexed: bool,
+    pub will_update: bool,
+    pub path_mapping: ValidateEditPathMapping,
+    pub scope_rule_kind: Option<String>,
+    pub matched_rule: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidateEditChangedFileStatus {
+    pub requested_path: String,
+    pub normalized_path: Option<String>,
+    pub status: String,
+    pub reason: String,
+    pub will_update: bool,
+    pub read: bool,
+    pub indexed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidateEditChangedFilesPreflight {
+    pub accepted_paths: Vec<String>,
+    pub normalized_changed_files: Vec<String>,
+    pub rejected_paths: Vec<ValidateEditChangedFileDiagnostic>,
+    pub no_op_paths: Vec<String>,
+    pub deleted_paths: Vec<String>,
+    pub renamed_paths: Vec<Value>,
+    pub ignored_paths: Vec<String>,
+    pub generated_paths: Vec<String>,
+    pub outside_repo_paths: Vec<String>,
+    pub duplicate_paths: Vec<String>,
+    pub atomic_temp_paths: Vec<String>,
+    pub requested_paths: Vec<String>,
+    pub warnings: Vec<String>,
+    pub diagnostics: Vec<ValidateEditChangedFileDiagnostic>,
+    pub per_file_status: Vec<ValidateEditChangedFileStatus>,
+    pub partial_input_failures_reported: bool,
+    pub too_many_changed_files: bool,
+    pub max_changed_files: usize,
+    pub should_update: bool,
+    pub outside_repo_only: bool,
+    pub input_policy: String,
+    pub rename_policy: String,
+}
+
+impl Default for ValidateEditChangedFilesPreflight {
+    fn default() -> Self {
+        Self {
+            accepted_paths: Vec::new(),
+            normalized_changed_files: Vec::new(),
+            rejected_paths: Vec::new(),
+            no_op_paths: Vec::new(),
+            deleted_paths: Vec::new(),
+            renamed_paths: Vec::new(),
+            ignored_paths: Vec::new(),
+            generated_paths: Vec::new(),
+            outside_repo_paths: Vec::new(),
+            duplicate_paths: Vec::new(),
+            atomic_temp_paths: Vec::new(),
+            requested_paths: Vec::new(),
+            warnings: Vec::new(),
+            diagnostics: Vec::new(),
+            per_file_status: Vec::new(),
+            partial_input_failures_reported: false,
+            too_many_changed_files: false,
+            max_changed_files: VALIDATE_EDIT_CHANGED_FILES_MAX,
+            should_update: false,
+            outside_repo_only: false,
+            input_policy:
+                "run_unique_in_repo_updateable_paths; report_invalid_duplicate_noop_paths_explicitly"
+                    .to_string(),
+            rename_policy: "explicit rename pairs are not part of the current API; pass old deleted path and new added path in the same changed set".to_string(),
+        }
+    }
+}
+
+impl ValidateEditChangedFilesPreflight {
+    pub fn accepted_pathbufs(&self, repo_root: &Path) -> Vec<PathBuf> {
+        self.accepted_paths
+            .iter()
+            .map(|path| repo_root.join(path))
+            .collect()
+    }
+
+    pub fn merge_no_op_paths(&self, update_no_op_paths: &[String]) -> Vec<String> {
+        let mut paths = self.no_op_paths.clone();
+        paths.extend(update_no_op_paths.iter().cloned());
+        sort_dedup_graph_paths(&mut paths);
+        paths
+    }
+
+    pub fn merge_deleted_paths(&self, update_deleted_paths: &[String]) -> Vec<String> {
+        let mut paths = self.deleted_paths.clone();
+        paths.extend(update_deleted_paths.iter().cloned());
+        sort_dedup_graph_paths(&mut paths);
+        paths
+    }
+}
+
+pub fn validate_edit_changed_files_preflight(
+    repo_root: &Path,
+    changed_paths: &[PathBuf],
+) -> ValidateEditChangedFilesPreflight {
+    validate_edit_changed_files_preflight_with_scope(
+        repo_root,
+        changed_paths,
+        &IndexScopeOptions::default(),
+        VALIDATE_EDIT_CHANGED_FILES_MAX,
+    )
+}
+
+pub fn validate_edit_changed_files_preflight_with_scope(
+    repo_root: &Path,
+    changed_paths: &[PathBuf],
+    scope_options: &IndexScopeOptions,
+    max_changed_files: usize,
+) -> ValidateEditChangedFilesPreflight {
+    let repo_root_for_paths =
+        fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+    let mut preflight = ValidateEditChangedFilesPreflight {
+        max_changed_files,
+        ..ValidateEditChangedFilesPreflight::default()
+    };
+    let scope = IndexScope::for_repo(&repo_root_for_paths, scope_options.clone());
+    let mut seen_identities = BTreeSet::<String>::new();
+
+    for changed_path in changed_paths {
+        let requested = validate_edit_requested_path_string(changed_path);
+        preflight.requested_paths.push(requested.clone());
+        let candidate_path = if changed_path.is_absolute() {
+            changed_path.to_path_buf()
+        } else {
+            repo_root_for_paths.join(changed_path)
+        };
+
+        let (absolute_path, repo_relative_path) =
+            match normalize_changed_path(&repo_root_for_paths, changed_path) {
+                Ok((absolute_path, repo_relative_path)) => (absolute_path, repo_relative_path),
+                Err(error) => {
+                    let diagnostic = validate_edit_path_diagnostic(
+                        &repo_root_for_paths,
+                        &candidate_path,
+                        &requested,
+                        changed_path,
+                        None,
+                        "path_outside_repo",
+                        "rejected",
+                        false,
+                        false,
+                        false,
+                        None,
+                        None,
+                        Some(error.to_string()),
+                    );
+                    preflight.outside_repo_paths.push(requested.clone());
+                    preflight.rejected_paths.push(diagnostic.clone());
+                    preflight.diagnostics.push(diagnostic);
+                    preflight.per_file_status.push(validate_edit_file_status(
+                        &requested,
+                        None,
+                        "rejected",
+                        "path_outside_repo",
+                        false,
+                        false,
+                        false,
+                    ));
+                    continue;
+                }
+            };
+
+        let normalized = normalize_graph_path(&repo_relative_path);
+        let identity = platform_path_identity_key(&normalized);
+        if !seen_identities.insert(identity) {
+            preflight.duplicate_paths.push(normalized.clone());
+            preflight.per_file_status.push(validate_edit_file_status(
+                &requested,
+                Some(normalized.clone()),
+                "duplicate",
+                "duplicate_changed_path",
+                false,
+                false,
+                false,
+            ));
+            preflight.diagnostics.push(validate_edit_path_diagnostic(
+                &repo_root_for_paths,
+                &candidate_path,
+                &requested,
+                changed_path,
+                Some(normalized),
+                "duplicate_changed_path",
+                "duplicate",
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+            ));
+            continue;
+        }
+
+        if preflight.accepted_paths.len() >= max_changed_files {
+            preflight.too_many_changed_files = true;
+            preflight.no_op_paths.push(normalized.clone());
+            let diagnostic = validate_edit_path_diagnostic(
+                &repo_root_for_paths,
+                &candidate_path,
+                &requested,
+                changed_path,
+                Some(normalized.clone()),
+                "changed_file_limit_exceeded",
+                "rejected",
+                false,
+                false,
+                false,
+                None,
+                None,
+                Some(format!(
+                    "changed file limit exceeded: max {max_changed_files}"
+                )),
+            );
+            preflight.rejected_paths.push(diagnostic.clone());
+            preflight.diagnostics.push(diagnostic);
+            preflight.per_file_status.push(validate_edit_file_status(
+                &requested,
+                Some(normalized),
+                "rejected",
+                "changed_file_limit_exceeded",
+                false,
+                false,
+                false,
+            ));
+            continue;
+        }
+
+        if let Some(reason) = validate_edit_atomic_temp_reason(&normalized) {
+            preflight.no_op_paths.push(normalized.clone());
+            preflight.atomic_temp_paths.push(normalized.clone());
+            let diagnostic = validate_edit_path_diagnostic(
+                &repo_root_for_paths,
+                &candidate_path,
+                &requested,
+                changed_path,
+                Some(normalized.clone()),
+                reason,
+                "no_op",
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+            );
+            preflight.diagnostics.push(diagnostic);
+            preflight.per_file_status.push(validate_edit_file_status(
+                &requested,
+                Some(normalized),
+                "no_op",
+                reason,
+                false,
+                false,
+                false,
+            ));
+            continue;
+        }
+
+        let path_kind = if absolute_path.is_dir() {
+            ScopePathKind::Directory
+        } else {
+            ScopePathKind::File
+        };
+        let scope_decision = scope.evaluate_repo_path(&normalized, path_kind);
+        let ignored = scope_decision.excluded()
+            || should_skip_file_with_scope(&absolute_path, &scope_decision, scope_options);
+        let generated = validate_edit_scope_decision_is_generated(&scope_decision, &normalized);
+        if ignored {
+            preflight.ignored_paths.push(normalized.clone());
+        }
+        if generated {
+            preflight.generated_paths.push(normalized.clone());
+        }
+        if !absolute_path.exists() {
+            preflight.deleted_paths.push(normalized.clone());
+        }
+
+        preflight.accepted_paths.push(normalized.clone());
+        preflight.per_file_status.push(validate_edit_file_status(
+            &requested,
+            Some(normalized.clone()),
+            "accepted",
+            if !absolute_path.exists() {
+                "deleted_or_missing_path_will_cleanup_stale_facts"
+            } else if ignored {
+                "ignored_or_generated_path_will_cleanup_or_noop_without_graph_pollution"
+            } else {
+                "accepted_for_delta_update"
+            },
+            true,
+            !ignored,
+            !ignored,
+        ));
+        if ignored || generated || !absolute_path.exists() {
+            preflight.diagnostics.push(validate_edit_path_diagnostic(
+                &repo_root_for_paths,
+                &candidate_path,
+                &requested,
+                changed_path,
+                Some(normalized),
+                if !absolute_path.exists() {
+                    "deleted_or_missing_path"
+                } else if generated {
+                    "generated_path"
+                } else {
+                    "ignored_path"
+                },
+                "accepted",
+                !ignored,
+                !ignored,
+                true,
+                Some(format!("{:?}", scope_decision.rule_kind)),
+                scope_decision.matched_rule.clone(),
+                None,
+            ));
+        }
+    }
+
+    sort_dedup_graph_paths(&mut preflight.accepted_paths);
+    preflight.normalized_changed_files = preflight.accepted_paths.clone();
+    sort_dedup_graph_paths(&mut preflight.no_op_paths);
+    sort_dedup_graph_paths(&mut preflight.deleted_paths);
+    sort_dedup_graph_paths(&mut preflight.ignored_paths);
+    sort_dedup_graph_paths(&mut preflight.generated_paths);
+    sort_dedup_graph_paths(&mut preflight.outside_repo_paths);
+    sort_dedup_graph_paths(&mut preflight.duplicate_paths);
+    sort_dedup_graph_paths(&mut preflight.atomic_temp_paths);
+    preflight.should_update = !preflight.accepted_paths.is_empty();
+    preflight.partial_input_failures_reported =
+        !preflight.rejected_paths.is_empty() || !preflight.duplicate_paths.is_empty();
+    preflight.outside_repo_only =
+        preflight.accepted_paths.is_empty() && !preflight.outside_repo_paths.is_empty();
+    if preflight.partial_input_failures_reported && preflight.should_update {
+        preflight
+            .warnings
+            .push("partial_input_failures_reported_valid_subset_will_update".to_string());
+    }
+    if preflight.too_many_changed_files {
+        preflight.warnings.push(format!(
+            "too_many_changed_files_bounded_to_{max_changed_files}"
+        ));
+    }
+    if !preflight.no_op_paths.is_empty() {
+        preflight.warnings.push(
+            "no_op_paths_reported_and_not_sent_to_graph_update_when_preflight_only".to_string(),
+        );
+    }
+    if !preflight.ignored_paths.is_empty() || !preflight.generated_paths.is_empty() {
+        preflight.warnings.push(
+            "ignored_generated_paths_are_truthful_cleanup_or_noop_not_graph_pollution".to_string(),
+        );
+    }
+    preflight.warnings.sort();
+    preflight.warnings.dedup();
+    preflight
+}
+
 fn normalize_lexical_path(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -18735,6 +19118,116 @@ fn normalize_changed_paths_for_update(
         platform_path_identity_key(&left.1) == platform_path_identity_key(&right.1)
     });
     Ok(normalized)
+}
+
+fn validate_edit_requested_path_string(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_edit_path_diagnostic(
+    repo_root: &Path,
+    candidate_path: &Path,
+    requested: &str,
+    original_path: &Path,
+    normalized_path: Option<String>,
+    reason: &str,
+    status: &str,
+    read: bool,
+    indexed: bool,
+    will_update: bool,
+    scope_rule_kind: Option<String>,
+    matched_rule: Option<String>,
+    error: Option<String>,
+) -> ValidateEditChangedFileDiagnostic {
+    ValidateEditChangedFileDiagnostic {
+        path: normalized_path
+            .clone()
+            .unwrap_or_else(|| requested.to_string()),
+        requested_path: requested.to_string(),
+        original_path: path_string(original_path),
+        normalized_path: normalized_path.clone(),
+        reason: reason.to_string(),
+        status: status.to_string(),
+        read,
+        indexed,
+        will_update,
+        path_mapping: ValidateEditPathMapping {
+            repo_root: path_string(repo_root),
+            candidate_path: path_string(candidate_path),
+            normalized_path: normalized_path.clone(),
+            repo_relative_path: normalized_path,
+        },
+        scope_rule_kind,
+        matched_rule,
+        error,
+    }
+}
+
+fn validate_edit_file_status(
+    requested: &str,
+    normalized_path: Option<String>,
+    status: &str,
+    reason: &str,
+    will_update: bool,
+    read: bool,
+    indexed: bool,
+) -> ValidateEditChangedFileStatus {
+    ValidateEditChangedFileStatus {
+        requested_path: requested.to_string(),
+        normalized_path,
+        status: status.to_string(),
+        reason: reason.to_string(),
+        will_update,
+        read,
+        indexed,
+    }
+}
+
+fn validate_edit_atomic_temp_reason(path: &str) -> Option<&'static str> {
+    let lower = path.to_ascii_lowercase();
+    let file_name = lower.rsplit('/').next().unwrap_or(lower.as_str());
+    if file_name == "4913"
+        || file_name.starts_with(".#")
+        || file_name.starts_with("~$")
+        || file_name.ends_with('~')
+        || file_name.ends_with(".swp")
+        || file_name.ends_with(".swo")
+        || file_name.ends_with(".swx")
+        || file_name.ends_with(".tmp")
+        || file_name.ends_with(".temp")
+        || file_name.ends_with(".bak")
+    {
+        return Some("atomic_save_or_editor_temp_path");
+    }
+    None
+}
+
+fn validate_edit_scope_decision_is_generated(
+    decision: &scope::IndexScopeDecision,
+    repo_relative_path: &str,
+) -> bool {
+    let normalized = normalize_graph_path(repo_relative_path).to_ascii_lowercase();
+    normalized.contains("/generated/")
+        || normalized.contains(".generated.")
+        || matches!(
+            decision.classification,
+            ScopeClassification::DefinitelyGeneratedDependencyArtifact
+                | ScopeClassification::LikelyGeneratedDependencyArtifact
+        )
+        || decision
+            .matched_rule
+            .as_deref()
+            .is_some_and(|rule| rule.contains("generated"))
+}
+
+fn sort_dedup_graph_paths(paths: &mut Vec<String>) {
+    paths.sort_by(|left, right| {
+        platform_path_identity_key(left).cmp(&platform_path_identity_key(right))
+    });
+    paths.dedup_by(|left, right| {
+        platform_path_identity_key(left) == platform_path_identity_key(right)
+    });
 }
 
 fn repo_relative_path_for_changed_path(root: &Path, path: &Path) -> Result<String, IndexError> {
@@ -24520,6 +25013,282 @@ mod tests {
             fs::create_dir_all(parent).expect("create parent");
         }
         fs::write(path, source).expect("write test file");
+    }
+
+    fn validate_edit_preflight_for(
+        repo: &Path,
+        paths: Vec<PathBuf>,
+    ) -> ValidateEditChangedFilesPreflight {
+        validate_edit_changed_files_preflight(repo, &paths)
+    }
+
+    #[test]
+    fn changed_file_input_normalization_complete() {
+        let repo = temp_repo("validate-edit-input-complete");
+        write_test_file(&repo, "src/lib.rs", "pub fn live() {}\n");
+        write_test_file(
+            &repo,
+            "src/spaced unicode/naive café.rs",
+            "pub fn unicode_path() {}\n",
+        );
+        write_test_file(&repo, ".gitignore", "generated/\n");
+        write_test_file(&repo, "generated/out.rs", "pub fn generated() {}\n");
+        let outside = repo
+            .parent()
+            .expect("temp repo parent")
+            .join("outside-validate-edit.rs");
+        let preflight = validate_edit_preflight_for(
+            &repo,
+            vec![
+                PathBuf::from("./src/lib.rs"),
+                repo.join("src").join("lib.rs"),
+                PathBuf::from(r"src\lib.rs"),
+                PathBuf::from("src/spaced unicode/naive café.rs"),
+                PathBuf::from("generated/out.rs"),
+                PathBuf::from("src/deleted.rs"),
+                PathBuf::from("src/.#lib.rs"),
+                outside,
+            ],
+        );
+
+        assert!(preflight.should_update, "{preflight:?}");
+        assert!(preflight
+            .normalized_changed_files
+            .contains(&"src/lib.rs".to_string()));
+        assert!(preflight
+            .normalized_changed_files
+            .contains(&"src/spaced unicode/naive café.rs".to_string()));
+        assert!(preflight
+            .deleted_paths
+            .contains(&"src/deleted.rs".to_string()));
+        assert!(preflight
+            .ignored_paths
+            .contains(&"generated/out.rs".to_string()));
+        assert!(preflight
+            .generated_paths
+            .contains(&"generated/out.rs".to_string()));
+        assert!(preflight
+            .atomic_temp_paths
+            .contains(&"src/.#lib.rs".to_string()));
+        assert_eq!(preflight.duplicate_paths, vec!["src/lib.rs".to_string()]);
+        assert_eq!(preflight.outside_repo_paths.len(), 1);
+        assert!(preflight.partial_input_failures_reported);
+        assert!(!preflight.rejected_paths.is_empty());
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn relative_path_normalized() {
+        let repo = temp_repo("validate-edit-relative");
+        write_test_file(&repo, "src/lib.rs", "pub fn live() {}\n");
+        let preflight = validate_edit_preflight_for(&repo, vec![PathBuf::from("./src/lib.rs")]);
+        assert_eq!(preflight.normalized_changed_files, vec!["src/lib.rs"]);
+        assert!(preflight.rejected_paths.is_empty(), "{preflight:?}");
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn absolute_path_normalized() {
+        let repo = temp_repo("validate-edit-absolute");
+        write_test_file(&repo, "src/lib.rs", "pub fn live() {}\n");
+        let preflight = validate_edit_preflight_for(&repo, vec![repo.join("src").join("lib.rs")]);
+        assert_eq!(preflight.normalized_changed_files, vec!["src/lib.rs"]);
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn windows_slash_normalized() {
+        let repo = temp_repo("validate-edit-windows-slash");
+        write_test_file(&repo, "src/lib.rs", "pub fn live() {}\n");
+        let preflight = validate_edit_preflight_for(&repo, vec![PathBuf::from(r"src\lib.rs")]);
+        assert_eq!(preflight.normalized_changed_files, vec!["src/lib.rs"]);
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn spaces_unicode_path_supported() {
+        let repo = temp_repo("validate-edit-unicode");
+        write_test_file(
+            &repo,
+            "src/spaced unicode/naive café.rs",
+            "pub fn unicode_path() {}\n",
+        );
+        let preflight = validate_edit_preflight_for(
+            &repo,
+            vec![PathBuf::from("src/spaced unicode/naive café.rs")],
+        );
+        assert_eq!(
+            preflight.normalized_changed_files,
+            vec!["src/spaced unicode/naive café.rs"]
+        );
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn duplicate_paths_deduped_reported() {
+        let repo = temp_repo("validate-edit-duplicates");
+        write_test_file(&repo, "src/lib.rs", "pub fn live() {}\n");
+        let preflight = validate_edit_preflight_for(
+            &repo,
+            vec![
+                PathBuf::from("src/lib.rs"),
+                PathBuf::from("./src/lib.rs"),
+                repo.join("src").join("lib.rs"),
+            ],
+        );
+        assert_eq!(preflight.normalized_changed_files, vec!["src/lib.rs"]);
+        assert_eq!(preflight.duplicate_paths, vec!["src/lib.rs"]);
+        assert!(preflight.partial_input_failures_reported);
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn outside_repo_rejected() {
+        let repo = temp_repo("validate-edit-outside");
+        let outside = repo
+            .parent()
+            .expect("temp repo parent")
+            .join("outside-validate-edit.rs");
+        let preflight = validate_edit_preflight_for(&repo, vec![outside]);
+        assert!(!preflight.should_update);
+        assert!(preflight.outside_repo_only);
+        assert_eq!(preflight.rejected_paths.len(), 1);
+        assert_eq!(preflight.rejected_paths[0].reason, "path_outside_repo");
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn ignored_generated_noop_truthful() {
+        let repo = temp_repo("validate-edit-ignored-generated");
+        write_test_file(&repo, ".gitignore", "generated/\n");
+        write_test_file(&repo, "generated/out.rs", "pub fn generated() {}\n");
+        let preflight = validate_edit_preflight_for(&repo, vec![PathBuf::from("generated/out.rs")]);
+        assert!(preflight.should_update);
+        assert_eq!(preflight.ignored_paths, vec!["generated/out.rs"]);
+        assert_eq!(preflight.generated_paths, vec!["generated/out.rs"]);
+        assert!(preflight
+            .per_file_status
+            .iter()
+            .any(|status| status.reason.contains("cleanup_or_noop")));
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn deleted_file_supported() {
+        let repo = temp_repo("validate-edit-deleted");
+        let preflight = validate_edit_preflight_for(&repo, vec![PathBuf::from("src/deleted.rs")]);
+        assert!(preflight.should_update);
+        assert_eq!(preflight.deleted_paths, vec!["src/deleted.rs"]);
+        assert_eq!(preflight.normalized_changed_files, vec!["src/deleted.rs"]);
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn rename_or_delete_add_semantics_supported() {
+        let repo = temp_repo("validate-edit-rename-delete-add");
+        write_test_file(&repo, "src/new.rs", "pub fn renamed() {}\n");
+        let preflight = validate_edit_preflight_for(
+            &repo,
+            vec![PathBuf::from("src/old.rs"), PathBuf::from("src/new.rs")],
+        );
+        assert!(preflight.should_update);
+        assert_eq!(preflight.deleted_paths, vec!["src/old.rs"]);
+        assert!(preflight
+            .normalized_changed_files
+            .contains(&"src/new.rs".to_string()));
+        assert!(preflight.rename_policy.contains("old deleted path"));
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn atomic_save_pattern_supported() {
+        let repo = temp_repo("validate-edit-atomic");
+        let preflight = validate_edit_preflight_for(&repo, vec![PathBuf::from("src/.#lib.rs")]);
+        assert!(!preflight.should_update);
+        assert_eq!(preflight.atomic_temp_paths, vec!["src/.#lib.rs"]);
+        assert_eq!(preflight.no_op_paths, vec!["src/.#lib.rs"]);
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn multi_file_validate_edit_supported() {
+        let repo = temp_repo("validate-edit-multi");
+        write_test_file(&repo, "src/a.rs", "pub fn a() {}\n");
+        write_test_file(&repo, "src/b.rs", "pub fn b() {}\n");
+        let preflight = validate_edit_preflight_for(
+            &repo,
+            vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")],
+        );
+        assert_eq!(
+            preflight.normalized_changed_files,
+            vec!["src/a.rs", "src/b.rs"]
+        );
+        assert!(preflight.should_update);
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn partial_input_failures_reported() {
+        let repo = temp_repo("validate-edit-partial");
+        write_test_file(&repo, "src/lib.rs", "pub fn live() {}\n");
+        let outside = repo
+            .parent()
+            .expect("temp repo parent")
+            .join("outside-validate-edit.rs");
+        let preflight =
+            validate_edit_preflight_for(&repo, vec![PathBuf::from("src/lib.rs"), outside]);
+        assert!(preflight.should_update);
+        assert!(preflight.partial_input_failures_reported);
+        assert_eq!(preflight.rejected_paths.len(), 1);
+        assert!(preflight
+            .warnings
+            .contains(&"partial_input_failures_reported_valid_subset_will_update".to_string()));
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn no_silent_path_drops() {
+        let repo = temp_repo("validate-edit-no-silent-drops");
+        write_test_file(&repo, "src/lib.rs", "pub fn live() {}\n");
+        let preflight = validate_edit_preflight_for(
+            &repo,
+            vec![PathBuf::from("src/lib.rs"), PathBuf::from("src/.#lib.rs")],
+        );
+        assert_eq!(preflight.per_file_status.len(), 2);
+        assert!(preflight
+            .per_file_status
+            .iter()
+            .any(|status| status.status == "accepted"));
+        assert!(preflight
+            .per_file_status
+            .iter()
+            .any(|status| status.status == "no_op"));
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn too_many_changed_files_bounded() {
+        let repo = temp_repo("validate-edit-too-many");
+        let paths = vec![
+            PathBuf::from("src/a.rs"),
+            PathBuf::from("src/b.rs"),
+            PathBuf::from("src/c.rs"),
+        ];
+        let preflight = validate_edit_changed_files_preflight_with_scope(
+            &repo,
+            &paths,
+            &IndexScopeOptions::default(),
+            2,
+        );
+        assert!(preflight.too_many_changed_files);
+        assert_eq!(preflight.normalized_changed_files.len(), 2);
+        assert_eq!(preflight.rejected_paths.len(), 1);
+        assert_eq!(
+            preflight.rejected_paths[0].reason,
+            "changed_file_limit_exceeded"
+        );
+        fs::remove_dir_all(repo).expect("cleanup repo");
     }
 
     fn read_jsonl_values(path: &Path) -> Vec<Value> {

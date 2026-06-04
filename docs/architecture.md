@@ -464,8 +464,10 @@ Real-Time Delta Sync is complete for the local production-profile gate:
 one-shot changed-file updates, add/delete/rename lifecycle, dirty evidence
 invalidation, bounded dependency closure, publish/read safety, local diagnostic
 performance, persistent watcher scheduling, and MCP/agent freshness surfaces are
-verified. The validate-edit bridge remains deferred to MVP3 rather than being
-claimed as a compiler/test or complete dangling-edge validator.
+verified. The validate-edit bridge is an explicit MVP3 agent-use/MCP wrapper
+over changed-file update plus validation packet preflight; it is not claimed as
+a compiler/test replacement, editor daemon, plugin, or complete runtime
+validator.
 
 Vector, binary, and nuance-rescue lanes are opt-in or bounded candidate recall
 surfaces. They can route attention, but graph/source verification still decides

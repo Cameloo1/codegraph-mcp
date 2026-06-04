@@ -54,16 +54,17 @@ pub use codegraph_index::{
     scope_policy_hash, should_ignore_path, should_start_new_index_batch,
     snapshot_normalized_facts_for_paths_to_db, update_changed_files, update_changed_files_to_db,
     update_changed_files_with_cache, update_changed_files_with_cache_to_db,
-    validate_vector_chunk_source_bindings, vector_chunk_search_hit_to_retrieval_candidate,
-    CandidateSpoolIndexLoad, CandidateSpoolIndexQueryResult, CandidateSpoolPolicy,
-    DbLifecycleOperationKind, DbLifecyclePolicy, DbLifecyclePreflight, DbLifecycleSurfacePreflight,
+    validate_edit_changed_files_preflight_with_scope, validate_vector_chunk_source_bindings,
+    vector_chunk_search_hit_to_retrieval_candidate, CandidateSpoolIndexLoad,
+    CandidateSpoolIndexQueryResult, CandidateSpoolPolicy, DbLifecycleOperationKind,
+    DbLifecyclePolicy, DbLifecyclePreflight, DbLifecycleSurfacePreflight,
     DbLifecycleSurfacePreflightRequest, EntitySourceRoleDeltaOptions, EntitySourceRoleDeltaReport,
     FreshnessLayerDelta, IncrementalIndexCache, IncrementalIndexSummary, IndexBuildMode,
     IndexError, IndexIssue, IndexOptions, IndexProfile, IndexScopeOptions, IndexSummary,
     LocalFactBundle, NormalizedFactSnapshotOptions, PendingIndexFile, StorageMode,
-    VectorChunkArtifactFormat, VectorChunkIndexArtifactOptions, VectorChunkIndexBuildOptions,
-    DEFAULT_ENTITY_SOURCE_ROLE_DELTA_TOP_LIMIT, DEFAULT_INDEX_BATCH_MAX_FILES,
-    DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY,
+    ValidateEditChangedFilesPreflight, VectorChunkArtifactFormat, VectorChunkIndexArtifactOptions,
+    VectorChunkIndexBuildOptions, DEFAULT_ENTITY_SOURCE_ROLE_DELTA_TOP_LIMIT,
+    DEFAULT_INDEX_BATCH_MAX_FILES, DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY,
     INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES, SCOPE_POLICY_KIND_DEFAULT_WITH_OVERRIDES,
     SCOPE_TRUTH_STATUS_OVERRIDE_ONLY, UNBOUNDED_STORE_READ_LIMIT,
 };
@@ -310,8 +311,13 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "agent-use",
-        usage: "codegraph-mcp agent-use <status|index|query|context-pack|mcp-config|watch> --repo <repo> --json\n  codegraph-mcp agent-use status --repo <repo> --json\n  codegraph-mcp agent-use index --repo <repo> [--fresh|--rebuild|--incremental] [--json]\n  codegraph-mcp agent-use query symbols|text|files|references|definitions|callers|callees|path|chain|unresolved-calls <args> --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use context-pack --repo <repo> --task <task> --agent-json\n  codegraph-mcp agent-use mcp-config --repo <repo> --json\n  codegraph-mcp agent-use watch --repo <repo> --json [--debounce-ms <ms>]\n  codegraph-mcp agent-use watch --repo <repo> --once --changed <path> [--changed <path>] --json",
+        usage: "codegraph-mcp agent-use <status|index|query|context-pack|mcp-config|watch|validate-edit> --repo <repo> --json\n  codegraph-mcp agent-use status --repo <repo> --json\n  codegraph-mcp agent-use index --repo <repo> [--fresh|--rebuild|--incremental] [--json]\n  codegraph-mcp agent-use query symbols|text|files|references|definitions|callers|callees|path|chain|unresolved-calls <args> --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use context-pack --repo <repo> --task <task> --agent-json\n  codegraph-mcp agent-use mcp-config --repo <repo> --json\n  codegraph-mcp agent-use watch --repo <repo> --json [--debounce-ms <ms>]\n  codegraph-mcp agent-use watch --repo <repo> --once --changed <path> [--changed <path>] --json\n  codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> [--changed <path>] --agent-json [--fail-on-blocking]",
         description: "Use the production agent profile outside the source tree.",
+    },
+    CommandSpec {
+        name: "validate-edit",
+        usage: "codegraph-mcp validate-edit --repo <repo> --changed-file <path> --agent-json\n  Compatibility alias is deferred; use `codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> --agent-json`.",
+        description: "Deferred compatibility alias for agent-use validate-edit.",
     },
     CommandSpec {
         name: "status",
@@ -977,6 +983,10 @@ where
         "init" => run_json_command("init_failed", run_init_command(&command_args)),
         "index" => run_json_command("index_failed", run_index_command(&command_args)),
         "agent-use" => run_json_command("agent_use_failed", run_agent_use_command(&command_args)),
+        "validate-edit" => run_json_command(
+            "validate_edit_alias_deferred",
+            run_validate_edit_alias_deferred_command(&command_args),
+        ),
         "status" => run_json_command("status_failed", run_status_command(&command_args)),
         "query" => run_json_command("query_failed", run_query_command(&command_args)),
         "impact" => run_json_command("impact_failed", run_impact_command(&command_args)),
@@ -1003,7 +1013,7 @@ fn run_json_command(error_kind: &str, result: Result<Value, String>) -> CliOutpu
         Ok(value) if error_kind == "bench_failed" => {
             success(json_line(add_benchmark_binary_metadata(value)))
         }
-        Ok(value) => success(json_line(value)),
+        Ok(value) => success_json_value(value),
         Err(error) if error_kind == "bench_failed" => command_error_json(
             error_kind,
             add_benchmark_binary_metadata(serde_json::from_str::<Value>(&error).unwrap_or_else(
@@ -1020,6 +1030,20 @@ fn run_json_command(error_kind: &str, result: Result<Value, String>) -> CliOutpu
             Ok(value) => command_error_json(error_kind, value),
             Err(_) => command_error(error_kind, &error),
         },
+    }
+}
+
+fn success_json_value(mut value: Value) -> CliOutput {
+    let exit_code = value
+        .as_object_mut()
+        .and_then(|object| object.remove("_cli_exit_code"))
+        .and_then(|value| value.as_i64())
+        .and_then(|value| i32::try_from(value).ok())
+        .unwrap_or(0);
+    CliOutput {
+        exit_code,
+        stdout: json_line(value),
+        stderr: String::new(),
     }
 }
 
@@ -10245,6 +10269,67 @@ fn json_line(value: Value) -> String {
     let mut line = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
     line.push('\n');
     line
+}
+
+#[cfg(test)]
+mod cli_json_output_tests {
+    use super::*;
+
+    #[test]
+    fn success_json_value_supports_nonzero_stdout_json() {
+        let output = success_json_value(json!({
+            "status": "blocking_graph_error",
+            "_cli_exit_code": 2,
+        }));
+        assert_eq!(output.exit_code, 2);
+        assert!(output.stderr.is_empty());
+        let value: Value = serde_json::from_str(&output.stdout).expect("stdout json");
+        assert_eq!(value["status"].as_str(), Some("blocking_graph_error"));
+        assert!(value.get("_cli_exit_code").is_none());
+    }
+
+    #[test]
+    fn default_exit_zero_on_validation_blocker() {
+        let output = success_json_value(json!({
+            "status": "blocking_graph_error",
+            "hard_interrupt_available": true,
+            "must_fix_before_continuing": true,
+        }));
+
+        assert_eq!(output.exit_code, 0);
+        assert!(output.stderr.is_empty());
+        let value: Value = serde_json::from_str(&output.stdout).expect("stdout json");
+        assert_eq!(value["status"].as_str(), Some("blocking_graph_error"));
+        assert_eq!(value["hard_interrupt_available"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn fail_on_blocking_exit_nonzero() {
+        let output = success_json_value(json!({
+            "status": "blocking_graph_error",
+            "hard_interrupt_available": true,
+            "must_fix_before_continuing": true,
+            "_cli_exit_code": 2,
+        }));
+
+        assert_eq!(output.exit_code, 2);
+        assert!(output.stderr.is_empty());
+    }
+
+    #[test]
+    fn stdout_json_preserved_on_fail_on_blocking() {
+        let output = success_json_value(json!({
+            "status": "blocking_graph_error",
+            "hard_interrupt_available": true,
+            "must_fix_before_continuing": true,
+            "_cli_exit_code": 2,
+        }));
+
+        let value: Value = serde_json::from_str(&output.stdout).expect("stdout json");
+        assert_eq!(value["status"].as_str(), Some("blocking_graph_error"));
+        assert_eq!(value["hard_interrupt_available"].as_bool(), Some(true));
+        assert!(value.get("_cli_exit_code").is_none());
+    }
 }
 
 fn command_help_text(command: &CommandSpec) -> String {

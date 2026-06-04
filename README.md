@@ -218,8 +218,9 @@ Start with [CONTRIBUTING.md](CONTRIBUTING.md). The short version:
 - Relation coverage varies by language and extractor.
 - macOS is coming soon; it is not tested or supported by this baseline.
 - Full-repo indexing is an explicit opt-in check, not a default CI smoke.
-- `agent-use validate-edit` is deferred to the validation roadmap; current
-  context packets and RTDS freshness are not compiler/test replacements.
+- `agent-use validate-edit` is available as an explicit production-profile
+  after-patch validation command; it is not a compiler/test replacement and
+  does not imply an editor daemon or plugin.
 - Knowledge-graph embeddings such as TransE, RotatE, ComplEx, TuckER,
   hyperbolic relation embeddings, and tensor decomposition are offline research
   directions, not runtime requirements.
@@ -248,16 +249,22 @@ Current lab tracks:
 - internal gold retrieval;
 - RepoBench smoke and small retrieval runs;
 - CrossCodeEval parser/load smoke and retrieval runs;
-- SWE-bench Lite gold validation and one-task patch-quality smoke.
+- SWE-bench Lite setup/preflight checks and blocked real-agent ladder tracking.
 
 Current provider arms: `baseline`, `rg_only`, `codegraph_exact_text`, and
 `codegraph_full`.
 
 Patch-quality runs use an external agent command. The local Codex wrapper is
-`benchmarks/scripts/run_codex_external_patch_agent.ps1`, configured through
-`CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND`. It reads benchmark JSON from stdin,
-runs Codex in the task workspace, writes only a `diff --git` patch to stdout,
-and keeps prompts/logs under ignored benchmark paths.
+`benchmarks/tracks/swebench_lite/scripts/run_codex_external_patch_agent.ps1`,
+configured through `CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND`. It reads benchmark
+JSON from stdin, runs Codex in the task workspace, writes only a `diff --git`
+patch to stdout, and keeps prompts/logs under ignored benchmark paths. Current
+real-agent patch ladders remain blocked because the external-agent route must be
+approved or replaced with a local-only wrapper before provider-visible
+task/context payloads are sent. Docker/SWE-bench setup is current-ready after
+Docker launch, and a live one-task gold validation passed. A one-task repo-side
+preflight with `--skip-agent --skip-eval` is runnable and passed; no
+real-agent patch-quality claim is made.
 
 ## OpenEvolve Lab
 

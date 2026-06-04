@@ -21,6 +21,16 @@ codegraph-mcp agent-use watch --repo <repo> `
   --once --changed src\file.ts `
   --json
 
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed src\file.ts `
+  --agent-json
+
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed src\file.ts `
+  --changed src\helper.ts `
+  --fail-on-blocking `
+  --agent-json
+
 codegraph-mcp agent-use watch --repo <repo> --json
 
 codegraph-mcp agent-use query symbols <symbol> --repo <repo> `
@@ -87,10 +97,89 @@ audit layers. Candidate/vector sidecars remain candidate-only and may be
 reported stale after a changed-file graph update; rebuild with `agent-use
 index` when those sidecars need to be refreshed.
 
-`agent-use validate-edit` is intentionally deferred to MVP3 expansion. Current
-RTDS freshness packets can expose changed/removed symbols and exact graph
-freshness, but they do not claim to replace compilers, tests, or a complete
-dangling-edge validator.
+## Validate-Edit After A Patch
+
+The canonical agent/editor validation command is:
+
+```powershell
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed <path> `
+  --agent-json
+```
+
+Pass more than one changed file by repeating `--changed`:
+
+```powershell
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed src\file.ts `
+  --changed src\helper.ts `
+  --agent-json
+```
+
+Use `--fail-on-blocking` when a hook or CI step should stop on a real hard
+interrupt while still capturing the JSON packet:
+
+```powershell
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed src\file.ts `
+  --fail-on-blocking `
+  --agent-json
+```
+
+Use `--explain` or `--audit-json` only when the caller needs richer diagnostic
+detail:
+
+```powershell
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed src\file.ts `
+  --explain
+
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed src\file.ts `
+  --audit-json
+```
+
+The top-level compatibility alias `codegraph-mcp validate-edit ...` is still
+deferred. Use the canonical `codegraph-mcp agent-use validate-edit --repo
+<repo> --changed <path> --agent-json` command.
+
+Exit-code policy:
+
+- Exit 0 means validation ran and emitted stdout JSON, even when the packet
+  status is `blocking_graph_error`.
+- With `--fail-on-blocking`, exit 2 means validation ran, JSON was printed,
+  and `hard_interrupt_available=true`.
+- Other nonzero exits mean validation did not complete because of command,
+  config, lifecycle, tool, runtime, or protocol failure.
+- Agents should parse stdout JSON and must not infer proof from exit code
+  alone.
+
+Validation status meanings:
+
+- `blocking` / `blocking_graph_error`: reverified graph/source proof, or an
+  eligible integrity/lifecycle proof failure, says the agent must stop and fix
+  before continuing.
+- `warning`: useful risk signal, but not a default hard interrupt.
+- `unknown`: unsupported, ambiguous, degraded, or incomplete evidence; do not
+  treat it as proof.
+- `diagnostic_only`: operator or lifecycle detail; useful for recovery, not
+  source-code proof.
+
+Recipes:
+
+- AI coding agent after-patch hook: collect the edited repo-relative paths,
+  run the canonical command with repeated `--changed`, parse stdout JSON, stop
+  only when `hard_interrupt_available=true` or local policy says a warning is
+  fatal, then run the project compiler/tests/typechecker as normal.
+- Editor save hook: call the same command for saved repo-relative files. This
+  is an explicit hook recipe, not a persistent editor daemon, editor plugin,
+  background loop, or unsaved-buffer integration claim.
+- Optional pre-commit or CI gate: run with `--fail-on-blocking`, treat exit 2
+  as a validation blocker, capture stdout JSON as the audit artifact, and
+  treat other nonzero exits as infrastructure/config failures.
+- MCP client: call `codegraph.validate_edit` with `repo` and
+  `changed_files`; handle validation blockers as structured tool results, not
+  MCP protocol errors.
 
 The release binary and separate DB keep routine agent reads away from
 development, lab, and temporary self-test artifacts. These outputs are usable
@@ -232,6 +321,15 @@ output excludes them by default.
 
 - Absent proof-mode relations have no precision claim.
 - Candidate, vector, text, and source-navigation evidence are not graph proof.
+- CodeGraph does not replace compilers, tests, type checkers, linters, runtime
+  checks, or security review.
+- Hard interrupts derive only from reverified graph/source proof or eligible
+  integrity/lifecycle proof failures. Text, candidate, vector, and
+  source-navigation evidence cannot hard-interrupt by themselves.
+- Unknown, unsupported, degraded, and diagnostic-only findings do not interrupt
+  by default. Unsafe DB state is a lifecycle blocker, not source-code proof.
+- MVP4 micro-flow extraction is future-only and is not part of the MVP3
+  validate-edit contract.
 - Local diagnostic metrics do not become public product claims unless they are
   intentionally promoted and claim-reviewed.
 

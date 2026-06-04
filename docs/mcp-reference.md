@@ -62,6 +62,7 @@ cwd = "<repo>"
 - `codegraph.status`
 - `codegraph.index_repo`
 - `codegraph.update_changed_files`
+- `codegraph.validate_edit`
 - `codegraph.search_symbols`
 - `codegraph.search_text`
 - `codegraph.search_semantic`
@@ -83,12 +84,12 @@ cwd = "<repo>"
 
 Every listed tool advertises an `inputSchema`, an `outputSchema`, and safety
 annotations. The annotations mark tools as local-only and
-`destructiveHint = false`. All tools except `codegraph.index_repo` and
-`codegraph.update_changed_files` advertise `readOnlyHint = true`; those two
-index/update tools advertise `readOnlyHint = false` because they write only the
-configured local SQLite index and never edit source files. In the production
-agent-use profile, that configured index is the external profile DB, not
-repo-local `.codegraph`.
+`destructiveHint = false`. All tools except `codegraph.index_repo`,
+`codegraph.update_changed_files`, and `codegraph.validate_edit` advertise
+`readOnlyHint = true`; those three index/update/validation tools advertise
+`readOnlyHint = false` because they write only the configured local SQLite index
+and never edit source files. In the production agent-use profile, that
+configured index is the external profile DB, not repo-local `.codegraph`.
 
 ## Resources
 
@@ -120,6 +121,56 @@ Most tools accept `repo` when repository context is needed. Query tools accept
 symbol/entity ids, relation filters, and bounded traversal limits depending on
 the tool schema. Search/path tools also accept `limit`, `offset`, and `mode`
 where applicable. Invalid input returns a structured JSON-RPC error.
+
+`codegraph.validate_edit` requires `repo` and a non-empty `changed_files` array.
+It accepts an explicit `db`/`db_path`, or a server config already generated for
+the production `agent-use` profile. It does not fall back to repo-local
+`.codegraph`, does not auto-index on startup, and does not edit source files.
+When validation runs, blocking graph findings are returned as structured MCP
+tool results with `isError = false`, `hard_interrupt_available`, and
+`must_fix_before_continuing`; tool errors are reserved for invalid input,
+runtime, protocol, or internal failures.
+
+Minimal MCP client call:
+
+```json
+{
+  "name": "codegraph.validate_edit",
+  "arguments": {
+    "repo": "<repo>",
+    "changed_files": ["src/file.ts"],
+    "mode": "agent-json",
+    "fail_on_blocking": true
+  }
+}
+```
+
+The advertised input schema requires `repo` and `changed_files`. Optional fields
+include `db`/`db_path`, `profile` with `production-agent-use`, `mode` as
+`agent-json`, `explain`, or `audit-json`, `fail_on_blocking`, `task_id`,
+`edit_intent`, `expected_touched_files`, and `max_output_bytes`. MCP
+`fail_on_blocking` is recorded in the packet; blockers still return a normal
+structured tool result rather than an MCP tool error.
+
+The output shape includes `validation_packet`, `hard_interrupt_available`,
+`hard_interrupt`, `must_fix_before_continuing`, `changed_files`,
+`rejected_paths`, `no_op_paths`, `warnings`, `unknowns`, `diagnostics`,
+`claimability`, `lifecycle`, `recovery_commands`, `omitted_count`,
+`expansion_handles`, and `timings`. `blocking_graph_error` means the validation
+completed and found a stop condition. `warning`, `unknown`, and
+`diagnostic_only` values do not interrupt by default.
+
+`codegraph.validate_edit` may update the configured SQLite graph DB and bounded
+profile sidecars. It must not mutate source files, must not start a background
+editor daemon, must not auto-index a missing profile at startup, and must not
+fall back to normal repo-local `.codegraph`. If lifecycle preflight reports an
+unsafe DB state, run the `recovery_commands` in the response or use:
+
+```powershell
+codegraph-mcp agent-use status --repo <repo> --json
+codegraph-mcp agent-use index --repo <repo> --json
+codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> --agent-json
+```
 
 Caller/callee tools preserve exact traversal when an `entity_id` is supplied.
 For symbol queries, an unambiguous symbol resolves to exact entity results;
@@ -198,6 +249,10 @@ or unknown DB state is not silently trusted.
 - `codegraph.index_repo` can build or update the configured DB.
 - `codegraph.update_changed_files` requires a reusable DB and refuses unsafe
   state instead of writing over unknown data.
+- `codegraph.validate_edit` runs the changed-file update plus validation packet
+  preflight against the explicit DB or external production profile DB. Unsafe DB
+  state or outside-repo changed paths are reported as structured validation
+  preflight responses; missing `changed_files` input remains a tool error.
 - The generated agent-use MCP config points at the external production profile
   DB. MCP startup does not surprise-index a missing profile; use
   `agent-use index` first, then `agent-use watch --once --changed <path>` for
@@ -212,9 +267,12 @@ or unknown DB state is not silently trusted.
 
 ## Safety
 
-`codegraph.index_repo` and `codegraph.update_changed_files` update only the
-configured local SQLite index. The default project-local path is
-`.codegraph/codegraph.sqlite`; the production agent-use profile deliberately
-uses a DB outside the source tree. Plain CLI `status --json` remains local
-`.codegraph` status, while `agent-use status` is read-only for the external
-profile. These tools do not edit source files or run project tests.
+`codegraph.index_repo`, `codegraph.update_changed_files`, and
+`codegraph.validate_edit` update only the configured local SQLite index.
+`codegraph.validate_edit` refuses implicit repo-local `.codegraph` fallback; it
+requires an explicit DB or configured production profile DB. The default
+project-local path is `.codegraph/codegraph.sqlite`; the production agent-use
+profile deliberately uses a DB outside the source tree. Plain CLI `status
+--json` remains local `.codegraph` status, while `agent-use status` is
+read-only for the external profile. These tools do not edit source files or run
+project tests.

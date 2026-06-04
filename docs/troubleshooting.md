@@ -60,6 +60,60 @@ If that command reports `not_indexed`, stale, locked, or another unsafe state,
 run `agent-use index` first. The command intentionally does not auto-index and
 does not fall back to repo-local `.codegraph`.
 
+## Validate-Edit Reports A Blocker Or Fails
+
+For agent/editor hooks, use the canonical production-profile command:
+
+```powershell
+codegraph-mcp agent-use validate-edit --repo <repo> --changed src\file.ts --agent-json
+```
+
+Repeat `--changed` for multi-file edits. Add `--fail-on-blocking` only when a
+pre-commit or CI step should return a distinct blocker exit while preserving
+stdout JSON:
+
+```powershell
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed src\file.ts `
+  --changed src\helper.ts `
+  --fail-on-blocking `
+  --agent-json > validate-edit.json
+
+if ($LASTEXITCODE -eq 2) {
+  Write-Error "CodeGraph validate-edit hard interrupt; inspect validate-edit.json"
+}
+```
+
+Exit 0 means validation completed and emitted JSON, even when the packet status
+is `blocking_graph_error`. Exit 2 with `--fail-on-blocking` means validation
+completed, JSON was printed, and `hard_interrupt_available=true`. Other
+nonzero exits mean validation did not complete because of command, config,
+lifecycle, tool, runtime, or protocol failure. Agents should parse stdout JSON;
+do not infer proof from exit code alone.
+
+`blocking` or `blocking_graph_error` findings are only hard interrupts when
+they come from reverified graph/source proof or eligible integrity/lifecycle
+proof failures. `warning`, `unknown`, unsupported, degraded, and
+`diagnostic_only` findings do not interrupt by default. Text, candidate,
+vector, and source-navigation evidence cannot hard-interrupt by themselves.
+Unsafe DB state is a lifecycle blocker, not source-code proof.
+
+If validate-edit reports `not_indexed`, stale, foreign, schema-mismatched,
+locked, permission-denied, publishing, interrupted, or otherwise unsafe DB
+state, run:
+
+```powershell
+codegraph-mcp agent-use status --repo <repo> --json
+codegraph-mcp agent-use index --repo <repo> --json
+codegraph-mcp agent-use validate-edit --repo <repo> --changed src\file.ts --agent-json
+```
+
+The command resolves the external production agent-use DB. It does not
+auto-index, does not fall back to repo-local `.codegraph`, and does not edit
+source files. An editor save hook may call the same command for saved files,
+but this is not a persistent editor daemon, editor plugin, background loop, or
+unsaved-buffer integration claim.
+
 ## `serve-ui` Refuses A Host
 
 `serve-ui` is local-only by default. Use:
