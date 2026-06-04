@@ -3709,7 +3709,7 @@ fn agent_use_watch_once_updates_external_profile_db_without_dot_codegraph() {
     assert_eq!(watch["hard_interrupt_available"].as_bool(), Some(false));
     assert_eq!(
         watch["hard_interrupt_not_implemented"].as_bool(),
-        Some(true)
+        Some(false)
     );
     let compact_entities_added = watch["graph_delta"]["entities_added"]
         .as_array()
@@ -4155,6 +4155,126 @@ fn agent_use_watch_once_delta_packet_budget_compact_audit_and_noop() {
 #[test]
 fn cli_surface_outputs_validation_packet() {
     agent_use_watch_once_updates_external_profile_db_without_dot_codegraph();
+}
+
+#[test]
+fn agent_use_watch_outputs_hard_interrupt_when_blocking() {
+    let _guard = lock_env_test();
+    let watch = run_agent_use_hard_interrupt_watch(1, &[]);
+
+    assert_watch_hard_interrupt_blocking(&watch);
+    assert_eq!(
+        watch["graph_delta_detail_mode"].as_str(),
+        Some("compact"),
+        "{watch:?}"
+    );
+}
+
+#[test]
+fn agent_use_watch_no_interrupt_when_only_warnings() {
+    let _guard = lock_env_test();
+    let watch = run_agent_use_warning_only_watch();
+
+    assert_eq!(watch["status"].as_str(), Some("updated"), "{watch:?}");
+    assert_eq!(watch["validation_status"].as_str(), Some("warning"));
+    assert_eq!(
+        watch["validation_must_fix_before_continuing"].as_bool(),
+        Some(false)
+    );
+    assert!(
+        watch["validation_warning_count"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0,
+        "{watch:?}"
+    );
+    assert_eq!(watch["validation_blocking_error_count"].as_u64(), Some(0));
+    assert_eq!(watch["hard_interrupt_available"].as_bool(), Some(false));
+    assert!(watch["hard_interrupt"].is_null(), "{watch:?}");
+    assert_eq!(
+        watch["validation_packet"]["hard_interrupt_available"].as_bool(),
+        Some(false)
+    );
+    assert!(watch["validation_packet"]["hard_interrupt"].is_null());
+}
+
+#[test]
+fn agent_use_watch_no_interrupt_when_unknown_degraded_diagnostic() {
+    let _guard = lock_env_test();
+    let watch = run_agent_use_over_budget_degraded_watch();
+
+    assert_eq!(watch["status"].as_str(), Some("degraded"), "{watch:?}");
+    assert_eq!(watch["delta_state"].as_str(), Some("degraded"));
+    assert_eq!(watch["closure_budget_hit"].as_bool(), Some(true));
+    assert_eq!(
+        watch["graph_delta"]["closure_budget_hit_degraded"].as_bool(),
+        Some(true)
+    );
+    assert!(
+        watch["degraded_relation_classes"]
+            .as_array()
+            .is_some_and(|classes| !classes.is_empty()),
+        "{watch:?}"
+    );
+    assert_eq!(watch["hard_interrupt_available"].as_bool(), Some(false));
+    assert!(watch["hard_interrupt"].is_null(), "{watch:?}");
+    assert_eq!(
+        watch["validation_packet"]["hard_interrupt_available"].as_bool(),
+        Some(false)
+    );
+    assert!(watch["validation_packet"]["hard_interrupt"].is_null());
+}
+
+#[test]
+fn agent_use_watch_compact_default_includes_hard_interrupt() {
+    let _guard = lock_env_test();
+    let watch = run_agent_use_hard_interrupt_watch(14, &[]);
+    assert_watch_hard_interrupt_blocking(&watch);
+
+    let interrupt = &watch["hard_interrupt"];
+    assert_eq!(watch["graph_delta_detail_mode"].as_str(), Some("compact"));
+    assert_eq!(watch["delta_packet_compact_default"].as_bool(), Some(true));
+    assert!(
+        interrupt["error_count"].as_u64().unwrap_or_default()
+            > interrupt["errors"]
+                .as_array()
+                .expect("interrupt errors")
+                .len() as u64,
+        "{watch:?}"
+    );
+    assert!(
+        interrupt["omitted_count"].as_u64().unwrap_or_default() > 0,
+        "{watch:?}"
+    );
+    assert!(interrupt["errors"][0].get("evidence_items").is_none());
+    assert!(interrupt["errors"][0].get("eligibility").is_none());
+    assert!(interrupt["expansion_handles"]
+        .as_array()
+        .expect("interrupt expansion handles")
+        .iter()
+        .any(|handle| handle["handle"].as_str() == Some("hard_interrupt_packet:full")));
+}
+
+#[test]
+fn agent_use_watch_explain_includes_interrupt_detail() {
+    let _guard = lock_env_test();
+    let watch = run_agent_use_hard_interrupt_watch(2, &["--explain"]);
+    assert_watch_hard_interrupt_blocking(&watch);
+
+    let interrupt = &watch["hard_interrupt"];
+    assert_eq!(watch["graph_delta_detail_mode"].as_str(), Some("explain"));
+    assert_eq!(watch["delta_packet_compact_default"].as_bool(), Some(false));
+    assert_eq!(
+        interrupt["errors"]
+            .as_array()
+            .map(Vec::len)
+            .map(|len| len as u64),
+        interrupt["error_count"].as_u64()
+    );
+    assert!(interrupt["errors"][0]["evidence_items"].is_array());
+    assert!(interrupt["errors"][0]["eligibility"].is_object());
+    assert!(interrupt["errors"][0]["provenance"].is_object());
+    assert!(interrupt["errors"][0]["fix_hint"].is_object());
 }
 
 #[test]
@@ -4647,6 +4767,8 @@ fn agent_use_watch_once_missing_db_reports_unavailable_without_fallback() {
     assert_eq!(watch["old_db_preserved"].as_bool(), Some(true));
     assert_eq!(watch["temp_db_claimable"].as_bool(), Some(false));
     assert_eq!(watch["claimability"]["claimable"].as_bool(), Some(false));
+    assert_eq!(watch["hard_interrupt_available"].as_bool(), Some(false));
+    assert!(watch["hard_interrupt"].is_null(), "{watch:?}");
     assert_eq!(watch["files_read"].as_u64(), Some(0));
     assert_eq!(watch["facts_inserted"].as_u64(), Some(0));
     assert!(watch["recovery_commands"].is_array());
@@ -4721,6 +4843,11 @@ fn agent_use_watch_once_rejects_stale_and_foreign_profile_dbs() {
     assert_eq!(stale_watch["delta_state"].as_str(), Some("blocked"));
     assert_eq!(stale_watch["auto_index_enabled"].as_bool(), Some(false));
     assert_eq!(stale_watch["temp_db_claimable"].as_bool(), Some(false));
+    assert_eq!(
+        stale_watch["hard_interrupt_available"].as_bool(),
+        Some(false)
+    );
+    assert!(stale_watch["hard_interrupt"].is_null(), "{stale_watch:?}");
     assert_no_dot_codegraph_sqlite(&stale_repo);
 
     let foreign_repo = temp_repo();
@@ -4747,6 +4874,14 @@ fn agent_use_watch_once_rejects_stale_and_foreign_profile_dbs() {
     assert_eq!(foreign_watch["delta_state"].as_str(), Some("blocked"));
     assert_eq!(foreign_watch["auto_index_enabled"].as_bool(), Some(false));
     assert_eq!(foreign_watch["temp_db_claimable"].as_bool(), Some(false));
+    assert_eq!(
+        foreign_watch["hard_interrupt_available"].as_bool(),
+        Some(false)
+    );
+    assert!(
+        foreign_watch["hard_interrupt"].is_null(),
+        "{foreign_watch:?}"
+    );
     assert_eq!(
         foreign_watch["db_problem_kind"].as_str(),
         Some("repo_root_mismatch")
@@ -15454,6 +15589,285 @@ fn value_contains_nonempty_array_for_key(value: &Value, key: &str) -> bool {
             .iter()
             .any(|child| value_contains_nonempty_array_for_key(child, key)),
         _ => false,
+    }
+}
+
+fn write_agent_use_hard_interrupt_fixture(root: &Path, target_count: usize) {
+    assert!(target_count > 0, "hard interrupt fixture needs targets");
+    write_cli_fixture_file(root, "package.json", "{\n  \"type\": \"module\"\n}\n");
+    let target_names = (0..target_count)
+        .map(|index| format!("hardInterruptTarget{index}"))
+        .collect::<Vec<_>>();
+    let service_source = target_names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| format!("export function {name}() {{\n  return {index};\n}}\n\n"))
+        .collect::<String>()
+        + "export function hardInterruptStillHere() {\n  return \"still-here\";\n}\n";
+    write_cli_fixture_file(root, "src/service.js", &service_source);
+
+    let calls = target_names
+        .iter()
+        .map(|name| format!("  outputs.push({name}());\n"))
+        .collect::<String>();
+    write_cli_fixture_file(
+        root,
+        "src/consumer.js",
+        &format!(
+            "import {{ {} }} from './service';\n\nexport function runHardInterruptConsumer() {{\n  const outputs = [];\n{}  return outputs.join(',');\n}}\n",
+            target_names.join(", "),
+            calls
+        ),
+    );
+}
+
+fn remove_agent_use_hard_interrupt_targets(root: &Path) {
+    write_cli_fixture_file(
+        root,
+        "src/service.js",
+        "export function hardInterruptStillHere() {\n  return \"changed\";\n}\n",
+    );
+}
+
+fn run_agent_use_hard_interrupt_watch(target_count: usize, extra_args: &[&str]) -> Value {
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_agent_use_hard_interrupt_fixture(&repo, target_count);
+    let profile =
+        super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index for hard interrupt fixture");
+
+    remove_agent_use_hard_interrupt_targets(&repo);
+    let mut args = vec![
+        "watch".to_string(),
+        "--repo".to_string(),
+        path_string(&repo),
+        "--once".to_string(),
+        "--changed".to_string(),
+        "src/service.js".to_string(),
+        "--json".to_string(),
+    ];
+    args.extend(extra_args.iter().map(|arg| (*arg).to_string()));
+    let watch = with_agent_use_data_root(&data_root, || super::run_agent_use_command(&args))
+        .expect("agent-use watch hard interrupt fixture");
+
+    assert_eq!(watch["external_db_used"].as_bool(), Some(true), "{watch:?}");
+    assert_eq!(
+        watch["db_path"].as_str(),
+        Some(path_string(&profile.db_path).as_str()),
+        "{watch:?}"
+    );
+    assert_eq!(
+        watch["watch_db"]["actual_db_path_opened"].as_str(),
+        Some(path_string(&profile.db_path).as_str()),
+        "{watch:?}"
+    );
+    assert_eq!(watch["normal_dot_codegraph_mutated"].as_bool(), Some(false));
+    assert_no_dot_codegraph_sqlite(&repo);
+
+    remove_dir_all_with_retry(&repo, "cleanup hard interrupt repo");
+    remove_dir_all_with_retry(&data_root, "cleanup hard interrupt data root");
+    watch
+}
+
+fn run_agent_use_warning_only_watch() -> Value {
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(
+        &repo,
+        "package/foo/Config.in",
+        "config BR2_PACKAGE_FOO\n\tbool \"foo package\"\n",
+    );
+    let profile =
+        super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index warning-only fixture");
+
+    write_cli_fixture_file(
+        &repo,
+        "package/foo/Config.in",
+        "config BR2_PACKAGE_FOO\n\tbool \"foo package\"\n\thelp\n\t  Text evidence changed only; no exact graph relation is implied.\n",
+    );
+    let watch = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "watch".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--once".to_string(),
+            "--changed".to_string(),
+            "package/foo/Config.in".to_string(),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use watch warning-only fixture");
+
+    assert_eq!(watch["external_db_used"].as_bool(), Some(true), "{watch:?}");
+    assert_eq!(
+        watch["db_path"].as_str(),
+        Some(path_string(&profile.db_path).as_str()),
+        "{watch:?}"
+    );
+    assert_eq!(watch["normal_dot_codegraph_mutated"].as_bool(), Some(false));
+    assert_no_dot_codegraph_sqlite(&repo);
+
+    remove_dir_all_with_retry(&repo, "cleanup warning-only repo");
+    remove_dir_all_with_retry(&data_root, "cleanup warning-only data root");
+    watch
+}
+
+fn run_agent_use_over_budget_degraded_watch() -> Value {
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+    write_cli_fixture_file(
+        &repo,
+        "src/service.js",
+        "export function targetForSurfaceBudget() {\n  return \"old\";\n}\n",
+    );
+    for index in 0..3 {
+        write_cli_fixture_file(
+            &repo,
+            &format!("src/consumer{index}.js"),
+            "import { targetForSurfaceBudget } from './service';\n\
+             export function runSurfaceBudgetConsumer() {\n  return targetForSurfaceBudget();\n}\n",
+        );
+    }
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index degraded fixture");
+
+    write_cli_fixture_file(
+        &repo,
+        "src/service.js",
+        "export function targetForSurfaceBudget() {\n  return \"new\";\n}\n",
+    );
+    let watch = with_process_env_var("CODEGRAPH_RTDS_CLOSURE_MAX_DIRTY_FILES", "1", || {
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "watch".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--once".to_string(),
+                "--changed".to_string(),
+                "src/service.js".to_string(),
+                "--json".to_string(),
+            ])
+        })
+    })
+    .expect("agent-use watch degraded fixture");
+
+    assert_eq!(watch["external_db_used"].as_bool(), Some(true), "{watch:?}");
+    assert_eq!(watch["normal_dot_codegraph_mutated"].as_bool(), Some(false));
+    assert_no_dot_codegraph_sqlite(&repo);
+
+    remove_dir_all_with_retry(&repo, "cleanup degraded repo");
+    remove_dir_all_with_retry(&data_root, "cleanup degraded data root");
+    watch
+}
+
+fn assert_watch_hard_interrupt_blocking(watch: &Value) {
+    assert_eq!(watch["status"].as_str(), Some("updated"), "{watch:?}");
+    assert_eq!(
+        watch["validation_status"].as_str(),
+        Some("blocking_graph_error")
+    );
+    assert_eq!(
+        watch["validation_must_fix_before_continuing"].as_bool(),
+        Some(true)
+    );
+    assert!(
+        watch["validation_blocking_error_count"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0,
+        "{watch:?}"
+    );
+    assert_eq!(watch["hard_interrupt_available"].as_bool(), Some(true));
+    assert_eq!(
+        watch["hard_interrupt_not_implemented"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        watch["validation_packet"]["hard_interrupt_available"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["validation_packet"]["must_fix_before_continuing"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        watch["hard_interrupt"],
+        watch["validation_packet"]["hard_interrupt"]
+    );
+    let interrupt = &watch["hard_interrupt"];
+    assert_eq!(interrupt["packet_kind"].as_str(), Some("hard_interrupt"));
+    assert_eq!(interrupt["status"].as_str(), Some("blocking_graph_error"));
+    assert_eq!(
+        interrupt["must_fix_before_continuing"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(interrupt["hard_interrupt_available"].as_bool(), Some(true));
+    assert!(
+        interrupt["error_count"].as_u64().unwrap_or_default() > 0,
+        "{watch:?}"
+    );
+    let errors = interrupt["errors"]
+        .as_array()
+        .expect("hard interrupt errors");
+    assert!(!errors.is_empty(), "{watch:?}");
+    assert!(errors.iter().all(|error| {
+        error["classification"].as_str() == Some("block")
+            && error["blocking_level"].as_str() == Some("blocking")
+            && error["source_span"].is_object()
+            && error["message"]
+                .as_str()
+                .is_some_and(|message| !message.is_empty())
+            && error["recommended_fix"]
+                .as_str()
+                .is_some_and(|fix| !fix.is_empty())
+            && error["suggested_next_steps"]
+                .as_array()
+                .is_some_and(|steps| !steps.is_empty())
+    }));
+    assert!(errors.iter().any(|error| {
+        matches!(
+            error["relation_kind"].as_str(),
+            Some("CALLS" | "IMPORTS" | "EXPORTS" | "ALIASED_BY")
+        )
+    }));
+    assert!(
+        interrupt["summary"]["top_error_source_span"].is_object(),
+        "{watch:?}"
+    );
+    assert!(
+        interrupt["summary"]["top_error_recommended_fix"]
+            .as_str()
+            .is_some_and(|fix| !fix.is_empty()),
+        "{watch:?}"
+    );
+    if let Some(preserved) = interrupt["critical_safety_fields_preserved"].as_bool() {
+        assert!(preserved, "{watch:?}");
     }
 }
 

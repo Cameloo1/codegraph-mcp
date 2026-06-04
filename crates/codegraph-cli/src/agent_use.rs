@@ -1908,8 +1908,18 @@ pub(crate) fn run_agent_use_watch_once_delta(
             "validation_unknown_count".to_string(),
             json!(validation_packet.unknowns.len()),
         );
-        object.insert("hard_interrupt_available".to_string(), json!(false));
-        object.insert("hard_interrupt_not_implemented".to_string(), json!(true));
+        object.insert(
+            "hard_interrupt_available".to_string(),
+            validation_packet_json["hard_interrupt_available"].clone(),
+        );
+        object.insert(
+            "hard_interrupt".to_string(),
+            validation_packet_json
+                .get("hard_interrupt")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert("hard_interrupt_not_implemented".to_string(), json!(false));
         object.insert(
             "graph_delta_detail_mode".to_string(),
             json!(detail_mode.label()),
@@ -2252,7 +2262,8 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
             lifecycle_json,
         );
         return Ok(agent_use_attach_activation_gated_contract_metadata(
-            packet, delta,
+            packet.with_eligible_hard_interrupts(format!("unix_ms:{}", unix_time_ms())),
+            delta,
         ));
     }
 
@@ -2512,7 +2523,8 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
         lifecycle_json,
     );
     Ok(agent_use_attach_activation_gated_contract_metadata(
-        packet, delta,
+        packet.with_eligible_hard_interrupts(format!("unix_ms:{}", unix_time_ms())),
+        delta,
     ))
 }
 
@@ -3091,7 +3103,8 @@ fn agent_use_activation_gate_state_json(delta: &EntitySourceRoleDeltaReport) -> 
         "source_navigation_only_not_graph_entity_delta": delta.source_navigation_only_not_graph_entity_delta,
         "unsupported_relation_classes": delta.unsupported_relation_classes,
         "degraded_relation_classes": delta.degraded_relation_classes,
-        "hard_interrupt_not_implemented": true
+        "hard_interrupt_eligibility_gate": "implemented",
+        "hard_interrupt_not_implemented": false
     })
 }
 
@@ -9738,6 +9751,14 @@ pub(crate) fn agent_use_watch_rejected_paths_json(
         "delta_sync_state": "blocked",
         "delta_state": "blocked",
         "auto_index_enabled": false,
+        "validation_status": "not_applicable",
+        "validation_must_fix_before_continuing": false,
+        "validation_blocking_error_count": 0,
+        "validation_warning_count": 0,
+        "validation_unknown_count": 0,
+        "hard_interrupt_available": false,
+        "hard_interrupt": Value::Null,
+        "hard_interrupt_not_implemented": false,
         "changed_paths": path_preflight.accepted_paths.clone(),
         "rejected_paths": path_preflight.rejected_paths.clone(),
         "no_op_paths": [],
@@ -12046,6 +12067,14 @@ pub(crate) fn agent_use_watch_unavailable_json(
         "delta_sync_state": "blocked",
         "delta_state": "blocked",
         "auto_index_enabled": false,
+        "validation_status": "not_applicable",
+        "validation_must_fix_before_continuing": false,
+        "validation_blocking_error_count": 0,
+        "validation_warning_count": 0,
+        "validation_unknown_count": 0,
+        "hard_interrupt_available": false,
+        "hard_interrupt": Value::Null,
+        "hard_interrupt_not_implemented": false,
         "changed_paths": changed_paths_requested,
         "rejected_paths": [],
         "no_op_paths": [],

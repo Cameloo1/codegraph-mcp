@@ -37,15 +37,17 @@ pub use normalized::{
     NormalizedSourceSpanFact, NormalizedTextEvidenceFact, NORMALIZED_FACT_SCHEMA_VERSION,
 };
 pub use validation::{
-    classify_validation_finding, relation_allows, reverify_validation_graph_source_contract,
-    RelationEndpointClass, SupportedRelationStatus, ValidationBlockingLevel,
-    ValidationClassification, ValidationEvidenceItem, ValidationEvidenceKind, ValidationFinding,
-    ValidationLifecycleRequirement, ValidationLifecycleState, ValidationPacket,
-    ValidationPacketKind, ValidationPacketStatus, ValidationProofRequirement,
-    ValidationProofStatus, ValidationProvenanceRequirement, ValidationReverification,
-    ValidationReverificationInput, ValidationRule, ValidationRuleKind,
+    classify_validation_finding, interrupt_eligibility_for_finding, relation_allows,
+    reverify_validation_graph_source_contract, HardInterruptError, HardInterruptPacket,
+    HardInterruptPacketKind, InterruptEligibility, InterruptExpansionHandle, InterruptFixHint,
+    InterruptPacketSummary, InterruptSourceFinding, RelationEndpointClass, SupportedRelationStatus,
+    ValidationBlockingLevel, ValidationClassification, ValidationEvidenceItem,
+    ValidationEvidenceKind, ValidationFinding, ValidationLifecycleRequirement,
+    ValidationLifecycleState, ValidationPacket, ValidationPacketKind, ValidationPacketStatus,
+    ValidationProofRequirement, ValidationProofStatus, ValidationProvenanceRequirement,
+    ValidationReverification, ValidationReverificationInput, ValidationRule, ValidationRuleKind,
     ValidationSourceRoleRequirement, ValidationSourceSpanRequirement,
-    VALIDATION_PACKET_SCHEMA_VERSION,
+    HARD_INTERRUPT_PACKET_SCHEMA_VERSION, VALIDATION_PACKET_SCHEMA_VERSION,
 };
 
 #[cfg(test)]

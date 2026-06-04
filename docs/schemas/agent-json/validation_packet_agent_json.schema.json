@@ -159,7 +159,17 @@
       }
     },
     "hard_interrupt_available": {
-      "const": false
+      "type": "boolean"
+    },
+    "hard_interrupt": {
+      "anyOf": [
+        {
+          "$ref": "hard_interrupt_agent_json.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "omitted_count": {
       "type": "integer",

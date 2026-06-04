@@ -6890,6 +6890,11 @@ mod tests {
     }
 
     #[test]
+    fn mcp_surface_outputs_hard_interrupt_or_not_applicable() {
+        mcp_surface_outputs_validation_findings_or_not_applicable();
+    }
+
+    #[test]
     fn missing_paths_explain_why_no_proof_was_found() {
         let (server, repo, login, _sanitize) = indexed_server();
         let result = ok(server.call_tool(
