@@ -7,6 +7,7 @@ use crate::{EntityKind, EvidenceRole, Exactness, RelationKind, SourceSpan};
 
 pub const VALIDATION_PACKET_SCHEMA_VERSION: u32 = 1;
 pub const HARD_INTERRUPT_PACKET_SCHEMA_VERSION: u32 = 1;
+pub const MVP3_6_SEVERITY_POLICY_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,6 +29,88 @@ pub enum ValidationPacketStatus {
     Ok,
     DiagnosticOnly,
     Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationSeverity {
+    Blocking,
+    Warning,
+    DiagnosticOnly,
+    Unknown,
+    Ok,
+}
+
+impl Default for ValidationSeverity {
+    fn default() -> Self {
+        Self::Ok
+    }
+}
+
+impl ValidationSeverity {
+    pub const fn from_packet_status(status: ValidationPacketStatus) -> Self {
+        match status {
+            ValidationPacketStatus::BlockingGraphError => Self::Blocking,
+            ValidationPacketStatus::Warning => Self::Warning,
+            ValidationPacketStatus::Ok => Self::Ok,
+            ValidationPacketStatus::DiagnosticOnly => Self::DiagnosticOnly,
+            ValidationPacketStatus::Unknown => Self::Unknown,
+        }
+    }
+
+    pub const fn priority_rank(self) -> u8 {
+        match self {
+            Self::Blocking => 5,
+            Self::Warning => 4,
+            Self::Unknown => 3,
+            Self::DiagnosticOnly => 2,
+            Self::Ok => 1,
+        }
+    }
+
+    pub const fn dominates(self, other: Self) -> bool {
+        self.priority_rank() >= other.priority_rank()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinalValidationStatus {
+    BlockingGraphError,
+    Warning,
+    DiagnosticOnly,
+    Unknown,
+    Ok,
+    ToolError,
+}
+
+impl Default for FinalValidationStatus {
+    fn default() -> Self {
+        Self::Ok
+    }
+}
+
+impl FinalValidationStatus {
+    pub const fn from_packet_status(status: ValidationPacketStatus) -> Self {
+        match status {
+            ValidationPacketStatus::BlockingGraphError => Self::BlockingGraphError,
+            ValidationPacketStatus::Warning => Self::Warning,
+            ValidationPacketStatus::Ok => Self::Ok,
+            ValidationPacketStatus::DiagnosticOnly => Self::DiagnosticOnly,
+            ValidationPacketStatus::Unknown => Self::Unknown,
+        }
+    }
+
+    pub const fn as_validation_packet_status(self) -> Option<ValidationPacketStatus> {
+        match self {
+            Self::BlockingGraphError => Some(ValidationPacketStatus::BlockingGraphError),
+            Self::Warning => Some(ValidationPacketStatus::Warning),
+            Self::DiagnosticOnly => Some(ValidationPacketStatus::DiagnosticOnly),
+            Self::Unknown => Some(ValidationPacketStatus::Unknown),
+            Self::Ok => Some(ValidationPacketStatus::Ok),
+            Self::ToolError => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +147,301 @@ pub enum ValidationBlockingLevel {
     Unknown,
     DiagnosticOnly,
     NotApplicable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SeveritySource {
+    ValidationFinding,
+    ValidationPacketStatus,
+    LifecycleState,
+    EvidenceBoundary,
+    ToolRuntime,
+    ToolInvalidInput,
+    McpProtocol,
+    Config,
+    PolicyDefault,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SeverityReason {
+    EligibleHardInterruptBlockFinding,
+    BlockFindingNotInterruptEligible,
+    WarningFinding,
+    UnknownFinding,
+    UnsupportedFinding,
+    DegradedFinding,
+    DiagnosticFinding,
+    NoFindingsSafeLifecycle,
+    UnsafeDbStale,
+    UnsafeDbForeign,
+    UnsafeDbSchemaMismatch,
+    UnsafeDbLockedPublishing,
+    SidecarStale,
+    NonGraphEvidenceBoundary,
+    TextEvidenceOnly,
+    RuntimeFailurePreventingValidation,
+    InvalidInputPreventingValidation,
+    McpProtocolInternalFailure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SeverityOverride {
+    None,
+    ForceDiagnosticOnly,
+    ForceUnknown,
+    ForceToolError,
+    ForceNonClaimableRecovery,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimabilityEffect {
+    Claimable,
+    NonClaimable,
+    DiagnosticOnly,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolErrorKind {
+    None,
+    InvalidInput,
+    RuntimeFailure,
+    ProtocolFailure,
+    ConfigFailure,
+    InternalFailure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentContinuationPolicy {
+    pub must_fix: bool,
+    pub inspect_before_continuing: bool,
+    pub continue_with_caution: bool,
+    pub r#continue: bool,
+    pub recover_tool_state: bool,
+    pub rerun_validation: bool,
+    pub run_tests_suggested: bool,
+    pub request_explain_suggested: bool,
+}
+
+impl AgentContinuationPolicy {
+    pub const fn must_fix() -> Self {
+        Self {
+            must_fix: true,
+            inspect_before_continuing: false,
+            continue_with_caution: false,
+            r#continue: false,
+            recover_tool_state: false,
+            rerun_validation: true,
+            run_tests_suggested: true,
+            request_explain_suggested: true,
+        }
+    }
+
+    pub const fn inspect_before_continuing() -> Self {
+        Self {
+            must_fix: false,
+            inspect_before_continuing: true,
+            continue_with_caution: false,
+            r#continue: false,
+            recover_tool_state: false,
+            rerun_validation: true,
+            run_tests_suggested: false,
+            request_explain_suggested: true,
+        }
+    }
+
+    pub const fn continue_with_caution() -> Self {
+        Self {
+            must_fix: false,
+            inspect_before_continuing: false,
+            continue_with_caution: true,
+            r#continue: false,
+            recover_tool_state: false,
+            rerun_validation: false,
+            run_tests_suggested: true,
+            request_explain_suggested: true,
+        }
+    }
+
+    pub const fn continue_ok() -> Self {
+        Self {
+            must_fix: false,
+            inspect_before_continuing: false,
+            continue_with_caution: false,
+            r#continue: true,
+            recover_tool_state: false,
+            rerun_validation: false,
+            run_tests_suggested: false,
+            request_explain_suggested: false,
+        }
+    }
+
+    pub const fn diagnostic() -> Self {
+        Self {
+            must_fix: false,
+            inspect_before_continuing: false,
+            continue_with_caution: false,
+            r#continue: true,
+            recover_tool_state: false,
+            rerun_validation: false,
+            run_tests_suggested: false,
+            request_explain_suggested: true,
+        }
+    }
+
+    pub const fn recover_tool_state() -> Self {
+        Self {
+            must_fix: false,
+            inspect_before_continuing: false,
+            continue_with_caution: false,
+            r#continue: false,
+            recover_tool_state: true,
+            rerun_validation: true,
+            run_tests_suggested: false,
+            request_explain_suggested: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeverityLevelDefinition {
+    pub severity: ValidationSeverity,
+    pub definition: String,
+    pub final_status: FinalValidationStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeverityDecision {
+    pub severity: ValidationSeverity,
+    pub source: SeveritySource,
+    pub reason: SeverityReason,
+    pub finding_id: Option<String>,
+    pub validation_rule_id: Option<String>,
+    pub proof_level: String,
+    pub claimability_effect: ClaimabilityEffect,
+    pub interrupt_eligible: bool,
+    pub tool_error: bool,
+    pub tool_error_kind: ToolErrorKind,
+    pub agent_action: AgentContinuationPolicy,
+    pub lifecycle_effect: String,
+    pub evidence_kind: Option<ValidationEvidenceKind>,
+    pub source_role: Option<EvidenceRole>,
+    pub exactness: Option<Exactness>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeverityDecisionTableRow {
+    pub row_id: String,
+    pub input_classification: Option<ValidationClassification>,
+    pub lifecycle_state: String,
+    pub claimability: ClaimabilityEffect,
+    pub evidence_kind: Option<ValidationEvidenceKind>,
+    pub severity: ValidationSeverity,
+    pub final_status_contribution: FinalValidationStatus,
+    pub interrupt_eligible: bool,
+    pub must_fix_before_continuing: bool,
+    pub tool_error: bool,
+    pub tool_error_kind: ToolErrorKind,
+    pub agent_action: AgentContinuationPolicy,
+    pub exit_code_default: i32,
+    pub exit_code_fail_on_blocking: i32,
+    pub mcp_is_error: bool,
+    pub explanation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeverityAggregationTrace {
+    pub schema_version: u32,
+    pub decisions: Vec<SeverityDecision>,
+    pub final_status: FinalValidationStatus,
+    pub max_severity: ValidationSeverity,
+    pub hard_interrupt_available: bool,
+    pub tool_error: bool,
+    pub notes: Vec<String>,
+}
+
+impl Default for SeverityAggregationTrace {
+    fn default() -> Self {
+        Self {
+            schema_version: MVP3_6_SEVERITY_POLICY_SCHEMA_VERSION,
+            decisions: Vec::new(),
+            final_status: FinalValidationStatus::Ok,
+            max_severity: ValidationSeverity::Ok,
+            hard_interrupt_available: false,
+            tool_error: false,
+            notes: vec!["no severity decisions were available; defaulted to ok".to_string()],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FinalStatusAggregation {
+    pub final_status: FinalValidationStatus,
+    pub validation_packet_status: Option<ValidationPacketStatus>,
+    pub must_fix_before_continuing: bool,
+    pub can_continue_with_caution: bool,
+    pub should_recover_tool_state: bool,
+    pub should_run_tests: bool,
+    pub should_request_explain: bool,
+    pub should_rerun_validation: bool,
+    pub hard_interrupt_available: bool,
+    pub hard_interrupt: bool,
+    pub next_agent_action: String,
+    pub recovery_commands: Vec<String>,
+    pub guidance: Vec<String>,
+    pub severity_summary: Value,
+    pub severity_aggregation_trace: SeverityAggregationTrace,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeverityPolicy {
+    pub schema_version: u32,
+    pub policy_name: String,
+    pub levels: Vec<SeverityLevelDefinition>,
+    pub decision_table: Vec<SeverityDecisionTableRow>,
+    pub severity_is_interpretation_not_proof: bool,
+    pub hard_interrupt_requires_interrupt_eligible_blocking: bool,
+    pub tool_error_reserved_for_validation_preventing_failure: bool,
+    pub blocking_validation_is_tool_error_by_default: bool,
+    pub mcp_blocking_validation_structured_success: bool,
+    pub unsafe_db_not_source_code_block: bool,
+    pub preserves_mvp3_4_hard_interrupt_eligibility: bool,
+    pub editor_daemon_introduced: bool,
+    pub plugin_introduced: bool,
+    pub mvp4_fields_introduced: bool,
+}
+
+impl SeverityPolicy {
+    pub fn mvp3_6_decision_table_complete(&self) -> bool {
+        let required_rows = [
+            "eligible_mvp3_4_hard_interrupt_block_finding",
+            "mvp3_3_block_finding_not_interrupt_eligible",
+            "warning_finding",
+            "unknown_finding",
+            "unsupported_finding",
+            "degraded_finding",
+            "diagnostic_finding",
+            "no_findings_safe_lifecycle",
+            "unsafe_db_stale",
+            "unsafe_db_foreign",
+            "unsafe_db_schema_mismatch",
+            "unsafe_db_locked_publishing",
+            "sidecar_stale",
+            "candidate_vector_source_navigation_evidence",
+            "text_evidence_only",
+            "runtime_failure_preventing_validation",
+            "invalid_input_preventing_validation",
+            "mcp_protocol_internal_failure",
+        ];
+        required_rows
+            .iter()
+            .all(|row_id| self.decision_table.iter().any(|row| row.row_id == *row_id))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +558,1027 @@ pub enum ValidationEvidenceKind {
 impl ValidationEvidenceKind {
     pub const fn can_support_blocking_graph_proof(self) -> bool {
         matches!(self, Self::GraphSource | Self::GraphIntegrity)
+    }
+}
+
+pub fn mvp3_6_severity_policy_contract() -> SeverityPolicy {
+    SeverityPolicy {
+        schema_version: MVP3_6_SEVERITY_POLICY_SCHEMA_VERSION,
+        policy_name: "mvp3_6_validation_severity_model".to_string(),
+        levels: mvp3_6_severity_levels(),
+        decision_table: mvp3_6_severity_decision_table(),
+        severity_is_interpretation_not_proof: true,
+        hard_interrupt_requires_interrupt_eligible_blocking: true,
+        tool_error_reserved_for_validation_preventing_failure: true,
+        blocking_validation_is_tool_error_by_default: false,
+        mcp_blocking_validation_structured_success: true,
+        unsafe_db_not_source_code_block: true,
+        preserves_mvp3_4_hard_interrupt_eligibility: true,
+        editor_daemon_introduced: false,
+        plugin_introduced: false,
+        mvp4_fields_introduced: false,
+    }
+}
+
+pub fn mvp3_6_severity_levels() -> Vec<SeverityLevelDefinition> {
+    vec![
+        SeverityLevelDefinition {
+            severity: ValidationSeverity::Blocking,
+            definition: "Reverified graph/source structural failure or eligible graph-integrity/lifecycle proof failure requiring fix before continuing.".to_string(),
+            final_status: FinalValidationStatus::BlockingGraphError,
+        },
+        SeverityLevelDefinition {
+            severity: ValidationSeverity::Warning,
+            definition: "Useful caution from non-exact, optional, suspicious, or degraded-but-actionable evidence; not proof of broken source behavior.".to_string(),
+            final_status: FinalValidationStatus::Warning,
+        },
+        SeverityLevelDefinition {
+            severity: ValidationSeverity::DiagnosticOnly,
+            definition: "Non-proof tool/state/artifact information, override output, sidecar freshness, or debug-only output.".to_string(),
+            final_status: FinalValidationStatus::DiagnosticOnly,
+        },
+        SeverityLevelDefinition {
+            severity: ValidationSeverity::Unknown,
+            definition: "Unsupported, ambiguous, unverifiable, runtime-only, or proof path cannot be determined.".to_string(),
+            final_status: FinalValidationStatus::Unknown,
+        },
+        SeverityLevelDefinition {
+            severity: ValidationSeverity::Ok,
+            definition: "Validation completed, lifecycle is safe, and no actionable findings remain.".to_string(),
+            final_status: FinalValidationStatus::Ok,
+        },
+    ]
+}
+
+pub fn mvp3_6_severity_decision_table() -> Vec<SeverityDecisionTableRow> {
+    vec![
+        severity_row(
+            "eligible_mvp3_4_hard_interrupt_block_finding",
+            Some(ValidationClassification::Block),
+            "claimable_current",
+            ClaimabilityEffect::Claimable,
+            Some(ValidationEvidenceKind::GraphSource),
+            ValidationSeverity::Blocking,
+            FinalValidationStatus::BlockingGraphError,
+            true,
+            true,
+            false,
+            ToolErrorKind::None,
+            AgentContinuationPolicy::must_fix(),
+            0,
+            2,
+            false,
+            "A reverified graph/source block finding that remains MVP3.4 interrupt-eligible requires a source fix and may emit a hard interrupt.",
+        ),
+        severity_row(
+            "mvp3_3_block_finding_not_interrupt_eligible",
+            Some(ValidationClassification::Block),
+            "claimable_current",
+            ClaimabilityEffect::Claimable,
+            Some(ValidationEvidenceKind::GraphIntegrity),
+            ValidationSeverity::Blocking,
+            FinalValidationStatus::BlockingGraphError,
+            false,
+            true,
+            false,
+            ToolErrorKind::None,
+            AgentContinuationPolicy::must_fix(),
+            0,
+            2,
+            false,
+            "A block finding can require a fix without becoming a hard interrupt when MVP3.4 eligibility disqualifies it.",
+        ),
+        severity_row(
+            "warning_finding",
+            Some(ValidationClassification::Warn),
+            "claimable_current",
+            ClaimabilityEffect::Claimable,
+            Some(ValidationEvidenceKind::GraphSource),
+            ValidationSeverity::Warning,
+            FinalValidationStatus::Warning,
+            false,
+            false,
+            false,
+            ToolErrorKind::None,
+            AgentContinuationPolicy::continue_with_caution(),
+            0,
+            0,
+            false,
+            "Warning findings are actionable caution, not proof of broken source behavior.",
+        ),
+        severity_row(
+            "unknown_finding",
+            Some(ValidationClassification::Unknown),
+            "claimable_current",
+            ClaimabilityEffect::Unknown,
+            Some(ValidationEvidenceKind::Diagnostic),
+            ValidationSeverity::Unknown,
+            FinalValidationStatus::Unknown,
+            false,
+            false,
+            false,
+            ToolErrorKind::None,
+            AgentContinuationPolicy::inspect_before_continuing(),
+            0,
+            0,
+            false,
+            "Unknown findings require inspection or explain output because proof cannot be determined.",
+        ),
+        severity_row(
+            "unsupported_finding",
+            Some(ValidationClassification::Unsupported),
+            "claimable_current",
+            ClaimabilityEffect::Unknown,
+            Some(ValidationEvidenceKind::Diagnostic),
+            ValidationSeverity::Unknown,
+            FinalValidationStatus::Unknown,
+            false,
+            false,
+            false,
+            ToolErrorKind::None,
+            AgentContinuationPolicy::inspect_before_continuing(),
+            0,
+            0,
+            false,
+            "Unsupported validation boundaries are unknown, never source-code blocking proof.",
+        ),
+        severity_row(
+            "degraded_finding",
+            Some(ValidationClassification::Degraded),
+            "claimable_current_bounded_or_degraded",
+            ClaimabilityEffect::Unknown,
+            Some(ValidationEvidenceKind::Diagnostic),
+            ValidationSeverity::Warning,
+            FinalValidationStatus::Warning,
+            false,
+            false,
+            false,
+            ToolErrorKind::None,
+            AgentContinuationPolicy::continue_with_caution(),
+            0,
+            0,
+            false,
+            "Degraded-but-actionable results become warning severity and should not interrupt by themselves.",
+        ),
+        severity_row(
+            "diagnostic_finding",
+            Some(ValidationClassification::Diagnostic),
+            "diagnostic_read",
+            ClaimabilityEffect::DiagnosticOnly,
+            Some(ValidationEvidenceKind::Diagnostic),
+            ValidationSeverity::DiagnosticOnly,
+            FinalValidationStatus::DiagnosticOnly,
+            false,
+            false,
+            false,
+            ToolErrorKind::None,
+            AgentContinuationPolicy::diagnostic(),
+            0,
+            0,
+            false,
+            "Diagnostic findings are tool or state context only.",
+        ),
+        severity_row(
+            "no_findings_safe_lifecycle",
+            None,
+            "claimable_current",
+            ClaimabilityEffect::Claimable,
+            None,
+            ValidationSeverity::Ok,
+            FinalValidationStatus::Ok,
+            false,
+            false,
+            false,
+            ToolErrorKind::None,
+            AgentContinuationPolicy::continue_ok(),
+            0,
+            0,
+            false,
+            "Validation completed with a safe lifecycle and no actionable findings.",
+        ),
+        severity_row(
+            "unsafe_db_stale",
+            None,
+            "stale",
+            ClaimabilityEffect::NonClaimable,
+            Some(ValidationEvidenceKind::Lifecycle),
+            ValidationSeverity::DiagnosticOnly,
+            FinalValidationStatus::DiagnosticOnly,
+            false,
+            false,
+            false,
+            ToolErrorKind::None,
+            AgentContinuationPolicy::recover_tool_state(),
+            0,
+            0,
+            false,
+            "A stale DB makes validation non-claimable and requires recovery, but is not proof of a source-code blocker.",
+        ),
+        severity_row(
+            "unsafe_db_foreign",
+            None,
+            "foreign",
+            ClaimabilityEffect::NonClaimable,
+            Some(ValidationEvidenceKind::Lifecycle),
+            ValidationSeverity::DiagnosticOnly,
+            FinalValidationStatus::DiagnosticOnly,
+            false,
+            false,
+            false,
+            ToolErrorKind::None,
+            AgentContinuationPolicy::recover_tool_state(),
+            0,
+            0,
+            false,
+            "A foreign DB is a non-claimable lifecycle state, not a source-code failure.",
+        ),
+        severity_row(
+            "unsafe_db_schema_mismatch",
+            None,
+            "schema_mismatched",
+            ClaimabilityEffect::NonClaimable,
+            Some(ValidationEvidenceKind::Lifecycle),
+            ValidationSeverity::DiagnosticOnly,
+            FinalValidationStatus::DiagnosticOnly,
+            false,
+            false,
+            false,
+            ToolErrorKind::None,
+            AgentContinuationPolicy::recover_tool_state(),
+            0,
+            0,
+            false,
+            "Schema mismatch blocks claimability and requires tool-state recovery, not source editing.",
+        ),
+        severity_row(
+            "unsafe_db_locked_publishing",
+            None,
+            "locked_or_publishing",
+            ClaimabilityEffect::NonClaimable,
+            Some(ValidationEvidenceKind::Lifecycle),
+            ValidationSeverity::DiagnosticOnly,
+            FinalValidationStatus::DiagnosticOnly,
+            false,
+            false,
+            false,
+            ToolErrorKind::None,
+            AgentContinuationPolicy::recover_tool_state(),
+            0,
+            0,
+            false,
+            "Locked or publishing DB states are recover/retry conditions and must not become fake source blockers.",
+        ),
+        severity_row(
+            "sidecar_stale",
+            None,
+            "sidecar_stale",
+            ClaimabilityEffect::DiagnosticOnly,
+            Some(ValidationEvidenceKind::Diagnostic),
+            ValidationSeverity::DiagnosticOnly,
+            FinalValidationStatus::DiagnosticOnly,
+            false,
+            false,
+            false,
+            ToolErrorKind::None,
+            AgentContinuationPolicy::diagnostic(),
+            0,
+            0,
+            false,
+            "Stale sidecar state is diagnostic freshness information unless graph/source validation proves a separate blocker.",
+        ),
+        severity_row(
+            "candidate_vector_source_navigation_evidence",
+            None,
+            "claimable_current",
+            ClaimabilityEffect::DiagnosticOnly,
+            Some(ValidationEvidenceKind::Candidate),
+            ValidationSeverity::DiagnosticOnly,
+            FinalValidationStatus::DiagnosticOnly,
+            false,
+            false,
+            false,
+            ToolErrorKind::None,
+            AgentContinuationPolicy::diagnostic(),
+            0,
+            0,
+            false,
+            "Candidate, vector, and source-navigation evidence can suggest context but cannot become graph-blocking proof.",
+        ),
+        severity_row(
+            "text_evidence_only",
+            Some(ValidationClassification::Warn),
+            "claimable_current",
+            ClaimabilityEffect::DiagnosticOnly,
+            Some(ValidationEvidenceKind::TextEvidence),
+            ValidationSeverity::Warning,
+            FinalValidationStatus::Warning,
+            false,
+            false,
+            false,
+            ToolErrorKind::None,
+            AgentContinuationPolicy::continue_with_caution(),
+            0,
+            0,
+            false,
+            "Text evidence only is warning/no-proof fallback context, never graph proof by severity mapping.",
+        ),
+        severity_row(
+            "runtime_failure_preventing_validation",
+            None,
+            "validation_not_completed",
+            ClaimabilityEffect::Unknown,
+            None,
+            ValidationSeverity::DiagnosticOnly,
+            FinalValidationStatus::ToolError,
+            false,
+            false,
+            true,
+            ToolErrorKind::RuntimeFailure,
+            AgentContinuationPolicy::recover_tool_state(),
+            1,
+            1,
+            true,
+            "Runtime failure that prevents validation is a tool error and no validation blocker is claimed.",
+        ),
+        severity_row(
+            "invalid_input_preventing_validation",
+            None,
+            "validation_not_started",
+            ClaimabilityEffect::Unknown,
+            None,
+            ValidationSeverity::DiagnosticOnly,
+            FinalValidationStatus::ToolError,
+            false,
+            false,
+            true,
+            ToolErrorKind::InvalidInput,
+            AgentContinuationPolicy::recover_tool_state(),
+            1,
+            1,
+            true,
+            "Invalid input that prevents validation is a tool/input error, not a blocking validation result.",
+        ),
+        severity_row(
+            "mcp_protocol_internal_failure",
+            None,
+            "validation_not_completed",
+            ClaimabilityEffect::Unknown,
+            None,
+            ValidationSeverity::DiagnosticOnly,
+            FinalValidationStatus::ToolError,
+            false,
+            false,
+            true,
+            ToolErrorKind::ProtocolFailure,
+            AgentContinuationPolicy::recover_tool_state(),
+            1,
+            1,
+            true,
+            "MCP protocol or internal failure is reported through tool error semantics because validation could not return a normal packet.",
+        ),
+    ]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn severity_row(
+    row_id: &str,
+    input_classification: Option<ValidationClassification>,
+    lifecycle_state: &str,
+    claimability: ClaimabilityEffect,
+    evidence_kind: Option<ValidationEvidenceKind>,
+    severity: ValidationSeverity,
+    final_status_contribution: FinalValidationStatus,
+    interrupt_eligible: bool,
+    must_fix_before_continuing: bool,
+    tool_error: bool,
+    tool_error_kind: ToolErrorKind,
+    agent_action: AgentContinuationPolicy,
+    exit_code_default: i32,
+    exit_code_fail_on_blocking: i32,
+    mcp_is_error: bool,
+    explanation: &str,
+) -> SeverityDecisionTableRow {
+    SeverityDecisionTableRow {
+        row_id: row_id.to_string(),
+        input_classification,
+        lifecycle_state: lifecycle_state.to_string(),
+        claimability,
+        evidence_kind,
+        severity,
+        final_status_contribution,
+        interrupt_eligible,
+        must_fix_before_continuing,
+        tool_error,
+        tool_error_kind,
+        agent_action,
+        exit_code_default,
+        exit_code_fail_on_blocking,
+        mcp_is_error,
+        explanation: explanation.to_string(),
+    }
+}
+
+pub fn map_finding_to_severity(
+    finding: &ValidationFinding,
+    rule: Option<&ValidationRule>,
+    claimability: &Value,
+    policy: &SeverityPolicy,
+) -> SeverityDecision {
+    map_finding_to_severity_with_lifecycle(finding, &finding.lifecycle, rule, claimability, policy)
+}
+
+pub fn map_finding_to_severity_with_lifecycle(
+    finding: &ValidationFinding,
+    lifecycle: &ValidationLifecycleState,
+    rule: Option<&ValidationRule>,
+    claimability: &Value,
+    policy: &SeverityPolicy,
+) -> SeverityDecision {
+    let lifecycle_rule = matches!(
+        rule.map(|rule| rule.rule_kind),
+        Some(ValidationRuleKind::LifecycleIntegrity)
+    );
+    let eligibility = interrupt_eligibility_for_finding(finding, rule, claimability);
+    let evidence_kind = severity_primary_evidence_kind(finding);
+    let non_graph_only = severity_non_graph_only(finding) && !lifecycle_rule;
+    let unsafe_lifecycle = severity_lifecycle_is_unsafe(lifecycle)
+        || severity_claimability_reports_unsafe_db(claimability);
+    let claimability_effect = severity_claimability_effect(lifecycle, claimability, non_graph_only);
+    let proof_level = finding.proof_level.clone();
+    let lifecycle_effect = severity_lifecycle_effect(lifecycle, claimability);
+
+    let (severity, reason, source, agent_action) = if unsafe_lifecycle
+        && finding.classification != ValidationClassification::Block
+    {
+        (
+            ValidationSeverity::DiagnosticOnly,
+            severity_reason_for_unsafe_lifecycle(lifecycle, claimability),
+            SeveritySource::LifecycleState,
+            AgentContinuationPolicy::recover_tool_state(),
+        )
+    } else if non_graph_only {
+        let severity = match (finding.classification, evidence_kind) {
+            (ValidationClassification::Warn, Some(ValidationEvidenceKind::TextEvidence)) => {
+                ValidationSeverity::Warning
+            }
+            (ValidationClassification::Warn, _) => ValidationSeverity::Warning,
+            (ValidationClassification::Unknown | ValidationClassification::Unsupported, _) => {
+                ValidationSeverity::Unknown
+            }
+            (ValidationClassification::Degraded, _) => ValidationSeverity::Warning,
+            _ => ValidationSeverity::DiagnosticOnly,
+        };
+        (
+            severity,
+            if evidence_kind == Some(ValidationEvidenceKind::TextEvidence) {
+                SeverityReason::TextEvidenceOnly
+            } else {
+                SeverityReason::NonGraphEvidenceBoundary
+            },
+            SeveritySource::EvidenceBoundary,
+            match severity {
+                ValidationSeverity::Warning => AgentContinuationPolicy::continue_with_caution(),
+                ValidationSeverity::Unknown => AgentContinuationPolicy::inspect_before_continuing(),
+                _ => AgentContinuationPolicy::diagnostic(),
+            },
+        )
+    } else {
+        match finding.classification {
+            ValidationClassification::Block => {
+                let interrupt_eligible =
+                    if policy.hard_interrupt_requires_interrupt_eligible_blocking {
+                        eligibility.eligible
+                    } else {
+                        true
+                    };
+                (
+                    ValidationSeverity::Blocking,
+                    if interrupt_eligible {
+                        SeverityReason::EligibleHardInterruptBlockFinding
+                    } else if lifecycle_rule || unsafe_lifecycle {
+                        severity_reason_for_unsafe_lifecycle(lifecycle, claimability)
+                    } else {
+                        SeverityReason::BlockFindingNotInterruptEligible
+                    },
+                    if lifecycle_rule || unsafe_lifecycle {
+                        SeveritySource::LifecycleState
+                    } else {
+                        SeveritySource::ValidationFinding
+                    },
+                    if lifecycle_rule || unsafe_lifecycle {
+                        severity_blocking_recovery_action()
+                    } else {
+                        AgentContinuationPolicy::must_fix()
+                    },
+                )
+            }
+            ValidationClassification::Warn => (
+                ValidationSeverity::Warning,
+                if evidence_kind == Some(ValidationEvidenceKind::TextEvidence) {
+                    SeverityReason::TextEvidenceOnly
+                } else {
+                    SeverityReason::WarningFinding
+                },
+                SeveritySource::ValidationFinding,
+                AgentContinuationPolicy::continue_with_caution(),
+            ),
+            ValidationClassification::Unknown => (
+                ValidationSeverity::Unknown,
+                SeverityReason::UnknownFinding,
+                SeveritySource::ValidationFinding,
+                AgentContinuationPolicy::inspect_before_continuing(),
+            ),
+            ValidationClassification::Unsupported => (
+                ValidationSeverity::Unknown,
+                SeverityReason::UnsupportedFinding,
+                SeveritySource::ValidationFinding,
+                AgentContinuationPolicy::inspect_before_continuing(),
+            ),
+            ValidationClassification::Degraded => (
+                ValidationSeverity::Warning,
+                SeverityReason::DegradedFinding,
+                SeveritySource::ValidationFinding,
+                AgentContinuationPolicy::continue_with_caution(),
+            ),
+            ValidationClassification::Diagnostic => (
+                ValidationSeverity::DiagnosticOnly,
+                SeverityReason::DiagnosticFinding,
+                SeveritySource::ValidationFinding,
+                AgentContinuationPolicy::diagnostic(),
+            ),
+        }
+    };
+
+    SeverityDecision {
+        severity,
+        source,
+        reason,
+        finding_id: Some(finding.finding_id.clone()),
+        validation_rule_id: Some(finding.validation_rule_id.clone()),
+        proof_level,
+        claimability_effect,
+        interrupt_eligible: eligibility.eligible
+            && severity == ValidationSeverity::Blocking
+            && policy.hard_interrupt_requires_interrupt_eligible_blocking,
+        tool_error: false,
+        tool_error_kind: ToolErrorKind::None,
+        agent_action,
+        lifecycle_effect,
+        evidence_kind,
+        source_role: finding.source_role,
+        exactness: finding.exactness,
+    }
+}
+
+pub fn map_no_findings_to_severity(
+    lifecycle: &ValidationLifecycleState,
+    claimability: &Value,
+    _policy: &SeverityPolicy,
+) -> SeverityDecision {
+    let unsafe_lifecycle = severity_lifecycle_is_unsafe(lifecycle)
+        || severity_claimability_reports_unsafe_db(claimability);
+    SeverityDecision {
+        severity: if unsafe_lifecycle {
+            ValidationSeverity::DiagnosticOnly
+        } else {
+            ValidationSeverity::Ok
+        },
+        source: if unsafe_lifecycle {
+            SeveritySource::LifecycleState
+        } else {
+            SeveritySource::PolicyDefault
+        },
+        reason: if unsafe_lifecycle {
+            severity_reason_for_unsafe_lifecycle(lifecycle, claimability)
+        } else {
+            SeverityReason::NoFindingsSafeLifecycle
+        },
+        finding_id: None,
+        validation_rule_id: None,
+        proof_level: if unsafe_lifecycle {
+            "non_claimable_lifecycle".to_string()
+        } else {
+            "no_findings".to_string()
+        },
+        claimability_effect: severity_claimability_effect(lifecycle, claimability, false),
+        interrupt_eligible: false,
+        tool_error: false,
+        tool_error_kind: ToolErrorKind::None,
+        agent_action: if unsafe_lifecycle {
+            AgentContinuationPolicy::recover_tool_state()
+        } else {
+            AgentContinuationPolicy::continue_ok()
+        },
+        lifecycle_effect: severity_lifecycle_effect(lifecycle, claimability),
+        evidence_kind: unsafe_lifecycle.then_some(ValidationEvidenceKind::Lifecycle),
+        source_role: None,
+        exactness: None,
+    }
+}
+
+pub fn aggregate_final_validation_status(
+    decisions: &[SeverityDecision],
+    hard_interrupt_available: bool,
+    hard_interrupt: bool,
+    _policy: &SeverityPolicy,
+) -> FinalStatusAggregation {
+    let tool_error = decisions.iter().any(|decision| decision.tool_error);
+    let max_severity = decisions
+        .iter()
+        .map(|decision| decision.severity)
+        .max_by_key(|severity| severity.priority_rank())
+        .unwrap_or(ValidationSeverity::Ok);
+    let final_status = if tool_error {
+        FinalValidationStatus::ToolError
+    } else if decisions
+        .iter()
+        .any(|decision| decision.severity == ValidationSeverity::Blocking)
+    {
+        FinalValidationStatus::BlockingGraphError
+    } else if decisions
+        .iter()
+        .any(|decision| decision.severity == ValidationSeverity::Warning)
+    {
+        FinalValidationStatus::Warning
+    } else if decisions
+        .iter()
+        .any(|decision| decision.severity == ValidationSeverity::Unknown)
+    {
+        FinalValidationStatus::Unknown
+    } else if decisions
+        .iter()
+        .any(|decision| decision.severity == ValidationSeverity::DiagnosticOnly)
+    {
+        FinalValidationStatus::DiagnosticOnly
+    } else {
+        FinalValidationStatus::Ok
+    };
+
+    let must_fix_by_policy = decisions
+        .iter()
+        .any(|decision| decision.agent_action.must_fix);
+    let must_fix_before_continuing = hard_interrupt_available || must_fix_by_policy;
+    let should_recover_tool_state = decisions
+        .iter()
+        .any(|decision| decision.agent_action.recover_tool_state);
+    let should_run_tests = decisions
+        .iter()
+        .any(|decision| decision.agent_action.run_tests_suggested);
+    let should_request_explain = matches!(
+        final_status,
+        FinalValidationStatus::ToolError | FinalValidationStatus::Unknown
+    ) || decisions
+        .iter()
+        .any(|decision| decision.agent_action.request_explain_suggested);
+    let should_rerun_validation = hard_interrupt_available
+        || should_recover_tool_state
+        || decisions
+            .iter()
+            .any(|decision| decision.agent_action.rerun_validation);
+    let can_continue_with_caution =
+        matches!(final_status, FinalValidationStatus::Warning) && !must_fix_before_continuing;
+
+    let next_agent_action = match final_status {
+        FinalValidationStatus::ToolError => "recover_tool_state_then_rerun_validation",
+        FinalValidationStatus::BlockingGraphError if hard_interrupt_available => {
+            "fix_cited_source_spans_then_rerun_validation_and_task_tests"
+        }
+        FinalValidationStatus::BlockingGraphError if should_recover_tool_state => {
+            "recover_tool_state_then_rerun_validation"
+        }
+        FinalValidationStatus::BlockingGraphError => {
+            "fix_blocking_validation_findings_then_rerun_validation"
+        }
+        FinalValidationStatus::Warning => "inspect_warning_run_tests_then_continue_with_caution",
+        FinalValidationStatus::Unknown => "inspect_unknown_or_request_explain_audit",
+        FinalValidationStatus::DiagnosticOnly if should_recover_tool_state => {
+            "recover_tool_state_then_rerun_validation"
+        }
+        FinalValidationStatus::DiagnosticOnly => "continue_with_diagnostic_context",
+        FinalValidationStatus::Ok => "continue",
+    }
+    .to_string();
+
+    let mut recovery_commands = Vec::<String>::new();
+    let mut guidance = Vec::<String>::new();
+    fn push_unique(items: &mut Vec<String>, item: &str) {
+        if !item.trim().is_empty() && !items.iter().any(|existing| existing == item) {
+            items.push(item.to_string());
+        }
+    }
+
+    match final_status {
+        FinalValidationStatus::ToolError => {
+            push_unique(
+                &mut guidance,
+                "Validation did not complete; recover tool/runtime state before interpreting findings.",
+            );
+            push_unique(
+                &mut recovery_commands,
+                "recover the failing tool/runtime/config state",
+            );
+            push_unique(&mut recovery_commands, "rerun validate-edit after recovery");
+        }
+        FinalValidationStatus::BlockingGraphError if should_recover_tool_state => {
+            push_unique(
+                &mut guidance,
+                "Recover unsafe validation state, then rerun validation before relying on proof.",
+            );
+            push_unique(
+                &mut recovery_commands,
+                "codegraph-mcp agent-use index --repo <repo>",
+            );
+            push_unique(
+                &mut recovery_commands,
+                "codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> --agent-json",
+            );
+        }
+        FinalValidationStatus::BlockingGraphError => {
+            push_unique(
+                &mut guidance,
+                "Fix cited graph/source validation spans, then rerun validation.",
+            );
+            push_unique(&mut recovery_commands, "fix cited source spans");
+            push_unique(
+                &mut recovery_commands,
+                "codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> --agent-json",
+            );
+        }
+        FinalValidationStatus::Warning => {
+            push_unique(
+                &mut guidance,
+                "Inspect warnings or run task tests, then continue with caution.",
+            );
+            push_unique(
+                &mut recovery_commands,
+                "run the task test target if available",
+            );
+        }
+        FinalValidationStatus::Unknown => {
+            push_unique(
+                &mut guidance,
+                "Inspect unknown or unsupported evidence; use explain/audit output when needed.",
+            );
+            push_unique(
+                &mut recovery_commands,
+                "rerun validate-edit with --explain or --audit-json",
+            );
+        }
+        FinalValidationStatus::DiagnosticOnly if should_recover_tool_state => {
+            push_unique(
+                &mut guidance,
+                "Recover non-claimable tool state; diagnostic output is not source-code proof.",
+            );
+            push_unique(
+                &mut recovery_commands,
+                "codegraph-mcp agent-use index --repo <repo>",
+            );
+            push_unique(
+                &mut recovery_commands,
+                "codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> --agent-json",
+            );
+        }
+        FinalValidationStatus::DiagnosticOnly => {
+            push_unique(
+                &mut guidance,
+                "Continue with diagnostic context only; no source-code proof is claimed.",
+            );
+        }
+        FinalValidationStatus::Ok => {
+            push_unique(
+                &mut guidance,
+                "Continue; run task tests if the edit warrants it.",
+            );
+        }
+    }
+
+    let mut counts_by_severity = BTreeMap::<String, usize>::new();
+    let mut counts_by_reason = BTreeMap::<String, usize>::new();
+    for decision in decisions {
+        let severity = serde_json::to_value(decision.severity)
+            .ok()
+            .and_then(|value| value.as_str().map(ToString::to_string))
+            .unwrap_or_else(|| "unknown".to_string());
+        *counts_by_severity.entry(severity).or_default() += 1;
+        let reason = serde_json::to_value(decision.reason)
+            .ok()
+            .and_then(|value| value.as_str().map(ToString::to_string))
+            .unwrap_or_else(|| "unknown".to_string());
+        *counts_by_reason.entry(reason).or_default() += 1;
+    }
+
+    let mut notes = vec![
+        "precedence: tool_error > blocking_graph_error > warning > unknown > diagnostic_only > ok"
+            .to_string(),
+        "warning beats unknown when an actionable caution is present in the same packet"
+            .to_string(),
+        "hard_interrupt_available mirrors only an actual MVP3.4 hard-interrupt packet".to_string(),
+    ];
+    if should_recover_tool_state && !hard_interrupt_available {
+        notes.push(
+            "unsafe lifecycle recovery does not create a source-code hard interrupt".to_string(),
+        );
+    }
+
+    let trace = SeverityAggregationTrace {
+        schema_version: MVP3_6_SEVERITY_POLICY_SCHEMA_VERSION,
+        decisions: decisions.to_vec(),
+        final_status,
+        max_severity,
+        hard_interrupt_available,
+        tool_error,
+        notes,
+    };
+    let validation_packet_status = final_status.as_validation_packet_status();
+    let severity_summary = json!({
+        "schema_version": MVP3_6_SEVERITY_POLICY_SCHEMA_VERSION,
+        "final_status": final_status,
+        "validation_packet_status": validation_packet_status,
+        "max_severity": max_severity,
+        "tool_error": tool_error,
+        "hard_interrupt_available": hard_interrupt_available,
+        "hard_interrupt": hard_interrupt,
+        "must_fix_before_continuing": must_fix_before_continuing,
+        "can_continue_with_caution": can_continue_with_caution,
+        "should_recover_tool_state": should_recover_tool_state,
+        "should_run_tests": should_run_tests,
+        "should_request_explain": should_request_explain,
+        "should_rerun_validation": should_rerun_validation,
+        "next_agent_action": next_agent_action,
+        "recovery_commands": &recovery_commands,
+        "guidance": &guidance,
+        "decision_count": decisions.len(),
+        "counts_by_severity": counts_by_severity,
+        "counts_by_reason": counts_by_reason,
+        "status_precedence": [
+            "tool_error",
+            "blocking_graph_error",
+            "warning",
+            "unknown",
+            "diagnostic_only",
+            "ok"
+        ],
+        "warning_unknown_priority": "warning_over_unknown_when_actionable_caution_is_present",
+        "public_claim": false
+    });
+
+    FinalStatusAggregation {
+        final_status,
+        validation_packet_status,
+        must_fix_before_continuing,
+        can_continue_with_caution,
+        should_recover_tool_state,
+        should_run_tests,
+        should_request_explain,
+        should_rerun_validation,
+        hard_interrupt_available,
+        hard_interrupt,
+        next_agent_action,
+        recovery_commands,
+        guidance,
+        severity_summary,
+        severity_aggregation_trace: trace,
+    }
+}
+
+fn severity_primary_evidence_kind(finding: &ValidationFinding) -> Option<ValidationEvidenceKind> {
+    finding
+        .evidence_items
+        .iter()
+        .find(|item| item.can_support_blocking_graph_proof())
+        .or_else(|| finding.evidence_items.first())
+        .map(|item| item.evidence_kind)
+}
+
+fn severity_non_graph_only(finding: &ValidationFinding) -> bool {
+    !finding
+        .evidence_items
+        .iter()
+        .any(ValidationEvidenceItem::can_support_blocking_graph_proof)
+        && (!finding.evidence_items.is_empty()
+            || matches!(
+                finding.proof_status,
+                ValidationProofStatus::NotGraphProof
+                    | ValidationProofStatus::UnsupportedRelation
+                    | ValidationProofStatus::OverBudgetDegraded
+                    | ValidationProofStatus::NeedsReverification
+                    | ValidationProofStatus::Unknown
+            ))
+}
+
+fn severity_lifecycle_is_unsafe(lifecycle: &ValidationLifecycleState) -> bool {
+    !lifecycle.is_claimable_current()
+        || lifecycle.stale
+        || lifecycle.foreign
+        || lifecycle.schema_mismatched
+        || lifecycle.dirty
+        || lifecycle.partial
+}
+
+fn severity_claimability_reports_unsafe_db(claimability: &Value) -> bool {
+    claimability
+        .get("db_problem_kind")
+        .and_then(Value::as_str)
+        .is_some()
+        || claimability
+            .get("blockers")
+            .and_then(Value::as_array)
+            .is_some_and(|items| !items.is_empty())
+        || claimability
+            .get("diagnostic_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || claimability
+            .get("claimable")
+            .and_then(Value::as_bool)
+            .is_some_and(|claimable| !claimable)
+}
+
+fn severity_claimability_effect(
+    lifecycle: &ValidationLifecycleState,
+    claimability: &Value,
+    non_graph_only: bool,
+) -> ClaimabilityEffect {
+    if severity_lifecycle_is_unsafe(lifecycle)
+        || severity_claimability_reports_unsafe_db(claimability)
+    {
+        ClaimabilityEffect::NonClaimable
+    } else if non_graph_only
+        || claimability
+            .get("candidate_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || claimability
+            .get("diagnostic_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        ClaimabilityEffect::DiagnosticOnly
+    } else if lifecycle.is_claimable_current()
+        && claimability
+            .get("claimable")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    {
+        ClaimabilityEffect::Claimable
+    } else {
+        ClaimabilityEffect::Unknown
+    }
+}
+
+fn severity_reason_for_unsafe_lifecycle(
+    lifecycle: &ValidationLifecycleState,
+    claimability: &Value,
+) -> SeverityReason {
+    if lifecycle.foreign
+        || claimability
+            .get("db_problem_kind")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind == "foreign")
+    {
+        SeverityReason::UnsafeDbForeign
+    } else if lifecycle.schema_mismatched
+        || claimability
+            .get("db_problem_kind")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind == "schema_mismatched" || kind == "schema_mismatch")
+    {
+        SeverityReason::UnsafeDbSchemaMismatch
+    } else if lifecycle.dirty || lifecycle.partial {
+        SeverityReason::UnsafeDbLockedPublishing
+    } else if lifecycle.stale {
+        SeverityReason::UnsafeDbStale
+    } else {
+        SeverityReason::UnsafeDbLockedPublishing
+    }
+}
+
+fn severity_lifecycle_effect(lifecycle: &ValidationLifecycleState, claimability: &Value) -> String {
+    if lifecycle.is_claimable_current() && !severity_claimability_reports_unsafe_db(claimability) {
+        "claimable_current".to_string()
+    } else if lifecycle.stale {
+        "non_claimable_stale_recovery_required".to_string()
+    } else if lifecycle.foreign {
+        "non_claimable_foreign_recovery_required".to_string()
+    } else if lifecycle.schema_mismatched {
+        "non_claimable_schema_mismatch_recovery_required".to_string()
+    } else if lifecycle.dirty || lifecycle.partial {
+        "non_claimable_locked_or_partial_recovery_required".to_string()
+    } else {
+        "non_claimable_recovery_required".to_string()
+    }
+}
+
+fn severity_blocking_recovery_action() -> AgentContinuationPolicy {
+    AgentContinuationPolicy {
+        must_fix: true,
+        inspect_before_continuing: false,
+        continue_with_caution: false,
+        r#continue: false,
+        recover_tool_state: true,
+        rerun_validation: true,
+        run_tests_suggested: false,
+        request_explain_suggested: true,
     }
 }
 
@@ -2287,12 +3686,142 @@ fn validation_recommended_next_steps(
     steps
 }
 
+fn validation_lifecycle_state_from_packet_value(
+    claimability: &Value,
+    lifecycle: &Value,
+) -> ValidationLifecycleState {
+    let db_problem_kind = claimability
+        .get("db_problem_kind")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let non_claimable_reason = lifecycle
+        .get("non_claimable_reason")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            claimability
+                .get("non_claimable_reason")
+                .and_then(Value::as_str)
+        })
+        .map(ToString::to_string);
+    let claimable = lifecycle
+        .get("claimable")
+        .and_then(Value::as_bool)
+        .or_else(|| claimability.get("claimable").and_then(Value::as_bool))
+        .unwrap_or(true);
+    let current = lifecycle
+        .get("current")
+        .and_then(Value::as_bool)
+        .or_else(|| claimability.get("current").and_then(Value::as_bool))
+        .unwrap_or(claimable);
+    let stale = lifecycle
+        .get("stale")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || db_problem_kind == "stale";
+    let foreign = lifecycle
+        .get("foreign")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || db_problem_kind == "foreign";
+    let schema_mismatched = lifecycle
+        .get("schema_mismatched")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || matches!(db_problem_kind, "schema_mismatched" | "schema_mismatch");
+    let dirty = lifecycle
+        .get("dirty")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || matches!(db_problem_kind, "dirty" | "locked" | "publishing");
+    let partial = lifecycle
+        .get("partial")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || matches!(db_problem_kind, "partial" | "partial_update");
+
+    ValidationLifecycleState {
+        claimable,
+        current,
+        stale,
+        foreign,
+        schema_mismatched,
+        dirty,
+        partial,
+        non_claimable_reason,
+    }
+}
+
+fn validation_packet_severity_decisions(
+    blocking_errors: &[ValidationFinding],
+    warnings: &[ValidationFinding],
+    unknowns: &[ValidationFinding],
+    diagnostics: &[ValidationFinding],
+    validation_rules_evaluated: &[ValidationRule],
+    validation_rules_skipped: &[ValidationRule],
+    claimability: &Value,
+    lifecycle: &Value,
+    policy: &SeverityPolicy,
+) -> Vec<SeverityDecision> {
+    let rule_by_id = validation_rules_evaluated
+        .iter()
+        .chain(validation_rules_skipped.iter())
+        .map(|rule| (rule.validation_rule_id.as_str(), rule))
+        .collect::<BTreeMap<_, _>>();
+    let packet_lifecycle = validation_lifecycle_state_from_packet_value(claimability, lifecycle);
+    let mut decisions = Vec::<SeverityDecision>::new();
+    for finding in blocking_errors
+        .iter()
+        .chain(warnings.iter())
+        .chain(unknowns.iter())
+        .chain(diagnostics.iter())
+    {
+        let rule = rule_by_id.get(finding.validation_rule_id.as_str()).copied();
+        decisions.push(map_finding_to_severity_with_lifecycle(
+            finding,
+            &finding.lifecycle,
+            rule,
+            claimability,
+            policy,
+        ));
+    }
+
+    let packet_lifecycle_decision =
+        map_no_findings_to_severity(&packet_lifecycle, claimability, policy);
+    let has_lifecycle_decision = decisions
+        .iter()
+        .any(|decision| decision.source == SeveritySource::LifecycleState);
+    if decisions.is_empty()
+        || (packet_lifecycle_decision.severity != ValidationSeverity::Ok && !has_lifecycle_decision)
+    {
+        decisions.push(packet_lifecycle_decision);
+    }
+    decisions
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ValidationPacket {
     pub schema_version: u32,
     pub packet_kind: ValidationPacketKind,
     pub status: ValidationPacketStatus,
+    #[serde(default)]
+    pub final_status: FinalValidationStatus,
     pub must_fix_before_continuing: bool,
+    #[serde(default)]
+    pub can_continue_with_caution: bool,
+    #[serde(default)]
+    pub should_recover_tool_state: bool,
+    #[serde(default)]
+    pub should_run_tests: bool,
+    #[serde(default)]
+    pub should_request_explain: bool,
+    #[serde(default)]
+    pub should_rerun_validation: bool,
+    #[serde(default)]
+    pub next_agent_action: String,
+    #[serde(default)]
+    pub recovery_commands: Vec<String>,
+    #[serde(default)]
+    pub aggregate_guidance: Vec<String>,
     pub changed_files: Vec<String>,
     pub graph_delta: Value,
     pub blocking_errors: Vec<ValidationFinding>,
@@ -2312,6 +3841,14 @@ pub struct ValidationPacket {
     pub stale_unsafe_blockers: Vec<String>,
     pub top_blocking_source_spans: Vec<SourceSpan>,
     pub recommended_next_steps: Vec<String>,
+    #[serde(default)]
+    pub severity_summary: Value,
+    #[serde(default)]
+    pub severity_decisions: Vec<SeverityDecision>,
+    #[serde(default)]
+    pub severity_aggregation_trace: SeverityAggregationTrace,
+    #[serde(default)]
+    pub editor_policy: Value,
     pub hard_interrupt_available: bool,
     #[serde(default)]
     pub hard_interrupt: Option<HardInterruptPacket>,
@@ -2371,17 +3908,6 @@ impl ValidationPacket {
             }
         }
 
-        let status = if !blocking_errors.is_empty() {
-            ValidationPacketStatus::BlockingGraphError
-        } else if !warnings.is_empty() {
-            ValidationPacketStatus::Warning
-        } else if !unknowns.is_empty() {
-            ValidationPacketStatus::Unknown
-        } else if !diagnostics.is_empty() {
-            ValidationPacketStatus::DiagnosticOnly
-        } else {
-            ValidationPacketStatus::Ok
-        };
         let stale_unsafe_blockers =
             validation_stale_unsafe_blockers_from_state(&claimability, &lifecycle);
         let top_blocking_source_spans = blocking_errors
@@ -2397,11 +3923,20 @@ impl ValidationPacket {
             &stale_unsafe_blockers,
         );
 
-        Self {
+        let mut packet = Self {
             schema_version: VALIDATION_PACKET_SCHEMA_VERSION,
             packet_kind: ValidationPacketKind::GraphValidationPacket,
-            status,
-            must_fix_before_continuing: !blocking_errors.is_empty(),
+            status: ValidationPacketStatus::Ok,
+            final_status: FinalValidationStatus::Ok,
+            must_fix_before_continuing: false,
+            can_continue_with_caution: false,
+            should_recover_tool_state: false,
+            should_run_tests: false,
+            should_request_explain: false,
+            should_rerun_validation: false,
+            next_agent_action: "continue".to_string(),
+            recovery_commands: Vec::new(),
+            aggregate_guidance: Vec::new(),
             changed_files: changed_files
                 .into_iter()
                 .map(crate::normalize_repo_relative_path)
@@ -2424,18 +3959,23 @@ impl ValidationPacket {
             stale_unsafe_blockers,
             top_blocking_source_spans,
             recommended_next_steps,
+            severity_summary: Value::Null,
+            severity_decisions: Vec::new(),
+            severity_aggregation_trace: SeverityAggregationTrace::default(),
+            editor_policy: Value::Null,
             hard_interrupt_available: false,
             hard_interrupt: None,
             omitted_count: 0,
             expansion_handles: Vec::new(),
-        }
+        };
+        packet.refresh_final_status_aggregation();
+        packet
     }
 
     pub fn with_hard_interrupt_packet(mut self, hard_interrupt: HardInterruptPacket) -> Self {
-        self.status = ValidationPacketStatus::BlockingGraphError;
-        self.must_fix_before_continuing = true;
         self.hard_interrupt_available = true;
         self.hard_interrupt = Some(hard_interrupt);
+        self.refresh_final_status_aggregation();
         self
     }
 
@@ -2451,7 +3991,16 @@ impl ValidationPacket {
     pub const fn critical_safety_field_names() -> &'static [&'static str] {
         &[
             "status",
+            "final_status",
             "must_fix_before_continuing",
+            "can_continue_with_caution",
+            "should_recover_tool_state",
+            "should_run_tests",
+            "should_request_explain",
+            "should_rerun_validation",
+            "next_agent_action",
+            "recovery_commands",
+            "aggregate_guidance",
             "changed_files",
             "graph_delta",
             "blocking_errors",
@@ -2469,6 +4018,10 @@ impl ValidationPacket {
             "stale_unsafe_blockers",
             "top_blocking_source_spans",
             "recommended_next_steps",
+            "severity_summary",
+            "severity_decisions",
+            "severity_aggregation_trace",
+            "editor_policy",
             "hard_interrupt_available",
             "hard_interrupt",
             "omitted_count",
@@ -2499,6 +4052,49 @@ impl ValidationPacket {
 
         let critical_safety_fields_preserved = Self::critical_safety_fields_preserved_in(&value);
         if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "final_severity".to_string(),
+                json!(validation_packet_final_severity_label(
+                    &self.severity_summary,
+                    self.final_status
+                )),
+            );
+            object.insert(
+                "blocking_error_count".to_string(),
+                json!(self.blocking_errors.len()),
+            );
+            object.insert("warning_count".to_string(), json!(self.warnings.len()));
+            object.insert("unknown_count".to_string(), json!(self.unknowns.len()));
+            object.insert(
+                "diagnostic_count".to_string(),
+                json!(self.diagnostics.len()),
+            );
+            object.insert(
+                "top_blocking_source_span".to_string(),
+                self.top_blocking_source_spans
+                    .first()
+                    .and_then(|span| serde_json::to_value(span).ok())
+                    .unwrap_or(Value::Null),
+            );
+            object.insert(
+                "top_recommended_fix".to_string(),
+                self.blocking_errors
+                    .iter()
+                    .filter_map(|finding| finding.recommended_fix.clone())
+                    .next()
+                    .map(Value::String)
+                    .unwrap_or(Value::Null),
+            );
+            object.insert(
+                "proof_ladder_changes_summary".to_string(),
+                validation_packet_proof_ladder_changes_summary(&self.proof_ladder_changes),
+            );
+            object.insert(
+                "recovery_commands_pointer".to_string(),
+                json!("validation_packet.recovery_commands"),
+            );
+            object.insert("full_graph_dump_included".to_string(), json!(false));
+            object.insert("full_source_bodies_included".to_string(), json!(false));
             object.insert("omitted_count".to_string(), json!(omitted));
             object.insert(
                 "critical_safety_fields_preserved".to_string(),
@@ -2522,6 +4118,159 @@ impl ValidationPacket {
             .iter()
             .all(|field| value.get(*field).is_some())
     }
+
+    fn refresh_final_status_aggregation(&mut self) {
+        let policy = mvp3_6_severity_policy_contract();
+        let decisions = validation_packet_severity_decisions(
+            &self.blocking_errors,
+            &self.warnings,
+            &self.unknowns,
+            &self.diagnostics,
+            &self.validation_rules_evaluated,
+            &self.validation_rules_skipped,
+            &self.claimability,
+            &self.lifecycle,
+            &policy,
+        );
+        let aggregation = aggregate_final_validation_status(
+            &decisions,
+            self.hard_interrupt_available,
+            self.hard_interrupt.is_some(),
+            &policy,
+        );
+        if let Some(packet_status) = aggregation.validation_packet_status {
+            self.status = packet_status;
+        }
+        self.final_status = aggregation.final_status;
+        self.must_fix_before_continuing = aggregation.must_fix_before_continuing;
+        self.can_continue_with_caution = aggregation.can_continue_with_caution;
+        self.should_recover_tool_state = aggregation.should_recover_tool_state;
+        self.should_run_tests = aggregation.should_run_tests;
+        self.should_request_explain = aggregation.should_request_explain;
+        self.should_rerun_validation = aggregation.should_rerun_validation;
+        self.next_agent_action = aggregation.next_agent_action;
+        self.recovery_commands = aggregation.recovery_commands;
+        self.aggregate_guidance = aggregation.guidance;
+        self.severity_summary = aggregation.severity_summary;
+        self.severity_decisions = aggregation.severity_aggregation_trace.decisions.clone();
+        self.severity_aggregation_trace = aggregation.severity_aggregation_trace;
+        self.editor_policy = validation_packet_editor_policy_json(
+            self.final_status,
+            self.must_fix_before_continuing,
+            self.hard_interrupt_available,
+            self.can_continue_with_caution,
+            self.should_request_explain,
+            self.should_rerun_validation,
+            self.should_recover_tool_state,
+        );
+    }
+}
+
+fn validation_packet_final_severity_label(
+    severity_summary: &Value,
+    final_status: FinalValidationStatus,
+) -> String {
+    severity_summary
+        .get("max_severity")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| {
+            serde_json::to_value(final_status)
+                .ok()
+                .and_then(|value| value.as_str().map(ToString::to_string))
+                .unwrap_or_else(|| "unknown".to_string())
+        })
+}
+
+fn validation_packet_proof_ladder_changes_summary(proof_ladder_changes: &Value) -> Value {
+    let Some(object) = proof_ladder_changes.as_object() else {
+        return json!({
+            "available": !proof_ladder_changes.is_null(),
+            "changed_count": 0,
+            "graph_proof_changed_count": 0,
+            "keys": [],
+        });
+    };
+    let mut keys = object.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+    let changed_count = object
+        .values()
+        .filter(|value| {
+            value
+                .get("changed")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+        })
+        .count();
+    let graph_proof_changed_count = object
+        .values()
+        .filter(|value| {
+            value
+                .get("graph_proof")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .count();
+    json!({
+        "available": true,
+        "changed_count": changed_count,
+        "graph_proof_changed_count": graph_proof_changed_count,
+        "keys": keys,
+        "full_detail_handle": "validation_packet.proof_ladder_changes",
+    })
+}
+
+fn validation_packet_editor_policy_json(
+    final_status: FinalValidationStatus,
+    must_fix_before_continuing: bool,
+    hard_interrupt_available: bool,
+    can_continue_with_caution: bool,
+    should_request_explain: bool,
+    should_rerun_validation: bool,
+    should_recover_tool_state: bool,
+) -> Value {
+    let recommended_editor_action = if hard_interrupt_available {
+        "show_blocking_modal"
+    } else if should_recover_tool_state {
+        "show_tool_state_recovery"
+    } else if must_fix_before_continuing {
+        "show_validation_blocker"
+    } else if can_continue_with_caution
+        || matches!(
+            final_status,
+            FinalValidationStatus::Warning
+                | FinalValidationStatus::Unknown
+                | FinalValidationStatus::DiagnosticOnly
+        )
+    {
+        "show_warning_panel"
+    } else {
+        "allow_continue"
+    };
+    json!({
+        "editor_policy_version": 1,
+        "recommended_editor_action": recommended_editor_action,
+        "should_show_modal": hard_interrupt_available,
+        "should_show_warning_panel": !hard_interrupt_available
+            && (can_continue_with_caution
+                || should_request_explain
+                || should_recover_tool_state
+                || matches!(
+                    final_status,
+                    FinalValidationStatus::Warning
+                        | FinalValidationStatus::Unknown
+                        | FinalValidationStatus::DiagnosticOnly
+                )),
+        "should_allow_continue": !must_fix_before_continuing,
+        "should_request_revalidation": should_rerun_validation,
+        "safe_to_autofix": false,
+        "source_edits_performed": false,
+        "daemon_integration_available": false,
+        "plugin_integration_available": false,
+        "metadata_advisory_only": true,
+        "no_automatic_source_edits": true,
+        "unsafe_db_states_are_not_source_code_hard_interrupts": true,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3067,6 +4816,1628 @@ mod tests {
             .unwrap_or_else(|error| panic!("parse schema {}: {error}", path.display()))
     }
 
+    fn severity_row_for(row_id: &str) -> SeverityDecisionTableRow {
+        mvp3_6_severity_decision_table()
+            .into_iter()
+            .find(|row| row.row_id == row_id)
+            .unwrap_or_else(|| panic!("missing severity decision table row {row_id}"))
+    }
+
+    fn aggregate_for_test(
+        decisions: Vec<SeverityDecision>,
+        hard_interrupt_available: bool,
+    ) -> FinalStatusAggregation {
+        let policy = mvp3_6_severity_policy_contract();
+        aggregate_final_validation_status(
+            &decisions,
+            hard_interrupt_available,
+            hard_interrupt_available,
+            &policy,
+        )
+    }
+
+    fn mapped_decision_for_test(
+        finding: &ValidationFinding,
+        rule: Option<&ValidationRule>,
+    ) -> SeverityDecision {
+        map_finding_to_severity(
+            finding,
+            rule,
+            &json!({"claimable": true, "current": true, "blockers": []}),
+            &mvp3_6_severity_policy_contract(),
+        )
+    }
+
+    fn tool_error_decision_for_test() -> SeverityDecision {
+        SeverityDecision {
+            severity: ValidationSeverity::DiagnosticOnly,
+            source: SeveritySource::ToolRuntime,
+            reason: SeverityReason::RuntimeFailurePreventingValidation,
+            finding_id: None,
+            validation_rule_id: None,
+            proof_level: "validation_not_completed".to_string(),
+            claimability_effect: ClaimabilityEffect::Unknown,
+            interrupt_eligible: false,
+            tool_error: true,
+            tool_error_kind: ToolErrorKind::RuntimeFailure,
+            agent_action: AgentContinuationPolicy::recover_tool_state(),
+            lifecycle_effect: "validation_not_completed".to_string(),
+            evidence_kind: None,
+            source_role: None,
+            exactness: None,
+        }
+    }
+
+    #[test]
+    fn severity_policy_contract_defined() {
+        let policy = mvp3_6_severity_policy_contract();
+        assert_eq!(policy.schema_version, MVP3_6_SEVERITY_POLICY_SCHEMA_VERSION);
+        assert_eq!(policy.policy_name, "mvp3_6_validation_severity_model");
+        assert!(policy.severity_is_interpretation_not_proof);
+        assert!(policy.hard_interrupt_requires_interrupt_eligible_blocking);
+        assert!(policy.tool_error_reserved_for_validation_preventing_failure);
+        assert!(!policy.blocking_validation_is_tool_error_by_default);
+        assert!(policy.mvp3_6_decision_table_complete());
+        assert!(!policy.editor_daemon_introduced);
+        assert!(!policy.plugin_introduced);
+        assert!(!policy.mvp4_fields_introduced);
+    }
+
+    #[test]
+    fn severity_levels_match_mvp3() {
+        let levels = mvp3_6_severity_levels();
+        let names = levels
+            .iter()
+            .map(|level| serde_json::to_value(level.severity).expect("serialize severity"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                json!("blocking"),
+                json!("warning"),
+                json!("diagnostic_only"),
+                json!("unknown"),
+                json!("ok")
+            ]
+        );
+        assert_eq!(
+            ValidationSeverity::from_packet_status(ValidationPacketStatus::BlockingGraphError),
+            ValidationSeverity::Blocking
+        );
+        assert_eq!(
+            FinalValidationStatus::from_packet_status(ValidationPacketStatus::Warning),
+            FinalValidationStatus::Warning
+        );
+        assert_eq!(
+            FinalValidationStatus::ToolError.as_validation_packet_status(),
+            None
+        );
+        assert!(ValidationSeverity::Blocking.dominates(ValidationSeverity::Ok));
+        assert!(ValidationSeverity::Warning.dominates(ValidationSeverity::Unknown));
+    }
+
+    #[test]
+    fn final_status_aggregation_defined() {
+        let policy = mvp3_6_severity_policy_contract();
+        let ok = map_no_findings_to_severity(
+            &ValidationLifecycleState::claimable_current(),
+            &json!({"claimable": true, "current": true}),
+            &policy,
+        );
+        let aggregate = aggregate_for_test(vec![ok], false);
+
+        assert_eq!(aggregate.final_status, FinalValidationStatus::Ok);
+        assert_eq!(
+            aggregate.validation_packet_status,
+            Some(ValidationPacketStatus::Ok)
+        );
+        assert!(!aggregate.must_fix_before_continuing);
+        assert_eq!(aggregate.next_agent_action, "continue");
+        assert_eq!(
+            aggregate.severity_summary["status_precedence"][0].as_str(),
+            Some("tool_error")
+        );
+    }
+
+    #[test]
+    fn severity_precedence_defined() {
+        let block_rule = exact_calls_rule();
+        let block = mapped_decision_for_test(
+            &block_finding_for_rule(&block_rule, "finding://aggregate/block"),
+            Some(&block_rule),
+        );
+        let (warning, warning_rule) = over_budget_degraded_finding();
+        let warning = mapped_decision_for_test(&warning, Some(&warning_rule));
+        let (unknown, unknown_rule) = ambiguous_rename_unknown_finding();
+        let unknown = mapped_decision_for_test(&unknown, Some(&unknown_rule));
+
+        assert_eq!(
+            aggregate_for_test(vec![tool_error_decision_for_test(), block.clone()], false)
+                .final_status,
+            FinalValidationStatus::ToolError
+        );
+        assert_eq!(
+            aggregate_for_test(vec![block, warning.clone()], false).final_status,
+            FinalValidationStatus::BlockingGraphError
+        );
+        assert_eq!(
+            aggregate_for_test(vec![warning, unknown], false).final_status,
+            FinalValidationStatus::Warning
+        );
+    }
+
+    #[test]
+    fn must_fix_policy_defined() {
+        let source_rule = exact_calls_rule();
+        let source_block = mapped_decision_for_test(
+            &block_finding_for_rule(&source_rule, "finding://aggregate/source-block"),
+            Some(&source_rule),
+        );
+        let (warning_finding, warning_rule) = over_budget_degraded_finding();
+        let warning = mapped_decision_for_test(&warning_finding, Some(&warning_rule));
+        let lifecycle_rule = lifecycle_integrity_rule();
+        let mut lifecycle_block =
+            block_finding_for_rule(&lifecycle_rule, "finding://aggregate/lifecycle-block");
+        lifecycle_block.lifecycle =
+            ValidationLifecycleState::stale_non_claimable("repo_head_mismatch");
+        let lifecycle_block = map_finding_to_severity_with_lifecycle(
+            &lifecycle_block,
+            &lifecycle_block.lifecycle,
+            Some(&lifecycle_rule),
+            &json!({
+                "claimable": false,
+                "current": false,
+                "db_problem_kind": "stale",
+                "blockers": ["repo_head_mismatch"]
+            }),
+            &mvp3_6_severity_policy_contract(),
+        );
+
+        assert!(aggregate_for_test(vec![source_block], false).must_fix_before_continuing);
+        assert!(!aggregate_for_test(vec![warning], false).must_fix_before_continuing);
+        let aggregate = aggregate_for_test(vec![lifecycle_block], false);
+        assert!(aggregate.must_fix_before_continuing);
+        assert!(aggregate.should_recover_tool_state);
+    }
+
+    #[test]
+    fn blocking_finding_sets_blocking_graph_error() {
+        let rule = generic_blocking_rule();
+        let decision = mapped_decision_for_test(
+            &block_finding_for_rule(&rule, "finding://aggregate/blocking-status"),
+            Some(&rule),
+        );
+        let aggregate = aggregate_for_test(vec![decision], false);
+
+        assert_eq!(
+            aggregate.final_status,
+            FinalValidationStatus::BlockingGraphError
+        );
+        assert_eq!(
+            aggregate.validation_packet_status,
+            Some(ValidationPacketStatus::BlockingGraphError)
+        );
+    }
+
+    #[test]
+    fn hard_interrupt_sets_must_fix() {
+        let rule = exact_calls_rule();
+        let decision = mapped_decision_for_test(
+            &block_finding_for_rule(&rule, "finding://aggregate/hard"),
+            Some(&rule),
+        );
+        let aggregate = aggregate_for_test(vec![decision], true);
+
+        assert!(aggregate.hard_interrupt_available);
+        assert!(aggregate.hard_interrupt);
+        assert!(aggregate.must_fix_before_continuing);
+        assert_eq!(
+            aggregate.next_agent_action,
+            "fix_cited_source_spans_then_rerun_validation_and_task_tests"
+        );
+    }
+
+    #[test]
+    fn warning_only_sets_warning_no_must_fix() {
+        let (finding, rule) = over_budget_degraded_finding();
+        let aggregate =
+            aggregate_for_test(vec![mapped_decision_for_test(&finding, Some(&rule))], false);
+
+        assert_eq!(aggregate.final_status, FinalValidationStatus::Warning);
+        assert!(aggregate.can_continue_with_caution);
+        assert!(!aggregate.must_fix_before_continuing);
+        assert!(aggregate.should_run_tests);
+    }
+
+    #[test]
+    fn unknown_only_sets_unknown_no_must_fix() {
+        let (finding, rule) = ambiguous_rename_unknown_finding();
+        let aggregate =
+            aggregate_for_test(vec![mapped_decision_for_test(&finding, Some(&rule))], false);
+
+        assert_eq!(aggregate.final_status, FinalValidationStatus::Unknown);
+        assert!(!aggregate.must_fix_before_continuing);
+        assert!(aggregate.should_request_explain);
+    }
+
+    #[test]
+    fn diagnostic_only_sets_diagnostic_no_source_block() {
+        let (finding, rule) = candidate_only_finding(ValidationEvidenceKind::Candidate);
+        let aggregate =
+            aggregate_for_test(vec![mapped_decision_for_test(&finding, Some(&rule))], false);
+
+        assert_eq!(
+            aggregate.final_status,
+            FinalValidationStatus::DiagnosticOnly
+        );
+        assert!(!aggregate.hard_interrupt_available);
+        assert!(!aggregate.must_fix_before_continuing);
+    }
+
+    #[test]
+    fn unsafe_db_state_not_source_code_interrupt() {
+        let packet = ValidationPacket::new(
+            vec!["src/main.rs".to_string()],
+            json!({"summary": {}}),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            json!({
+                "claimable": false,
+                "current": false,
+                "db_problem_kind": "stale",
+                "blockers": ["repo_head_mismatch"]
+            }),
+            json!({}),
+            json!({
+                "claimable": false,
+                "current": false,
+                "stale": true,
+                "non_claimable_reason": "repo_head_mismatch"
+            }),
+        );
+
+        assert_eq!(packet.status, ValidationPacketStatus::DiagnosticOnly);
+        assert!(!packet.hard_interrupt_available);
+        assert!(packet.hard_interrupt.is_none());
+        assert!(packet.should_recover_tool_state);
+        assert!(!packet.must_fix_before_continuing);
+        assert!(packet.blocking_errors.is_empty());
+    }
+
+    #[test]
+    fn unsafe_db_state_not_ok() {
+        let policy = mvp3_6_severity_policy_contract();
+        let decision = map_no_findings_to_severity(
+            &ValidationLifecycleState::stale_non_claimable("repo_head_mismatch"),
+            &json!({"claimable": false, "db_problem_kind": "stale"}),
+            &policy,
+        );
+        let aggregate = aggregate_for_test(vec![decision], false);
+
+        assert_ne!(aggregate.final_status, FinalValidationStatus::Ok);
+        assert_eq!(
+            aggregate.final_status,
+            FinalValidationStatus::DiagnosticOnly
+        );
+        assert!(aggregate.should_recover_tool_state);
+    }
+
+    #[test]
+    fn ok_status_requires_safe_lifecycle_and_no_actionable_findings() {
+        let safe = ValidationPacket::new(
+            vec!["src/main.rs".to_string()],
+            json!({"summary": {}}),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            json!({"claimable": true, "current": true, "blockers": []}),
+            json!({}),
+            json!({"claimable": true, "current": true}),
+        );
+        let unsafe_packet = ValidationPacket::new(
+            vec!["src/main.rs".to_string()],
+            json!({"summary": {}}),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            json!({"claimable": false, "db_problem_kind": "foreign"}),
+            json!({}),
+            json!({
+                "claimable": false,
+                "current": false,
+                "foreign": true,
+                "non_claimable_reason": "foreign_db"
+            }),
+        );
+
+        assert_eq!(safe.status, ValidationPacketStatus::Ok);
+        assert_eq!(safe.final_status, FinalValidationStatus::Ok);
+        assert_eq!(unsafe_packet.status, ValidationPacketStatus::DiagnosticOnly);
+    }
+
+    #[test]
+    fn mixed_block_warning_diagnostic_sets_blocking_graph_error() {
+        let block_rule = exact_calls_rule();
+        let block = mapped_decision_for_test(
+            &block_finding_for_rule(&block_rule, "finding://aggregate/mixed-block"),
+            Some(&block_rule),
+        );
+        let (warning, warning_rule) = over_budget_degraded_finding();
+        let warning = mapped_decision_for_test(&warning, Some(&warning_rule));
+        let (diagnostic, diagnostic_rule) = candidate_only_finding(ValidationEvidenceKind::Vector);
+        let diagnostic = mapped_decision_for_test(&diagnostic, Some(&diagnostic_rule));
+
+        let aggregate = aggregate_for_test(vec![block, warning, diagnostic], false);
+
+        assert_eq!(
+            aggregate.final_status,
+            FinalValidationStatus::BlockingGraphError
+        );
+        assert!(aggregate.must_fix_before_continuing);
+    }
+
+    #[test]
+    fn mixed_warning_unknown_status_policy_tested() {
+        let (warning, warning_rule) = over_budget_degraded_finding();
+        let (unknown, unknown_rule) = ambiguous_rename_unknown_finding();
+        let aggregate = aggregate_for_test(
+            vec![
+                mapped_decision_for_test(&unknown, Some(&unknown_rule)),
+                mapped_decision_for_test(&warning, Some(&warning_rule)),
+            ],
+            false,
+        );
+
+        assert_eq!(aggregate.final_status, FinalValidationStatus::Warning);
+        assert!(aggregate.can_continue_with_caution);
+        assert_eq!(
+            aggregate.severity_summary["warning_unknown_priority"].as_str(),
+            Some("warning_over_unknown_when_actionable_caution_is_present")
+        );
+    }
+
+    #[test]
+    fn no_hard_interrupt_when_no_eligible_block() {
+        let (warning, rule) = over_budget_degraded_finding();
+        let aggregate =
+            aggregate_for_test(vec![mapped_decision_for_test(&warning, Some(&rule))], false);
+
+        assert!(!aggregate.hard_interrupt_available);
+        assert!(!aggregate.hard_interrupt);
+        assert!(!aggregate.must_fix_before_continuing);
+    }
+
+    #[test]
+    fn aggregate_guidance_actionable() {
+        let rule = exact_calls_rule();
+        let aggregate = aggregate_for_test(
+            vec![mapped_decision_for_test(
+                &block_finding_for_rule(&rule, "finding://aggregate/guidance"),
+                Some(&rule),
+            )],
+            true,
+        );
+
+        assert!(!aggregate.guidance.is_empty());
+        assert!(!aggregate.recovery_commands.is_empty());
+        assert!(aggregate
+            .guidance
+            .iter()
+            .any(|step| step.contains("rerun validation")));
+        assert!(aggregate.next_agent_action.contains("rerun_validation"));
+    }
+
+    #[test]
+    fn no_dot_codegraph_mutation_from_final_status_aggregation() {
+        let rule = exact_calls_rule();
+        let aggregate = aggregate_for_test(
+            vec![mapped_decision_for_test(
+                &block_finding_for_rule(&rule, "finding://aggregate/no-dot-codegraph"),
+                Some(&rule),
+            )],
+            true,
+        );
+        let serialized = serde_json::to_string(&aggregate).expect("aggregate serializes");
+
+        assert!(!serialized.contains(".codegraph"));
+    }
+
+    #[test]
+    fn agent_action_model_defined() {
+        let must_fix = AgentContinuationPolicy::must_fix();
+        assert!(must_fix.must_fix);
+        assert!(must_fix.rerun_validation);
+        assert!(must_fix.run_tests_suggested);
+        assert!(must_fix.request_explain_suggested);
+        assert!(!must_fix.r#continue);
+
+        let caution = AgentContinuationPolicy::continue_with_caution();
+        assert!(caution.continue_with_caution);
+        assert!(caution.run_tests_suggested);
+        assert!(!caution.must_fix);
+
+        let recover = AgentContinuationPolicy::recover_tool_state();
+        assert!(recover.recover_tool_state);
+        assert!(recover.rerun_validation);
+        assert!(!recover.must_fix);
+
+        let ok = AgentContinuationPolicy::continue_ok();
+        assert!(ok.r#continue);
+        assert!(!ok.request_explain_suggested);
+    }
+
+    #[test]
+    fn claimability_effect_model_defined() {
+        let values = serde_json::to_value([
+            ClaimabilityEffect::Claimable,
+            ClaimabilityEffect::NonClaimable,
+            ClaimabilityEffect::DiagnosticOnly,
+            ClaimabilityEffect::Unknown,
+        ])
+        .expect("serialize claimability effects");
+        assert_eq!(
+            values,
+            json!(["claimable", "non_claimable", "diagnostic_only", "unknown"])
+        );
+    }
+
+    #[test]
+    fn tool_error_separated_from_validation_blocker() {
+        let blocking = severity_row_for("eligible_mvp3_4_hard_interrupt_block_finding");
+        assert_eq!(
+            blocking.final_status_contribution,
+            FinalValidationStatus::BlockingGraphError
+        );
+        assert!(!blocking.tool_error);
+        assert_eq!(blocking.tool_error_kind, ToolErrorKind::None);
+        assert_eq!(blocking.exit_code_default, 0);
+        assert_eq!(blocking.exit_code_fail_on_blocking, 2);
+        assert!(!blocking.mcp_is_error);
+
+        let runtime = severity_row_for("runtime_failure_preventing_validation");
+        assert_eq!(
+            runtime.final_status_contribution,
+            FinalValidationStatus::ToolError
+        );
+        assert!(runtime.tool_error);
+        assert_eq!(runtime.tool_error_kind, ToolErrorKind::RuntimeFailure);
+        assert_eq!(runtime.exit_code_default, 1);
+        assert!(runtime.mcp_is_error);
+    }
+
+    #[test]
+    fn decision_table_covers_all_current_finding_classes() {
+        let policy = mvp3_6_severity_policy_contract();
+        assert!(policy.mvp3_6_decision_table_complete());
+
+        for row_id in [
+            "eligible_mvp3_4_hard_interrupt_block_finding",
+            "mvp3_3_block_finding_not_interrupt_eligible",
+            "warning_finding",
+            "unknown_finding",
+            "unsupported_finding",
+            "degraded_finding",
+            "diagnostic_finding",
+            "no_findings_safe_lifecycle",
+            "unsafe_db_stale",
+            "unsafe_db_foreign",
+            "unsafe_db_schema_mismatch",
+            "unsafe_db_locked_publishing",
+            "sidecar_stale",
+            "candidate_vector_source_navigation_evidence",
+            "text_evidence_only",
+            "runtime_failure_preventing_validation",
+            "invalid_input_preventing_validation",
+            "mcp_protocol_internal_failure",
+        ] {
+            assert!(
+                policy.decision_table.iter().any(|row| row.row_id == row_id),
+                "missing severity decision table row {row_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn blocking_validation_not_tool_error_by_default() {
+        let policy = mvp3_6_severity_policy_contract();
+        assert!(!policy.blocking_validation_is_tool_error_by_default);
+        assert!(policy.mcp_blocking_validation_structured_success);
+
+        for row_id in [
+            "eligible_mvp3_4_hard_interrupt_block_finding",
+            "mvp3_3_block_finding_not_interrupt_eligible",
+        ] {
+            let row = severity_row_for(row_id);
+            assert_eq!(
+                row.final_status_contribution,
+                FinalValidationStatus::BlockingGraphError
+            );
+            assert_eq!(row.severity, ValidationSeverity::Blocking);
+            assert!(!row.tool_error);
+            assert!(!row.mcp_is_error);
+            assert_eq!(row.exit_code_default, 0);
+            assert_eq!(row.exit_code_fail_on_blocking, 2);
+        }
+    }
+
+    #[test]
+    fn unsafe_db_not_source_code_block_by_policy() {
+        let policy = mvp3_6_severity_policy_contract();
+        assert!(policy.unsafe_db_not_source_code_block);
+
+        for row_id in [
+            "unsafe_db_stale",
+            "unsafe_db_foreign",
+            "unsafe_db_schema_mismatch",
+            "unsafe_db_locked_publishing",
+        ] {
+            let row = severity_row_for(row_id);
+            assert_eq!(row.claimability, ClaimabilityEffect::NonClaimable);
+            assert_eq!(row.evidence_kind, Some(ValidationEvidenceKind::Lifecycle));
+            assert_eq!(row.severity, ValidationSeverity::DiagnosticOnly);
+            assert!(!row.must_fix_before_continuing);
+            assert!(!row.interrupt_eligible);
+            assert!(!row.tool_error);
+            assert!(row.agent_action.recover_tool_state);
+        }
+    }
+
+    #[test]
+    fn non_graph_evidence_not_graph_blocking_by_policy() {
+        for row_id in [
+            "candidate_vector_source_navigation_evidence",
+            "text_evidence_only",
+            "sidecar_stale",
+        ] {
+            let row = severity_row_for(row_id);
+            let evidence_kind = row.evidence_kind.expect("evidence kind");
+            assert!(!evidence_kind.can_support_blocking_graph_proof());
+            assert!(!row.interrupt_eligible);
+            assert!(!row.must_fix_before_continuing);
+            assert!(!row.tool_error);
+        }
+
+        assert_eq!(
+            severity_row_for("candidate_vector_source_navigation_evidence").severity,
+            ValidationSeverity::DiagnosticOnly
+        );
+        assert_eq!(
+            severity_row_for("text_evidence_only").severity,
+            ValidationSeverity::Warning
+        );
+    }
+
+    #[test]
+    fn validation_hard_interrupt_schema_compatibility_preserved() {
+        let validation_schema =
+            read_agent_json_schema_for_test("validation_packet_agent_json.schema.json");
+        let hard_interrupt_schema =
+            read_agent_json_schema_for_test("hard_interrupt_agent_json.schema.json");
+
+        let packet_statuses = validation_schema["properties"]["status"]["enum"]
+            .as_array()
+            .expect("validation packet status enum");
+        for status in [
+            "blocking_graph_error",
+            "warning",
+            "ok",
+            "diagnostic_only",
+            "unknown",
+        ] {
+            assert!(
+                packet_statuses
+                    .iter()
+                    .any(|value| value.as_str() == Some(status)),
+                "validation packet status enum missing {status}"
+            );
+        }
+
+        let severity_values = validation_schema["$defs"]["validation_severity"]["enum"]
+            .as_array()
+            .expect("validation severity enum");
+        for severity in ["blocking", "warning", "diagnostic_only", "unknown", "ok"] {
+            assert!(
+                severity_values
+                    .iter()
+                    .any(|value| value.as_str() == Some(severity)),
+                "validation severity enum missing {severity}"
+            );
+        }
+
+        let final_statuses = validation_schema["$defs"]["final_validation_status"]["enum"]
+            .as_array()
+            .expect("final validation status enum");
+        assert!(
+            final_statuses
+                .iter()
+                .any(|value| value.as_str() == Some("tool_error")),
+            "final status enum must include tool_error outside validation packet status"
+        );
+        assert!(validation_schema["properties"]["severity_aggregation_trace"].is_object());
+        assert!(validation_schema["$defs"]["severity_decision"].is_object());
+        assert!(validation_schema["properties"]["editor_policy"].is_object());
+        let validation_required = validation_schema["required"]
+            .as_array()
+            .expect("validation packet required fields");
+        for field in [
+            "severity_summary",
+            "severity_decisions",
+            "severity_aggregation_trace",
+            "editor_policy",
+        ] {
+            assert!(
+                validation_required
+                    .iter()
+                    .any(|value| value.as_str() == Some(field)),
+                "validation packet schema missing required field {field}"
+            );
+        }
+        let editor_policy_required = validation_schema["properties"]["editor_policy"]["required"]
+            .as_array()
+            .expect("editor policy required fields");
+        for field in [
+            "editor_policy_version",
+            "recommended_editor_action",
+            "safe_to_autofix",
+            "source_edits_performed",
+            "daemon_integration_available",
+        ] {
+            assert!(
+                editor_policy_required
+                    .iter()
+                    .any(|value| value.as_str() == Some(field)),
+                "editor policy schema missing required field {field}"
+            );
+        }
+
+        assert_eq!(
+            hard_interrupt_schema["properties"]["status"]["const"],
+            json!("blocking_graph_error")
+        );
+        assert!(
+            hard_interrupt_schema["$defs"]["hard_interrupt_error"]["properties"]["severity"]
+                .is_object()
+        );
+    }
+
+    #[test]
+    fn no_editor_daemon_plugin_introduced() {
+        let policy = mvp3_6_severity_policy_contract();
+        assert!(!policy.editor_daemon_introduced);
+        assert!(!policy.plugin_introduced);
+    }
+
+    #[test]
+    fn no_mvp4_fields_introduced() {
+        let policy = mvp3_6_severity_policy_contract();
+        assert!(!policy.mvp4_fields_introduced);
+
+        let validation_schema =
+            read_agent_json_schema_for_test("validation_packet_agent_json.schema.json");
+        let serialized = serde_json::to_string(&validation_schema).expect("serialize schema");
+        for forbidden in [
+            "ast_quantization",
+            "micro_flow",
+            "flow_proof",
+            "semantic_quality_score",
+            "mvp4_ready",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "schema unexpectedly contains MVP4 field {forbidden}"
+            );
+        }
+    }
+
+    fn claimable_packet_claimability_for_test() -> Value {
+        json!({"claimable": true, "current": true, "blockers": []})
+    }
+
+    fn map_for_test(finding: &ValidationFinding, rule: &ValidationRule) -> SeverityDecision {
+        map_finding_to_severity(
+            finding,
+            Some(rule),
+            &claimable_packet_claimability_for_test(),
+            &mvp3_6_severity_policy_contract(),
+        )
+    }
+
+    #[test]
+    fn blocking_mapping_complete() {
+        for (rule, id) in [
+            (exact_calls_rule(), "finding://mapping/calls"),
+            (exact_imports_rule(), "finding://mapping/imports"),
+            (
+                proof_integrity_source_span_rule(),
+                "finding://mapping/source-span",
+            ),
+            (source_role_boundary_rule(), "finding://mapping/source-role"),
+            (
+                activation_gated_reads_rule(),
+                "finding://mapping/activated-reads",
+            ),
+        ] {
+            let mut finding = block_finding_for_rule(&rule, id);
+            if rule.rule_kind == ValidationRuleKind::SourceRoleBoundary {
+                finding.source_role = Some(EvidenceRole::Test);
+            }
+            let decision = map_for_test(&finding, &rule);
+            assert_eq!(decision.severity, ValidationSeverity::Blocking);
+            assert!(decision.agent_action.must_fix);
+            assert!(!decision.tool_error);
+        }
+    }
+
+    #[test]
+    fn warning_mapping_complete() {
+        let dynamic = dynamic_call_warning_finding();
+        let dynamic_decision = map_for_test(&dynamic.0, &dynamic.1);
+        assert_eq!(dynamic_decision.severity, ValidationSeverity::Warning);
+        assert!(dynamic_decision.agent_action.continue_with_caution);
+
+        let text = text_only_warning_finding();
+        let text_decision = map_for_test(&text.0, &text.1);
+        assert_eq!(text_decision.severity, ValidationSeverity::Warning);
+        assert_eq!(text_decision.reason, SeverityReason::TextEvidenceOnly);
+
+        let degraded = over_budget_degraded_finding();
+        let degraded_decision = map_for_test(&degraded.0, &degraded.1);
+        assert_eq!(degraded_decision.severity, ValidationSeverity::Warning);
+        assert_eq!(degraded_decision.reason, SeverityReason::DegradedFinding);
+    }
+
+    #[test]
+    fn diagnostic_mapping_complete() {
+        let (finding, rule) = candidate_only_finding(ValidationEvidenceKind::Candidate);
+        let decision = map_for_test(&finding, &rule);
+        assert_eq!(decision.severity, ValidationSeverity::DiagnosticOnly);
+        assert_eq!(decision.reason, SeverityReason::NonGraphEvidenceBoundary);
+        assert!(!decision.interrupt_eligible);
+
+        let unsafe_decision = map_no_findings_to_severity(
+            &ValidationLifecycleState::stale_non_claimable("repo_head_mismatch"),
+            &json!({"claimable": false, "current": false, "db_problem_kind": "stale"}),
+            &mvp3_6_severity_policy_contract(),
+        );
+        assert_eq!(unsafe_decision.severity, ValidationSeverity::DiagnosticOnly);
+        assert_eq!(
+            unsafe_decision.claimability_effect,
+            ClaimabilityEffect::NonClaimable
+        );
+        assert!(unsafe_decision.agent_action.recover_tool_state);
+    }
+
+    #[test]
+    fn unknown_mapping_complete() {
+        let (computed, rule) = computed_import_unknown_finding();
+        let computed_decision = map_for_test(&computed, &rule);
+        assert_eq!(computed_decision.severity, ValidationSeverity::Unknown);
+        assert_eq!(computed_decision.reason, SeverityReason::UnknownFinding);
+
+        let (unsupported, unsupported_rule) = unsupported_macro_finding();
+        let unsupported_decision = map_for_test(&unsupported, &unsupported_rule);
+        assert_eq!(unsupported_decision.severity, ValidationSeverity::Unknown);
+        assert_eq!(
+            unsupported_decision.reason,
+            SeverityReason::UnsupportedFinding
+        );
+
+        let (ambiguous, ambiguous_rule) = ambiguous_rename_unknown_finding();
+        let ambiguous_decision = map_for_test(&ambiguous, &ambiguous_rule);
+        assert_eq!(ambiguous_decision.severity, ValidationSeverity::Unknown);
+        assert!(!ambiguous_decision.interrupt_eligible);
+    }
+
+    #[test]
+    fn ok_mapping_complete() {
+        let decision = map_no_findings_to_severity(
+            &ValidationLifecycleState::claimable_current(),
+            &claimable_packet_claimability_for_test(),
+            &mvp3_6_severity_policy_contract(),
+        );
+        assert_eq!(decision.severity, ValidationSeverity::Ok);
+        assert_eq!(decision.reason, SeverityReason::NoFindingsSafeLifecycle);
+        assert!(decision.agent_action.r#continue);
+        assert!(!decision.interrupt_eligible);
+    }
+
+    #[test]
+    fn exact_calls_block_maps_to_blocking() {
+        let rule = exact_calls_rule();
+        let finding = block_finding_for_rule(&rule, "finding://severity/exact-calls");
+        let decision = map_for_test(&finding, &rule);
+        assert_eq!(decision.severity, ValidationSeverity::Blocking);
+        assert_eq!(
+            decision.reason,
+            SeverityReason::EligibleHardInterruptBlockFinding
+        );
+        assert!(decision.interrupt_eligible);
+        assert_eq!(
+            decision.evidence_kind,
+            Some(ValidationEvidenceKind::GraphSource)
+        );
+    }
+
+    #[test]
+    fn exact_imports_block_maps_to_blocking() {
+        let rule = exact_imports_rule();
+        let finding = block_finding_for_rule(&rule, "finding://severity/exact-imports");
+        let decision = map_for_test(&finding, &rule);
+        assert_eq!(decision.severity, ValidationSeverity::Blocking);
+        assert!(decision.interrupt_eligible);
+        assert_eq!(
+            decision.evidence_kind,
+            Some(ValidationEvidenceKind::GraphSource)
+        );
+    }
+
+    #[test]
+    fn proof_integrity_block_maps_to_blocking() {
+        for rule in [
+            proof_integrity_source_span_rule(),
+            proof_integrity_provenance_rule(),
+        ] {
+            let mut input = exact_graph_source_input();
+            input.graph_source_relation_reverified = false;
+            input.integrity_condition_reverified = true;
+            input.source_span_required = rule
+                .validation_rule_id
+                .to_ascii_lowercase()
+                .contains("source_span");
+            input.source_span_present = !input.source_span_required;
+            input.provenance_required = rule.provenance_requirement.requires_provenance();
+            input.provenance_present = !input.provenance_required;
+            input.evidence_items = vec![ValidationEvidenceItem::graph_integrity(
+                "edge://proof-integrity",
+                "proof integrity condition was reverified",
+            )];
+            let mut finding = classify_validation_finding(&rule, "finding://severity/proof", input);
+            finding.source_span = Some(SourceSpan::new("src/main.rs", 1, 1));
+            let decision = map_for_test(&finding, &rule);
+            assert_eq!(decision.severity, ValidationSeverity::Blocking);
+            assert_eq!(
+                decision.evidence_kind,
+                Some(ValidationEvidenceKind::GraphIntegrity)
+            );
+            assert!(decision.agent_action.must_fix);
+        }
+    }
+
+    #[test]
+    fn source_role_leakage_maps_to_blocking() {
+        let rule = source_role_boundary_rule();
+        let mut finding = block_finding_for_rule(&rule, "finding://severity/source-role");
+        finding.source_role = Some(EvidenceRole::Test);
+        let decision = map_for_test(&finding, &rule);
+        assert_eq!(decision.severity, ValidationSeverity::Blocking);
+        assert_eq!(decision.source_role, Some(EvidenceRole::Test));
+        assert!(decision.agent_action.must_fix);
+    }
+
+    #[test]
+    fn lifecycle_block_maps_to_recover_tool_state_or_blocking_validation_state() {
+        let rule = lifecycle_integrity_rule();
+        let mut finding = block_finding_for_rule(&rule, "finding://severity/lifecycle-block");
+        finding.lifecycle = ValidationLifecycleState {
+            claimable: false,
+            current: false,
+            stale: false,
+            foreign: false,
+            schema_mismatched: false,
+            dirty: true,
+            partial: true,
+            non_claimable_reason: Some("partial_interrupted_update".to_string()),
+        };
+        finding.evidence_items = vec![ValidationEvidenceItem {
+            evidence_kind: ValidationEvidenceKind::Lifecycle,
+            evidence_id: Some("lifecycle://partial-update".to_string()),
+            proof_status: ValidationProofStatus::ReverifiedGraphIntegrity,
+            graph_proof: true,
+            claimable: true,
+            reason: "lifecycle integrity blocker was reverified".to_string(),
+        }];
+        let decision = map_for_test(&finding, &rule);
+        assert_eq!(decision.severity, ValidationSeverity::Blocking);
+        assert_eq!(decision.source, SeveritySource::LifecycleState);
+        assert!(decision.agent_action.must_fix);
+        assert!(decision.agent_action.recover_tool_state);
+        assert!(!decision.tool_error);
+    }
+
+    #[test]
+    fn dynamic_call_warn_maps_to_warning() {
+        let (finding, rule) = dynamic_call_warning_finding();
+        let decision = map_for_test(&finding, &rule);
+        assert_eq!(decision.severity, ValidationSeverity::Warning);
+        assert_eq!(decision.reason, SeverityReason::WarningFinding);
+        assert!(!decision.interrupt_eligible);
+    }
+
+    #[test]
+    fn computed_import_maps_to_unknown() {
+        let (finding, rule) = computed_import_unknown_finding();
+        let decision = map_for_test(&finding, &rule);
+        assert_eq!(decision.severity, ValidationSeverity::Unknown);
+        assert_eq!(decision.reason, SeverityReason::UnknownFinding);
+        assert!(!decision.interrupt_eligible);
+    }
+
+    #[test]
+    fn text_only_maps_to_warning_or_diagnostic_not_blocking() {
+        let (finding, rule) = text_only_warning_finding();
+        let decision = map_for_test(&finding, &rule);
+        assert!(matches!(
+            decision.severity,
+            ValidationSeverity::Warning | ValidationSeverity::DiagnosticOnly
+        ));
+        assert_ne!(decision.severity, ValidationSeverity::Blocking);
+        assert_eq!(decision.reason, SeverityReason::TextEvidenceOnly);
+        assert!(!decision.interrupt_eligible);
+    }
+
+    #[test]
+    fn candidate_vector_source_navigation_maps_non_blocking() {
+        for kind in [
+            ValidationEvidenceKind::Candidate,
+            ValidationEvidenceKind::Vector,
+            ValidationEvidenceKind::SourceNavigation,
+        ] {
+            let (finding, rule) = candidate_only_finding(kind);
+            let decision = map_for_test(&finding, &rule);
+            assert_ne!(decision.severity, ValidationSeverity::Blocking);
+            assert_eq!(decision.reason, SeverityReason::NonGraphEvidenceBoundary);
+            assert!(!decision.interrupt_eligible);
+        }
+    }
+
+    #[test]
+    fn over_budget_degraded_maps_non_blocking() {
+        let (finding, rule) = over_budget_degraded_finding();
+        let decision = map_for_test(&finding, &rule);
+        assert_eq!(decision.severity, ValidationSeverity::Warning);
+        assert_eq!(decision.reason, SeverityReason::DegradedFinding);
+        assert!(!decision.interrupt_eligible);
+    }
+
+    #[test]
+    fn unsafe_db_maps_non_claimable_not_source_code_block() {
+        let decision = map_no_findings_to_severity(
+            &ValidationLifecycleState::stale_non_claimable("repo_head_mismatch"),
+            &json!({"claimable": false, "current": false, "db_problem_kind": "stale"}),
+            &mvp3_6_severity_policy_contract(),
+        );
+        assert_eq!(decision.severity, ValidationSeverity::DiagnosticOnly);
+        assert_eq!(decision.source, SeveritySource::LifecycleState);
+        assert_eq!(
+            decision.claimability_effect,
+            ClaimabilityEffect::NonClaimable
+        );
+        assert!(!decision.agent_action.must_fix);
+        assert!(decision.agent_action.recover_tool_state);
+        assert!(!decision.interrupt_eligible);
+    }
+
+    #[test]
+    fn no_findings_safe_lifecycle_maps_ok() {
+        ok_mapping_complete();
+    }
+
+    #[test]
+    fn non_graph_evidence_never_maps_to_graph_blocking() {
+        for kind in [
+            ValidationEvidenceKind::TextEvidence,
+            ValidationEvidenceKind::Candidate,
+            ValidationEvidenceKind::Vector,
+            ValidationEvidenceKind::SourceNavigation,
+            ValidationEvidenceKind::PathEvidence,
+            ValidationEvidenceKind::Routing,
+            ValidationEvidenceKind::Nuance,
+            ValidationEvidenceKind::Binary,
+        ] {
+            let (mut finding, rule) = candidate_only_finding(kind);
+            finding.classification = ValidationClassification::Block;
+            finding.blocking_level = ValidationBlockingLevel::Blocking;
+            let decision = map_for_test(&finding, &rule);
+            assert_ne!(
+                decision.severity,
+                ValidationSeverity::Blocking,
+                "non-graph evidence kind {kind:?} mapped to blocking"
+            );
+            assert!(!decision.interrupt_eligible);
+        }
+    }
+
+    #[test]
+    fn no_new_relation_support_claim_without_fixtures() {
+        let (finding, rule) = unsupported_macro_finding();
+        let decision = map_for_test(&finding, &rule);
+        assert_eq!(decision.severity, ValidationSeverity::Unknown);
+        assert_eq!(decision.proof_level, "unsupported");
+        assert!(!decision.interrupt_eligible);
+
+        let serialized = serde_json::to_string(&decision).expect("serialize decision");
+        for unsupported_claim in ["mutation_proof", "flow_proof", "new_relation_support"] {
+            assert!(
+                !serialized.contains(unsupported_claim),
+                "mapping emitted unsupported support claim {unsupported_claim}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_dot_codegraph_mutation_from_severity_mapping() {
+        let rule = exact_calls_rule();
+        let finding = block_finding_for_rule(&rule, "finding://severity/no-dot-codegraph");
+        let decision = map_for_test(&finding, &rule);
+        let serialized = serde_json::to_string(&decision).expect("serialize severity decision");
+        assert!(!serialized.contains(".codegraph"));
+    }
+
+    struct AdversarialSeverityCase {
+        name: &'static str,
+        category: &'static str,
+        decisions: Vec<SeverityDecision>,
+        expected_status: FinalValidationStatus,
+    }
+
+    fn unsafe_lifecycle_cases_for_test() -> Vec<(&'static str, ValidationLifecycleState, Value)> {
+        vec![
+            (
+                "stale",
+                ValidationLifecycleState::stale_non_claimable("repo_head_mismatch"),
+                json!({"claimable": false, "current": false, "db_problem_kind": "stale"}),
+            ),
+            (
+                "foreign",
+                ValidationLifecycleState {
+                    claimable: false,
+                    current: false,
+                    stale: false,
+                    foreign: true,
+                    schema_mismatched: false,
+                    dirty: false,
+                    partial: false,
+                    non_claimable_reason: Some("foreign_db".to_string()),
+                },
+                json!({"claimable": false, "current": false, "db_problem_kind": "foreign"}),
+            ),
+            (
+                "schema_mismatch",
+                ValidationLifecycleState {
+                    claimable: false,
+                    current: false,
+                    stale: false,
+                    foreign: false,
+                    schema_mismatched: true,
+                    dirty: false,
+                    partial: false,
+                    non_claimable_reason: Some("schema_mismatch".to_string()),
+                },
+                json!({"claimable": false, "current": false, "db_problem_kind": "schema_mismatch"}),
+            ),
+            (
+                "locked",
+                ValidationLifecycleState {
+                    claimable: false,
+                    current: false,
+                    stale: false,
+                    foreign: false,
+                    schema_mismatched: false,
+                    dirty: true,
+                    partial: false,
+                    non_claimable_reason: Some("locked_or_publishing".to_string()),
+                },
+                json!({"claimable": false, "current": false, "db_problem_kind": "locked"}),
+            ),
+            (
+                "publishing_dirty",
+                ValidationLifecycleState {
+                    claimable: false,
+                    current: false,
+                    stale: false,
+                    foreign: false,
+                    schema_mismatched: false,
+                    dirty: true,
+                    partial: true,
+                    non_claimable_reason: Some("publishing_dirty".to_string()),
+                },
+                json!({"claimable": false, "current": false, "db_problem_kind": "publishing_dirty"}),
+            ),
+            (
+                "permission_denied",
+                ValidationLifecycleState::claimable_current(),
+                json!({"claimable": false, "current": false, "db_problem_kind": "permission_denied"}),
+            ),
+            (
+                "sidecar_inaccessible",
+                ValidationLifecycleState::claimable_current(),
+                json!({"claimable": false, "current": false, "db_problem_kind": "sidecar_inaccessible"}),
+            ),
+            (
+                "missing_explicit_db",
+                ValidationLifecycleState::claimable_current(),
+                json!({"claimable": false, "current": false, "db_problem_kind": "missing_explicit_db"}),
+            ),
+        ]
+    }
+
+    fn adversarial_non_blocking_severity_cases() -> Vec<AdversarialSeverityCase> {
+        let policy = mvp3_6_severity_policy_contract();
+        let (dynamic_warning, dynamic_rule) = dynamic_call_warning_finding();
+        let dynamic_warning = map_for_test(&dynamic_warning, &dynamic_rule);
+        let (text_warning, text_rule) = text_only_warning_finding();
+        let text_warning = map_for_test(&text_warning, &text_rule);
+        let (computed_unknown, computed_rule) = computed_import_unknown_finding();
+        let computed_unknown = map_for_test(&computed_unknown, &computed_rule);
+        let (ambiguous_unknown, ambiguous_rule) = ambiguous_rename_unknown_finding();
+        let ambiguous_unknown = map_for_test(&ambiguous_unknown, &ambiguous_rule);
+        let (unsupported, unsupported_rule) = unsupported_macro_finding();
+        let unsupported = map_for_test(&unsupported, &unsupported_rule);
+        let (degraded, degraded_rule) = over_budget_degraded_finding();
+        let degraded = map_for_test(&degraded, &degraded_rule);
+        let (diagnostic, diagnostic_rule) =
+            candidate_only_finding(ValidationEvidenceKind::Candidate);
+        let diagnostic = map_for_test(&diagnostic, &diagnostic_rule);
+        let (vector, vector_rule) = candidate_only_finding(ValidationEvidenceKind::Vector);
+        let vector = map_for_test(&vector, &vector_rule);
+        let unsafe_stale = map_no_findings_to_severity(
+            &ValidationLifecycleState::stale_non_claimable("repo_head_mismatch"),
+            &json!({"claimable": false, "current": false, "db_problem_kind": "stale"}),
+            &policy,
+        );
+
+        vec![
+            AdversarialSeverityCase {
+                name: "dynamic call warning",
+                category: "warning_only",
+                decisions: vec![dynamic_warning.clone()],
+                expected_status: FinalValidationStatus::Warning,
+            },
+            AdversarialSeverityCase {
+                name: "config package text only warning",
+                category: "warning_only",
+                decisions: vec![text_warning.clone()],
+                expected_status: FinalValidationStatus::Warning,
+            },
+            AdversarialSeverityCase {
+                name: "computed import unknown",
+                category: "unknown_only",
+                decisions: vec![computed_unknown.clone()],
+                expected_status: FinalValidationStatus::Unknown,
+            },
+            AdversarialSeverityCase {
+                name: "ambiguous rename unknown",
+                category: "unknown_only",
+                decisions: vec![ambiguous_unknown.clone()],
+                expected_status: FinalValidationStatus::Unknown,
+            },
+            AdversarialSeverityCase {
+                name: "macro preprocessor unsupported",
+                category: "unsupported_only",
+                decisions: vec![unsupported.clone()],
+                expected_status: FinalValidationStatus::Unknown,
+            },
+            AdversarialSeverityCase {
+                name: "over budget closure degraded",
+                category: "degraded_only",
+                decisions: vec![degraded.clone()],
+                expected_status: FinalValidationStatus::Warning,
+            },
+            AdversarialSeverityCase {
+                name: "candidate query diagnostic",
+                category: "diagnostic_only",
+                decisions: vec![diagnostic.clone()],
+                expected_status: FinalValidationStatus::DiagnosticOnly,
+            },
+            AdversarialSeverityCase {
+                name: "vector audit diagnostic",
+                category: "diagnostic_only",
+                decisions: vec![vector],
+                expected_status: FinalValidationStatus::DiagnosticOnly,
+            },
+            AdversarialSeverityCase {
+                name: "stale unsafe db",
+                category: "unsafe_db",
+                decisions: vec![unsafe_stale.clone()],
+                expected_status: FinalValidationStatus::DiagnosticOnly,
+            },
+            AdversarialSeverityCase {
+                name: "warning unknown diagnostic packet",
+                category: "mixed_packet_non_blocking",
+                decisions: vec![
+                    dynamic_warning.clone(),
+                    computed_unknown.clone(),
+                    diagnostic,
+                ],
+                expected_status: FinalValidationStatus::Warning,
+            },
+            AdversarialSeverityCase {
+                name: "diagnostic unknown packet",
+                category: "mixed_packet_non_blocking",
+                decisions: vec![unsafe_stale.clone(), ambiguous_unknown],
+                expected_status: FinalValidationStatus::Unknown,
+            },
+            AdversarialSeverityCase {
+                name: "unsafe lifecycle warning packet",
+                category: "mixed_packet_non_blocking",
+                decisions: vec![unsafe_stale, text_warning],
+                expected_status: FinalValidationStatus::Warning,
+            },
+        ]
+    }
+
+    #[test]
+    fn false_blocking_severity_count_zero() {
+        let false_blocking_severity_count = adversarial_non_blocking_severity_cases()
+            .into_iter()
+            .filter(|case| {
+                let aggregate = aggregate_for_test(case.decisions.clone(), false);
+                case.decisions
+                    .iter()
+                    .any(|decision| decision.severity == ValidationSeverity::Blocking)
+                    || aggregate.final_status == FinalValidationStatus::BlockingGraphError
+            })
+            .count();
+
+        assert_eq!(false_blocking_severity_count, 0);
+    }
+
+    #[test]
+    fn warning_unknown_diagnostic_not_upgraded() {
+        for case in adversarial_non_blocking_severity_cases()
+            .into_iter()
+            .filter(|case| {
+                matches!(
+                    case.category,
+                    "warning_only"
+                        | "unknown_only"
+                        | "diagnostic_only"
+                        | "mixed_packet_non_blocking"
+                )
+            })
+        {
+            let aggregate = aggregate_for_test(case.decisions.clone(), false);
+            assert_eq!(
+                aggregate.final_status, case.expected_status,
+                "{} ({}) aggregated to the wrong status",
+                case.name, case.category
+            );
+            assert!(!aggregate.must_fix_before_continuing, "{}", case.name);
+            assert!(!aggregate.hard_interrupt_available, "{}", case.name);
+            assert!(
+                case.decisions
+                    .iter()
+                    .all(|decision| decision.severity != ValidationSeverity::Blocking),
+                "{} upgraded a nonblocking decision",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_not_upgraded_to_blocking() {
+        let (finding, rule) = unsupported_macro_finding();
+        let decision = map_for_test(&finding, &rule);
+        let aggregate = aggregate_for_test(vec![decision.clone()], false);
+
+        assert_eq!(decision.severity, ValidationSeverity::Unknown);
+        assert_eq!(decision.reason, SeverityReason::UnsupportedFinding);
+        assert_eq!(aggregate.final_status, FinalValidationStatus::Unknown);
+        assert!(!decision.interrupt_eligible);
+        assert!(!aggregate.must_fix_before_continuing);
+    }
+
+    #[test]
+    fn degraded_not_upgraded_to_blocking() {
+        let (degraded, degraded_rule) = over_budget_degraded_finding();
+        let decision = map_for_test(&degraded, &degraded_rule);
+        let aggregate = aggregate_for_test(vec![decision], false);
+
+        assert_eq!(aggregate.final_status, FinalValidationStatus::Warning);
+        assert!(!aggregate.must_fix_before_continuing);
+        assert!(!aggregate.hard_interrupt_available);
+
+        let (text_warning, text_rule) = text_only_warning_finding();
+        let packet = ValidationPacket::new(
+            vec!["src/large.rs".to_string(), "docs/notes.md".to_string()],
+            json!({"summary": {"degraded_count": 1}}),
+            vec![degraded, text_warning],
+            vec![degraded_rule, text_rule],
+            Vec::new(),
+            json!({"claimable": true, "current": true, "blockers": []}),
+            json!({"closure": {"degraded": true}}),
+            json!({"claimable": true, "current": true}),
+        );
+        let compact = packet.compact_agent_json(1);
+        assert_eq!(packet.final_status, FinalValidationStatus::Warning);
+        assert_eq!(compact["final_severity"], json!("warning"));
+        assert!(compact["omitted_count"].as_u64().unwrap_or(0) >= 1);
+        assert!(compact["expansion_handles"].as_array().is_some());
+    }
+
+    #[test]
+    fn text_candidate_vector_source_navigation_not_blocking() {
+        let (text, text_rule) = text_only_warning_finding();
+        let text_decision = map_for_test(&text, &text_rule);
+        assert_ne!(text_decision.severity, ValidationSeverity::Blocking);
+        assert_eq!(text_decision.reason, SeverityReason::TextEvidenceOnly);
+
+        for kind in [
+            ValidationEvidenceKind::Candidate,
+            ValidationEvidenceKind::Vector,
+            ValidationEvidenceKind::SourceNavigation,
+        ] {
+            let (finding, rule) = candidate_only_finding(kind);
+            let decision = map_for_test(&finding, &rule);
+            assert_ne!(
+                decision.severity,
+                ValidationSeverity::Blocking,
+                "{kind:?} became blocking"
+            );
+            assert_eq!(decision.reason, SeverityReason::NonGraphEvidenceBoundary);
+            assert!(!decision.interrupt_eligible);
+        }
+    }
+
+    #[test]
+    fn unsafe_db_states_not_source_code_blockers() {
+        for (label, lifecycle, claimability) in unsafe_lifecycle_cases_for_test() {
+            let decision = map_no_findings_to_severity(
+                &lifecycle,
+                &claimability,
+                &mvp3_6_severity_policy_contract(),
+            );
+            let aggregate = aggregate_for_test(vec![decision.clone()], false);
+
+            assert_eq!(
+                decision.severity,
+                ValidationSeverity::DiagnosticOnly,
+                "{label}"
+            );
+            assert_eq!(decision.source, SeveritySource::LifecycleState, "{label}");
+            assert_ne!(
+                aggregate.final_status,
+                FinalValidationStatus::BlockingGraphError,
+                "{label}"
+            );
+            assert!(!decision.interrupt_eligible, "{label}");
+            assert!(!aggregate.hard_interrupt_available, "{label}");
+        }
+    }
+
+    #[test]
+    fn unsafe_db_states_non_claimable() {
+        for (label, lifecycle, claimability) in unsafe_lifecycle_cases_for_test() {
+            let decision = map_no_findings_to_severity(
+                &lifecycle,
+                &claimability,
+                &mvp3_6_severity_policy_contract(),
+            );
+
+            assert_eq!(
+                decision.claimability_effect,
+                ClaimabilityEffect::NonClaimable,
+                "{label}"
+            );
+            assert!(decision.agent_action.recover_tool_state, "{label}");
+            assert!(decision.agent_action.rerun_validation, "{label}");
+            assert!(!decision.agent_action.must_fix, "{label}");
+        }
+    }
+
+    #[test]
+    fn mixed_packets_aggregate_correctly() {
+        let block_rule = exact_calls_rule();
+        let warning_rule = exact_imports_rule();
+        let diagnostic_rule = exact_calls_rule();
+        let block = block_finding_for_rule(&block_rule, "finding://mixed-severity/block");
+        let mut warning_input = exact_graph_source_input();
+        warning_input.over_budget = true;
+        let warning = classify_validation_finding(
+            &warning_rule,
+            "finding://mixed-severity/warning",
+            warning_input,
+        );
+        let (diagnostic, _) = candidate_only_finding(ValidationEvidenceKind::Candidate);
+        let packet = ValidationPacket::new(
+            vec!["src/main.rs".to_string(), "docs/notes.md".to_string()],
+            json!({"summary": {"mixed_packet_cases": 1}}),
+            vec![block, warning, diagnostic],
+            vec![block_rule.clone(), warning_rule, diagnostic_rule],
+            Vec::new(),
+            json!({"claimable": true, "current": true, "blockers": []}),
+            json!({"graph_relation_proof": {"changed": true}}),
+            json!({"claimable": true, "current": true}),
+        )
+        .with_eligible_hard_interrupts("test-generated-at");
+
+        assert_eq!(
+            packet.final_status,
+            FinalValidationStatus::BlockingGraphError
+        );
+        assert!(packet.must_fix_before_continuing);
+        assert!(packet.hard_interrupt_available);
+        assert_eq!(packet.blocking_errors.len(), 1);
+        assert_eq!(packet.warnings.len(), 1);
+        assert_eq!(packet.diagnostics.len(), 1);
+        let hard_interrupt = packet.hard_interrupt.as_ref().expect("hard interrupt");
+        assert_eq!(hard_interrupt.errors.len(), 1);
+        assert_eq!(
+            hard_interrupt.errors[0].validation_rule_id,
+            block_rule.validation_rule_id
+        );
+
+        let cases = adversarial_non_blocking_severity_cases();
+        let warning_unknown = cases
+            .iter()
+            .find(|case| case.name == "warning unknown diagnostic packet")
+            .expect("warning unknown diagnostic case");
+        assert_eq!(
+            aggregate_for_test(warning_unknown.decisions.clone(), false).final_status,
+            FinalValidationStatus::Warning
+        );
+
+        let diagnostic_unknown = cases
+            .iter()
+            .find(|case| case.name == "diagnostic unknown packet")
+            .expect("diagnostic unknown case");
+        assert_eq!(
+            aggregate_for_test(diagnostic_unknown.decisions.clone(), false).final_status,
+            FinalValidationStatus::Unknown
+        );
+
+        let unsafe_warning = cases
+            .iter()
+            .find(|case| case.name == "unsafe lifecycle warning packet")
+            .expect("unsafe warning case");
+        let unsafe_warning_aggregate = aggregate_for_test(unsafe_warning.decisions.clone(), false);
+        assert_eq!(
+            unsafe_warning_aggregate.final_status,
+            FinalValidationStatus::Warning
+        );
+        assert!(unsafe_warning_aggregate.should_recover_tool_state);
+    }
+
+    #[test]
+    fn non_graph_evidence_not_graph_proof() {
+        let (text, text_rule) = text_only_warning_finding();
+        let text_decision = map_for_test(&text, &text_rule);
+        assert_eq!(text_decision.proof_level, "not_graph_proof");
+        assert_ne!(text_decision.severity, ValidationSeverity::Blocking);
+
+        for kind in [
+            ValidationEvidenceKind::TextEvidence,
+            ValidationEvidenceKind::Candidate,
+            ValidationEvidenceKind::Vector,
+            ValidationEvidenceKind::SourceNavigation,
+            ValidationEvidenceKind::PathEvidence,
+            ValidationEvidenceKind::Routing,
+            ValidationEvidenceKind::Nuance,
+            ValidationEvidenceKind::Binary,
+        ] {
+            let (finding, rule) = candidate_only_finding(kind);
+            let decision = map_for_test(&finding, &rule);
+            assert_eq!(decision.proof_level, "not_graph_proof", "{kind:?}");
+            assert_ne!(decision.severity, ValidationSeverity::Blocking, "{kind:?}");
+            assert!(!decision.interrupt_eligible, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn no_new_relation_support_claim() {
+        let (finding, rule) = unsupported_macro_finding();
+        let decision = map_for_test(&finding, &rule);
+        let serialized = serde_json::to_string(&decision).expect("serialize decision");
+
+        assert_eq!(decision.severity, ValidationSeverity::Unknown);
+        assert_eq!(decision.proof_level, "unsupported");
+        for unsupported_claim in ["mutation_proof", "flow_proof", "new_relation_support"] {
+            assert!(
+                !serialized.contains(unsupported_claim),
+                "mapping emitted unsupported support claim {unsupported_claim}"
+            );
+        }
+    }
+
+    fn dynamic_call_warning_finding() -> (ValidationFinding, ValidationRule) {
+        let mut rule = ValidationRule::exact_blocking(
+            "mvp3_3.calls.dynamic_warning",
+            ValidationRuleKind::DanglingTarget,
+            Some(RelationKind::Calls),
+            "heuristic dynamic CALLS relation should be inspected",
+            "Inspect the dynamic call target if it matters to this edit.",
+        );
+        rule.supported_relation_status = SupportedRelationStatus::ExactWarningCandidate;
+        let finding = classify_validation_finding(
+            &rule,
+            "finding://severity/dynamic-call",
+            exact_graph_source_input(),
+        );
+        (finding, rule)
+    }
+
+    fn computed_import_unknown_finding() -> (ValidationFinding, ValidationRule) {
+        let mut rule = exact_imports_rule();
+        rule.validation_rule_id = "mvp3_3.imports.computed_unknown".to_string();
+        rule.supported_relation_status = SupportedRelationStatus::Unknown;
+        let mut input = exact_graph_source_input();
+        input.graph_source_relation_reverified = false;
+        input.integrity_condition_reverified = false;
+        input.reason = "computed import proof path cannot be verified".to_string();
+        let finding =
+            classify_validation_finding(&rule, "finding://severity/computed-import", input);
+        (finding, rule)
+    }
+
+    fn unsupported_macro_finding() -> (ValidationFinding, ValidationRule) {
+        let mut rule = exact_calls_rule();
+        rule.validation_rule_id = "mvp3_3.macro.preprocessor_unsupported".to_string();
+        rule.supported_relation_status = SupportedRelationStatus::Unsupported;
+        rule.default_classification_when_unsupported = ValidationClassification::Unsupported;
+        let mut input = exact_graph_source_input();
+        input.unsupported_relation = true;
+        input.reason = "macro or preprocessor relation is not modeled".to_string();
+        let finding = classify_validation_finding(&rule, "finding://severity/macro", input);
+        (finding, rule)
+    }
+
+    fn ambiguous_rename_unknown_finding() -> (ValidationFinding, ValidationRule) {
+        let rule = exact_calls_rule();
+        let mut input = exact_graph_source_input();
+        input.graph_source_relation_reverified = false;
+        input.integrity_condition_reverified = false;
+        input.reason = "ambiguous rename cannot be verified as a graph/source blocker".to_string();
+        let mut finding = classify_validation_finding(&rule, "finding://severity/ambiguous", input);
+        finding
+            .unknowns
+            .push("ambiguous rename cannot be graph/source proof".to_string());
+        (finding, rule)
+    }
+
+    fn text_only_warning_finding() -> (ValidationFinding, ValidationRule) {
+        let rule = exact_calls_rule();
+        let mut finding = block_finding_for_rule(&rule, "finding://severity/text-only");
+        finding.classification = ValidationClassification::Warn;
+        finding.blocking_level = ValidationBlockingLevel::Warning;
+        finding.proof_status = ValidationProofStatus::NotGraphProof;
+        finding.proof_level = "not_graph_proof".to_string();
+        finding.proof_strength = "text_evidence_only".to_string();
+        finding.reverified_graph_source_proof = false;
+        finding.evidence_items = vec![ValidationEvidenceItem::non_graph(
+            ValidationEvidenceKind::TextEvidence,
+            "text://relation",
+            "text evidence only; user should inspect",
+        )];
+        (finding, rule)
+    }
+
+    fn candidate_only_finding(kind: ValidationEvidenceKind) -> (ValidationFinding, ValidationRule) {
+        let rule = exact_calls_rule();
+        let mut finding = block_finding_for_rule(&rule, "finding://severity/non-graph");
+        finding.classification = ValidationClassification::Diagnostic;
+        finding.blocking_level = ValidationBlockingLevel::DiagnosticOnly;
+        finding.proof_status = ValidationProofStatus::NotGraphProof;
+        finding.proof_level = "not_graph_proof".to_string();
+        finding.proof_strength = "candidate_only".to_string();
+        finding.reverified_graph_source_proof = false;
+        finding.evidence_items = vec![ValidationEvidenceItem::non_graph(
+            kind,
+            "candidate://relation",
+            "candidate evidence is not graph proof",
+        )];
+        (finding, rule)
+    }
+
+    fn over_budget_degraded_finding() -> (ValidationFinding, ValidationRule) {
+        let rule = exact_calls_rule();
+        let mut input = exact_graph_source_input();
+        input.over_budget = true;
+        input.reason = "closure budget hit may hide validation coverage".to_string();
+        let finding = classify_validation_finding(&rule, "finding://severity/over-budget", input);
+        (finding, rule)
+    }
+
     fn claimable_interrupt_packet_for(
         rule: ValidationRule,
         findings: Vec<ValidationFinding>,
@@ -3420,7 +6791,16 @@ mod tests {
         for field in [
             "packet_kind",
             "status",
+            "final_status",
             "must_fix_before_continuing",
+            "can_continue_with_caution",
+            "should_recover_tool_state",
+            "should_run_tests",
+            "should_request_explain",
+            "should_rerun_validation",
+            "next_agent_action",
+            "recovery_commands",
+            "aggregate_guidance",
             "changed_files",
             "graph_delta",
             "blocking_errors",
@@ -3440,6 +6820,9 @@ mod tests {
             "stale_unsafe_blockers",
             "top_blocking_source_spans",
             "recommended_next_steps",
+            "severity_summary",
+            "severity_decisions",
+            "severity_aggregation_trace",
             "hard_interrupt_available",
             "omitted_count",
             "expansion_handles",
@@ -3454,6 +6837,9 @@ mod tests {
         assert_eq!(value["must_fix_before_continuing"].as_bool(), Some(true));
         assert_eq!(value["hard_interrupt_available"].as_bool(), Some(false));
         assert!(value["recommended_next_steps"].as_array().is_some());
+        assert_eq!(value["final_status"].as_str(), Some("blocking_graph_error"));
+        assert!(value["severity_summary"].is_object());
+        assert!(value["severity_aggregation_trace"].is_object());
     }
 
     #[test]

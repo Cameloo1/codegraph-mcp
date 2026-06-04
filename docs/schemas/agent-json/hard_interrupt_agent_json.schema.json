@@ -471,8 +471,7 @@
           "minLength": 1
         },
         "severity": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "validation_packet_agent_json.schema.json#/$defs/final_validation_status"
         },
         "file": {
           "type": "string",

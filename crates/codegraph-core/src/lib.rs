@@ -37,17 +37,24 @@ pub use normalized::{
     NormalizedSourceSpanFact, NormalizedTextEvidenceFact, NORMALIZED_FACT_SCHEMA_VERSION,
 };
 pub use validation::{
-    classify_validation_finding, interrupt_eligibility_for_finding, relation_allows,
-    reverify_validation_graph_source_contract, HardInterruptError, HardInterruptPacket,
-    HardInterruptPacketKind, InterruptEligibility, InterruptExpansionHandle, InterruptFixHint,
-    InterruptPacketSummary, InterruptSourceFinding, RelationEndpointClass, SupportedRelationStatus,
-    ValidationBlockingLevel, ValidationClassification, ValidationEvidenceItem,
+    aggregate_final_validation_status, classify_validation_finding,
+    interrupt_eligibility_for_finding, map_finding_to_severity,
+    map_finding_to_severity_with_lifecycle, map_no_findings_to_severity,
+    mvp3_6_severity_decision_table, mvp3_6_severity_levels, mvp3_6_severity_policy_contract,
+    relation_allows, reverify_validation_graph_source_contract, AgentContinuationPolicy,
+    ClaimabilityEffect, FinalStatusAggregation, FinalValidationStatus, HardInterruptError,
+    HardInterruptPacket, HardInterruptPacketKind, InterruptEligibility, InterruptExpansionHandle,
+    InterruptFixHint, InterruptPacketSummary, InterruptSourceFinding, RelationEndpointClass,
+    SeverityAggregationTrace, SeverityDecision, SeverityDecisionTableRow, SeverityLevelDefinition,
+    SeverityOverride, SeverityPolicy, SeverityReason, SeveritySource, SupportedRelationStatus,
+    ToolErrorKind, ValidationBlockingLevel, ValidationClassification, ValidationEvidenceItem,
     ValidationEvidenceKind, ValidationFinding, ValidationLifecycleRequirement,
     ValidationLifecycleState, ValidationPacket, ValidationPacketKind, ValidationPacketStatus,
     ValidationProofRequirement, ValidationProofStatus, ValidationProvenanceRequirement,
     ValidationReverification, ValidationReverificationInput, ValidationRule, ValidationRuleKind,
-    ValidationSourceRoleRequirement, ValidationSourceSpanRequirement,
-    HARD_INTERRUPT_PACKET_SCHEMA_VERSION, VALIDATION_PACKET_SCHEMA_VERSION,
+    ValidationSeverity, ValidationSourceRoleRequirement, ValidationSourceSpanRequirement,
+    HARD_INTERRUPT_PACKET_SCHEMA_VERSION, MVP3_6_SEVERITY_POLICY_SCHEMA_VERSION,
+    VALIDATION_PACKET_SCHEMA_VERSION,
 };
 
 #[cfg(test)]

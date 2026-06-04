@@ -133,6 +133,13 @@ diagnostic output. The top-level compatibility alias
 `codegraph-mcp validate-edit ...` is deferred; use the canonical `agent-use`
 command above.
 
+Compact validate-edit output preserves the current severity summary, must-fix
+flags, hard-interrupt availability, finding counts, claimability/lifecycle,
+recovery pointers, omitted-count, and expansion handles. Explain and audit modes
+restore the severity mapping and aggregation trace. The optional `editor_policy`
+metadata is advisory only; this CLI does not perform source edits, auto-fixes,
+or editor daemon/plugin integration.
+
 Exit 0 means validation completed and emitted JSON, even when the packet status
 is `blocking_graph_error`. With `--fail-on-blocking`, exit 2 means validation
 completed, stdout JSON was printed, and `hard_interrupt_available=true`. Other

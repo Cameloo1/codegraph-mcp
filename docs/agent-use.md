@@ -139,6 +139,17 @@ codegraph-mcp agent-use validate-edit --repo <repo> `
   --audit-json
 ```
 
+Compact output preserves the safety-critical severity surface:
+`status`, `final_severity`, `severity_summary`, `must_fix_before_continuing`,
+`hard_interrupt_available`, changed-file normalization, claimability,
+lifecycle, stale/unsafe blockers, finding counts, top blocking source span and
+recommended fix when present, recovery command pointers, `omitted_count`, and
+`expansion_handles`. `--explain` and `--audit-json` add the per-finding severity
+mapping, aggregation trace, precedence decision, lifecycle/claimability detail,
+proof-ladder summary, and non-interrupt reasons. The `editor_policy` object is
+advisory metadata for future editor callers; `safe_to_autofix`,
+`source_edits_performed`, and `daemon_integration_available` are false.
+
 The top-level compatibility alias `codegraph-mcp validate-edit ...` is still
 deferred. Use the canonical `codegraph-mcp agent-use validate-edit --repo
 <repo> --changed <path> --agent-json` command.

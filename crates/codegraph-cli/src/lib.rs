@@ -10330,6 +10330,47 @@ mod cli_json_output_tests {
         assert_eq!(value["hard_interrupt_available"].as_bool(), Some(true));
         assert!(value.get("_cli_exit_code").is_none());
     }
+
+    #[test]
+    fn fail_on_blocking_prints_json() {
+        let output = success_json_value(json!({
+            "status": "blocking_graph_error",
+            "must_fix_before_continuing": true,
+            "_cli_exit_code": 2,
+        }));
+
+        assert_eq!(output.exit_code, 2);
+        assert!(output.stderr.is_empty());
+        let value: Value = serde_json::from_str(&output.stdout).expect("stdout json");
+        assert_eq!(value["status"].as_str(), Some("blocking_graph_error"));
+        assert!(value.get("_cli_exit_code").is_none());
+    }
+
+    #[test]
+    fn runtime_failure_exit_nonzero() {
+        let output = command_error("validate_edit_failed", "runtime failure");
+
+        assert_ne!(output.exit_code, 0);
+        assert!(output.stdout.is_empty());
+        let value: Value = serde_json::from_str(&output.stderr).expect("stderr json");
+        assert_eq!(value["status"].as_str(), Some("error"));
+        assert_eq!(value["error"].as_str(), Some("validate_edit_failed"));
+    }
+
+    #[test]
+    fn stdout_json_not_corrupted() {
+        let output = success_json_value(json!({
+            "status": "warning",
+            "final_status": "warning",
+            "warnings": [{"validation_rule_id": "CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING"}],
+        }));
+
+        assert_eq!(output.exit_code, 0);
+        assert!(output.stderr.is_empty());
+        let value: Value = serde_json::from_str(output.stdout.trim()).expect("clean stdout json");
+        assert_eq!(value["status"].as_str(), Some("warning"));
+        assert!(!output.stdout.contains("_cli_exit_code"));
+    }
 }
 
 fn command_help_text(command: &CommandSpec) -> String {

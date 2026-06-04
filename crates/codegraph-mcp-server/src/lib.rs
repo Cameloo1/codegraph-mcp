@@ -82,6 +82,7 @@ const MCP_CONTEXT_PACK_SOURCE_BYTE_LIMIT: usize = 256 * 1024;
 const MCP_VALIDATE_EDIT_TOOL_NAME: &str = "codegraph.validate_edit";
 const MCP_VALIDATE_EDIT_SCHEMA_NAME: &str = "validate_edit_agent_json";
 const CG_MVP3_CALLS_DANGLING_TARGET: &str = "CG_MVP3_CALLS_DANGLING_TARGET";
+const CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED: &str = "CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED";
 const CG_MVP3_IMPORTS_DANGLING_TARGET: &str = "CG_MVP3_IMPORTS_DANGLING_TARGET";
 const CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH: &str = "CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH";
 const CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING: &str = "CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING";
@@ -3323,6 +3324,13 @@ fn mcp_validate_edit_validation_rules() -> Vec<ValidationRule> {
             "Define the missing callee or update the exact call relation.",
         ),
         ValidationRule::exact_blocking(
+            CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED,
+            ValidationRuleKind::DanglingTarget,
+            Some(RelationKind::Calls),
+            "renamed callee validation requires reverified graph/source evidence",
+            "Inspect the rename and update stale call sites when graph/source proof exists.",
+        ),
+        ValidationRule::exact_blocking(
             CG_MVP3_IMPORTS_DANGLING_TARGET,
             ValidationRuleKind::DanglingTarget,
             Some(RelationKind::Imports),
@@ -3583,6 +3591,25 @@ fn mcp_validate_edit_collect_delta_findings(
         )?);
     }
 
+    if !delta.file_renames_detected.is_empty()
+        && !findings
+            .iter()
+            .any(|finding| finding.validation_rule_id == CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED)
+    {
+        if let Some(rule) = rule_by_id
+            .get(CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED)
+            .copied()
+        {
+            for entry in &delta.file_renames_detected {
+                findings.push(mcp_validate_edit_rename_lifecycle_unknown(
+                    rule,
+                    lifecycle.clone(),
+                    entry,
+                )?);
+            }
+        }
+    }
+
     let mut warned_text_paths = BTreeSet::<String>::new();
     for entry in &delta.text_evidence_changed {
         let path = normalize_repo_relative_path(&entry.repo_relative_path);
@@ -3612,6 +3639,55 @@ fn mcp_validate_edit_collect_delta_findings(
     }
 
     Ok(findings)
+}
+
+fn mcp_validate_edit_rename_lifecycle_unknown(
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    entry: &codegraph_index::FileRenameDeltaEntry,
+) -> Result<ValidationFinding, ToolCallError> {
+    let old_path = entry
+        .old_path
+        .as_deref()
+        .map(normalize_repo_relative_path)
+        .unwrap_or_else(|| "unknown".to_string());
+    let reason = "renamed callee validation is unknown because file rename lifecycle evidence alone is not graph-relation proof";
+    let mut input = ValidationReverificationInput::exact_graph_source(
+        lifecycle,
+        format!("evidence://mcp-validate-edit/rename/{old_path}"),
+        reason,
+    );
+    input.relation_exact = false;
+    input.graph_source_relation_reverified = false;
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mcp_validate_edit/calls/unknown/{:016x}",
+            mcp_validate_edit_stable_u64(&format!("{}:{reason}", old_path))
+        ),
+        input,
+    );
+    finding.affected_delta = serde_json::to_value(entry).map_err(|error| {
+        ToolCallError::new(
+            "serialization_failed",
+            format!("could not encode validate-edit rename unknown: {error}"),
+        )
+    })?;
+    finding.affected_file = Some(old_path.clone());
+    finding.file = Some(old_path);
+    finding.source_role = Some(EvidenceRole::Unknown);
+    finding.relation_kind = Some(RelationKind::Calls);
+    finding.reason = reason.to_string();
+    finding.recommended_fix = Some(
+        "Inspect the rename with explain/audit output before treating it as a source blocker."
+            .to_string(),
+    );
+    finding.suggested_next_steps = vec![
+        "Inspect the rename with explain/audit output before treating it as a source blocker."
+            .to_string(),
+    ];
+    finding.diagnostics = vec!["rename_lifecycle_not_graph_relation_proof".to_string()];
+    Ok(finding)
 }
 
 fn mcp_validate_edit_entity_delta_id(entry: &codegraph_index::EntityDeltaEntry) -> Option<String> {
@@ -4193,6 +4269,15 @@ fn mcp_validate_edit_response(
         "canonical_mcp_surface": "codegraph.validate_edit",
         "compatibility_alias_status": "implemented_as_explicit_mcp_tool",
         "status": status,
+        "final_status": full_packet.get("final_status").cloned().unwrap_or_else(|| json!(status)),
+        "severity_summary": full_packet.get("severity_summary").cloned().unwrap_or_else(|| json!({})),
+        "can_continue_with_caution": full_packet.get("can_continue_with_caution").cloned().unwrap_or_else(|| json!(false)),
+        "should_recover_tool_state": full_packet.get("should_recover_tool_state").cloned().unwrap_or_else(|| json!(false)),
+        "should_run_tests": full_packet.get("should_run_tests").cloned().unwrap_or_else(|| json!(false)),
+        "should_request_explain": full_packet.get("should_request_explain").cloned().unwrap_or_else(|| json!(false)),
+        "should_rerun_validation": full_packet.get("should_rerun_validation").cloned().unwrap_or_else(|| json!(false)),
+        "next_agent_action": full_packet.get("next_agent_action").cloned().unwrap_or_else(|| json!("continue")),
+        "aggregate_guidance": full_packet.get("aggregate_guidance").cloned().unwrap_or_else(|| json!([])),
         "repo": path_string(repo_root),
         "repo_root": path_string(repo_root),
         "db": path_string(db_path),
@@ -4250,6 +4335,7 @@ fn mcp_validate_edit_response(
         "rtds_freshness": rtds_freshness,
         "profile_identity": mcp_profile_identity_json(repo_root, db_path),
         "recovery_commands": mcp_agent_use_recovery_commands(repo_root),
+        "validation_recovery_commands": full_packet.get("recovery_commands").cloned().unwrap_or_else(|| json!([])),
         "omitted_count": validation_packet.get("omitted_count").and_then(Value::as_u64).unwrap_or(packet.omitted_count as u64),
         "expansion_handles": validation_packet.get("expansion_handles").cloned().unwrap_or_else(|| json!(packet.expansion_handles.clone())),
         "timings": timings,
@@ -4282,10 +4368,297 @@ fn mcp_validate_edit_response(
             "extra": extra_metrics,
         },
     });
+    mcp_validate_edit_add_mode_aware_severity_fields(&mut value, mode);
     if let Some(max_output_bytes) = max_output_bytes {
         value = mcp_validate_edit_apply_output_budget(value, packet, max_output_bytes)?;
+        mcp_validate_edit_add_mode_aware_severity_fields(&mut value, mode);
     }
     Ok(value)
+}
+
+fn mcp_validate_edit_add_mode_aware_severity_fields(value: &mut Value, mode: &str) {
+    let validation_packet = value
+        .get("validation_packet")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let severity_summary = validation_packet
+        .get("severity_summary")
+        .cloned()
+        .or_else(|| value.get("severity_summary").cloned())
+        .unwrap_or_else(|| json!({}));
+    let final_status = validation_packet
+        .get("final_status")
+        .or_else(|| value.get("final_status"))
+        .or_else(|| validation_packet.get("status"))
+        .or_else(|| value.get("status"))
+        .cloned()
+        .unwrap_or_else(|| json!("unknown"));
+    let final_severity = severity_summary
+        .get("max_severity")
+        .and_then(Value::as_str)
+        .or_else(|| final_status.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let hard_interrupt_available = value
+        .get("hard_interrupt_available")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let must_fix_before_continuing = value
+        .get("must_fix_before_continuing")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let should_request_explain = value
+        .get("should_request_explain")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let should_rerun_validation = value
+        .get("should_rerun_validation")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let editor_policy = validation_packet
+        .get("editor_policy")
+        .cloned()
+        .unwrap_or_else(|| {
+            mcp_validate_edit_editor_policy_json(
+                final_status.as_str().unwrap_or("unknown"),
+                must_fix_before_continuing,
+                hard_interrupt_available,
+                should_request_explain,
+                should_rerun_validation,
+            )
+        });
+    let severity_trace = if mode == "explain" || mode == "audit-json" {
+        json!({
+            "mode": mode,
+            "per_finding_severity_mapping": validation_packet
+                .get("severity_decisions")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+            "final_aggregation_trace": validation_packet
+                .get("severity_aggregation_trace")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+            "severity_precedence_decision": severity_summary
+                .get("status_precedence")
+                .cloned()
+                .unwrap_or_else(|| json!(["tool_error", "blocking_graph_error", "warning", "unknown", "diagnostic_only", "ok"])),
+            "activation_gate_state": validation_packet
+                .get("activation_gate_state")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+            "why_hard_interrupt_available_or_unavailable": {
+                "hard_interrupt_available": hard_interrupt_available,
+                "hard_interrupt_requires_interrupt_eligible_blocking": true,
+                "normal_validation_blocker_is_tool_error": false
+            },
+            "tool_error_vs_validation_blocker": {
+                "validation_blockers_return_structured_success": true,
+                "mcp_tool_error_reserved_for_runtime_protocol_failure": true
+            },
+            "lifecycle_claimability_details": {
+                "claimability": value.get("claimability").cloned().unwrap_or_else(|| json!({})),
+                "lifecycle": value.get("lifecycle").cloned().unwrap_or_else(|| json!({})),
+                "stale_unsafe_blockers": validation_packet
+                    .get("stale_unsafe_blockers")
+                    .cloned()
+                    .unwrap_or_else(|| json!([]))
+            },
+            "proof_ladder_details": validation_packet
+                .get("proof_ladder_changes")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+            "warning_unknown_diagnostic_details": {
+                "warnings": validation_packet.get("warnings").cloned().unwrap_or_else(|| json!([])),
+                "unknowns": validation_packet.get("unknowns").cloned().unwrap_or_else(|| json!([])),
+                "diagnostics": validation_packet.get("diagnostics").cloned().unwrap_or_else(|| json!([]))
+            },
+            "skipped_rule_details": validation_packet
+                .get("validation_rules_skipped")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+            "non_interrupt_reasons": validation_packet
+                .get("aggregate_guidance")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+            "full_source_bodies_included": false,
+            "full_graph_dump_included": false,
+        })
+    } else {
+        json!({
+            "mode": mode,
+            "summary_only": true,
+            "request_full_trace_with": "mode=explain or mode=audit-json",
+            "full_source_bodies_included": false,
+            "full_graph_dump_included": false,
+        })
+    };
+    let proof_ladder_changes_summary = mcp_validate_edit_proof_ladder_summary(
+        &validation_packet
+            .get("proof_ladder_changes")
+            .cloned()
+            .or_else(|| value.get("proof_ladder_changes").cloned())
+            .unwrap_or(Value::Null),
+    );
+
+    if let Some(object) = value.as_object_mut() {
+        object.insert("final_severity".to_string(), json!(final_severity));
+        object.insert(
+            "stale_unsafe_blockers".to_string(),
+            validation_packet
+                .get("stale_unsafe_blockers")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        );
+        object.insert(
+            "blocking_error_count".to_string(),
+            json!(mcp_validate_edit_bucket_count(
+                &validation_packet,
+                "blocking_errors"
+            )),
+        );
+        object.insert(
+            "warning_count".to_string(),
+            json!(mcp_validate_edit_bucket_count(
+                &validation_packet,
+                "warnings"
+            )),
+        );
+        object.insert(
+            "unknown_count".to_string(),
+            json!(mcp_validate_edit_bucket_count(
+                &validation_packet,
+                "unknowns"
+            )),
+        );
+        object.insert(
+            "diagnostic_count".to_string(),
+            json!(mcp_validate_edit_bucket_count(
+                &validation_packet,
+                "diagnostics"
+            )),
+        );
+        object.insert(
+            "validation_blocking_error_count".to_string(),
+            json!(mcp_validate_edit_bucket_count(
+                &validation_packet,
+                "blocking_errors"
+            )),
+        );
+        object.insert(
+            "validation_warning_count".to_string(),
+            json!(mcp_validate_edit_bucket_count(
+                &validation_packet,
+                "warnings"
+            )),
+        );
+        object.insert(
+            "validation_unknown_count".to_string(),
+            json!(mcp_validate_edit_bucket_count(
+                &validation_packet,
+                "unknowns"
+            )),
+        );
+        object.insert(
+            "validation_diagnostic_count".to_string(),
+            json!(mcp_validate_edit_bucket_count(
+                &validation_packet,
+                "diagnostics"
+            )),
+        );
+        object.insert(
+            "top_blocking_source_span".to_string(),
+            validation_packet
+                .get("top_blocking_source_spans")
+                .and_then(Value::as_array)
+                .and_then(|items| items.first())
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "top_recommended_fix".to_string(),
+            validation_packet
+                .get("blocking_errors")
+                .and_then(Value::as_array)
+                .and_then(|items| items.first())
+                .and_then(|item| item.get("recommended_fix"))
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "proof_ladder_changes_summary".to_string(),
+            proof_ladder_changes_summary,
+        );
+        object.insert(
+            "recovery_commands_pointer".to_string(),
+            json!("validation_recovery_commands"),
+        );
+        object.insert("severity_trace".to_string(), severity_trace);
+        object.insert("editor_policy".to_string(), editor_policy);
+        object.insert("full_graph_dump_included".to_string(), json!(false));
+        object.insert("full_source_bodies_included".to_string(), json!(false));
+    }
+}
+
+fn mcp_validate_edit_bucket_count(validation_packet: &Value, key: &str) -> usize {
+    validation_packet
+        .get(key)
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0)
+}
+
+fn mcp_validate_edit_editor_policy_json(
+    final_status: &str,
+    must_fix_before_continuing: bool,
+    hard_interrupt_available: bool,
+    should_request_explain: bool,
+    should_rerun_validation: bool,
+) -> Value {
+    let should_show_warning_panel = !hard_interrupt_available
+        && (matches!(final_status, "warning" | "unknown" | "diagnostic_only")
+            || should_request_explain);
+    json!({
+        "editor_policy_version": 1,
+        "recommended_editor_action": if hard_interrupt_available {
+            "show_blocking_modal"
+        } else if should_show_warning_panel {
+            "show_warning_panel"
+        } else {
+            "allow_continue"
+        },
+        "should_show_modal": hard_interrupt_available,
+        "should_show_warning_panel": should_show_warning_panel,
+        "should_allow_continue": !must_fix_before_continuing,
+        "should_request_revalidation": should_rerun_validation,
+        "safe_to_autofix": false,
+        "source_edits_performed": false,
+        "daemon_integration_available": false,
+        "plugin_integration_available": false,
+        "metadata_advisory_only": true,
+    })
+}
+
+fn mcp_validate_edit_proof_ladder_summary(proof_ladder_changes: &Value) -> Value {
+    let Some(object) = proof_ladder_changes.as_object() else {
+        return json!({
+            "available": !proof_ladder_changes.is_null(),
+            "changed_count": 0,
+            "graph_proof_changed_count": 0,
+            "keys": [],
+        });
+    };
+    let mut keys = object.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+    json!({
+        "available": true,
+        "changed_count": object.len(),
+        "graph_proof_changed_count": object
+            .values()
+            .filter(|value| value.get("graph_proof").and_then(Value::as_bool).unwrap_or(false))
+            .count(),
+        "keys": keys,
+        "full_detail_handle": "validation_packet.proof_ladder_changes",
+    })
 }
 
 fn mcp_validate_edit_expected_missing(
@@ -7993,6 +8366,207 @@ mod tests {
         (response, repo, profile_root)
     }
 
+    fn mcp_test_severity_rule(status: &str) -> ValidationRule {
+        match status {
+            "diagnostic_only" => ValidationRule::diagnostic(
+                "CG_MVP3_DIAGNOSTIC_ONLY_TEST",
+                "diagnostic-only test observation",
+                "Diagnostic-only validation context.",
+            ),
+            _ => {
+                let mut rule = ValidationRule::exact_blocking(
+                    match status {
+                        "warning" => "CG_MVP3_WARNING_TEST",
+                        "unknown" => "CG_MVP3_UNKNOWN_TEST",
+                        _ => CG_MVP3_CALLS_DANGLING_TARGET,
+                    },
+                    ValidationRuleKind::DanglingTarget,
+                    Some(RelationKind::Calls),
+                    "exact CALLS edges must resolve to a claimable target",
+                    "Define the missing target or update the exact call relation.",
+                );
+                if status == "warning" {
+                    rule.supported_relation_status = SupportedRelationStatus::ExactWarningCandidate;
+                }
+                rule
+            }
+        }
+    }
+
+    fn mcp_test_severity_finding(status: &str, rule: &ValidationRule) -> Option<ValidationFinding> {
+        if status == "ok" {
+            return None;
+        }
+        let mut input = ValidationReverificationInput::exact_graph_source(
+            ValidationLifecycleState::claimable_current(),
+            format!("edge://{status}"),
+            format!("{status} severity policy fixture"),
+        );
+        if status == "unknown" {
+            input.graph_source_relation_reverified = false;
+        }
+        let mut finding =
+            classify_validation_finding(rule, format!("finding://mcp/{status}"), input);
+        finding.affected_file = Some("src/auth.ts".to_string());
+        finding.source_span = Some(SourceSpan::with_columns("src/auth.ts", 1, 1, 1, 12));
+        finding.source_role = Some(EvidenceRole::Production);
+        finding.recommended_fix = Some("Severity semantics fixture.".to_string());
+        finding.suggested_next_steps = vec!["Rerun validate_edit after reviewing.".to_string()];
+        Some(finding)
+    }
+
+    fn mcp_test_severity_packet(status: &str) -> ValidationPacket {
+        let rule = mcp_test_severity_rule(status);
+        let findings = mcp_test_severity_finding(status, &rule)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let mut packet = ValidationPacket::new(
+            vec!["src/auth.ts".to_string()],
+            json!({}),
+            findings,
+            vec![rule],
+            Vec::new(),
+            json!({"claimable": true, "current": true}),
+            json!({}),
+            json!({"claimable": true, "current": true}),
+        );
+        if status == "blocking_graph_error" {
+            packet = packet.with_eligible_hard_interrupts("test-generated-at");
+        }
+        packet
+    }
+
+    fn mcp_packet_status_string(packet: &ValidationPacket) -> String {
+        serde_json::to_value(packet.status)
+            .expect("packet status json")
+            .as_str()
+            .expect("packet status string")
+            .to_string()
+    }
+
+    fn mcp_validate_edit_severity_response(status: &str) -> (Value, PathBuf, PathBuf) {
+        let repo = fixture_repo();
+        let profile_id = FIXTURE_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+        let profile_root = repo
+            .parent()
+            .expect("repo parent")
+            .join(format!("app-validate-edit-severity-{profile_id}"));
+        if profile_root.exists() {
+            fs::remove_dir_all(&profile_root).expect("remove stale profile");
+        }
+        fs::create_dir_all(&profile_root).expect("profile root");
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+        ok(server.call_tool(
+            "codegraph.index_repo",
+            &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
+        ));
+        let preflight =
+            inspect_db_lifecycle_preflight(&repo, &db_path, None).expect("safe DB preflight");
+        let path_preflight = validate_edit_changed_files_preflight_with_scope(
+            &repo,
+            &[PathBuf::from("src/auth.ts")],
+            &IndexScopeOptions::default(),
+            VALIDATE_EDIT_CHANGED_FILES_MAX,
+        );
+        let packet = mcp_test_severity_packet(status);
+        let packet_status = mcp_packet_status_string(&packet);
+        let structured = mcp_validate_edit_response(
+            &repo,
+            &db_path,
+            "production_agent_use_profile",
+            true,
+            &packet_status,
+            "agent-json",
+            status == "blocking_graph_error",
+            None,
+            None,
+            Vec::new(),
+            None,
+            &path_preflight,
+            &preflight,
+            &packet,
+            json!({"status": "synthetic_severity_fixture"}),
+            json!({}),
+            json!({"total_ms": 0}),
+            false,
+        )
+        .expect("severity response");
+        (
+            json!({"result": mcp_tool_result(structured, false)}),
+            repo,
+            profile_root,
+        )
+    }
+
+    fn assert_mcp_structured_success_for_status(status: &str) {
+        let (response, repo, profile_root) = mcp_validate_edit_severity_response(status);
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+        assert_eq!(
+            response["result"]["structuredContent"]["status"].as_str(),
+            Some(status)
+        );
+        assert_eq!(
+            response["result"]["structuredContent"]["normal_dot_codegraph_mutated"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            response["result"]["structuredContent"]["startup_auto_index"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            response["result"]["structuredContent"]["no_dot_codegraph_fallback"].as_bool(),
+            Some(true)
+        );
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
+    }
+
+    #[test]
+    fn mcp_response_semantics_match_severity_policy() {
+        for status in [
+            "blocking_graph_error",
+            "warning",
+            "unknown",
+            "diagnostic_only",
+            "ok",
+        ] {
+            assert_mcp_structured_success_for_status(status);
+        }
+    }
+
+    #[test]
+    fn mcp_warning_structured_success() {
+        assert_mcp_structured_success_for_status("warning");
+    }
+
+    #[test]
+    fn mcp_unknown_structured_success() {
+        assert_mcp_structured_success_for_status("unknown");
+    }
+
+    #[test]
+    fn mcp_diagnostic_structured_success() {
+        assert_mcp_structured_success_for_status("diagnostic_only");
+    }
+
+    #[test]
+    fn mcp_ok_structured_success() {
+        assert_mcp_structured_success_for_status("ok");
+    }
+
+    #[test]
+    fn mcp_no_startup_auto_index_and_no_dot_codegraph_fallback() {
+        let (response, repo, profile_root) = mcp_validate_edit_severity_response("ok");
+        let packet = &response["result"]["structuredContent"];
+        assert_eq!(packet["startup_auto_index"].as_bool(), Some(false));
+        assert_eq!(packet["no_dot_codegraph_fallback"].as_bool(), Some(true));
+        assert!(!repo.join(".codegraph").exists());
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
+    }
+
     #[test]
     fn mcp_hard_interrupt_propagation_correct() {
         let (response, repo, profile_root) = mcp_validate_edit_dangling_response(true);
@@ -8122,6 +8696,83 @@ mod tests {
     }
 
     #[test]
+    fn mcp_validate_edit_rename_lifecycle_unknown_structured_success() {
+        let repo = fixture_repo();
+        fs::write(
+            repo.join("src").join("old_name.js"),
+            "export function oldName() {\n  return 1;\n}\n",
+        )
+        .expect("write renamed source");
+        let profile_id = FIXTURE_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+        let profile_root = repo
+            .parent()
+            .expect("repo parent")
+            .join(format!("app-validate-edit-rename-unknown-{profile_id}"));
+        if profile_root.exists() {
+            fs::remove_dir_all(&profile_root).expect("remove stale profile");
+        }
+        fs::create_dir_all(&profile_root).expect("profile root");
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+
+        ok(server.call_tool(
+            "codegraph.index_repo",
+            &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
+        ));
+        fs::rename(
+            repo.join("src").join("old_name.js"),
+            repo.join("src").join("new_name.js"),
+        )
+        .expect("rename source");
+
+        let response = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 18,
+                "method": "tools/call",
+                "params": {
+                    "name": MCP_VALIDATE_EDIT_TOOL_NAME,
+                    "arguments": {
+                        "repo": path_string(&repo),
+                        "db_path": path_string(&db_path),
+                        "changed_files": ["src/old_name.js", "src/new_name.js"],
+                        "mode": "agent-json"
+                    }
+                }
+            }))
+            .expect("tools/call response");
+        let result = &response["result"];
+        assert_eq!(result["isError"].as_bool(), Some(false), "{response}");
+        let packet = &result["structuredContent"];
+        assert_eq!(packet["status"].as_str(), Some("unknown"), "{packet}");
+        assert_eq!(
+            packet["hard_interrupt_available"].as_bool(),
+            Some(false),
+            "{packet}"
+        );
+        assert_eq!(
+            packet["must_fix_before_continuing"].as_bool(),
+            Some(false),
+            "{packet}"
+        );
+        let rule_counts = &packet["validation_packet"]["summary_counts_by_rule_id"];
+        assert!(
+            rule_counts[CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED]
+                .as_u64()
+                .unwrap_or_default()
+                > 0,
+            "expected rename unknown rule count: {packet}"
+        );
+        assert_eq!(
+            packet["normal_dot_codegraph_mutated"].as_bool(),
+            Some(false)
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
+    }
+
+    #[test]
     fn mcp_blocking_structured_success_response() {
         let (response, repo, profile_root) = mcp_validate_edit_dangling_response(true);
 
@@ -8133,6 +8784,25 @@ mod tests {
         );
         assert_eq!(
             response["result"]["structuredContent"]["hard_interrupt_available"].as_bool(),
+            Some(true)
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
+    }
+
+    #[test]
+    fn mcp_blocking_structured_success_preserved() {
+        let (response, repo, profile_root) = mcp_validate_edit_dangling_response(true);
+
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+        assert_eq!(
+            response["result"]["structuredContent"]["status"].as_str(),
+            Some("blocking_graph_error")
+        );
+        assert_eq!(
+            response["result"]["structuredContent"]["must_fix_before_continuing"].as_bool(),
             Some(true)
         );
 
@@ -8159,6 +8829,77 @@ mod tests {
         assert!(!error.message.contains("hard_interrupt"));
 
         fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn mcp_tool_errors_reserved_for_runtime_protocol_failure() {
+        let repo = fixture_repo();
+        let server = McpServer::new(McpServerConfig::for_repo(&repo));
+        let response = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 88,
+                "method": "tools/call",
+                "params": {
+                    "name": MCP_VALIDATE_EDIT_TOOL_NAME,
+                    "arguments": {
+                        "repo": path_string(&repo),
+                        "changed_files": ["src/auth.ts"],
+                        "mode": "agent-json"
+                    }
+                }
+            }))
+            .expect("tools/call response");
+
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+        let error = &response["result"]["structuredContent"];
+        assert_eq!(error["status"].as_str(), Some("error"));
+        assert_eq!(error["error"].as_str(), Some("profile_db_unresolved"));
+        assert!(error.get("validation_packet").is_none());
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn mcp_invalid_input_behavior_documented_and_tested() {
+        let repo = fixture_repo();
+        let profile_root = repo
+            .parent()
+            .expect("repo parent")
+            .join("app-validate-edit-invalid-input");
+        if profile_root.exists() {
+            fs::remove_dir_all(&profile_root).expect("remove stale profile");
+        }
+        fs::create_dir_all(&profile_root).expect("profile root");
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+        let response = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 89,
+                "method": "tools/call",
+                "params": {
+                    "name": MCP_VALIDATE_EDIT_TOOL_NAME,
+                    "arguments": {
+                        "repo": path_string(&repo),
+                        "db_path": path_string(&db_path),
+                        "changed_files": [],
+                        "mode": "agent-json"
+                    }
+                }
+            }))
+            .expect("tools/call response");
+
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+        assert_eq!(
+            response["result"]["structuredContent"]["error"].as_str(),
+            Some("invalid_input")
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
     }
 
     #[test]

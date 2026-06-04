@@ -18685,6 +18685,7 @@ pub struct ValidateEditPathMapping {
     pub candidate_path: String,
     pub normalized_path: Option<String>,
     pub repo_relative_path: Option<String>,
+    pub mapping_status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -19140,6 +19141,11 @@ fn validate_edit_path_diagnostic(
     matched_rule: Option<String>,
     error: Option<String>,
 ) -> ValidateEditChangedFileDiagnostic {
+    let mapping_status = if normalized_path.is_some() {
+        "ok".to_string()
+    } else {
+        reason.to_string()
+    };
     ValidateEditChangedFileDiagnostic {
         path: normalized_path
             .clone()
@@ -19157,6 +19163,7 @@ fn validate_edit_path_diagnostic(
             candidate_path: path_string(candidate_path),
             normalized_path: normalized_path.clone(),
             repo_relative_path: normalized_path,
+            mapping_status,
         },
         scope_rule_kind,
         matched_rule,

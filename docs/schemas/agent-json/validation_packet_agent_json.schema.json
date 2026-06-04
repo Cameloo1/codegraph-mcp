@@ -27,6 +27,10 @@
     "stale_unsafe_blockers",
     "top_blocking_source_spans",
     "recommended_next_steps",
+    "severity_summary",
+    "severity_decisions",
+    "severity_aggregation_trace",
+    "editor_policy",
     "hard_interrupt_available",
     "omitted_count",
     "expansion_handles"
@@ -48,6 +52,115 @@
         "diagnostic_only",
         "unknown"
       ]
+    },
+    "final_status": {
+      "$ref": "#/$defs/final_validation_status"
+    },
+    "severity_summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "max_severity": {
+          "$ref": "#/$defs/validation_severity"
+        },
+        "tool_error": {
+          "type": "boolean"
+        },
+        "hard_interrupt_available": {
+          "type": "boolean"
+        },
+        "must_fix_before_continuing": {
+          "type": "boolean"
+        }
+      }
+    },
+    "severity_decisions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/severity_decision"
+      }
+    },
+    "severity_aggregation_trace": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/severity_decision"
+          }
+        },
+        "final_status": {
+          "$ref": "#/$defs/final_validation_status"
+        },
+        "max_severity": {
+          "$ref": "#/$defs/validation_severity"
+        },
+        "hard_interrupt_available": {
+          "type": "boolean"
+        },
+        "tool_error": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "editor_policy": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "editor_policy_version",
+        "recommended_editor_action",
+        "should_show_modal",
+        "should_show_warning_panel",
+        "should_allow_continue",
+        "should_request_revalidation",
+        "safe_to_autofix",
+        "source_edits_performed",
+        "daemon_integration_available"
+      ],
+      "properties": {
+        "editor_policy_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "recommended_editor_action": {
+          "type": "string"
+        },
+        "should_show_modal": {
+          "type": "boolean"
+        },
+        "should_show_warning_panel": {
+          "type": "boolean"
+        },
+        "should_allow_continue": {
+          "type": "boolean"
+        },
+        "should_request_revalidation": {
+          "type": "boolean"
+        },
+        "safe_to_autofix": {
+          "const": false
+        },
+        "source_edits_performed": {
+          "const": false
+        },
+        "daemon_integration_available": {
+          "const": false
+        },
+        "plugin_integration_available": {
+          "const": false
+        }
+      }
     },
     "must_fix_before_continuing": {
       "type": "boolean"
@@ -191,6 +304,102 @@
     "validation_blocking_level": {
       "type": "string",
       "enum": ["blocking", "warning", "unknown", "diagnostic_only", "not_applicable"]
+    },
+    "validation_severity": {
+      "type": "string",
+      "enum": ["blocking", "warning", "diagnostic_only", "unknown", "ok"]
+    },
+    "final_validation_status": {
+      "type": "string",
+      "enum": [
+        "blocking_graph_error",
+        "warning",
+        "diagnostic_only",
+        "unknown",
+        "ok",
+        "tool_error"
+      ]
+    },
+    "claimability_effect": {
+      "type": "string",
+      "enum": ["claimable", "non_claimable", "diagnostic_only", "unknown"]
+    },
+    "tool_error_kind": {
+      "type": "string",
+      "enum": [
+        "none",
+        "invalid_input",
+        "runtime_failure",
+        "protocol_failure",
+        "config_failure",
+        "internal_failure"
+      ]
+    },
+    "severity_decision": {
+      "type": "object",
+      "required": [
+        "severity",
+        "source",
+        "reason",
+        "proof_level",
+        "claimability_effect",
+        "interrupt_eligible",
+        "tool_error",
+        "tool_error_kind",
+        "agent_action",
+        "lifecycle_effect"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "severity": {
+          "$ref": "#/$defs/validation_severity"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "finding_id": {
+          "type": ["string", "null"]
+        },
+        "validation_rule_id": {
+          "type": ["string", "null"]
+        },
+        "proof_level": {
+          "type": "string"
+        },
+        "claimability_effect": {
+          "$ref": "#/$defs/claimability_effect"
+        },
+        "interrupt_eligible": {
+          "type": "boolean"
+        },
+        "tool_error": {
+          "type": "boolean"
+        },
+        "tool_error_kind": {
+          "$ref": "#/$defs/tool_error_kind"
+        },
+        "agent_action": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "lifecycle_effect": {
+          "type": "string"
+        },
+        "evidence_kind": {
+          "type": ["string", "null"]
+        },
+        "source_role": {
+          "type": ["string", "null"]
+        },
+        "exactness": {
+          "type": ["string", "null"]
+        }
+      }
     },
     "validation_rule_kind": {
       "type": "string",

@@ -1674,7 +1674,12 @@ pub(crate) fn run_agent_use_validate_edit_command(args: &[String]) -> Result<Val
         .max_output_bytes
         .unwrap_or_else(|| options.detail_mode.default_max_output_bytes());
     agent_use_validate_edit_finalize_budget(&mut packet, options.detail_mode, max_output_bytes);
-    let must_exit_nonzero = options.fail_on_blocking
+    agent_use_validate_edit_apply_exit_policy(&mut packet, options.fail_on_blocking);
+    Ok(packet)
+}
+
+fn agent_use_validate_edit_apply_exit_policy(packet: &mut Value, fail_on_blocking: bool) {
+    let must_exit_nonzero = fail_on_blocking
         && packet
             .get("must_fix_before_continuing")
             .and_then(Value::as_bool)
@@ -1684,7 +1689,6 @@ pub(crate) fn run_agent_use_validate_edit_command(args: &[String]) -> Result<Val
             object.insert("_cli_exit_code".to_string(), json!(2));
         }
     }
-    Ok(packet)
 }
 
 pub(crate) fn run_validate_edit_alias_deferred_command(args: &[String]) -> Result<Value, String> {
@@ -1764,7 +1768,7 @@ pub(crate) fn agent_use_validate_edit_packet_json(
     } else {
         Value::Null
     };
-    json!({
+    let mut value = json!({
         "schema_version": 1,
         "schema_name": "validate_edit_agent_json",
         "packet_kind": "validate_edit_packet",
@@ -1774,6 +1778,48 @@ pub(crate) fn agent_use_validate_edit_packet_json(
         "canonical_cli_surface": format!("{BIN_NAME} agent-use validate-edit --repo <repo> --changed <path> --agent-json"),
         "compatibility_alias_status": "deferred",
         "status": status,
+        "final_status": validation_packet
+            .get("final_status")
+            .cloned()
+            .unwrap_or_else(|| json!(validation_status)),
+        "severity_summary": validation_packet
+            .get("severity_summary")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "can_continue_with_caution": validation_packet
+            .get("can_continue_with_caution")
+            .cloned()
+            .unwrap_or_else(|| json!(false)),
+        "should_recover_tool_state": validation_packet
+            .get("should_recover_tool_state")
+            .cloned()
+            .unwrap_or_else(|| json!(preflight_blocked)),
+        "should_run_tests": validation_packet
+            .get("should_run_tests")
+            .cloned()
+            .unwrap_or_else(|| json!(false)),
+        "should_request_explain": validation_packet
+            .get("should_request_explain")
+            .cloned()
+            .unwrap_or_else(|| json!(preflight_blocked)),
+        "should_rerun_validation": validation_packet
+            .get("should_rerun_validation")
+            .cloned()
+            .unwrap_or_else(|| json!(preflight_blocked)),
+        "next_agent_action": validation_packet
+            .get("next_agent_action")
+            .cloned()
+            .unwrap_or_else(|| {
+                if preflight_blocked {
+                    json!("recover_tool_state_then_rerun_validation")
+                } else {
+                    json!("continue")
+                }
+            }),
+        "aggregate_guidance": validation_packet
+            .get("aggregate_guidance")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
         "repo": path_string(&profile.repo_root),
         "repo_root": path_string(&profile.repo_root),
         "db": path_string(&profile.db_path),
@@ -1845,6 +1891,10 @@ pub(crate) fn agent_use_validate_edit_packet_json(
             .or_else(|| source_update.get("proof_ladder_changes").cloned())
             .unwrap_or_else(|| json!({})),
         "recovery_commands": recovery_commands,
+        "validation_recovery_commands": validation_packet
+            .get("recovery_commands")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
         "omitted_count": source_update
             .pointer("/validation_packet/omitted_count")
             .and_then(Value::as_u64)
@@ -1886,6 +1936,270 @@ pub(crate) fn agent_use_validate_edit_packet_json(
             "edges_removed": source_update.get("edges_removed").cloned().unwrap_or_else(|| json!(0)),
             "edges_changed": source_update.get("edges_changed").cloned().unwrap_or_else(|| json!(0)),
         },
+    });
+    agent_use_validate_edit_add_mode_aware_severity_fields(&mut value, options.detail_mode);
+    value
+}
+
+fn agent_use_validate_edit_add_mode_aware_severity_fields(
+    packet: &mut Value,
+    detail_mode: AgentUseDetailMode,
+) {
+    let validation_packet = packet
+        .get("validation_packet")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let severity_summary = validation_packet
+        .get("severity_summary")
+        .cloned()
+        .or_else(|| packet.get("severity_summary").cloned())
+        .unwrap_or_else(|| json!({}));
+    let final_status = validation_packet
+        .get("final_status")
+        .or_else(|| packet.get("final_status"))
+        .or_else(|| validation_packet.get("status"))
+        .or_else(|| packet.get("status"))
+        .cloned()
+        .unwrap_or_else(|| json!("unknown"));
+    let final_severity = severity_summary
+        .get("max_severity")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| final_status.as_str().map(ToString::to_string))
+        .unwrap_or_else(|| "unknown".to_string());
+    let blocking_count =
+        agent_use_validate_edit_bucket_count(&validation_packet, "blocking_errors");
+    let warning_count = agent_use_validate_edit_bucket_count(&validation_packet, "warnings");
+    let unknown_count = agent_use_validate_edit_bucket_count(&validation_packet, "unknowns");
+    let diagnostic_count = agent_use_validate_edit_bucket_count(&validation_packet, "diagnostics");
+    let editor_policy = validation_packet
+        .get("editor_policy")
+        .cloned()
+        .unwrap_or_else(|| {
+            agent_use_validate_edit_editor_policy_json(
+                final_status.as_str().unwrap_or("unknown"),
+                packet
+                    .get("must_fix_before_continuing")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                packet
+                    .get("hard_interrupt_available")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                packet
+                    .get("should_request_explain")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                packet
+                    .get("should_rerun_validation")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            )
+        });
+    let severity_trace = if detail_mode.preserves_full_details() {
+        json!({
+            "mode": detail_mode.label(),
+            "per_finding_severity_mapping": validation_packet
+                .get("severity_decisions")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+            "final_aggregation_trace": validation_packet
+                .get("severity_aggregation_trace")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+            "severity_precedence_decision": severity_summary
+                .get("status_precedence")
+                .cloned()
+                .unwrap_or_else(|| json!(["tool_error", "blocking_graph_error", "warning", "unknown", "diagnostic_only", "ok"])),
+            "activation_gate_state": validation_packet
+                .get("activation_gate_state")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+            "why_hard_interrupt_available_or_unavailable": {
+                "hard_interrupt_available": packet
+                    .get("hard_interrupt_available")
+                    .cloned()
+                    .unwrap_or_else(|| json!(false)),
+                "hard_interrupt_requires_interrupt_eligible_blocking": true,
+                "normal_validation_blocker_is_tool_error": false
+            },
+            "tool_error_vs_validation_blocker": {
+                "validation_blockers_return_json": true,
+                "mcp_tool_error_reserved_for_runtime_protocol_failure": true,
+                "cli_runtime_failure_exit_nonzero": true
+            },
+            "lifecycle_claimability_details": {
+                "claimability": packet.get("claimability").cloned().unwrap_or_else(|| json!({})),
+                "lifecycle": packet.get("lifecycle").cloned().unwrap_or_else(|| json!({})),
+                "stale_unsafe_blockers": validation_packet
+                    .get("stale_unsafe_blockers")
+                    .cloned()
+                    .unwrap_or_else(|| json!([]))
+            },
+            "proof_ladder_details": validation_packet
+                .get("proof_ladder_changes")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+            "warning_unknown_diagnostic_details": {
+                "warnings": validation_packet.get("warnings").cloned().unwrap_or_else(|| json!([])),
+                "unknowns": validation_packet.get("unknowns").cloned().unwrap_or_else(|| json!([])),
+                "diagnostics": validation_packet.get("diagnostics").cloned().unwrap_or_else(|| json!([]))
+            },
+            "skipped_rule_details": validation_packet
+                .get("validation_rules_skipped")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+            "non_interrupt_reasons": validation_packet
+                .get("aggregate_guidance")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+            "full_source_bodies_included": false,
+            "full_graph_dump_included": false,
+        })
+    } else {
+        json!({
+            "mode": detail_mode.label(),
+            "summary_only": true,
+            "request_full_trace_with": "--explain or --audit-json",
+            "full_source_bodies_included": false,
+            "full_graph_dump_included": false,
+        })
+    };
+    let proof_ladder_changes_summary = agent_use_validate_edit_proof_ladder_summary(
+        &validation_packet
+            .get("proof_ladder_changes")
+            .cloned()
+            .or_else(|| packet.get("proof_ladder_changes").cloned())
+            .unwrap_or(Value::Null),
+    );
+
+    if let Some(object) = packet.as_object_mut() {
+        object.insert("final_severity".to_string(), json!(final_severity));
+        object.insert(
+            "stale_unsafe_blockers".to_string(),
+            validation_packet
+                .get("stale_unsafe_blockers")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        );
+        object.insert("blocking_error_count".to_string(), json!(blocking_count));
+        object.insert("warning_count".to_string(), json!(warning_count));
+        object.insert("unknown_count".to_string(), json!(unknown_count));
+        object.insert("diagnostic_count".to_string(), json!(diagnostic_count));
+        object.insert(
+            "validation_blocking_error_count".to_string(),
+            json!(blocking_count),
+        );
+        object.insert("validation_warning_count".to_string(), json!(warning_count));
+        object.insert("validation_unknown_count".to_string(), json!(unknown_count));
+        object.insert(
+            "validation_diagnostic_count".to_string(),
+            json!(diagnostic_count),
+        );
+        object.insert(
+            "top_blocking_source_span".to_string(),
+            validation_packet
+                .get("top_blocking_source_spans")
+                .and_then(Value::as_array)
+                .and_then(|items| items.first())
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "top_recommended_fix".to_string(),
+            validation_packet
+                .get("blocking_errors")
+                .and_then(Value::as_array)
+                .and_then(|items| items.first())
+                .and_then(|item| item.get("recommended_fix"))
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "proof_ladder_changes_summary".to_string(),
+            proof_ladder_changes_summary,
+        );
+        object.insert(
+            "recovery_commands_pointer".to_string(),
+            json!("validation_recovery_commands"),
+        );
+        object.insert("severity_trace".to_string(), severity_trace);
+        object.insert("editor_policy".to_string(), editor_policy);
+        object.insert("full_graph_dump_included".to_string(), json!(false));
+        object.insert("full_source_bodies_included".to_string(), json!(false));
+    }
+}
+
+fn agent_use_validate_edit_bucket_count(validation_packet: &Value, key: &str) -> usize {
+    validation_packet
+        .get(key)
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_else(|| {
+            validation_packet
+                .get(match key {
+                    "blocking_errors" => "blocking_error_count",
+                    "warnings" => "warning_count",
+                    "unknowns" => "unknown_count",
+                    "diagnostics" => "diagnostic_count",
+                    _ => key,
+                })
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize
+        })
+}
+
+fn agent_use_validate_edit_editor_policy_json(
+    final_status: &str,
+    must_fix_before_continuing: bool,
+    hard_interrupt_available: bool,
+    should_request_explain: bool,
+    should_rerun_validation: bool,
+) -> Value {
+    let should_show_warning_panel = !hard_interrupt_available
+        && (matches!(final_status, "warning" | "unknown" | "diagnostic_only")
+            || should_request_explain);
+    json!({
+        "editor_policy_version": 1,
+        "recommended_editor_action": if hard_interrupt_available {
+            "show_blocking_modal"
+        } else if should_show_warning_panel {
+            "show_warning_panel"
+        } else {
+            "allow_continue"
+        },
+        "should_show_modal": hard_interrupt_available,
+        "should_show_warning_panel": should_show_warning_panel,
+        "should_allow_continue": !must_fix_before_continuing,
+        "should_request_revalidation": should_rerun_validation,
+        "safe_to_autofix": false,
+        "source_edits_performed": false,
+        "daemon_integration_available": false,
+        "plugin_integration_available": false,
+        "metadata_advisory_only": true,
+    })
+}
+
+fn agent_use_validate_edit_proof_ladder_summary(proof_ladder_changes: &Value) -> Value {
+    let Some(object) = proof_ladder_changes.as_object() else {
+        return json!({
+            "available": !proof_ladder_changes.is_null(),
+            "changed_count": 0,
+            "graph_proof_changed_count": 0,
+            "keys": [],
+        });
+    };
+    let mut keys = object.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+    json!({
+        "available": true,
+        "changed_count": object.len(),
+        "graph_proof_changed_count": object
+            .values()
+            .filter(|value| value.get("graph_proof").and_then(Value::as_bool).unwrap_or(false))
+            .count(),
+        "keys": keys,
+        "full_detail_handle": "validation_packet.proof_ladder_changes",
     })
 }
 
@@ -1951,7 +2265,18 @@ fn agent_use_validate_edit_validation_packet(
         "schema_version": 1,
         "packet_kind": "graph_validation_packet",
         "status": "diagnostic_only",
+        "final_status": "diagnostic_only",
         "must_fix_before_continuing": false,
+        "can_continue_with_caution": false,
+        "should_recover_tool_state": true,
+        "should_run_tests": false,
+        "should_request_explain": true,
+        "should_rerun_validation": true,
+        "next_agent_action": "recover_tool_state_then_rerun_validation",
+        "recovery_commands": recommended_next_steps.clone(),
+        "aggregate_guidance": [
+            "Recover non-claimable tool state; diagnostic output is not source-code proof."
+        ],
         "changed_files": changed_files,
         "graph_delta": {},
         "blocking_errors": [],
@@ -1971,6 +2296,53 @@ fn agent_use_validate_edit_validation_packet(
         "stale_unsafe_blockers": stale_unsafe_blockers,
         "top_blocking_source_spans": [],
         "recommended_next_steps": recommended_next_steps,
+        "severity_summary": {
+            "schema_version": 1,
+            "final_status": "diagnostic_only",
+            "validation_packet_status": "diagnostic_only",
+            "max_severity": "diagnostic_only",
+            "tool_error": false,
+            "hard_interrupt_available": false,
+            "hard_interrupt": false,
+            "must_fix_before_continuing": false,
+            "can_continue_with_caution": false,
+            "should_recover_tool_state": true,
+            "should_run_tests": false,
+            "should_request_explain": true,
+            "should_rerun_validation": true,
+            "next_agent_action": "recover_tool_state_then_rerun_validation",
+            "decision_count": 1,
+            "counts_by_severity": {"diagnostic_only": 1},
+            "status_precedence": ["tool_error", "blocking_graph_error", "warning", "unknown", "diagnostic_only", "ok"],
+            "public_claim": false
+        },
+        "severity_decisions": [],
+        "severity_aggregation_trace": {
+            "schema_version": 1,
+            "decisions": [],
+            "final_status": "diagnostic_only",
+            "max_severity": "diagnostic_only",
+            "hard_interrupt_available": false,
+            "tool_error": false,
+            "notes": [
+                "synthetic validate-edit preflight packet; validation did not run"
+            ]
+        },
+        "editor_policy": {
+            "editor_policy_version": 1,
+            "recommended_editor_action": "show_tool_state_recovery",
+            "should_show_modal": false,
+            "should_show_warning_panel": true,
+            "should_allow_continue": true,
+            "should_request_revalidation": true,
+            "safe_to_autofix": false,
+            "source_edits_performed": false,
+            "daemon_integration_available": false,
+            "plugin_integration_available": false,
+            "metadata_advisory_only": true,
+            "no_automatic_source_edits": true,
+            "unsafe_db_states_are_not_source_code_hard_interrupts": true
+        },
         "hard_interrupt_available": false,
         "hard_interrupt": Value::Null,
         "omitted_count": 0,
@@ -2043,6 +2415,43 @@ fn agent_use_validate_edit_finalize_budget(
     detail_mode: AgentUseDetailMode,
     max_output_bytes: usize,
 ) {
+    let initial_output_bytes = serialized_json_len(packet);
+    let mut output_truncated = false;
+    if initial_output_bytes > max_output_bytes {
+        output_truncated = true;
+        if let Some(object) = packet.as_object_mut() {
+            object.insert("source_update_packet".to_string(), Value::Null);
+            object.insert("output_truncated".to_string(), json!(true));
+            object.insert("max_output_bytes".to_string(), json!(max_output_bytes));
+            object.insert(
+                "pre_truncation_bytes".to_string(),
+                json!(initial_output_bytes),
+            );
+            for key in ["warnings", "unknowns", "diagnostics"] {
+                if let Some(items) = object.get_mut(key).and_then(Value::as_array_mut) {
+                    if items.len() > 1 {
+                        items.truncate(1);
+                    }
+                }
+            }
+            if let Some(validation_packet) = object.get_mut("validation_packet") {
+                agent_use_validate_edit_truncate_validation_packet(validation_packet, 1);
+            }
+            let omitted_count = object
+                .get("validation_packet")
+                .and_then(|packet| packet.get("omitted_count"))
+                .cloned()
+                .unwrap_or_else(|| json!(0));
+            let expansion_handles = object
+                .get("validation_packet")
+                .and_then(|packet| packet.get("expansion_handles"))
+                .cloned()
+                .unwrap_or_else(|| json!(["validation_packet:full"]));
+            object.insert("omitted_count".to_string(), omitted_count);
+            object.insert("expansion_handles".to_string(), expansion_handles);
+        }
+        agent_use_validate_edit_add_mode_aware_severity_fields(packet, detail_mode);
+    }
     let output_bytes = serialized_json_len(packet);
     if let Some(object) = packet.as_object_mut() {
         object.insert(
@@ -2051,12 +2460,41 @@ fn agent_use_validate_edit_finalize_budget(
                 "mode": detail_mode.label(),
                 "max_output_bytes": max_output_bytes,
                 "output_bytes": output_bytes,
-                "truncated": false,
+                "pre_truncation_bytes": initial_output_bytes,
+                "truncated": output_truncated,
+                "output_truncated": output_truncated,
                 "omitted_count": object.get("omitted_count").and_then(Value::as_u64).unwrap_or(0),
                 "max_output_bytes_exceeded": output_bytes > max_output_bytes,
                 "required_safety_fields_preserved": true,
             }),
         );
+    }
+}
+
+fn agent_use_validate_edit_truncate_validation_packet(packet: &mut Value, limit: usize) {
+    let mut omitted = packet
+        .get("omitted_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if let Some(object) = packet.as_object_mut() {
+        for key in ["blocking_errors", "warnings", "unknowns", "diagnostics"] {
+            if let Some(items) = object.get_mut(key).and_then(Value::as_array_mut) {
+                if items.len() > limit {
+                    omitted += (items.len() - limit) as u64;
+                    items.truncate(limit);
+                }
+            }
+        }
+        object.insert("omitted_count".to_string(), json!(omitted));
+        if omitted > 0 {
+            object.insert(
+                "expansion_handles".to_string(),
+                json!(["validation_packet:full"]),
+            );
+        }
+        object.insert("critical_safety_fields_preserved".to_string(), json!(true));
+        object.insert("full_graph_dump_included".to_string(), json!(false));
+        object.insert("full_source_bodies_included".to_string(), json!(false));
     }
 }
 
@@ -7419,6 +7857,474 @@ mod exact_calls_validation_tests {
             value["canonical_command"].as_str(),
             Some("agent-use validate-edit")
         );
+    }
+
+    fn validate_edit_exit_packet(status: &str, must_fix_before_continuing: bool) -> Value {
+        json!({
+            "status": status,
+            "final_status": status,
+            "must_fix_before_continuing": must_fix_before_continuing,
+            "hard_interrupt_available": status == "blocking_graph_error",
+            "normal_dot_codegraph_mutated": false,
+        })
+    }
+
+    fn validate_edit_policy_exit_code(status: &str, must_fix_before_continuing: bool) -> i64 {
+        let mut packet = validate_edit_exit_packet(status, must_fix_before_continuing);
+        agent_use_validate_edit_apply_exit_policy(&mut packet, true);
+        packet
+            .get("_cli_exit_code")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn cli_exit_codes_match_severity_policy() {
+        assert_eq!(
+            validate_edit_policy_exit_code("blocking_graph_error", true),
+            2
+        );
+        for status in ["warning", "unknown", "diagnostic_only", "ok"] {
+            assert_eq!(
+                validate_edit_policy_exit_code(status, false),
+                0,
+                "{status} must remain exit 0"
+            );
+        }
+    }
+
+    #[test]
+    fn default_blocking_exit_zero_preserved() {
+        let mut packet = validate_edit_exit_packet("blocking_graph_error", true);
+        agent_use_validate_edit_apply_exit_policy(&mut packet, false);
+        assert!(packet.get("_cli_exit_code").is_none(), "{packet}");
+    }
+
+    #[test]
+    fn fail_on_blocking_exit_two_preserved() {
+        let mut packet = validate_edit_exit_packet("blocking_graph_error", true);
+        agent_use_validate_edit_apply_exit_policy(&mut packet, true);
+        assert_eq!(packet["_cli_exit_code"].as_i64(), Some(2));
+    }
+
+    #[test]
+    fn warning_exit_zero() {
+        assert_eq!(validate_edit_policy_exit_code("warning", false), 0);
+    }
+
+    #[test]
+    fn unknown_exit_zero() {
+        assert_eq!(validate_edit_policy_exit_code("unknown", false), 0);
+    }
+
+    #[test]
+    fn diagnostic_only_exit_zero() {
+        assert_eq!(validate_edit_policy_exit_code("diagnostic_only", false), 0);
+    }
+
+    #[test]
+    fn ok_exit_zero() {
+        assert_eq!(validate_edit_policy_exit_code("ok", false), 0);
+    }
+
+    #[test]
+    fn no_dot_codegraph_mutation_in_cli_severity_semantics() {
+        let mut packet = validate_edit_exit_packet("blocking_graph_error", true);
+        agent_use_validate_edit_apply_exit_policy(&mut packet, true);
+        assert_eq!(
+            packet["normal_dot_codegraph_mutated"].as_bool(),
+            Some(false)
+        );
+    }
+
+    fn validate_edit_blocking_source_update_with_severity_trace() -> Value {
+        let mut source_update = validate_edit_blocking_source_update();
+        source_update["validation_packet"]["final_status"] = json!("blocking_graph_error");
+        source_update["validation_packet"]["severity_summary"] = json!({
+            "schema_version": 1,
+            "final_status": "blocking_graph_error",
+            "max_severity": "blocking",
+            "hard_interrupt_available": true,
+            "must_fix_before_continuing": true,
+            "status_precedence": [
+                "tool_error",
+                "blocking_graph_error",
+                "warning",
+                "unknown",
+                "diagnostic_only",
+                "ok"
+            ]
+        });
+        source_update["validation_packet"]["severity_decisions"] = json!([
+            {
+                "severity": "blocking",
+                "source": "finding",
+                "reason": "exact graph/source dangling CALLS proof",
+                "finding_id": "finding://validate-edit/blocking",
+                "validation_rule_id": CG_MVP3_CALLS_DANGLING_TARGET,
+                "proof_level": "graph_source_verified",
+                "claimability_effect": "claimable",
+                "interrupt_eligible": true,
+                "tool_error": false,
+                "tool_error_kind": "none",
+                "agent_action": {"must_fix_before_continuing": true},
+                "lifecycle_effect": "claimable_current"
+            }
+        ]);
+        source_update["validation_packet"]["severity_aggregation_trace"] = json!({
+            "schema_version": 1,
+            "decisions": source_update["validation_packet"]["severity_decisions"].clone(),
+            "final_status": "blocking_graph_error",
+            "max_severity": "blocking",
+            "hard_interrupt_available": true,
+            "tool_error": false,
+            "notes": ["blocking finding wins by severity precedence"]
+        });
+        source_update["validation_packet"]["editor_policy"] = json!({
+            "editor_policy_version": 1,
+            "recommended_editor_action": "show_blocking_modal",
+            "should_show_modal": true,
+            "should_show_warning_panel": false,
+            "should_allow_continue": false,
+            "should_request_revalidation": true,
+            "safe_to_autofix": false,
+            "source_edits_performed": false,
+            "daemon_integration_available": false,
+            "plugin_integration_available": false,
+            "metadata_advisory_only": true
+        });
+        source_update
+    }
+
+    fn validate_edit_many_findings_source_update() -> Value {
+        let mut source_update = validate_edit_non_interrupt_source_update();
+        let warning = source_update["validation_packet"]["warnings"][0].clone();
+        let unknown = source_update["validation_packet"]["unknowns"][0].clone();
+        let diagnostic = source_update["validation_packet"]["diagnostics"][0].clone();
+        source_update["validation_packet"]["warnings"] = Value::Array(
+            (0..8)
+                .map(|index| {
+                    let mut item = warning.clone();
+                    item["validation_rule_id"] =
+                        json!(format!("CG_MVP3_WARNING_TRUNCATION_{index}"));
+                    item
+                })
+                .collect(),
+        );
+        source_update["validation_packet"]["unknowns"] = Value::Array(
+            (0..6)
+                .map(|index| {
+                    let mut item = unknown.clone();
+                    item["validation_rule_id"] =
+                        json!(format!("CG_MVP3_UNKNOWN_TRUNCATION_{index}"));
+                    item
+                })
+                .collect(),
+        );
+        source_update["validation_packet"]["diagnostics"] = Value::Array(
+            (0..6)
+                .map(|index| {
+                    let mut item = diagnostic.clone();
+                    item["validation_rule_id"] =
+                        json!(format!("CG_MVP3_DIAGNOSTIC_TRUNCATION_{index}"));
+                    item
+                })
+                .collect(),
+        );
+        source_update
+    }
+
+    fn assert_compact_validate_edit_safety_fields(packet: &Value) {
+        for field in [
+            "status",
+            "final_severity",
+            "must_fix_before_continuing",
+            "hard_interrupt_available",
+            "changed_files",
+            "claimability",
+            "lifecycle",
+            "recovery_commands_pointer",
+            "stale_unsafe_blockers",
+            "blocking_error_count",
+            "warning_count",
+            "unknown_count",
+            "diagnostic_count",
+            "proof_ladder_changes_summary",
+            "omitted_count",
+            "expansion_handles",
+        ] {
+            assert!(
+                packet.get(field).is_some(),
+                "missing compact field {field}: {packet}"
+            );
+        }
+        assert!(packet["severity_summary"].is_object());
+        assert!(packet["severity_trace"].is_object());
+        assert!(packet["editor_policy"].is_object());
+    }
+
+    #[test]
+    fn compact_severity_fields_preserved() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_blocking_source_update(),
+        );
+
+        assert_compact_validate_edit_safety_fields(&packet);
+        assert_eq!(
+            packet["final_severity"].as_str(),
+            Some("blocking_graph_error")
+        );
+        assert!(packet["top_blocking_source_span"].is_object(), "{packet}");
+        assert!(packet["top_recommended_fix"].as_str().is_some(), "{packet}");
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn critical_fields_not_omitted_under_truncation() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let mut packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_many_findings_source_update(),
+        );
+        agent_use_validate_edit_finalize_budget(&mut packet, AgentUseDetailMode::Compact, 1024);
+
+        assert_eq!(packet["output_truncated"].as_bool(), Some(true), "{packet}");
+        assert_compact_validate_edit_safety_fields(&packet);
+        assert!(packet["omitted_count"].as_u64().unwrap_or_default() > 0);
+        assert!(packet["expansion_handles"].as_array().is_some());
+        assert_eq!(packet["source_update_packet"], Value::Null);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn explain_audit_severity_trace_available() {
+        for detail_mode in [AgentUseDetailMode::Explain, AgentUseDetailMode::Audit] {
+            let repo = test_repo();
+            let profile = test_profile(&repo);
+            let options = validate_edit_test_options(&repo, detail_mode, false);
+            let packet = agent_use_validate_edit_packet_json(
+                &profile,
+                &options,
+                validate_edit_blocking_source_update_with_severity_trace(),
+            );
+
+            assert_eq!(
+                packet["severity_trace"]["mode"].as_str(),
+                Some(detail_mode.label())
+            );
+            assert!(packet["severity_trace"]["per_finding_severity_mapping"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty()));
+            assert!(packet["severity_trace"]["final_aggregation_trace"].is_object());
+            assert_eq!(
+                packet["severity_trace"]["full_graph_dump_included"].as_bool(),
+                Some(false)
+            );
+            cleanup_repo(repo);
+        }
+    }
+
+    #[test]
+    fn fail_on_blocking_mode_consistent() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let default_options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let fail_options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, true);
+        let mut default_packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &default_options,
+            validate_edit_blocking_source_update_with_severity_trace(),
+        );
+        let mut fail_packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &fail_options,
+            validate_edit_blocking_source_update_with_severity_trace(),
+        );
+
+        agent_use_validate_edit_apply_exit_policy(&mut default_packet, false);
+        agent_use_validate_edit_apply_exit_policy(&mut fail_packet, true);
+
+        assert!(default_packet.get("_cli_exit_code").is_none());
+        assert_eq!(fail_packet["_cli_exit_code"].as_i64(), Some(2));
+        assert_eq!(default_packet["status"], fail_packet["status"]);
+        assert_eq!(
+            default_packet["must_fix_before_continuing"],
+            fail_packet["must_fix_before_continuing"]
+        );
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn fail_on_blocking_does_not_change_severity() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let default_options = validate_edit_test_options(&repo, AgentUseDetailMode::Explain, false);
+        let fail_options = validate_edit_test_options(&repo, AgentUseDetailMode::Explain, true);
+        let mut default_packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &default_options,
+            validate_edit_blocking_source_update_with_severity_trace(),
+        );
+        let mut fail_packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &fail_options,
+            validate_edit_blocking_source_update_with_severity_trace(),
+        );
+
+        agent_use_validate_edit_apply_exit_policy(&mut default_packet, false);
+        agent_use_validate_edit_apply_exit_policy(&mut fail_packet, true);
+
+        assert_eq!(
+            default_packet["final_severity"],
+            fail_packet["final_severity"]
+        );
+        assert_eq!(
+            default_packet["severity_summary"],
+            fail_packet["severity_summary"]
+        );
+        assert_eq!(
+            default_packet["severity_trace"],
+            fail_packet["severity_trace"]
+        );
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn compact_output_no_full_graph_dump() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_blocking_source_update(),
+        );
+        let serialized = serde_json::to_string(&packet).expect("packet serializes");
+
+        assert_eq!(packet["full_graph_dump_included"].as_bool(), Some(false));
+        assert_eq!(packet["full_source_bodies_included"].as_bool(), Some(false));
+        assert_eq!(packet["source_update_packet"], Value::Null);
+        assert!(!serialized.contains("\"nodes\""), "{packet}");
+        assert!(!serialized.contains("\"edges\""), "{packet}");
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn audit_output_restores_severity_reasoning() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Audit, false);
+        let packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_blocking_source_update_with_severity_trace(),
+        );
+
+        assert!(packet["source_update_packet"].is_object(), "{packet}");
+        assert!(packet["severity_trace"]["per_finding_severity_mapping"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+        assert!(packet["severity_trace"]["severity_precedence_decision"].is_array());
+        assert!(packet["severity_trace"]["tool_error_vs_validation_blocker"].is_object());
+        assert!(packet["severity_trace"]["proof_ladder_details"].is_object());
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn future_editor_policy_metadata_defined_without_daemon() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_blocking_source_update(),
+        );
+        let editor_policy = &packet["editor_policy"];
+
+        assert_eq!(editor_policy["editor_policy_version"].as_u64(), Some(1));
+        assert!(editor_policy["recommended_editor_action"]
+            .as_str()
+            .is_some());
+        assert_eq!(editor_policy["safe_to_autofix"].as_bool(), Some(false));
+        assert_eq!(
+            editor_policy["source_edits_performed"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            editor_policy["daemon_integration_available"].as_bool(),
+            Some(false)
+        );
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn source_edits_performed_false() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_blocking_source_update(),
+        );
+
+        assert_eq!(
+            packet["editor_policy"]["source_edits_performed"].as_bool(),
+            Some(false)
+        );
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn daemon_integration_available_false() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_blocking_source_update(),
+        );
+
+        assert_eq!(
+            packet["editor_policy"]["daemon_integration_available"].as_bool(),
+            Some(false)
+        );
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn max_output_bytes_respected_if_supported() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let mut packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_many_findings_source_update(),
+        );
+        agent_use_validate_edit_finalize_budget(&mut packet, AgentUseDetailMode::Compact, 1024);
+
+        let budget = &packet["agent_json_budget"];
+        assert_eq!(budget["max_output_bytes"].as_u64(), Some(1024));
+        assert_eq!(
+            budget["required_safety_fields_preserved"].as_bool(),
+            Some(true)
+        );
+        if budget["max_output_bytes_exceeded"].as_bool() == Some(false) {
+            assert!(serialized_json_len(&packet) <= 1024);
+        }
+        assert_compact_validate_edit_safety_fields(&packet);
+        cleanup_repo(repo);
     }
 
     #[test]

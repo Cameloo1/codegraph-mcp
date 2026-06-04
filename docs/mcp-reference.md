@@ -155,16 +155,21 @@ structured tool result rather than an MCP tool error.
 The output shape includes `validation_packet`, `hard_interrupt_available`,
 `hard_interrupt`, `must_fix_before_continuing`, `changed_files`,
 `rejected_paths`, `no_op_paths`, `warnings`, `unknowns`, `diagnostics`,
-`claimability`, `lifecycle`, `recovery_commands`, `omitted_count`,
-`expansion_handles`, and `timings`. `blocking_graph_error` means the validation
-completed and found a stop condition. `warning`, `unknown`, and
-`diagnostic_only` values do not interrupt by default.
+`claimability`, `lifecycle`, `recovery_commands`, `final_severity`,
+finding-count fields, severity trace handles, `editor_policy`,
+`omitted_count`, `expansion_handles`, and `timings`. `blocking_graph_error`
+means the validation completed and found a stop condition. `warning`, `unknown`,
+and `diagnostic_only` values do not interrupt by default. Compact mode preserves
+safety-critical severity fields; `explain` and `audit-json` include severity
+mapping and aggregation trace details.
 
 `codegraph.validate_edit` may update the configured SQLite graph DB and bounded
 profile sidecars. It must not mutate source files, must not start a background
 editor daemon, must not auto-index a missing profile at startup, and must not
-fall back to normal repo-local `.codegraph`. If lifecycle preflight reports an
-unsafe DB state, run the `recovery_commands` in the response or use:
+fall back to normal repo-local `.codegraph`. `editor_policy` is advisory only:
+`safe_to_autofix=false`, `source_edits_performed=false`, and
+`daemon_integration_available=false`. If lifecycle preflight reports an unsafe
+DB state, run the `recovery_commands` in the response or use:
 
 ```powershell
 codegraph-mcp agent-use status --repo <repo> --json
