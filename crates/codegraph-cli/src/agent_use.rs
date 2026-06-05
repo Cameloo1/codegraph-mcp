@@ -7246,7 +7246,7 @@ fn agent_use_reverify_source_span_text(
     if span.start_line == 0 || span.end_line == 0 || span.end_line < span.start_line {
         return Err("source span line coordinates are missing or invalid".to_string());
     }
-    let (Some(start_column), Some(end_column)) = (span.start_column, span.end_column) else {
+    let (Some(start_column), Some(mut end_column)) = (span.start_column, span.end_column) else {
         return Err(format!(
             "source span columns are required for {column_requirement_reason}"
         ));
@@ -7263,6 +7263,9 @@ fn agent_use_reverify_source_span_text(
     let mut end = span.end_line.saturating_sub(1) as usize;
     if end == lines.len() && span.end_column == Some(1) && start < lines.len() {
         end = lines.len().saturating_sub(1);
+        if start == end {
+            end_column = (lines[end].len() as u32).saturating_add(1);
+        }
     }
     if start >= lines.len() || end >= lines.len() {
         return Err("source span line is outside the current source file".to_string());
@@ -10992,6 +10995,24 @@ mod exact_calls_validation_tests {
                 && finding.classification == ValidationClassification::Block
         }));
         drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn one_line_source_span_eof_sentinel_reverifies_text() {
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "dir with spaces/spaced file.js",
+            "export function spacedPathSymbol() { return 2; }\n",
+        );
+        let span = SourceSpan::with_columns("dir with spaces/spaced file.js", 1, 1, 2, 1);
+
+        let snippet =
+            agent_use_reverify_source_span_text(&repo, &span, "claimable graph edge proof")
+                .expect("one-line EOF sentinel source span should resolve to source text");
+
+        assert!(snippet.contains("spacedPathSymbol"));
         cleanup_repo(repo);
     }
 
