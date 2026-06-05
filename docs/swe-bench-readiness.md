@@ -35,20 +35,21 @@ are prerequisites, not quality scores.
 
 | Surface | Status |
 |---|---|
-| SWE-bench source checkout | pinned |
-| SWE-bench Lite dataset access | verified |
-| Docker/Linux harness route | working |
-| Gold-validation smoke | passed for `sympy__sympy-20590` |
-| External-agent patch generation | working for `baseline` and `rg_only` on one task |
-| Docker patch evaluation | working for `baseline` and `rg_only` on one task |
-| CodeGraph patch-quality ablation | not measured; CodeGraph context attribution blocked |
+| SWE-bench source checkout | current harness fallback `benchmarks/upstream/SWE-bench` exists; cached SymPy checkout identity validates with local `git -c safe.directory=<checkout>` |
+| SWE-bench Lite dataset access | pinned fixture exists for `sympy__sympy-20590` |
+| Docker/Linux harness route | ready through unsandboxed Docker Desktop `desktop-linux`; sandbox pipe probes still report permission denial |
+| Gold-validation smoke | live one-task gold validation for `sympy__sympy-20590` passed after Docker launch |
+| External-agent wrapper | Codex wrapper validates with `-ValidateOnly`; real execution still needs an approved local-only route or explicit approval of provider-visible task/context exposure |
+| One-task patch smoke | repo-side no-agent/no-eval preflight passed; real patch/evaluator smoke is blocked before execution |
+| CodeGraph-attributed arms | no current real patch run; attribution remains zero |
 | Mock-agent scaffold | available, non-quality only |
 | Official SWE-bench score | not claimed |
 
 ## What Passed
 
-The Linux-container harness route completed a SWE-bench Lite gold-validation
-smoke for `sympy__sympy-20590`:
+Prior setup evidence showed that the Linux-container harness route can evaluate
+a known SWE-bench Lite gold patch for `sympy__sympy-20590` when Docker is
+available:
 
 | Item | Result |
 |---|---:|
@@ -57,139 +58,47 @@ smoke for `sympy__sympy-20590`:
 | Resolved instances | 1 |
 | Error instances | 0 |
 
-This proves the local harness path can evaluate a known gold patch through the
-Linux container route. It does not prove CodeGraph improves agent patch quality.
+This is live setup evidence only. It does not prove CodeGraph improves agent
+patch quality, and it is not a real-agent patch-quality run.
 
-## Patch Quality Requirements And Remaining Gate
+Older one-task local patch-smoke evidence for `baseline` and `rg_only` remains
+local diagnostic history. It does not describe the current v1 patch-ladder
+state: the current gate did not execute patch tasks because external-agent
+execution still needs an approved route or local-only replacement.
 
-Any patch-quality scoring needs a real external agent/model command, configured
-explicitly, for example through:
+## What Is Still Missing
+
+Patch-quality scoring now needs an approved external-agent route and then
+same-agent A/B runs with reliable context prep for the CodeGraph-attributed
+arms. The current readiness and SWE-bench Lite smoke
+configs declare the saved Codex wrapper as the canonical external-agent command:
+
+```powershell
+python -m benchmarks.harness.v1_readiness --output-dir reports/audit/artifacts/resolve_mvp2_closure_blockers/benchmark_v1_external_preflight/v1_readiness
+python -m benchmarks.harness.runners.run_patch_eval --config benchmarks/tracks/swebench_lite/configs/smoke.toml
+```
+
+The command can still be overridden explicitly for a host run:
 
 ```powershell
 $env:CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND = "<fixed agent command>"
 ```
 
-For this repository's Codex CLI path, use the saved wrapper:
+For this repository's current Codex CLI path, the saved wrapper command is:
 
 ```powershell
-$env:CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND = "powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/scripts/run_codex_external_patch_agent.ps1"
+$env:CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND = "powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/tracks/swebench_lite/scripts/run_codex_external_patch_agent.ps1"
 ```
 
-The wrapper resolves `codex.cmd` before the PowerShell shim, reads benchmark
+The saved wrapper resolves `codex.cmd` before the PowerShell shim, reads benchmark
 JSON from stdin, runs `codex exec` non-interactively in the task workspace, and
 prints only a `diff --git` patch to stdout. Use `-ValidateOnly` to check
 readiness without making a model call.
 
-Without that configured, the benchmark layer can run setup checks and
-scaffold-only mock-agent flows, but it cannot claim model quality, solved task
-rate, or SWE-bench improvement.
-
-The local Codex wrapper is now sufficient for one-task diagnostic runs, but
-CodeGraph patch-quality is still blocked until a CodeGraph context packet is
-valid for attribution. A CodeGraph mode must produce usable context, run the
-same external agent, and be evaluated through the same SWE-bench harness before
-it counts as CodeGraph patch-quality evidence.
-
-## Latest Patch-Quality Smoke
-
-On 2026-05-23, the local official-compatible one-task smoke
-`swebench_official_compatible_smoke_20260523_174023` ran real Codex external
-agent predictions for `sympy__sympy-20590` and evaluated them through the local
-SWE-bench Lite harness.
-
-| Mode | Resolved | Clean source patch | Reason |
-|---|---:|---:|---|
-| `baseline` | true | false | extra test-file edit |
-| `rg_only` | true | false | extra test-file edit |
-
-Both modes edited `sympy/core/_print_helpers.py` and also edited
-`sympy/core/tests/test_symbol.py`. This is useful local patch-quality evidence,
-but it is not an official SWE-bench score and does not prove CodeGraph value.
-CodeGraph modes remain gated until their context packets are valid for
-attribution.
-
-The later E2E diagnostic `swebench_lite_e2e_20260523_192718` requested
-`baseline`, `rg_only`, `codegraph_exact_text`, and `codegraph_full` for the
-same task.
-
-| Mode | Agent ran | Docker eval | Resolved | Context valid for attribution | Clean source patch |
-|---|---:|---:|---:|---:|---:|
-| `baseline` | yes | yes | true | yes | false |
-| `rg_only` | yes | yes | true | yes | false |
-| `codegraph_exact_text` | no | no | n/a | no | false |
-| `codegraph_full` | no | no | n/a | no | false |
-
-The CodeGraph modes were skipped before agent execution because the shared
-CodeGraph prebuild hit the 240 s index timeout and the staged candidate context
-did not return `_print_helpers.py`:
-
-```text
-blocked_index_timeout; candidate_spool_present_but_no_gold_hit
-```
-
-That skip is intentional fail-fast behavior. It prevents an independent agent
-patch from being mislabeled as a CodeGraph-attributed result.
-
-### Recreate The One-Task E2E Smoke
-
-Run from a normal user PowerShell in the benchmark lab worktree. Docker-backed
-SWE-bench commands may fail from the Codex sandbox identity because Docker
-Desktop named pipes are not reachable there.
-
-```powershell
-cargo build --release --bin codegraph-mcp
-
-$env:CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND = "powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/scripts/run_codex_external_patch_agent.ps1 -StationMode always"
-
-powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/scripts/run_codex_external_patch_agent.ps1 -ValidateOnly -StationMode never
-
-$runId = Get-Date -Format "yyyyMMdd_HHmmss"
-
-python -m benchmarks.harness.runners.run_swebench_patch_smoke `
-  --output-dir "benchmarks/results/summaries/swebench_lite_e2e_$runId" `
-  --task-fixture benchmarks/tracks/swebench_lite/fixtures/swebench_lite_sympy_20590.json `
-  --modes baseline rg_only codegraph_exact_text codegraph_full `
-  --codegraph-context-timeout-s 240 `
-  --agent-timeout-s 900 `
-  --eval-timeout-s 1200 `
-  --max-process-tree-rss-mib 12288 `
-  --min-system-available-mib 3072
-```
-
-For CodeGraph debugging without spending model or Docker time:
-
-```powershell
-$runId = Get-Date -Format "yyyyMMdd_HHmmss"
-
-python -m benchmarks.harness.runners.run_swebench_patch_smoke `
-  --output-dir "benchmarks/results/summaries/swebench_context_probe_$runId" `
-  --task-fixture benchmarks/tracks/swebench_lite/fixtures/swebench_lite_sympy_20590.json `
-  --modes codegraph_exact_text codegraph_full `
-  --skip-agent `
-  --skip-eval `
-  --codegraph-context-timeout-s 240
-```
-
-Important local outputs:
-
-- `summary.json` and `summary.md` - phase gates and per-mode results.
-- `commands.jsonl` - exact argv, timings, exit codes, and resource guard data.
-- `patches/` and `predictions/` - generated patch and SWE-bench prediction
-  files for measured agent modes.
-- `swebench_eval/` - Docker evaluation summaries and per-task reports.
-- `external_patch_agent_logs/` - wrapper prompt, status, stdout JSONL, stderr,
-  last message, and station launch data.
-
-### Current Troubleshooting Meanings
-
-- `blocked_index_timeout`: CodeGraph context prebuild exceeded the fixed
-  context-prep timeout.
-- `candidate_spool_present_but_no_gold_hit`: partial candidate context existed
-  but did not return the gold source file.
-- `skipped_invalid_context`: the runner correctly skipped the agent to avoid
-  false CodeGraph attribution.
-- `resource_limit`: the resource guard killed a command because process-tree
-  or host-memory limits were exceeded; this is a hard failure, not a timeout.
+Until CodeGraph-attributed patch arms run successfully under the same pinned
+agent/model/task/evaluator setup, the benchmark layer cannot claim CodeGraph
+patch-quality improvement, solved-task lift, or an official SWE-bench score.
+The current blocker is the external-agent approval/local-only route boundary.
 
 ## Official-Compatible Requirements
 
@@ -211,16 +120,22 @@ Anything less is local diagnostic evidence.
 
 The intended path is deliberately incremental:
 
-1. Gold-validation smoke. Complete for `sympy__sympy-20590`.
-2. One real external-agent SWE-bench Lite smoke. Complete for `baseline` and
-   `rg_only`, with clean-source-patch gate failing due to extra test-file edits.
-3. One attributable CodeGraph SWE-bench Lite smoke for the same task. Not yet
-   complete; current blocker is CodeGraph context attribution.
-4. 10-task SWE-bench Lite diagnostic subset.
-5. 25-task and 50-task Lite diagnostic subsets.
-6. Full SWE-bench Lite diagnostic run when cost and runtime are understood.
-7. SWE-bench Verified only after Lite runs are boring and reproducible.
-8. SWE-bench-Live later for contamination-resistant current tasks.
+1. Validate the canonical external-agent wrapper command. The current preflight
+   config also allows `CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND` to override the
+   wrapper when an operator supplies a different fixed agent command.
+2. Docker Desktop's Linux engine is already verified ready; rerun patch setup
+   only if Docker/SWE-bench state changes.
+3. Use an approved local-only external agent or explicitly approve the configured
+   Codex wrapper data-exposure risk.
+4. Rerun the v1 external preflight until it reports Docker/evaluator ready and
+   only the external-agent approval/local-only gate remains.
+5. Run one real external-agent SWE-bench Lite smoke with strict same-agent A/B
+   attribution checks.
+6. 10-task SWE-bench Lite diagnostic subset.
+7. 25-task and 50-task Lite diagnostic subsets.
+8. Full SWE-bench Lite diagnostic run when cost and runtime are understood.
+9. SWE-bench Verified only after Lite runs are boring and reproducible.
+10. SWE-bench-Live later for contamination-resistant current tasks.
 
 At each step, CodeGraph should be compared as an added reliability layer:
 
@@ -231,16 +146,24 @@ At each step, CodeGraph should be compared as an added reliability layer:
 
 ## Claim Boundaries
 
-Safe wording:
+Current safe wording:
 
 ```text
-The SWE-bench Lite harness path is ready for gold validation.
+The current Benchmark v1 real-agent patch ladder is
+blocked_external_agent_approval_after_docker_ready: the one-task repo-side
+preflight is runnable and passed, Docker/SWE-bench setup plus live gold
+validation passed, but no patch tasks ran because the external-agent route still
+needs approval or a local-only replacement.
 ```
+
+Future wording, only after a green preflight and real same-agent patch runs:
 
 ```text
 On this pinned local diagnostic subset, the same configured agent solved A
 tasks with one context provider and B tasks with another.
 ```
+
+Future wording, only after measured CodeGraph-attributed real patch runs:
 
 ```text
 On this pinned diagnostic subset, the same rg-using agent made fewer wrong-file

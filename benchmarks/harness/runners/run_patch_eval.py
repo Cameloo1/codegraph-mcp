@@ -13,6 +13,9 @@ from benchmarks.harness.adapters.swebench_adapter import SWEBenchAdapter
 from benchmarks.harness.config import load_config
 from benchmarks.harness.paths import resolve_benchmark_path
 
+DEFAULT_EXTERNAL_AGENT_COMMAND_ENV = "CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND"
+DEFAULT_EXTERNAL_AGENT_CONFIG = "benchmarks/tracks/swebench_lite/configs/smoke.toml"
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
@@ -35,8 +38,7 @@ def patch_setup_summary(config_path: str) -> dict:
     upstream_repo = resolve_benchmark_path(adapter_cfg.get("upstream_repo", "benchmarks/tracks/swebench_lite/upstream/SWE-bench"))
     swebench = SWEBenchAdapter(upstream_repo)
     swe_status = swebench.setup_status().to_dict()
-    command_env = str(agent_cfg.get("external_agent_command_env", "CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND"))
-    command = os.environ.get(command_env) or str(agent_cfg.get("external_agent_command", ""))
+    command, command_env, command_source = resolve_external_agent_command(agent_cfg)
     external_agent = validate_external_agent_command(command, command_env, agent_cfg)
     external_agent_status = external_agent["status"]
     quality_status = "ready" if swe_status["ready"] and external_agent_status == "ready" else "blocked"
@@ -55,11 +57,42 @@ def patch_setup_summary(config_path: str) -> dict:
             "status": external_agent_status,
             "env": command_env,
             "configured": bool(command),
+            "source": command_source,
             "validation": external_agent,
         },
         "mock_agent": {"status": "scaffold_only", "quality": False},
         "blockers": blockers,
     }
+
+
+def resolve_external_agent_command(
+    agent_cfg: dict[str, Any] | None = None,
+    *,
+    explicit_command: str | None = None,
+) -> tuple[str, str, str]:
+    agent_cfg = agent_cfg or {}
+    command_env = str(agent_cfg.get("external_agent_command_env", DEFAULT_EXTERNAL_AGENT_COMMAND_ENV))
+    if explicit_command is not None:
+        stripped = explicit_command.strip()
+        return stripped, command_env, "explicit_cli" if stripped else "explicit_empty"
+    env_command = os.environ.get(command_env, "").strip()
+    if env_command:
+        return env_command, command_env, "env"
+    config_command = str(agent_cfg.get("external_agent_command", "")).strip()
+    if config_command:
+        return config_command, command_env, "config"
+    return "", command_env, "missing"
+
+
+def resolve_external_agent_command_from_config(
+    config_path: str | Path = DEFAULT_EXTERNAL_AGENT_CONFIG,
+    *,
+    explicit_command: str | None = None,
+) -> tuple[str, str, str, dict[str, Any]]:
+    config = load_config(config_path)
+    agent_cfg = config.raw.get("agent", {})
+    command, env_name, source = resolve_external_agent_command(agent_cfg, explicit_command=explicit_command)
+    return command, env_name, source, agent_cfg
 
 
 def validate_external_agent_command(command: str, command_env: str, agent_cfg: dict[str, Any]) -> dict[str, Any]:

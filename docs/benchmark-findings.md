@@ -4,6 +4,11 @@ These findings summarize the latest local diagnostic benchmark sweep. They are
 not public benchmark results, not official leaderboard numbers, and not a
 CodeGraph-over-rg claim.
 
+Current MVP2 closure evidence supersedes this historical clean-sweep summary
+for public-claim decisions: release comprehensive is clean, the current clean
+aggregate is complete local diagnostic evidence, Benchmark v1 real-agent patch
+ladders are `blocked_external_complete_actionable`, and `public_claim=false`.
+
 The important framing is:
 
 ```text
@@ -15,12 +20,12 @@ v1 must measure rg-only agent vs rg + CodeGraph agent.
 
 Source report:
 
-- `reports/final/full_benchmark_sweep_latest.md`
-- `reports/final/full_benchmark_sweep_latest.json`
+- `reports/final/full_e2e_benchmark_three_run_latest.md`
+- `reports/final/full_e2e_benchmark_three_run_latest.json`
 
-The latest clean sweep ran smoke, full v0, v0.5 internal, v0.5 external, and a
-SWE-bench-focused suite alias after fixing an `rg`/Python output-flood
-regression. It recorded:
+The latest clean sweep is a three-run local diagnostic sweep. It ran smoke,
+full v0, v0.5 internal, v0.5 external, and a SWE-bench-focused suite alias. It
+recorded:
 
 - claimability violations: 0;
 - unsupported-claim violations: 0;
@@ -35,9 +40,9 @@ RepoBench-style, and CrossCodeEval-style tracks.
 
 | Provider | Recall@5 | MRR | Precision@5 | Context bytes | Warm ms/task |
 |---|---:|---:|---:|---:|---:|
-| `rg_only` | 0.531 | 0.490 | 0.261 | 132,259 | 195 |
-| `codegraph_full` | 0.460 | 0.356 | 0.217 | 52,496 | 1,418 |
-| `codegraph_exact_text` | 0.138 | 0.127 | 0.044 | 43,038 | 1,305 |
+| `rg_only` | 0.528 | 0.482 | 0.261 | 135,815 | 595 |
+| `codegraph_full` | 0.454 | 0.358 | 0.214 | 54,342 | 1,098 |
+| `codegraph_exact_text` | 0.138 | 0.127 | 0.044 | 44,689 | 1,018 |
 | `baseline` | 0.000 | 0.000 | 0.000 | 0 | 0 |
 
 Interpretation:
@@ -56,10 +61,10 @@ large-codebase planning.
 
 | Provider | Recall@5 | MRR | Precision@5 | Context bytes | Warm ms/task |
 |---|---:|---:|---:|---:|---:|
-| `rg_planned` | 0.758 | 0.925 | 0.400 | 43,903 | 433 |
-| `codegraph_current` | 0.483 | 0.588 | 0.200 | 62,877 | 2,521 |
-| `codegraph_planned` | 0.492 | 0.517 | 0.200 | 87,897 | 7,391 |
-| `rg_only` | 0.475 | 0.553 | 0.200 | 395,999 | 327 |
+| `rg_planned` | 0.692 | 0.828 | 0.360 | 44,250 | 758 |
+| `codegraph_current` | 0.483 | 0.577 | 0.200 | 65,276 | 1,622 |
+| `codegraph_planned` | 0.492 | 0.517 | 0.200 | 91,961 | 5,424 |
+| `rg_only` | 0.483 | 0.541 | 0.200 | 403,859 | 719 |
 
 Interpretation:
 
@@ -76,10 +81,10 @@ CrossCodeEval-style local diagnostic subsets after query-leakage hardening.
 
 | Provider | Recall@5 | MRR | Precision@5 | Context bytes | Warm ms/task |
 |---|---:|---:|---:|---:|---:|
-| `rg_planned` | 0.973 | 0.500 | 0.560 | 288 | 145 |
-| `codegraph_planned` | 0.573 | 0.611 | 0.310 | 59,078 | 3,684 |
-| `rg_only` | 0.539 | 0.571 | 0.310 | 2,956 | 125 |
-| `codegraph_current` | 0.466 | 0.362 | 0.250 | 47,489 | 986 |
+| `rg_planned` | 0.973 | 0.500 | 0.560 | 288 | 609 |
+| `codegraph_planned` | 0.573 | 0.611 | 0.310 | 60,785 | 3,508 |
+| `rg_only` | 0.539 | 0.558 | 0.310 | 2,956 | 536 |
+| `codegraph_current` | 0.466 | 0.362 | 0.250 | 48,927 | 888 |
 
 Interpretation:
 
@@ -92,16 +97,22 @@ Interpretation:
 
 ## SWE-bench Status
 
-SWE-bench Lite gold validation has completed for `sympy__sympy-20590` through
-the local Linux-container route in a normal user/approved unsandboxed process.
-That is harness readiness evidence only.
+Older SWE-bench Lite setup evidence remains harness-readiness history only. The
+current v1 evidence is more precise: the external-agent wrapper validates when
+configured for the run, host/approved Docker and live gold validation are ready,
+the production `agent-use` profile is claimable through the external DB, and
+checkout identity was verified under the normal user/approved host probe. The
+patch ladder is still blocked before real patch execution because the one-task
+CodeGraph B-arm context prebuild timed out at 1800s and stayed
+non-claimable/non-attributable; the 5/10 task subsets are also not
+materialized.
 
-Patch-quality predictions have now run for `baseline` and `rg_only` on the
-same one-task local diagnostic. Both modes generated real patches, completed
-Docker evaluation, and resolved, but both failed the clean-source-patch gate due
-an extra test-file edit. CodeGraph patch-quality is still unmeasured because
-`codegraph_exact_text` and `codegraph_full` were skipped before agent execution
-when context was invalid for attribution.
+Patch-quality scoring still requires actual external-agent predictions
+evaluated through the SWE-bench harness. No current CodeGraph-attributed patch
+outcome, official-compatible multi-task score, public benchmark result, or
+real-agent patch-quality claim exists. Setup readiness, mock-agent runs,
+cached/live gold-validation runs, and blocked preflights are not patch-quality
+scores.
 
 ## What The Results Actually Say
 

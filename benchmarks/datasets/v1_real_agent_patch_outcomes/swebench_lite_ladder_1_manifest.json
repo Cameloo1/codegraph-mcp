@@ -1,0 +1,129 @@
+{
+  "schema_version": "benchmark_v1_task_manifest_template_v1",
+  "manifest_id": "swebench_lite_one_task_pinned_manifest",
+  "manifest_status": "pinned",
+  "rung": "one_task",
+  "public_claim": false,
+  "real_patch_quality_claim": false,
+  "claim_boundary": "local diagnostic Benchmark v1 task manifest only; no public benchmark, SWE-bench score, or real patch-quality claim",
+  "product_comparison": {
+    "arm_a": "same agent + normal rg/search/edit/test tools",
+    "arm_b": "same agent + normal rg/search/edit/test tools + CodeGraph",
+    "only_allowed_difference": "CodeGraph context/routing/proof packet availability in arm B"
+  },
+  "provider_visible_fields": [
+    "task_id",
+    "prompt",
+    "visible_query_terms",
+    "visible_file_hints",
+    "visible_symbol_hints",
+    "visible_text_hints",
+    "visible_language",
+    "visible_repo_metadata"
+  ],
+  "evaluator_only_fields": [
+    "hidden_gold_files",
+    "hidden_gold_symbols",
+    "forbidden_files",
+    "forbidden_symbols",
+    "oracle_labels",
+    "expected_result_fields",
+    "expected_tests",
+    "evaluator_notes",
+    "patch",
+    "test_patch",
+    "FAIL_TO_PASS",
+    "PASS_TO_PASS",
+    "hints_text"
+  ],
+  "tasks": [
+    {
+      "task_id": "swebench_lite_sympy_sympy_20590",
+      "repo": {
+        "source": "swe_bench_lite",
+        "repo_name": "sympy/sympy",
+        "pinned_commit": "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+        "task_source_id": "sympy__sympy-20590",
+        "dataset_name": "princeton-nlp/SWE-bench_Lite",
+        "dataset_cache_fingerprint": "6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2",
+        "upstream_harness_pinned_commit": "f7bbbb2ccdf479001d6467c9e34af59e44a840f9",
+        "pinning_required": false,
+        "checkout": {
+          "local_source_checkout_path": "benchmarks/results/summaries/swebench_focused_20260521_163620/repos/sympy-source",
+          "base_commit_resolved": true,
+          "safe_directory_validation": "git -c safe.directory=<checkout> cat-file -e <base_commit>^{commit}",
+          "docker_evaluator_checkout_policy": "official_swebench_harness_materializes_disposable_checkout"
+        }
+      },
+      "visible": {
+        "prompt": "Symbol instances have __dict__ since 1.7?\nIn version 1.6.2 Symbol instances had no `__dict__` attribute\r\n```python\r\n>>> sympy.Symbol('s').__dict__\r\n---------------------------------------------------------------------------\r\nAttributeError                            Traceback (most recent call last)\r\n<ipython-input-3-e2060d5eec73> in <module>\r\n----> 1 sympy.Symbol('s').__dict__\r\n\r\nAttributeError: 'Symbol' object has no attribute '__dict__'\r\n>>> sympy.Symbol('s').__slots__\r\n('name',)\r\n```\r\n\r\nThis changes in 1.7 where `sympy.Symbol('s').__dict__` now exists (and returns an empty dict)\r\nI may misinterpret this, but given the purpose of `__slots__`, I assume this is a bug, introduced because some parent class accidentally stopped defining `__slots__`.\n",
+        "visible_query_terms": [
+          "swebench lite",
+          "sympy",
+          "sympy__sympy-20590",
+          "Symbol",
+          "instances",
+          "have",
+          "__dict__",
+          "since"
+        ],
+        "visible_file_hints": [],
+        "visible_symbol_hints": [],
+        "visible_text_hints": [],
+        "visible_language": "python",
+        "visible_repo_metadata": {
+          "repo_name": "sympy/sympy",
+          "repository": "sympy/sympy",
+          "task_source_id": "sympy__sympy-20590",
+          "base_commit": "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+          "dataset_version": "princeton-nlp/SWE-bench_Lite",
+          "version": "1.7",
+          "checkout_policy": "validated local source checkout; disposable evaluator checkout at run time"
+        }
+      },
+      "evaluator_only": {
+        "hidden_gold_files": [
+          "sympy/core/_print_helpers.py"
+        ],
+        "hidden_gold_symbols": [],
+        "forbidden_files": [],
+        "forbidden_symbols": [],
+        "oracle_labels": [],
+        "expected_result_fields": [
+          "resolved_percentage",
+          "test_pass_rate",
+          "wrong_file_edits",
+          "nonexistent_symbol_references",
+          "unsupported_claims",
+          "evidence_alignment",
+          "time_tokens_tool_calls",
+          "context_bytes",
+          "patch_size",
+          "retry_count",
+          "cost_per_solved_task",
+          "no_proof_behavior",
+          "stale_db_behavior",
+          "context_attribution_validity",
+          "skipped_blocked_task_status"
+        ],
+        "expected_tests": [
+          "sympy/core/tests/test_basic.py"
+        ],
+        "evaluator_notes": "Evaluator-only file labels derived from cached pinned SWE-bench Lite patch/test_patch columns. These labels are never provider-visible and are not patch-quality evidence."
+      },
+      "claim_boundaries": {
+        "public_claim": false,
+        "real_patch_quality_claim": false,
+        "requires_real_external_agent_prediction": true,
+        "mock_agent_quality_allowed": false,
+        "local_diagnostic_only_until_later_claim_gate": true
+      },
+      "same_agent_ab_invariant": {
+        "arm_a": "same agent + normal rg/search/edit/test tools",
+        "arm_b": "same agent + normal rg/search/edit/test tools + CodeGraph",
+        "same_model_scaffold_task_budget_evaluator_timeout_repo_commit": true,
+        "only_allowed_difference": "CodeGraph context/routing/proof packet availability in arm B"
+      }
+    }
+  ]
+}

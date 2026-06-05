@@ -188,12 +188,50 @@ function Invoke-CodexPatchAgent {
 function Get-GitDiff {
     param([string]$Workspace)
 
-    $diff = & git -C $Workspace diff --no-ext-diff --binary -- 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        throw "git_diff_failed"
+    $resolvedWorkspace = (Resolve-Path -LiteralPath $Workspace).Path
+
+    function Invoke-GitCapture {
+        param([string[]]$GitArgs)
+
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = "git"
+        $psi.Arguments = Join-ProcessArgs (@("-c", "safe.directory=$resolvedWorkspace", "-C", $resolvedWorkspace) + $GitArgs)
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+
+        $proc = [System.Diagnostics.Process]::new()
+        $proc.StartInfo = $psi
+        [void]$proc.Start()
+        $stdout = $proc.StandardOutput.ReadToEnd()
+        $stderr = $proc.StandardError.ReadToEnd()
+        $proc.WaitForExit()
+        return [pscustomobject]@{
+            ExitCode = $proc.ExitCode
+            Stdout = $stdout
+            Stderr = $stderr
+        }
     }
-    $text = ($diff -join [Environment]::NewLine)
+
+    $inside = Invoke-GitCapture -GitArgs @("rev-parse", "--is-inside-work-tree")
+    if ($inside.ExitCode -ne 0) {
+        [Console]::Error.WriteLine("git_workspace_invalid: $resolvedWorkspace")
+        [Console]::Error.WriteLine($inside.Stderr)
+        exit $inside.ExitCode
+    }
+
+    $diff = Invoke-GitCapture -GitArgs @("diff", "--no-ext-diff", "--binary", "--")
+    if ($diff.ExitCode -ne 0) {
+        [Console]::Error.WriteLine("git_diff_failed: $resolvedWorkspace")
+        [Console]::Error.WriteLine($diff.Stderr)
+        exit $diff.ExitCode
+    }
+    $text = $diff.Stdout
     if (-not $text.Trim().StartsWith("diff --git")) {
+        if ($diff.Stderr) {
+            [Console]::Error.WriteLine($diff.Stderr)
+        }
         throw "no_patch_generated"
     }
     return $text

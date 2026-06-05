@@ -106,6 +106,15 @@ class PowerShellWrapperTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertTrue(proc.stdout.lstrip().startswith("diff --git"), proc.stdout)
 
+    def test_swebench_track_codex_wrapper_uses_local_safe_directory_for_diff(self):
+        text = Path("benchmarks/tracks/swebench_lite/scripts/run_codex_external_patch_agent.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("safe.directory=$resolvedWorkspace", text)
+        self.assertIn('"rev-parse", "--is-inside-work-tree"', text)
+        self.assertIn('"diff", "--no-ext-diff", "--binary", "--"', text)
+
     def test_codex_external_agent_wrapper_station_dry_run_writes_launch_command(self):
         powershell = shutil.which("powershell") or shutil.which("pwsh")
         if powershell is None:

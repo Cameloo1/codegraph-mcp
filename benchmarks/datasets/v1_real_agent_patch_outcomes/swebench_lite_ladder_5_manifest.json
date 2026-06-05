@@ -1,0 +1,479 @@
+{
+  "schema_version": "benchmark_v1_task_manifest_template_v1",
+  "manifest_id": "swebench_lite_five_task_pinned_manifest",
+  "manifest_status": "pinned",
+  "rung": "five_task",
+  "public_claim": false,
+  "real_patch_quality_claim": false,
+  "claim_boundary": "local diagnostic Benchmark v1 task manifest only; no public benchmark, SWE-bench score, or real patch-quality claim",
+  "product_comparison": {
+    "arm_a": "same agent + normal rg/search/edit/test tools",
+    "arm_b": "same agent + normal rg/search/edit/test tools + CodeGraph",
+    "only_allowed_difference": "CodeGraph context/routing/proof packet availability in arm B"
+  },
+  "provider_visible_fields": [
+    "task_id",
+    "prompt",
+    "visible_query_terms",
+    "visible_file_hints",
+    "visible_symbol_hints",
+    "visible_text_hints",
+    "visible_language",
+    "visible_repo_metadata"
+  ],
+  "evaluator_only_fields": [
+    "hidden_gold_files",
+    "hidden_gold_symbols",
+    "forbidden_files",
+    "forbidden_symbols",
+    "oracle_labels",
+    "expected_result_fields",
+    "expected_tests",
+    "evaluator_notes",
+    "patch",
+    "test_patch",
+    "FAIL_TO_PASS",
+    "PASS_TO_PASS",
+    "hints_text"
+  ],
+  "tasks": [
+    {
+      "task_id": "swebench_lite_sympy_sympy_20590",
+      "repo": {
+        "source": "swe_bench_lite",
+        "repo_name": "sympy/sympy",
+        "pinned_commit": "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+        "task_source_id": "sympy__sympy-20590",
+        "dataset_name": "princeton-nlp/SWE-bench_Lite",
+        "dataset_cache_fingerprint": "6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2",
+        "upstream_harness_pinned_commit": "f7bbbb2ccdf479001d6467c9e34af59e44a840f9",
+        "pinning_required": false,
+        "checkout": {
+          "local_source_checkout_path": "benchmarks/results/summaries/swebench_focused_20260521_163620/repos/sympy-source",
+          "base_commit_resolved": true,
+          "safe_directory_validation": "git -c safe.directory=<checkout> cat-file -e <base_commit>^{commit}",
+          "docker_evaluator_checkout_policy": "official_swebench_harness_materializes_disposable_checkout"
+        }
+      },
+      "visible": {
+        "prompt": "Symbol instances have __dict__ since 1.7?\nIn version 1.6.2 Symbol instances had no `__dict__` attribute\r\n```python\r\n>>> sympy.Symbol('s').__dict__\r\n---------------------------------------------------------------------------\r\nAttributeError                            Traceback (most recent call last)\r\n<ipython-input-3-e2060d5eec73> in <module>\r\n----> 1 sympy.Symbol('s').__dict__\r\n\r\nAttributeError: 'Symbol' object has no attribute '__dict__'\r\n>>> sympy.Symbol('s').__slots__\r\n('name',)\r\n```\r\n\r\nThis changes in 1.7 where `sympy.Symbol('s').__dict__` now exists (and returns an empty dict)\r\nI may misinterpret this, but given the purpose of `__slots__`, I assume this is a bug, introduced because some parent class accidentally stopped defining `__slots__`.\n",
+        "visible_query_terms": [
+          "swebench lite",
+          "sympy",
+          "sympy__sympy-20590",
+          "Symbol",
+          "instances",
+          "have",
+          "__dict__",
+          "since"
+        ],
+        "visible_file_hints": [],
+        "visible_symbol_hints": [],
+        "visible_text_hints": [],
+        "visible_language": "python",
+        "visible_repo_metadata": {
+          "repo_name": "sympy/sympy",
+          "repository": "sympy/sympy",
+          "task_source_id": "sympy__sympy-20590",
+          "base_commit": "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+          "dataset_version": "princeton-nlp/SWE-bench_Lite",
+          "version": "1.7",
+          "checkout_policy": "validated local source checkout; disposable evaluator checkout at run time"
+        }
+      },
+      "evaluator_only": {
+        "hidden_gold_files": [
+          "sympy/core/_print_helpers.py"
+        ],
+        "hidden_gold_symbols": [],
+        "forbidden_files": [],
+        "forbidden_symbols": [],
+        "oracle_labels": [],
+        "expected_result_fields": [
+          "resolved_percentage",
+          "test_pass_rate",
+          "wrong_file_edits",
+          "nonexistent_symbol_references",
+          "unsupported_claims",
+          "evidence_alignment",
+          "time_tokens_tool_calls",
+          "context_bytes",
+          "patch_size",
+          "retry_count",
+          "cost_per_solved_task",
+          "no_proof_behavior",
+          "stale_db_behavior",
+          "context_attribution_validity",
+          "skipped_blocked_task_status"
+        ],
+        "expected_tests": [
+          "sympy/core/tests/test_basic.py"
+        ],
+        "evaluator_notes": "Evaluator-only file labels derived from cached pinned SWE-bench Lite patch/test_patch columns. These labels are never provider-visible and are not patch-quality evidence."
+      },
+      "claim_boundaries": {
+        "public_claim": false,
+        "real_patch_quality_claim": false,
+        "requires_real_external_agent_prediction": true,
+        "mock_agent_quality_allowed": false,
+        "local_diagnostic_only_until_later_claim_gate": true
+      },
+      "same_agent_ab_invariant": {
+        "arm_a": "same agent + normal rg/search/edit/test tools",
+        "arm_b": "same agent + normal rg/search/edit/test tools + CodeGraph",
+        "same_model_scaffold_task_budget_evaluator_timeout_repo_commit": true,
+        "only_allowed_difference": "CodeGraph context/routing/proof packet availability in arm B"
+      }
+    },
+    {
+      "task_id": "swebench_lite_sympy_sympy_11400",
+      "repo": {
+        "source": "swe_bench_lite",
+        "repo_name": "sympy/sympy",
+        "pinned_commit": "8dcb12a6cf500e8738d6729ab954a261758f49ca",
+        "task_source_id": "sympy__sympy-11400",
+        "dataset_name": "princeton-nlp/SWE-bench_Lite",
+        "dataset_cache_fingerprint": "6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2",
+        "upstream_harness_pinned_commit": "f7bbbb2ccdf479001d6467c9e34af59e44a840f9",
+        "pinning_required": false,
+        "checkout": {
+          "local_source_checkout_path": "benchmarks/results/summaries/swebench_focused_20260521_163620/repos/sympy-source",
+          "base_commit_resolved": true,
+          "safe_directory_validation": "git -c safe.directory=<checkout> cat-file -e <base_commit>^{commit}",
+          "docker_evaluator_checkout_policy": "official_swebench_harness_materializes_disposable_checkout"
+        }
+      },
+      "visible": {
+        "prompt": "ccode(sinc(x)) doesn't work\n```\nIn [30]: ccode(sinc(x))\nOut[30]: '// Not supported in C:\\n// sinc\\nsinc(x)'\n```\n\nI don't think `math.h` has `sinc`, but it could print\n\n```\nIn [38]: ccode(Piecewise((sin(theta)/theta, Ne(theta, 0)), (1, True)))\nOut[38]: '((Ne(theta, 0)) ? (\\n   sin(theta)/theta\\n)\\n: (\\n   1\\n))'\n```\n\n",
+        "visible_query_terms": [
+          "swebench lite",
+          "sympy",
+          "sympy__sympy-11400",
+          "ccode",
+          "sinc",
+          "doesn",
+          "work"
+        ],
+        "visible_file_hints": [],
+        "visible_symbol_hints": [],
+        "visible_text_hints": [],
+        "visible_language": "python",
+        "visible_repo_metadata": {
+          "repo_name": "sympy/sympy",
+          "repository": "sympy/sympy",
+          "task_source_id": "sympy__sympy-11400",
+          "base_commit": "8dcb12a6cf500e8738d6729ab954a261758f49ca",
+          "dataset_version": "princeton-nlp/SWE-bench_Lite",
+          "version": "1.0",
+          "checkout_policy": "validated local source checkout; disposable evaluator checkout at run time"
+        }
+      },
+      "evaluator_only": {
+        "hidden_gold_files": [
+          "sympy/printing/ccode.py"
+        ],
+        "hidden_gold_symbols": [],
+        "forbidden_files": [],
+        "forbidden_symbols": [],
+        "oracle_labels": [],
+        "expected_result_fields": [
+          "resolved_percentage",
+          "test_pass_rate",
+          "wrong_file_edits",
+          "nonexistent_symbol_references",
+          "unsupported_claims",
+          "evidence_alignment",
+          "time_tokens_tool_calls",
+          "context_bytes",
+          "patch_size",
+          "retry_count",
+          "cost_per_solved_task",
+          "no_proof_behavior",
+          "stale_db_behavior",
+          "context_attribution_validity",
+          "skipped_blocked_task_status"
+        ],
+        "expected_tests": [
+          "sympy/printing/tests/test_ccode.py"
+        ],
+        "evaluator_notes": "Evaluator-only file labels derived from cached pinned SWE-bench Lite patch/test_patch columns. These labels are never provider-visible and are not patch-quality evidence."
+      },
+      "claim_boundaries": {
+        "public_claim": false,
+        "real_patch_quality_claim": false,
+        "requires_real_external_agent_prediction": true,
+        "mock_agent_quality_allowed": false,
+        "local_diagnostic_only_until_later_claim_gate": true
+      },
+      "same_agent_ab_invariant": {
+        "arm_a": "same agent + normal rg/search/edit/test tools",
+        "arm_b": "same agent + normal rg/search/edit/test tools + CodeGraph",
+        "same_model_scaffold_task_budget_evaluator_timeout_repo_commit": true,
+        "only_allowed_difference": "CodeGraph context/routing/proof packet availability in arm B"
+      }
+    },
+    {
+      "task_id": "swebench_lite_sympy_sympy_11870",
+      "repo": {
+        "source": "swe_bench_lite",
+        "repo_name": "sympy/sympy",
+        "pinned_commit": "5c2e1f96a7ff562d4a778f4ca9ffc9c81557197e",
+        "task_source_id": "sympy__sympy-11870",
+        "dataset_name": "princeton-nlp/SWE-bench_Lite",
+        "dataset_cache_fingerprint": "6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2",
+        "upstream_harness_pinned_commit": "f7bbbb2ccdf479001d6467c9e34af59e44a840f9",
+        "pinning_required": false,
+        "checkout": {
+          "local_source_checkout_path": "benchmarks/results/summaries/swebench_focused_20260521_163620/repos/sympy-source",
+          "base_commit_resolved": true,
+          "safe_directory_validation": "git -c safe.directory=<checkout> cat-file -e <base_commit>^{commit}",
+          "docker_evaluator_checkout_policy": "official_swebench_harness_materializes_disposable_checkout"
+        }
+      },
+      "visible": {
+        "prompt": "simplifying exponential -> trig identities\n```\r\nf = 1 / 2 * (-I*exp(I*k) + I*exp(-I*k))\r\ntrigsimp(f)\r\n```\r\n\r\nIdeally, this would yield `sin(k)`. Is there a way to do this?\r\n\r\nAs a corollary, it would be awesome if \r\n\r\n```\r\nf = 1 / 2 / k* (-I*exp(I*k) + I*exp(-I*k))\r\ntrigsimp(f)\r\n```\r\n\r\ncould yield `sinc(k)`. Thank you for your consideration!\n",
+        "visible_query_terms": [
+          "swebench lite",
+          "sympy",
+          "sympy__sympy-11870",
+          "simplifying",
+          "exponential",
+          "trig",
+          "identities"
+        ],
+        "visible_file_hints": [],
+        "visible_symbol_hints": [],
+        "visible_text_hints": [],
+        "visible_language": "python",
+        "visible_repo_metadata": {
+          "repo_name": "sympy/sympy",
+          "repository": "sympy/sympy",
+          "task_source_id": "sympy__sympy-11870",
+          "base_commit": "5c2e1f96a7ff562d4a778f4ca9ffc9c81557197e",
+          "dataset_version": "princeton-nlp/SWE-bench_Lite",
+          "version": "1.1",
+          "checkout_policy": "validated local source checkout; disposable evaluator checkout at run time"
+        }
+      },
+      "evaluator_only": {
+        "hidden_gold_files": [
+          "sympy/functions/elementary/trigonometric.py"
+        ],
+        "hidden_gold_symbols": [],
+        "forbidden_files": [],
+        "forbidden_symbols": [],
+        "oracle_labels": [],
+        "expected_result_fields": [
+          "resolved_percentage",
+          "test_pass_rate",
+          "wrong_file_edits",
+          "nonexistent_symbol_references",
+          "unsupported_claims",
+          "evidence_alignment",
+          "time_tokens_tool_calls",
+          "context_bytes",
+          "patch_size",
+          "retry_count",
+          "cost_per_solved_task",
+          "no_proof_behavior",
+          "stale_db_behavior",
+          "context_attribution_validity",
+          "skipped_blocked_task_status"
+        ],
+        "expected_tests": [
+          "sympy/functions/elementary/tests/test_trigonometric.py"
+        ],
+        "evaluator_notes": "Evaluator-only file labels derived from cached pinned SWE-bench Lite patch/test_patch columns. These labels are never provider-visible and are not patch-quality evidence."
+      },
+      "claim_boundaries": {
+        "public_claim": false,
+        "real_patch_quality_claim": false,
+        "requires_real_external_agent_prediction": true,
+        "mock_agent_quality_allowed": false,
+        "local_diagnostic_only_until_later_claim_gate": true
+      },
+      "same_agent_ab_invariant": {
+        "arm_a": "same agent + normal rg/search/edit/test tools",
+        "arm_b": "same agent + normal rg/search/edit/test tools + CodeGraph",
+        "same_model_scaffold_task_budget_evaluator_timeout_repo_commit": true,
+        "only_allowed_difference": "CodeGraph context/routing/proof packet availability in arm B"
+      }
+    },
+    {
+      "task_id": "swebench_lite_sympy_sympy_11897",
+      "repo": {
+        "source": "swe_bench_lite",
+        "repo_name": "sympy/sympy",
+        "pinned_commit": "e2918c1205c47345eb73c9be68b14c0f15fdeb17",
+        "task_source_id": "sympy__sympy-11897",
+        "dataset_name": "princeton-nlp/SWE-bench_Lite",
+        "dataset_cache_fingerprint": "6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2",
+        "upstream_harness_pinned_commit": "f7bbbb2ccdf479001d6467c9e34af59e44a840f9",
+        "pinning_required": false,
+        "checkout": {
+          "local_source_checkout_path": "benchmarks/results/summaries/swebench_focused_20260521_163620/repos/sympy-source",
+          "base_commit_resolved": true,
+          "safe_directory_validation": "git -c safe.directory=<checkout> cat-file -e <base_commit>^{commit}",
+          "docker_evaluator_checkout_policy": "official_swebench_harness_materializes_disposable_checkout"
+        }
+      },
+      "visible": {
+        "prompt": "LaTeX printer inconsistent with pretty printer\nThe LaTeX printer should always give the same output as the pretty printer, unless better output is possible from LaTeX. In some cases it is inconsistent. For instance:\n\n``` py\nIn [9]: var('x', positive=True)\nOut[9]: x\n\nIn [10]: latex(exp(-x)*log(x))\nOut[10]: '\\\\frac{1}{e^{x}} \\\\log{\\\\left (x \\\\right )}'\n\nIn [11]: pprint(exp(-x)*log(x))\n -x\n\u212f  \u22c5log(x)\n```\n\n(I also don't think the assumptions should affect printing). \n\n``` py\nIn [14]: var('x y')\nOut[14]: (x, y)\n\nIn [15]: latex(1/(x + y)/2)\nOut[15]: '\\\\frac{1}{2 x + 2 y}'\n\nIn [16]: pprint(1/(x + y)/2)\n    1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n2\u22c5(x + y)\n```\n\n",
+        "visible_query_terms": [
+          "swebench lite",
+          "sympy",
+          "sympy__sympy-11897",
+          "LaTeX",
+          "printer",
+          "inconsistent",
+          "with",
+          "pretty"
+        ],
+        "visible_file_hints": [],
+        "visible_symbol_hints": [],
+        "visible_text_hints": [],
+        "visible_language": "python",
+        "visible_repo_metadata": {
+          "repo_name": "sympy/sympy",
+          "repository": "sympy/sympy",
+          "task_source_id": "sympy__sympy-11897",
+          "base_commit": "e2918c1205c47345eb73c9be68b14c0f15fdeb17",
+          "dataset_version": "princeton-nlp/SWE-bench_Lite",
+          "version": "1.0",
+          "checkout_policy": "validated local source checkout; disposable evaluator checkout at run time"
+        }
+      },
+      "evaluator_only": {
+        "hidden_gold_files": [
+          "sympy/printing/latex.py"
+        ],
+        "hidden_gold_symbols": [],
+        "forbidden_files": [],
+        "forbidden_symbols": [],
+        "oracle_labels": [],
+        "expected_result_fields": [
+          "resolved_percentage",
+          "test_pass_rate",
+          "wrong_file_edits",
+          "nonexistent_symbol_references",
+          "unsupported_claims",
+          "evidence_alignment",
+          "time_tokens_tool_calls",
+          "context_bytes",
+          "patch_size",
+          "retry_count",
+          "cost_per_solved_task",
+          "no_proof_behavior",
+          "stale_db_behavior",
+          "context_attribution_validity",
+          "skipped_blocked_task_status"
+        ],
+        "expected_tests": [
+          "sympy/printing/tests/test_latex.py"
+        ],
+        "evaluator_notes": "Evaluator-only file labels derived from cached pinned SWE-bench Lite patch/test_patch columns. These labels are never provider-visible and are not patch-quality evidence."
+      },
+      "claim_boundaries": {
+        "public_claim": false,
+        "real_patch_quality_claim": false,
+        "requires_real_external_agent_prediction": true,
+        "mock_agent_quality_allowed": false,
+        "local_diagnostic_only_until_later_claim_gate": true
+      },
+      "same_agent_ab_invariant": {
+        "arm_a": "same agent + normal rg/search/edit/test tools",
+        "arm_b": "same agent + normal rg/search/edit/test tools + CodeGraph",
+        "same_model_scaffold_task_budget_evaluator_timeout_repo_commit": true,
+        "only_allowed_difference": "CodeGraph context/routing/proof packet availability in arm B"
+      }
+    },
+    {
+      "task_id": "swebench_lite_sympy_sympy_12171",
+      "repo": {
+        "source": "swe_bench_lite",
+        "repo_name": "sympy/sympy",
+        "pinned_commit": "ca6ef27272be31c9dc3753ede9232c39df9a75d8",
+        "task_source_id": "sympy__sympy-12171",
+        "dataset_name": "princeton-nlp/SWE-bench_Lite",
+        "dataset_cache_fingerprint": "6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2",
+        "upstream_harness_pinned_commit": "f7bbbb2ccdf479001d6467c9e34af59e44a840f9",
+        "pinning_required": false,
+        "checkout": {
+          "local_source_checkout_path": "benchmarks/results/summaries/swebench_focused_20260521_163620/repos/sympy-source",
+          "base_commit_resolved": true,
+          "safe_directory_validation": "git -c safe.directory=<checkout> cat-file -e <base_commit>^{commit}",
+          "docker_evaluator_checkout_policy": "official_swebench_harness_materializes_disposable_checkout"
+        }
+      },
+      "visible": {
+        "prompt": "matematica code printer does not handle floats and derivatives correctly\nIn its current state the mathematica code printer does not handle Derivative(func(vars), deriver) \r\ne.g. Derivative(f(t), t) yields Derivative(f(t), t) instead of D[f[t],t]\r\n\r\nAlso floats with exponents are not handled correctly e.g. 1.0e-4 is not converted to 1.0*^-4\r\n\r\nThis has an easy fix by adding the following lines to MCodePrinter:\r\n\r\n\r\ndef _print_Derivative(self, expr):\r\n        return \"D[%s]\" % (self.stringify(expr.args, \", \"))\r\n\r\ndef _print_Float(self, expr):\r\n        res =str(expr)\r\n        return res.replace('e','*^') \r\n\r\n\r\n\n",
+        "visible_query_terms": [
+          "swebench lite",
+          "sympy",
+          "sympy__sympy-12171",
+          "matematica",
+          "code",
+          "printer",
+          "does",
+          "handle"
+        ],
+        "visible_file_hints": [],
+        "visible_symbol_hints": [],
+        "visible_text_hints": [],
+        "visible_language": "python",
+        "visible_repo_metadata": {
+          "repo_name": "sympy/sympy",
+          "repository": "sympy/sympy",
+          "task_source_id": "sympy__sympy-12171",
+          "base_commit": "ca6ef27272be31c9dc3753ede9232c39df9a75d8",
+          "dataset_version": "princeton-nlp/SWE-bench_Lite",
+          "version": "1.0",
+          "checkout_policy": "validated local source checkout; disposable evaluator checkout at run time"
+        }
+      },
+      "evaluator_only": {
+        "hidden_gold_files": [
+          "sympy/printing/mathematica.py"
+        ],
+        "hidden_gold_symbols": [],
+        "forbidden_files": [],
+        "forbidden_symbols": [],
+        "oracle_labels": [],
+        "expected_result_fields": [
+          "resolved_percentage",
+          "test_pass_rate",
+          "wrong_file_edits",
+          "nonexistent_symbol_references",
+          "unsupported_claims",
+          "evidence_alignment",
+          "time_tokens_tool_calls",
+          "context_bytes",
+          "patch_size",
+          "retry_count",
+          "cost_per_solved_task",
+          "no_proof_behavior",
+          "stale_db_behavior",
+          "context_attribution_validity",
+          "skipped_blocked_task_status"
+        ],
+        "expected_tests": [
+          "sympy/printing/tests/test_mathematica.py"
+        ],
+        "evaluator_notes": "Evaluator-only file labels derived from cached pinned SWE-bench Lite patch/test_patch columns. These labels are never provider-visible and are not patch-quality evidence."
+      },
+      "claim_boundaries": {
+        "public_claim": false,
+        "real_patch_quality_claim": false,
+        "requires_real_external_agent_prediction": true,
+        "mock_agent_quality_allowed": false,
+        "local_diagnostic_only_until_later_claim_gate": true
+      },
+      "same_agent_ab_invariant": {
+        "arm_a": "same agent + normal rg/search/edit/test tools",
+        "arm_b": "same agent + normal rg/search/edit/test tools + CodeGraph",
+        "same_model_scaffold_task_budget_evaluator_timeout_repo_commit": true,
+        "only_allowed_difference": "CodeGraph context/routing/proof packet availability in arm B"
+      }
+    }
+  ]
+}

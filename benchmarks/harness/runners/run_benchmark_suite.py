@@ -86,13 +86,31 @@ RETRIEVAL_CONFIGS = {
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--suite", required=True, choices=sorted(SUITES))
-    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--suite", choices=sorted(SUITES))
+    parser.add_argument("--output-dir")
+    parser.add_argument("--list-suites", action="store_true")
     add_resource_guard_arguments(parser)
     args = parser.parse_args(argv)
+    if args.list_suites:
+        print(json.dumps(suite_inventory(), indent=2))
+        return 0
+    if not args.suite:
+        parser.error("--suite is required unless --list-suites is used")
+    if not args.output_dir:
+        parser.error("--output-dir is required unless --list-suites is used")
     output_dir = ensure_dir(Path(args.output_dir))
     result = run_suite(args.suite, output_dir, resource_limits=resource_limits_from_args(args))
     return 0 if result["status"] == "pass" else 1
+
+
+def suite_inventory() -> dict[str, Any]:
+    return {
+        "schema_version": "benchmark_suite_inventory_v1",
+        "suites": sorted(SUITES),
+        "provider_inventory": PROVIDER_INVENTORY,
+        "retrieval_configs": RETRIEVAL_CONFIGS,
+        "claim_boundary": "suite inventory only; not a benchmark score or public result",
+    }
 
 
 def run_suite(suite: str, output_dir: Path, *, resource_limits: ResourceLimits | None = None) -> dict[str, Any]:

@@ -43,13 +43,21 @@ additional reliability it provides on top of normal `rg` use.
 
 - "On a pinned local diagnostic retrieval set, provider X returned these gold
   files with this recall, ranking, cost, and proof-label behavior."
-- "On a pinned SWE-bench Lite 10-task diagnostic subset, the same configured
-  rg-using agent solved A tasks without CodeGraph and B tasks with CodeGraph."
-- "On a pinned diagnostic patch subset, the same agent using rg + CodeGraph had
-  fewer wrong-file edits than the same agent using rg alone."
 - "This is a local diagnostic ablation, not an official leaderboard result."
 - "CodeGraph reduced claimability violations from A to B on this pinned task
   set."
+
+Future patch-outcome wording is safe only after real same-agent patch runs,
+valid CodeGraph attribution, and a later claim gate approving the exact text:
+
+- "On a pinned SWE-bench Lite 10-task diagnostic subset, the same configured
+  agent using normal rg/search/edit/test tools solved A tasks, and the same
+  configured agent using normal rg/search/edit/test tools plus CodeGraph solved
+  B tasks."
+- "On a pinned diagnostic patch subset, the same configured agent using normal
+  rg/search/edit/test tools plus CodeGraph had fewer wrong-file edits than the
+  same configured agent using normal rg/search/edit/test tools without
+  CodeGraph."
 
 ## Unsafe Wording
 
@@ -134,6 +142,9 @@ SWE-bench boundaries:
   live gold-validation run.
 - Docker failure must produce a blocked live-run status, not a green result.
 - Missing `CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND` blocks patch quality.
+- A configured external-agent command is not sufficient by itself: the current
+  patch ladder also requires claimable, attributable CodeGraph B-arm context and
+  materialized 5/10 task subsets.
 - Current live gold validation may be reported only when the Docker/Linux
   harness actually reruns in the current environment. On 2026-05-23,
   `codegraph-live-gold-20260523-083023` completed 1/1 gold validation for
@@ -160,6 +171,17 @@ SWE-bench boundaries:
 - No SWE-bench score or real-agent patch-quality claim exists unless actual
   external-agent predictions are evaluated through the official-compatible
   harness and skipped/failed tasks are reported.
+
+Current 2026-06-02 patch-ladder status:
+
+- The external-agent wrapper and host/approved Docker validate when the command
+  is supplied for the run.
+- No 1/5/10 real-agent patch tasks ran.
+- The one-task CodeGraph B-arm context prebuild timed out at 1800s and stayed
+  non-claimable/non-attributable.
+- The 5/10 SWE-bench Lite ladder subsets are not materialized.
+- No public benchmark, official SWE-bench score, real-agent patch-quality, or
+  CodeGraph attribution claim is made.
 
 Safe current wording:
 

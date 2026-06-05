@@ -30,6 +30,8 @@ scaffold = "external_agent_command"
 model = "external"
 external_agent_required = true
 external_agent_command_env = "CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND"
+external_agent_command = "powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/tracks/swebench_lite/scripts/run_codex_external_patch_agent.ps1"
+external_agent_dry_run_args = "-ValidateOnly"
 
 [v1]
 schema_version = "benchmark_v1_readiness_config_v1"

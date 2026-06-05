@@ -1,0 +1,1 @@
+Deployment notes are text evidence only. They are useful context, not graph proof.

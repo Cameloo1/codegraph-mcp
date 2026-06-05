@@ -29,7 +29,7 @@ See the full benchmark-lab contract in
 |---|---|---|
 | v0 | Internal/external retrieval diagnostics, claimability scoring, setup readiness, timing accounting. | No. Component health only. |
 | v0.5 | Stronger provider diagnostics: `rg_planned` and `codegraph_planned`. | No. Provider comparison only. |
-| v1 | Real agent A/B runs: rg-only agent vs rg + CodeGraph agent. | Yes, if the harness is official-compatible or explicitly diagnostic. |
+| v1 | Real agent A/B runs: rg-only agent vs rg + CodeGraph agent. | Not currently. Yes only after real same-agent patch runs execute and the claim gate approves the exact wording. |
 
 v0/v0.5 are still valuable. They find retrieval regressions, query leakage,
 proof-label bugs, context poison, and timing problems. They do not decide
@@ -110,14 +110,6 @@ evaluated by an official-compatible harness, pinned datasets, recorded Docker
 dependencies, retained logs/predictions, and reported skipped/failed tasks.
 CodeGraph does not currently claim such a score.
 
-Current SWE-bench Lite pilot status: the local one-task E2E path can generate
-real external-agent patches and evaluate them through Docker for `baseline` and
-`rg_only` on `sympy__sympy-20590`. CodeGraph patch-quality is still not
-measured because CodeGraph modes were skipped before agent execution when
-context was invalid for attribution. See
-[SWE-bench Readiness](swe-bench-readiness.md) for the exact run and recreate
-commands.
-
 ## What CodeGraph Should Prove
 
 CodeGraph should prove that it helps an rg-using agent:
@@ -149,12 +141,14 @@ On this pinned local diagnostic retrieval subset, this provider returned these
 gold files with this recall, ranking, cost, and proof-label behavior.
 ```
 
-Valid product wording requires v1-style agent A/B evidence:
+Potential product wording requires v1-style agent A/B evidence and is not
+currently claimable:
 
 ```text
-On this pinned diagnostic patch subset, the same agent using rg + CodeGraph had
-fewer wrong-file edits and better evidence alignment than the same agent using
-rg alone.
+On this pinned diagnostic patch subset, the same configured agent using normal
+rg/search/edit/test tools plus CodeGraph had fewer wrong-file edits and better
+evidence alignment than the same configured agent using normal rg/search/edit/test
+tools without CodeGraph.
 ```
 
 ## Running Local Diagnostics
@@ -168,3 +162,14 @@ python -m benchmarks.harness.runners.run_benchmark_suite --suite full --output-d
 
 Generated results, DBs, logs, upstream checkouts, patches, predictions, and raw
 payloads are local/ignored by default.
+
+## Related Docs
+
+- [Agent Reliability Benchmark Lab](agent-reliability-benchmark-lab.md)
+  defines the v1 agent A/B benchmark contract.
+- [Current Benchmark Findings](benchmark-findings.md) summarizes stable local
+  diagnostic findings without turning them into public benchmark claims.
+- [SWE-bench Readiness](swe-bench-readiness.md) explains current local
+  SWE-bench Lite harness readiness and claim boundaries.
+- [Benchmark Guide](benchmark-guide.md) covers setup, run hygiene, and report
+  interpretation for benchmark/lab contributors.

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import shutil
 import time
@@ -19,6 +18,10 @@ from benchmarks.harness.resource_guard import (
     summarize_resource_limit_failures,
 )
 from benchmarks.harness.paths import fixture_path, resolve_benchmark_path
+from benchmarks.harness.runners.run_patch_eval import (
+    DEFAULT_EXTERNAL_AGENT_CONFIG,
+    resolve_external_agent_command_from_config,
+)
 from benchmarks.harness.scoring.patch_outcome import changed_files_from_patch, wrong_file_edits
 
 
@@ -32,6 +35,8 @@ CODEGRAPH_CONTEXT_TIMEOUT_S = 240
 DEFAULT_AGENT_TIMEOUT_S = MAX_TIME_S + 180
 DEFAULT_EVAL_TIMEOUT_S = 1800
 MAX_TOOL_CALLS = 80
+CODEGRAPH_PREBUILD_SCOPE = "provider-visible-sparse"
+PATCH_SMOKE_PROVIDER_VISIBLE_SCOPE_MAX_FILES = 64
 PATCH_SMOKE_CANDIDATE_SPOOL_MAX_MIB = 4
 PATCH_SMOKE_CANDIDATE_SPOOL_MAX_RECORDS = 4096
 PATCH_SMOKE_CANDIDATE_SPOOL_PER_DIR_SOFT_CAP = 768
@@ -58,16 +63,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--instance-id", default=TASK_ID)
     parser.add_argument("--modes", nargs="*", default=MODES)
-    parser.add_argument("--external-agent-command", default=os.environ.get("CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND", ""))
+    parser.add_argument("--config", default=DEFAULT_EXTERNAL_AGENT_CONFIG)
+    parser.add_argument("--external-agent-command", default=None)
     parser.add_argument("--source-repo", default="")
     parser.add_argument("--skip-eval", action="store_true")
     parser.add_argument("--skip-agent", action="store_true")
     parser.add_argument("--codegraph-context-timeout-s", type=int, default=CODEGRAPH_CONTEXT_TIMEOUT_S)
+    parser.add_argument(
+        "--codegraph-prebuild-scope",
+        choices=("provider-visible-sparse", "full-checkout"),
+        default=CODEGRAPH_PREBUILD_SCOPE,
+    )
     parser.add_argument("--agent-timeout-s", type=int, default=DEFAULT_AGENT_TIMEOUT_S)
     parser.add_argument("--eval-timeout-s", type=int, default=DEFAULT_EVAL_TIMEOUT_S)
     parser.add_argument("--task-fixture", default=str(DEFAULT_TASK_FIXTURE))
     add_resource_guard_arguments(parser)
     args = parser.parse_args(argv)
+    external_agent_command, _external_agent_env, _external_agent_source, _agent_cfg = resolve_external_agent_command_from_config(
+        args.config,
+        explicit_command=args.external_agent_command,
+    )
 
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -75,11 +90,12 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=output_dir,
         instance_id=args.instance_id,
         modes=args.modes,
-        external_agent_command=args.external_agent_command,
+        external_agent_command=external_agent_command,
         source_repo=Path(args.source_repo).resolve() if args.source_repo else None,
         skip_eval=args.skip_eval,
         skip_agent=args.skip_agent,
         codegraph_context_timeout_s=args.codegraph_context_timeout_s,
+        codegraph_prebuild_scope=args.codegraph_prebuild_scope,
         agent_timeout_s=args.agent_timeout_s,
         eval_timeout_s=args.eval_timeout_s,
         task_fixture=resolve_benchmark_path(args.task_fixture).resolve() if args.task_fixture else None,
@@ -101,8 +117,9 @@ class PatchSmokeRunner:
         source_repo: Path | None,
         skip_eval: bool,
         skip_agent: bool,
-        codegraph_context_timeout_s: int,
         agent_timeout_s: int,
+        codegraph_context_timeout_s: int,
+        codegraph_prebuild_scope: str,
         eval_timeout_s: int = DEFAULT_EVAL_TIMEOUT_S,
         task_fixture: Path | None,
         resource_limits: ResourceLimits | None = None,
@@ -115,6 +132,7 @@ class PatchSmokeRunner:
         self.skip_eval = skip_eval
         self.skip_agent = skip_agent
         self.codegraph_context_timeout_s = codegraph_context_timeout_s
+        self.codegraph_prebuild_scope = codegraph_prebuild_scope
         self.agent_timeout_s = agent_timeout_s
         self.eval_timeout_s = eval_timeout_s
         self.task_fixture = task_fixture
@@ -214,7 +232,7 @@ class PatchSmokeRunner:
             context = self._build_context(task, context_repo, mode, codegraph_prebuild=codegraph_prebuild)
             repo = context_repo
         else:
-            repo = self._prepare_repo(mode)
+            repo = self._prepare_repo(mode, task)
             context = self._build_context(task, repo, mode, codegraph_prebuild=codegraph_prebuild)
         self._write_json(self.context_dir / f"{self.instance_id}_{mode}.json", context)
         if mode.startswith("codegraph_") and not context.get("context_valid_for_attribution", True):
@@ -222,7 +240,7 @@ class PatchSmokeRunner:
             self._write_json(self.output_dir / "per_mode" / mode / "result_pre_eval.json", result)
             return result
         if mode.startswith("codegraph_"):
-            repo = self._prepare_repo(mode)
+            repo = self._prepare_repo(mode, task)
         agent = self._run_external_agent(task, context, repo, mode)
         patch_text = agent.get("patch_text") or ""
         prediction_path = None
@@ -248,6 +266,9 @@ class PatchSmokeRunner:
             "estimated_context_tokens": context["estimated_context_tokens"],
             "tool_calls": context["tool_calls"],
             "context_wall_time_ms": context["wall_time_ms"],
+            "context_claimability": context.get("claimability"),
+            "graph_proof_available": context.get("graph_proof_available", False),
+            "codegraph_attribution": context.get("codegraph_attribution"),
             "patch_applied_static": bool(patch_text),
             "patch_path": str(self.patches_dir / f"{self.instance_id}_{mode}.patch") if patch_text else None,
             "prediction_path": str(prediction_path) if prediction_path else None,
@@ -277,11 +298,15 @@ class PatchSmokeRunner:
             "gold_diagnostic": context.get("gold_diagnostic"),
             "candidate_spool_gold_diagnostic": context.get("candidate_spool_gold_diagnostic"),
             "provider_visible_queries": context.get("provider_visible_queries"),
+            "provider_visible_query_diagnostics": context.get("provider_visible_query_diagnostics"),
             "codegraph_gold_miss_classification": context.get("codegraph_gold_miss_classification"),
             "context_bytes": context["raw_context_bytes"],
             "estimated_context_tokens": context["estimated_context_tokens"],
             "tool_calls": context["tool_calls"],
             "context_wall_time_ms": context["wall_time_ms"],
+            "context_claimability": context.get("claimability"),
+            "graph_proof_available": context.get("graph_proof_available", False),
+            "codegraph_attribution": context.get("codegraph_attribution"),
             "patch_applied_static": False,
             "patch_path": None,
             "prediction_path": None,
@@ -334,7 +359,7 @@ class PatchSmokeRunner:
         result["clean_source_patch"] = True
         result["clean_source_patch_reason"] = "resolved_no_extra_or_unexpected_test_edits"
 
-    def _prepare_repo(self, mode: str) -> Path:
+    def _prepare_repo(self, mode: str, task: dict[str, Any]) -> Path:
         dest = self.repos_dir / _mode_repo_slug(mode)
         if dest.exists():
             shutil.rmtree(dest)
@@ -366,9 +391,10 @@ class PatchSmokeRunner:
                     timeout_s=1200,
                 )
             )
+        base_commit = str(task.get("base_commit") or BASE_COMMIT)
         git_base = ["git", "-c", "core.longpaths=true"]
-        self._must(self._run_command([*git_base, "checkout", BASE_COMMIT], f"checkout_{mode}", cwd=dest, timeout_s=120))
-        self._must(self._run_command([*git_base, "reset", "--hard", BASE_COMMIT], f"reset_{mode}", cwd=dest, timeout_s=120))
+        self._must(self._run_command([*git_base, "checkout", base_commit], f"checkout_{mode}", cwd=dest, timeout_s=120))
+        self._must(self._run_command([*git_base, "reset", "--hard", base_commit], f"reset_{mode}", cwd=dest, timeout_s=120))
         self._must(self._run_command([*git_base, "clean", "-fdx"], f"clean_{mode}", cwd=dest, timeout_s=120))
         return dest
 
@@ -426,9 +452,100 @@ class PatchSmokeRunner:
             claimability={"graph_proof": False, "proof_status": "source_text_evidence", "text_evidence_only": True},
         )
 
+    def _prepare_codegraph_index_scope(self, repo: Path, task: dict[str, Any]) -> dict[str, Any]:
+        if self.codegraph_prebuild_scope == "full-checkout":
+            return {
+                "scope_policy": "full_checkout",
+                "provider_visible_only": False,
+                "selected_files": [],
+                "selected_count": None,
+                "files_after_scope": None,
+                "commands": [],
+            }
+
+        selection = self._select_provider_visible_scope_files(repo, task)
+        selected = selection["selected_files"]
+        if not selected:
+            return {
+                **selection,
+                "scope_policy": "provider_visible_sparse_checkout",
+                "provider_visible_only": True,
+                "scope_status": "blocked_no_provider_visible_files",
+                "commands": [],
+            }
+
+        commands = [
+            self._run_command(
+                ["git", "-c", "core.longpaths=true", "sparse-checkout", "set", "--no-cone", "--", *selected],
+                "codegraph_scope_sparse_set",
+                cwd=repo,
+                timeout_s=120,
+            ),
+            self._run_command(
+                ["git", "-c", "core.longpaths=true", "status", "--short"],
+                "codegraph_scope_git_status",
+                cwd=repo,
+                timeout_s=120,
+            ),
+        ]
+        rg = _rg_binary()
+        files_after = self._run_command([str(rg), "--no-ignore-parent", "--files"], "codegraph_scope_files_after", cwd=repo, timeout_s=120)
+        commands.append(files_after)
+        scope_failed = [record for record in commands if record.get("exit_code") != 0]
+        return {
+            **selection,
+            "scope_policy": "provider_visible_sparse_checkout",
+            "provider_visible_only": True,
+            "scope_status": "ok" if not scope_failed else "failed",
+            "scope_failures": [record.get("failure_kind") for record in scope_failed],
+            "git_status_short": commands[1].get("stdout", ""),
+            "files_after_scope": len(_files_from_rg(files_after.get("stdout", ""))),
+            "commands": [_command_brief(record) for record in commands],
+        }
+
+    def _select_provider_visible_scope_files(self, repo: Path, task: dict[str, Any]) -> dict[str, Any]:
+        rg = _rg_binary()
+        specs = _provider_visible_query_specs(task)
+        hits: dict[str, int] = {}
+        query_records: list[dict[str, Any]] = []
+        for spec in specs:
+            term = spec["term"]
+            if spec["kind"] == "files":
+                candidate = term.replace("\\", "/").lstrip("./")
+                if (repo / candidate).exists():
+                    hits[candidate] = hits.get(candidate, 0) + 5
+                continue
+            record = self._run_command(
+                [str(rg), "--no-ignore-parent", "-F", "-l", "--glob", "*.py", term, "."],
+                f"codegraph_scope_query_{spec['kind']}_{_safe_slug(term)}",
+                cwd=repo,
+                timeout_s=120,
+            )
+            query_records.append(record)
+            for path in _files_from_rg(record.get("stdout", "")):
+                hits[path] = hits.get(path, 0) + 1
+
+        selected = _rank_provider_visible_scope_files(hits, limit=PATCH_SMOKE_PROVIDER_VISIBLE_SCOPE_MAX_FILES)
+        selected = _add_package_init_files(repo, selected)
+        return {
+            "provider_visible_queries": specs,
+            "provider_visible_query_diagnostics": _provider_visible_query_diagnostics(specs, task),
+            "query_commands": [_command_brief(record) for record in query_records],
+            "selected_files": selected,
+            "selected_count": len(selected),
+            "selection_limit": PATCH_SMOKE_PROVIDER_VISIBLE_SCOPE_MAX_FILES,
+            "gold_diagnostic_only": True,
+            "gold_files_selected_diagnostic": [
+                str(path).replace("\\", "/").lstrip("./")
+                for path in task.get("gold_files") or []
+                if str(path).replace("\\", "/").lstrip("./") in selected
+            ],
+        }
+
     def _prebuild_codegraph_context(self, task: dict[str, Any]) -> dict[str, Any]:
         codegraph = ROOT / "target" / "release" / "codegraph-mcp.exe"
-        repo = self._prepare_repo("codegraph_context")
+        repo = self._prepare_repo("codegraph_context", task)
+        index_scope = self._prepare_codegraph_index_scope(repo, task)
         # Keep Windows paths short: SQLite may create journal/WAL siblings that
         # cross legacy MAX_PATH even when the primary file path barely fits.
         db = self.output_dir / "db" / "cg" / "cg.sqlite"
@@ -477,6 +594,7 @@ class PatchSmokeRunner:
             "candidate_spool_path": str(spool),
             "candidate_spool_query_index_path": str(query_index),
             "build_vector": build_vector,
+            "index_scope": index_scope,
             "candidate_spool_runner_caps": {
                 "max_mib": PATCH_SMOKE_CANDIDATE_SPOOL_MAX_MIB,
                 "max_records": PATCH_SMOKE_CANDIDATE_SPOOL_MAX_RECORDS,
@@ -576,15 +694,33 @@ class PatchSmokeRunner:
                     timeout_s=120,
                 )
             )
+        status_payload = _parse_json_loose(records[0]["stdout"])
         files: list[str] = []
+        parsed_outputs: list[Any] = []
         for record in records[1:]:
             parsed = _parse_json_loose(record["stdout"])
+            parsed_outputs.append(parsed)
             for path in _extract_files(parsed):
                 if path not in files:
                     files.append(path)
         failed = [record for record in records if record["exit_code"] != 0]
         text = _trim_context(records[1:], MAX_CONTEXT_BYTES)
-        gold_diagnostic = _context_gold_diagnostic(task, files, text)
+        claimability = _codegraph_context_claimability(status_payload, db=db, repo=repo)
+        attribution = {
+            "valid": not failed and bool(files) and claimability["db_claimable"] and claimability["graph_proof_available"],
+            "db_claimable": claimability["db_claimable"],
+            "graph_proof_available": claimability["graph_proof_available"],
+            "candidate_only": False,
+            "source": "claimable_codegraph_db",
+            "query_output_files": len(files),
+        }
+        failure_parts = [record["failure_kind"] for record in failed]
+        if not claimability["db_claimable"]:
+            failure_parts.append("db_not_claimable")
+        if not claimability["graph_proof_available"]:
+            failure_parts.append("graph_proof_unavailable")
+        if not files:
+            failure_parts.append("no_codegraph_context_files")
         return self._context_packet(
             mode,
             text=text,
@@ -592,14 +728,16 @@ class PatchSmokeRunner:
             tool_calls=len(records),
             wall_time_ms=sum(int(record["wall_time_ms"]) for record in records),
             codegraph_calls=len(records),
-            context_valid_for_attribution=not failed and bool(files),
-            context_failure="; ".join(record["failure_kind"] for record in failed) if failed else "",
-            claimability={"graph_proof": False, "proof_status": "source_navigation_or_text_evidence"},
+            context_valid_for_attribution=attribution["valid"],
+            context_failure="; ".join(failure_parts),
+            claimability=claimability,
             db_path=str(db),
             vector_index=str(vector) if full and vector else None,
             codegraph_prebuild=prebuild,
             provider_visible_queries=query_specs,
-            gold_diagnostic=gold_diagnostic,
+            provider_visible_query_diagnostics=_provider_visible_query_diagnostics(query_specs, task),
+            codegraph_attribution=attribution,
+            context_output_summary=_context_output_summary(status_payload, parsed_outputs),
         )
 
     def _staged_candidate_context(self, task: dict[str, Any], repo: Path, mode: str, prebuild: dict[str, Any]) -> dict[str, Any]:
@@ -692,7 +830,7 @@ class PatchSmokeRunner:
             if failed:
                 failure += "; " + "; ".join(record["failure_kind"] for record in failed)
         else:
-            failure = f"{prebuild.get('status', 'prebuild_failed')}; staged_candidate_context_used"
+            failure = f"{prebuild.get('status', 'prebuild_failed')}; staged_candidate_context_non_attributable"
         return self._context_packet(
             mode,
             text=text,
@@ -700,10 +838,11 @@ class PatchSmokeRunner:
             tool_calls=len(records),
             wall_time_ms=sum(int(record["wall_time_ms"]) for record in records),
             codegraph_calls=len(records),
-            context_valid_for_attribution=useful and not failed,
+            context_valid_for_attribution=False,
             context_failure=failure,
             claimability={
                 "graph_proof": False,
+                "graph_proof_available": False,
                 "proof_status": "candidate_only_until_verified" if useful else "candidate_context_unavailable",
                 "candidate_only": True,
                 "source_navigation_or_graph_verification": False,
@@ -713,13 +852,22 @@ class PatchSmokeRunner:
             candidate_only=True,
             codegraph_prebuild=prebuild,
             provider_visible_queries=query_specs,
+            provider_visible_query_diagnostics=_provider_visible_query_diagnostics(query_specs, task),
             gold_diagnostic=gold_diagnostic,
             candidate_spool_gold_diagnostic=spool_diagnostic,
             codegraph_gold_miss_classification=miss_classification,
+            codegraph_attribution={
+                "valid": False,
+                "db_claimable": False,
+                "graph_proof_available": False,
+                "candidate_only": True,
+                "source": "candidate_spool_non_proof",
+            },
         )
 
     def _context_packet(self, mode: str, *, text: str, files: list[str], tool_calls: int, wall_time_ms: int, rg_calls: int = 0, codegraph_calls: int = 0, context_valid_for_attribution: bool = True, context_failure: str = "", claimability: dict[str, Any] | None = None, **extra: Any) -> dict[str, Any]:
         raw_bytes = len(text.encode("utf-8", errors="ignore"))
+        claimability = claimability or {"graph_proof": False, "graph_proof_available": False, "proof_status": "no_extra_context"}
         packet = {
             "provider": mode,
             "files": files,
@@ -732,9 +880,10 @@ class PatchSmokeRunner:
             "wall_time_ms": wall_time_ms,
             "context_valid_for_attribution": context_valid_for_attribution,
             "context_failure": context_failure,
-            "claimability": claimability or {"graph_proof": False, "proof_status": "no_extra_context"},
-            "graph_proof": False,
-            "claim_boundary": "context packet is evidence/routing input, not graph proof",
+            "claimability": claimability,
+            "graph_proof": bool(claimability.get("graph_proof")),
+            "graph_proof_available": bool(claimability.get("graph_proof_available")),
+            "claim_boundary": "Only graph/source verification is graph proof; text, candidate, vector, and source-navigation context remain non-proof.",
         }
         packet.update(extra)
         return packet
@@ -753,7 +902,7 @@ class PatchSmokeRunner:
                 "workspace_path": str(repo),
                 "task": task["task"],
             },
-            "context": context,
+            "context": _agent_visible_context(context),
             "budgets": {
                 "max_time_s": MAX_TIME_S,
                 "max_tool_calls": MAX_TOOL_CALLS,
@@ -1190,6 +1339,27 @@ def _candidate_query_index_path(spool: Path) -> Path:
     return spool.with_name(f"{spool.name}.query.sqlite")
 
 
+def _rg_binary() -> Path | str:
+    rg = ROOT / ".codex-tools" / "rg.exe"
+    return rg if rg.exists() else "rg"
+
+
+def _rank_provider_visible_scope_files(hits: dict[str, int], *, limit: int) -> list[str]:
+    return sorted(hits, key=lambda path: _score_rg_path(path, hits))[:limit]
+
+
+def _add_package_init_files(repo: Path, selected: list[str]) -> list[str]:
+    expanded = list(selected)
+    for path in selected:
+        parent = Path(path).parent
+        while parent and str(parent) != ".":
+            init_path = (parent / "__init__.py").as_posix()
+            if (repo / init_path).exists() and init_path not in expanded:
+                expanded.append(init_path)
+            parent = parent.parent
+    return sorted(expanded)
+
+
 def _provider_visible_query_specs(task: dict[str, Any]) -> list[dict[str, Any]]:
     task_text = str(task.get("task") or task.get("problem_statement") or "")
     specs: list[dict[str, Any]] = []
@@ -1209,7 +1379,6 @@ def _provider_visible_query_specs(task: dict[str, Any]) -> list[dict[str, Any]]:
                 "term": term,
                 "source": source,
                 "visible_in_prompt": term in task_text,
-                "gold_overlap": _term_overlaps_gold(term, task),
                 "allowed": True,
             }
         )
@@ -1239,6 +1408,18 @@ def _provider_visible_query_specs(task: dict[str, Any]) -> list[dict[str, Any]]:
     return specs[:8]
 
 
+def _provider_visible_query_diagnostics(specs: list[dict[str, Any]], task: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            **spec,
+            "gold_overlap": _term_overlaps_gold(str(spec.get("term") or ""), task),
+            "gold_diagnostic_only": True,
+            "gold_not_passed_to_provider": True,
+        }
+        for spec in specs
+    ]
+
+
 def _term_overlaps_gold(term: str, task: dict[str, Any]) -> bool:
     normalized = term.replace("\\", "/").lower()
     gold_files = [str(path).replace("\\", "/").lower() for path in task.get("gold_files") or []]
@@ -1246,6 +1427,82 @@ def _term_overlaps_gold(term: str, task: dict[str, Any]) -> bool:
     if normalized in gold_symbols:
         return True
     return any(normalized == path or normalized == Path(path).name.lower() for path in gold_files)
+
+
+def _codegraph_context_claimability(status_payload: Any, *, db: Path, repo: Path) -> dict[str, Any]:
+    status = status_payload if isinstance(status_payload, dict) else {}
+    claim = status.get("claimability") if isinstance(status.get("claimability"), dict) else {}
+    staged = status.get("staged_availability") if isinstance(status.get("staged_availability"), dict) else {}
+    lifecycle = status.get("db_lifecycle_read") if isinstance(status.get("db_lifecycle_read"), dict) else {}
+    claimable = bool(claim.get("claimable") is True or status.get("claimable") is True or lifecycle.get("claimable") is True)
+    graph_available = bool(
+        claimable
+        and (
+            claim.get("graph_proof_available") is True
+            or status.get("graph_proof_available") is True
+            or staged.get("graph_proof_available") is True
+        )
+    )
+    candidate_only = bool(claim.get("candidate_only") is True or staged.get("candidate_only_available") is True and not claimable)
+    external_db = _path_is_external_to_repo_db(db, repo)
+    return {
+        "graph_proof": False,
+        "graph_proof_available": graph_available,
+        "proof_status": "graph_db_ready_source_verification_available" if graph_available else str(status.get("proof_status") or "no_proof_path_found"),
+        "proof_strength": "graph_source_verification_available" if graph_available else str(status.get("proof_strength") or "none"),
+        "db_claimable": claimable,
+        "external_db_used": external_db,
+        "candidate_only": candidate_only,
+        "text_evidence_graph_proof": False,
+        "candidate_evidence_graph_proof": False,
+        "vector_evidence_graph_proof": False,
+        "source_navigation_graph_proof": False,
+        "db_path": str(db),
+        "graph_db_status": status.get("graph_db_status"),
+        "lifecycle_decision": status.get("lifecycle_decision") or lifecycle.get("decision"),
+    }
+
+
+def _path_is_external_to_repo_db(db: Path, repo: Path) -> bool:
+    try:
+        resolved_db = db.resolve()
+        repo_dot_codegraph = (repo / ".codegraph").resolve()
+        return not (resolved_db == repo_dot_codegraph or repo_dot_codegraph in resolved_db.parents)
+    except OSError:
+        return True
+
+
+def _context_output_summary(status_payload: Any, parsed_outputs: list[Any]) -> dict[str, Any]:
+    status = status_payload if isinstance(status_payload, dict) else {}
+    return {
+        "status": {
+            "claimable": status.get("claimable") or (status.get("claimability") or {}).get("claimable") if isinstance(status.get("claimability"), dict) else status.get("claimable"),
+            "graph_proof_available": status.get("graph_proof_available")
+            or ((status.get("claimability") or {}).get("graph_proof_available") if isinstance(status.get("claimability"), dict) else None),
+            "graph_db_status": status.get("graph_db_status"),
+        },
+        "outputs_with_files": sum(1 for output in parsed_outputs if _extract_files(output)),
+    }
+
+
+def _agent_visible_context(context: dict[str, Any]) -> dict[str, Any]:
+    return _strip_evaluator_only_context(context)
+
+
+def _strip_evaluator_only_context(value: Any) -> Any:
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, child in value.items():
+            lowered = key.lower()
+            if "gold" in lowered:
+                continue
+            if key in {"candidate_spool_gold_diagnostic", "codegraph_gold_miss_classification"}:
+                continue
+            sanitized[key] = _strip_evaluator_only_context(child)
+        return sanitized
+    if isinstance(value, list):
+        return [_strip_evaluator_only_context(item) for item in value]
+    return value
 
 
 def _context_gold_diagnostic(task: dict[str, Any], files: list[str], text: str) -> dict[str, Any]:
@@ -1422,6 +1679,11 @@ def _phase_gates(
     codegraph_modes = [mode for mode in modes if mode.startswith("codegraph_")]
     agent_modes = [result for result in mode_results.values() if result.get("agent", {}).get("status") == "ok"]
     eval_modes = [result for result in mode_results.values() if result.get("swebench", {}).get("status") == "completed"]
+    codegraph_context_attributable = [
+        result
+        for mode, result in mode_results.items()
+        if mode.startswith("codegraph_") and result.get("context_valid_for_attribution") is True
+    ]
     codegraph_measured = [
         result
         for mode, result in mode_results.items()
@@ -1448,7 +1710,7 @@ def _phase_gates(
         "harness_run_complete": True,
         "external_agent_working": bool(agent_modes),
         "swebench_eval_working": bool(eval_modes),
-        "codegraph_context_attributable": bool(codegraph_measured),
+        "codegraph_context_attributable": bool(codegraph_context_attributable),
         "codegraph_patch_quality_measured": bool(codegraph_measured),
         "phase_gate_ready": not blockers,
         "phase_gate_blockers": blockers,

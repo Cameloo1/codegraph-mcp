@@ -1,0 +1,3 @@
+[billing_credit]
+path = "/billing/credit"
+handler = "billing.apply_credit"

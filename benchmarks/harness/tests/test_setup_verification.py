@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from benchmarks.harness.config import load_config, validate_config
 from benchmarks.harness.runners.verify_benchmark_setup import verify_setup
@@ -29,6 +30,23 @@ class SetupVerificationTests(unittest.TestCase):
         self.assertIn("crosscodeeval", summary["adapters"])
         self.assertIn("swe_bench_lite", summary["adapters"])
         self.assertTrue(summary["docs"]["benchmark_claims"])
+
+    def test_setup_verifier_and_preflight_share_canonical_external_agent_command(self):
+        readiness_agent = load_config("benchmarks/configs/benchmark_v1_readiness.template.toml").raw["agent"]
+        smoke_agent = load_config("benchmarks/tracks/swebench_lite/configs/smoke.toml").raw["agent"]
+        self.assertEqual(readiness_agent["external_agent_command_env"], smoke_agent["external_agent_command_env"])
+        self.assertEqual(readiness_agent["external_agent_command"], smoke_agent["external_agent_command"])
+        self.assertEqual(readiness_agent["external_agent_dry_run_args"], smoke_agent["external_agent_dry_run_args"])
+
+    def test_swebench_live_gold_script_preserves_bash_variables(self):
+        script = Path("benchmarks/tracks/swebench_lite/scripts/run_harness_linux_container.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("$script = @'", script)
+        self.assertIn('if [ ! -d "$SWEBENCH" ]', script)
+        self.assertIn('python3 -m pip install --break-system-packages -e "$SWEBENCH"', script)
+        self.assertIn('-e "INSTANCE_ID=$InstanceId"', script)
+        self.assertIn('--instance_ids "$INSTANCE_ID"', script)
 
 
 if __name__ == "__main__":

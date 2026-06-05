@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -19,7 +18,7 @@ from benchmarks.harness.runners.run_ab_agent_harness import (
     NORMAL_TOOLS,
     validate_same_agent_invariant,
 )
-from benchmarks.harness.runners.run_patch_eval import validate_external_agent_command
+from benchmarks.harness.runners.run_patch_eval import resolve_external_agent_command, validate_external_agent_command
 from benchmarks.harness.schema import new_result, validate_result
 from benchmarks.harness.task_sanitizer import EVALUATOR_ONLY_FIELDS, audit_provider_task
 
@@ -267,10 +266,7 @@ def run_v1_preflight(
     raw = load_raw_toml(config_path)
     v1 = raw.get("v1", {})
     agent_cfg = raw.get("agent", {})
-    env_name = str(agent_cfg.get("external_agent_command_env", "CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND"))
-    command = external_agent_command
-    if command is None:
-        command = os.environ.get(env_name) or str(agent_cfg.get("external_agent_command", ""))
+    command, env_name, command_source = resolve_external_agent_command(agent_cfg, explicit_command=external_agent_command)
     external_agent = validate_external_agent_command(command, env_name, agent_cfg)
     external_agent_configured = bool(command and external_agent.get("configured"))
 
@@ -337,6 +333,7 @@ def run_v1_preflight(
             "configured": external_agent_configured,
             "status": external_agent.get("status"),
             "env": env_name,
+            "source": command_source,
             "validation": external_agent,
         },
         "patch_quality": {

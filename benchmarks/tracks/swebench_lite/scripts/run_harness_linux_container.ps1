@@ -13,7 +13,7 @@ New-Item -ItemType Directory -Force -Path $dockerConfig | Out-Null
 $env:DOCKER_CONFIG = (Resolve-Path $dockerConfig).Path
 $env:DOCKER_HOST = "npipe:////./pipe/dockerDesktopLinuxEngine"
 
-$script = @"
+$script = @'
 set -eux
 cd /work
 mkdir -p /work/benchmarks/tracks/swebench_lite/workspaces/gold_validation
@@ -29,15 +29,18 @@ python3 -m swebench.harness.run_evaluation \
   --dataset_name princeton-nlp/SWE-bench_Lite \
   --predictions_path gold \
   --max_workers 1 \
-  --instance_ids $InstanceId \
-  --run_id $RunId \
-  --timeout $TimeoutSeconds \
+  --instance_ids "$INSTANCE_ID" \
+  --run_id "$RUN_ID" \
+  --timeout "$EVAL_TIMEOUT_SECONDS" \
   --report_dir /work/benchmarks/tracks/swebench_lite/workspaces/gold_validation/report
-"@
+'@
 $script = $script -replace "`r`n", "`n"
 $script = $script -replace "`r", "`n"
 
 & $DockerCommand run --rm `
+  -e "INSTANCE_ID=$InstanceId" `
+  -e "RUN_ID=$RunId" `
+  -e "EVAL_TIMEOUT_SECONDS=$TimeoutSeconds" `
   -v /var/run/docker.sock:/var/run/docker.sock `
   -v "${repoRoot}:/work" `
   -w /work `

@@ -189,19 +189,6 @@ SWE-bench-family results require real external-agent predictions evaluated by an
 official-compatible harness. Setup checks, mock-agent runs, and gold-patch
 validation are prerequisites, not patch-quality scores.
 
-Current lab status: the one-task SWE-bench Lite E2E path now generates real
-external-agent patches and evaluates them through Docker for `baseline` and
-`rg_only` on `sympy__sympy-20590`. Both modes resolved under the local harness,
-but both failed the clean-source-patch gate by editing an extra test file. That
-proves the harness path is alive, not that the product is winning.
-
-CodeGraph patch-quality is still unmeasured. In
-`swebench_lite_e2e_20260523_192718`, `codegraph_exact_text` and
-`codegraph_full` were skipped before agent execution because context was invalid
-for attribution: `blocked_index_timeout;
-candidate_spool_present_but_no_gold_hit`. This skip is correct; it prevents an
-independent agent patch from being counted as CodeGraph evidence.
-
 ## 9. Full-Codebase Complexity Tests
 
 Use tasks where a single grep hit is not enough:
@@ -229,7 +216,8 @@ These tests decide whether MVP3 and MVP4 are buying real agent reliability.
 The v1 gate should answer one question:
 
 ```text
-Does rg + CodeGraph make the same agent better than rg alone?
+Does adding CodeGraph to the same agent's normal rg/search/edit/test tools make
+that agent more reliable on the same pinned tasks?
 ```
 
 A useful result must show at least one reliable improvement:
@@ -244,13 +232,14 @@ A useful result must show at least one reliable improvement:
 If v1 does not improve over the rg-only agent, the roadmap should pause or pivot
 before deeper MVP3/MVP4 investment.
 
-The safe headline is:
+The possible future local-diagnostic headline, only after v1 evidence supports
+it and a claim gate approves the exact wording, would be:
 
 ```text
 CodeGraph improves agent reliability on top of normal rg use.
 ```
 
-The unsafe headline is:
+The unsafe headline remains:
 
 ```text
 CodeGraph beats rg.
