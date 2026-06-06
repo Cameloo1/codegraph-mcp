@@ -249,6 +249,51 @@
       "type": "object",
       "additionalProperties": true
     },
+    "proof_ladder_change_counts": {
+      "$ref": "common.schema.json#/$defs/proof_ladder_change_counts"
+    },
+    "dirty_evidence_summary": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_summary"
+    },
+    "invalidated_evidence": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_surface_status_list"
+    },
+    "refreshed_evidence": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_surface_status_list"
+    },
+    "stale_evidence": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_surface_status_list"
+    },
+    "unavailable_evidence": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_surface_status_list"
+    },
+    "claimability_effect": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_claimability_effect"
+    },
+    "candidate_layer_status": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_freshness_state"
+    },
+    "vector_layer_status": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_freshness_state"
+    },
+    "path_evidence_status": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_freshness_state"
+    },
+    "source_navigation_status": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_freshness_state"
+    },
+    "routing_handle_status": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_freshness_state"
+    },
+    "sidecar_statuses": {
+      "$ref": "common.schema.json#/$defs/sidecar_statuses"
+    },
+    "recovery_commands": {
+      "$ref": "common.schema.json#/$defs/recovery_commands"
+    },
+    "stale_non_proof_reasons": {
+      "$ref": "common.schema.json#/$defs/stale_non_proof_reasons"
+    },
     "lifecycle": {
       "type": "object",
       "additionalProperties": true

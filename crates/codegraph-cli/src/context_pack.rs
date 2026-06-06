@@ -6529,6 +6529,11 @@ pub(crate) fn context_pack_agent_json_response(
             context_pack_top_level_claimability_json(lifecycle_claimable, graph_proof)
         });
     }
+    add_agent_use_dirty_evidence_output_fields(
+        &mut response,
+        "agent-use.context-pack",
+        options.explain,
+    );
 
     let mut max_output_bytes_exceeded = false;
     let mut omitted_retrieval_architecture = 0;

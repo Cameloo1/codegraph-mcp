@@ -3570,9 +3570,12 @@ fn sidecar_status_delta_action(old_status: &str, new_status: &str) -> &'static s
         new_status,
         "corrupt"
             | "query_index_corrupt"
+            | "sidecar_corrupt"
             | "permission_denied"
+            | "read_only"
             | "filesystem_inaccessible"
             | "sidecar_unavailable"
+            | "sidecar_locked"
     ) {
         "diagnostic_error"
     } else {
@@ -3582,9 +3585,10 @@ fn sidecar_status_delta_action(old_status: &str, new_status: &str) -> &'static s
 
 fn sidecar_status_classification(status: &str) -> &'static str {
     match status {
-        "permission_denied" => "permission_denied",
+        "permission_denied" | "read_only" => "permission_denied",
         "filesystem_inaccessible" | "sidecar_unavailable" => "filesystem_inaccessible",
-        "corrupt" | "query_index_corrupt" => "corrupt",
+        "corrupt" | "query_index_corrupt" | "sidecar_corrupt" => "corrupt",
+        "sidecar_locked" => "locked",
         "stale" | "superseded_by_graph_db" => "stale",
         "missing" | "no_spool" | "query_index_missing" | "absent" => "absent",
         "not_applicable" => "not_applicable",
@@ -3597,6 +3601,9 @@ fn access_vs_corrupt_classification_safe() -> bool {
         && sidecar_status_classification("filesystem_inaccessible") == "filesystem_inaccessible"
         && sidecar_status_classification("corrupt") == "corrupt"
         && sidecar_status_classification("query_index_corrupt") == "corrupt"
+        && sidecar_status_classification("sidecar_corrupt") == "corrupt"
+        && sidecar_status_classification("read_only") == "permission_denied"
+        && sidecar_status_classification("sidecar_locked") == "locked"
 }
 
 fn stale_sidecars_not_used_as_fresh(
@@ -3606,7 +3613,16 @@ fn stale_sidecars_not_used_as_fresh(
     old_sidecars.iter().chain(new_sidecars).all(|fact| {
         !matches!(
             fact.freshness_status.as_str(),
-            "stale" | "superseded_by_graph_db"
+            "stale"
+                | "superseded_by_graph_db"
+                | "corrupt"
+                | "query_index_corrupt"
+                | "sidecar_corrupt"
+                | "permission_denied"
+                | "read_only"
+                | "filesystem_inaccessible"
+                | "sidecar_unavailable"
+                | "sidecar_locked"
         ) || !fact.claimability.graph_proof
     })
 }
@@ -34089,6 +34105,158 @@ pub fn caller() {
     }
 
     #[test]
+    fn old_good_db_preserved() {
+        let repo = temp_repo("mvp3-7-old-good-preserved");
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function oldLogin() { return 'old'; }\n",
+        );
+        let db = repo.join("target").join("old-good.sqlite");
+        index_repo_to_db(&repo, &db).expect("initial index");
+        let before_hash = semantic_graph_fact_hash(&db);
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function newLogin() { return 'new'; }\n",
+        );
+
+        let error = with_write_path_chaos_failpoint("cold_after_validation_before_publish", || {
+            index_repo_to_db_with_options(&repo, &db, fresh_rebuild_options())
+        })
+        .expect_err("pre-publish failpoint must fail");
+        assert!(error
+            .to_string()
+            .contains("cold_after_validation_before_publish"));
+
+        let store = SqliteGraphStore::open(&db).expect("open preserved DB");
+        store.full_integrity_gate().expect("old-good DB valid");
+        assert_eq!(semantic_graph_fact_hash(&db), before_hash);
+        assert_eq!(
+            entities_by_kind_and_name(&store, EntityKind::Function, "oldLogin").len(),
+            1
+        );
+        assert!(entities_by_kind_and_name(&store, EntityKind::Function, "newLogin").is_empty());
+        drop(store);
+        assert_no_atomic_temp_dbs(&db);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn partial_db_never_claimable() {
+        let repo = temp_repo("mvp3-7-partial-db-never-claimable");
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function oldLogin() { return 'old'; }\n",
+        );
+        let db = repo.join("target").join("partial.sqlite");
+        index_repo_to_db(&repo, &db).expect("initial index");
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function newLogin() { return 'new'; }\n",
+        );
+
+        let error =
+            with_write_path_chaos_failpoint("cold_after_temp_db_write_before_validation", || {
+                index_repo_to_db_with_options(&repo, &db, fresh_rebuild_options())
+            })
+            .expect_err("temp DB failpoint must fail");
+        assert!(error
+            .to_string()
+            .contains("cold_after_temp_db_write_before_validation"));
+        assert_no_atomic_temp_dbs(&db);
+
+        let preflight =
+            inspect_repo_db_passport(&repo, &db, &IndexOptions::default()).expect("preflight");
+        assert!(
+            preflight.valid,
+            "final visible old-good DB must remain claimable: {preflight:?}"
+        );
+        let store = SqliteGraphStore::open(&db).expect("open old-good DB");
+        assert!(entities_by_kind_and_name(&store, EntityKind::Function, "newLogin").is_empty());
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn dirty_sidecars_not_fresh_after_failure() {
+        let repo = temp_repo("mvp3-7-dirty-sidecars-not-fresh-after-failure");
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function oldLogin() { return 'old'; }\n",
+        );
+        let db = repo.join("target").join("dirty-sidecars.sqlite");
+        index_repo_to_db(&repo, &db).expect("initial index");
+        {
+            let store = SqliteGraphStore::open(&db).expect("store");
+            let old_login = entity_by_file_kind_and_name(
+                &store,
+                "src/auth.ts",
+                EntityKind::Function,
+                "oldLogin",
+            );
+            store
+                .insert_entity_feature(&EntityFeatureRow {
+                    entity_id: old_login.id.clone(),
+                    feature_kind: "ast_shape".to_string(),
+                    payload_version: 1,
+                    compact_payload: "{\"shape\":\"old\"}".to_string(),
+                    extraction_version: "test-sidecar-v1".to_string(),
+                    source_span_id: Some(old_login.id.clone()),
+                    claimability: "diagnostic_only".to_string(),
+                })
+                .expect("insert entity feature");
+            store
+                .insert_routing_packet_handle(&RoutingPacketHandleRow {
+                    handle_id: "handle-old-auth".to_string(),
+                    db_passport_hash: "passport-old".to_string(),
+                    task_intent_hash: "intent-old".to_string(),
+                    packet_kind: "routing_packet".to_string(),
+                    evidence_refs_json: format!("[\"{}\"]", old_login.id),
+                    expires_or_invalidates_on: "file_fact_cleanup".to_string(),
+                    payload_version: 1,
+                    claimability: "diagnostic_only".to_string(),
+                })
+                .expect("insert routing handle");
+        }
+
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function newLogin() { return 'new'; }\n",
+        );
+        let error = with_write_path_chaos_failpoint(
+            "incremental_after_stale_cleanup_before_insert",
+            || update_changed_files_to_db(&repo, &[PathBuf::from("src/auth.ts")], &db),
+        )
+        .expect_err("dirty sidecar invalidation failpoint must fail");
+        assert!(error
+            .to_string()
+            .contains("incremental_after_stale_cleanup_before_insert"));
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        store.full_integrity_gate().expect("rolled-back DB valid");
+        assert_eq!(
+            entities_by_kind_and_name(&store, EntityKind::Function, "oldLogin").len(),
+            1
+        );
+        assert!(entities_by_kind_and_name(&store, EntityKind::Function, "newLogin").is_empty());
+        let counts = store.sparse_sidecar_counts().expect("sidecar counts");
+        assert_eq!(counts.get("entity_features").copied(), Some(1));
+        assert_eq!(counts.get("routing_packet_handles").copied(), Some(1));
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn access_vs_corrupt_classification_safe() {
+        assert!(super::access_vs_corrupt_classification_safe());
+    }
+
+    #[test]
     fn audit_full_reindex_after_rename_deletes_old_path_and_indexes_new_path() {
         let repo = temp_repo("rename-cleanup");
         let old_path = repo.join("src").join("old_path.ts");
@@ -35260,6 +35428,647 @@ pub fn caller() {
 
         drop(store);
         fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    mod mvp3_7_core_dirty_invalidation_tests {
+        use super::*;
+
+        fn db_path(repo: &Path, name: &str) -> PathBuf {
+            repo.join("target").join(format!("{name}.sqlite"))
+        }
+
+        fn open_store(db: &Path) -> SqliteGraphStore {
+            SqliteGraphStore::open(db).expect("open store")
+        }
+
+        fn entity_names(store: &SqliteGraphStore, repo_relative_path: &str) -> BTreeSet<String> {
+            store
+                .list_entities_by_file(repo_relative_path)
+                .expect("list entities")
+                .into_iter()
+                .map(|entity| entity.name)
+                .collect()
+        }
+
+        fn entity_id_by_name(
+            store: &SqliteGraphStore,
+            repo_relative_path: &str,
+            name: &str,
+        ) -> Option<String> {
+            store
+                .list_entities_by_file(repo_relative_path)
+                .expect("list entities")
+                .into_iter()
+                .find(|entity| entity.name == name)
+                .map(|entity| entity.id)
+        }
+
+        fn update_service_symbol(repo: &Path, db: &Path) -> IncrementalIndexSummary {
+            write_test_file(
+                repo,
+                "src/service.ts",
+                "export function fresh_service_symbol() { return 2; }\n",
+            );
+            update_changed_files_to_db(repo, &[PathBuf::from("src/service.ts")], db)
+                .expect("update service")
+        }
+
+        fn changed_service_fixture(name: &str) -> (PathBuf, PathBuf, String) {
+            let repo = temp_repo(name);
+            write_test_file(
+                &repo,
+                "src/service.ts",
+                "export function stale_service_symbol() { return 1; }\n",
+            );
+            let db = db_path(&repo, name);
+            index_repo_to_db(&repo, &db).expect("initial index");
+            let store = open_store(&db);
+            let old_id = entity_id_by_name(&store, "src/service.ts", "stale_service_symbol")
+                .expect("old symbol id");
+            drop(store);
+            (repo, db, old_id)
+        }
+
+        fn snapshots_for_changed_path(
+            repo: &Path,
+            db: &Path,
+            path: &str,
+        ) -> (NormalizedFactSnapshot, NormalizedFactSnapshot) {
+            let old_snapshot =
+                snapshot_normalized_changed_facts_to_db(repo, &[PathBuf::from(path)], db)
+                    .expect("old snapshot");
+            write_test_file(
+                repo,
+                path,
+                "export function fresh_service_symbol() { return 2; }\n",
+            );
+            update_changed_files_to_db(repo, &[PathBuf::from(path)], db).expect("hot update");
+            let new_snapshot =
+                snapshot_normalized_changed_facts_to_db(repo, &[PathBuf::from(path)], db)
+                    .expect("new snapshot");
+            (old_snapshot, new_snapshot)
+        }
+
+        #[test]
+        fn stale_entities_removed() {
+            let (repo, db, _) = changed_service_fixture("mvp3-7-stale-entities");
+            update_service_symbol(&repo, &db);
+            let store = open_store(&db);
+            let names = entity_names(&store, "src/service.ts");
+            assert!(names.contains("fresh_service_symbol"), "{names:?}");
+            assert!(!names.contains("stale_service_symbol"), "{names:?}");
+            drop(store);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn stale_edges_removed() {
+            let repo = temp_repo("mvp3-7-stale-edges");
+            write_test_file(
+                &repo,
+                "src/service.ts",
+                "export function called_service() { return 1; }\n",
+            );
+            write_test_file(
+                &repo,
+                "src/consumer.ts",
+                "import { called_service } from './service';\n\
+                 export function run() { return called_service(); }\n",
+            );
+            let db = db_path(&repo, "stale-edges");
+            index_repo_to_db(&repo, &db).expect("initial index");
+            write_test_file(
+                &repo,
+                "src/consumer.ts",
+                "export function run() { return 0; }\n",
+            );
+            update_changed_files_to_db(&repo, &[PathBuf::from("src/consumer.ts")], &db)
+                .expect("consumer update");
+            let store = open_store(&db);
+            let stale_calls = store
+                .list_edges_by_file("src/consumer.ts")
+                .expect("consumer edges")
+                .into_iter()
+                .filter(|edge| edge.relation == RelationKind::Calls)
+                .collect::<Vec<_>>();
+            assert!(stale_calls.is_empty(), "{stale_calls:?}");
+            drop(store);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn stale_source_spans_removed() {
+            let (repo, db, old_id) = changed_service_fixture("mvp3-7-stale-spans");
+            update_service_symbol(&repo, &db);
+            let store = open_store(&db);
+            assert_eq!(store.get_source_span(&old_id).expect("old span"), None);
+            assert!(store
+                .list_entities_by_file("src/service.ts")
+                .expect("entities")
+                .into_iter()
+                .any(|entity| entity.name == "fresh_service_symbol"
+                    && entity
+                        .source_span
+                        .as_ref()
+                        .is_some_and(|span| span.repo_relative_path == "src/service.ts")));
+            drop(store);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn new_facts_queryable_after_change() {
+            let (repo, db, _) = changed_service_fixture("mvp3-7-new-facts");
+            update_service_symbol(&repo, &db);
+            let store = open_store(&db);
+            assert!(store
+                .find_entities_by_exact_symbol("fresh_service_symbol")
+                .expect("find fresh symbol")
+                .iter()
+                .any(|entity| entity.repo_relative_path == "src/service.ts"));
+            drop(store);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn old_facts_not_queryable_after_change() {
+            let (repo, db, _) = changed_service_fixture("mvp3-7-old-facts");
+            update_service_symbol(&repo, &db);
+            let store = open_store(&db);
+            assert!(store
+                .find_entities_by_exact_symbol("stale_service_symbol")
+                .expect("find old symbol")
+                .is_empty());
+            drop(store);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn added_file_facts_queryable() {
+            let repo = temp_repo("mvp3-7-added-file");
+            write_test_file(
+                &repo,
+                "src/root.ts",
+                "export function root() { return 1; }\n",
+            );
+            let db = db_path(&repo, "added-file");
+            index_repo_to_db(&repo, &db).expect("initial index");
+            write_test_file(
+                &repo,
+                "src/added.ts",
+                "export function added_file_symbol() { return 2; }\n",
+            );
+            update_changed_files_to_db(&repo, &[PathBuf::from("src/added.ts")], &db)
+                .expect("add update");
+            let store = open_store(&db);
+            assert!(entity_names(&store, "src/added.ts").contains("added_file_symbol"));
+            drop(store);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn deleted_file_facts_not_queryable_as_fresh() {
+            let repo = temp_repo("mvp3-7-deleted-file");
+            write_test_file(
+                &repo,
+                "src/deleted.ts",
+                "export function deleted_file_symbol() { return 1; }\n",
+            );
+            let db = db_path(&repo, "deleted-file");
+            index_repo_to_db(&repo, &db).expect("initial index");
+            fs::remove_file(repo.join("src").join("deleted.ts")).expect("delete file");
+            let summary =
+                update_changed_files_to_db(&repo, &[PathBuf::from("src/deleted.ts")], &db)
+                    .expect("delete update");
+            assert_eq!(summary.files_deleted, 1);
+            assert_eq!(summary.deleted_file_facts_removed, 1);
+            let store = open_store(&db);
+            assert_eq!(
+                store.get_file("src/deleted.ts").expect("deleted file"),
+                None
+            );
+            assert!(store
+                .find_entities_by_exact_symbol("deleted_file_symbol")
+                .expect("find deleted symbol")
+                .is_empty());
+            drop(store);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn renamed_file_path_identity_preserved() {
+            let repo = temp_repo("mvp3-7-renamed-file");
+            write_test_file(
+                &repo,
+                "src/old_name.ts",
+                "export function renamed_file_symbol() { return 1; }\n",
+            );
+            let db = db_path(&repo, "renamed-file");
+            index_repo_to_db(&repo, &db).expect("initial index");
+            let store = open_store(&db);
+            let old_id = entity_id_by_name(&store, "src/old_name.ts", "renamed_file_symbol")
+                .expect("old id");
+            drop(store);
+            fs::rename(
+                repo.join("src").join("old_name.ts"),
+                repo.join("src").join("new_name.ts"),
+            )
+            .expect("rename file");
+            update_changed_files_to_db(
+                &repo,
+                &[
+                    PathBuf::from("src/old_name.ts"),
+                    PathBuf::from("src/new_name.ts"),
+                ],
+                &db,
+            )
+            .expect("rename update");
+            let store = open_store(&db);
+            assert!(entity_names(&store, "src/old_name.ts").is_empty());
+            let new_id = entity_id_by_name(&store, "src/new_name.ts", "renamed_file_symbol")
+                .expect("new id");
+            assert_ne!(old_id, new_id);
+            drop(store);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn duplicate_content_paths_distinct() {
+            let repo = temp_repo("mvp3-7-duplicate-content");
+            let source = "export function duplicate_content_symbol() { return 1; }\n";
+            write_test_file(&repo, "src/a.ts", source);
+            write_test_file(&repo, "src/b.ts", source);
+            let db = db_path(&repo, "duplicate-content");
+            index_repo_to_db(&repo, &db).expect("index");
+            let store = open_store(&db);
+            let entities = store
+                .find_entities_by_exact_symbol("duplicate_content_symbol")
+                .expect("duplicate symbol lookup");
+            let paths = entities
+                .iter()
+                .map(|entity| entity.repo_relative_path.as_str())
+                .collect::<BTreeSet<_>>();
+            let ids = entities
+                .iter()
+                .map(|entity| entity.id.as_str())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(paths, BTreeSet::from(["src/a.ts", "src/b.ts"]));
+            assert_eq!(ids.len(), 2, "{entities:?}");
+            drop(store);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn same_name_symbols_distinct() {
+            let repo = temp_repo("mvp3-7-same-name");
+            write_test_file(
+                &repo,
+                "src/a.ts",
+                "export function shared_name() { return 1; }\n",
+            );
+            write_test_file(
+                &repo,
+                "src/b.ts",
+                "export function shared_name() { return 2; }\n",
+            );
+            let db = db_path(&repo, "same-name");
+            index_repo_to_db(&repo, &db).expect("index");
+            let store = open_store(&db);
+            let entities = store
+                .find_entities_by_exact_symbol("shared_name")
+                .expect("same-name lookup");
+            let ids = entities
+                .iter()
+                .map(|entity| entity.id.as_str())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(entities.len(), 2, "{entities:?}");
+            assert_eq!(ids.len(), 2, "{entities:?}");
+            drop(store);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn source_roles_refreshed() {
+            let repo = temp_repo("mvp3-7-source-role");
+            write_test_file(
+                &repo,
+                "src/lib.rs",
+                "pub fn production_entry() -> i32 {\n    1\n}\n",
+            );
+            let db = db_path(&repo, "source-role");
+            index_repo_to_db(&repo, &db).expect("index old");
+            let old_snapshot =
+                snapshot_normalized_changed_facts_to_db(&repo, &[PathBuf::from("src/lib.rs")], &db)
+                    .expect("old snapshot");
+            write_test_file(
+                &repo,
+                "src/lib.rs",
+                "pub fn production_entry() -> i32 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn inline_role_case() { assert_eq!(production_entry(), 1); }\n}\n",
+            );
+            update_changed_files_to_db(&repo, &[PathBuf::from("src/lib.rs")], &db)
+                .expect("role update");
+            let new_snapshot =
+                snapshot_normalized_changed_facts_to_db(&repo, &[PathBuf::from("src/lib.rs")], &db)
+                    .expect("new snapshot");
+            let delta = compute_entity_source_role_delta(
+                &old_snapshot,
+                &new_snapshot,
+                EntitySourceRoleDeltaOptions {
+                    max_items_per_category: usize::MAX,
+                },
+            );
+            assert!(delta.source_roles_changed_count > 0, "{delta:?}");
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn inline_test_not_production_proof() {
+            let repo = temp_repo("mvp3-7-inline-test-proof");
+            write_test_file(
+                &repo,
+                "src/lib.rs",
+                "pub fn production_entry() -> i32 {\n    1\n}\n",
+            );
+            let db = db_path(&repo, "inline-test-proof");
+            index_repo_to_db(&repo, &db).expect("index old");
+            let old_snapshot =
+                snapshot_normalized_changed_facts_to_db(&repo, &[PathBuf::from("src/lib.rs")], &db)
+                    .expect("old snapshot");
+            write_test_file(
+                &repo,
+                "src/lib.rs",
+                "pub fn production_entry() -> i32 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn inline_not_prod_case() { assert_eq!(production_entry(), 1); }\n}\n",
+            );
+            update_changed_files_to_db(&repo, &[PathBuf::from("src/lib.rs")], &db)
+                .expect("role update");
+            let new_snapshot =
+                snapshot_normalized_changed_facts_to_db(&repo, &[PathBuf::from("src/lib.rs")], &db)
+                    .expect("new snapshot");
+            let delta = compute_entity_source_role_delta(
+                &old_snapshot,
+                &new_snapshot,
+                EntitySourceRoleDeltaOptions {
+                    max_items_per_category: usize::MAX,
+                },
+            );
+            assert!(delta.entities_added.iter().any(|entry| {
+                entry.name == "inline_not_prod_case" && entry.source_role == EvidenceRole::Test
+            }));
+            assert!(delta.source_roles_changed.iter().any(|entry| {
+                entry.new_source_role == Some(EvidenceRole::Test)
+                    && entry.old_source_role != Some(EvidenceRole::Test)
+                    && !entry.claimability.graph_proof
+            }));
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn text_evidence_refreshed() {
+            let repo = temp_repo("mvp3-7-text-refresh");
+            write_test_file(&repo, "docs/README.md", "old_text_marker\n");
+            let db = db_path(&repo, "text-refresh");
+            index_repo_to_db(&repo, &db).expect("index old");
+            write_test_file(&repo, "docs/README.md", "new_text_marker\n");
+            update_changed_files_to_db(&repo, &[PathBuf::from("docs/README.md")], &db)
+                .expect("text update");
+            let store = open_store(&db);
+            assert!(store
+                .search_text("old_text_marker", 10)
+                .expect("old text search")
+                .is_empty());
+            assert!(store
+                .search_text("new_text_marker", 10)
+                .expect("new text search")
+                .iter()
+                .any(|hit| hit.repo_relative_path == "docs/README.md"));
+            drop(store);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn text_evidence_not_graph_proof() {
+            let repo = temp_repo("mvp3-7-text-not-proof");
+            write_test_file(&repo, "docs/README.md", "plain text evidence only\n");
+            let db = db_path(&repo, "text-not-proof");
+            index_repo_to_db(&repo, &db).expect("index");
+            let snapshot = snapshot_normalized_changed_facts_to_db(
+                &repo,
+                &[PathBuf::from("docs/README.md")],
+                &db,
+            )
+            .expect("snapshot");
+            assert!(snapshot.facts.entities.is_empty(), "{snapshot:?}");
+            assert!(snapshot
+                .facts
+                .text_evidence
+                .iter()
+                .all(|fact| !fact.claimability.graph_proof && !fact.claimability.claimable));
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn text_evidence_change_not_broken_graph_behavior() {
+            let repo = temp_repo("mvp3-7-text-not-graph-break");
+            write_test_file(&repo, "docs/README.md", "old docs text\n");
+            let db = db_path(&repo, "text-not-graph-break");
+            index_repo_to_db(&repo, &db).expect("index old");
+            let old_snapshot = snapshot_normalized_changed_facts_to_db(
+                &repo,
+                &[PathBuf::from("docs/README.md")],
+                &db,
+            )
+            .expect("old snapshot");
+            write_test_file(&repo, "docs/README.md", "new docs text\n");
+            update_changed_files_to_db(&repo, &[PathBuf::from("docs/README.md")], &db)
+                .expect("text update");
+            let new_snapshot = snapshot_normalized_changed_facts_to_db(
+                &repo,
+                &[PathBuf::from("docs/README.md")],
+                &db,
+            )
+            .expect("new snapshot");
+            let delta = compute_entity_source_role_delta(
+                &old_snapshot,
+                &new_snapshot,
+                EntitySourceRoleDeltaOptions {
+                    max_items_per_category: usize::MAX,
+                },
+            );
+            assert_eq!(delta.entities_added_count, 0);
+            assert_eq!(delta.entities_removed_count, 0);
+            assert_eq!(delta.edges_added_count, 0);
+            assert_eq!(delta.edges_removed_count, 0);
+            assert!(delta.text_evidence_changed_count > 0, "{delta:?}");
+            assert!(delta
+                .text_evidence_changed
+                .iter()
+                .all(|entry| !entry.graph_proof));
+            assert!(delta.text_evidence_not_graph_entity_delta);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn ignored_generated_noop_truthful() {
+            let repo = temp_repo("mvp3-7-ignored-generated");
+            write_test_file(&repo, ".gitignore", "generated/\n");
+            write_test_file(
+                &repo,
+                "src/live.ts",
+                "export function live() { return 1; }\n",
+            );
+            write_test_file(
+                &repo,
+                "generated/out.ts",
+                "export function generated_symbol() { return 1; }\n",
+            );
+            let db = db_path(&repo, "ignored-generated");
+            index_repo_to_db(&repo, &db).expect("index");
+            let summary =
+                update_changed_files_to_db(&repo, &[PathBuf::from("generated/out.ts")], &db)
+                    .expect("ignored update");
+            assert_eq!(summary.files_ignored, 1);
+            assert_eq!(summary.files_indexed, 0);
+            let store = open_store(&db);
+            assert!(store
+                .get_file("generated/out.ts")
+                .expect("generated file")
+                .is_none());
+            assert!(store
+                .find_entities_by_exact_symbol("generated_symbol")
+                .expect("generated symbol")
+                .is_empty());
+            drop(store);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn outside_repo_rejected() {
+            let repo = temp_repo("mvp3-7-outside-rejected");
+            write_test_file(
+                &repo,
+                "src/live.ts",
+                "export function live() { return 1; }\n",
+            );
+            let db = db_path(&repo, "outside-rejected");
+            index_repo_to_db(&repo, &db).expect("index");
+            let outside = repo
+                .parent()
+                .expect("repo parent")
+                .join("outside-mvp3-7.ts");
+            fs::write(&outside, "export function outside() {}\n").expect("outside file");
+            let preflight =
+                validate_edit_changed_files_preflight(&repo, std::slice::from_ref(&outside));
+            assert!(!preflight.should_update);
+            assert!(preflight.outside_repo_only);
+            assert_eq!(preflight.rejected_paths[0].reason, "path_outside_repo");
+            let store = open_store(&db);
+            let before_files = store.count_files().expect("before files");
+            drop(store);
+            let error = update_changed_files_to_db(&repo, &[outside], &db)
+                .expect_err("outside update must reject before mutation");
+            assert!(
+                error.to_string().contains("could not make")
+                    || error.to_string().contains("outside repo"),
+                "{error}"
+            );
+            let store = open_store(&db);
+            assert_eq!(store.count_files().expect("after files"), before_files);
+            drop(store);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn atomic_save_temp_not_fresh() {
+            let repo = temp_repo("mvp3-7-atomic-temp");
+            write_test_file(
+                &repo,
+                "src/service.ts",
+                "export function live() { return 1; }\n",
+            );
+            let preflight =
+                validate_edit_changed_files_preflight(&repo, &[PathBuf::from("src/.#service.ts")]);
+            assert!(!preflight.should_update);
+            assert_eq!(preflight.atomic_temp_paths, vec!["src/.#service.ts"]);
+            assert_eq!(preflight.no_op_paths, vec!["src/.#service.ts"]);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn source_spans_present_for_claimable_facts() {
+            let repo = temp_repo("mvp3-7-source-spans-claimable");
+            write_test_file(
+                &repo,
+                "src/service.ts",
+                "export function claimable_span_symbol() { return 1; }\n",
+            );
+            let db = db_path(&repo, "source-spans-claimable");
+            index_repo_to_db(&repo, &db).expect("index");
+            let store = open_store(&db);
+            let functions = store
+                .list_entities_by_file("src/service.ts")
+                .expect("entities")
+                .into_iter()
+                .filter(|entity| entity.kind == EntityKind::Function)
+                .collect::<Vec<_>>();
+            assert!(!functions.is_empty(), "expected function facts");
+            assert!(functions.iter().all(|entity| entity.source_span.is_some()));
+            drop(store);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
+
+        #[test]
+        fn derived_edges_require_provenance() {
+            let mut edge = graph_budget_test_edge(
+                "src/service.ts:head",
+                RelationKind::FlowsTo,
+                "src/service.ts:tail",
+                1,
+            );
+            edge.derived = true;
+            edge.edge_class = EdgeClass::Derived;
+            edge.provenance_edges.clear();
+            let error = validate_derived_edge_provenance(&edge)
+                .expect_err("derived edge without provenance must be rejected");
+            assert!(error.to_string().contains("missing provenance_edges"));
+        }
+
+        #[test]
+        fn no_dot_codegraph_mutation() {
+            let cwd_dot_codegraph = std::env::current_dir()
+                .expect("current dir")
+                .join(".codegraph");
+            assert!(
+                !cwd_dot_codegraph.exists(),
+                "MVP3.7 core invalidation tests must not create repo-local .codegraph"
+            );
+        }
+
+        #[test]
+        fn graph_delta_contract_counts_core_invalidation() {
+            let repo = temp_repo("mvp3-7-core-delta-contract");
+            write_test_file(
+                &repo,
+                "src/service.ts",
+                "export function stale_service_symbol() { return 1; }\n",
+            );
+            let db = db_path(&repo, "core-delta-contract");
+            index_repo_to_db(&repo, &db).expect("index old");
+            let (old_snapshot, new_snapshot) =
+                snapshots_for_changed_path(&repo, &db, "src/service.ts");
+            let delta = compute_entity_source_role_delta(
+                &old_snapshot,
+                &new_snapshot,
+                EntitySourceRoleDeltaOptions {
+                    max_items_per_category: usize::MAX,
+                },
+            );
+            assert!(delta.entities_removed_count > 0, "{delta:?}");
+            assert!(delta.entities_added_count > 0, "{delta:?}");
+            assert!(delta.source_spans_removed_count > 0, "{delta:?}");
+            assert!(delta.source_spans_added_count > 0, "{delta:?}");
+            assert!(delta.source_spans_present_for_claimable_entity_deltas);
+            assert!(delta.claim_boundaries_preserved);
+            fs::remove_dir_all(repo).expect("cleanup");
+        }
     }
 
     #[test]

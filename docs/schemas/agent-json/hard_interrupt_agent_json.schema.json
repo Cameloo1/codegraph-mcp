@@ -126,6 +126,33 @@
       "type": "object",
       "additionalProperties": true
     },
+    "proof_ladder_change_counts": {
+      "$ref": "common.schema.json#/$defs/proof_ladder_change_counts"
+    },
+    "dirty_evidence_summary": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_summary"
+    },
+    "invalidated_evidence": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_surface_status_list"
+    },
+    "refreshed_evidence": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_surface_status_list"
+    },
+    "stale_evidence": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_surface_status_list"
+    },
+    "unavailable_evidence": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_surface_status_list"
+    },
+    "claimability_effect": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_claimability_effect"
+    },
+    "sidecar_statuses": {
+      "$ref": "common.schema.json#/$defs/sidecar_statuses"
+    },
+    "stale_non_proof_reasons": {
+      "$ref": "common.schema.json#/$defs/stale_non_proof_reasons"
+    },
     "stale_unsafe_blockers": {
       "type": "array",
       "items": {

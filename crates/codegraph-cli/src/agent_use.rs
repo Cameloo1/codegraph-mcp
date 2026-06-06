@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use crate::*;
 
 const AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT: usize = 3;
+const AGENT_USE_WATCH_COMPACT_MAX_OUTPUT_BYTES: usize = 256 * 1024;
 const CG_MVP3_CALLS_DANGLING_TARGET: &str = "CG_MVP3_CALLS_DANGLING_TARGET";
 const CG_MVP3_CALLS_REMOVED_CALLEE_STILL_REFERENCED: &str =
     "CG_MVP3_CALLS_REMOVED_CALLEE_STILL_REFERENCED";
@@ -1281,6 +1282,7 @@ pub(crate) fn run_agent_use_status_command(args: &[String]) -> Result<Value, Str
     }
     merge_json_object(&mut value, staged_fields);
     add_agent_use_rtds_freshness_fields(&mut value, &profile, &preflight, &staged_availability);
+    add_agent_use_dirty_evidence_output_fields(&mut value, "agent-use.status", false);
     compact_agent_use_agent_json_envelope(
         &mut value,
         &profile,
@@ -1885,6 +1887,10 @@ pub(crate) fn agent_use_validate_edit_packet_json(
             .unwrap_or_else(|| json!([])),
         "claimability": claimability,
         "lifecycle": lifecycle,
+        "staged_availability": source_update
+            .get("staged_availability")
+            .cloned()
+            .unwrap_or(Value::Null),
         "proof_ladder_changes": source_update
             .pointer("/validation_packet/proof_ladder_changes")
             .cloned()
@@ -1938,6 +1944,11 @@ pub(crate) fn agent_use_validate_edit_packet_json(
         },
     });
     agent_use_validate_edit_add_mode_aware_severity_fields(&mut value, options.detail_mode);
+    add_agent_use_dirty_evidence_output_fields(
+        &mut value,
+        "agent-use.validate-edit",
+        options.detail_mode.preserves_full_details(),
+    );
     value
 }
 
@@ -2189,13 +2200,17 @@ fn agent_use_validate_edit_proof_ladder_summary(proof_ladder_changes: &Value) ->
             "keys": [],
         });
     };
-    let mut keys = object.keys().cloned().collect::<Vec<_>>();
+    let mut keys = object
+        .iter()
+        .filter_map(|(key, value)| value.is_object().then_some(key.clone()))
+        .collect::<Vec<_>>();
     keys.sort();
     json!({
         "available": true,
-        "changed_count": object.len(),
+        "changed_count": keys.len(),
         "graph_proof_changed_count": object
             .values()
+            .filter(|value| value.is_object())
             .filter(|value| value.get("graph_proof").and_then(Value::as_bool).unwrap_or(false))
             .count(),
         "keys": keys,
@@ -3266,7 +3281,23 @@ pub(crate) fn run_agent_use_watch_once_delta(
         staged_availability_top_level_fields(&staged_availability),
     );
     add_agent_use_rtds_freshness_fields(&mut value, profile, &post_preflight, &staged_availability);
+    add_agent_use_dirty_evidence_output_fields(
+        &mut value,
+        "agent-use.watch.once",
+        detail_mode.preserves_full_details(),
+    );
     persist_agent_use_last_delta_state(&mut value, profile, "agent-use.watch.once");
+    compact_agent_use_agent_json_envelope(
+        &mut value,
+        profile,
+        detail_mode,
+        if detail_mode.preserves_full_details() {
+            detail_mode.default_max_output_bytes()
+        } else {
+            AGENT_USE_WATCH_COMPACT_MAX_OUTPUT_BYTES
+        },
+        Some(&staged_availability),
+    );
     Ok(value)
 }
 
@@ -11194,6 +11225,34 @@ mod exact_calls_validation_tests {
     }
 
     #[test]
+    fn stale_graph_state_not_claimable() {
+        let finding = lifecycle_integrity_finding(
+            CG_MVP3_STALE_OR_FOREIGN_DB_VALIDATION_ATTEMPT,
+            ValidationLifecycleState::stale_non_claimable("repo_head_mismatch"),
+            "stale graph DB must not be used as claimable graph proof",
+        );
+        assert_ne!(finding.classification, ValidationClassification::Block);
+        assert_eq!(
+            finding.proof_status,
+            ValidationProofStatus::StaleOrNonClaimableDb
+        );
+    }
+
+    #[test]
+    fn partial_db_never_claimable() {
+        let finding = lifecycle_integrity_finding(
+            CG_MVP3_CORRUPT_OR_INCOMPLETE_UPDATE_TRANSACTION,
+            ValidationLifecycleState::stale_non_claimable("partial_db"),
+            "partial DB is a recovery state, not claimable source-code proof",
+        );
+        assert_ne!(finding.classification, ValidationClassification::Block);
+        assert_eq!(
+            finding.proof_status,
+            ValidationProofStatus::StaleOrNonClaimableDb
+        );
+    }
+
+    #[test]
     fn corrupt_incomplete_update_blocks_validation() {
         let finding = lifecycle_integrity_finding(
             CG_MVP3_CORRUPT_OR_INCOMPLETE_UPDATE_TRANSACTION,
@@ -11221,6 +11280,30 @@ mod exact_calls_validation_tests {
     }
 
     #[test]
+    fn validate_edit_no_fake_interrupt_from_dirty_state() {
+        let finding = lifecycle_integrity_finding(
+            CG_MVP3_QUERY_DURING_UPDATE_UNSAFE,
+            ValidationLifecycleState::stale_non_claimable("publishing_dirty"),
+            "dirty or publishing DB state must be recovery-only",
+        );
+        assert_ne!(finding.classification, ValidationClassification::Block);
+
+        let packet = ValidationPacket::new(
+            vec!["src/service.ts".to_string()],
+            json!({"status": "not_run", "reason": "dirty_state"}),
+            vec![finding],
+            vec![proof_integrity_rule(CG_MVP3_QUERY_DURING_UPDATE_UNSAFE)],
+            Vec::new(),
+            json!({"claimable": false, "current": false, "db_problem_kind": "publishing_dirty"}),
+            json!({"graph_relation_proof": {"stale": true, "graph_proof": true}}),
+            json!({"claimable": false, "current": false}),
+        )
+        .with_eligible_hard_interrupts("mvp3_7_dirty_state_test");
+        assert!(!packet.hard_interrupt_available);
+        assert!(packet.hard_interrupt.is_none());
+    }
+
+    #[test]
     fn sidecar_access_vs_corrupt_classification_safe() {
         let finding = lifecycle_integrity_finding(
             CG_MVP3_SIDECAR_CORRUPT_VS_INACCESSIBLE_MISCLASSIFIED,
@@ -11232,6 +11315,77 @@ mod exact_calls_validation_tests {
             finding.proof_status,
             ValidationProofStatus::ReverifiedGraphIntegrity
         );
+    }
+
+    #[test]
+    fn sidecar_failure_does_not_corrupt_graph_claimability() {
+        let mut packet = dirty_output_source_packet();
+        add_agent_use_dirty_evidence_output_fields(&mut packet, "agent-use.status", false);
+        assert_eq!(
+            packet["sidecar_statuses"]["graph_db_status"].as_str(),
+            Some("fresh")
+        );
+        assert_eq!(
+            packet["sidecar_statuses"]["candidate_spool_query_index_status"].as_str(),
+            Some("corrupt")
+        );
+        assert_eq!(
+            packet["claimability_effect"].as_str(),
+            Some("graph_proof_available")
+        );
+    }
+
+    #[test]
+    fn recovery_commands_actionable() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let recovery = agent_use_recovery_json(&profile);
+        for key in [
+            "agent_use_index_command",
+            "agent_use_status_command",
+            "agent_use_context_pack_command",
+            "agent_use_watch_once_command",
+        ] {
+            let command = recovery[key].as_str().expect("recovery command string");
+            assert!(command.contains(BIN_NAME), "{key}: {command}");
+            assert!(command.contains("--repo"), "{key}: {command}");
+            assert!(
+                command.contains(&path_string(&profile.repo_root)),
+                "{key}: {command}"
+            );
+        }
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn status_doctor_read_only() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let normal_dot_codegraph = repo.join(".codegraph");
+        assert!(!normal_dot_codegraph.exists());
+
+        let status_like = agent_use_persistent_watch_many_changes_json(
+            &profile,
+            &[PathBuf::from("src/one.ts"), PathBuf::from("src/two.ts")],
+            &AgentUseWatchOptions {
+                repo: repo.clone(),
+                once: false,
+                changed_paths: Vec::new(),
+                debounce: Duration::from_millis(10),
+                lock_retries: 0,
+                lock_retry: Duration::from_millis(1),
+                max_batch_paths: 1,
+                max_updates: None,
+                idle_timeout: None,
+                test_events: Vec::new(),
+                detail_mode: AgentUseDetailMode::Compact,
+            },
+        );
+        assert_eq!(status_like["auto_index_enabled"].as_bool(), Some(false));
+        assert_eq!(status_like["old_db_preserved"].as_bool(), Some(true));
+        assert_eq!(status_like["temp_db_claimable"].as_bool(), Some(false));
+        assert!(!normal_dot_codegraph.exists());
+        cleanup_repo(repo);
     }
 
     #[test]
@@ -11254,6 +11408,295 @@ mod exact_calls_validation_tests {
         assert_ne!(finding.classification, ValidationClassification::Block);
         assert!(!finding.reverified_graph_source_proof);
         assert_eq!(finding.proof_status, ValidationProofStatus::NotGraphProof);
+    }
+
+    fn dirty_output_graph_layer(status: &str, ready: bool) -> Value {
+        json!({
+            "layer": "graph_db",
+            "status": status,
+            "ready": ready,
+            "claimable": ready,
+            "graph_proof_available": ready,
+            "diagnostic_only": !ready,
+        })
+    }
+
+    fn dirty_output_candidate_layer(status: &str, query_index_status: &str) -> Value {
+        json!({
+            "layer": "candidate_spool",
+            "status": status,
+            "ready": matches!(status, "ready" | "bounded_ready" | "truncated_ready")
+                && query_index_status == "ready",
+            "candidate_only": true,
+            "graph_proof": false,
+            "path": "candidate.jsonl",
+            "query_index_status": query_index_status,
+            "query_index_path": "candidate.sqlite",
+            "reason": "test candidate sidecar status",
+        })
+    }
+
+    fn dirty_output_vector_layer(status: &str) -> Value {
+        json!({
+            "layer": "vector_runtime",
+            "status": status,
+            "ready": status == "ready",
+            "candidate_only": true,
+            "graph_proof": false,
+            "path": "vector-runtime.json",
+            "reason": "test vector sidecar status",
+        })
+    }
+
+    fn dirty_output_audit_layer(status: &str) -> Value {
+        json!({
+            "layer": "vector_audit",
+            "status": status,
+            "ready": matches!(status, "ready" | "diagnostic_only" | "stale"),
+            "diagnostic_only": true,
+            "runtime_dependency": false,
+            "path": "vector-audit.json",
+        })
+    }
+
+    fn dirty_output_staged(candidate_status: &str, query_index_status: &str) -> Value {
+        staged_availability_from_layers(
+            dirty_output_graph_layer("ready", true),
+            dirty_output_candidate_layer(candidate_status, query_index_status),
+            dirty_output_vector_layer("stale"),
+            dirty_output_audit_layer("missing"),
+        )
+    }
+
+    fn dirty_output_source_packet() -> Value {
+        json!({
+            "staged_availability": dirty_output_staged("query_index_corrupt", "corrupt"),
+            "text_evidence_changed": true,
+            "path_evidence_invalidated": {"action": "refreshed", "graph_proof": false},
+            "candidate_spool_invalidated_or_refreshed": {"action": "error", "status": "query_index_corrupt", "graph_proof": false},
+            "candidate_query_index_invalidated_or_refreshed": {"action": "error", "status": "corrupt", "graph_proof": false},
+            "vector_chunks_invalidated": {"action": "invalidated", "status": "stale", "graph_proof": false},
+            "routing_handles_invalidated_or_not_applicable": {"action": "dirty_file_cleanup", "graph_proof": false},
+            "proof_ladder_changes": {
+                "text_evidence": {"changed": true, "graph_proof": false},
+                "candidate_evidence": {"changed": true, "graph_proof": false},
+                "vector_evidence": {"changed": true, "graph_proof": false},
+                "source_navigation": {"changed": true, "graph_proof": false}
+            },
+            "recovery_commands": ["codegraph-mcp agent-use index --repo <repo> --json"],
+        })
+    }
+
+    #[test]
+    fn validate_edit_reports_dirty_evidence() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let mut source_update = validate_edit_non_interrupt_source_update();
+        let dirty = dirty_output_source_packet();
+        if let Some(object) = source_update.as_object_mut() {
+            object.extend(dirty.as_object().expect("dirty object").clone());
+        }
+        let packet = agent_use_validate_edit_packet_json(&profile, &options, source_update);
+        assert!(packet["dirty_evidence_summary"].is_object(), "{packet:?}");
+        assert_eq!(
+            packet["validation_packet"]["dirty_evidence_summary"].is_object(),
+            true
+        );
+        assert_eq!(packet["candidate_layer_status"].as_str(), Some("corrupt"));
+        assert_eq!(
+            packet["proof_ladder_change_counts"]["candidate_evidence"].as_u64(),
+            Some(2)
+        );
+        assert_eq!(
+            packet["severity_effect"]["severity_model_preserved"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(false));
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn watch_reports_dirty_evidence() {
+        let mut packet = dirty_output_source_packet();
+        add_agent_use_dirty_evidence_output_fields(&mut packet, "agent-use.watch.once", false);
+        assert_eq!(
+            packet["dirty_evidence_summary"]["surface"].as_str(),
+            Some("agent-use.watch.once")
+        );
+        assert!(packet["invalidated_evidence"]
+            .as_array()
+            .expect("invalidated")
+            .iter()
+            .any(|item| item["surface_name"].as_str() == Some("text_evidence")));
+        assert!(packet["stale_evidence"]
+            .as_array()
+            .expect("stale")
+            .iter()
+            .all(|item| item["graph_proof"].as_bool() != Some(true)
+                || item["proof_ladder_level"].as_str() == Some("graph_relation_proof")));
+    }
+
+    #[test]
+    fn context_pack_refuses_stale_proof() {
+        let staged = staged_availability_from_layers(
+            dirty_output_graph_layer("stale", false),
+            dirty_output_candidate_layer("no_spool", "index_missing"),
+            dirty_output_vector_layer("missing"),
+            dirty_output_audit_layer("missing"),
+        );
+        let mut packet = json!({
+            "staged_availability": staged,
+            "proof_ladder_changes": {},
+            "recovery_commands": [],
+        });
+        add_agent_use_dirty_evidence_output_fields(&mut packet, "agent-use.context-pack", false);
+        assert_eq!(
+            packet["claimability_effect"].as_str(),
+            Some("graph_proof_unavailable")
+        );
+        assert!(packet["stale_evidence"]
+            .as_array()
+            .expect("stale")
+            .iter()
+            .any(|item| item["surface_name"].as_str() == Some("graph_relation_proof")));
+    }
+
+    #[test]
+    fn context_pack_refuses_stale_candidate_as_fresh() {
+        let mut packet = dirty_output_source_packet();
+        add_agent_use_dirty_evidence_output_fields(&mut packet, "agent-use.context-pack", false);
+        assert_eq!(packet["candidate_layer_status"].as_str(), Some("corrupt"));
+        assert!(packet["stale_non_proof_reasons"]
+            .as_array()
+            .expect("reasons")
+            .iter()
+            .any(|reason| reason
+                .as_str()
+                .is_some_and(|text| text.contains("cannot be used as graph proof"))));
+    }
+
+    #[test]
+    fn routing_packet_marks_stale_candidate_layers_or_not_applicable() {
+        let mut packet = json!({
+            "layer_readiness": dirty_output_staged("no_spool", "index_missing")["layer_readiness"].clone(),
+            "graph_proof_available": true,
+            "candidate_only_available": false,
+            "routing_handles_invalidated_or_not_applicable": {"action": "not_applicable", "graph_proof": false},
+        });
+        add_agent_use_dirty_evidence_output_fields(&mut packet, "agent-routing-packet", false);
+        assert_eq!(
+            packet["routing_handle_status"].as_str(),
+            Some("not_applicable")
+        );
+        assert_eq!(
+            packet["sidecar_statuses"]["source_navigation_status"].as_str(),
+            Some("not_applicable")
+        );
+    }
+
+    #[test]
+    fn status_doctor_graph_sidecar_split() {
+        let mut packet = dirty_output_source_packet();
+        add_agent_use_dirty_evidence_output_fields(&mut packet, "status", false);
+        assert_eq!(
+            packet["sidecar_statuses"]["graph_db_status"].as_str(),
+            Some("fresh")
+        );
+        assert_eq!(
+            packet["sidecar_statuses"]["candidate_layer_status"].as_str(),
+            Some("corrupt")
+        );
+        assert_eq!(
+            packet["claimability_effect"].as_str(),
+            Some("graph_proof_available")
+        );
+    }
+
+    #[test]
+    fn proof_ladder_changes_explicit() {
+        let counts = agent_use_proof_ladder_change_counts(
+            &dirty_output_source_packet()["proof_ladder_changes"],
+        );
+        assert_eq!(counts["text_evidence"].as_u64(), Some(1));
+        assert_eq!(counts["candidate_evidence"].as_u64(), Some(2));
+        assert_eq!(counts["source_navigation_evidence"].as_u64(), Some(1));
+        assert_eq!(counts["graph_proof_changed_count"].as_u64(), Some(0));
+    }
+
+    #[test]
+    fn text_evidence_change_not_broken_graph_behavior() {
+        let mut packet = dirty_output_source_packet();
+        add_agent_use_dirty_evidence_output_fields(&mut packet, "agent-use.validate-edit", false);
+        let text = packet["invalidated_evidence"]
+            .as_array()
+            .expect("invalidated")
+            .iter()
+            .find(|item| item["surface_name"].as_str() == Some("text_evidence"))
+            .expect("text evidence entry");
+        assert_eq!(text["graph_proof"].as_bool(), Some(false));
+        assert_eq!(
+            packet["severity_effect"]["text_evidence_change_not_broken_graph_behavior"].as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn stale_sidecar_not_hard_interrupt() {
+        let mut packet = dirty_output_source_packet();
+        packet["hard_interrupt_available"] = json!(false);
+        add_agent_use_dirty_evidence_output_fields(&mut packet, "agent-use.validate-edit", false);
+        assert_eq!(
+            packet["severity_effect"]["stale_sidecar_not_hard_interrupt"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn severity_model_preserved() {
+        let mut packet = dirty_output_source_packet();
+        add_agent_use_dirty_evidence_output_fields(&mut packet, "agent-use.validate-edit", false);
+        assert_eq!(
+            packet["severity_effect"]["severity_model_preserved"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            packet["severity_effect"]["hard_interrupt_eligibility_unchanged"].as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn compact_output_preserves_dirty_evidence_summary() {
+        let mut packet = dirty_output_source_packet();
+        add_agent_use_dirty_evidence_output_fields(&mut packet, "agent-use.context-pack", false);
+        assert!(packet["dirty_evidence_summary"].is_object());
+        assert_eq!(
+            packet["dirty_evidence_summary"]["summary_only"].as_bool(),
+            Some(true)
+        );
+        assert!(packet["expansion_handles"]
+            .as_array()
+            .expect("handles")
+            .iter()
+            .any(|handle| handle.as_str() == Some("dirty_evidence:full")));
+    }
+
+    #[test]
+    fn explain_audit_restores_dirty_evidence_detail() {
+        let mut packet = dirty_output_source_packet();
+        add_agent_use_dirty_evidence_output_fields(&mut packet, "agent-use.context-pack", true);
+        assert_eq!(
+            packet["dirty_evidence_summary"]["summary_only"].as_bool(),
+            Some(false)
+        );
+        assert!(!packet
+            .get("expansion_handles")
+            .and_then(Value::as_array)
+            .is_some_and(|handles| handles
+                .iter()
+                .any(|handle| handle.as_str() == Some("dirty_evidence:full"))));
     }
 
     #[test]
@@ -12443,10 +12886,19 @@ pub(crate) fn agent_use_layer_delta_action(status: Option<&str>) -> Value {
     let action = match status {
         "ready" | "superseded_by_graph_db" => "status_checked",
         "stale" => "invalidated",
-        "missing" | "no_spool" | "query_index_missing" => "absent",
+        "missing"
+        | "no_spool"
+        | "query_index_missing"
+        | "disabled_budget_exceeded"
+        | "not_applicable" => "absent",
         "rebuilt" => "rebuilt",
-        "corrupt" | "query_index_corrupt" => "error",
-        "permission_denied" | "filesystem_inaccessible" | "sidecar_unavailable" => "error",
+        "corrupt" | "query_index_corrupt" | "sidecar_corrupt" => "error",
+        "permission_denied"
+        | "read_only"
+        | "filesystem_inaccessible"
+        | "sidecar_unavailable"
+        | "sidecar_locked"
+        | "blocked_by_graph_db" => "error",
         _ => "status_checked",
     };
     json!({
@@ -13289,6 +13741,21 @@ pub(crate) fn agent_use_compact_delta_summary(value: &Value) -> Value {
         "old_db_preserved",
         "temp_db_claimable",
         "claimability",
+        "dirty_evidence_summary",
+        "invalidated_evidence",
+        "refreshed_evidence",
+        "stale_evidence",
+        "unavailable_evidence",
+        "sidecar_statuses",
+        "candidate_layer_status",
+        "vector_layer_status",
+        "path_evidence_status",
+        "source_navigation_status",
+        "routing_handle_status",
+        "proof_ladder_change_counts",
+        "stale_non_proof_reasons",
+        "claimability_effect",
+        "severity_effect",
         "warnings",
         "recovery_commands",
     ] {
@@ -13297,6 +13764,803 @@ pub(crate) fn agent_use_compact_delta_summary(value: &Value) -> Value {
         }
     }
     Value::Object(object)
+}
+
+pub(crate) fn add_agent_use_dirty_evidence_output_fields(
+    value: &mut Value,
+    surface: &str,
+    full_detail: bool,
+) {
+    let staged_availability = value
+        .get("staged_availability")
+        .cloned()
+        .unwrap_or_else(|| value.clone());
+    let proof_ladder_changes = value
+        .get("proof_ladder_changes")
+        .cloned()
+        .or_else(|| {
+            value
+                .pointer("/validation_packet/proof_ladder_changes")
+                .cloned()
+        })
+        .or_else(|| {
+            value
+                .pointer("/packet/metadata/proof_ladder_changes")
+                .cloned()
+        })
+        .unwrap_or_else(|| json!({}));
+    let recovery_commands = value
+        .get("recovery_commands")
+        .cloned()
+        .or_else(|| value.get("validation_recovery_commands").cloned())
+        .unwrap_or_else(|| json!([]));
+    let fields = agent_use_dirty_evidence_output_fields(
+        surface,
+        value,
+        &staged_availability,
+        &proof_ladder_changes,
+        recovery_commands,
+        full_detail,
+    );
+    merge_json_object(value, fields.clone());
+
+    let hard_interrupt_fields = agent_use_dirty_evidence_hard_interrupt_fields(&fields);
+    if let Some(packet) = value
+        .get_mut("validation_packet")
+        .filter(|packet| packet.is_object())
+    {
+        merge_json_object(packet, fields.clone());
+        if let Some(interrupt) = packet
+            .get_mut("hard_interrupt")
+            .filter(|interrupt| interrupt.is_object())
+        {
+            merge_json_object(interrupt, hard_interrupt_fields.clone());
+        }
+    }
+    if let Some(packet) = value
+        .get_mut("hard_interrupt")
+        .filter(|packet| packet.is_object())
+    {
+        merge_json_object(packet, hard_interrupt_fields);
+    }
+    agent_use_append_dirty_evidence_expansion_handle(value, full_detail);
+}
+
+pub(crate) fn agent_use_dirty_evidence_output_fields(
+    surface: &str,
+    source: &Value,
+    staged_availability: &Value,
+    proof_ladder_changes: &Value,
+    recovery_commands: Value,
+    full_detail: bool,
+) -> Value {
+    let graph_status = agent_use_layer_freshness(staged_availability, "graph_db");
+    let candidate_layer_status = agent_use_layer_freshness(staged_availability, "candidate_spool");
+    let vector_layer_status = agent_use_layer_freshness(staged_availability, "vector_runtime");
+    let vector_audit_status = agent_use_layer_freshness(staged_availability, "vector_audit");
+    let path_evidence_status = agent_use_path_evidence_freshness(source);
+    let source_navigation_status =
+        agent_use_source_navigation_freshness(staged_availability, &candidate_layer_status);
+    let routing_handle_status = agent_use_routing_handle_freshness(source);
+    let sidecar_statuses = json!({
+        "graph_db_status": graph_status,
+        "candidate_layer_status": candidate_layer_status,
+        "candidate_spool_query_index_status": agent_use_candidate_query_index_freshness(staged_availability),
+        "vector_layer_status": vector_layer_status,
+        "vector_audit_status": vector_audit_status,
+        "path_evidence_status": path_evidence_status,
+        "source_navigation_status": source_navigation_status,
+        "routing_handle_status": routing_handle_status,
+        "graph_db_claimable": staged_availability
+            .get("claimability")
+            .and_then(|claimability| claimability.get("claimable"))
+            .cloned()
+            .or_else(|| staged_availability.get("graph_proof_available").cloned())
+            .unwrap_or_else(|| json!(false)),
+        "graph_proof_available": staged_availability
+            .get("graph_proof_available")
+            .cloned()
+            .unwrap_or_else(|| json!(false)),
+        "candidate_only_available": staged_availability
+            .get("candidate_only_available")
+            .cloned()
+            .unwrap_or_else(|| json!(false)),
+    });
+    let proof_ladder_change_counts = agent_use_proof_ladder_change_counts(proof_ladder_changes);
+    let invalidated_evidence =
+        agent_use_invalidated_evidence_statuses(source, proof_ladder_changes);
+    let refreshed_evidence = agent_use_refreshed_evidence_statuses(source, proof_ladder_changes);
+    let stale_evidence =
+        agent_use_stale_evidence_statuses(staged_availability, proof_ladder_changes);
+    let unavailable_evidence = agent_use_unavailable_evidence_statuses(staged_availability);
+    let stale_non_proof_reasons =
+        agent_use_stale_non_proof_reasons(&stale_evidence, &unavailable_evidence);
+    let graph_proof_available = staged_availability
+        .get("graph_proof_available")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let claimability_effect =
+        agent_use_output_claimability_effect(staged_availability, graph_proof_available);
+    let sidecar_corrupt_or_unavailable =
+        agent_use_any_sidecar_corrupt_or_unavailable(&sidecar_statuses);
+    let graph_db_corrupt_or_unavailable = matches!(
+        graph_status.as_str(),
+        Some("corrupt" | "inaccessible" | "permission_denied")
+    );
+
+    json!({
+        "dirty_evidence_summary": {
+            "schema_version": 1,
+            "surface": surface,
+            "surfaces_total": 8,
+            "fresh_count": agent_use_count_fresh_dirty_statuses(&sidecar_statuses),
+            "stale_count": stale_evidence.as_array().map(Vec::len).unwrap_or_default(),
+            "dirty_count": invalidated_evidence.as_array().map(Vec::len).unwrap_or_default(),
+            "unavailable_count": unavailable_evidence.as_array().map(Vec::len).unwrap_or_default(),
+            "corrupt_count": agent_use_count_status(&sidecar_statuses, "corrupt"),
+            "not_applicable_count": agent_use_count_status(&sidecar_statuses, "not_applicable"),
+            "graph_proof_available": graph_proof_available,
+            "sidecar_corrupt_or_unavailable": sidecar_corrupt_or_unavailable,
+            "graph_db_corrupt_or_unavailable": graph_db_corrupt_or_unavailable,
+            "text_evidence_is_not_graph_proof": true,
+            "candidate_evidence_is_not_graph_proof": true,
+            "vector_evidence_is_not_graph_proof": true,
+            "source_navigation_evidence_is_not_graph_proof": true,
+            "summary_only": !full_detail,
+        },
+        "invalidated_evidence": invalidated_evidence,
+        "refreshed_evidence": refreshed_evidence,
+        "stale_evidence": stale_evidence,
+        "unavailable_evidence": unavailable_evidence,
+        "proof_ladder_changes": proof_ladder_changes.clone(),
+        "proof_ladder_change_counts": proof_ladder_change_counts,
+        "candidate_layer_status": sidecar_statuses["candidate_layer_status"].clone(),
+        "vector_layer_status": sidecar_statuses["vector_layer_status"].clone(),
+        "path_evidence_status": sidecar_statuses["path_evidence_status"].clone(),
+        "source_navigation_status": sidecar_statuses["source_navigation_status"].clone(),
+        "routing_handle_status": sidecar_statuses["routing_handle_status"].clone(),
+        "sidecar_statuses": sidecar_statuses,
+        "stale_non_proof_reasons": stale_non_proof_reasons,
+        "claimability_effect": claimability_effect,
+        "severity_effect": {
+            "severity_model_preserved": true,
+            "hard_interrupt_eligibility_unchanged": true,
+            "stale_sidecar_not_hard_interrupt": true,
+            "text_evidence_change_not_broken_graph_behavior": true,
+            "candidate_vector_source_navigation_non_proof": true,
+        },
+        "recovery_commands": recovery_commands,
+    })
+}
+
+fn agent_use_dirty_evidence_hard_interrupt_fields(fields: &Value) -> Value {
+    json!({
+        "dirty_evidence_summary": fields.get("dirty_evidence_summary").cloned().unwrap_or(Value::Null),
+        "proof_ladder_change_counts": fields.get("proof_ladder_change_counts").cloned().unwrap_or(Value::Null),
+        "sidecar_statuses": fields.get("sidecar_statuses").cloned().unwrap_or(Value::Null),
+        "stale_non_proof_reasons": fields.get("stale_non_proof_reasons").cloned().unwrap_or_else(|| json!([])),
+        "claimability_effect": fields.get("claimability_effect").cloned().unwrap_or_else(|| json!("not_applicable")),
+        "severity_effect": fields.get("severity_effect").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn agent_use_append_dirty_evidence_expansion_handle(value: &mut Value, full_detail: bool) {
+    if full_detail {
+        return;
+    }
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let handles = object
+        .entry("expansion_handles".to_string())
+        .or_insert_with(|| json!([]));
+    let Some(handles) = handles.as_array_mut() else {
+        return;
+    };
+    if !handles
+        .iter()
+        .any(|handle| handle.as_str() == Some("dirty_evidence:full"))
+    {
+        handles.push(json!("dirty_evidence:full"));
+    }
+}
+
+fn agent_use_layer_freshness(staged_availability: &Value, layer_name: &str) -> Value {
+    let status = staged_availability
+        .pointer(&format!("/layer_readiness/{layer_name}/status"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            let key = match layer_name {
+                "graph_db" => "graph_db_status",
+                "candidate_spool" => "candidate_spool_status",
+                "vector_runtime" => "vector_runtime_status",
+                "vector_audit" => "vector_audit_status",
+                _ => "",
+            };
+            staged_availability.get(key).and_then(Value::as_str)
+        })
+        .unwrap_or("unknown");
+    json!(agent_use_normalize_dirty_freshness_status(status))
+}
+
+fn agent_use_candidate_query_index_freshness(staged_availability: &Value) -> Value {
+    let status = staged_availability
+        .pointer("/layer_readiness/candidate_spool/query_index_status")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            staged_availability
+                .get("candidate_spool_query_index_status")
+                .and_then(Value::as_str)
+        })
+        .unwrap_or_else(|| {
+            staged_availability
+                .pointer("/layer_readiness/candidate_spool/status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        });
+    json!(agent_use_normalize_dirty_freshness_status(status))
+}
+
+fn agent_use_path_evidence_freshness(source: &Value) -> Value {
+    let action = source
+        .get("path_evidence_invalidated")
+        .and_then(|value| value.get("action"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    json!(match action {
+        "refreshed" | "status_checked" | "unchanged" => "fresh",
+        "invalidated" => "stale",
+        "rebuilt" => "fresh",
+        "not_applicable" => "not_applicable",
+        "absent" => "missing",
+        "error" => "inaccessible",
+        _ => "unknown",
+    })
+}
+
+fn agent_use_source_navigation_freshness(
+    staged_availability: &Value,
+    candidate_layer_status: &Value,
+) -> Value {
+    if staged_availability
+        .get("active_candidate_sources")
+        .and_then(Value::as_array)
+        .is_some_and(|sources| {
+            sources
+                .iter()
+                .any(|source| source.as_str() == Some("candidate_spool"))
+        })
+    {
+        return json!("fresh");
+    }
+    match candidate_layer_status.as_str().unwrap_or("unknown") {
+        "stale" | "corrupt" | "inaccessible" | "permission_denied" => json!("stale"),
+        "missing" | "not_applicable" => json!("not_applicable"),
+        "fresh" => json!("fresh"),
+        _ => json!("unknown"),
+    }
+}
+
+fn agent_use_routing_handle_freshness(source: &Value) -> Value {
+    let action = source
+        .get("routing_handles_invalidated_or_not_applicable")
+        .or_else(|| source.get("routing_handles_invalidated"))
+        .and_then(|value| value.get("action"))
+        .and_then(Value::as_str)
+        .unwrap_or("not_applicable");
+    json!(match action {
+        "dirty_file_cleanup" | "invalidated" => "stale",
+        "unchanged" | "status_checked" | "refreshed" => "fresh",
+        "not_applicable" => "not_applicable",
+        "error" => "inaccessible",
+        _ => "not_applicable",
+    })
+}
+
+fn agent_use_normalize_dirty_freshness_status(status: &str) -> &'static str {
+    match status {
+        "ready" | "current" | "ok" | "superseded_by_graph_db" => "fresh",
+        "building" | "rebuilding" => "rebuilding",
+        "publishing" | "updating" => "publishing",
+        "partial_ready" => "partial",
+        "truncated_ready" | "bounded_ready" => "truncated",
+        "stale" | "foreign" | "blocked_by_graph_db" => "stale",
+        "missing" | "no_spool" | "no_index" | "query_index_missing" | "index_missing" => "missing",
+        "corrupt" | "query_index_corrupt" | "sidecar_corrupt" => "corrupt",
+        "permission_denied" | "read_only" => "permission_denied",
+        "filesystem_inaccessible" | "sidecar_unavailable" | "sidecar_locked" | "blocked" => {
+            "inaccessible"
+        }
+        "not_requested" | "not_applicable" => "not_applicable",
+        "diagnostic_only" | "present_unvalidated" => "diagnostic_only",
+        "disabled_budget_exceeded" => "inaccessible",
+        _ => "unknown",
+    }
+}
+
+fn agent_use_output_claimability_effect(
+    staged_availability: &Value,
+    graph_proof_available: bool,
+) -> &'static str {
+    if graph_proof_available {
+        "graph_proof_available"
+    } else if staged_availability
+        .get("candidate_only_available")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        "non_proof_evidence_only"
+    } else {
+        "graph_proof_unavailable"
+    }
+}
+
+fn agent_use_proof_ladder_change_counts(proof_ladder_changes: &Value) -> Value {
+    let mut counts = BTreeMap::from([
+        ("text_evidence".to_string(), 0usize),
+        ("symbol_evidence".to_string(), 0),
+        ("candidate_evidence".to_string(), 0),
+        ("source_navigation_evidence".to_string(), 0),
+        ("graph_relation_proof".to_string(), 0),
+        ("mutation_proof".to_string(), 0),
+        ("flow_proof".to_string(), 0),
+        ("unknown".to_string(), 0),
+        ("unsupported".to_string(), 0),
+        ("diagnostic_only".to_string(), 0),
+    ]);
+    let mut graph_proof_changed = 0usize;
+    if let Some(object) = proof_ladder_changes.as_object() {
+        for (key, value) in object {
+            if !value.is_object() {
+                continue;
+            }
+            let level = agent_use_proof_ladder_level_for_key(key);
+            *counts.entry(level.to_string()).or_insert(0) += 1;
+            if value
+                .get("graph_proof")
+                .and_then(Value::as_bool)
+                .unwrap_or(level == "graph_relation_proof")
+            {
+                graph_proof_changed += 1;
+            }
+        }
+    }
+    let total = counts.values().copied().sum::<usize>();
+    let mut value = serde_json::Map::new();
+    for (key, count) in counts {
+        value.insert(key, json!(count));
+    }
+    value.insert("total".to_string(), json!(total));
+    value.insert(
+        "graph_proof_changed_count".to_string(),
+        json!(graph_proof_changed),
+    );
+    Value::Object(value)
+}
+
+fn agent_use_proof_ladder_level_for_key(key: &str) -> &'static str {
+    match key {
+        "text_evidence" => "text_evidence",
+        "symbol_evidence" | "graph_entities" | "source_spans" | "source_roles" => "symbol_evidence",
+        "candidate_evidence"
+        | "vector_evidence"
+        | "runtime_vector_chunks"
+        | "candidate_spool_packets"
+        | "candidate_spool_query_index_rows"
+        | "binary_candidate_records"
+        | "nuance_token_records" => "candidate_evidence",
+        "source_navigation"
+        | "source_navigation_evidence"
+        | "source_navigation_handles"
+        | "routing_packet_handles"
+        | "context_packet_handles" => "source_navigation_evidence",
+        "graph_relation_proof" | "graph_edges" | "PathEvidence" | "path_evidence" => {
+            "graph_relation_proof"
+        }
+        "mutation_proof" => "mutation_proof",
+        "flow_proof" => "flow_proof",
+        "unsupported" => "unsupported",
+        "diagnostic_only" => "diagnostic_only",
+        _ => "unknown",
+    }
+}
+
+fn agent_use_invalidated_evidence_statuses(source: &Value, proof_ladder_changes: &Value) -> Value {
+    let mut surfaces = Vec::new();
+    if source
+        .get("text_evidence_changed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        surfaces.push(agent_use_surface_status(
+            "text_evidence",
+            "text_evidence",
+            "dirty",
+            "non_proof_evidence_only",
+            false,
+            Some(
+                "text evidence changed; source-text evidence refreshed, not broken graph behavior",
+            ),
+        ));
+    }
+    for (source_key, surface, level) in [
+        (
+            "path_evidence_invalidated",
+            "PathEvidence",
+            "graph_relation_proof",
+        ),
+        (
+            "candidate_spool_invalidated_or_refreshed",
+            "candidate_spool_packets",
+            "candidate_evidence",
+        ),
+        (
+            "candidate_query_index_invalidated_or_refreshed",
+            "candidate_spool_query_index_rows",
+            "candidate_evidence",
+        ),
+        (
+            "vector_chunks_invalidated",
+            "runtime_vector_chunks",
+            "candidate_evidence",
+        ),
+        (
+            "routing_handles_invalidated_or_not_applicable",
+            "routing_packet_handles",
+            "source_navigation_evidence",
+        ),
+    ] {
+        let action = source
+            .get(source_key)
+            .and_then(|value| value.get("action"))
+            .and_then(Value::as_str)
+            .unwrap_or("unchanged");
+        if matches!(action, "invalidated" | "dirty_file_cleanup" | "stale") {
+            surfaces.push(agent_use_surface_status(
+                surface,
+                level,
+                "stale",
+                if level == "graph_relation_proof" {
+                    "graph_proof_unavailable"
+                } else {
+                    "non_proof_evidence_only"
+                },
+                level == "graph_relation_proof",
+                None,
+            ));
+        }
+    }
+    if let Some(object) = proof_ladder_changes.as_object() {
+        for (surface, change) in object {
+            if !change.is_object() {
+                continue;
+            }
+            if change
+                .get("stale")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                || change.get("action").and_then(Value::as_str) == Some("invalidated")
+            {
+                let level = agent_use_proof_ladder_level_for_key(surface);
+                surfaces.push(agent_use_surface_status(
+                    surface,
+                    level,
+                    "stale",
+                    agent_use_surface_claimability_effect(level, false),
+                    level == "graph_relation_proof",
+                    None,
+                ));
+            }
+        }
+    }
+    Value::Array(surfaces)
+}
+
+fn agent_use_refreshed_evidence_statuses(source: &Value, proof_ladder_changes: &Value) -> Value {
+    let mut surfaces = Vec::new();
+    if source
+        .get("text_evidence_changed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        surfaces.push(agent_use_surface_status(
+            "text_evidence",
+            "text_evidence",
+            "fresh",
+            "non_proof_evidence_only",
+            false,
+            Some("fresh text evidence can support source-text fallback but is not graph proof"),
+        ));
+    }
+    for (source_key, surface, level) in [
+        (
+            "path_evidence_invalidated",
+            "PathEvidence",
+            "graph_relation_proof",
+        ),
+        (
+            "candidate_spool_invalidated_or_refreshed",
+            "candidate_spool_packets",
+            "candidate_evidence",
+        ),
+        (
+            "candidate_query_index_invalidated_or_refreshed",
+            "candidate_spool_query_index_rows",
+            "candidate_evidence",
+        ),
+        (
+            "vector_chunks_invalidated",
+            "runtime_vector_chunks",
+            "candidate_evidence",
+        ),
+    ] {
+        let action = source
+            .get(source_key)
+            .and_then(|value| value.get("action"))
+            .and_then(Value::as_str)
+            .unwrap_or("unchanged");
+        if matches!(
+            action,
+            "refreshed" | "rebuilt" | "status_checked" | "unchanged"
+        ) {
+            surfaces.push(agent_use_surface_status(
+                surface,
+                level,
+                "fresh",
+                agent_use_surface_claimability_effect(level, true),
+                level == "graph_relation_proof",
+                None,
+            ));
+        }
+    }
+    if let Some(object) = proof_ladder_changes.as_object() {
+        for (surface, change) in object {
+            if !change.is_object() {
+                continue;
+            }
+            if change
+                .get("refreshed")
+                .or_else(|| change.get("changed"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                let level = agent_use_proof_ladder_level_for_key(surface);
+                surfaces.push(agent_use_surface_status(
+                    surface,
+                    level,
+                    "fresh",
+                    agent_use_surface_claimability_effect(level, true),
+                    level == "graph_relation_proof",
+                    None,
+                ));
+            }
+        }
+    }
+    Value::Array(surfaces)
+}
+
+fn agent_use_stale_evidence_statuses(
+    staged_availability: &Value,
+    proof_ladder_changes: &Value,
+) -> Value {
+    let mut surfaces = agent_use_stale_candidate_layers(staged_availability)
+        .into_iter()
+        .map(|layer| {
+            let name = layer
+                .get("layer")
+                .and_then(Value::as_str)
+                .unwrap_or("candidate_layer");
+            let level = if name == "vector_audit" {
+                "diagnostic_only"
+            } else if name == "candidate_spool" || name == "candidate_spool_query_index" {
+                "candidate_evidence"
+            } else {
+                "source_navigation_evidence"
+            };
+            agent_use_surface_status(
+                name,
+                level,
+                "stale",
+                "non_proof_evidence_only",
+                false,
+                Some("stale candidate/vector/source-navigation evidence cannot be used as graph proof"),
+            )
+        })
+        .collect::<Vec<_>>();
+    if !staged_availability
+        .get("graph_proof_available")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        surfaces.push(agent_use_surface_status(
+            "graph_relation_proof",
+            "graph_relation_proof",
+            "stale",
+            "graph_proof_unavailable",
+            true,
+            Some("unsafe or unavailable graph DB means graph/source proof is unavailable"),
+        ));
+    }
+    if let Some(text_change) = proof_ladder_changes
+        .get("text_evidence")
+        .filter(|value| value.is_object())
+    {
+        if text_change
+            .get("stale")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            surfaces.push(agent_use_surface_status(
+                "text_evidence",
+                "text_evidence",
+                "stale",
+                "non_proof_evidence_only",
+                false,
+                Some(
+                    "stale text evidence is stale source-text evidence, not broken graph behavior",
+                ),
+            ));
+        }
+    }
+    Value::Array(surfaces)
+}
+
+fn agent_use_unavailable_evidence_statuses(staged_availability: &Value) -> Value {
+    let mut surfaces = Vec::new();
+    for (layer_name, level) in [
+        ("candidate_spool", "candidate_evidence"),
+        ("vector_runtime", "candidate_evidence"),
+        ("vector_audit", "diagnostic_only"),
+    ] {
+        let layer = staged_availability
+            .pointer(&format!("/layer_readiness/{layer_name}"))
+            .unwrap_or(&Value::Null);
+        let status = layer
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let freshness = agent_use_normalize_dirty_freshness_status(status);
+        if matches!(
+            freshness,
+            "missing" | "corrupt" | "inaccessible" | "permission_denied"
+        ) {
+            surfaces.push(agent_use_surface_status(
+                layer_name,
+                level,
+                freshness,
+                if layer_name == "vector_audit" {
+                    "diagnostic_only"
+                } else {
+                    "sidecar_only"
+                },
+                false,
+                Some("optional sidecar state is separate from graph DB claimability"),
+            ));
+        }
+        if layer_name == "candidate_spool" {
+            let query_status = layer
+                .get("query_index_status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let query_freshness = agent_use_normalize_dirty_freshness_status(query_status);
+            if matches!(
+                query_freshness,
+                "missing" | "corrupt" | "inaccessible" | "permission_denied"
+            ) {
+                surfaces.push(agent_use_surface_status(
+                    "candidate_spool_query_index_rows",
+                    "candidate_evidence",
+                    query_freshness,
+                    "sidecar_only",
+                    false,
+                    Some("candidate query index failure is sidecar state, not graph DB corruption"),
+                ));
+            }
+        }
+    }
+    Value::Array(surfaces)
+}
+
+fn agent_use_surface_claimability_effect(level: &str, fresh: bool) -> &'static str {
+    match (level, fresh) {
+        ("graph_relation_proof", true) => "graph_proof_available",
+        ("graph_relation_proof", false) => "graph_proof_unavailable",
+        ("symbol_evidence", true) => "supports_graph_proof_when_joined",
+        ("mutation_proof" | "flow_proof", _) => "conditional_future_proof_only",
+        ("diagnostic_only", _) => "diagnostic_only",
+        ("unsupported", _) => "not_applicable",
+        _ => "non_proof_evidence_only",
+    }
+}
+
+fn agent_use_surface_status(
+    surface_name: &str,
+    proof_ladder_level: &str,
+    freshness_state: &str,
+    claimability_effect: &str,
+    graph_proof_possible: bool,
+    stale_non_proof_reason: Option<&str>,
+) -> Value {
+    let mut value = json!({
+        "surface_name": surface_name,
+        "evidence_kind": proof_ladder_level,
+        "proof_ladder_level": proof_ladder_level,
+        "freshness_state": freshness_state,
+        "claimability_effect": claimability_effect,
+        "graph_proof_possible": graph_proof_possible,
+        "graph_proof": graph_proof_possible && freshness_state == "fresh",
+    });
+    if let Some(reason) = stale_non_proof_reason {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("stale_non_proof_reason".to_string(), json!(reason));
+        }
+    }
+    value
+}
+
+fn agent_use_stale_non_proof_reasons(
+    stale_evidence: &Value,
+    unavailable_evidence: &Value,
+) -> Value {
+    let mut reasons = BTreeSet::new();
+    for item in stale_evidence
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(unavailable_evidence.as_array().into_iter().flatten())
+    {
+        if item
+            .get("graph_proof_possible")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if let Some(reason) = item.get("stale_non_proof_reason").and_then(Value::as_str) {
+            reasons.insert(reason.to_string());
+        } else if let Some(surface) = item.get("surface_name").and_then(Value::as_str) {
+            reasons.insert(format!(
+                "{surface} is non-proof evidence when stale or unavailable"
+            ));
+        }
+    }
+    Value::Array(reasons.into_iter().map(Value::String).collect())
+}
+
+fn agent_use_any_sidecar_corrupt_or_unavailable(sidecar_statuses: &Value) -> bool {
+    [
+        "candidate_layer_status",
+        "vector_layer_status",
+        "candidate_spool_query_index_status",
+    ]
+    .iter()
+    .any(|key| {
+        matches!(
+            sidecar_statuses.get(*key).and_then(Value::as_str),
+            Some("corrupt" | "inaccessible" | "permission_denied")
+        )
+    })
+}
+
+fn agent_use_count_fresh_dirty_statuses(sidecar_statuses: &Value) -> usize {
+    [
+        "graph_db_status",
+        "candidate_layer_status",
+        "vector_layer_status",
+        "path_evidence_status",
+    ]
+    .iter()
+    .filter(|key| sidecar_statuses.get(**key).and_then(Value::as_str) == Some("fresh"))
+    .count()
+}
+
+fn agent_use_count_status(sidecar_statuses: &Value, status: &str) -> usize {
+    sidecar_statuses
+        .as_object()
+        .into_iter()
+        .flat_map(|object| object.values())
+        .filter(|value| value.as_str() == Some(status))
+        .count()
 }
 
 pub(crate) fn add_agent_use_rtds_freshness_fields(
@@ -13610,10 +14874,14 @@ pub(crate) fn agent_use_candidate_layer_status_is_stale(status: &str) -> bool {
         "stale"
             | "corrupt"
             | "query_index_corrupt"
+            | "sidecar_corrupt"
             | "permission_denied"
+            | "read_only"
             | "filesystem_inaccessible"
             | "sidecar_unavailable"
+            | "sidecar_locked"
             | "blocked_by_graph_db"
+            | "disabled_budget_exceeded"
     )
 }
 
@@ -14050,6 +15318,7 @@ pub(crate) fn add_agent_use_staged_availability(
         value,
         staged_availability_top_level_fields(&staged_availability),
     );
+    add_agent_use_dirty_evidence_output_fields(value, "agent-use.status", false);
 }
 
 pub(crate) fn add_agent_use_db_lifecycle_read(value: &mut Value, preflight: &DbLifecyclePreflight) {
@@ -14157,6 +15426,7 @@ pub(crate) fn agent_use_unavailable_json(
         &mut value,
         staged_availability_top_level_fields(&staged_availability),
     );
+    add_agent_use_dirty_evidence_output_fields(&mut value, command, false);
     if command == "context-pack" {
         attach_unavailable_patch_assist_packet(
             &mut value,

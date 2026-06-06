@@ -852,12 +852,21 @@ impl McpServer {
             .entry("response_mode".to_string())
             .or_insert_with(|| Value::String("verbose".to_string()));
         let pack = self.context_pack(&request)?;
-        Ok(json!({
+        let staged_availability = pack
+            .get("staged_availability")
+            .cloned()
+            .or_else(|| {
+                pack.pointer("/packet/metadata/staged_availability")
+                    .cloned()
+            })
+            .unwrap_or_else(|| json!({}));
+        let mut value = json!({
             "status": "ok",
             "tool": "codegraph.plan_context",
             "repo_context": context.to_json(),
             "db_lifecycle_read": pack["db_lifecycle_read"].clone(),
             "packet": pack["packet"].clone(),
+            "recovery_commands": pack.get("recovery_commands").cloned().unwrap_or_else(|| json!([])),
             "workflow": recommended_workflow(),
             "recommended_next": [
                 "Use the packet snippets and verified paths for planning.",
@@ -865,7 +874,13 @@ impl McpServer {
                 "Call codegraph.update_changed_files after edits."
             ],
             "proof": "Plan context uses the same Stage 0-4 runtime funnel as codegraph.context_pack.",
-        }))
+        });
+        mcp_merge_json_object(
+            &mut value,
+            mcp_staged_top_level_fields(&staged_availability),
+        );
+        mcp_attach_dirty_evidence_output_fields(&mut value, "codegraph.plan_context", false);
+        Ok(value)
     }
 
     fn explain_missing(&self, args: &Map<String, Value>) -> Result<Value, ToolCallError> {
@@ -1004,6 +1019,7 @@ impl McpServer {
                 Some(&preflight),
                 &staged_availability,
             );
+            mcp_attach_dirty_evidence_output_fields(&mut value, "codegraph.status", false);
             return Ok(value);
         }
 
@@ -1045,6 +1061,7 @@ impl McpServer {
                 Some(&preflight),
                 &staged_availability,
             );
+            mcp_attach_dirty_evidence_output_fields(&mut value, "codegraph.status", false);
             return Ok(value);
         }
 
@@ -1092,6 +1109,7 @@ impl McpServer {
             Some(&preflight),
             &staged_availability,
         );
+        mcp_attach_dirty_evidence_output_fields(&mut value, "codegraph.status", false);
         Ok(value)
     }
 
@@ -1724,6 +1742,11 @@ impl McpServer {
                 Some(&preflight),
                 &staged_availability,
             );
+            mcp_attach_dirty_evidence_output_fields(
+                &mut value,
+                "codegraph.context_pack",
+                response_mode == "explain",
+            );
             return Ok(value);
         }
 
@@ -1746,6 +1769,7 @@ impl McpServer {
             Some(&preflight),
             &staged_availability,
         );
+        mcp_attach_dirty_evidence_output_fields(&mut compact, "codegraph.context_pack", false);
         Ok(compact)
     }
 
@@ -4369,9 +4393,19 @@ fn mcp_validate_edit_response(
         },
     });
     mcp_validate_edit_add_mode_aware_severity_fields(&mut value, mode);
+    mcp_attach_dirty_evidence_output_fields(
+        &mut value,
+        "codegraph.validate_edit",
+        mode == "explain" || mode == "audit-json",
+    );
     if let Some(max_output_bytes) = max_output_bytes {
         value = mcp_validate_edit_apply_output_budget(value, packet, max_output_bytes)?;
         mcp_validate_edit_add_mode_aware_severity_fields(&mut value, mode);
+        mcp_attach_dirty_evidence_output_fields(
+            &mut value,
+            "codegraph.validate_edit",
+            mode == "explain" || mode == "audit-json",
+        );
     }
     Ok(value)
 }
@@ -4647,13 +4681,17 @@ fn mcp_validate_edit_proof_ladder_summary(proof_ladder_changes: &Value) -> Value
             "keys": [],
         });
     };
-    let mut keys = object.keys().cloned().collect::<Vec<_>>();
+    let mut keys = object
+        .iter()
+        .filter_map(|(key, value)| value.is_object().then_some(key.clone()))
+        .collect::<Vec<_>>();
     keys.sort();
     json!({
         "available": true,
-        "changed_count": object.len(),
+        "changed_count": keys.len(),
         "graph_proof_changed_count": object
             .values()
+            .filter(|value| value.is_object())
             .filter(|value| value.get("graph_proof").and_then(Value::as_bool).unwrap_or(false))
             .count(),
         "keys": keys,
@@ -5229,6 +5267,7 @@ fn mcp_candidate_spool_context_pack(
     });
     mcp_merge_json_object(&mut value, staged_fields);
     mcp_attach_rtds_freshness_fields(&mut value, repo_root, db_path, None, &staged_availability);
+    mcp_attach_dirty_evidence_output_fields(&mut value, "codegraph.context_pack", false);
     Ok(value)
 }
 
@@ -6269,6 +6308,776 @@ fn mcp_rtds_freshness_json(
     })
 }
 
+fn mcp_attach_dirty_evidence_output_fields(value: &mut Value, surface: &str, full_detail: bool) {
+    let staged_availability = value
+        .get("staged_availability")
+        .cloned()
+        .unwrap_or_else(|| value.clone());
+    let proof_ladder_changes = value
+        .get("proof_ladder_changes")
+        .cloned()
+        .or_else(|| {
+            value
+                .pointer("/validation_packet/proof_ladder_changes")
+                .cloned()
+        })
+        .or_else(|| {
+            value
+                .pointer("/packet/metadata/proof_ladder_changes")
+                .cloned()
+        })
+        .unwrap_or_else(|| json!({}));
+    let recovery_commands = value
+        .get("recovery_commands")
+        .cloned()
+        .or_else(|| value.get("validation_recovery_commands").cloned())
+        .unwrap_or_else(|| json!([]));
+    let fields = mcp_dirty_evidence_output_fields(
+        surface,
+        value,
+        &staged_availability,
+        &proof_ladder_changes,
+        recovery_commands,
+        full_detail,
+    );
+    mcp_merge_json_object(value, fields.clone());
+    if let Some(packet) = value
+        .get_mut("validation_packet")
+        .filter(|packet| packet.is_object())
+    {
+        mcp_merge_json_object(packet, fields.clone());
+    }
+    if let Some(packet) = value
+        .get_mut("hard_interrupt")
+        .filter(|packet| packet.is_object())
+    {
+        mcp_merge_json_object(packet, mcp_dirty_evidence_hard_interrupt_fields(&fields));
+    }
+    mcp_append_dirty_evidence_expansion_handle(value, full_detail);
+}
+
+fn mcp_dirty_evidence_output_fields(
+    surface: &str,
+    source: &Value,
+    staged_availability: &Value,
+    proof_ladder_changes: &Value,
+    recovery_commands: Value,
+    full_detail: bool,
+) -> Value {
+    let graph_status = mcp_layer_freshness(staged_availability, "graph_db");
+    let candidate_layer_status = mcp_layer_freshness(staged_availability, "candidate_spool");
+    let vector_layer_status = mcp_layer_freshness(staged_availability, "vector_runtime");
+    let vector_audit_status = mcp_layer_freshness(staged_availability, "vector_audit");
+    let path_evidence_status = mcp_path_evidence_freshness(source);
+    let source_navigation_status =
+        mcp_source_navigation_freshness(staged_availability, &candidate_layer_status);
+    let routing_handle_status = mcp_routing_handle_freshness(source);
+    let sidecar_statuses = json!({
+        "graph_db_status": graph_status,
+        "candidate_layer_status": candidate_layer_status,
+        "candidate_spool_query_index_status": mcp_candidate_query_index_freshness(staged_availability),
+        "vector_layer_status": vector_layer_status,
+        "vector_audit_status": vector_audit_status,
+        "path_evidence_status": path_evidence_status,
+        "source_navigation_status": source_navigation_status,
+        "routing_handle_status": routing_handle_status,
+        "graph_db_claimable": staged_availability
+            .get("claimability")
+            .and_then(|claimability| claimability.get("claimable"))
+            .cloned()
+            .or_else(|| staged_availability.get("graph_proof_available").cloned())
+            .unwrap_or_else(|| json!(false)),
+        "graph_proof_available": staged_availability
+            .get("graph_proof_available")
+            .cloned()
+            .unwrap_or_else(|| json!(false)),
+        "candidate_only_available": staged_availability
+            .get("candidate_only_available")
+            .cloned()
+            .unwrap_or_else(|| json!(false)),
+    });
+    let proof_ladder_change_counts = mcp_proof_ladder_change_counts(proof_ladder_changes);
+    let invalidated_evidence = mcp_invalidated_evidence_statuses(source, proof_ladder_changes);
+    let refreshed_evidence = mcp_refreshed_evidence_statuses(source, proof_ladder_changes);
+    let stale_evidence = mcp_stale_evidence_statuses(staged_availability, proof_ladder_changes);
+    let unavailable_evidence = mcp_unavailable_evidence_statuses(staged_availability);
+    let stale_non_proof_reasons =
+        mcp_stale_non_proof_reasons(&stale_evidence, &unavailable_evidence);
+    let graph_proof_available = staged_availability
+        .get("graph_proof_available")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let claimability_effect =
+        mcp_output_claimability_effect(staged_availability, graph_proof_available);
+    let graph_db_corrupt_or_unavailable = matches!(
+        graph_status.as_str(),
+        Some("corrupt" | "inaccessible" | "permission_denied")
+    );
+
+    json!({
+        "dirty_evidence_summary": {
+            "schema_version": 1,
+            "surface": surface,
+            "surfaces_total": 8,
+            "fresh_count": mcp_count_fresh_dirty_statuses(&sidecar_statuses),
+            "stale_count": stale_evidence.as_array().map(Vec::len).unwrap_or_default(),
+            "dirty_count": invalidated_evidence.as_array().map(Vec::len).unwrap_or_default(),
+            "unavailable_count": unavailable_evidence.as_array().map(Vec::len).unwrap_or_default(),
+            "corrupt_count": mcp_count_status(&sidecar_statuses, "corrupt"),
+            "not_applicable_count": mcp_count_status(&sidecar_statuses, "not_applicable"),
+            "graph_proof_available": graph_proof_available,
+            "sidecar_corrupt_or_unavailable": mcp_any_sidecar_corrupt_or_unavailable(&sidecar_statuses),
+            "graph_db_corrupt_or_unavailable": graph_db_corrupt_or_unavailable,
+            "text_evidence_is_not_graph_proof": true,
+            "candidate_evidence_is_not_graph_proof": true,
+            "vector_evidence_is_not_graph_proof": true,
+            "source_navigation_evidence_is_not_graph_proof": true,
+            "summary_only": !full_detail,
+        },
+        "invalidated_evidence": invalidated_evidence,
+        "refreshed_evidence": refreshed_evidence,
+        "stale_evidence": stale_evidence,
+        "unavailable_evidence": unavailable_evidence,
+        "proof_ladder_changes": proof_ladder_changes.clone(),
+        "proof_ladder_change_counts": proof_ladder_change_counts,
+        "candidate_layer_status": sidecar_statuses["candidate_layer_status"].clone(),
+        "vector_layer_status": sidecar_statuses["vector_layer_status"].clone(),
+        "path_evidence_status": sidecar_statuses["path_evidence_status"].clone(),
+        "source_navigation_status": sidecar_statuses["source_navigation_status"].clone(),
+        "routing_handle_status": sidecar_statuses["routing_handle_status"].clone(),
+        "sidecar_statuses": sidecar_statuses,
+        "stale_non_proof_reasons": stale_non_proof_reasons,
+        "claimability_effect": claimability_effect,
+        "severity_effect": {
+            "severity_model_preserved": true,
+            "hard_interrupt_eligibility_unchanged": true,
+            "stale_sidecar_not_hard_interrupt": true,
+            "text_evidence_change_not_broken_graph_behavior": true,
+            "candidate_vector_source_navigation_non_proof": true,
+        },
+        "recovery_commands": recovery_commands,
+    })
+}
+
+fn mcp_dirty_evidence_hard_interrupt_fields(fields: &Value) -> Value {
+    json!({
+        "dirty_evidence_summary": fields.get("dirty_evidence_summary").cloned().unwrap_or(Value::Null),
+        "proof_ladder_change_counts": fields.get("proof_ladder_change_counts").cloned().unwrap_or(Value::Null),
+        "sidecar_statuses": fields.get("sidecar_statuses").cloned().unwrap_or(Value::Null),
+        "stale_non_proof_reasons": fields.get("stale_non_proof_reasons").cloned().unwrap_or_else(|| json!([])),
+        "claimability_effect": fields.get("claimability_effect").cloned().unwrap_or_else(|| json!("not_applicable")),
+        "severity_effect": fields.get("severity_effect").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn mcp_append_dirty_evidence_expansion_handle(value: &mut Value, full_detail: bool) {
+    if full_detail {
+        return;
+    }
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let handles = object
+        .entry("expansion_handles".to_string())
+        .or_insert_with(|| json!([]));
+    let Some(handles) = handles.as_array_mut() else {
+        return;
+    };
+    if !handles
+        .iter()
+        .any(|handle| handle.as_str() == Some("dirty_evidence:full"))
+    {
+        handles.push(json!("dirty_evidence:full"));
+    }
+}
+
+fn mcp_layer_freshness(staged_availability: &Value, layer_name: &str) -> Value {
+    let status = staged_availability
+        .pointer(&format!("/layer_readiness/{layer_name}/status"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            let key = match layer_name {
+                "graph_db" => "graph_db_status",
+                "candidate_spool" => "candidate_spool_status",
+                "vector_runtime" => "vector_runtime_status",
+                "vector_audit" => "vector_audit_status",
+                _ => "",
+            };
+            staged_availability.get(key).and_then(Value::as_str)
+        })
+        .unwrap_or("unknown");
+    json!(mcp_normalize_dirty_freshness_status(status))
+}
+
+fn mcp_candidate_query_index_freshness(staged_availability: &Value) -> Value {
+    let status = staged_availability
+        .pointer("/layer_readiness/candidate_spool/query_index_status")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            staged_availability
+                .get("candidate_spool_query_index_status")
+                .and_then(Value::as_str)
+        })
+        .unwrap_or_else(|| {
+            staged_availability
+                .pointer("/layer_readiness/candidate_spool/status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        });
+    json!(mcp_normalize_dirty_freshness_status(status))
+}
+
+fn mcp_path_evidence_freshness(source: &Value) -> Value {
+    let action = source
+        .get("path_evidence_invalidated")
+        .and_then(|value| value.get("action"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    json!(match action {
+        "refreshed" | "status_checked" | "unchanged" | "rebuilt" => "fresh",
+        "invalidated" => "stale",
+        "not_applicable" => "not_applicable",
+        "absent" => "missing",
+        "error" => "inaccessible",
+        _ => "unknown",
+    })
+}
+
+fn mcp_source_navigation_freshness(
+    staged_availability: &Value,
+    candidate_layer_status: &Value,
+) -> Value {
+    if staged_availability
+        .get("active_candidate_sources")
+        .and_then(Value::as_array)
+        .is_some_and(|sources| {
+            sources
+                .iter()
+                .any(|source| source.as_str() == Some("candidate_spool"))
+        })
+    {
+        return json!("fresh");
+    }
+    match candidate_layer_status.as_str().unwrap_or("unknown") {
+        "stale" | "corrupt" | "inaccessible" | "permission_denied" => json!("stale"),
+        "missing" | "not_applicable" => json!("not_applicable"),
+        "fresh" => json!("fresh"),
+        _ => json!("unknown"),
+    }
+}
+
+fn mcp_routing_handle_freshness(source: &Value) -> Value {
+    let action = source
+        .get("routing_handles_invalidated_or_not_applicable")
+        .or_else(|| source.get("routing_handles_invalidated"))
+        .and_then(|value| value.get("action"))
+        .and_then(Value::as_str)
+        .unwrap_or("not_applicable");
+    json!(match action {
+        "dirty_file_cleanup" | "invalidated" => "stale",
+        "unchanged" | "status_checked" | "refreshed" => "fresh",
+        "not_applicable" => "not_applicable",
+        "error" => "inaccessible",
+        _ => "not_applicable",
+    })
+}
+
+fn mcp_normalize_dirty_freshness_status(status: &str) -> &'static str {
+    match status {
+        "ready" | "current" | "ok" | "superseded_by_graph_db" => "fresh",
+        "building" | "rebuilding" => "rebuilding",
+        "publishing" | "updating" => "publishing",
+        "partial_ready" => "partial",
+        "truncated_ready" | "bounded_ready" => "truncated",
+        "stale" | "foreign" | "blocked_by_graph_db" => "stale",
+        "missing" | "no_spool" | "no_index" | "query_index_missing" | "index_missing" => "missing",
+        "corrupt" | "query_index_corrupt" | "sidecar_corrupt" => "corrupt",
+        "permission_denied" | "read_only" => "permission_denied",
+        "filesystem_inaccessible" | "sidecar_unavailable" | "sidecar_locked" | "blocked" => {
+            "inaccessible"
+        }
+        "not_requested" | "not_applicable" => "not_applicable",
+        "diagnostic_only" | "present_unvalidated" => "diagnostic_only",
+        "disabled_budget_exceeded" => "inaccessible",
+        _ => "unknown",
+    }
+}
+
+fn mcp_output_claimability_effect(
+    staged_availability: &Value,
+    graph_proof_available: bool,
+) -> &'static str {
+    if graph_proof_available {
+        "graph_proof_available"
+    } else if staged_availability
+        .get("candidate_only_available")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        "non_proof_evidence_only"
+    } else {
+        "graph_proof_unavailable"
+    }
+}
+
+fn mcp_proof_ladder_change_counts(proof_ladder_changes: &Value) -> Value {
+    let mut counts = BTreeMap::from([
+        ("text_evidence".to_string(), 0usize),
+        ("symbol_evidence".to_string(), 0),
+        ("candidate_evidence".to_string(), 0),
+        ("source_navigation_evidence".to_string(), 0),
+        ("graph_relation_proof".to_string(), 0),
+        ("mutation_proof".to_string(), 0),
+        ("flow_proof".to_string(), 0),
+        ("unknown".to_string(), 0),
+        ("unsupported".to_string(), 0),
+        ("diagnostic_only".to_string(), 0),
+    ]);
+    let mut graph_proof_changed = 0usize;
+    if let Some(object) = proof_ladder_changes.as_object() {
+        for (key, value) in object {
+            if !value.is_object() {
+                continue;
+            }
+            let level = mcp_proof_ladder_level_for_key(key);
+            *counts.entry(level.to_string()).or_insert(0) += 1;
+            if value
+                .get("graph_proof")
+                .and_then(Value::as_bool)
+                .unwrap_or(level == "graph_relation_proof")
+            {
+                graph_proof_changed += 1;
+            }
+        }
+    }
+    let total = counts.values().copied().sum::<usize>();
+    let mut value = Map::new();
+    for (key, count) in counts {
+        value.insert(key, json!(count));
+    }
+    value.insert("total".to_string(), json!(total));
+    value.insert(
+        "graph_proof_changed_count".to_string(),
+        json!(graph_proof_changed),
+    );
+    Value::Object(value)
+}
+
+fn mcp_proof_ladder_level_for_key(key: &str) -> &'static str {
+    match key {
+        "text_evidence" => "text_evidence",
+        "symbol_evidence" | "graph_entities" | "source_spans" | "source_roles" => "symbol_evidence",
+        "candidate_evidence"
+        | "vector_evidence"
+        | "runtime_vector_chunks"
+        | "candidate_spool_packets"
+        | "candidate_spool_query_index_rows"
+        | "binary_candidate_records"
+        | "nuance_token_records" => "candidate_evidence",
+        "source_navigation"
+        | "source_navigation_evidence"
+        | "source_navigation_handles"
+        | "routing_packet_handles"
+        | "context_packet_handles" => "source_navigation_evidence",
+        "graph_relation_proof" | "graph_edges" | "PathEvidence" | "path_evidence" => {
+            "graph_relation_proof"
+        }
+        "mutation_proof" => "mutation_proof",
+        "flow_proof" => "flow_proof",
+        "unsupported" => "unsupported",
+        "diagnostic_only" => "diagnostic_only",
+        _ => "unknown",
+    }
+}
+
+fn mcp_invalidated_evidence_statuses(source: &Value, proof_ladder_changes: &Value) -> Value {
+    let mut surfaces = Vec::new();
+    if source
+        .get("text_evidence_changed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        surfaces.push(mcp_surface_status(
+            "text_evidence",
+            "text_evidence",
+            "dirty",
+            "non_proof_evidence_only",
+            false,
+            Some(
+                "text evidence changed; source-text evidence refreshed, not broken graph behavior",
+            ),
+        ));
+    }
+    for (source_key, surface, level) in [
+        (
+            "path_evidence_invalidated",
+            "PathEvidence",
+            "graph_relation_proof",
+        ),
+        (
+            "candidate_spool_invalidated_or_refreshed",
+            "candidate_spool_packets",
+            "candidate_evidence",
+        ),
+        (
+            "candidate_query_index_invalidated_or_refreshed",
+            "candidate_spool_query_index_rows",
+            "candidate_evidence",
+        ),
+        (
+            "vector_chunks_invalidated",
+            "runtime_vector_chunks",
+            "candidate_evidence",
+        ),
+        (
+            "routing_handles_invalidated_or_not_applicable",
+            "routing_packet_handles",
+            "source_navigation_evidence",
+        ),
+    ] {
+        let action = source
+            .get(source_key)
+            .and_then(|value| value.get("action"))
+            .and_then(Value::as_str)
+            .unwrap_or("unchanged");
+        if matches!(action, "invalidated" | "dirty_file_cleanup" | "stale") {
+            surfaces.push(mcp_surface_status(
+                surface,
+                level,
+                "stale",
+                mcp_surface_claimability_effect(level, false),
+                level == "graph_relation_proof",
+                None,
+            ));
+        }
+    }
+    if let Some(object) = proof_ladder_changes.as_object() {
+        for (surface, change) in object {
+            if !change.is_object() {
+                continue;
+            }
+            if change
+                .get("stale")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                || change.get("action").and_then(Value::as_str) == Some("invalidated")
+            {
+                let level = mcp_proof_ladder_level_for_key(surface);
+                surfaces.push(mcp_surface_status(
+                    surface,
+                    level,
+                    "stale",
+                    mcp_surface_claimability_effect(level, false),
+                    level == "graph_relation_proof",
+                    None,
+                ));
+            }
+        }
+    }
+    Value::Array(surfaces)
+}
+
+fn mcp_refreshed_evidence_statuses(source: &Value, proof_ladder_changes: &Value) -> Value {
+    let mut surfaces = Vec::new();
+    if source
+        .get("text_evidence_changed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        surfaces.push(mcp_surface_status(
+            "text_evidence",
+            "text_evidence",
+            "fresh",
+            "non_proof_evidence_only",
+            false,
+            Some("fresh text evidence can support source-text fallback but is not graph proof"),
+        ));
+    }
+    for (source_key, surface, level) in [
+        (
+            "path_evidence_invalidated",
+            "PathEvidence",
+            "graph_relation_proof",
+        ),
+        (
+            "candidate_spool_invalidated_or_refreshed",
+            "candidate_spool_packets",
+            "candidate_evidence",
+        ),
+        (
+            "candidate_query_index_invalidated_or_refreshed",
+            "candidate_spool_query_index_rows",
+            "candidate_evidence",
+        ),
+        (
+            "vector_chunks_invalidated",
+            "runtime_vector_chunks",
+            "candidate_evidence",
+        ),
+    ] {
+        let action = source
+            .get(source_key)
+            .and_then(|value| value.get("action"))
+            .and_then(Value::as_str)
+            .unwrap_or("unchanged");
+        if matches!(
+            action,
+            "refreshed" | "rebuilt" | "status_checked" | "unchanged"
+        ) {
+            surfaces.push(mcp_surface_status(
+                surface,
+                level,
+                "fresh",
+                mcp_surface_claimability_effect(level, true),
+                level == "graph_relation_proof",
+                None,
+            ));
+        }
+    }
+    if let Some(object) = proof_ladder_changes.as_object() {
+        for (surface, change) in object {
+            if !change.is_object() {
+                continue;
+            }
+            if change
+                .get("refreshed")
+                .or_else(|| change.get("changed"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                let level = mcp_proof_ladder_level_for_key(surface);
+                surfaces.push(mcp_surface_status(
+                    surface,
+                    level,
+                    "fresh",
+                    mcp_surface_claimability_effect(level, true),
+                    level == "graph_relation_proof",
+                    None,
+                ));
+            }
+        }
+    }
+    Value::Array(surfaces)
+}
+
+fn mcp_stale_evidence_statuses(staged_availability: &Value, proof_ladder_changes: &Value) -> Value {
+    let mut surfaces = mcp_stale_candidate_layers(staged_availability)
+        .into_iter()
+        .map(|layer| {
+            let name = layer
+                .get("layer")
+                .and_then(Value::as_str)
+                .unwrap_or("candidate_layer");
+            let level = if name == "vector_audit" {
+                "diagnostic_only"
+            } else if name == "candidate_spool" || name == "candidate_spool_query_index" {
+                "candidate_evidence"
+            } else {
+                "source_navigation_evidence"
+            };
+            mcp_surface_status(
+                name,
+                level,
+                "stale",
+                "non_proof_evidence_only",
+                false,
+                Some("stale candidate/vector/source-navigation evidence cannot be used as graph proof"),
+            )
+        })
+        .collect::<Vec<_>>();
+    if !staged_availability
+        .get("graph_proof_available")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        surfaces.push(mcp_surface_status(
+            "graph_relation_proof",
+            "graph_relation_proof",
+            "stale",
+            "graph_proof_unavailable",
+            true,
+            Some("unsafe or unavailable graph DB means graph/source proof is unavailable"),
+        ));
+    }
+    if let Some(text_change) = proof_ladder_changes
+        .get("text_evidence")
+        .filter(|value| value.is_object())
+    {
+        if text_change
+            .get("stale")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            surfaces.push(mcp_surface_status(
+                "text_evidence",
+                "text_evidence",
+                "stale",
+                "non_proof_evidence_only",
+                false,
+                Some(
+                    "stale text evidence is stale source-text evidence, not broken graph behavior",
+                ),
+            ));
+        }
+    }
+    Value::Array(surfaces)
+}
+
+fn mcp_unavailable_evidence_statuses(staged_availability: &Value) -> Value {
+    let mut surfaces = Vec::new();
+    for (layer_name, level) in [
+        ("candidate_spool", "candidate_evidence"),
+        ("vector_runtime", "candidate_evidence"),
+        ("vector_audit", "diagnostic_only"),
+    ] {
+        let layer = staged_availability
+            .pointer(&format!("/layer_readiness/{layer_name}"))
+            .unwrap_or(&Value::Null);
+        let status = layer
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let freshness = mcp_normalize_dirty_freshness_status(status);
+        if matches!(
+            freshness,
+            "missing" | "corrupt" | "inaccessible" | "permission_denied"
+        ) {
+            surfaces.push(mcp_surface_status(
+                layer_name,
+                level,
+                freshness,
+                if layer_name == "vector_audit" {
+                    "diagnostic_only"
+                } else {
+                    "sidecar_only"
+                },
+                false,
+                Some("optional sidecar state is separate from graph DB claimability"),
+            ));
+        }
+        if layer_name == "candidate_spool" {
+            let query_status = layer
+                .get("query_index_status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let query_freshness = mcp_normalize_dirty_freshness_status(query_status);
+            if matches!(
+                query_freshness,
+                "missing" | "corrupt" | "inaccessible" | "permission_denied"
+            ) {
+                surfaces.push(mcp_surface_status(
+                    "candidate_spool_query_index_rows",
+                    "candidate_evidence",
+                    query_freshness,
+                    "sidecar_only",
+                    false,
+                    Some("candidate query index failure is sidecar state, not graph DB corruption"),
+                ));
+            }
+        }
+    }
+    Value::Array(surfaces)
+}
+
+fn mcp_surface_claimability_effect(level: &str, fresh: bool) -> &'static str {
+    match (level, fresh) {
+        ("graph_relation_proof", true) => "graph_proof_available",
+        ("graph_relation_proof", false) => "graph_proof_unavailable",
+        ("symbol_evidence", true) => "supports_graph_proof_when_joined",
+        ("mutation_proof" | "flow_proof", _) => "conditional_future_proof_only",
+        ("diagnostic_only", _) => "diagnostic_only",
+        ("unsupported", _) => "not_applicable",
+        _ => "non_proof_evidence_only",
+    }
+}
+
+fn mcp_surface_status(
+    surface_name: &str,
+    proof_ladder_level: &str,
+    freshness_state: &str,
+    claimability_effect: &str,
+    graph_proof_possible: bool,
+    stale_non_proof_reason: Option<&str>,
+) -> Value {
+    let mut value = json!({
+        "surface_name": surface_name,
+        "evidence_kind": proof_ladder_level,
+        "proof_ladder_level": proof_ladder_level,
+        "freshness_state": freshness_state,
+        "claimability_effect": claimability_effect,
+        "graph_proof_possible": graph_proof_possible,
+        "graph_proof": graph_proof_possible && freshness_state == "fresh",
+    });
+    if let Some(reason) = stale_non_proof_reason {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("stale_non_proof_reason".to_string(), json!(reason));
+        }
+    }
+    value
+}
+
+fn mcp_stale_non_proof_reasons(stale_evidence: &Value, unavailable_evidence: &Value) -> Value {
+    let mut reasons = BTreeSet::new();
+    for item in stale_evidence
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(unavailable_evidence.as_array().into_iter().flatten())
+    {
+        if item
+            .get("graph_proof_possible")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if let Some(reason) = item.get("stale_non_proof_reason").and_then(Value::as_str) {
+            reasons.insert(reason.to_string());
+        } else if let Some(surface) = item.get("surface_name").and_then(Value::as_str) {
+            reasons.insert(format!(
+                "{surface} is non-proof evidence when stale or unavailable"
+            ));
+        }
+    }
+    Value::Array(reasons.into_iter().map(Value::String).collect())
+}
+
+fn mcp_any_sidecar_corrupt_or_unavailable(sidecar_statuses: &Value) -> bool {
+    [
+        "candidate_layer_status",
+        "vector_layer_status",
+        "candidate_spool_query_index_status",
+    ]
+    .iter()
+    .any(|key| {
+        matches!(
+            sidecar_statuses.get(*key).and_then(Value::as_str),
+            Some("corrupt" | "inaccessible" | "permission_denied")
+        )
+    })
+}
+
+fn mcp_count_fresh_dirty_statuses(sidecar_statuses: &Value) -> usize {
+    [
+        "graph_db_status",
+        "candidate_layer_status",
+        "vector_layer_status",
+        "path_evidence_status",
+    ]
+    .iter()
+    .filter(|key| sidecar_statuses.get(**key).and_then(Value::as_str) == Some("fresh"))
+    .count()
+}
+
+fn mcp_count_status(sidecar_statuses: &Value, status: &str) -> usize {
+    sidecar_statuses
+        .as_object()
+        .into_iter()
+        .flat_map(|object| object.values())
+        .filter(|value| value.as_str() == Some(status))
+        .count()
+}
+
 fn mcp_profile_identity_json(repo_root: &Path, db_path: &Path) -> Value {
     let env_profile_name = std::env::var("CODEGRAPH_AGENT_USE_PROFILE").ok();
     let profile_name = if let Some(profile_name) = env_profile_name {
@@ -6458,11 +7267,162 @@ fn mcp_candidate_layer_status_is_stale(status: &str) -> bool {
         "stale"
             | "corrupt"
             | "query_index_corrupt"
+            | "sidecar_corrupt"
             | "permission_denied"
+            | "read_only"
             | "filesystem_inaccessible"
             | "sidecar_unavailable"
+            | "sidecar_locked"
             | "blocked_by_graph_db"
+            | "disabled_budget_exceeded"
     )
+}
+
+#[cfg(test)]
+mod mvp3_7_sidecar_status_tests {
+    use super::*;
+
+    fn mcp_dirty_output_graph_layer(status: &str, ready: bool) -> Value {
+        json!({
+            "layer": "graph_db",
+            "status": status,
+            "ready": ready,
+            "claimable": ready,
+            "graph_proof_available": ready,
+            "diagnostic_only": !ready,
+        })
+    }
+
+    fn mcp_dirty_output_candidate_layer(status: &str, query_index_status: &str) -> Value {
+        json!({
+            "layer": "candidate_spool",
+            "status": status,
+            "ready": status == "ready" && query_index_status == "ready",
+            "candidate_only": true,
+            "graph_proof": false,
+            "path": "candidate.jsonl",
+            "query_index_status": query_index_status,
+            "query_index_path": "candidate.sqlite",
+            "reason": "test candidate sidecar status",
+        })
+    }
+
+    fn mcp_dirty_output_vector_layer(status: &str) -> Value {
+        json!({
+            "layer": "vector_runtime",
+            "status": status,
+            "ready": status == "ready",
+            "candidate_only": true,
+            "graph_proof": false,
+            "path": "vector-runtime.json",
+            "reason": "test vector sidecar status",
+        })
+    }
+
+    fn mcp_dirty_output_audit_layer(status: &str) -> Value {
+        json!({
+            "layer": "vector_audit",
+            "status": status,
+            "ready": matches!(status, "ready" | "diagnostic_only" | "stale"),
+            "diagnostic_only": true,
+            "runtime_dependency": false,
+            "path": "vector-audit.json",
+        })
+    }
+
+    fn mcp_dirty_output_staged(candidate_status: &str, query_index_status: &str) -> Value {
+        mcp_staged_availability_from_layers(
+            mcp_dirty_output_graph_layer("ready", true),
+            mcp_dirty_output_candidate_layer(candidate_status, query_index_status),
+            mcp_dirty_output_vector_layer("stale"),
+            mcp_dirty_output_audit_layer("missing"),
+        )
+    }
+
+    fn mcp_dirty_output_packet() -> Value {
+        json!({
+            "staged_availability": mcp_dirty_output_staged("query_index_corrupt", "corrupt"),
+            "text_evidence_changed": true,
+            "path_evidence_invalidated": {"action": "refreshed", "graph_proof": false},
+            "candidate_spool_invalidated_or_refreshed": {"action": "error", "status": "query_index_corrupt", "graph_proof": false},
+            "candidate_query_index_invalidated_or_refreshed": {"action": "error", "status": "corrupt", "graph_proof": false},
+            "vector_chunks_invalidated": {"action": "invalidated", "status": "stale", "graph_proof": false},
+            "routing_handles_invalidated_or_not_applicable": {"action": "dirty_file_cleanup", "graph_proof": false},
+            "proof_ladder_changes": {
+                "text_evidence": {"changed": true, "graph_proof": false},
+                "candidate_evidence": {"changed": true, "graph_proof": false},
+                "vector_evidence": {"changed": true, "graph_proof": false},
+                "source_navigation": {"changed": true, "graph_proof": false}
+            },
+            "recovery_commands": ["codegraph-mcp agent-use index --repo <repo> --json"],
+        })
+    }
+
+    #[test]
+    fn mcp_sidecar_stale_status_set_matches_dirty_evidence_contract() {
+        for status in [
+            "stale",
+            "query_index_corrupt",
+            "sidecar_corrupt",
+            "permission_denied",
+            "read_only",
+            "filesystem_inaccessible",
+            "sidecar_unavailable",
+            "sidecar_locked",
+            "blocked_by_graph_db",
+            "disabled_budget_exceeded",
+        ] {
+            assert!(mcp_candidate_layer_status_is_stale(status), "{status}");
+        }
+        for status in ["ready", "missing", "no_spool", "not_applicable"] {
+            assert!(!mcp_candidate_layer_status_is_stale(status), "{status}");
+        }
+    }
+
+    #[test]
+    fn mcp_validate_edit_parity() {
+        let mut packet = mcp_dirty_output_packet();
+        packet["validation_packet"] = json!({
+            "proof_ladder_changes": packet["proof_ladder_changes"].clone(),
+            "hard_interrupt_available": false,
+        });
+        mcp_attach_dirty_evidence_output_fields(&mut packet, "codegraph.validate_edit", false);
+        assert!(packet["dirty_evidence_summary"].is_object(), "{packet:?}");
+        assert_eq!(
+            packet["validation_packet"]["dirty_evidence_summary"].is_object(),
+            true
+        );
+        assert_eq!(packet["candidate_layer_status"].as_str(), Some("corrupt"));
+        assert_eq!(
+            packet["proof_ladder_change_counts"]["candidate_evidence"].as_u64(),
+            Some(2)
+        );
+        assert_eq!(
+            packet["severity_effect"]["stale_sidecar_not_hard_interrupt"].as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn mcp_context_pack_parity() {
+        let mut packet = mcp_dirty_output_packet();
+        mcp_attach_dirty_evidence_output_fields(&mut packet, "codegraph.context_pack", false);
+        assert_eq!(
+            packet["dirty_evidence_summary"]["surface"].as_str(),
+            Some("codegraph.context_pack")
+        );
+        assert_eq!(
+            packet["claimability_effect"].as_str(),
+            Some("graph_proof_available")
+        );
+        assert!(packet["stale_non_proof_reasons"]
+            .as_array()
+            .expect("reasons")
+            .iter()
+            .any(|reason| reason
+                .as_str()
+                .is_some_and(|text| text.contains("cannot be used as graph proof"))));
+    }
 }
 
 fn mcp_merge_json_object(target: &mut Value, fields: Value) {

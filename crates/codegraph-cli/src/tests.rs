@@ -609,6 +609,382 @@ fn candidate_spool_indexed_status_and_query_reject_changed_and_deleted_files() {
         .contains("deleted_file"));
 }
 
+fn mvp3_7_sidecar_graph_ready_layer() -> Value {
+    json!({
+        "layer": "graph_db",
+        "status": "ready",
+        "ready": true,
+        "graph_proof_available": true,
+        "claimable": true,
+        "diagnostic_only": false,
+        "path": "fixture.sqlite",
+    })
+}
+
+fn mvp3_7_sidecar_missing_layer(layer: &str) -> Value {
+    json!({
+        "layer": layer,
+        "status": "missing",
+        "ready": false,
+        "candidate_only": true,
+        "graph_proof": false,
+        "diagnostic_only": layer == "vector_audit",
+        "runtime_dependency": false,
+    })
+}
+
+fn mvp3_7_sidecar_candidate_layer(status: &str) -> Value {
+    json!({
+        "layer": "candidate_spool",
+        "status": status,
+        "ready": false,
+        "path": "candidate-spool.jsonl",
+        "query_index_status": status,
+        "query_index_path": "candidate-spool.jsonl.query.sqlite",
+        "candidate_only": true,
+        "graph_proof": false,
+        "candidate_spool_unavailable": true,
+        "reason": "mvp3.7 fixture sidecar state",
+    })
+}
+
+#[test]
+fn candidate_spool_invalidated_or_refreshed() {
+    let action = super::agent_use_layer_delta_action(Some("stale"));
+    assert_eq!(action["action"].as_str(), Some("invalidated"));
+    assert_eq!(action["status"].as_str(), Some("stale"));
+    assert_eq!(action["graph_proof"].as_bool(), Some(false));
+}
+
+#[test]
+fn candidate_query_index_invalidated_or_refreshed() {
+    let stale = super::agent_use_layer_delta_action(Some("stale"));
+    let corrupt = super::agent_use_layer_delta_action(Some("query_index_corrupt"));
+    assert_eq!(stale["action"].as_str(), Some("invalidated"));
+    assert_eq!(corrupt["action"].as_str(), Some("error"));
+    assert_eq!(corrupt["graph_proof"].as_bool(), Some(false));
+}
+
+#[test]
+fn stale_candidate_hits_not_fresh() {
+    let repo = temp_repo();
+    let spool = write_candidate_spool_cli_fixture(&repo);
+    let args = vec![
+        "symbols".to_string(),
+        "spool_target".to_string(),
+        "--agent-json".to_string(),
+    ];
+    write_cli_fixture_file(&repo, "src/lib.rs", "pub fn changed_spool_target() {}\n");
+
+    let error = super::run_candidate_spool_query_command(&repo, &args, &spool, false)
+        .expect_err("normal query must reject stale candidate hits");
+    assert!(error.contains("candidate_spool_stale"), "{error}");
+    let diagnostic = super::run_candidate_spool_query_command(&repo, &args, &spool, true)
+        .expect("diagnostic stale query");
+    assert_eq!(diagnostic["candidate_spool_status"].as_str(), Some("stale"));
+    assert_eq!(diagnostic["graph_proof"].as_bool(), Some(false));
+    assert_no_dot_codegraph_sqlite(&repo);
+    remove_dir_all_with_retry(&repo, "cleanup stale candidate repo");
+}
+
+#[test]
+fn deleted_file_candidate_rows_not_fresh() {
+    let repo = temp_repo();
+    let spool = write_candidate_spool_cli_fixture(&repo);
+    let args = vec![
+        "symbols".to_string(),
+        "spool_target".to_string(),
+        "--agent-json".to_string(),
+    ];
+    super::run_candidate_spool_query_command(&repo, &args, &spool, false)
+        .expect("warm query index before delete");
+    fs::remove_file(repo.join("src").join("lib.rs")).expect("delete source");
+
+    let status = super::candidate_spool_layer_status(&repo, &spool);
+    assert_eq!(status["status"].as_str(), Some("stale"));
+    assert_eq!(status["ready"].as_bool(), Some(false));
+    assert_eq!(status["candidate_spool_unavailable"].as_bool(), Some(true));
+    assert!(status["reason"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("deleted_file"));
+    assert_no_dot_codegraph_sqlite(&repo);
+    remove_dir_all_with_retry(&repo, "cleanup deleted candidate repo");
+}
+
+#[test]
+fn candidate_query_index_corrupt_non_graph_db_corruption() {
+    let repo = temp_repo();
+    let spool = write_candidate_spool_cli_fixture(&repo);
+    let index_path = super::candidate_spool_query_index_path(&spool);
+    let _ = fs::remove_file(&index_path);
+    fs::write(&index_path, "not sqlite").expect("write corrupt sidecar");
+
+    let status = super::candidate_spool_layer_status(&repo, &spool);
+    assert_eq!(status["status"].as_str(), Some("query_index_corrupt"));
+    assert_eq!(status["graph_proof"].as_bool(), Some(false));
+    assert_eq!(status["candidate_spool_unavailable"].as_bool(), Some(true));
+
+    let staged = super::staged_availability_from_layers(
+        mvp3_7_sidecar_graph_ready_layer(),
+        status,
+        mvp3_7_sidecar_missing_layer("vector_runtime"),
+        mvp3_7_sidecar_missing_layer("vector_audit"),
+    );
+    assert_eq!(staged["graph_proof_available"].as_bool(), Some(true));
+    assert_eq!(staged["claimability"]["claimable"].as_bool(), Some(true));
+    assert!(!staged["active_candidate_sources"]
+        .as_array()
+        .expect("active sources")
+        .iter()
+        .any(|source| source.as_str() == Some("candidate_spool")));
+    assert_no_dot_codegraph_sqlite(&repo);
+    remove_dir_all_with_retry(&repo, "cleanup corrupt query index repo");
+}
+
+#[test]
+fn candidate_query_index_inaccessible_not_corrupt() {
+    let repo = temp_repo();
+    let spool = repo.join("codegraph-candidate-spool.jsonl");
+    let load = super::CandidateSpoolIndexLoad {
+        path: spool.clone(),
+        query_index_path: super::candidate_spool_query_index_path(&spool),
+        metadata: json!({
+            "candidate_spool_status": "bounded_ready",
+            "candidate_spool_truncated": false,
+            "incomplete": false,
+        }),
+        stale: true,
+        reason: Some(
+            "candidate_spool_query_index_open_failed: filesystem_inaccessible: unable to open database file"
+                .to_string(),
+        ),
+        query_index_status: "filesystem_inaccessible".to_string(),
+        query_index_kind: "sqlite".to_string(),
+        query_index_bytes: 0,
+        query_index_record_count: 0,
+        query_index_version: "candidate_spool_query_index_v1".to_string(),
+        query_index_bound_manifest_hash: None,
+        query_index_source_binding_count: 0,
+    };
+    let status = super::candidate_spool_layer_from_index_load(&spool, &load);
+    assert_eq!(status["status"].as_str(), Some("filesystem_inaccessible"));
+    assert_eq!(
+        status["query_index_problem_kind"].as_str(),
+        Some("filesystem_inaccessible")
+    );
+    assert_ne!(status["status"].as_str(), Some("query_index_corrupt"));
+    assert_eq!(status["graph_proof"].as_bool(), Some(false));
+    remove_dir_all_with_retry(&repo, "cleanup inaccessible query index repo");
+}
+
+#[test]
+fn optional_candidate_spool_failure_does_not_fail_claimable_graph() {
+    let staged = super::staged_availability_from_layers(
+        mvp3_7_sidecar_graph_ready_layer(),
+        mvp3_7_sidecar_candidate_layer("disabled_budget_exceeded"),
+        mvp3_7_sidecar_missing_layer("vector_runtime"),
+        mvp3_7_sidecar_missing_layer("vector_audit"),
+    );
+    assert_eq!(staged["graph_proof_available"].as_bool(), Some(true));
+    assert_eq!(staged["claimability"]["claimable"].as_bool(), Some(true));
+    assert_eq!(
+        staged["candidate_spool_status"].as_str(),
+        Some("disabled_budget_exceeded")
+    );
+    assert!(!staged["active_candidate_sources"]
+        .as_array()
+        .expect("active sources")
+        .iter()
+        .any(|source| source.as_str() == Some("candidate_spool")));
+}
+
+#[test]
+fn required_candidate_spool_failure_structured() {
+    let failure = json!({
+        "status": "index_failed",
+        "error": "candidate_spool_required_budget_exceeded",
+        "candidate_spool_required": true,
+        "candidate_spool_disabled_reason": "candidate_spool_budget_too_small",
+        "candidate_only": true,
+        "graph_proof": false,
+    });
+    assert_eq!(
+        failure["error"].as_str(),
+        Some("candidate_spool_required_budget_exceeded")
+    );
+    assert_eq!(failure["candidate_spool_required"].as_bool(), Some(true));
+    assert_eq!(failure["graph_proof"].as_bool(), Some(false));
+}
+
+#[test]
+fn vector_runtime_invalidated_or_refreshed() {
+    let action = super::agent_use_layer_delta_action(Some("stale"));
+    assert_eq!(action["action"].as_str(), Some("invalidated"));
+    assert_eq!(action["graph_proof"].as_bool(), Some(false));
+}
+
+#[test]
+fn vector_audit_diagnostic_only() {
+    let repo = temp_repo();
+    let audit_path = repo.join("vector-audit.json");
+    fs::write(
+        &audit_path,
+        serde_json::to_string(&json!({
+            "metadata": {
+                "artifact_kind": "audit_artifact",
+                "index_artifact_format": "pretty_json"
+            }
+        }))
+        .expect("audit json"),
+    )
+    .expect("write audit");
+    let status = super::vector_audit_layer_status(&repo.join("missing.sqlite"), None, &audit_path);
+    assert_eq!(status["diagnostic_only"].as_bool(), Some(true));
+    assert_eq!(status["runtime_dependency"].as_bool(), Some(false));
+    assert_ne!(status["graph_proof"].as_bool(), Some(true));
+    assert_no_dot_codegraph_sqlite(&repo);
+    remove_dir_all_with_retry(&repo, "cleanup vector audit repo");
+}
+
+#[test]
+fn stale_vector_chunks_not_fresh() {
+    let staged = super::staged_availability_from_layers(
+        mvp3_7_sidecar_graph_ready_layer(),
+        mvp3_7_sidecar_candidate_layer("no_spool"),
+        json!({
+            "layer": "vector_runtime",
+            "status": "stale",
+            "ready": false,
+            "candidate_only": true,
+            "graph_proof": false,
+            "reason": "vector_source_binding_stale",
+        }),
+        mvp3_7_sidecar_missing_layer("vector_audit"),
+    );
+    assert_eq!(staged["graph_proof_available"].as_bool(), Some(true));
+    assert!(!staged["active_candidate_sources"]
+        .as_array()
+        .expect("active sources")
+        .iter()
+        .any(|source| source.as_str() == Some("vector_semantic")));
+}
+
+#[test]
+fn nuance_records_invalidated_or_not_applicable() {
+    let action = super::agent_use_not_applicable_delta_action(
+        "nuance_rescue_candidates_are_request_time_context_candidates",
+    );
+    assert_eq!(action["status"].as_str(), Some("not_applicable"));
+    assert_eq!(action["graph_proof"].as_bool(), Some(false));
+}
+
+#[test]
+fn source_navigation_handles_invalidated_or_not_applicable() {
+    assert!(super::agent_use_candidate_layer_status_is_stale("stale"));
+    let action = super::agent_use_not_applicable_delta_action(
+        "source_navigation_handles_are_candidate_inspection_aids",
+    );
+    assert_eq!(action["status"].as_str(), Some("not_applicable"));
+    assert_eq!(action["graph_proof"].as_bool(), Some(false));
+}
+
+#[test]
+fn routing_handles_invalidated_or_not_applicable() {
+    let action = json!({
+        "action": "dirty_file_cleanup",
+        "scope": "sparse_sidecar_handles",
+        "graph_proof": false,
+    });
+    assert_eq!(action["action"].as_str(), Some("dirty_file_cleanup"));
+    assert_eq!(action["graph_proof"].as_bool(), Some(false));
+}
+
+#[test]
+fn stale_sidecars_not_used_as_fresh() {
+    for status in [
+        "stale",
+        "query_index_corrupt",
+        "sidecar_corrupt",
+        "permission_denied",
+        "read_only",
+        "filesystem_inaccessible",
+        "sidecar_unavailable",
+        "sidecar_locked",
+        "blocked_by_graph_db",
+        "disabled_budget_exceeded",
+    ] {
+        assert!(
+            super::agent_use_candidate_layer_status_is_stale(status),
+            "{status}"
+        );
+        let action = super::agent_use_layer_delta_action(Some(status));
+        assert_ne!(
+            action["action"].as_str(),
+            Some("status_checked"),
+            "{status}"
+        );
+        assert_eq!(action["graph_proof"].as_bool(), Some(false));
+    }
+}
+
+#[test]
+fn corrupt_sidecar_not_graph_db_corruption() {
+    let staged = super::staged_availability_from_layers(
+        mvp3_7_sidecar_graph_ready_layer(),
+        mvp3_7_sidecar_candidate_layer("sidecar_corrupt"),
+        mvp3_7_sidecar_missing_layer("vector_runtime"),
+        mvp3_7_sidecar_missing_layer("vector_audit"),
+    );
+    assert_eq!(staged["graph_db_status"].as_str(), Some("ready"));
+    assert_eq!(
+        staged["candidate_spool_status"].as_str(),
+        Some("sidecar_corrupt")
+    );
+    assert_eq!(staged["graph_proof_available"].as_bool(), Some(true));
+}
+
+#[test]
+fn graph_claimable_when_optional_sidecar_corrupt() {
+    let staged = super::staged_availability_from_layers(
+        mvp3_7_sidecar_graph_ready_layer(),
+        mvp3_7_sidecar_candidate_layer("sidecar_corrupt"),
+        json!({
+            "layer": "vector_runtime",
+            "status": "sidecar_corrupt",
+            "ready": false,
+            "candidate_only": true,
+            "graph_proof": false,
+            "reason": "runtime sidecar corrupt",
+        }),
+        json!({
+            "layer": "vector_audit",
+            "status": "sidecar_corrupt",
+            "ready": false,
+            "diagnostic_only": true,
+            "runtime_dependency": false,
+            "graph_proof": false,
+            "reason": "audit sidecar corrupt",
+        }),
+    );
+    assert_eq!(staged["graph_proof_available"].as_bool(), Some(true));
+    assert_eq!(staged["claimability"]["claimable"].as_bool(), Some(true));
+    assert_eq!(staged["candidate_only_available"].as_bool(), Some(false));
+}
+
+#[test]
+fn no_dot_codegraph_mutation_for_sidecar_status_helpers() {
+    let repo = temp_repo();
+    let _ = super::staged_availability_from_layers(
+        mvp3_7_sidecar_graph_ready_layer(),
+        mvp3_7_sidecar_candidate_layer("sidecar_corrupt"),
+        mvp3_7_sidecar_missing_layer("vector_runtime"),
+        mvp3_7_sidecar_missing_layer("vector_audit"),
+    );
+    assert_no_dot_codegraph_sqlite(&repo);
+    remove_dir_all_with_retry(&repo, "cleanup sidecar helper repo");
+}
+
 #[test]
 fn candidate_spool_legacy_firehose_without_index_is_not_hot_path() {
     let repo = temp_repo();

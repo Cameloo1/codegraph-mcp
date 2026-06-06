@@ -257,7 +257,7 @@ pub(crate) fn context_pack_routing_packet_json(
         "max_output_bytes": options.max_output_bytes.unwrap_or(DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES),
     });
 
-    json!({
+    let mut value = json!({
         "packet_kind": "agent_routing_packet",
         "schema_version": 1,
         "task_intent": task_intent.to_json(),
@@ -303,7 +303,9 @@ pub(crate) fn context_pack_routing_packet_json(
             "omitted_candidates_preview": candidate_set.omitted_candidates.iter().take(budgets.explain_debug_budget).cloned().collect::<Vec<_>>(),
             "proof_contract": "only verified graph/source evidence can set graph_proof=true; text, vector, binary, nuance, and follow-up query evidence remain candidate or source-text evidence"
         }
-    })
+    });
+    add_agent_use_dirty_evidence_output_fields(&mut value, "agent-routing-packet", options.explain);
+    value
 }
 
 pub(crate) fn context_pack_routing_ranked_evidence(

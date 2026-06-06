@@ -1557,6 +1557,7 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
             "next_command": "codegraph-mcp index .",
         });
         merge_json_object(&mut value, staged_fields);
+        add_agent_use_dirty_evidence_output_fields(&mut value, "status", false);
         merge_json_object(&mut value, plain_status_agent_use_guidance_json(&repo_root));
         return Ok(value);
     }
@@ -1579,6 +1580,7 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
             "next_command": "codegraph-mcp index . --fresh",
         });
         merge_json_object(&mut value, staged_fields);
+        add_agent_use_dirty_evidence_output_fields(&mut value, "status", false);
         merge_json_object(&mut value, plain_status_agent_use_guidance_json(&repo_root));
         return Ok(value);
     }
@@ -1662,6 +1664,7 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
         "languages": languages,
     });
     merge_json_object(&mut value, staged_fields);
+    add_agent_use_dirty_evidence_output_fields(&mut value, "status", false);
     Ok(value)
 }
 
@@ -1879,6 +1882,7 @@ fn run_doctor_command(args: &[String]) -> Result<Value, String> {
         "proof": "Doctor is local-only and treats missing optional components as warnings.",
     });
     merge_json_object(&mut value, staged_fields);
+    add_agent_use_dirty_evidence_output_fields(&mut value, "doctor", false);
     Ok(value)
 }
 

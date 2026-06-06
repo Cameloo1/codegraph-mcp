@@ -8,12 +8,20 @@
 
 #![forbid(unsafe_code)]
 
+mod dirty_evidence;
 mod ids;
 mod kinds;
 mod model;
 mod normalized;
 mod validation;
 
+pub use dirty_evidence::{
+    all_known_dirty_evidence_surfaces, dirty_evidence_registry, proof_ladder_invalidation_contract,
+    DirtyEvidenceBinding, DirtyEvidenceClaimabilityEffect, DirtyEvidenceFreshnessState,
+    DirtyEvidenceKind, DirtyEvidenceRefreshStrategy, DirtyEvidenceRegistryEntry,
+    DirtyEvidenceStorageLayer, ProofLadderInvalidationRule, ProofLadderLevel,
+    DIRTY_EVIDENCE_REGISTRY_SCHEMA_VERSION, PROOF_LADDER_INVALIDATION_CONTRACT_SCHEMA_VERSION,
+};
 pub use ids::{
     normalize_repo_relative_path, stable_edge_id, stable_entity_id, stable_entity_id_for_kind,
     stable_fact_hash, stable_fact_identity_key,

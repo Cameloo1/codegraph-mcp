@@ -4041,6 +4041,25 @@ impl ValidationPacket {
                 }
             }
         }
+        if validation_packet_compact_graph_delta_field(&mut value) {
+            omitted += 1;
+        }
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "validation_rules_evaluated".to_string(),
+                validation_packet_compact_rules_json(
+                    &self.validation_rules_evaluated,
+                    "validation_packet.validation_rules_evaluated",
+                ),
+            );
+            object.insert(
+                "validation_rules_skipped".to_string(),
+                validation_packet_compact_rules_json(
+                    &self.validation_rules_skipped,
+                    "validation_packet.validation_rules_skipped",
+                ),
+            );
+        }
 
         if let (Some(object), Some(hard_interrupt)) = (value.as_object_mut(), &self.hard_interrupt)
         {
@@ -4164,6 +4183,112 @@ impl ValidationPacket {
             self.should_recover_tool_state,
         );
     }
+}
+
+fn validation_packet_compact_graph_delta_field(value: &mut Value) -> bool {
+    let Some(graph_delta) = value.get("graph_delta").cloned() else {
+        return false;
+    };
+    let compact = validation_packet_compact_graph_delta_json(&graph_delta);
+    if compact == graph_delta {
+        return false;
+    }
+    if let Some(object) = value.as_object_mut() {
+        object.insert("graph_delta".to_string(), compact);
+        return true;
+    }
+    false
+}
+
+fn validation_packet_compact_graph_delta_json(graph_delta: &Value) -> Value {
+    let Some(object) = graph_delta.as_object() else {
+        return graph_delta.clone();
+    };
+    let mut compact = serde_json::Map::new();
+    for key in [
+        "schema_version",
+        "status",
+        "ready_to_report",
+        "claimable",
+        "diagnostic_only",
+        "summary",
+        "closure_budget_hit",
+        "closure_delta_summary",
+        "closure_degraded_relation_classes",
+        "closure_unknowns",
+        "candidate_spool_invalidated_or_refreshed",
+        "candidate_query_index_invalidated_or_refreshed",
+        "vector_chunks_invalidated",
+        "vector_runtime_status_changed",
+        "vector_audit_status_changed",
+        "nuance_tokens_invalidated",
+        "routing_handles_invalidated",
+        "path_evidence_invalidated_count",
+        "sidecar_freshness_changed_count",
+        "packet_budget",
+        "omitted_count",
+        "truncated_sections",
+        "stale_sidecars_not_used_as_fresh",
+        "no_silent_full_repo_fallback",
+        "source_spans_and_provenance_preserved",
+        "claim_boundaries_preserved",
+        "public_claim",
+    ] {
+        if let Some(field) = object.get(key) {
+            compact.insert(key.to_string(), field.clone());
+        }
+    }
+    if let Some(proof_ladder_changes) = object.get("proof_ladder_changes") {
+        compact.insert(
+            "proof_ladder_changes".to_string(),
+            hard_interrupt_compact_proof_ladder_changes_json(proof_ladder_changes),
+        );
+    }
+    for key in [
+        "entities_added",
+        "entities_removed",
+        "entities_changed",
+        "edges_added",
+        "edges_removed",
+        "edges_changed",
+        "source_spans_added",
+        "source_spans_removed",
+        "source_spans_changed",
+        "text_evidence_changed",
+        "path_evidence_invalidated",
+        "sidecar_freshness_changed",
+        "source_roles_changed",
+        "file_renames_detected",
+        "rename_ambiguities",
+    ] {
+        if let Some(items) = object.get(key).and_then(Value::as_array) {
+            compact.insert(format!("{key}_count"), json!(items.len()));
+        }
+    }
+    compact.insert("agent_json_compacted".to_string(), json!(true));
+    compact.insert(
+        "full_detail_handle".to_string(),
+        json!("validation_packet.graph_delta"),
+    );
+    Value::Object(compact)
+}
+
+fn validation_packet_compact_rules_json(
+    rules: &[ValidationRule],
+    full_detail_handle: &str,
+) -> Value {
+    let mut rule_ids = rules
+        .iter()
+        .map(|rule| rule.validation_rule_id.clone())
+        .collect::<Vec<_>>();
+    rule_ids.sort();
+    rule_ids.dedup();
+    json!({
+        "count": rules.len(),
+        "rule_ids": rule_ids,
+        "full_detail_handle": full_detail_handle,
+        "agent_json_compacted": true,
+    })
 }
 
 fn validation_packet_final_severity_label(
@@ -7014,6 +7139,75 @@ mod tests {
         assert!(compact["omitted_count"].as_u64().unwrap_or_default() > 0);
         assert!(compact["expansion_handles"].as_array().is_some());
         assert!(compact["diagnostics"].as_array().unwrap().len() <= 1);
+    }
+
+    #[test]
+    fn compact_validation_packet_summarizes_graph_delta_and_rules() {
+        let rule = exact_calls_rule();
+        let graph_delta = serde_json::json!({
+            "schema_version": "test_graph_delta_v1",
+            "status": "complete",
+            "summary": {"entity_delta_count": 12, "edge_delta_count": 12},
+            "entities_added": (0..12)
+                .map(|index| serde_json::json!({
+                    "entity_id": format!("entity://{index}"),
+                    "source_span": {"repo_relative_path": "src/main.rs", "start_line": index + 1}
+                }))
+                .collect::<Vec<_>>(),
+            "edges_added": (0..12)
+                .map(|index| serde_json::json!({
+                    "edge_id": format!("edge://{index}"),
+                    "source_span": {"repo_relative_path": "src/main.rs", "start_line": index + 1}
+                }))
+                .collect::<Vec<_>>(),
+            "proof_ladder_changes": {
+                "graph_relation_proof": {"changed": true, "graph_proof": true, "reason": "test"}
+            },
+            "packet_budget": {"critical_safety_fields_preserved": true},
+            "claim_boundaries_preserved": true,
+            "public_claim": false
+        });
+        let full_graph_delta_bytes = serde_json::to_vec(&graph_delta).unwrap().len();
+        let packet = ValidationPacket::new(
+            vec!["src/main.rs".to_string()],
+            graph_delta,
+            Vec::new(),
+            vec![rule],
+            Vec::new(),
+            serde_json::json!({"claimable": true}),
+            serde_json::json!({"graph_relation_proof": {"changed": true}}),
+            serde_json::json!({"claimable": true, "current": true}),
+        );
+
+        let compact = packet.compact_agent_json(1);
+
+        assert!(ValidationPacket::critical_safety_fields_preserved_in(
+            &compact
+        ));
+        assert_eq!(
+            compact["graph_delta"]["agent_json_compacted"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            compact["graph_delta"]["summary"]["entity_delta_count"].as_u64(),
+            Some(12)
+        );
+        assert_eq!(
+            compact["graph_delta"]["entities_added_count"].as_u64(),
+            Some(12)
+        );
+        assert!(compact["graph_delta"].get("entities_added").is_none());
+        assert_eq!(
+            compact["validation_rules_evaluated"]["count"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            compact["validation_rules_evaluated"]["agent_json_compacted"].as_bool(),
+            Some(true)
+        );
+        assert!(
+            serde_json::to_vec(&compact["graph_delta"]).unwrap().len() < full_graph_delta_bytes
+        );
     }
 
     #[test]
