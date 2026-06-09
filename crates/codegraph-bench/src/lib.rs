@@ -40,6 +40,7 @@ use serde_json::{json, Value};
 
 pub mod competitors;
 pub mod graph_truth;
+pub mod mvp3_validation_fixtures;
 pub mod retrieval_ablation;
 pub mod two_layer;
 pub mod v1_ab_harness;
@@ -54,6 +55,26 @@ pub use graph_truth::{
     run_graph_truth_gate, write_context_packet_gate_report, write_graph_truth_gate_report,
     ContextPacketCaseResult, ContextPacketGateMetrics, ContextPacketGateOptions,
     ContextPacketGateReport, GraphTruthCaseResult, GraphTruthGateOptions, GraphTruthGateReport,
+};
+pub use mvp3_validation_fixtures::{
+    default_mvp3_9_hot_path_reindex_gate_options, default_mvp3_gate_runner_options,
+    default_mvp3_validation_fixture_runner_options, discover_mvp3_validation_fixture_paths,
+    evaluate_mvp3_validation_fixture_assertions, list_mvp3_validation_fixture_manifests,
+    load_mvp3_validation_fixture_manifest, mvp3_gate_effective_fixture_tags,
+    mvp3_gate_failure_taxonomy_value, mvp3_gate_result_schema_value,
+    mvp3_validation_fixture_manifest_schema_value, render_mvp3_gate_result_markdown,
+    run_mvp3_9_hot_path_reindex_gate, run_mvp3_9_sample_gate, run_mvp3_gate,
+    run_mvp3_validation_fixture_by_id, run_mvp3_validation_fixture_family,
+    run_mvp3_validation_fixtures, validate_mvp3_gate_result_value,
+    validate_mvp3_validation_fixture_manifest_value, write_mvp3_gate_result_artifacts,
+    Mvp3FixtureAssertionReport, Mvp3FixtureCommandRecord, Mvp3FixtureResult, Mvp3FixtureSurfaceRun,
+    Mvp3GateFailure, Mvp3GateInvariantCounters, Mvp3GateResult, Mvp3GateResultArtifacts,
+    Mvp3GateRunnerOptions, Mvp3SurfaceSupport, Mvp3ValidationFixtureManifest,
+    Mvp3ValidationFixtureRunReport, Mvp3ValidationFixtureRunnerMode,
+    Mvp3ValidationFixtureRunnerOptions, MVP3_9_FAILURE_TAXONOMY, MVP3_9_GATE_RESULT_SCHEMA_VERSION,
+    MVP3_9_HOT_PATH_REINDEX_FIXTURE_IDS, MVP3_9_HOT_PATH_REINDEX_GATE_ID,
+    MVP3_9_REQUIRED_GATE_TAGS, MVP3_9_REQUIRED_INVARIANTS, MVP3_9_SAMPLE_GATE_ID,
+    MVP3_VALIDATION_FIXTURE_SCHEMA_VERSION,
 };
 pub use retrieval_ablation::{
     default_retrieval_ablation_options, render_retrieval_ablation_markdown, run_retrieval_ablation,

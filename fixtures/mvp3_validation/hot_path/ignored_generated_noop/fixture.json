@@ -1,0 +1,256 @@
+{
+  "fixture_id": "mvp3_9_hot_path_ignored_generated_noop",
+  "fixture_family": "hot_path_reindex",
+  "fixture_title": "Ignored/generated hot-path change is truthful no-op",
+  "description": "A generated output file changes, and the gate expects no graph pollution, no hard interrupt, explicit no-op/degraded labeling, and no stale fresh facts.",
+  "language": "typescript",
+  "domain": "validation",
+  "proof_boundary": "Generated or ignored path diagnostics are not graph proof and must not create fresh graph facts.",
+  "required_support_status": "supported",
+  "unsupported_or_not_applicable_reason": "",
+  "fixture_version": 1,
+  "schema_version": 1,
+  "tags": [
+    "mvp3_8",
+    "mvp3_9_gate",
+    "hot_path",
+    "hot_path_reindex",
+    "ignored_generated",
+    "ignored_generated_noop",
+    "generated",
+    "non_blocking"
+  ],
+  "expected_mvp_phase": "mvp3_9_gates",
+  "initial_files": [
+    {
+      "path": "src/main.ts",
+      "contents": "export function stable(): string {\n  return 'stable';\n}\n",
+      "source_role": "production"
+    },
+    {
+      "path": "dist/generated.ts",
+      "contents": "// generated file\nexport const generatedValue = 1;\n",
+      "source_role": "generated"
+    }
+  ],
+  "initial_graph_expectations": {
+    "entities_present": [
+      "src/main.stable"
+    ],
+    "generated_entities_excluded": [
+      "dist/generated.generatedValue"
+    ]
+  },
+  "initial_text_evidence_expectations": {
+    "text_evidence_expected": false
+  },
+  "initial_sidecar_expectations": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable"
+  },
+  "initial_lifecycle_expectations": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "baseline_queries": [
+    {
+      "surface": "query_symbols",
+      "query": "stable",
+      "expected_symbol": "stable"
+    }
+  ],
+  "baseline_context_pack_expectations": {
+    "status": "ok",
+    "proof_path_required": false
+  },
+  "mutation_steps": [
+    {
+      "type": "replace_text",
+      "path": "dist/generated.ts",
+      "find": "generatedValue = 1",
+      "replace": "generatedValue = 2",
+      "reason": "Generated path change should be classified as no-op/degraded."
+    }
+  ],
+  "changed_files": [
+    "dist/generated.ts"
+  ],
+  "added_files": [],
+  "deleted_files": [],
+  "renamed_files": [],
+  "expected_changed_file_normalization": {
+    "normalized_changed_files": [],
+    "ignored_paths": [
+      "dist/generated.ts"
+    ],
+    "rejected_paths": []
+  },
+  "expected_graph_delta": {
+    "entities_added": 0,
+    "entities_removed": 0,
+    "entities_changed": 0,
+    "edges_added": 0,
+    "edges_removed": 0,
+    "edges_changed": 0,
+    "source_spans_added": 0,
+    "source_spans_removed": 0,
+    "source_spans_changed": 0,
+    "files_walked": 0,
+    "files_read": 0,
+    "files_hashed": 0,
+    "files_parsed": 0,
+    "full_repo_fallback_count": 0,
+    "disk_fallback_count": 0
+  },
+  "expected_blocking_errors": [],
+  "expected_warnings": [],
+  "expected_unknowns": [],
+  "expected_diagnostics": [
+    {
+      "validation_rule_id": "CG_MVP3_HOT_PATH_IGNORED_GENERATED_NOOP",
+      "proof_ladder_level": "diagnostic_only",
+      "severity": "diagnostic",
+      "message_contains": "generated path ignored",
+      "source_file": "dist/generated.ts"
+    }
+  ],
+  "expected_hard_interrupt": false,
+  "expected_severity": "diagnostic",
+  "expected_must_fix_before_continuing": false,
+  "expected_recommended_fix": null,
+  "expected_suggested_next_steps": [
+    "No graph repair is required for ignored/generated path changes."
+  ],
+  "expected_source_spans": [],
+  "expected_final_db_lifecycle_status": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "expected_proof_ladder_changes": {
+    "diagnostic_only": {
+      "changed": 1
+    },
+    "graph_relation_proof": {
+      "invalidated": 0,
+      "refreshed": 0
+    }
+  },
+  "expected_dirty_evidence_changes": {
+    "invalidated_count": 0,
+    "refreshed_count": 0,
+    "stale_count": 0,
+    "levels": [
+      "diagnostic_only"
+    ]
+  },
+  "expected_sidecar_statuses": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable"
+  },
+  "forbidden_claimable_outputs": [
+    "dist/generated.ts as fresh production proof"
+  ],
+  "forbidden_graph_proof_outputs": [
+    "generated_path_graph_proof"
+  ],
+  "forbidden_hard_interrupts": [
+    "generated_path_hard_interrupt"
+  ],
+  "forbidden_source_role_leakage": [
+    "generated_as_production"
+  ],
+  "expected_cli_validate_edit_behavior": {
+    "status": "diagnostic",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "dirty_evidence_summary",
+      "changed_file_normalization"
+    ],
+    "forbidden_fields": [
+      "hard_interrupt"
+    ],
+    "notes": []
+  },
+  "expected_watch_once_behavior": {
+    "status": "diagnostic",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "changed_file_normalization"
+    ],
+    "forbidden_fields": [],
+    "notes": []
+  },
+  "expected_mcp_validate_edit_behavior": {
+    "status": "not_applicable",
+    "supported": false,
+    "not_applicable": true,
+    "required_fields": [],
+    "forbidden_fields": [],
+    "notes": [
+      "MCP release execution is not part of this fixture runner path."
+    ]
+  },
+  "expected_context_pack_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [],
+    "forbidden_fields": [
+      "generated_graph_proof"
+    ],
+    "notes": []
+  },
+  "expected_status_doctor_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_db_state"
+    ],
+    "forbidden_fields": [],
+    "notes": []
+  },
+  "expected_compact_output": {
+    "summary_first": true,
+    "diagnostic_count": 1
+  },
+  "expected_explain_output": {
+    "ignored_path_detail": true
+  },
+  "expected_audit_output": {
+    "changed_file_normalization": true
+  },
+  "fix_mutation_if_any": [],
+  "fix_steps": [],
+  "post_fix_changed_files": [],
+  "post_fix_expected_status": "diagnostic",
+  "post_fix_expected_severity": "diagnostic",
+  "post_fix_expected_hard_interrupt": false,
+  "post_fix_expected_warnings": [],
+  "post_fix_expected_unknowns": [],
+  "post_fix_expected_diagnostics": [
+    {
+      "validation_rule_id": "CG_MVP3_HOT_PATH_IGNORED_GENERATED_NOOP",
+      "proof_ladder_level": "diagnostic_only",
+      "severity": "diagnostic",
+      "message_contains": "generated path ignored",
+      "source_file": "dist/generated.ts"
+    }
+  ],
+  "post_fix_expected_graph_delta": {
+    "entities_added": 0,
+    "full_repo_fallback_count": 0
+  },
+  "post_fix_forbidden_stale_outputs": [],
+  "recovery_commands_expected": [],
+  "recovery_command_verification": {
+    "recovery_command_alone_not_proof": true,
+    "lifecycle_preflight_required": true,
+    "graph_source_verification_required_for_graph_proof": true,
+    "public_claim": false,
+    "real_agent_patch_quality_claim": false
+  },
+  "recovery_is_hint_not_proof": true
+}

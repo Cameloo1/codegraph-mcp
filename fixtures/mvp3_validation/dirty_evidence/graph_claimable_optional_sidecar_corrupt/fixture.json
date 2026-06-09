@@ -1,0 +1,243 @@
+{
+  "fixture_id": "mvp3_8_graph_claimable_optional_sidecar_corrupt",
+  "fixture_family": "dirty_evidence_lifecycle",
+  "fixture_title": "Graph claimable while optional sidecar corrupt",
+  "description": "A claimable fresh graph DB can still provide graph proof while an optional sidecar is corrupt/unavailable; candidate layer is unavailable and graph DB is not corrupt.",
+  "language": "typescript",
+  "domain": "validation",
+  "proof_boundary": "Optional sidecar corruption affects candidate availability only; graph DB claimability is based on graph DB lifecycle.",
+  "required_support_status": "supported",
+  "unsupported_or_not_applicable_reason": "",
+  "fixture_version": 1,
+  "schema_version": 1,
+  "tags": [
+    "mvp3_8",
+    "dirty_evidence",
+    "claimability",
+    "sidecar_corrupt",
+    "fix_recovery"
+  ],
+  "expected_mvp_phase": "mvp3_8_validation_fixtures",
+  "initial_files": [
+    {
+      "path": "src/claimable.ts",
+      "contents": "export function claimableGraph(): string {\n  return 'proof';\n}\n",
+      "source_role": "production"
+    }
+  ],
+  "initial_graph_expectations": {
+    "graph_db_claimable": true,
+    "graph_proof_available": true,
+    "entities_present": [
+      "src/claimable.claimableGraph"
+    ]
+  },
+  "initial_text_evidence_expectations": {
+    "text_evidence_expected": false
+  },
+  "initial_sidecar_expectations": {
+    "candidate_layer_status": "fresh"
+  },
+  "initial_lifecycle_expectations": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "baseline_queries": [
+    {
+      "surface": "context_pack",
+      "query": "claimableGraph",
+      "expected_symbol": "claimableGraph"
+    }
+  ],
+  "baseline_context_pack_expectations": {
+    "status": "ok",
+    "graph_relation_proof": true
+  },
+  "mutation_steps": [
+    {
+      "type": "no_op",
+      "reason": "Fixture simulates optional sidecar corruption with graph DB left fresh and claimable."
+    }
+  ],
+  "changed_files": [
+    "src/claimable.ts"
+  ],
+  "added_files": [],
+  "deleted_files": [],
+  "renamed_files": [],
+  "expected_changed_file_normalization": {
+    "normalized_changed_files": [
+      "src/claimable.ts"
+    ],
+    "sidecar_mutation": "corrupt_optional_candidate_sidecar",
+    "rejected_paths": []
+  },
+  "expected_graph_delta": {
+    "entities_added": 0,
+    "entities_removed": 0,
+    "edges_added": 0,
+    "edges_removed": 0
+  },
+  "expected_blocking_errors": [],
+  "expected_warnings": [],
+  "expected_unknowns": [],
+  "expected_diagnostics": [],
+  "expected_hard_interrupt": false,
+  "expected_severity": "ok",
+  "expected_must_fix_before_continuing": false,
+  "expected_recommended_fix": null,
+  "expected_suggested_next_steps": [
+    "Repair optional candidate sidecar only if candidate recall is required."
+  ],
+  "expected_source_spans": [],
+  "expected_final_db_lifecycle_status": {
+    "claimable": true,
+    "status": "fresh",
+    "graph_db_status": "fresh",
+    "db_problem_kind": null
+  },
+  "expected_proof_ladder_changes": {
+    "candidate_evidence": {
+      "invalidated": 0,
+      "refreshed": 0,
+      "status": "corrupt"
+    },
+    "graph_relation_proof": {
+      "invalidated": 0,
+      "refreshed": 0,
+      "status": "available"
+    }
+  },
+  "expected_dirty_evidence_changes": {
+    "invalidated_count": 0,
+    "refreshed_count": 0,
+    "stale_count": 0,
+    "unavailable_count": 1,
+    "levels": [
+      "candidate_evidence"
+    ]
+  },
+  "expected_sidecar_statuses": {
+    "graph_db_claimable": true,
+    "graph_db_status": "fresh",
+    "graph_proof_available": true,
+    "candidate_layer_status": "corrupt",
+    "candidate_spool_query_index_status": "corrupt",
+    "candidate_only_available": false,
+    "vector_layer_status": "fresh",
+    "source_navigation_status": "stale",
+    "path_evidence_status": "unknown",
+    "routing_handle_status": "not_applicable"
+  },
+  "forbidden_claimable_outputs": [
+    "optional_sidecar_corrupt_makes_graph_unclaimable"
+  ],
+  "forbidden_graph_proof_outputs": [
+    "candidate_sidecar_as_graph_proof"
+  ],
+  "forbidden_hard_interrupts": [
+    "optional_sidecar_corrupt_hard_interrupt"
+  ],
+  "forbidden_source_role_leakage": [],
+  "expected_cli_validate_edit_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_db_claimable",
+      "candidate_layer_status"
+    ],
+    "forbidden_fields": [
+      "graph_db_corrupt",
+      "hard_interrupt"
+    ],
+    "notes": []
+  },
+  "expected_watch_once_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "sidecar_statuses"
+    ],
+    "forbidden_fields": [
+      "hard_interrupt"
+    ],
+    "notes": []
+  },
+  "expected_mcp_validate_edit_behavior": {
+    "status": "not_applicable",
+    "supported": false,
+    "not_applicable": true,
+    "required_fields": [],
+    "forbidden_fields": [],
+    "notes": [
+      "MCP execution is planned by the fixture harness and exercised in a later MVP3.8 release matrix."
+    ]
+  },
+  "expected_context_pack_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_relation_proof",
+      "sidecar_statuses"
+    ],
+    "forbidden_fields": [
+      "corrupt_candidate_as_fresh"
+    ],
+    "notes": []
+  },
+  "expected_status_doctor_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_db_claimable",
+      "candidate_spool_query_index_status"
+    ],
+    "forbidden_fields": [
+      "graph_db_corrupt"
+    ],
+    "notes": []
+  },
+  "expected_compact_output": {
+    "summary_first": true,
+    "graph_db_claimable": true
+  },
+  "expected_explain_output": {
+    "graph_sidecar_split_detail": true
+  },
+  "expected_audit_output": {
+    "graph_claimable_sidecar_corrupt_possible": true
+  },
+  "fix_mutation_if_any": [],
+  "post_fix_changed_files": [],
+  "post_fix_expected_status": "ok",
+  "post_fix_expected_graph_delta": {},
+  "post_fix_forbidden_stale_outputs": [
+    "sidecar corrupt as graph db corrupt"
+  ],
+  "recovery_commands_expected": [
+    "codegraph-mcp agent-use status --repo <fixture> --json"
+  ],
+  "fix_steps": [],
+  "post_fix_expected_severity": "ok",
+  "post_fix_expected_hard_interrupt": false,
+  "post_fix_expected_warnings": [],
+  "post_fix_expected_unknowns": [],
+  "post_fix_expected_diagnostics": [],
+  "recovery_command_verification": {
+    "recovery_command_alone_not_proof": true,
+    "lifecycle_preflight_required": true,
+    "graph_source_verification_required_for_graph_proof": true,
+    "recovery_command_may_refresh_state": true,
+    "post_recovery_lifecycle": {
+      "claimable": true,
+      "status": "fresh_or_unchanged"
+    },
+    "public_claim": false,
+    "real_agent_patch_quality_claim": false
+  },
+  "recovery_is_hint_not_proof": true
+}

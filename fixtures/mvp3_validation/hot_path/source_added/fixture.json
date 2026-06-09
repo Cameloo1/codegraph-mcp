@@ -1,0 +1,233 @@
+{
+  "fixture_id": "mvp3_9_hot_path_source_added",
+  "fixture_family": "hot_path_reindex",
+  "fixture_title": "Source file added is indexed through hot-path update",
+  "description": "Baseline has one production source file; the mutation adds a second production source file and expects file-scoped added facts, source spans, and graph delta metadata without a silent full-repo fallback.",
+  "language": "typescript",
+  "domain": "validation",
+  "proof_boundary": "Only graph/source verified facts from the added file may become graph proof; candidate, text, vector, and source-navigation evidence remain non-proof.",
+  "required_support_status": "supported",
+  "unsupported_or_not_applicable_reason": "",
+  "fixture_version": 1,
+  "schema_version": 1,
+  "tags": [
+    "mvp3_8",
+    "mvp3_9_gate",
+    "hot_path",
+    "hot_path_reindex",
+    "source_added",
+    "graph_delta"
+  ],
+  "expected_mvp_phase": "mvp3_9_gates",
+  "initial_files": [
+    {
+      "path": "src/main.ts",
+      "contents": "export function existing(): string {\n  return 'existing';\n}\n",
+      "source_role": "production"
+    }
+  ],
+  "initial_graph_expectations": {
+    "entities_present": [
+      "src/main.existing"
+    ],
+    "source_spans_required": true
+  },
+  "initial_text_evidence_expectations": {
+    "text_evidence_expected": false
+  },
+  "initial_sidecar_expectations": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable"
+  },
+  "initial_lifecycle_expectations": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "baseline_queries": [
+    {
+      "surface": "query_symbols",
+      "query": "existing",
+      "expected_symbol": "existing"
+    }
+  ],
+  "baseline_context_pack_expectations": {
+    "status": "ok",
+    "proof_path_required": false
+  },
+  "mutation_steps": [
+    {
+      "type": "add_file",
+      "path": "src/added.ts",
+      "contents": "export function added(): string {\n  return 'added';\n}\n",
+      "reason": "Add a production source file."
+    }
+  ],
+  "changed_files": [],
+  "added_files": [
+    "src/added.ts"
+  ],
+  "deleted_files": [],
+  "renamed_files": [],
+  "expected_changed_file_normalization": {
+    "normalized_changed_files": [
+      "src/added.ts"
+    ],
+    "rejected_paths": []
+  },
+  "expected_graph_delta": {
+    "entities_added": 1,
+    "entities_removed": 0,
+    "entities_changed": 0,
+    "edges_added": 0,
+    "edges_removed": 0,
+    "edges_changed": 0,
+    "source_spans_added": 1,
+    "source_spans_removed": 0,
+    "source_spans_changed": 0,
+    "files_walked": 0,
+    "files_read": 1,
+    "files_hashed": 1,
+    "files_parsed": 1,
+    "full_repo_fallback_count": 0,
+    "disk_fallback_count": 0
+  },
+  "expected_blocking_errors": [],
+  "expected_warnings": [],
+  "expected_unknowns": [],
+  "expected_diagnostics": [],
+  "expected_hard_interrupt": false,
+  "expected_severity": "ok",
+  "expected_must_fix_before_continuing": false,
+  "expected_recommended_fix": null,
+  "expected_suggested_next_steps": [
+    "Rerun validation after additional changed files if needed."
+  ],
+  "expected_source_spans": [
+    {
+      "source_file": "src/added.ts",
+      "start_line": 1,
+      "start_column": 1,
+      "end_line": 3,
+      "end_column": 2,
+      "expected_text": "added",
+      "required_for_graph_proof": true
+    }
+  ],
+  "expected_final_db_lifecycle_status": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "expected_proof_ladder_changes": {
+    "graph_relation_proof": {
+      "invalidated": 0,
+      "refreshed": 1
+    }
+  },
+  "expected_dirty_evidence_changes": {
+    "invalidated_count": 0,
+    "refreshed_count": 1,
+    "stale_count": 0,
+    "levels": [
+      "graph_relation_proof"
+    ]
+  },
+  "expected_sidecar_statuses": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable"
+  },
+  "forbidden_claimable_outputs": [
+    "added_file_without_source_span"
+  ],
+  "forbidden_graph_proof_outputs": [
+    "candidate_added_file_graph_proof"
+  ],
+  "forbidden_hard_interrupts": [
+    "source_added_hard_interrupt"
+  ],
+  "forbidden_source_role_leakage": [],
+  "expected_cli_validate_edit_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_delta",
+      "dirty_evidence_summary",
+      "proof_ladder_changes"
+    ],
+    "forbidden_fields": [],
+    "notes": []
+  },
+  "expected_watch_once_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_delta"
+    ],
+    "forbidden_fields": [],
+    "notes": []
+  },
+  "expected_mcp_validate_edit_behavior": {
+    "status": "not_applicable",
+    "supported": false,
+    "not_applicable": true,
+    "required_fields": [],
+    "forbidden_fields": [],
+    "notes": [
+      "MCP release execution is not part of this fixture runner path."
+    ]
+  },
+  "expected_context_pack_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_proof"
+    ],
+    "forbidden_fields": [],
+    "notes": []
+  },
+  "expected_status_doctor_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_db_state"
+    ],
+    "forbidden_fields": [],
+    "notes": []
+  },
+  "expected_compact_output": {
+    "summary_first": true,
+    "dirty_evidence_summary": true
+  },
+  "expected_explain_output": {
+    "graph_delta_detail": true
+  },
+  "expected_audit_output": {
+    "changed_file_metrics": true
+  },
+  "fix_mutation_if_any": [],
+  "fix_steps": [],
+  "post_fix_changed_files": [],
+  "post_fix_expected_status": "ok",
+  "post_fix_expected_severity": "ok",
+  "post_fix_expected_hard_interrupt": false,
+  "post_fix_expected_warnings": [],
+  "post_fix_expected_unknowns": [],
+  "post_fix_expected_diagnostics": [],
+  "post_fix_expected_graph_delta": {
+    "entities_added": 0,
+    "full_repo_fallback_count": 0
+  },
+  "post_fix_forbidden_stale_outputs": [],
+  "recovery_commands_expected": [],
+  "recovery_command_verification": {
+    "recovery_command_alone_not_proof": true,
+    "lifecycle_preflight_required": true,
+    "graph_source_verification_required_for_graph_proof": true,
+    "public_claim": false,
+    "real_agent_patch_quality_claim": false
+  },
+  "recovery_is_hint_not_proof": true
+}

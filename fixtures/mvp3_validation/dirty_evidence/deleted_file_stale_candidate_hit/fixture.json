@@ -1,0 +1,243 @@
+{
+  "fixture_id": "mvp3_8_deleted_file_stale_candidate_hit",
+  "fixture_family": "dirty_evidence_deleted_file",
+  "fixture_title": "Deleted file stale candidate hit is refused as fresh",
+  "description": "A candidate layer may still mention a deleted file path, but query/context/validate must not use it as fresh evidence or graph proof.",
+  "language": "typescript",
+  "domain": "validation",
+  "proof_boundary": "Deleted-file candidate hits are stale candidate_evidence and cannot be fresh proof.",
+  "required_support_status": "supported",
+  "unsupported_or_not_applicable_reason": "",
+  "fixture_version": 1,
+  "schema_version": 1,
+  "tags": [
+    "mvp3_8",
+    "dirty_evidence",
+    "deleted_file",
+    "candidate_stale"
+  ],
+  "expected_mvp_phase": "mvp3_8_validation_fixtures",
+  "initial_files": [
+    {
+      "path": "src/live.ts",
+      "contents": "export function live(): string { return 'live'; }\n",
+      "source_role": "production"
+    },
+    {
+      "path": "src/deleted_candidate.ts",
+      "contents": "export function deletedCandidate(): string { return 'deleted'; }\n",
+      "source_role": "production"
+    }
+  ],
+  "initial_graph_expectations": {
+    "graph_db_claimable": true,
+    "entities_present": [
+      "src/deleted_candidate.deletedCandidate"
+    ]
+  },
+  "initial_text_evidence_expectations": {
+    "text_evidence_expected": false
+  },
+  "initial_sidecar_expectations": {
+    "candidate_layer_status": "fresh"
+  },
+  "initial_lifecycle_expectations": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "baseline_queries": [
+    {
+      "surface": "query_symbols",
+      "query": "deletedCandidate",
+      "expected_symbol": "deletedCandidate"
+    }
+  ],
+  "baseline_context_pack_expectations": {
+    "status": "ok",
+    "candidate_layer_status": "fresh"
+  },
+  "mutation_steps": [
+    {
+      "type": "delete_file",
+      "path": "src/deleted_candidate.ts",
+      "reason": "Delete file that stale candidate layer still suggests."
+    }
+  ],
+  "changed_files": [
+    "src/deleted_candidate.ts"
+  ],
+  "added_files": [],
+  "deleted_files": [
+    "src/deleted_candidate.ts"
+  ],
+  "renamed_files": [],
+  "expected_changed_file_normalization": {
+    "normalized_changed_files": [
+      "src/deleted_candidate.ts"
+    ],
+    "deleted_files": [
+      "src/deleted_candidate.ts"
+    ],
+    "rejected_paths": []
+  },
+  "expected_graph_delta": {
+    "entities_removed": 1,
+    "edges_removed": 0,
+    "source_spans_removed": 1
+  },
+  "expected_blocking_errors": [],
+  "expected_warnings": [],
+  "expected_unknowns": [],
+  "expected_diagnostics": [],
+  "expected_hard_interrupt": false,
+  "expected_severity": "ok",
+  "expected_must_fix_before_continuing": false,
+  "expected_recommended_fix": null,
+  "expected_suggested_next_steps": [
+    "Refresh candidate sidecars before using deleted-path candidates."
+  ],
+  "expected_source_spans": [],
+  "expected_final_db_lifecycle_status": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "expected_proof_ladder_changes": {
+    "candidate_evidence": {
+      "invalidated": 1,
+      "refreshed": 0,
+      "status": "stale"
+    },
+    "symbol_evidence": {
+      "invalidated": 1,
+      "refreshed": 0
+    }
+  },
+  "expected_dirty_evidence_changes": {
+    "invalidated_count": 2,
+    "refreshed_count": 0,
+    "stale_count": 1,
+    "levels": [
+      "candidate_evidence",
+      "symbol_evidence"
+    ]
+  },
+  "expected_sidecar_statuses": {
+    "graph_db_claimable": true,
+    "candidate_layer_status": "stale",
+    "candidate_spool_query_index_status": "stale",
+    "vector_layer_status": "stale",
+    "source_navigation_status": "stale",
+    "path_evidence_status": "unknown",
+    "routing_handle_status": "not_applicable"
+  },
+  "forbidden_claimable_outputs": [
+    "src/deleted_candidate.ts as fresh evidence",
+    "deletedCandidate stale candidate as fresh"
+  ],
+  "forbidden_graph_proof_outputs": [
+    "deleted_file_candidate_as_graph_proof"
+  ],
+  "forbidden_hard_interrupts": [
+    "deleted_file_candidate_hard_interrupt"
+  ],
+  "forbidden_source_role_leakage": [],
+  "expected_cli_validate_edit_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "stale_evidence",
+      "candidate_layer_status"
+    ],
+    "forbidden_fields": [
+      "hard_interrupt"
+    ],
+    "notes": []
+  },
+  "expected_watch_once_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "deleted_files",
+      "dirty_evidence_summary"
+    ],
+    "forbidden_fields": [
+      "hard_interrupt"
+    ],
+    "notes": []
+  },
+  "expected_mcp_validate_edit_behavior": {
+    "status": "not_applicable",
+    "supported": false,
+    "not_applicable": true,
+    "required_fields": [],
+    "forbidden_fields": [],
+    "notes": [
+      "MCP execution is planned by the fixture harness and exercised in a later MVP3.8 release matrix."
+    ]
+  },
+  "expected_context_pack_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "no_proof_for_deleted_file"
+    ],
+    "forbidden_fields": [
+      "src/deleted_candidate.ts as fresh"
+    ],
+    "notes": []
+  },
+  "expected_status_doctor_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "candidate_layer_status"
+    ],
+    "forbidden_fields": [
+      "graph_db_corrupt"
+    ],
+    "notes": []
+  },
+  "expected_compact_output": {
+    "summary_first": true,
+    "deleted_files": 1
+  },
+  "expected_explain_output": {
+    "deleted_file_candidate_detail": true
+  },
+  "expected_audit_output": {
+    "deleted_path_forbidden_as_fresh": true
+  },
+  "fix_mutation_if_any": [],
+  "post_fix_changed_files": [],
+  "post_fix_expected_status": "ok",
+  "post_fix_expected_graph_delta": {},
+  "post_fix_forbidden_stale_outputs": [
+    "src/deleted_candidate.ts as fresh"
+  ],
+  "recovery_commands_expected": [
+    "codegraph-mcp agent-use index --repo <fixture> --json"
+  ],
+  "fix_steps": [],
+  "post_fix_expected_severity": "ok",
+  "post_fix_expected_hard_interrupt": false,
+  "post_fix_expected_warnings": [],
+  "post_fix_expected_unknowns": [],
+  "post_fix_expected_diagnostics": [],
+  "recovery_command_verification": {
+    "recovery_command_alone_not_proof": true,
+    "lifecycle_preflight_required": true,
+    "graph_source_verification_required_for_graph_proof": true,
+    "recovery_command_may_refresh_state": true,
+    "post_recovery_lifecycle": {
+      "claimable": true,
+      "status": "fresh_or_unchanged"
+    },
+    "public_claim": false,
+    "real_agent_patch_quality_claim": false
+  },
+  "recovery_is_hint_not_proof": true
+}
