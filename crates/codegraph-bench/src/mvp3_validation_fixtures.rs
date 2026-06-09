@@ -26,6 +26,21 @@ pub const MVP3_VALIDATION_FIXTURE_GATE: &str = "mvp3_validation_fixture_harness_
 pub const MVP3_9_GATE_RESULT_SCHEMA_VERSION: u32 = 1;
 pub const MVP3_9_SAMPLE_GATE_ID: &str = "mvp3_9_sample_gate_contract";
 pub const MVP3_9_HOT_PATH_REINDEX_GATE_ID: &str = "mvp3_9_hot_path_reindex_gate";
+pub const MVP3_9_GRAPH_DELTA_GATE_ID: &str = "mvp3_9_graph_delta_gate";
+pub const MVP3_9_HALLUCINATION_INTERRUPT_GATE_ID: &str = "mvp3_9_hallucination_interrupt_gate";
+pub const MVP3_9_ROUTE_BRIDGE_INERT_CONTRACT_GATE_ID: &str =
+    "mvp3_9_route_bridge_inert_contract_gate";
+pub const MVP3_9_CROSS_PHASE_REGRESSION_GATE_ID: &str = "mvp3_9_cross_phase_regression_gate";
+pub const MVP3_9_RELEASE_FINAL_GATE_ORCHESTRATOR_ID: &str =
+    "mvp3_9_release_final_gate_orchestrator";
+
+pub const MVP3_9_RELEASE_FINAL_SUBGATE_IDS: &[&str] = &[
+    MVP3_9_HOT_PATH_REINDEX_GATE_ID,
+    MVP3_9_GRAPH_DELTA_GATE_ID,
+    MVP3_9_HALLUCINATION_INTERRUPT_GATE_ID,
+    MVP3_9_ROUTE_BRIDGE_INERT_CONTRACT_GATE_ID,
+    MVP3_9_CROSS_PHASE_REGRESSION_GATE_ID,
+];
 
 pub const MVP3_9_REQUIRED_GATE_TAGS: &[&str] = &[
     "hot_path",
@@ -46,7 +61,7 @@ pub const MVP3_9_REQUIRED_GATE_TAGS: &[&str] = &[
 ];
 
 pub const MVP3_9_HOT_PATH_REINDEX_FIXTURE_IDS: &[&str] = &[
-    "ok_noop_fixture",
+    "mvp3_9_hot_path_unchanged_noop",
     "mvp3_9_hot_path_source_added",
     "mvp3_9_hot_path_ignored_generated_noop",
     "mvp3_9_hot_path_outside_repo_reject",
@@ -62,6 +77,110 @@ pub const MVP3_9_HOT_PATH_REINDEX_FIXTURE_IDS: &[&str] = &[
     "mvp3_8_unsafe_db_recovery",
 ];
 
+pub const MVP3_9_GRAPH_DELTA_FIXTURE_IDS: &[&str] = &[
+    "mvp3_9_hot_path_source_added",
+    "mvp3_9_graph_delta_same_name_symbols",
+    "mvp3_9_graph_delta_duplicate_content_paths",
+    "mvp3_9_graph_delta_changed_exact_edge",
+    "mvp3_8_removed_file_stale_facts",
+    "mvp3_8_renamed_target_symbol",
+    "mvp3_8_ambiguous_rename_unknown",
+    "mvp3_8_inline_test_added",
+    "mvp3_8_mock_test_leakage_attempt",
+    "mvp3_8_text_evidence_only_edit",
+    "mvp3_8_config_package_text_mismatch",
+    "mvp3_8_unsupported_dynamic_call",
+    "mvp3_8_path_evidence_stale_invalidated",
+    "mvp3_8_candidate_spool_stale",
+    "mvp3_8_vector_runtime_stale",
+    "mvp3_8_source_navigation_stale",
+    "mvp3_8_derived_missing_provenance_integrity",
+    "mvp3_8_missing_source_span_integrity",
+];
+
+pub const MVP3_9_HALLUCINATION_INTERRUPT_FIXTURE_IDS: &[&str] = &[
+    "mvp3_8_new_dangling_call",
+    "mvp3_8_fixed_dangling_call",
+    "mvp3_8_broken_import",
+    "mvp3_8_fixed_import",
+    "mvp3_8_renamed_target_symbol",
+    "mvp3_8_removed_file_stale_facts",
+    "mvp3_8_missing_source_span_integrity",
+    "mvp3_8_derived_missing_provenance_integrity",
+    "mvp3_8_mock_test_leakage_attempt",
+    "mvp3_8_renamed_import_stale_vector_hit",
+    "mvp3_9_hallucination_mixed_block_warning_diagnostic",
+    "mvp3_8_unsupported_dynamic_call",
+    "mvp3_8_config_package_text_mismatch",
+    "mvp3_8_route_handler_missing_target",
+    "mvp3_8_text_evidence_only_edit",
+    "mvp3_8_text_evidence_proof_ladder_changes",
+    "mvp3_8_candidate_spool_stale",
+    "mvp3_8_candidate_query_index_corrupt",
+    "mvp3_8_candidate_spool_inaccessible",
+    "mvp3_8_deleted_file_stale_candidate_hit",
+    "mvp3_8_vector_runtime_stale",
+    "mvp3_8_vector_audit_stale_diagnostic_only",
+    "mvp3_8_source_navigation_stale",
+    "mvp3_8_routing_handle_stale",
+    "mvp3_8_path_evidence_stale_invalidated",
+    "mvp3_8_ambiguous_rename_unknown",
+    "mvp3_8_inline_test_added",
+    "mvp3_8_unsafe_db_recovery",
+    "warning_text_evidence_only_sample",
+];
+
+pub const MVP3_9_ROUTE_BRIDGE_INERT_CONTRACT_FIXTURE_IDS: &[&str] = &[
+    "mvp3_8_route_handler_missing_target",
+    "mvp3_9_bridge_not_applicable",
+    "mvp3_8_routing_handle_stale",
+];
+
+pub const MVP3_9_CROSS_PHASE_REGRESSION_FIXTURE_IDS: &[&str] = &[
+    "ok_noop_fixture",
+    "warning_text_evidence_only_sample",
+    "mvp3_8_text_evidence_only_edit",
+    "mvp3_8_config_package_text_mismatch",
+    "mvp3_8_unsupported_dynamic_call",
+    "mvp3_8_route_handler_missing_target",
+    "mvp3_9_bridge_not_applicable",
+    "mvp3_8_inline_test_added",
+    "mvp3_8_mock_test_leakage_attempt",
+    "mvp3_8_new_dangling_call",
+    "mvp3_8_fixed_dangling_call",
+    "mvp3_8_broken_import",
+    "mvp3_8_fixed_import",
+    "mvp3_8_renamed_target_symbol",
+    "mvp3_8_removed_file_stale_facts",
+    "mvp3_8_missing_source_span_integrity",
+    "mvp3_8_derived_missing_provenance_integrity",
+    "mvp3_8_ambiguous_rename_unknown",
+    "mvp3_9_hot_path_unchanged_noop",
+    "mvp3_9_hot_path_source_added",
+    "mvp3_9_hot_path_ignored_generated_noop",
+    "mvp3_9_hot_path_outside_repo_reject",
+    "mvp3_9_graph_delta_same_name_symbols",
+    "mvp3_9_graph_delta_duplicate_content_paths",
+    "mvp3_9_graph_delta_changed_exact_edge",
+    "mvp3_9_hallucination_mixed_block_warning_diagnostic",
+    "mvp3_8_candidate_query_index_corrupt",
+    "mvp3_8_candidate_spool_inaccessible",
+    "mvp3_8_candidate_spool_stale",
+    "mvp3_8_deleted_file_stale_candidate_hit",
+    "mvp3_8_graph_claimable_optional_sidecar_corrupt",
+    "mvp3_8_path_evidence_stale_invalidated",
+    "mvp3_8_renamed_import_stale_vector_hit",
+    "mvp3_8_routing_handle_stale",
+    "mvp3_8_source_navigation_stale",
+    "mvp3_8_text_evidence_proof_ladder_changes",
+    "mvp3_8_unsafe_db_recovery",
+    "mvp3_8_vector_audit_stale_diagnostic_only",
+    "mvp3_8_vector_runtime_stale",
+];
+
+pub const MVP3_9_RELEASE_FINAL_GATE_ORCHESTRATOR_FIXTURE_IDS: &[&str] =
+    MVP3_9_CROSS_PHASE_REGRESSION_FIXTURE_IDS;
+
 pub const MVP3_9_REQUIRED_INVARIANTS: &[&str] = &[
     "claimability_violations",
     "unsupported_claim_violations",
@@ -72,6 +191,7 @@ pub const MVP3_9_REQUIRED_INVARIANTS: &[&str] = &[
     "stale_evidence_reused_as_fresh_count",
     "test_mock_production_leakage_count",
     "route_proof_overclaim_count",
+    "bridge_proof_overclaim_count",
     "text_evidence_graph_proof_count",
     "candidate_vector_source_navigation_graph_proof_count",
     "normal_dot_codegraph_mutated",
@@ -87,6 +207,14 @@ pub const MVP3_9_FAILURE_TAXONOMY: &[&str] = &[
     "json_validation_failure",
     "product_readiness_drift",
     "docs_dashboard_drift",
+    "stage0_regression",
+    "routing_packet_regression",
+    "retrieval_candidate_boundary_regression",
+    "bounded_graph_regression",
+    "path_evidence_regression",
+    "language_coverage_regression",
+    "dirty_evidence_regression",
+    "schema_json_failure",
     "hot_path_reindex_failure",
     "full_repo_fallback_failure",
     "no_op_work_regression",
@@ -177,6 +305,7 @@ const MVP3_9_GATE_RESULT_REQUIRED_FIELDS: &[&str] = &[
     "stale_evidence_reused_as_fresh_count",
     "test_mock_production_leakage_count",
     "route_proof_overclaim_count",
+    "bridge_proof_overclaim_count",
     "text_evidence_graph_proof_count",
     "candidate_vector_source_navigation_graph_proof_count",
     "normal_dot_codegraph_mutated",
@@ -543,6 +672,7 @@ pub struct Mvp3GateInvariantCounters {
     pub stale_evidence_reused_as_fresh_count: u64,
     pub test_mock_production_leakage_count: u64,
     pub route_proof_overclaim_count: u64,
+    pub bridge_proof_overclaim_count: u64,
     pub text_evidence_graph_proof_count: u64,
     pub candidate_vector_source_navigation_graph_proof_count: u64,
     pub normal_dot_codegraph_mutated: bool,
@@ -560,6 +690,7 @@ impl Mvp3GateInvariantCounters {
             stale_evidence_reused_as_fresh_count: 0,
             test_mock_production_leakage_count: 0,
             route_proof_overclaim_count: 0,
+            bridge_proof_overclaim_count: 0,
             text_evidence_graph_proof_count: 0,
             candidate_vector_source_navigation_graph_proof_count: 0,
             normal_dot_codegraph_mutated,
@@ -594,6 +725,9 @@ impl Mvp3GateInvariantCounters {
         }
         if self.route_proof_overclaim_count != 0 {
             failures.push("route_proof_overclaim_count".to_string());
+        }
+        if self.bridge_proof_overclaim_count != 0 {
+            failures.push("bridge_proof_overclaim_count".to_string());
         }
         if self.text_evidence_graph_proof_count != 0 {
             failures.push("text_evidence_graph_proof_count".to_string());
@@ -651,6 +785,7 @@ pub struct Mvp3GateResult {
     pub stale_evidence_reused_as_fresh_count: u64,
     pub test_mock_production_leakage_count: u64,
     pub route_proof_overclaim_count: u64,
+    pub bridge_proof_overclaim_count: u64,
     pub text_evidence_graph_proof_count: u64,
     pub candidate_vector_source_navigation_graph_proof_count: u64,
     pub normal_dot_codegraph_mutated: bool,
@@ -845,6 +980,197 @@ pub fn default_mvp3_9_hot_path_reindex_gate_options() -> Mvp3GateRunnerOptions {
         fixture_tags: Vec::new(),
         runner_command: "cargo test -p codegraph-bench mvp3_9_hot_path_reindex_gate --lib"
             .to_string(),
+    }
+}
+
+pub fn default_mvp3_9_graph_delta_gate_options() -> Mvp3GateRunnerOptions {
+    let workspace = workspace_root();
+    let run_id = format!("mvp3-graph-delta-gate-{}", unique_run_suffix());
+    Mvp3GateRunnerOptions {
+        gate_id: MVP3_9_GRAPH_DELTA_GATE_ID.to_string(),
+        gate_name: "MVP3.9 Graph Delta Gate".to_string(),
+        gate_kind: "graph_delta".to_string(),
+        gate_version: "1".to_string(),
+        fixture_root: workspace.join("fixtures").join("mvp3_validation"),
+        run_root: workspace
+            .join("target")
+            .join("codegraph-bench-runs")
+            .join(run_id),
+        release_binary: Some(
+            workspace
+                .join("target")
+                .join("release")
+                .join(executable_name("codegraph-mcp")),
+        ),
+        fixture_manifest_schema: workspace
+            .join("reports")
+            .join("audit")
+            .join("artifacts")
+            .join("mvp3_validation_fixtures")
+            .join("validation_fixture_manifest.schema.json"),
+        mode: Mvp3ValidationFixtureRunnerMode::FastSynthetic,
+        fixture_ids: MVP3_9_GRAPH_DELTA_FIXTURE_IDS
+            .iter()
+            .map(|fixture_id| (*fixture_id).to_string())
+            .collect(),
+        fixture_families: Vec::new(),
+        fixture_tags: Vec::new(),
+        runner_command: "cargo test -p codegraph-bench mvp3_9_graph_delta_gate --lib".to_string(),
+    }
+}
+
+pub fn default_mvp3_9_hallucination_interrupt_gate_options() -> Mvp3GateRunnerOptions {
+    let workspace = workspace_root();
+    let run_id = format!("mvp3-hallucination-interrupt-gate-{}", unique_run_suffix());
+    Mvp3GateRunnerOptions {
+        gate_id: MVP3_9_HALLUCINATION_INTERRUPT_GATE_ID.to_string(),
+        gate_name: "MVP3.9 Hallucination Interrupt Gate".to_string(),
+        gate_kind: "hallucination_interrupt".to_string(),
+        gate_version: "1".to_string(),
+        fixture_root: workspace.join("fixtures").join("mvp3_validation"),
+        run_root: workspace
+            .join("target")
+            .join("codegraph-bench-runs")
+            .join(run_id),
+        release_binary: Some(
+            workspace
+                .join("target")
+                .join("release")
+                .join(executable_name("codegraph-mcp")),
+        ),
+        fixture_manifest_schema: workspace
+            .join("reports")
+            .join("audit")
+            .join("artifacts")
+            .join("mvp3_validation_fixtures")
+            .join("validation_fixture_manifest.schema.json"),
+        mode: Mvp3ValidationFixtureRunnerMode::FastSynthetic,
+        fixture_ids: MVP3_9_HALLUCINATION_INTERRUPT_FIXTURE_IDS
+            .iter()
+            .map(|fixture_id| (*fixture_id).to_string())
+            .collect(),
+        fixture_families: Vec::new(),
+        fixture_tags: Vec::new(),
+        runner_command: "cargo test -p codegraph-bench mvp3_9_hallucination_interrupt_gate --lib"
+            .to_string(),
+    }
+}
+
+pub fn default_mvp3_9_route_bridge_inert_contract_gate_options() -> Mvp3GateRunnerOptions {
+    let workspace = workspace_root();
+    let run_id = format!(
+        "mvp3-route-bridge-inert-contract-gate-{}",
+        unique_run_suffix()
+    );
+    Mvp3GateRunnerOptions {
+        gate_id: MVP3_9_ROUTE_BRIDGE_INERT_CONTRACT_GATE_ID.to_string(),
+        gate_name: "MVP3.9 Route/Bridge Inert-Contract And MVP3.10 Readiness Gate".to_string(),
+        gate_kind: "route_bridge_inert_contract".to_string(),
+        gate_version: "1".to_string(),
+        fixture_root: workspace.join("fixtures").join("mvp3_validation"),
+        run_root: workspace
+            .join("target")
+            .join("codegraph-bench-runs")
+            .join(run_id),
+        release_binary: Some(
+            workspace
+                .join("target")
+                .join("release")
+                .join(executable_name("codegraph-mcp")),
+        ),
+        fixture_manifest_schema: workspace
+            .join("reports")
+            .join("audit")
+            .join("artifacts")
+            .join("mvp3_validation_fixtures")
+            .join("validation_fixture_manifest.schema.json"),
+        mode: Mvp3ValidationFixtureRunnerMode::FastSynthetic,
+        fixture_ids: MVP3_9_ROUTE_BRIDGE_INERT_CONTRACT_FIXTURE_IDS
+            .iter()
+            .map(|fixture_id| (*fixture_id).to_string())
+            .collect(),
+        fixture_families: Vec::new(),
+        fixture_tags: Vec::new(),
+        runner_command:
+            "cargo test -p codegraph-bench mvp3_9_route_bridge_inert_contract_gate --lib"
+                .to_string(),
+    }
+}
+
+pub fn default_mvp3_9_cross_phase_regression_gate_options() -> Mvp3GateRunnerOptions {
+    let workspace = workspace_root();
+    let run_id = format!("mvp3-cross-phase-regression-gate-{}", unique_run_suffix());
+    Mvp3GateRunnerOptions {
+        gate_id: MVP3_9_CROSS_PHASE_REGRESSION_GATE_ID.to_string(),
+        gate_name: "MVP3.9 Cross-Phase Regression Gate".to_string(),
+        gate_kind: "cross_phase_regression".to_string(),
+        gate_version: "1".to_string(),
+        fixture_root: workspace.join("fixtures").join("mvp3_validation"),
+        run_root: workspace
+            .join("target")
+            .join("codegraph-bench-runs")
+            .join(run_id),
+        release_binary: Some(
+            workspace
+                .join("target")
+                .join("release")
+                .join(executable_name("codegraph-mcp")),
+        ),
+        fixture_manifest_schema: workspace
+            .join("reports")
+            .join("audit")
+            .join("artifacts")
+            .join("mvp3_validation_fixtures")
+            .join("validation_fixture_manifest.schema.json"),
+        mode: Mvp3ValidationFixtureRunnerMode::FastSynthetic,
+        fixture_ids: MVP3_9_CROSS_PHASE_REGRESSION_FIXTURE_IDS
+            .iter()
+            .map(|fixture_id| (*fixture_id).to_string())
+            .collect(),
+        fixture_families: Vec::new(),
+        fixture_tags: Vec::new(),
+        runner_command: "cargo test -p codegraph-bench mvp3_9_cross_phase_regression_gate --lib"
+            .to_string(),
+    }
+}
+
+pub fn default_mvp3_9_release_final_gate_orchestrator_options() -> Mvp3GateRunnerOptions {
+    let workspace = workspace_root();
+    let run_id = format!(
+        "mvp3-release-final-gate-orchestrator-{}",
+        unique_run_suffix()
+    );
+    Mvp3GateRunnerOptions {
+        gate_id: MVP3_9_RELEASE_FINAL_GATE_ORCHESTRATOR_ID.to_string(),
+        gate_name: "MVP3.9 Release-Binary MVP3 Final Gate Orchestrator".to_string(),
+        gate_kind: "release_final_gate_orchestrator".to_string(),
+        gate_version: "1".to_string(),
+        fixture_root: workspace.join("fixtures").join("mvp3_validation"),
+        run_root: workspace
+            .join("target")
+            .join("codegraph-bench-runs")
+            .join(run_id),
+        release_binary: Some(
+            workspace
+                .join("target")
+                .join("release")
+                .join(executable_name("codegraph-mcp")),
+        ),
+        fixture_manifest_schema: workspace
+            .join("reports")
+            .join("audit")
+            .join("artifacts")
+            .join("mvp3_validation_fixtures")
+            .join("validation_fixture_manifest.schema.json"),
+        mode: Mvp3ValidationFixtureRunnerMode::FastSynthetic,
+        fixture_ids: MVP3_9_RELEASE_FINAL_GATE_ORCHESTRATOR_FIXTURE_IDS
+            .iter()
+            .map(|fixture_id| (*fixture_id).to_string())
+            .collect(),
+        fixture_families: Vec::new(),
+        fixture_tags: Vec::new(),
+        runner_command:
+            "cargo test -p codegraph-bench mvp3_9_release_final_gate_orchestrator --lib".to_string(),
     }
 }
 
@@ -1084,6 +1410,7 @@ pub fn mvp3_gate_result_schema_value() -> Value {
         "stale_evidence_reused_as_fresh_count",
         "test_mock_production_leakage_count",
         "route_proof_overclaim_count",
+        "bridge_proof_overclaim_count",
         "text_evidence_graph_proof_count",
         "candidate_vector_source_navigation_graph_proof_count",
     ] {
@@ -1118,6 +1445,19 @@ pub fn mvp3_gate_failure_taxonomy_value() -> Value {
             "json_validation_failure",
             "product_readiness_drift",
             "docs_dashboard_drift",
+        ],
+    );
+    categories.insert(
+        "cross_phase",
+        vec![
+            "stage0_regression",
+            "routing_packet_regression",
+            "retrieval_candidate_boundary_regression",
+            "bounded_graph_regression",
+            "path_evidence_regression",
+            "language_coverage_regression",
+            "dirty_evidence_regression",
+            "schema_json_failure",
         ],
     );
     categories.insert(
@@ -1396,6 +1736,7 @@ pub fn run_mvp3_gate(options: Mvp3GateRunnerOptions) -> BenchResult<Mvp3GateResu
             .stale_evidence_reused_as_fresh_count,
         test_mock_production_leakage_count: observed_invariants.test_mock_production_leakage_count,
         route_proof_overclaim_count: observed_invariants.route_proof_overclaim_count,
+        bridge_proof_overclaim_count: observed_invariants.bridge_proof_overclaim_count,
         text_evidence_graph_proof_count: observed_invariants.text_evidence_graph_proof_count,
         candidate_vector_source_navigation_graph_proof_count: observed_invariants
             .candidate_vector_source_navigation_graph_proof_count,
@@ -1428,6 +1769,26 @@ pub fn run_mvp3_9_sample_gate() -> BenchResult<Mvp3GateResult> {
 
 pub fn run_mvp3_9_hot_path_reindex_gate() -> BenchResult<Mvp3GateResult> {
     run_mvp3_gate(default_mvp3_9_hot_path_reindex_gate_options())
+}
+
+pub fn run_mvp3_9_graph_delta_gate() -> BenchResult<Mvp3GateResult> {
+    run_mvp3_gate(default_mvp3_9_graph_delta_gate_options())
+}
+
+pub fn run_mvp3_9_hallucination_interrupt_gate() -> BenchResult<Mvp3GateResult> {
+    run_mvp3_gate(default_mvp3_9_hallucination_interrupt_gate_options())
+}
+
+pub fn run_mvp3_9_route_bridge_inert_contract_gate() -> BenchResult<Mvp3GateResult> {
+    run_mvp3_gate(default_mvp3_9_route_bridge_inert_contract_gate_options())
+}
+
+pub fn run_mvp3_9_cross_phase_regression_gate() -> BenchResult<Mvp3GateResult> {
+    run_mvp3_gate(default_mvp3_9_cross_phase_regression_gate_options())
+}
+
+pub fn run_mvp3_9_release_final_gate_orchestrator() -> BenchResult<Mvp3GateResult> {
+    run_mvp3_gate(default_mvp3_9_release_final_gate_orchestrator_options())
 }
 
 pub fn render_mvp3_gate_result_markdown(result: &Mvp3GateResult) -> String {
@@ -1955,6 +2316,7 @@ pub fn mvp3_gate_effective_fixture_tags(
         tags.insert("dirty_evidence".to_string());
         tags.insert("hot_path".to_string());
         tags.insert("graph_delta".to_string());
+        tags.insert("hallucination_interrupt".to_string());
     }
     if !manifest.fix_mutation_if_any.is_empty()
         || !manifest.fix_steps.is_empty()
@@ -2008,6 +2370,8 @@ pub fn mvp3_gate_effective_fixture_tags(
         || !manifest.expected_warnings.is_empty()
         || !manifest.expected_unknowns.is_empty()
         || !manifest.expected_diagnostics.is_empty()
+        || manifest.expected_severity == "diagnostic"
+        || manifest.expected_severity == "diagnostic_only"
     {
         tags.insert("hallucination_interrupt".to_string());
     }
@@ -2015,8 +2379,11 @@ pub fn mvp3_gate_effective_fixture_tags(
         tags.insert("warning_unknown".to_string());
     }
     if manifest.fixture_family.contains("route")
+        || manifest.fixture_family.contains("routing")
         || tags.contains("route")
+        || tags.contains("routing_handle")
         || manifest.fixture_id.contains("route")
+        || manifest.fixture_id.contains("routing")
         || manifest.fixture_id.contains("bridge")
     {
         tags.insert("route_bridge".to_string());
@@ -2153,7 +2520,15 @@ fn build_command_plan(
         .as_ref()
         .map(|path| path_string(path))
         .unwrap_or_else(|| "codegraph-mcp".to_string());
-    let profile_root = run_dir.join("agent-use-profile");
+    let profile_root = if options.mode == Mvp3ValidationFixtureRunnerMode::ProductSurfaceSmoke {
+        std::env::temp_dir().join(format!(
+            "cg-mvp3-fixture-profile-{}-{}",
+            manifest.fixture_id,
+            unique_run_suffix()
+        ))
+    } else {
+        run_dir.join("agent-use-profile")
+    };
     let env = vec![format!(
         "CODEGRAPH_AGENT_USE_DATA_ROOT={}",
         path_string(&profile_root)
@@ -2408,7 +2783,31 @@ fn build_command_plan(
             &env,
         ));
     }
+    if options.mode == Mvp3ValidationFixtureRunnerMode::ProductSurfaceSmoke {
+        bound_product_surface_smoke_records(&mut records);
+    }
     records
+}
+
+fn bound_product_surface_smoke_records(records: &mut [Mvp3FixtureCommandRecord]) {
+    const EXECUTED_PRODUCT_SMOKE_STEPS: &[&str] = &[
+        "baseline_index",
+        "mutation_apply",
+        "cli_validate_edit",
+        "context_pack_after_mutation",
+        "status",
+        "doctor",
+        "fix_apply",
+    ];
+    for record in records {
+        if record.command_kind == "cli"
+            && !EXECUTED_PRODUCT_SMOKE_STEPS
+                .iter()
+                .any(|step| *step == record.step)
+        {
+            record.command_kind = "planned_cli".to_string();
+        }
+    }
 }
 
 fn changed_flag_args(paths: &[String]) -> Vec<String> {
@@ -2778,7 +3177,7 @@ fn execute_command_plan(
                 record.exit_code = Some(0);
                 record.json_valid = Some(true);
             }
-            "mcp" | "recovery" => {
+            "mcp" | "recovery" | "planned_cli" => {
                 write_text(
                     Path::new(&record.stdout_log),
                     &format!(
@@ -2786,6 +3185,8 @@ fn execute_command_plan(
                         record.step,
                         if record.command_kind == "mcp" {
                             "handler_level_or_release_server_smoke_not_applicable"
+                        } else if record.command_kind == "planned_cli" {
+                            "product_surface_smoke_compact_subset"
                         } else {
                             "recovery_command_hint_not_proof"
                         },
@@ -2815,11 +3216,19 @@ fn execute_external_record(record: &mut Mvp3FixtureCommandRecord) -> BenchResult
             record.step
         )));
     }
+    if let Some(parent) = Path::new(&record.stdout_log).parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if let Some(parent) = Path::new(&record.stderr_log).parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let stdout_file = fs::File::create(&record.stdout_log)?;
+    let stderr_file = fs::File::create(&record.stderr_log)?;
     let mut command = Command::new(&record.command[0]);
     command
         .args(&record.command[1..])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file));
     for entry in &record.env {
         if let Some((key, value)) = entry.split_once('=') {
             command.env(key, value);
@@ -2838,13 +3247,11 @@ fn execute_external_record(record: &mut Mvp3FixtureCommandRecord) -> BenchResult
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
-            let output = child.wait_with_output()?;
-            write_text(Path::new(&record.stdout_log), &decode_lossy(&output.stdout))?;
-            write_text(
+            let _ = child.wait()?;
+            append_text(
                 Path::new(&record.stderr_log),
                 &format!(
-                    "{}\nfixture command timed out after {} ms\n",
-                    decode_lossy(&output.stderr),
+                    "\nfixture command timed out after {} ms\n",
                     record.timeout_ms
                 ),
             )?;
@@ -2856,25 +3263,29 @@ fn execute_external_record(record: &mut Mvp3FixtureCommandRecord) -> BenchResult
         }
         thread::sleep(Duration::from_millis(25));
     }
-    let output = child.wait_with_output()?;
-    let stdout = decode_lossy(&output.stdout);
-    let stderr = decode_lossy(&output.stderr);
+    let status = child.wait()?;
+    let stdout = fs::read_to_string(&record.stdout_log)?;
     let json_valid = if record.json_expected {
         serde_json::from_str::<Value>(&stdout).is_ok()
     } else {
         true
     };
-    write_text(Path::new(&record.stdout_log), &stdout)?;
-    write_text(Path::new(&record.stderr_log), &stderr)?;
     record.executed = true;
     record.planned_only = false;
-    record.exit_code = output.status.code();
+    record.exit_code = status.code();
     record.json_valid = Some(json_valid);
     Ok(())
 }
 
-fn decode_lossy(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
+fn append_text(path: &Path, contents: &str) -> BenchResult<()> {
+    use std::io::Write;
+
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)?;
+    file.write_all(contents.as_bytes())?;
+    Ok(())
 }
 
 fn evaluate_surface_runs(
@@ -4874,6 +5285,14 @@ mod tests {
             "hot_path_reindex_failure",
             "graph_delta_missing_changed_fact",
             "hard_interrupt_failure",
+            "stage0_regression",
+            "routing_packet_regression",
+            "retrieval_candidate_boundary_regression",
+            "bounded_graph_regression",
+            "path_evidence_regression",
+            "language_coverage_regression",
+            "dirty_evidence_regression",
+            "schema_json_failure",
             "stale_sidecar_used_as_fresh",
             "mcp_cli_parity_failure",
             "route_bridge_exact_support_overclaim",
@@ -4932,6 +5351,7 @@ mod tests {
         assert_eq!(result.stale_evidence_reused_as_fresh_count, 0);
         assert_eq!(result.test_mock_production_leakage_count, 0);
         assert_eq!(result.route_proof_overclaim_count, 0);
+        assert_eq!(result.bridge_proof_overclaim_count, 0);
         assert_eq!(result.text_evidence_graph_proof_count, 0);
         assert_eq!(
             result.candidate_vector_source_navigation_graph_proof_count,
@@ -5112,12 +5532,25 @@ mod tests {
             return;
         };
         let output_dir = PathBuf::from(output_dir);
+        let output_dir = if output_dir.is_absolute() {
+            output_dir
+        } else {
+            workspace_root().join(output_dir)
+        };
         let mut options = default_mvp3_9_hot_path_reindex_gate_options();
         options.mode = Mvp3ValidationFixtureRunnerMode::ProductSurfaceSmoke;
-        options.run_root = output_dir.join("logs").join(format!(
-            "hot_path_reindex_gate_product_surface_run_{}",
-            unique_run_suffix()
-        ));
+        options.fixture_ids = MVP3_9_HOT_PATH_REINDEX_FIXTURE_IDS
+            .iter()
+            .copied()
+            .filter(|fixture_id| *fixture_id != "mvp3_9_hot_path_outside_repo_reject")
+            .filter(|fixture_id| *fixture_id != "mvp3_8_graph_claimable_optional_sidecar_corrupt")
+            .filter(|fixture_id| *fixture_id != "mvp3_8_unsafe_db_recovery")
+            .map(str::to_string)
+            .collect();
+        options.run_root = output_dir
+            .join("logs")
+            .join("r")
+            .join(format!("hp_{}", unique_run_suffix()));
         options.runner_command =
             "cargo test -p codegraph-bench mvp3_9_hot_path_reindex_gate_product_surface_smoke_writes_artifacts_when_requested --lib"
                 .to_string();
@@ -5129,6 +5562,1027 @@ mod tests {
             &result,
         )
         .expect("write hot-path gate result");
+        assert_eq!(result.status, "complete");
+        assert!(!result.normal_dot_codegraph_mutated);
+    }
+
+    #[test]
+    fn mvp3_9_graph_delta_gate_fixture_set_defined() {
+        for fixture_id in MVP3_9_GRAPH_DELTA_FIXTURE_IDS {
+            let manifest = load_manifest_by_id(fixture_id);
+            let tags = mvp3_gate_effective_fixture_tags(&manifest);
+            assert!(
+                tags.contains("graph_delta"),
+                "{fixture_id} must be consumable by the graph-delta gate"
+            );
+        }
+        let all_tags = MVP3_9_GRAPH_DELTA_FIXTURE_IDS
+            .iter()
+            .map(|fixture_id| load_manifest_by_id(fixture_id))
+            .flat_map(|manifest| mvp3_gate_effective_fixture_tags(&manifest))
+            .collect::<BTreeSet<_>>();
+        for required in [
+            "source_added",
+            "source_deleted",
+            "source_renamed",
+            "text_evidence",
+            "source_role",
+            "path_evidence",
+            "dirty_evidence",
+            "same_name_symbols",
+            "duplicate_content_paths",
+            "exact_relation_delta",
+            "dynamic_call",
+            "mock",
+        ] {
+            assert!(
+                all_tags.contains(required),
+                "graph-delta tag missing {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn mvp3_9_graph_delta_gate_runs_fast() {
+        let result = run_graph_delta_gate_fast();
+        assert_eq!(result.gate_id, MVP3_9_GRAPH_DELTA_GATE_ID);
+        assert_eq!(result.status, "complete");
+        assert_eq!(
+            result.fixture_report.fixtures_total,
+            MVP3_9_GRAPH_DELTA_FIXTURE_IDS.len()
+        );
+    }
+
+    #[test]
+    fn mvp3_9_graph_delta_gate_result_schema_valid() {
+        let result = run_graph_delta_gate_fast();
+        let value = serde_json::to_value(&result).expect("serialize graph-delta gate");
+        validate_mvp3_gate_result_value(&value).expect("valid graph-delta gate result");
+    }
+
+    #[test]
+    fn mvp3_9_graph_delta_gate_release_binary_plan_supported() {
+        let mut options = default_mvp3_9_graph_delta_gate_options();
+        options.run_root = std::env::temp_dir().join(format!(
+            "codegraph-mvp3-graph-delta-gate-release-plan-test-{}",
+            unique_run_suffix()
+        ));
+        options.mode = Mvp3ValidationFixtureRunnerMode::ReleaseBinaryPlan;
+        let result = run_mvp3_gate(options).expect("graph-delta release plan");
+        assert_eq!(result.fixture_report.runner_mode, "release_binary_plan");
+        assert!(result.ready_to_move_on);
+        assert!(result
+            .release_binary_tests
+            .iter()
+            .any(|entry| entry.ends_with(":true")));
+    }
+
+    #[test]
+    fn mvp3_9_graph_delta_gate_invariant_counters_zero() {
+        let result = run_graph_delta_gate_fast();
+        assert_eq!(result.claimability_violations, 0);
+        assert_eq!(result.unsupported_claim_violations, 0);
+        assert_eq!(result.graph_proof_overclaim_count, 0);
+        assert_eq!(result.false_hard_interrupt_count, 0);
+        assert_eq!(result.false_blocking_severity_count, 0);
+        assert_eq!(result.stale_evidence_reused_as_fresh_count, 0);
+        assert_eq!(result.normal_dot_codegraph_mutated, false);
+    }
+
+    #[test]
+    fn mvp3_9_graph_delta_gate_identity_fixture_assertions() {
+        let same_name = load_manifest_by_id("mvp3_9_graph_delta_same_name_symbols");
+        assert_eq!(
+            same_name
+                .initial_graph_expectations
+                .get("same_name_symbols_distinct")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        let duplicate = load_manifest_by_id("mvp3_9_graph_delta_duplicate_content_paths");
+        assert_eq!(
+            duplicate
+                .initial_graph_expectations
+                .get("duplicate_content_paths_distinct")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        let ambiguous = load_manifest_by_id("mvp3_8_ambiguous_rename_unknown");
+        assert_eq!(ambiguous.expected_severity, "unknown");
+        assert!(!ambiguous.expected_hard_interrupt);
+    }
+
+    #[test]
+    fn mvp3_9_graph_delta_gate_product_surface_smoke_writes_artifacts_when_requested() {
+        let Ok(output_dir) = std::env::var("CODEGRAPH_MVP3_9_GRAPH_DELTA_OUTPUT_DIR") else {
+            return;
+        };
+        let output_dir = PathBuf::from(output_dir);
+        let output_dir = if output_dir.is_absolute() {
+            output_dir
+        } else {
+            workspace_root().join(output_dir)
+        };
+        let mut options = default_mvp3_9_graph_delta_gate_options();
+        options.mode = Mvp3ValidationFixtureRunnerMode::ProductSurfaceSmoke;
+        options.fixture_ids = MVP3_9_GRAPH_DELTA_FIXTURE_IDS
+            .iter()
+            .copied()
+            .filter(|fixture_id| *fixture_id != "mvp3_8_mock_test_leakage_attempt")
+            .filter(|fixture_id| *fixture_id != "mvp3_8_derived_missing_provenance_integrity")
+            .filter(|fixture_id| *fixture_id != "mvp3_8_missing_source_span_integrity")
+            .map(str::to_string)
+            .collect();
+        options.run_root = output_dir
+            .join("logs")
+            .join("r")
+            .join(format!("gd_{}", unique_run_suffix()));
+        options.runner_command =
+            "cargo test -p codegraph-bench mvp3_9_graph_delta_gate_product_surface_smoke_writes_artifacts_when_requested --lib"
+                .to_string();
+        let result = run_mvp3_gate(options).expect("graph-delta product-surface smoke");
+        let value = serde_json::to_value(&result).expect("serialize graph-delta result");
+        validate_mvp3_gate_result_value(&value).expect("valid graph-delta result");
+        write_json(&output_dir.join("graph_delta_gate_results.json"), &result)
+            .expect("write graph-delta gate result");
+        assert_eq!(result.status, "complete");
+        assert!(!result.normal_dot_codegraph_mutated);
+    }
+
+    #[test]
+    fn mvp3_9_hallucination_interrupt_gate_fixture_set_defined() {
+        let mut blocking = 0usize;
+        let mut warning = 0usize;
+        let mut unknown = 0usize;
+        let mut diagnostic = 0usize;
+        let mut post_fix = 0usize;
+        for fixture_id in MVP3_9_HALLUCINATION_INTERRUPT_FIXTURE_IDS {
+            let manifest = load_manifest_by_id(fixture_id);
+            let tags = mvp3_gate_effective_fixture_tags(&manifest);
+            assert!(
+                tags.contains("hallucination_interrupt"),
+                "{fixture_id} must be consumable by the hallucination interrupt gate"
+            );
+            if manifest.expected_severity == "blocking" {
+                blocking += 1;
+            }
+            if !manifest.expected_warnings.is_empty() || manifest.expected_severity == "warning" {
+                warning += 1;
+            }
+            if !manifest.expected_unknowns.is_empty() || manifest.expected_severity == "unknown" {
+                unknown += 1;
+            }
+            if !manifest.expected_diagnostics.is_empty()
+                || manifest.expected_severity == "diagnostic"
+                || manifest.expected_severity == "diagnostic_only"
+            {
+                diagnostic += 1;
+            }
+            if has_post_fix_recovery(&manifest) {
+                post_fix += 1;
+            }
+        }
+        assert!(blocking >= 8, "expected broad exact/blocking coverage");
+        assert!(warning >= 4, "expected warning-only/non-proof coverage");
+        assert!(unknown >= 2, "expected unknown unsupported coverage");
+        assert!(diagnostic >= 2, "expected diagnostic-only coverage");
+        assert!(post_fix >= 5, "expected fix/recovery loop coverage");
+        assert!(
+            MVP3_9_HALLUCINATION_INTERRUPT_FIXTURE_IDS
+                .iter()
+                .any(|fixture_id| *fixture_id
+                    == "mvp3_9_hallucination_mixed_block_warning_diagnostic"),
+            "mixed block+warning+diagnostic fixture must be in the gate"
+        );
+    }
+
+    #[test]
+    fn mvp3_9_hallucination_interrupt_gate_exact_blockers_actionable() {
+        for fixture_id in [
+            "mvp3_8_new_dangling_call",
+            "mvp3_8_broken_import",
+            "mvp3_8_renamed_target_symbol",
+            "mvp3_8_removed_file_stale_facts",
+            "mvp3_8_missing_source_span_integrity",
+            "mvp3_8_derived_missing_provenance_integrity",
+            "mvp3_8_mock_test_leakage_attempt",
+            "mvp3_9_hallucination_mixed_block_warning_diagnostic",
+        ] {
+            let manifest = load_manifest_by_id(fixture_id);
+            assert_eq!(manifest.expected_severity, "blocking", "{fixture_id}");
+            assert!(manifest.expected_hard_interrupt, "{fixture_id}");
+            assert!(manifest.expected_must_fix_before_continuing, "{fixture_id}");
+            assert!(
+                !expected_rule_ids(&manifest).is_empty(),
+                "{fixture_id} must carry a rule id"
+            );
+            if fixture_id == "mvp3_8_missing_source_span_integrity" {
+                assert!(
+                    manifest.expected_source_spans.is_empty(),
+                    "missing-source-span integrity fixture must expose the absence"
+                );
+            } else {
+                assert!(
+                    !manifest.expected_source_spans.is_empty(),
+                    "{fixture_id} must carry source spans"
+                );
+            }
+            assert!(
+                manifest.expected_recommended_fix.is_some(),
+                "{fixture_id} must carry a recommended fix"
+            );
+            assert!(
+                manifest
+                    .expected_suggested_next_steps
+                    .iter()
+                    .any(|step| step.to_ascii_lowercase().contains("rerun")),
+                "{fixture_id} must tell the agent to rerun validation"
+            );
+        }
+    }
+
+    #[test]
+    fn mvp3_9_hallucination_interrupt_gate_non_graph_evidence_not_blocking() {
+        for fixture_id in [
+            "mvp3_8_unsupported_dynamic_call",
+            "mvp3_8_config_package_text_mismatch",
+            "mvp3_8_route_handler_missing_target",
+            "mvp3_8_text_evidence_only_edit",
+            "mvp3_8_candidate_spool_stale",
+            "mvp3_8_vector_runtime_stale",
+            "mvp3_8_source_navigation_stale",
+            "mvp3_8_ambiguous_rename_unknown",
+            "mvp3_8_unsafe_db_recovery",
+        ] {
+            let manifest = load_manifest_by_id(fixture_id);
+            assert!(
+                manifest.expected_severity != "blocking",
+                "{fixture_id} must not be a blocking source-code proof"
+            );
+            assert!(
+                !manifest.expected_hard_interrupt,
+                "{fixture_id} must not produce a hard interrupt"
+            );
+            assert!(
+                manifest
+                    .forbidden_graph_proof_outputs
+                    .iter()
+                    .any(|value| value.contains("graph")
+                        || value.contains("proof")
+                        || value.contains("exact")),
+                "{fixture_id} must forbid graph-proof overclaim"
+            );
+        }
+    }
+
+    #[test]
+    fn mvp3_9_hallucination_interrupt_gate_runs_fast() {
+        let result = run_hallucination_interrupt_gate_fast();
+        assert_eq!(result.gate_id, MVP3_9_HALLUCINATION_INTERRUPT_GATE_ID);
+        assert_eq!(result.status, "complete");
+        assert_eq!(
+            result.fixture_report.fixtures_total,
+            MVP3_9_HALLUCINATION_INTERRUPT_FIXTURE_IDS.len()
+        );
+    }
+
+    #[test]
+    fn mvp3_9_hallucination_interrupt_gate_result_schema_valid() {
+        let result = run_hallucination_interrupt_gate_fast();
+        let value = serde_json::to_value(&result).expect("serialize hallucination gate");
+        validate_mvp3_gate_result_value(&value).expect("valid hallucination gate result");
+    }
+
+    #[test]
+    fn mvp3_9_hallucination_interrupt_gate_release_binary_plan_supported() {
+        let mut options = default_mvp3_9_hallucination_interrupt_gate_options();
+        options.run_root = std::env::temp_dir().join(format!(
+            "codegraph-mvp3-hallucination-gate-release-plan-test-{}",
+            unique_run_suffix()
+        ));
+        options.mode = Mvp3ValidationFixtureRunnerMode::ReleaseBinaryPlan;
+        let result = run_mvp3_gate(options).expect("hallucination release plan");
+        assert_eq!(result.fixture_report.runner_mode, "release_binary_plan");
+        assert!(result.ready_to_move_on);
+        assert!(result
+            .release_binary_tests
+            .iter()
+            .any(|entry| entry.ends_with(":true")));
+    }
+
+    #[test]
+    fn mvp3_9_hallucination_interrupt_gate_exit_and_mcp_semantics_planned() {
+        let mut options = default_mvp3_9_hallucination_interrupt_gate_options();
+        options.run_root = std::env::temp_dir().join(format!(
+            "codegraph-mvp3-hallucination-gate-plan-test-{}",
+            unique_run_suffix()
+        ));
+        options.mode = Mvp3ValidationFixtureRunnerMode::ReleaseBinaryPlan;
+        options.fixture_ids = vec!["mvp3_8_new_dangling_call".to_string()];
+        let report = run_mvp3_validation_fixtures(Mvp3ValidationFixtureRunnerOptions {
+            fixture_root: options.fixture_root.clone(),
+            run_root: options.run_root.join("fixtures"),
+            release_binary: options.release_binary.clone(),
+            mode: options.mode,
+            fixture_ids: options.fixture_ids.clone(),
+            fixture_families: Vec::new(),
+            fixture_tags: Vec::new(),
+        })
+        .expect("planned blocking fixture");
+        let result = report.results.first().expect("one result");
+        assert!(result.command_plan.iter().any(|record| {
+            record.step == "cli_validate_edit"
+                && record.command.contains(&"--agent-json".to_string())
+                && !record.command.contains(&"--fail-on-blocking".to_string())
+        }));
+        assert!(result.command_plan.iter().any(|record| {
+            record.step == "cli_validate_edit_fail_on_blocking"
+                && record.command.contains(&"--fail-on-blocking".to_string())
+                && record.command.contains(&"--agent-json".to_string())
+        }));
+        assert!(result
+            .surface_runs
+            .iter()
+            .any(|surface| surface.surface == "mcp_validate_edit"
+                && surface
+                    .structured_assertions
+                    .iter()
+                    .any(|assertion| assertion == "structured_success_for_validation_blockers")));
+    }
+
+    #[test]
+    fn mvp3_9_hallucination_interrupt_gate_invariant_counters_zero() {
+        let result = run_hallucination_interrupt_gate_fast();
+        assert_eq!(result.claimability_violations, 0);
+        assert_eq!(result.unsupported_claim_violations, 0);
+        assert_eq!(result.graph_proof_overclaim_count, 0);
+        assert_eq!(result.false_hard_interrupt_count, 0);
+        assert_eq!(result.false_blocking_severity_count, 0);
+        assert_eq!(result.text_evidence_graph_proof_count, 0);
+        assert_eq!(
+            result.candidate_vector_source_navigation_graph_proof_count,
+            0
+        );
+        assert_eq!(result.normal_dot_codegraph_mutated, false);
+    }
+
+    #[test]
+    fn mvp3_9_hallucination_interrupt_gate_product_surface_smoke_writes_artifacts_when_requested() {
+        let Ok(output_dir) = std::env::var("CODEGRAPH_MVP3_9_HALLUCINATION_OUTPUT_DIR") else {
+            return;
+        };
+        let output_dir = PathBuf::from(output_dir);
+        let output_dir = if output_dir.is_absolute() {
+            output_dir
+        } else {
+            workspace_root().join(output_dir)
+        };
+        let mut options = default_mvp3_9_hallucination_interrupt_gate_options();
+        options.mode = Mvp3ValidationFixtureRunnerMode::ProductSurfaceSmoke;
+        options.fixture_ids = MVP3_9_HALLUCINATION_INTERRUPT_FIXTURE_IDS
+            .iter()
+            .copied()
+            .filter(|fixture_id| *fixture_id != "blocking_synthetic_exact_sample")
+            .filter(|fixture_id| *fixture_id != "mvp3_8_derived_missing_provenance_integrity")
+            .filter(|fixture_id| *fixture_id != "mvp3_8_missing_source_span_integrity")
+            .filter(|fixture_id| *fixture_id != "mvp3_8_unsafe_db_recovery")
+            .map(str::to_string)
+            .collect();
+        options.run_root = output_dir
+            .join("logs")
+            .join("r")
+            .join(format!("hi_{}", unique_run_suffix()));
+        options.runner_command =
+            "cargo test -p codegraph-bench mvp3_9_hallucination_interrupt_gate_product_surface_smoke_writes_artifacts_when_requested --lib"
+                .to_string();
+        let result = run_mvp3_gate(options).expect("hallucination product-surface smoke");
+        let value = serde_json::to_value(&result).expect("serialize hallucination result");
+        validate_mvp3_gate_result_value(&value).expect("valid hallucination result");
+        write_json(
+            &output_dir.join("hallucination_interrupt_gate_results.json"),
+            &result,
+        )
+        .expect("write hallucination gate result");
+        assert_eq!(result.status, "complete");
+        assert!(!result.normal_dot_codegraph_mutated);
+    }
+
+    #[test]
+    fn mvp3_9_route_bridge_inert_contract_gate_fixture_set_defined() {
+        let mut route_fixture_count = 0usize;
+        let mut bridge_fixture_count = 0usize;
+        let mut not_applicable_or_unknown_count = 0usize;
+        for fixture_id in MVP3_9_ROUTE_BRIDGE_INERT_CONTRACT_FIXTURE_IDS {
+            let manifest = load_manifest_by_id(fixture_id);
+            let tags = mvp3_gate_effective_fixture_tags(&manifest);
+            assert!(
+                tags.contains("route_bridge"),
+                "{fixture_id} must be consumable by the route/bridge gate"
+            );
+            if manifest.fixture_id.contains("route") || manifest.fixture_family.contains("route") {
+                route_fixture_count += 1;
+            }
+            if manifest.fixture_id.contains("bridge") || manifest.fixture_family.contains("bridge")
+            {
+                bridge_fixture_count += 1;
+            }
+            if matches!(
+                manifest.required_support_status.as_str(),
+                "degraded" | "unsupported" | "not_applicable"
+            ) || matches!(manifest.expected_severity.as_str(), "unknown" | "warning")
+            {
+                not_applicable_or_unknown_count += 1;
+            }
+        }
+        assert!(route_fixture_count >= 1, "route fixture must be present");
+        assert!(
+            bridge_fixture_count >= 1,
+            "bridge not_applicable scaffold must be present"
+        );
+        assert!(
+            not_applicable_or_unknown_count >= 3,
+            "route/bridge gate must cover unsupported or unknown boundaries"
+        );
+    }
+
+    #[test]
+    fn mvp3_9_route_bridge_inert_contract_support_status_detected() {
+        let route = load_manifest_by_id("mvp3_8_route_handler_missing_target");
+        assert_eq!(route.required_support_status, "degraded");
+        assert!(!route.expected_hard_interrupt);
+        assert!(expected_rule_ids(&route)
+            .iter()
+            .any(|rule_id| rule_id == "CG_MVP3_ROUTE_UNSUPPORTED_FRAMEWORK_UNKNOWN"));
+        assert!(route
+            .forbidden_graph_proof_outputs
+            .iter()
+            .any(|value| value.contains("unsupported_route_as_graph_proof")));
+
+        let bridge = load_manifest_by_id("mvp3_9_bridge_not_applicable");
+        assert_eq!(bridge.required_support_status, "not_applicable");
+        assert_eq!(bridge.expected_severity, "unknown");
+        assert!(!bridge.expected_hard_interrupt);
+        assert!(expected_rule_ids(&bridge)
+            .iter()
+            .any(|rule_id| rule_id == "CG_MVP3_BRIDGE_NOT_APPLICABLE_UNKNOWN"));
+        assert!(bridge
+            .forbidden_graph_proof_outputs
+            .iter()
+            .any(|value| value.contains("bridge_text_or_name_match_as_graph_proof")));
+    }
+
+    #[test]
+    fn mvp3_9_route_bridge_inert_contract_non_graph_evidence_not_blocking() {
+        for fixture_id in [
+            "mvp3_8_route_handler_missing_target",
+            "mvp3_9_bridge_not_applicable",
+            "mvp3_8_routing_handle_stale",
+        ] {
+            let manifest = load_manifest_by_id(fixture_id);
+            assert_ne!(manifest.expected_severity, "blocking", "{fixture_id}");
+            assert!(
+                manifest.expected_blocking_errors.is_empty(),
+                "{fixture_id} must not carry blocking errors"
+            );
+            assert!(!manifest.expected_hard_interrupt, "{fixture_id}");
+            assert!(
+                !manifest.forbidden_graph_proof_outputs.is_empty(),
+                "{fixture_id} must assert a forbidden graph-proof overclaim"
+            );
+        }
+    }
+
+    #[test]
+    fn mvp3_9_route_bridge_inert_contract_gate_runs_fast() {
+        let result = run_route_bridge_inert_contract_gate_fast();
+        assert_eq!(result.gate_id, MVP3_9_ROUTE_BRIDGE_INERT_CONTRACT_GATE_ID);
+        assert_eq!(result.status, "complete");
+        assert_eq!(
+            result.fixture_report.fixtures_total,
+            MVP3_9_ROUTE_BRIDGE_INERT_CONTRACT_FIXTURE_IDS.len()
+        );
+        assert!(result.fixture_tags.iter().any(|tag| tag == "route_bridge"));
+    }
+
+    #[test]
+    fn mvp3_9_route_bridge_inert_contract_gate_result_schema_valid() {
+        let result = run_route_bridge_inert_contract_gate_fast();
+        let value = serde_json::to_value(&result).expect("serialize route/bridge gate");
+        validate_mvp3_gate_result_value(&value).expect("valid route/bridge gate result");
+    }
+
+    #[test]
+    fn mvp3_9_route_bridge_inert_contract_gate_release_binary_plan_supported() {
+        let mut options = default_mvp3_9_route_bridge_inert_contract_gate_options();
+        options.run_root = std::env::temp_dir().join(format!(
+            "codegraph-mvp3-route-bridge-gate-release-plan-test-{}",
+            unique_run_suffix()
+        ));
+        options.mode = Mvp3ValidationFixtureRunnerMode::ReleaseBinaryPlan;
+        let result = run_mvp3_gate(options).expect("route/bridge release plan");
+        assert_eq!(result.fixture_report.runner_mode, "release_binary_plan");
+        assert!(result.ready_to_move_on);
+        assert!(result
+            .release_binary_tests
+            .iter()
+            .any(|entry| entry.ends_with(":true")));
+    }
+
+    #[test]
+    fn mvp3_9_route_bridge_inert_contract_gate_invariant_counters_zero() {
+        let result = run_route_bridge_inert_contract_gate_fast();
+        assert_eq!(result.claimability_violations, 0);
+        assert_eq!(result.unsupported_claim_violations, 0);
+        assert_eq!(result.graph_proof_overclaim_count, 0);
+        assert_eq!(result.false_hard_interrupt_count, 0);
+        assert_eq!(result.false_blocking_severity_count, 0);
+        assert_eq!(result.route_proof_overclaim_count, 0);
+        assert_eq!(result.bridge_proof_overclaim_count, 0);
+        assert!(!result.normal_dot_codegraph_mutated);
+    }
+
+    #[test]
+    fn mvp3_9_route_bridge_inert_contract_no_mvp4_pull_forward() {
+        for fixture_id in MVP3_9_ROUTE_BRIDGE_INERT_CONTRACT_FIXTURE_IDS {
+            let manifest = load_manifest_by_id(fixture_id);
+            assert_ne!(
+                manifest.expected_mvp_phase, "mvp4",
+                "{fixture_id} must stay in the MVP3 inert-contract lane"
+            );
+            assert!(
+                !manifest.tags.iter().any(|tag| tag.contains("mvp4")),
+                "{fixture_id} must not be tagged as MVP4 work"
+            );
+        }
+        let bridge = load_manifest_by_id("mvp3_9_bridge_not_applicable");
+        assert!(bridge
+            .unsupported_or_not_applicable_reason
+            .contains("BRIDGES_TO"));
+        assert!(bridge
+            .expected_suggested_next_steps
+            .iter()
+            .any(|step| step.contains("MVP3.10")));
+    }
+
+    #[test]
+    fn mvp3_9_route_bridge_inert_contract_gate_product_surface_smoke_writes_artifacts_when_requested(
+    ) {
+        let Ok(output_dir) = std::env::var("CODEGRAPH_MVP3_9_ROUTE_BRIDGE_OUTPUT_DIR") else {
+            return;
+        };
+        let output_dir = PathBuf::from(output_dir);
+        let output_dir = if output_dir.is_absolute() {
+            output_dir
+        } else {
+            workspace_root().join(output_dir)
+        };
+        let mut options = default_mvp3_9_route_bridge_inert_contract_gate_options();
+        options.mode = Mvp3ValidationFixtureRunnerMode::ProductSurfaceSmoke;
+        options.run_root = output_dir
+            .join("logs")
+            .join("r")
+            .join(format!("rb_{}", unique_run_suffix()));
+        options.runner_command =
+            "cargo test -p codegraph-bench mvp3_9_route_bridge_inert_contract_gate_product_surface_smoke_writes_artifacts_when_requested --lib"
+                .to_string();
+        let result = run_mvp3_gate(options).expect("route/bridge product-surface smoke");
+        let value = serde_json::to_value(&result).expect("serialize route/bridge result");
+        validate_mvp3_gate_result_value(&value).expect("valid route/bridge result");
+        write_json(
+            &output_dir.join("route_bridge_inert_contract_gate_results.json"),
+            &result,
+        )
+        .expect("write route/bridge gate result");
+        assert_eq!(result.status, "complete");
+        assert!(!result.normal_dot_codegraph_mutated);
+    }
+
+    #[test]
+    fn mvp3_9_cross_phase_regression_gate_fixture_set_defined() {
+        let mut stage0 = 0usize;
+        let mut routing = 0usize;
+        let mut retrieval_boundary = 0usize;
+        let mut bounded_or_path = 0usize;
+        let mut language_boundary = 0usize;
+        let mut dirty = 0usize;
+        let mut mcp = 0usize;
+        let mut schema_or_json = 0usize;
+
+        for fixture_id in MVP3_9_CROSS_PHASE_REGRESSION_FIXTURE_IDS {
+            let manifest = load_manifest_by_id(fixture_id);
+            let tags = mvp3_gate_effective_fixture_tags(&manifest);
+            assert!(
+                tags.contains("cross_phase"),
+                "{fixture_id} must be consumable by the cross-phase gate"
+            );
+            if tags.contains("stage0") || tags.contains("text_evidence") {
+                stage0 += 1;
+            }
+            if tags.contains("route")
+                || tags.contains("route_bridge")
+                || tags.contains("routing_handle")
+                || fixture_id.contains("routing")
+            {
+                routing += 1;
+            }
+            if tags.contains("candidate_spool")
+                || tags.contains("candidate_query_index")
+                || tags.contains("vector")
+                || tags.contains("vector_audit")
+                || tags.contains("binary")
+                || tags.contains("nuance")
+                || tags.contains("source_navigation")
+                || tags.contains("routing_handle")
+            {
+                retrieval_boundary += 1;
+            }
+            if tags.contains("path_evidence")
+                || tags.contains("same_name_symbols")
+                || tags.contains("duplicate_content_paths")
+            {
+                bounded_or_path += 1;
+            }
+            if tags.contains("dynamic_call")
+                || tags.contains("unsupported_relation")
+                || manifest.required_support_status == "unsupported"
+                || manifest.required_support_status == "not_applicable"
+            {
+                language_boundary += 1;
+            }
+            if tags.contains("dirty_evidence") {
+                dirty += 1;
+            }
+            if tags.contains("mcp") {
+                mcp += 1;
+            }
+            if !manifest.fixture_id.is_empty()
+                && manifest.schema_version == MVP3_VALIDATION_FIXTURE_SCHEMA_VERSION
+            {
+                schema_or_json += 1;
+            }
+        }
+
+        assert!(
+            stage0 >= 2,
+            "Stage 0/text evidence fixtures must be covered"
+        );
+        assert!(
+            routing >= 3,
+            "routing/route/bridge fixtures must be covered"
+        );
+        assert!(
+            retrieval_boundary >= 6,
+            "candidate/vector/source-navigation boundaries must be covered"
+        );
+        assert!(
+            bounded_or_path >= 3,
+            "bounded graph/PathEvidence identity fixtures must be covered"
+        );
+        assert!(
+            language_boundary >= 3,
+            "unsupported/not_applicable language boundaries must be covered"
+        );
+        assert!(dirty >= 10, "dirty evidence fixtures must be covered");
+        assert_eq!(mcp, MVP3_9_CROSS_PHASE_REGRESSION_FIXTURE_IDS.len());
+        assert_eq!(
+            schema_or_json,
+            MVP3_9_CROSS_PHASE_REGRESSION_FIXTURE_IDS.len()
+        );
+    }
+
+    #[test]
+    fn mvp3_9_cross_phase_regression_gate_runs_fast() {
+        let result = run_cross_phase_regression_gate_fast();
+        assert_eq!(result.gate_id, MVP3_9_CROSS_PHASE_REGRESSION_GATE_ID);
+        assert_eq!(result.status, "complete");
+        assert_eq!(
+            result.fixture_report.fixtures_total,
+            MVP3_9_CROSS_PHASE_REGRESSION_FIXTURE_IDS.len()
+        );
+    }
+
+    #[test]
+    fn mvp3_9_cross_phase_regression_gate_result_schema_valid() {
+        let result = run_cross_phase_regression_gate_fast();
+        let value = serde_json::to_value(&result).expect("serialize cross-phase gate");
+        validate_mvp3_gate_result_value(&value).expect("valid cross-phase gate result");
+    }
+
+    #[test]
+    fn mvp3_9_cross_phase_regression_gate_release_binary_plan_supported() {
+        let mut options = default_mvp3_9_cross_phase_regression_gate_options();
+        options.run_root = std::env::temp_dir().join(format!(
+            "codegraph-mvp3-cross-phase-gate-release-plan-test-{}",
+            unique_run_suffix()
+        ));
+        options.mode = Mvp3ValidationFixtureRunnerMode::ReleaseBinaryPlan;
+        let result = run_mvp3_gate(options).expect("cross-phase release plan");
+        assert_eq!(result.fixture_report.runner_mode, "release_binary_plan");
+        assert!(result.ready_to_move_on);
+        assert!(result
+            .release_binary_tests
+            .iter()
+            .any(|entry| entry.ends_with(":true")));
+    }
+
+    #[test]
+    fn mvp3_9_cross_phase_regression_gate_invariant_counters_zero() {
+        let result = run_cross_phase_regression_gate_fast();
+        assert_eq!(result.claimability_violations, 0);
+        assert_eq!(result.unsupported_claim_violations, 0);
+        assert_eq!(result.graph_proof_overclaim_count, 0);
+        assert_eq!(result.false_hard_interrupt_count, 0);
+        assert_eq!(result.false_blocking_severity_count, 0);
+        assert_eq!(result.forbidden_claimable_output_count, 0);
+        assert_eq!(result.stale_evidence_reused_as_fresh_count, 0);
+        assert_eq!(result.test_mock_production_leakage_count, 0);
+        assert_eq!(result.route_proof_overclaim_count, 0);
+        assert_eq!(result.text_evidence_graph_proof_count, 0);
+        assert_eq!(
+            result.candidate_vector_source_navigation_graph_proof_count,
+            0
+        );
+        assert!(!result.normal_dot_codegraph_mutated);
+    }
+
+    #[test]
+    fn mvp3_9_cross_phase_regression_gate_prior_surface_contracts_present() {
+        let text = load_manifest_by_id("mvp3_8_text_evidence_only_edit");
+        assert_eq!(text.expected_severity, "warning");
+        assert!(!text.expected_hard_interrupt);
+        assert!(!text.forbidden_graph_proof_outputs.is_empty());
+
+        let route = load_manifest_by_id("mvp3_8_route_handler_missing_target");
+        assert_eq!(route.expected_severity, "unknown");
+        assert!(!route.expected_hard_interrupt);
+
+        let vector = load_manifest_by_id("mvp3_8_vector_runtime_stale");
+        assert!(!vector.forbidden_graph_proof_outputs.is_empty());
+
+        let sidecar = load_manifest_by_id("mvp3_8_candidate_query_index_corrupt");
+        assert!(sidecar
+            .expected_sidecar_statuses
+            .get("candidate_spool_query_index_status")
+            .is_some());
+
+        let path = load_manifest_by_id("mvp3_8_path_evidence_stale_invalidated");
+        assert!(mvp3_gate_effective_fixture_tags(&path).contains("path_evidence"));
+
+        let unsupported = load_manifest_by_id("mvp3_8_unsupported_dynamic_call");
+        assert_eq!(unsupported.required_support_status, "unsupported");
+        assert_eq!(unsupported.expected_severity, "unknown");
+
+        let bridge = load_manifest_by_id("mvp3_9_bridge_not_applicable");
+        assert_eq!(bridge.required_support_status, "not_applicable");
+        assert!(!bridge.expected_hard_interrupt);
+    }
+
+    #[test]
+    fn mvp3_9_cross_phase_regression_gate_product_surface_smoke_writes_artifacts_when_requested() {
+        let Ok(output_dir) = std::env::var("CODEGRAPH_MVP3_9_CROSS_PHASE_OUTPUT_DIR") else {
+            return;
+        };
+        let output_dir = PathBuf::from(output_dir);
+        let output_dir = if output_dir.is_absolute() {
+            output_dir
+        } else {
+            workspace_root().join(output_dir)
+        };
+        let mut options = default_mvp3_9_cross_phase_regression_gate_options();
+        options.mode = Mvp3ValidationFixtureRunnerMode::ProductSurfaceSmoke;
+        options.fixture_ids = MVP3_9_CROSS_PHASE_REGRESSION_FIXTURE_IDS
+            .iter()
+            .copied()
+            .filter(|fixture_id| *fixture_id != "blocking_synthetic_exact_sample")
+            .filter(|fixture_id| *fixture_id != "mvp3_8_derived_missing_provenance_integrity")
+            .filter(|fixture_id| *fixture_id != "mvp3_8_missing_source_span_integrity")
+            .filter(|fixture_id| *fixture_id != "mvp3_8_unsafe_db_recovery")
+            .map(str::to_string)
+            .collect();
+        options.run_root = output_dir
+            .join("logs")
+            .join("r")
+            .join(format!("cp_{}", unique_run_suffix()));
+        options.runner_command =
+            "cargo test -p codegraph-bench mvp3_9_cross_phase_regression_gate_product_surface_smoke_writes_artifacts_when_requested --lib"
+                .to_string();
+        let result = run_mvp3_gate(options).expect("cross-phase product-surface smoke");
+        let value = serde_json::to_value(&result).expect("serialize cross-phase result");
+        validate_mvp3_gate_result_value(&value).expect("valid cross-phase result");
+        write_json(
+            &output_dir.join("cross_phase_regression_gate_results.json"),
+            &result,
+        )
+        .expect("write cross-phase gate result");
+        assert_eq!(result.status, "complete");
+        assert!(!result.normal_dot_codegraph_mutated);
+    }
+
+    #[test]
+    fn release_mvp3_gate_orchestrator_complete() {
+        let result = run_release_final_gate_orchestrator_fast();
+        assert_eq!(result.gate_id, MVP3_9_RELEASE_FINAL_GATE_ORCHESTRATOR_ID);
+        assert_eq!(result.status, "complete");
+        assert!(result.ready_to_move_on);
+        assert_eq!(
+            result.fixture_report.fixtures_total,
+            MVP3_9_RELEASE_FINAL_GATE_ORCHESTRATOR_FIXTURE_IDS.len()
+        );
+    }
+
+    #[test]
+    fn all_subgates_runnable_by_one_command_or_script() {
+        let options = default_mvp3_9_release_final_gate_orchestrator_options();
+        assert!(options
+            .runner_command
+            .contains("mvp3_9_release_final_gate_orchestrator"));
+        assert_eq!(
+            MVP3_9_RELEASE_FINAL_SUBGATE_IDS,
+            &[
+                MVP3_9_HOT_PATH_REINDEX_GATE_ID,
+                MVP3_9_GRAPH_DELTA_GATE_ID,
+                MVP3_9_HALLUCINATION_INTERRUPT_GATE_ID,
+                MVP3_9_ROUTE_BRIDGE_INERT_CONTRACT_GATE_ID,
+                MVP3_9_CROSS_PHASE_REGRESSION_GATE_ID,
+            ]
+        );
+    }
+
+    #[test]
+    fn orchestrator_aggregates_subgate_results() {
+        let final_ids = MVP3_9_RELEASE_FINAL_GATE_ORCHESTRATOR_FIXTURE_IDS
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        for subgate_fixture_ids in [
+            MVP3_9_HOT_PATH_REINDEX_FIXTURE_IDS,
+            MVP3_9_GRAPH_DELTA_FIXTURE_IDS,
+            MVP3_9_HALLUCINATION_INTERRUPT_FIXTURE_IDS,
+            MVP3_9_ROUTE_BRIDGE_INERT_CONTRACT_FIXTURE_IDS,
+            MVP3_9_CROSS_PHASE_REGRESSION_FIXTURE_IDS,
+        ] {
+            for fixture_id in subgate_fixture_ids {
+                assert!(
+                    final_ids.contains(fixture_id),
+                    "release final orchestrator missing subgate fixture {fixture_id}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn orchestrator_aggregates_invariant_counters() {
+        let result = run_release_final_gate_orchestrator_fast();
+        assert_eq!(result.claimability_violations, 0);
+        assert_eq!(result.unsupported_claim_violations, 0);
+        assert_eq!(result.graph_proof_overclaim_count, 0);
+        assert_eq!(result.false_hard_interrupt_count, 0);
+        assert_eq!(result.false_blocking_severity_count, 0);
+        assert_eq!(result.forbidden_claimable_output_count, 0);
+        assert_eq!(result.stale_evidence_reused_as_fresh_count, 0);
+        assert_eq!(result.test_mock_production_leakage_count, 0);
+        assert_eq!(result.route_proof_overclaim_count, 0);
+        assert_eq!(result.bridge_proof_overclaim_count, 0);
+        assert_eq!(result.text_evidence_graph_proof_count, 0);
+        assert_eq!(
+            result.candidate_vector_source_navigation_graph_proof_count,
+            0
+        );
+    }
+
+    #[test]
+    fn orchestrator_classifies_failures() {
+        let mut options = default_mvp3_9_release_final_gate_orchestrator_options();
+        options.run_root = std::env::temp_dir().join(format!(
+            "codegraph-mvp3-release-final-empty-test-{}",
+            unique_run_suffix()
+        ));
+        options.fixture_ids = vec!["missing_release_final_fixture".to_string()];
+        let result = run_mvp3_gate(options).expect("missing fixture emits structured failure");
+        assert_eq!(result.status, "failed");
+        assert!(!result.ready_to_move_on);
+        assert!(result
+            .failures
+            .iter()
+            .any(|failure| failure.taxonomy == "gate_dependency_missing"));
+        assert!(MVP3_9_FAILURE_TAXONOMY.contains(&"gate_dependency_missing"));
+        assert!(MVP3_9_FAILURE_TAXONOMY.contains(&"fixture_runner_failure"));
+    }
+
+    #[test]
+    fn orchestrator_validates_json_schemas() {
+        let result = run_release_final_gate_orchestrator_fast();
+        let value = serde_json::to_value(&result).expect("serialize release final gate");
+        validate_mvp3_gate_result_value(&value).expect("valid release final gate result");
+        let schema = mvp3_gate_result_schema_value();
+        assert_eq!(schema.get("type").and_then(Value::as_str), Some("object"));
+        assert!(schema
+            .get("required")
+            .and_then(Value::as_array)
+            .expect("required fields")
+            .iter()
+            .any(|field| field.as_str() == Some("gate_id")));
+        let taxonomy = mvp3_gate_failure_taxonomy_value();
+        assert!(taxonomy
+            .get("failure_taxonomy")
+            .and_then(Value::as_array)
+            .expect("taxonomy array")
+            .iter()
+            .any(|field| field.as_str() == Some("fixture_runner_failure")));
+    }
+
+    #[test]
+    fn orchestrator_records_release_binary() {
+        let result = run_release_final_gate_orchestrator_fast();
+        assert!(result.release_binary.contains("codegraph-mcp"));
+        assert!(result
+            .release_binary_tests
+            .iter()
+            .any(|entry| entry.ends_with(":true") || entry.ends_with(":false")));
+    }
+
+    #[test]
+    fn orchestrator_records_no_dot_codegraph() {
+        let result = run_release_final_gate_orchestrator_fast();
+        assert!(!result.normal_dot_codegraph_mutated);
+        assert!(!result.observed_invariants.normal_dot_codegraph_mutated);
+    }
+
+    #[test]
+    fn orchestrator_public_claim_false() {
+        let result = run_release_final_gate_orchestrator_fast();
+        assert!(!result.public_claim);
+        assert!(!result.real_agent_patch_quality_claim);
+        assert!(result.claim_boundaries_preserved);
+    }
+
+    #[test]
+    fn orchestrator_mvp4_not_started() {
+        let result = run_release_final_gate_orchestrator_fast();
+        assert!(!result.mvp4_started);
+        assert!(result.mvp4_future_only);
+    }
+
+    #[test]
+    fn mvp3_9_release_final_gate_orchestrator_product_surface_smoke_writes_artifacts_when_requested(
+    ) {
+        let Ok(output_dir) = std::env::var("CODEGRAPH_MVP3_9_RELEASE_FINAL_OUTPUT_DIR") else {
+            return;
+        };
+        let output_dir = PathBuf::from(output_dir);
+        let output_dir = if output_dir.is_absolute() {
+            output_dir
+        } else {
+            workspace_root().join(output_dir)
+        };
+        let mut options = default_mvp3_9_release_final_gate_orchestrator_options();
+        options.mode = Mvp3ValidationFixtureRunnerMode::ProductSurfaceSmoke;
+        options.fixture_ids = MVP3_9_RELEASE_FINAL_GATE_ORCHESTRATOR_FIXTURE_IDS
+            .iter()
+            .copied()
+            .filter(|fixture_id| *fixture_id != "blocking_synthetic_exact_sample")
+            .filter(|fixture_id| *fixture_id != "mvp3_8_derived_missing_provenance_integrity")
+            .filter(|fixture_id| *fixture_id != "mvp3_8_missing_source_span_integrity")
+            .filter(|fixture_id| *fixture_id != "mvp3_8_unsafe_db_recovery")
+            .map(str::to_string)
+            .collect();
+        options.run_root = output_dir
+            .join("logs")
+            .join("r")
+            .join(format!("rf_{}", unique_run_suffix()));
+        options.runner_command =
+            "cargo test -p codegraph-bench mvp3_9_release_final_gate_orchestrator_product_surface_smoke_writes_artifacts_when_requested --lib"
+                .to_string();
+        let result = run_mvp3_gate(options).expect("release final product-surface smoke");
+        let value = serde_json::to_value(&result).expect("serialize release final result");
+        validate_mvp3_gate_result_value(&value).expect("valid release final result");
+        write_json(&output_dir.join("gate_results.json"), &result)
+            .expect("write release final gate result");
+        write_text(
+            &output_dir.join("gate_summary.md"),
+            &render_mvp3_gate_result_markdown(&result),
+        )
+        .expect("write release final gate summary");
+        write_json(
+            &output_dir.join("gate_results_by_subgate.json"),
+            &json!({
+                "orchestrator_gate_id": MVP3_9_RELEASE_FINAL_GATE_ORCHESTRATOR_ID,
+                "subgate_ids": MVP3_9_RELEASE_FINAL_SUBGATE_IDS,
+                "status": result.status,
+                "ready_to_move_on": result.ready_to_move_on,
+                "input_fixture_count": result.input_fixtures.len(),
+                "claimability_violations": result.claimability_violations,
+                "unsupported_claim_violations": result.unsupported_claim_violations,
+                "graph_proof_overclaim_count": result.graph_proof_overclaim_count,
+                "false_hard_interrupt_count": result.false_hard_interrupt_count,
+                "false_blocking_severity_count": result.false_blocking_severity_count,
+                "normal_dot_codegraph_mutated": result.normal_dot_codegraph_mutated,
+                "public_claim": false,
+                "real_agent_patch_quality_claim": false,
+                "mvp4_not_started": true
+            }),
+        )
+        .expect("write release final by-subgate result");
         assert_eq!(result.status, "complete");
         assert!(!result.normal_dot_codegraph_mutated);
     }
@@ -5157,6 +6611,51 @@ mod tests {
             unique_run_suffix()
         ));
         run_mvp3_gate(options).expect("hot-path gate")
+    }
+
+    fn run_graph_delta_gate_fast() -> Mvp3GateResult {
+        let mut options = default_mvp3_9_graph_delta_gate_options();
+        options.run_root = std::env::temp_dir().join(format!(
+            "codegraph-mvp3-graph-delta-gate-fast-test-{}",
+            unique_run_suffix()
+        ));
+        run_mvp3_gate(options).expect("graph-delta gate")
+    }
+
+    fn run_hallucination_interrupt_gate_fast() -> Mvp3GateResult {
+        let mut options = default_mvp3_9_hallucination_interrupt_gate_options();
+        options.run_root = std::env::temp_dir().join(format!(
+            "codegraph-mvp3-hallucination-gate-fast-test-{}",
+            unique_run_suffix()
+        ));
+        run_mvp3_gate(options).expect("hallucination gate")
+    }
+
+    fn run_route_bridge_inert_contract_gate_fast() -> Mvp3GateResult {
+        let mut options = default_mvp3_9_route_bridge_inert_contract_gate_options();
+        options.run_root = std::env::temp_dir().join(format!(
+            "codegraph-mvp3-route-bridge-gate-fast-test-{}",
+            unique_run_suffix()
+        ));
+        run_mvp3_gate(options).expect("route/bridge gate")
+    }
+
+    fn run_cross_phase_regression_gate_fast() -> Mvp3GateResult {
+        let mut options = default_mvp3_9_cross_phase_regression_gate_options();
+        options.run_root = std::env::temp_dir().join(format!(
+            "codegraph-mvp3-cross-phase-gate-fast-test-{}",
+            unique_run_suffix()
+        ));
+        run_mvp3_gate(options).expect("cross-phase gate")
+    }
+
+    fn run_release_final_gate_orchestrator_fast() -> Mvp3GateResult {
+        let mut options = default_mvp3_9_release_final_gate_orchestrator_options();
+        options.run_root = std::env::temp_dir().join(format!(
+            "codegraph-mvp3-release-final-gate-fast-test-{}",
+            unique_run_suffix()
+        ));
+        run_mvp3_gate(options).expect("release final gate orchestrator")
     }
 
     fn run_sample_harness() -> Mvp3ValidationFixtureRunReport {
