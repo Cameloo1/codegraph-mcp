@@ -4232,6 +4232,7 @@ fn validation_packet_compact_graph_delta_json(graph_delta: &Value) -> Value {
         "no_silent_full_repo_fallback",
         "source_spans_and_provenance_preserved",
         "claim_boundaries_preserved",
+        "full_graph_dump_default",
         "public_claim",
     ] {
         if let Some(field) = object.get(key) {
