@@ -105,6 +105,7 @@ mod query;
 mod routing;
 mod serve_ui;
 mod storage_budget;
+mod validation_journal;
 
 pub(crate) use agent_use::*;
 pub(crate) use benchmark::*;
@@ -117,6 +118,7 @@ pub(crate) use graph_json::*;
 pub(crate) use query::*;
 pub(crate) use routing::*;
 pub(crate) use serve_ui::*;
+pub(crate) use validation_journal::*;
 
 pub const BIN_NAME: &str = "codegraph-mcp";
 pub const PHASE: &str = "30";

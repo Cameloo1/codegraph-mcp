@@ -3754,6 +3754,361 @@ fn agent_use_index_and_status_use_external_profile_db() {
 }
 
 #[test]
+fn agent_use_validate_edit_panic_failpoint_emits_structured_error_packet_and_stage_file() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+    write_cli_fixture_file(
+        &repo,
+        "src/service.js",
+        "export function stagePanicTarget() {\n  return \"before\";\n}\n",
+    );
+    let profile =
+        super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    write_cli_fixture_file(
+        &repo,
+        "src/service.js",
+        "export function stagePanicTarget() {\n  return \"after\";\n}\n",
+    );
+
+    let packet = {
+        let _failpoint = BundleFailpointEnvGuard::set("agent_use_validation_panic_at_delta");
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                "validate-edit".to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--changed".to_string(),
+                "src/service.js".to_string(),
+                "--agent-json".to_string(),
+            ])
+        })
+        .expect("a post-commit panic must surface as a structured packet, not an Err/abort")
+    };
+
+    assert_eq!(packet["status"].as_str(), Some("error"), "{packet}");
+    assert_eq!(packet["validation_pipeline_error"].as_bool(), Some(true));
+    assert_eq!(packet["validation_state"].as_str(), Some("incomplete"));
+    assert_eq!(packet["failed_stage"].as_str(), Some("delta"));
+    assert!(
+        packet["panic_message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("agent_use_validation_panic_at_delta"),
+        "{packet}"
+    );
+    assert_eq!(packet["_cli_exit_code"].as_i64(), Some(1));
+    assert_eq!(packet["command"].as_str(), Some("validate-edit"));
+    assert_eq!(packet["graph_claimability_unchanged"].as_bool(), Some(true));
+    assert_eq!(packet["must_fix_before_continuing"].as_bool(), Some(false));
+    assert!(
+        packet["recovery_commands"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or(0)
+            > 0,
+        "{packet}"
+    );
+
+    let stage_path = super::agent_use_validation_stage_path(&profile);
+    assert!(
+        stage_path.exists(),
+        "stage sidecar must survive a caught panic for post-mortem"
+    );
+    let stage: Value =
+        serde_json::from_str(&fs::read_to_string(&stage_path).expect("read stage sidecar"))
+            .expect("stage sidecar json");
+    let last_stage = stage["stages"]
+        .as_array()
+        .and_then(|stages| stages.last())
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(last_stage["name"].as_str(), Some("delta"), "{stage}");
+
+    let clean = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "validate-edit".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--changed".to_string(),
+            "src/service.js".to_string(),
+            "--agent-json".to_string(),
+        ])
+    })
+    .expect("clean validate-edit after the failpoint is removed");
+    assert_ne!(clean["status"].as_str(), Some("error"), "{clean}");
+    assert!(
+        !stage_path.exists(),
+        "a clean run must remove the stage sidecar again"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+fn validate_edit_args_for(repo: &Path) -> Vec<String> {
+    vec![
+        "validate-edit".to_string(),
+        "--repo".to_string(),
+        path_string(repo),
+        "--changed".to_string(),
+        "src/service.js".to_string(),
+        "--agent-json".to_string(),
+        "--fail-on-blocking".to_string(),
+    ]
+}
+
+#[test]
+fn agent_use_validate_edit_crash_after_commit_replays_blocking_finding() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_agent_use_hard_interrupt_fixture(&repo, 1);
+    let profile =
+        super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    remove_agent_use_hard_interrupt_targets(&repo);
+
+    // Run 1: the edit commits, then the validation pipeline dies post-commit
+    // (the exact dogfood poisoning window).
+    let crashed = {
+        let _failpoint =
+            BundleFailpointEnvGuard::set("agent_use_validation_panic_at_lifecycle_reads");
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&validate_edit_args_for(&repo))
+        })
+        .expect("post-commit panic must yield a structured packet")
+    };
+    assert_eq!(crashed["status"].as_str(), Some("error"), "{crashed}");
+    assert_eq!(crashed["validation_state"].as_str(), Some("incomplete"));
+
+    // The journal survives in a failed state and status reports incomplete.
+    let journal_path = super::agent_use_validation_journal_path(&profile);
+    assert!(journal_path.exists(), "journal must survive the crash");
+    let journal: Value =
+        serde_json::from_str(&fs::read_to_string(&journal_path).expect("read journal"))
+            .expect("journal json");
+    assert!(
+        journal["state"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("failed:"),
+        "{journal}"
+    );
+    let status = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "status".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("status");
+    assert_eq!(
+        status["validation_state"]["state"].as_str(),
+        Some("incomplete"),
+        "{status}"
+    );
+
+    // Run 2: identical command, no failpoint. The pending validation is
+    // replayed from the journal and the lost blocking finding is recovered.
+    let replayed = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&validate_edit_args_for(&repo))
+    })
+    .expect("validate-edit after crash");
+    assert_eq!(
+        replayed["journal_replay"]["replayed"].as_bool(),
+        Some(true),
+        "{replayed}"
+    );
+    assert!(
+        replayed["journal_replay"]["blocking_error_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 1,
+        "{replayed}"
+    );
+    assert_eq!(
+        replayed["status"].as_str(),
+        Some("blocking_graph_error"),
+        "{replayed}"
+    );
+    assert_eq!(replayed["must_fix_before_continuing"].as_bool(), Some(true));
+    assert_eq!(replayed["_cli_exit_code"].as_i64(), Some(2));
+    assert!(
+        !journal_path.exists(),
+        "journal must be cleared after a completed replay + run"
+    );
+    assert_eq!(
+        replayed["validation_state"]["state"].as_str(),
+        Some("blocked"),
+        "{replayed}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn agent_use_validate_edit_blocking_is_sticky_until_source_fixed() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_agent_use_hard_interrupt_fixture(&repo, 1);
+    let profile =
+        super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    remove_agent_use_hard_interrupt_targets(&repo);
+
+    // Run 1: the break is detected and blocks.
+    let first = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&validate_edit_args_for(&repo))
+    })
+    .expect("first validate-edit");
+    assert_eq!(
+        first["status"].as_str(),
+        Some("blocking_graph_error"),
+        "{first}"
+    );
+    assert_eq!(first["_cli_exit_code"].as_i64(), Some(2));
+
+    // Run 2: identical command on the UNCHANGED broken source. Before
+    // MVP3.9.5c this returned ok (the broken graph became the baseline);
+    // the persisted blocker must now be re-verified and re-emitted.
+    let second = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&validate_edit_args_for(&repo))
+    })
+    .expect("second validate-edit");
+    assert_eq!(
+        second["status"].as_str(),
+        Some("blocking_graph_error"),
+        "sticky blocker must keep blocking on unchanged broken source: {second}"
+    );
+    assert_eq!(second["must_fix_before_continuing"].as_bool(), Some(true));
+    assert_eq!(second["_cli_exit_code"].as_i64(), Some(2));
+    assert_eq!(
+        second["validation_state"]["state"].as_str(),
+        Some("blocked")
+    );
+    let reemitted = serde_json::to_string(&second["validation_packet"]).unwrap_or_default();
+    assert!(
+        reemitted.contains("persisted_open_blocker"),
+        "re-emitted finding must be labeled with its persisted origin: {second}"
+    );
+
+    // Run 3: fix the source (restore the deleted target) -> blocker is
+    // re-verified against the current graph, resolved, and cleared.
+    write_agent_use_hard_interrupt_fixture(&repo, 1);
+    let third = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&validate_edit_args_for(&repo))
+    })
+    .expect("third validate-edit");
+    assert_ne!(
+        third["status"].as_str(),
+        Some("blocking_graph_error"),
+        "{third}"
+    );
+    assert!(third.get("_cli_exit_code").is_none(), "{third}");
+    assert_eq!(third["validation_state"]["state"].as_str(), Some("ok"));
+    let record_path = super::agent_use_validation_state_path(&profile);
+    let record: Value =
+        serde_json::from_str(&fs::read_to_string(&record_path).expect("read validation state"))
+            .expect("validation state json");
+    assert!(
+        record["resolved_blockers_total"].as_u64().unwrap_or(0) >= 1,
+        "{record}"
+    );
+    assert_eq!(record["open_blockers"].as_array().map(Vec::len), Some(0));
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn agent_use_index_clears_validation_journal_and_rechecks_blockers() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_agent_use_hard_interrupt_fixture(&repo, 1);
+    let profile =
+        super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    remove_agent_use_hard_interrupt_targets(&repo);
+    let crashed = {
+        let _failpoint =
+            BundleFailpointEnvGuard::set("agent_use_validation_panic_at_lifecycle_reads");
+        with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&validate_edit_args_for(&repo))
+        })
+        .expect("structured packet")
+    };
+    assert_eq!(crashed["status"].as_str(), Some("error"));
+    let journal_path = super::agent_use_validation_journal_path(&profile);
+    assert!(journal_path.exists());
+
+    let reindex = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("reindex");
+    assert_eq!(
+        reindex["validation_journal_cleared"].as_bool(),
+        Some(true),
+        "{reindex}"
+    );
+    assert!(
+        !journal_path.exists(),
+        "a full reindex supersedes the pending validation journal"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
 fn agent_use_watch_once_updates_external_profile_db_without_dot_codegraph() {
     let _guard = lock_env_test();
     let data_root = temp_repo();
@@ -15170,6 +15525,11 @@ fn routing_packet_implementation_trace_keeps_source_navigation_and_inspection_re
         .as_array()
         .expect("source nav")
         .is_empty());
+    assert!(routing["source_navigation_evidence"]
+        .as_array()
+        .expect("source nav")
+        .iter()
+        .all(|evidence| evidence["graph_proof"].as_bool() == Some(false)));
     assert!(!routing["artifact_inspection_requirements"]
         .as_array()
         .expect("artifact requirements")
@@ -15190,17 +15550,17 @@ fn routing_packet_implementation_trace_keeps_source_navigation_and_inspection_re
         .as_array()
         .expect("db requirements")
         .is_empty());
-    assert!(routing["available_layers"]
+    assert_eq!(
+        routing["budget_status"]["source_navigation_evidence_survives_for_implementation_trace"]
+            .as_bool(),
+        Some(true)
+    );
+    assert!(routing["formulas_or_accounting_notes"]
         .as_array()
-        .expect("available layers")
+        .expect("formula notes")
         .iter()
-        .any(|layer| layer.as_str() == Some("graph_db")));
-    assert_eq!(routing["graph_proof_available"].as_bool(), Some(true));
-    assert!(routing["risks"]
-        .as_array()
-        .expect("risks")
-        .iter()
-        .any(|risk| risk["risk_id"].as_str() == Some("vector_sidecar_not_complete_path_index")));
+        .any(|note| note.get("actual_index_file_bytes").is_some()
+            || note.get("estimated_f32_payload_bytes").is_some()));
     assert_eq!(
         routing["deterministic_summary"]["proof"].as_str(),
         Some("I found no verified graph proof path. This packet uses source text evidence only.")

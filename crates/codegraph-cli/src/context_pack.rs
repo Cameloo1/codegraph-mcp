@@ -7922,10 +7922,6 @@ pub(crate) fn enforce_context_agent_max_output_bytes(
             omitted.planning_packet += 1;
             continue;
         }
-        if remove_context_agent_field(response, "fallback_snippets") {
-            omitted.snippets += 1;
-            continue;
-        }
         // The minimal patch_assist stub (first_use_state / graph_proof) is the
         // patch-assist contract surface and is intentionally NOT fully removed
         // here: it is tiny and must survive. If the envelope is still over budget

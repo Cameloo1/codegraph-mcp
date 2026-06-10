@@ -36,8 +36,6 @@ pub(crate) fn enforce_agent_use_context_pack_max_output_bytes(
             "recommended_tests",
             "risks",
             "snippets",
-            "active_candidate_sources",
-            "staged_availability",
             "agent_use_profile_root",
             "candidate_spool_query_index_path",
             "candidate_spool_query_index_bytes",
@@ -135,6 +133,7 @@ pub(crate) fn compact_agent_use_agent_json_envelope(
             }
         }
         agent_use_compact_publish_state_field(value, &mut truncated_sections, &mut omitted_count);
+        agent_use_compact_lock_state_field(value, &mut truncated_sections, &mut omitted_count);
         agent_use_compact_read_path_metrics_field(
             value,
             &mut truncated_sections,
@@ -142,7 +141,6 @@ pub(crate) fn compact_agent_use_agent_json_envelope(
         );
         agent_use_compact_query_results_field(value, &mut truncated_sections, &mut omitted_count);
         for key in [
-            "agent_use_command",
             "agent_use_profile_name",
             "output_mode",
             "repo_source",
@@ -151,6 +149,9 @@ pub(crate) fn compact_agent_use_agent_json_envelope(
             "agent_use_profile",
             "db_health",
             "sqlite_sidecars",
+            "graph_verification",
+            "limits",
+            "omitted",
             "agent_use_profile_root",
             "normal_dot_codegraph_path",
             "repo_root",
@@ -372,15 +373,23 @@ pub(crate) fn agent_use_dedupe_recovery_commands(
 
 pub(crate) fn agent_use_compact_recovery_fields(
     value: &mut Value,
-    _profile: &AgentUseProfile,
+    profile: &AgentUseProfile,
     truncated_sections: &mut Vec<String>,
     omitted_count: &mut u64,
 ) {
+    let preserve_array_commands = value.get("command").and_then(Value::as_str) == Some("watch");
     if let Some(object) = value.as_object_mut() {
-        object.insert(
-            "recovery_commands".to_string(),
-            compact_agent_use_recovery_commands_json(),
-        );
+        if preserve_array_commands {
+            object.insert(
+                "recovery_commands".to_string(),
+                json!(profile.recovery_commands.clone()),
+            );
+        } else {
+            object.insert(
+                "recovery_commands".to_string(),
+                compact_agent_use_recovery_commands_json(),
+            );
+        }
         object.insert(
             "recovery".to_string(),
             json!({
@@ -588,6 +597,7 @@ pub(crate) fn compact_agent_use_layer_readiness_summary(layer_readiness: Option<
                 "candidate_only": pick("candidate_only"),
                 "diagnostic_only": pick("diagnostic_only"),
                 "runtime_dependency": pick("runtime_dependency"),
+                "query_index_status": pick("query_index_status"),
             }),
         );
     }
@@ -627,6 +637,7 @@ pub(crate) fn agent_use_compact_rtds_freshness_field(
         "candidate_only_available": rtds.get("candidate_only_available").cloned().unwrap_or(Value::Null),
         "graph_proof_available": rtds.get("graph_proof_available").cloned().unwrap_or(Value::Null),
         "candidate_context_available": rtds.get("candidate_context_available").cloned().unwrap_or(Value::Null),
+        "candidate_context_policy": rtds.get("candidate_context_policy").cloned().unwrap_or(Value::Null),
         "startup_auto_index": rtds.get("startup_auto_index").cloned().unwrap_or(Value::Null),
         "dot_codegraph_fallback": rtds.get("dot_codegraph_fallback").cloned().unwrap_or(Value::Null),
         "last_delta_update_summary": rtds.get("last_delta_update_summary").map(compact_agent_use_last_delta_update_summary).unwrap_or(Value::Null),
@@ -669,6 +680,44 @@ pub(crate) fn compact_agent_use_publish_state_summary(publish_state: &Value) -> 
         "visible_db_mutation_claim": publish_state.get("visible_db_mutation_claim").cloned().unwrap_or(Value::Null),
         "temp_db_claimability": publish_state.get("temp_db_claimability").cloned().unwrap_or(Value::Null),
         "updated_unix_ms": publish_state.get("updated_unix_ms").cloned().unwrap_or(Value::Null),
+        "agent_json_compacted": true,
+    })
+}
+
+pub(crate) fn agent_use_compact_lock_state_field(
+    value: &mut Value,
+    truncated_sections: &mut Vec<String>,
+    omitted_count: &mut u64,
+) {
+    let Some(lock_state) = value.get("lock_state").cloned() else {
+        return;
+    };
+    let compact = compact_agent_use_lock_state_summary(&lock_state);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("lock_state".to_string(), compact);
+    }
+    truncated_sections.push("lock_state".to_string());
+    *omitted_count = omitted_count.saturating_add(1);
+}
+
+pub(crate) fn compact_agent_use_lock_state_summary(lock_state: &Value) -> Value {
+    json!({
+        "scope": lock_state.get("scope").cloned().unwrap_or(Value::Null),
+        "profile_name": lock_state.get("profile_name").cloned().unwrap_or(Value::Null),
+        "writer_queue_serialized": lock_state.get("writer_queue_serialized").cloned().unwrap_or(Value::Null),
+        "max_concurrent_writers": lock_state.get("max_concurrent_writers").cloned().unwrap_or(Value::Null),
+        "active_update": lock_state.get("active_update").cloned().unwrap_or(Value::Null),
+        "publish_status": lock_state.get("publish_status").cloned().unwrap_or(Value::Null),
+        "db_locked": lock_state.get("db_locked").cloned().unwrap_or(Value::Null),
+        "retryable": lock_state.get("retryable").cloned().unwrap_or(Value::Null),
+        "retryable_labels": lock_state.get("retryable_labels").cloned().unwrap_or_else(|| json!([])),
+        "blocked_labels": lock_state.get("blocked_labels").cloned().unwrap_or_else(|| json!([])),
+        "lock_retry_count": lock_state.get("lock_retry_count").cloned().unwrap_or(Value::Null),
+        "global_lock_scope": lock_state.get("global_lock_scope").cloned().unwrap_or(Value::Null),
+        "unrelated_repo_blocking": lock_state.get("unrelated_repo_blocking").cloned().unwrap_or(Value::Null),
+        "old_db_preserved": lock_state.get("old_db_preserved").cloned().unwrap_or(Value::Null),
+        "temp_db_claimable": lock_state.get("temp_db_claimable").cloned().unwrap_or(Value::Null),
+        "no_dot_codegraph_fallback": lock_state.get("no_dot_codegraph_fallback").cloned().unwrap_or(Value::Null),
         "agent_json_compacted": true,
     })
 }
@@ -784,6 +833,13 @@ pub(crate) fn agent_use_enforce_total_output_budget(
             "follow_up_queries",
             "recommended_tests",
             "risks",
+            "artifact_hygiene",
+            "dirty_evidence_summary",
+            "refreshed_evidence",
+            "stale_evidence",
+            "unavailable_evidence",
+            "invalidated_evidence",
+            "stale_non_proof_reasons",
         ] {
             if agent_use_remove_field(value, key) {
                 truncated_sections.push(key.to_string());
@@ -810,43 +866,31 @@ pub(crate) fn agent_use_enforce_hard_agent_json_budget(
         // compact context-pack/status output, so they are the first to go under
         // hard budget pressure (e.g. an explicit small --max-output-bytes), before
         // contract sections like patch_assist_packet.
+        "refreshed_evidence",
+        "stale_evidence",
+        "unavailable_evidence",
+        "invalidated_evidence",
+        "dirty_evidence_summary",
         "candidate_spool_trace",
-        "update_queue_state",
-        "lock_state",
         "artifact_hygiene",
-        "staged_availability",
-        "rtds_freshness",
-        "read_path_metrics",
-        "db_lifecycle_read",
         "graph_verification",
         "limits",
         "omitted",
         "candidate_cap",
         "candidate_count",
-        "candidate_only_available",
         "candidate_payload_compacted",
-        "candidate_spool_query_index_status",
-        "candidate_spool_status",
         "candidates",
-        "delta_state",
-        "dirty_state",
         "evidence_status",
-        "graph_db_status",
-        "graph_freshness",
-        "graph_proof_available",
         "mode",
         "normal_dot_codegraph_created",
         "omitted_by_budget",
         "omitted_by_dedup",
         "proof_failure_reason",
         "proof_path_available",
-        "proof_path_count",
         "publishing",
         "staged_claimability",
         "task",
         "truncated_sections",
-        "vector_audit_status",
-        "vector_runtime_status",
         // candidate_spool is a verbose lifecycle blob; the compact
         // candidate_spool_status scalar already conveys readiness, so drop the
         // blob before sacrificing the patch_assist contract section.

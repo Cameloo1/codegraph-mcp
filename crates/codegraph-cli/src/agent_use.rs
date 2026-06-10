@@ -1279,6 +1279,10 @@ pub(crate) fn run_agent_use_status_command(args: &[String]) -> Result<Value, Str
             "normal_dot_codegraph_mutated".to_string(),
             json!(normal_dot_codegraph_existed_before != normal_dot_codegraph.exists()),
         );
+        object.insert(
+            "validation_state".to_string(),
+            agent_use_validation_state_block_compact(&profile),
+        );
     }
     merge_json_object(&mut value, staged_fields);
     add_agent_use_rtds_freshness_fields(&mut value, &profile, &preflight, &staged_availability);
@@ -1389,6 +1393,19 @@ pub(crate) fn run_agent_use_index_command(args: &[String]) -> Result<Value, Stri
             return Err(error);
         }
     };
+    // MVP3.9.5b/c: a full/incremental reindex supersedes any pending
+    // validation journal, and persisted open blockers are re-checked once
+    // against the freshly indexed store (kept while still contradicted).
+    let had_pending_journal = matches!(load_validation_journal(&profile), Ok(Some(_)) | Err(_));
+    clear_validation_journal(&profile);
+    let open_blockers_recheck = agent_use_recheck_open_blockers_after_index(&profile);
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "validation_journal_cleared".to_string(),
+            json!(had_pending_journal),
+        );
+        object.insert("open_blockers_recheck".to_string(), open_blockers_recheck);
+    }
     let post_preflight = inspect_read_db_lifecycle_preflight(
         &profile.repo_root,
         &profile.db_path,
@@ -1671,6 +1688,24 @@ pub(crate) fn run_agent_use_validate_edit_command(args: &[String]) -> Result<Val
         options.detail_mode,
         normal_dot_codegraph_existed_before,
     )?;
+    if source_update
+        .get("validation_pipeline_error")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        // Pass the structured pipeline-error packet through unchanged (it
+        // carries its own nonzero _cli_exit_code); wrapping it would mislabel
+        // a post-commit panic as preflight_blocked.
+        let mut packet = source_update;
+        if let Some(object) = packet.as_object_mut() {
+            object.insert("command".to_string(), json!("validate-edit"));
+            object.insert(
+                "agent_use_command".to_string(),
+                json!("agent-use validate-edit"),
+            );
+        }
+        return Ok(packet);
+    }
     let mut packet = agent_use_validate_edit_packet_json(&profile, &options, source_update);
     let max_output_bytes = options
         .max_output_bytes
@@ -1770,10 +1805,20 @@ pub(crate) fn agent_use_validate_edit_packet_json(
     } else {
         Value::Null
     };
+    let validation_state = source_update
+        .get("validation_state")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let journal_replay = source_update
+        .get("journal_replay")
+        .cloned()
+        .unwrap_or(Value::Null);
     let mut value = json!({
         "schema_version": 1,
         "schema_name": "validate_edit_agent_json",
         "packet_kind": "validate_edit_packet",
+        "validation_state": validation_state,
+        "journal_replay": journal_replay,
         "command": "validate-edit",
         "command_namespace": "agent-use",
         "agent_use_command": "agent-use validate-edit",
@@ -2520,9 +2565,12 @@ pub(crate) fn run_agent_use_watch_once_delta(
     normal_dot_codegraph_existed_before: bool,
 ) -> Result<Value, String> {
     let total_update_plus_delta_start = Instant::now();
+    let mut validation_stage_tracker =
+        ValidationStageTracker::start(profile, "agent-use.watch.once");
     let normal_dot_codegraph = profile.repo_root.join(".codegraph");
     let requested_changed_paths =
         agent_use_report_changed_paths(&profile.repo_root, &changed_paths);
+    validation_stage_tracker.mark("preflight");
     let preflight_start = Instant::now();
     let preflight = inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
         repo_root: profile.repo_root.clone(),
@@ -2557,12 +2605,19 @@ pub(crate) fn run_agent_use_watch_once_delta(
     }
     let update_changed_paths = path_preflight.accepted_pathbufs(&profile.repo_root);
 
+    // MVP3.9.5b: a journal surviving from a previous run means a committed
+    // update whose validation never finished — replay it FIRST so its
+    // findings are recovered (persisted as open blockers and re-emitted by
+    // this run's validation packet after fresh re-verification).
+    let journal_replay_summary = agent_use_replay_pending_validation(profile);
+
     let snapshot_options = NormalizedFactSnapshotOptions {
         include_text_evidence: true,
         include_path_evidence: true,
         include_sidecar_freshness: true,
         ..NormalizedFactSnapshotOptions::default()
     };
+    validation_stage_tracker.mark("closure");
     let dependency_closure_start = Instant::now();
     let pre_update_dependency_closure = rtds_dependency_closure_for_changed_paths_to_db(
         &profile.repo_root,
@@ -2582,6 +2637,7 @@ pub(crate) fn run_agent_use_watch_once_delta(
         .filter(|path| !pre_update_requested_set.contains(*path))
         .map(PathBuf::from)
         .collect::<Vec<_>>();
+    validation_stage_tracker.mark("old_snapshot");
     let old_snapshot_start = Instant::now();
     let old_graph_delta_snapshot = snapshot_normalized_facts_for_paths_to_db(
         &profile.repo_root,
@@ -2592,7 +2648,45 @@ pub(crate) fn run_agent_use_watch_once_delta(
     )
     .map_err(|error| format!("old normalized graph delta snapshot failed: {error}"))?;
     let snapshot_old_ms = old_snapshot_start.elapsed().as_millis();
+    // Phase B (MVP3.9.5b): journal the pre-commit facts before anything is
+    // published, so a post-commit death leaves a replayable record. Refusing
+    // to proceed on journal-write failure is deliberate: committing without
+    // the journal would silently reopen the atomicity hole.
+    let journal_started_unix_ms = unix_time_ms();
+    let mut validation_journal = ValidationJournal {
+        journal_version: VALIDATION_JOURNAL_VERSION,
+        run_id: format!("{journal_started_unix_ms}-{}", std::process::id()),
+        surface: "agent-use.watch.once".to_string(),
+        started_unix_ms: journal_started_unix_ms as u128,
+        state: VALIDATION_JOURNAL_STATE_UPDATE_PENDING.to_string(),
+        journal_scope: "changed_and_closure".to_string(),
+        changed_files: old_graph_delta_snapshot.changed_files.clone(),
+        closure_files: old_graph_delta_snapshot.closure_files.clone(),
+        snapshot_options: snapshot_options.clone(),
+        old_facts: old_graph_delta_snapshot.clone(),
+    };
+    let journal_serialized_len = serde_json::to_vec(&validation_journal)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX);
+    if journal_serialized_len > VALIDATION_JOURNAL_MAX_BYTES {
+        let changed_only_snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &profile.repo_root,
+            &update_changed_paths,
+            &[],
+            &profile.db_path,
+            snapshot_options.clone(),
+        )
+        .map_err(|error| format!("bounded journal snapshot failed: {error}"))?;
+        validation_journal.journal_scope = "changed_files_only".to_string();
+        validation_journal.closure_files = Vec::new();
+        validation_journal.old_facts = changed_only_snapshot;
+    }
+    write_validation_journal(profile, &validation_journal).map_err(|error| {
+        format!("validation journal write failed; refusing to commit without an atomicity journal: {error}")
+    })?;
+    validation_stage_tracker.mark("publish");
     write_agent_use_publish_state(profile, "updating", None)?;
+    validation_stage_tracker.mark("commit");
     let hot_path_update_start = Instant::now();
     let summary = match update_changed_files_to_db(
         &profile.repo_root,
@@ -2613,8 +2707,15 @@ pub(crate) fn run_agent_use_watch_once_delta(
                         "{message}; publish_state_update_failed: {state_error}"
                     ));
                 }
+                // Interrupted commit: publish-state recovery owns the DB; a
+                // pre-commit journal has nothing to replay.
+                clear_validation_journal(profile);
                 return Err(message);
             }
+            // Phase D: the DB is now consistent with source; what is pending
+            // is VALIDATION. Transition before clearing the publish marker so
+            // no instant exists where neither sidecar covers the run.
+            transition_validation_journal_state(profile, VALIDATION_JOURNAL_STATE_VALIDATING);
             clear_agent_use_publish_state(profile)?;
             summary
         }
@@ -2627,247 +2728,260 @@ pub(crate) fn run_agent_use_watch_once_delta(
                     "{message}; publish_state_update_failed: {state_error}"
                 ));
             }
+            clear_validation_journal(profile);
             return Err(message);
         }
     };
     let hot_path_update_ms = hot_path_update_start.elapsed().as_millis();
-    let mut value = serde_json::to_value(&summary).map_err(|error| error.to_string())?;
+    // The update is committed and the publish-state marker is cleared: from
+    // here on a panic must surface as a structured packet instead of leaving
+    // the published baseline unexplained (MVP3.9.5 no-silent-failure rule).
+    let post_commit_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || -> Result<Value, String> {
+            let mut value = serde_json::to_value(&summary).map_err(|error| error.to_string())?;
 
-    let lifecycle = watch_update_lifecycle_metadata(
-        &profile.repo_root,
-        &profile.db_path,
-        "agent-use.watch.once",
-        true,
-        Some(profile.scope_policy.clone()),
-    )
-    .map_err(|error| error.to_string())?;
-    let post_preflight = inspect_read_db_lifecycle_preflight(
-        &profile.repo_root,
-        &profile.db_path,
-        Some(profile.scope_policy.clone()),
-    )?;
-    let staged_availability = staged_availability_for_cli(
-        &profile.repo_root,
-        &profile.db_path,
-        Some(&post_preflight),
-        Some(&profile.candidate_spool_path),
-        Some(&profile.vector_runtime_path),
-        Some(&profile.vector_audit_path),
-        None,
-    );
-    let changed_paths_normalized = if summary.changed_files.is_empty() {
-        requested_changed_paths.clone()
-    } else {
-        summary.changed_files.clone()
-    };
-    let delta_requested_paths = if summary
-        .dependency_closure
-        .requested_changed_files
-        .is_empty()
-    {
-        changed_paths_normalized.clone()
-    } else {
-        summary.dependency_closure.requested_changed_files.clone()
-    };
-    let delta_requested_set = delta_requested_paths
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let delta_changed_paths = delta_requested_paths
-        .iter()
-        .map(PathBuf::from)
-        .collect::<Vec<_>>();
-    let delta_closure_paths = summary
-        .dependency_closure
-        .closure_files_updated
-        .iter()
-        .filter(|path| !delta_requested_set.contains(*path))
-        .map(PathBuf::from)
-        .collect::<Vec<_>>();
-    let new_snapshot_start = Instant::now();
-    let new_graph_delta_snapshot = snapshot_normalized_facts_for_paths_to_db(
-        &profile.repo_root,
-        &delta_changed_paths,
-        &delta_closure_paths,
-        &profile.db_path,
-        snapshot_options,
-    )
-    .map_err(|error| format!("new normalized graph delta snapshot failed: {error}"))?;
-    let snapshot_new_ms = new_snapshot_start.elapsed().as_millis();
-    let delta_compute_start = Instant::now();
-    let mut validation_entity_source_role_delta = compute_entity_source_role_delta(
-        &old_graph_delta_snapshot,
-        &new_graph_delta_snapshot,
-        EntitySourceRoleDeltaOptions {
-            max_items_per_category: usize::MAX,
-        },
-    );
-    validation_entity_source_role_delta
-        .apply_dependency_closure_summary(&summary.dependency_closure);
-    validation_entity_source_role_delta.timings.diff_closure_ms = pre_update_dependency_closure_ms;
-    let mut entity_source_role_delta = if detail_mode.preserves_full_details() {
-        validation_entity_source_role_delta.clone()
-    } else {
-        let mut compact_delta = compute_entity_source_role_delta(
-            &old_graph_delta_snapshot,
-            &new_graph_delta_snapshot,
-            EntitySourceRoleDeltaOptions {
-                max_items_per_category: AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT,
-            },
-        );
-        compact_delta.apply_dependency_closure_summary(&summary.dependency_closure);
-        compact_delta.timings = validation_entity_source_role_delta.timings.clone();
-        compact_delta
-    };
-    let delta_compute_ms = delta_compute_start.elapsed().as_millis();
-    entity_source_role_delta.timings.diff_closure_ms = pre_update_dependency_closure_ms;
-    let deleted_paths = agent_use_watch_deleted_paths(&summary);
-    annotate_agent_use_output(
-        &mut value,
-        profile,
-        "watch",
-        normal_dot_codegraph_existed_before,
-    );
-    add_agent_use_durability_labels(&mut value, profile, &post_preflight, None);
-    if let Some(object) = value.as_object_mut() {
-        let update_no_op_paths = agent_use_watch_no_op_paths(&summary);
-        let no_op_paths = path_preflight.merge_no_op_paths(&update_no_op_paths);
-        let status = agent_use_watch_status(&summary, &no_op_paths);
-        let delta_state = agent_use_watch_delta_state(&summary, &no_op_paths);
-        let graph_delta_packet_start = Instant::now();
-        let graph_delta_json = agent_use_graph_delta_json(&entity_source_role_delta);
-        let graph_delta_packet_serialize_ms = graph_delta_packet_start.elapsed().as_millis();
-        let graph_delta_packet_budget =
-            agent_use_graph_delta_packet_budget_json(&entity_source_role_delta);
-        let graph_delta_timing_json = agent_use_graph_delta_timing_json(
-            &entity_source_role_delta,
-            hot_path_update_ms,
-            snapshot_old_ms,
-            snapshot_new_ms,
-            pre_update_dependency_closure_ms,
-            graph_delta_packet_serialize_ms,
-            delta_compute_ms,
-            total_update_plus_delta_start.elapsed().as_millis(),
-        );
-        let validation_packet = agent_use_exact_calls_validation_packet(
-            profile,
-            &post_preflight,
-            &validation_entity_source_role_delta,
-            graph_delta_json.clone(),
-            changed_paths_normalized.clone(),
-        )?;
-        let validation_packet_json = if detail_mode.preserves_full_details() {
-            serde_json::to_value(&validation_packet).map_err(|error| error.to_string())?
-        } else {
-            validation_packet.compact_agent_json(AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT)
-        };
-        object.insert("command".to_string(), json!("watch"));
-        object.insert("subcommand".to_string(), json!("once"));
-        object.insert("watch_mode".to_string(), json!("once_changed"));
-        object.insert("status".to_string(), json!(status));
-        object.insert("agent_use_watch_available".to_string(), json!(true));
-        object.insert(
-            "agent_use_watch_status".to_string(),
-            json!("implemented_once_changed"),
-        );
-        object.insert(
-            "delta_sync_phase".to_string(),
-            json!("real_time_delta_sync"),
-        );
-        object.insert("delta_sync_state".to_string(), json!(delta_state));
-        object.insert("delta_state".to_string(), json!(delta_state));
-        object.insert(
-            "reason".to_string(),
-            json!(agent_use_watch_reason(&summary, &no_op_paths)),
-        );
-        object.insert("auto_index_enabled".to_string(), json!(false));
-        object.insert("changed_paths".to_string(), json!(changed_paths_normalized));
-        let deleted_paths = path_preflight.merge_deleted_paths(&deleted_paths);
-        object.insert("deleted_paths".to_string(), json!(deleted_paths.clone()));
-        object.insert(
-            "deleted_path".to_string(),
-            if deleted_paths.len() == 1 {
-                json!(deleted_paths[0])
+            validation_stage_tracker.mark("lifecycle_reads");
+            let lifecycle = watch_update_lifecycle_metadata(
+                &profile.repo_root,
+                &profile.db_path,
+                "agent-use.watch.once",
+                true,
+                Some(profile.scope_policy.clone()),
+            )
+            .map_err(|error| error.to_string())?;
+            let post_preflight = inspect_read_db_lifecycle_preflight(
+                &profile.repo_root,
+                &profile.db_path,
+                Some(profile.scope_policy.clone()),
+            )?;
+            let staged_availability = staged_availability_for_cli(
+                &profile.repo_root,
+                &profile.db_path,
+                Some(&post_preflight),
+                Some(&profile.candidate_spool_path),
+                Some(&profile.vector_runtime_path),
+                Some(&profile.vector_audit_path),
+                None,
+            );
+            let changed_paths_normalized = if summary.changed_files.is_empty() {
+                requested_changed_paths.clone()
             } else {
-                Value::Null
-            },
-        );
-        object.insert(
-            "normalized_changed_files".to_string(),
-            json!(path_preflight.normalized_changed_files.clone()),
-        );
-        object.insert(
-            "rejected_paths".to_string(),
-            json!(path_preflight.rejected_paths.clone()),
-        );
-        object.insert("no_op_paths".to_string(), json!(no_op_paths));
-        object.insert(
-            "changed_paths_requested".to_string(),
-            json!(path_preflight.requested_paths.clone()),
-        );
-        object.insert(
-            "ignored_paths".to_string(),
-            json!(path_preflight.ignored_paths.clone()),
-        );
-        object.insert(
-            "generated_paths".to_string(),
-            json!(path_preflight.generated_paths.clone()),
-        );
-        object.insert(
-            "outside_repo_paths".to_string(),
-            json!(path_preflight.outside_repo_paths.clone()),
-        );
-        object.insert(
-            "duplicate_paths".to_string(),
-            json!(path_preflight.duplicate_paths.clone()),
-        );
-        object.insert(
-            "renamed_paths".to_string(),
-            json!(path_preflight.renamed_paths.clone()),
-        );
-        object.insert(
-            "atomic_temp_paths".to_string(),
-            json!(path_preflight.atomic_temp_paths.clone()),
-        );
-        object.insert(
-            "partial_input_failures_reported".to_string(),
-            json!(path_preflight.partial_input_failures_reported),
-        );
-        object.insert(
-            "too_many_changed_files".to_string(),
-            json!(path_preflight.too_many_changed_files),
-        );
-        object.insert(
-            "max_changed_files".to_string(),
-            json!(path_preflight.max_changed_files),
-        );
-        object.insert("no_silent_path_drops".to_string(), json!(true));
-        object.insert(
-            "input_policy".to_string(),
-            json!(path_preflight.input_policy.clone()),
-        );
-        object.insert(
-            "rename_policy".to_string(),
-            json!(path_preflight.rename_policy.clone()),
-        );
-        object.insert(
-            "per_file_status".to_string(),
-            json!(path_preflight.per_file_status.clone()),
-        );
-        object.insert(
-            "input_diagnostics".to_string(),
-            json!(path_preflight.diagnostics.clone()),
-        );
-        object.insert(
-            "input_warnings".to_string(),
-            json!(path_preflight.warnings.clone()),
-        );
-        object.insert("watch_db".to_string(), lifecycle);
-        object.insert(
-            "staged_availability".to_string(),
-            staged_availability.clone(),
-        );
-        object.insert(
+                summary.changed_files.clone()
+            };
+            let delta_requested_paths = if summary
+                .dependency_closure
+                .requested_changed_files
+                .is_empty()
+            {
+                changed_paths_normalized.clone()
+            } else {
+                summary.dependency_closure.requested_changed_files.clone()
+            };
+            let delta_requested_set = delta_requested_paths
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let delta_changed_paths = delta_requested_paths
+                .iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>();
+            let delta_closure_paths = summary
+                .dependency_closure
+                .closure_files_updated
+                .iter()
+                .filter(|path| !delta_requested_set.contains(*path))
+                .map(PathBuf::from)
+                .collect::<Vec<_>>();
+            validation_stage_tracker.mark("new_snapshot");
+            let new_snapshot_start = Instant::now();
+            let new_graph_delta_snapshot = snapshot_normalized_facts_for_paths_to_db(
+                &profile.repo_root,
+                &delta_changed_paths,
+                &delta_closure_paths,
+                &profile.db_path,
+                snapshot_options,
+            )
+            .map_err(|error| format!("new normalized graph delta snapshot failed: {error}"))?;
+            let snapshot_new_ms = new_snapshot_start.elapsed().as_millis();
+            validation_stage_tracker.mark("delta");
+            let delta_compute_start = Instant::now();
+            let mut validation_entity_source_role_delta = compute_entity_source_role_delta(
+                &old_graph_delta_snapshot,
+                &new_graph_delta_snapshot,
+                EntitySourceRoleDeltaOptions {
+                    max_items_per_category: usize::MAX,
+                },
+            );
+            validation_entity_source_role_delta
+                .apply_dependency_closure_summary(&summary.dependency_closure);
+            validation_entity_source_role_delta.timings.diff_closure_ms =
+                pre_update_dependency_closure_ms;
+            let mut entity_source_role_delta = if detail_mode.preserves_full_details() {
+                validation_entity_source_role_delta.clone()
+            } else {
+                let mut compact_delta = compute_entity_source_role_delta(
+                    &old_graph_delta_snapshot,
+                    &new_graph_delta_snapshot,
+                    EntitySourceRoleDeltaOptions {
+                        max_items_per_category: AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT,
+                    },
+                );
+                compact_delta.apply_dependency_closure_summary(&summary.dependency_closure);
+                compact_delta.timings = validation_entity_source_role_delta.timings.clone();
+                compact_delta
+            };
+            let delta_compute_ms = delta_compute_start.elapsed().as_millis();
+            entity_source_role_delta.timings.diff_closure_ms = pre_update_dependency_closure_ms;
+            let deleted_paths = agent_use_watch_deleted_paths(&summary);
+            annotate_agent_use_output(
+                &mut value,
+                profile,
+                "watch",
+                normal_dot_codegraph_existed_before,
+            );
+            add_agent_use_durability_labels(&mut value, profile, &post_preflight, None);
+            if let Some(object) = value.as_object_mut() {
+                let update_no_op_paths = agent_use_watch_no_op_paths(&summary);
+                let no_op_paths = path_preflight.merge_no_op_paths(&update_no_op_paths);
+                let status = agent_use_watch_status(&summary, &no_op_paths);
+                let delta_state = agent_use_watch_delta_state(&summary, &no_op_paths);
+                let graph_delta_packet_start = Instant::now();
+                let graph_delta_json = agent_use_graph_delta_json(&entity_source_role_delta);
+                let graph_delta_packet_serialize_ms =
+                    graph_delta_packet_start.elapsed().as_millis();
+                let graph_delta_packet_budget =
+                    agent_use_graph_delta_packet_budget_json(&entity_source_role_delta);
+                let graph_delta_timing_json = agent_use_graph_delta_timing_json(
+                    &entity_source_role_delta,
+                    hot_path_update_ms,
+                    snapshot_old_ms,
+                    snapshot_new_ms,
+                    pre_update_dependency_closure_ms,
+                    graph_delta_packet_serialize_ms,
+                    delta_compute_ms,
+                    total_update_plus_delta_start.elapsed().as_millis(),
+                );
+                validation_stage_tracker.mark("validation");
+                let validation_packet = agent_use_exact_calls_validation_packet(
+                    profile,
+                    &post_preflight,
+                    &validation_entity_source_role_delta,
+                    graph_delta_json.clone(),
+                    changed_paths_normalized.clone(),
+                )?;
+                validation_stage_tracker.mark("packet");
+                let validation_packet_json = if detail_mode.preserves_full_details() {
+                    serde_json::to_value(&validation_packet).map_err(|error| error.to_string())?
+                } else {
+                    validation_packet.compact_agent_json(AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT)
+                };
+                object.insert("command".to_string(), json!("watch"));
+                object.insert("subcommand".to_string(), json!("once"));
+                object.insert("watch_mode".to_string(), json!("once_changed"));
+                object.insert("status".to_string(), json!(status));
+                object.insert("agent_use_watch_available".to_string(), json!(true));
+                object.insert(
+                    "agent_use_watch_status".to_string(),
+                    json!("implemented_once_changed"),
+                );
+                object.insert(
+                    "delta_sync_phase".to_string(),
+                    json!("real_time_delta_sync"),
+                );
+                object.insert("delta_sync_state".to_string(), json!(delta_state));
+                object.insert("delta_state".to_string(), json!(delta_state));
+                object.insert(
+                    "reason".to_string(),
+                    json!(agent_use_watch_reason(&summary, &no_op_paths)),
+                );
+                object.insert("auto_index_enabled".to_string(), json!(false));
+                object.insert("changed_paths".to_string(), json!(changed_paths_normalized));
+                let deleted_paths = path_preflight.merge_deleted_paths(&deleted_paths);
+                object.insert("deleted_paths".to_string(), json!(deleted_paths.clone()));
+                object.insert(
+                    "deleted_path".to_string(),
+                    if deleted_paths.len() == 1 {
+                        json!(deleted_paths[0])
+                    } else {
+                        Value::Null
+                    },
+                );
+                object.insert(
+                    "normalized_changed_files".to_string(),
+                    json!(path_preflight.normalized_changed_files.clone()),
+                );
+                object.insert(
+                    "rejected_paths".to_string(),
+                    json!(path_preflight.rejected_paths.clone()),
+                );
+                object.insert("no_op_paths".to_string(), json!(no_op_paths));
+                object.insert(
+                    "changed_paths_requested".to_string(),
+                    json!(path_preflight.requested_paths.clone()),
+                );
+                object.insert(
+                    "ignored_paths".to_string(),
+                    json!(path_preflight.ignored_paths.clone()),
+                );
+                object.insert(
+                    "generated_paths".to_string(),
+                    json!(path_preflight.generated_paths.clone()),
+                );
+                object.insert(
+                    "outside_repo_paths".to_string(),
+                    json!(path_preflight.outside_repo_paths.clone()),
+                );
+                object.insert(
+                    "duplicate_paths".to_string(),
+                    json!(path_preflight.duplicate_paths.clone()),
+                );
+                object.insert(
+                    "renamed_paths".to_string(),
+                    json!(path_preflight.renamed_paths.clone()),
+                );
+                object.insert(
+                    "atomic_temp_paths".to_string(),
+                    json!(path_preflight.atomic_temp_paths.clone()),
+                );
+                object.insert(
+                    "partial_input_failures_reported".to_string(),
+                    json!(path_preflight.partial_input_failures_reported),
+                );
+                object.insert(
+                    "too_many_changed_files".to_string(),
+                    json!(path_preflight.too_many_changed_files),
+                );
+                object.insert(
+                    "max_changed_files".to_string(),
+                    json!(path_preflight.max_changed_files),
+                );
+                object.insert("no_silent_path_drops".to_string(), json!(true));
+                object.insert(
+                    "input_policy".to_string(),
+                    json!(path_preflight.input_policy.clone()),
+                );
+                object.insert(
+                    "rename_policy".to_string(),
+                    json!(path_preflight.rename_policy.clone()),
+                );
+                object.insert(
+                    "per_file_status".to_string(),
+                    json!(path_preflight.per_file_status.clone()),
+                );
+                object.insert(
+                    "input_diagnostics".to_string(),
+                    json!(path_preflight.diagnostics.clone()),
+                );
+                object.insert(
+                    "input_warnings".to_string(),
+                    json!(path_preflight.warnings.clone()),
+                );
+                object.insert("watch_db".to_string(), lifecycle);
+                object.insert(
+                    "staged_availability".to_string(),
+                    staged_availability.clone(),
+                );
+                object.insert(
             "publish_safety".to_string(),
             json!({
                 "strategy": "sqlite_transaction_delta_update",
@@ -2878,268 +2992,269 @@ pub(crate) fn run_agent_use_watch_once_delta(
                 "auto_index_on_start": false,
             }),
         );
-        object.insert(
-            "freshness".to_string(),
-            agent_use_watch_freshness_json(&summary, &staged_availability),
-        );
-        object.insert(
-            "old_graph_valid".to_string(),
-            json!(preflight.safe_to_write),
-        );
-        object.insert("new_graph_valid".to_string(), json!(post_preflight.safe));
-        object.insert("old_db_preserved".to_string(), json!(true));
-        object.insert("temp_db_claimable".to_string(), json!(false));
-        object.insert("claimable".to_string(), json!(post_preflight.safe));
-        object.insert(
-            "claimability".to_string(),
-            staged_availability
-                .get("claimability")
-                .cloned()
-                .unwrap_or_else(|| {
+                object.insert(
+                    "freshness".to_string(),
+                    agent_use_watch_freshness_json(&summary, &staged_availability),
+                );
+                object.insert(
+                    "old_graph_valid".to_string(),
+                    json!(preflight.safe_to_write),
+                );
+                object.insert("new_graph_valid".to_string(), json!(post_preflight.safe));
+                object.insert("old_db_preserved".to_string(), json!(true));
+                object.insert("temp_db_claimable".to_string(), json!(false));
+                object.insert("claimable".to_string(), json!(post_preflight.safe));
+                object.insert(
+                    "claimability".to_string(),
+                    staged_availability
+                        .get("claimability")
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            json!({
+                                "claimable": post_preflight.safe,
+                                "diagnostic_only": !post_preflight.safe,
+                                "candidate_only": false,
+                                "graph_proof_available": post_preflight.safe,
+                            })
+                        }),
+                );
+                object.insert(
+                    "facts_deleted".to_string(),
+                    json!(
+                        summary.deleted_fact_files
+                            + summary.deleted_file_facts_removed
+                            + summary.stale_facts_deleted_for_ignored_paths
+                    ),
+                );
+                object.insert(
+                    "facts_deleted_measurement".to_string(),
+                    json!("file_fact_sets_plus_deleted_file_records"),
+                );
+                object.insert(
+                    "facts_inserted".to_string(),
+                    json!(
+                        summary.files_indexed
+                            + summary.entities
+                            + summary.edges
+                            + summary.dirty_path_evidence_count
+                    ),
+                );
+                object.insert(
+                    "facts_inserted_measurement".to_string(),
+                    json!("files_plus_entities_plus_edges_plus_path_evidence_rows"),
+                );
+                object.insert(
+                    "entities_added".to_string(),
+                    json!(entity_source_role_delta.entities_added_count),
+                );
+                object.insert(
+                    "entities_removed".to_string(),
+                    json!(entity_source_role_delta.entities_removed_count),
+                );
+                object.insert(
+                    "entities_changed".to_string(),
+                    json!(entity_source_role_delta.entities_changed_count),
+                );
+                object.insert(
+                    "source_roles_changed".to_string(),
+                    json!(entity_source_role_delta.source_roles_changed_count),
+                );
+                object.insert("graph_delta".to_string(), graph_delta_json);
+                object.insert(
+                    "validation_packet".to_string(),
+                    validation_packet_json.clone(),
+                );
+                object.insert(
+                    "validation_status".to_string(),
+                    validation_packet_json["status"].clone(),
+                );
+                object.insert(
+                    "validation_must_fix_before_continuing".to_string(),
+                    validation_packet_json["must_fix_before_continuing"].clone(),
+                );
+                object.insert(
+                    "validation_summary_counts_by_rule_id".to_string(),
+                    validation_packet_json["summary_counts_by_rule_id"].clone(),
+                );
+                object.insert(
+                    "validation_summary_counts_by_classification".to_string(),
+                    validation_packet_json["summary_counts_by_classification"].clone(),
+                );
+                object.insert(
+                    "validation_summary_counts_by_relation_kind".to_string(),
+                    validation_packet_json["summary_counts_by_relation_kind"].clone(),
+                );
+                object.insert(
+                    "validation_stale_unsafe_blockers".to_string(),
+                    validation_packet_json["stale_unsafe_blockers"].clone(),
+                );
+                object.insert(
+                    "validation_recommended_next_steps".to_string(),
+                    validation_packet_json["recommended_next_steps"].clone(),
+                );
+                object.insert("journal_replay".to_string(), journal_replay_summary.clone());
+                object.insert(
+                    "validation_blocking_error_count".to_string(),
+                    json!(validation_packet.blocking_errors.len()),
+                );
+                object.insert(
+                    "validation_warning_count".to_string(),
+                    json!(validation_packet.warnings.len()),
+                );
+                object.insert(
+                    "validation_unknown_count".to_string(),
+                    json!(validation_packet.unknowns.len()),
+                );
+                object.insert(
+                    "hard_interrupt_available".to_string(),
+                    validation_packet_json["hard_interrupt_available"].clone(),
+                );
+                object.insert(
+                    "hard_interrupt".to_string(),
+                    validation_packet_json
+                        .get("hard_interrupt")
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                );
+                object.insert("hard_interrupt_not_implemented".to_string(), json!(false));
+                object.insert(
+                    "graph_delta_detail_mode".to_string(),
+                    json!(detail_mode.label()),
+                );
+                object.insert(
+                    "delta_packet_compact_default".to_string(),
+                    json!(matches!(detail_mode, AgentUseDetailMode::Compact)),
+                );
+                object.insert(
+                    "graph_delta_packet_budget".to_string(),
+                    graph_delta_packet_budget.clone(),
+                );
+                object.insert(
+                    "edges_added".to_string(),
+                    json!(entity_source_role_delta.edges_added_count),
+                );
+                object.insert(
+                    "edges_removed".to_string(),
+                    json!(entity_source_role_delta.edges_removed_count),
+                );
+                object.insert(
+                    "edges_changed".to_string(),
+                    json!(entity_source_role_delta.edges_changed_count),
+                );
+                object.insert(
+                    "source_spans_added".to_string(),
+                    json!(entity_source_role_delta.source_spans_added_count),
+                );
+                object.insert(
+                    "source_spans_removed".to_string(),
+                    json!(entity_source_role_delta.source_spans_removed_count),
+                );
+                object.insert(
+                    "source_spans_changed".to_string(),
+                    json!(entity_source_role_delta.source_spans_changed_count),
+                );
+                object.insert(
+                    "text_evidence_changed".to_string(),
+                    json!(entity_source_role_delta.text_evidence_changed_count > 0),
+                );
+                object.insert(
+                    "path_evidence_invalidated".to_string(),
                     json!({
-                        "claimable": post_preflight.safe,
-                        "diagnostic_only": !post_preflight.safe,
-                        "candidate_only": false,
-                        "graph_proof_available": post_preflight.safe,
-                    })
-                }),
-        );
-        object.insert(
-            "facts_deleted".to_string(),
-            json!(
-                summary.deleted_fact_files
-                    + summary.deleted_file_facts_removed
-                    + summary.stale_facts_deleted_for_ignored_paths
-            ),
-        );
-        object.insert(
-            "facts_deleted_measurement".to_string(),
-            json!("file_fact_sets_plus_deleted_file_records"),
-        );
-        object.insert(
-            "facts_inserted".to_string(),
-            json!(
-                summary.files_indexed
-                    + summary.entities
-                    + summary.edges
-                    + summary.dirty_path_evidence_count
-            ),
-        );
-        object.insert(
-            "facts_inserted_measurement".to_string(),
-            json!("files_plus_entities_plus_edges_plus_path_evidence_rows"),
-        );
-        object.insert(
-            "entities_added".to_string(),
-            json!(entity_source_role_delta.entities_added_count),
-        );
-        object.insert(
-            "entities_removed".to_string(),
-            json!(entity_source_role_delta.entities_removed_count),
-        );
-        object.insert(
-            "entities_changed".to_string(),
-            json!(entity_source_role_delta.entities_changed_count),
-        );
-        object.insert(
-            "source_roles_changed".to_string(),
-            json!(entity_source_role_delta.source_roles_changed_count),
-        );
-        object.insert("graph_delta".to_string(), graph_delta_json);
-        object.insert(
-            "validation_packet".to_string(),
-            validation_packet_json.clone(),
-        );
-        object.insert(
-            "validation_status".to_string(),
-            validation_packet_json["status"].clone(),
-        );
-        object.insert(
-            "validation_must_fix_before_continuing".to_string(),
-            validation_packet_json["must_fix_before_continuing"].clone(),
-        );
-        object.insert(
-            "validation_summary_counts_by_rule_id".to_string(),
-            validation_packet_json["summary_counts_by_rule_id"].clone(),
-        );
-        object.insert(
-            "validation_summary_counts_by_classification".to_string(),
-            validation_packet_json["summary_counts_by_classification"].clone(),
-        );
-        object.insert(
-            "validation_summary_counts_by_relation_kind".to_string(),
-            validation_packet_json["summary_counts_by_relation_kind"].clone(),
-        );
-        object.insert(
-            "validation_stale_unsafe_blockers".to_string(),
-            validation_packet_json["stale_unsafe_blockers"].clone(),
-        );
-        object.insert(
-            "validation_recommended_next_steps".to_string(),
-            validation_packet_json["recommended_next_steps"].clone(),
-        );
-        object.insert(
-            "validation_blocking_error_count".to_string(),
-            json!(validation_packet.blocking_errors.len()),
-        );
-        object.insert(
-            "validation_warning_count".to_string(),
-            json!(validation_packet.warnings.len()),
-        );
-        object.insert(
-            "validation_unknown_count".to_string(),
-            json!(validation_packet.unknowns.len()),
-        );
-        object.insert(
-            "hard_interrupt_available".to_string(),
-            validation_packet_json["hard_interrupt_available"].clone(),
-        );
-        object.insert(
-            "hard_interrupt".to_string(),
-            validation_packet_json
-                .get("hard_interrupt")
-                .cloned()
-                .unwrap_or(Value::Null),
-        );
-        object.insert("hard_interrupt_not_implemented".to_string(), json!(false));
-        object.insert(
-            "graph_delta_detail_mode".to_string(),
-            json!(detail_mode.label()),
-        );
-        object.insert(
-            "delta_packet_compact_default".to_string(),
-            json!(matches!(detail_mode, AgentUseDetailMode::Compact)),
-        );
-        object.insert(
-            "graph_delta_packet_budget".to_string(),
-            graph_delta_packet_budget.clone(),
-        );
-        object.insert(
-            "edges_added".to_string(),
-            json!(entity_source_role_delta.edges_added_count),
-        );
-        object.insert(
-            "edges_removed".to_string(),
-            json!(entity_source_role_delta.edges_removed_count),
-        );
-        object.insert(
-            "edges_changed".to_string(),
-            json!(entity_source_role_delta.edges_changed_count),
-        );
-        object.insert(
-            "source_spans_added".to_string(),
-            json!(entity_source_role_delta.source_spans_added_count),
-        );
-        object.insert(
-            "source_spans_removed".to_string(),
-            json!(entity_source_role_delta.source_spans_removed_count),
-        );
-        object.insert(
-            "source_spans_changed".to_string(),
-            json!(entity_source_role_delta.source_spans_changed_count),
-        );
-        object.insert(
-            "text_evidence_changed".to_string(),
-            json!(entity_source_role_delta.text_evidence_changed_count > 0),
-        );
-        object.insert(
-            "path_evidence_invalidated".to_string(),
-            json!({
-                "action": agent_use_path_evidence_delta_action(&summary),
-                "dirty_path_evidence_count": summary.dirty_path_evidence_count,
-                "delta_count": entity_source_role_delta.path_evidence_invalidated_count,
-                "graph_proof": false,
-            }),
-        );
-        object.insert(
-            "candidate_spool_invalidated_or_rebuilt".to_string(),
-            json!(agent_use_layer_delta_action(
-                staged_availability
-                    .get("candidate_spool_status")
-                    .and_then(Value::as_str),
-            )),
-        );
-        object.insert(
-            "candidate_spool_invalidated_or_refreshed".to_string(),
-            json!(agent_use_layer_delta_action(
-                staged_availability
-                    .get("candidate_spool_status")
-                    .and_then(Value::as_str),
-            )),
-        );
-        object.insert(
-            "candidate_query_index_invalidated_or_rebuilt".to_string(),
-            json!(agent_use_layer_delta_action(
-                staged_availability
-                    .pointer("/layer_readiness/candidate_spool/query_index_status")
-                    .and_then(Value::as_str),
-            )),
-        );
-        object.insert(
-            "candidate_query_index_invalidated_or_refreshed".to_string(),
-            json!(agent_use_layer_delta_action(
-                staged_availability
-                    .pointer("/layer_readiness/candidate_spool/query_index_status")
-                    .and_then(Value::as_str),
-            )),
-        );
-        object.insert(
-            "vector_chunks_invalidated_or_rebuilt".to_string(),
-            json!(agent_use_layer_delta_action(
-                staged_availability
-                    .get("vector_runtime_status")
-                    .and_then(Value::as_str),
-            )),
-        );
-        object.insert(
-            "vector_chunks_invalidated".to_string(),
-            json!(agent_use_layer_delta_action(
-                staged_availability
-                    .get("vector_runtime_status")
-                    .and_then(Value::as_str),
-            )),
-        );
-        object.insert(
-            "vector_runtime_status_changed".to_string(),
-            json!(agent_use_layer_delta_action(
-                staged_availability
-                    .get("vector_runtime_status")
-                    .and_then(Value::as_str),
-            )),
-        );
-        object.insert(
-            "vector_audit_status_changed".to_string(),
-            json!(agent_use_layer_delta_action(
-                staged_availability
-                    .get("vector_audit_status")
-                    .and_then(Value::as_str),
-            )),
-        );
-        object.insert(
-            "binary_candidates_invalidated_or_not_applicable".to_string(),
-            agent_use_not_applicable_delta_action(
-                "binary_vector_candidates_are_request_time_context_candidates",
-            ),
-        );
-        object.insert(
-            "nuance_tokens_invalidated_or_not_applicable".to_string(),
-            agent_use_not_applicable_delta_action(
-                "nuance_rescue_candidates_are_request_time_context_candidates",
-            ),
-        );
-        object.insert(
-            "nuance_tokens_invalidated".to_string(),
-            agent_use_not_applicable_delta_action(
-                "nuance_rescue_candidates_are_request_time_context_candidates",
-            ),
-        );
-        object.insert(
-            "proof_path_caches_invalidated_or_not_applicable".to_string(),
-            agent_use_not_applicable_delta_action(
-                "stored_path_evidence_rows_are_the_current_proof_path_cache_surface",
-            ),
-        );
-        object.insert(
+                        "action": agent_use_path_evidence_delta_action(&summary),
+                        "dirty_path_evidence_count": summary.dirty_path_evidence_count,
+                        "delta_count": entity_source_role_delta.path_evidence_invalidated_count,
+                        "graph_proof": false,
+                    }),
+                );
+                object.insert(
+                    "candidate_spool_invalidated_or_rebuilt".to_string(),
+                    json!(agent_use_layer_delta_action(
+                        staged_availability
+                            .get("candidate_spool_status")
+                            .and_then(Value::as_str),
+                    )),
+                );
+                object.insert(
+                    "candidate_spool_invalidated_or_refreshed".to_string(),
+                    json!(agent_use_layer_delta_action(
+                        staged_availability
+                            .get("candidate_spool_status")
+                            .and_then(Value::as_str),
+                    )),
+                );
+                object.insert(
+                    "candidate_query_index_invalidated_or_rebuilt".to_string(),
+                    json!(agent_use_layer_delta_action(
+                        staged_availability
+                            .pointer("/layer_readiness/candidate_spool/query_index_status")
+                            .and_then(Value::as_str),
+                    )),
+                );
+                object.insert(
+                    "candidate_query_index_invalidated_or_refreshed".to_string(),
+                    json!(agent_use_layer_delta_action(
+                        staged_availability
+                            .pointer("/layer_readiness/candidate_spool/query_index_status")
+                            .and_then(Value::as_str),
+                    )),
+                );
+                object.insert(
+                    "vector_chunks_invalidated_or_rebuilt".to_string(),
+                    json!(agent_use_layer_delta_action(
+                        staged_availability
+                            .get("vector_runtime_status")
+                            .and_then(Value::as_str),
+                    )),
+                );
+                object.insert(
+                    "vector_chunks_invalidated".to_string(),
+                    json!(agent_use_layer_delta_action(
+                        staged_availability
+                            .get("vector_runtime_status")
+                            .and_then(Value::as_str),
+                    )),
+                );
+                object.insert(
+                    "vector_runtime_status_changed".to_string(),
+                    json!(agent_use_layer_delta_action(
+                        staged_availability
+                            .get("vector_runtime_status")
+                            .and_then(Value::as_str),
+                    )),
+                );
+                object.insert(
+                    "vector_audit_status_changed".to_string(),
+                    json!(agent_use_layer_delta_action(
+                        staged_availability
+                            .get("vector_audit_status")
+                            .and_then(Value::as_str),
+                    )),
+                );
+                object.insert(
+                    "binary_candidates_invalidated_or_not_applicable".to_string(),
+                    agent_use_not_applicable_delta_action(
+                        "binary_vector_candidates_are_request_time_context_candidates",
+                    ),
+                );
+                object.insert(
+                    "nuance_tokens_invalidated_or_not_applicable".to_string(),
+                    agent_use_not_applicable_delta_action(
+                        "nuance_rescue_candidates_are_request_time_context_candidates",
+                    ),
+                );
+                object.insert(
+                    "nuance_tokens_invalidated".to_string(),
+                    agent_use_not_applicable_delta_action(
+                        "nuance_rescue_candidates_are_request_time_context_candidates",
+                    ),
+                );
+                object.insert(
+                    "proof_path_caches_invalidated_or_not_applicable".to_string(),
+                    agent_use_not_applicable_delta_action(
+                        "stored_path_evidence_rows_are_the_current_proof_path_cache_surface",
+                    ),
+                );
+                object.insert(
             "routing_handles_invalidated".to_string(),
             json!({
                 "action": if summary.files_indexed > 0 || summary.files_deleted > 0 || summary.files_renamed > 0 {
@@ -3150,7 +3265,7 @@ pub(crate) fn run_agent_use_watch_once_delta(
                 "scope": "sparse_sidecar_handles",
             }),
         );
-        object.insert(
+                object.insert(
             "routing_handles_invalidated_or_not_applicable".to_string(),
             json!({
                 "action": if summary.files_indexed > 0 || summary.files_deleted > 0 || summary.files_renamed > 0 {
@@ -3162,88 +3277,88 @@ pub(crate) fn run_agent_use_watch_once_delta(
                 "graph_proof": false,
             }),
         );
-        object.insert(
-            "proof_ladder_changes".to_string(),
-            json!(entity_source_role_delta.proof_ladder_changes),
-        );
-        object.insert(
-            "file_renames_detected".to_string(),
-            json!(entity_source_role_delta.file_renames_detected.clone()),
-        );
-        object.insert(
-            "rename_ambiguities".to_string(),
-            json!(entity_source_role_delta.rename_ambiguities.clone()),
-        );
-        object.insert(
-            "closure_delta_summary".to_string(),
-            json!(entity_source_role_delta.closure_delta_summary.clone()),
-        );
-        object.insert(
-            "closure_files_considered".to_string(),
-            json!(summary.dependency_closure.closure_files_considered.clone()),
-        );
-        object.insert(
-            "closure_files_updated".to_string(),
-            json!(summary.dependency_closure.closure_files_updated.clone()),
-        );
-        object.insert(
-            "closure_edges_inspected".to_string(),
-            json!(summary.dependency_closure.closure_edges_inspected),
-        );
-        object.insert(
-            "closure_relation_classes".to_string(),
-            json!(summary.dependency_closure.closure_relation_classes.clone()),
-        );
-        object.insert(
-            "closure_budget_hit".to_string(),
-            json!(summary.dependency_closure.closure_budget_hit),
-        );
-        object.insert(
-            "degraded_relation_classes".to_string(),
-            json!(summary.dependency_closure.degraded_relation_classes.clone()),
-        );
-        object.insert(
-            "unsupported_relation_classes".to_string(),
-            json!(entity_source_role_delta
-                .closure_unsupported_relation_classes
-                .clone()),
-        );
-        object.insert(
-            "graph_output_degraded_labels".to_string(),
-            json!(summary.graph_output_degraded_labels.clone()),
-        );
-        object.insert(
-            "graph_output_budget_hit".to_string(),
-            json!(!summary.graph_output_degraded_labels.is_empty()),
-        );
-        object.insert(
-            "skipped_relation_classes".to_string(),
-            json!(summary.dependency_closure.skipped_relation_classes.clone()),
-        );
-        object.insert(
-            "closure_unknowns".to_string(),
-            json!(summary.dependency_closure.closure_unknowns.clone()),
-        );
-        object.insert(
-            "dependency_closure".to_string(),
-            json!(summary.dependency_closure.clone()),
-        );
-        object.insert(
-            "no_full_repo_fallback".to_string(),
-            json!(summary.dependency_closure.full_repo_fallback_avoided),
-        );
-        object.insert(
-            "full_repo_fallback_avoided_reason".to_string(),
-            json!(summary.dependency_closure.fallback_avoided_reason.clone()),
-        );
-        object.insert(
-            "manual_full_index_recommendation".to_string(),
-            json!(summary
-                .dependency_closure
-                .manual_full_index_recommendation
-                .clone()),
-        );
-        object.insert(
+                object.insert(
+                    "proof_ladder_changes".to_string(),
+                    json!(entity_source_role_delta.proof_ladder_changes),
+                );
+                object.insert(
+                    "file_renames_detected".to_string(),
+                    json!(entity_source_role_delta.file_renames_detected.clone()),
+                );
+                object.insert(
+                    "rename_ambiguities".to_string(),
+                    json!(entity_source_role_delta.rename_ambiguities.clone()),
+                );
+                object.insert(
+                    "closure_delta_summary".to_string(),
+                    json!(entity_source_role_delta.closure_delta_summary.clone()),
+                );
+                object.insert(
+                    "closure_files_considered".to_string(),
+                    json!(summary.dependency_closure.closure_files_considered.clone()),
+                );
+                object.insert(
+                    "closure_files_updated".to_string(),
+                    json!(summary.dependency_closure.closure_files_updated.clone()),
+                );
+                object.insert(
+                    "closure_edges_inspected".to_string(),
+                    json!(summary.dependency_closure.closure_edges_inspected),
+                );
+                object.insert(
+                    "closure_relation_classes".to_string(),
+                    json!(summary.dependency_closure.closure_relation_classes.clone()),
+                );
+                object.insert(
+                    "closure_budget_hit".to_string(),
+                    json!(summary.dependency_closure.closure_budget_hit),
+                );
+                object.insert(
+                    "degraded_relation_classes".to_string(),
+                    json!(summary.dependency_closure.degraded_relation_classes.clone()),
+                );
+                object.insert(
+                    "unsupported_relation_classes".to_string(),
+                    json!(entity_source_role_delta
+                        .closure_unsupported_relation_classes
+                        .clone()),
+                );
+                object.insert(
+                    "graph_output_degraded_labels".to_string(),
+                    json!(summary.graph_output_degraded_labels.clone()),
+                );
+                object.insert(
+                    "graph_output_budget_hit".to_string(),
+                    json!(!summary.graph_output_degraded_labels.is_empty()),
+                );
+                object.insert(
+                    "skipped_relation_classes".to_string(),
+                    json!(summary.dependency_closure.skipped_relation_classes.clone()),
+                );
+                object.insert(
+                    "closure_unknowns".to_string(),
+                    json!(summary.dependency_closure.closure_unknowns.clone()),
+                );
+                object.insert(
+                    "dependency_closure".to_string(),
+                    json!(summary.dependency_closure.clone()),
+                );
+                object.insert(
+                    "no_full_repo_fallback".to_string(),
+                    json!(summary.dependency_closure.full_repo_fallback_avoided),
+                );
+                object.insert(
+                    "full_repo_fallback_avoided_reason".to_string(),
+                    json!(summary.dependency_closure.fallback_avoided_reason.clone()),
+                );
+                object.insert(
+                    "manual_full_index_recommendation".to_string(),
+                    json!(summary
+                        .dependency_closure
+                        .manual_full_index_recommendation
+                        .clone()),
+                );
+                object.insert(
             "timings".to_string(),
             json!({
                 "total_update_plus_delta_ms": graph_delta_timing_json["total_update_plus_delta_ms"].clone(),
@@ -3258,47 +3373,86 @@ pub(crate) fn run_agent_use_watch_once_delta(
                 "graph_delta": graph_delta_timing_json,
             }),
         );
-        object.insert(
-            "normal_dot_codegraph_created".to_string(),
-            json!(!normal_dot_codegraph_existed_before && normal_dot_codegraph.exists()),
-        );
-        object.insert(
-            "normal_dot_codegraph_mutated".to_string(),
-            json!(normal_dot_codegraph_existed_before != normal_dot_codegraph.exists()),
-        );
-        let recovery = agent_use_recovery_json(profile);
-        object.insert(
-            "recovery_commands".to_string(),
-            recovery
-                .get("commands")
-                .cloned()
-                .unwrap_or_else(|| json!(profile.recovery_commands.clone())),
-        );
-        object.insert("recovery".to_string(), recovery);
-    }
-    merge_json_object(
-        &mut value,
-        staged_availability_top_level_fields(&staged_availability),
-    );
-    add_agent_use_rtds_freshness_fields(&mut value, profile, &post_preflight, &staged_availability);
-    add_agent_use_dirty_evidence_output_fields(
-        &mut value,
-        "agent-use.watch.once",
-        detail_mode.preserves_full_details(),
-    );
-    persist_agent_use_last_delta_state(&mut value, profile, "agent-use.watch.once");
-    compact_agent_use_agent_json_envelope(
-        &mut value,
-        profile,
-        detail_mode,
-        if detail_mode.preserves_full_details() {
-            detail_mode.default_max_output_bytes()
-        } else {
-            AGENT_USE_WATCH_COMPACT_MAX_OUTPUT_BYTES
+                object.insert(
+                    "normal_dot_codegraph_created".to_string(),
+                    json!(!normal_dot_codegraph_existed_before && normal_dot_codegraph.exists()),
+                );
+                object.insert(
+                    "normal_dot_codegraph_mutated".to_string(),
+                    json!(normal_dot_codegraph_existed_before != normal_dot_codegraph.exists()),
+                );
+                let recovery = agent_use_recovery_json(profile);
+                object.insert(
+                    "recovery_commands".to_string(),
+                    recovery
+                        .get("commands")
+                        .cloned()
+                        .unwrap_or_else(|| json!(profile.recovery_commands.clone())),
+                );
+                object.insert("recovery".to_string(), recovery);
+            }
+            merge_json_object(
+                &mut value,
+                staged_availability_top_level_fields(&staged_availability),
+            );
+            add_agent_use_rtds_freshness_fields(
+                &mut value,
+                profile,
+                &post_preflight,
+                &staged_availability,
+            );
+            add_agent_use_dirty_evidence_output_fields(
+                &mut value,
+                "agent-use.watch.once",
+                detail_mode.preserves_full_details(),
+            );
+            validation_stage_tracker.mark("persist_outcome");
+            persist_agent_use_last_delta_state(&mut value, profile, "agent-use.watch.once");
+            // Phase F: the validation outcome is persisted (validation-state sidecar
+            // written during packet construction, delta-state just now) — the
+            // two-phase operation is complete and the journal can be retired. The
+            // validation_state block is computed only now, after retirement, so this
+            // run's own (intentionally open) journal does not read as "incomplete".
+            clear_validation_journal(profile);
+            if let Some(object) = value.as_object_mut() {
+                object.insert(
+                    "validation_state".to_string(),
+                    agent_use_validation_state_block(profile),
+                );
+            }
+            validation_stage_tracker.mark("envelope");
+            compact_agent_use_agent_json_envelope(
+                &mut value,
+                profile,
+                detail_mode,
+                if detail_mode.preserves_full_details() {
+                    detail_mode.default_max_output_bytes()
+                } else {
+                    AGENT_USE_WATCH_COMPACT_MAX_OUTPUT_BYTES
+                },
+                Some(&staged_availability),
+            );
+            Ok(value)
         },
-        Some(&staged_availability),
-    );
-    Ok(value)
+    ));
+    match post_commit_result {
+        Ok(result) => result,
+        Err(panic_payload) => {
+            let failed_stage = validation_stage_tracker
+                .current_stage()
+                .unwrap_or_else(|| "post_commit".to_string());
+            let panic_message = panic_payload_message(panic_payload.as_ref());
+            validation_stage_tracker.preserve_for_post_mortem();
+            transition_validation_journal_state(profile, &format!("failed:{panic_message}"));
+            Ok(agent_use_watch_pipeline_panic_packet(
+                profile,
+                &requested_changed_paths,
+                &failed_stage,
+                &panic_message,
+                validation_stage_tracker.path(),
+            ))
+        }
+    }
 }
 
 pub(crate) fn agent_use_exact_calls_validation_packet(
@@ -3610,6 +3764,18 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
         }
     }
 
+    // MVP3.9.5c sticky blockers: re-verify previously persisted block-class
+    // findings against the CURRENT store + source and re-emit the ones that
+    // are still contradicted, so an unchanged broken baseline keeps blocking.
+    let persisted_blockers_summary = agent_use_apply_persisted_open_blockers(
+        profile,
+        &store,
+        lifecycle.clone(),
+        &mut findings,
+        &mut seen_edge_rule,
+    );
+
+    let persisted_changed_files = changed_files.clone();
     let packet = ValidationPacket::new(
         changed_files,
         graph_delta,
@@ -3620,10 +3786,23 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
         json!(delta.proof_ladder_changes),
         lifecycle_json,
     );
-    Ok(agent_use_attach_activation_gated_contract_metadata(
+    let packet = agent_use_attach_activation_gated_contract_metadata(
         packet.with_eligible_hard_interrupts(format!("unix_ms:{}", unix_time_ms())),
         delta,
-    ))
+    );
+    let final_severity = serde_json::to_value(&packet.final_status)
+        .ok()
+        .and_then(|value| value.as_str().map(ToString::to_string))
+        .unwrap_or_default();
+    persist_validation_outcome(
+        profile,
+        "agent_use_validation_packet",
+        &persisted_changed_files,
+        &final_severity,
+        &packet.blocking_errors,
+        &persisted_blockers_summary,
+    );
+    Ok(packet)
 }
 
 fn agent_use_exact_calls_validation_rules() -> Vec<ValidationRule> {
