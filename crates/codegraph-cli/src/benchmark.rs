@@ -5309,6 +5309,8 @@ pub(crate) fn benchmark_unresolved_calls_surface_query(
         explicit_scope_policy: None,
         surface_name: "bench.query_surface.unresolved_calls".to_string(),
         operation_kind: DbLifecycleOperationKind::BenchmarkInspection,
+        class_filter: None,
+        path_filter: None,
     };
     let mut lifecycle_read =
         unresolved_calls_lifecycle_preflight(repo_root, db_path, &preflight_options)
@@ -5344,6 +5346,8 @@ pub(crate) fn benchmark_unresolved_calls_surface_query(
             explicit_scope_policy: None,
             surface_name: "bench.query_surface.unresolved_calls".to_string(),
             operation_kind: DbLifecycleOperationKind::BenchmarkInspection,
+            class_filter: None,
+            path_filter: None,
         };
         match query_unresolved_calls(repo_root, options) {
             Ok(value) => {

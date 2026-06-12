@@ -12,6 +12,7 @@ use codegraph_core::{
     EntityKind, EvidenceRole, Exactness, FileRecord, Metadata, RelationKind, RetrievalCandidate,
     SourceSpan,
 };
+use codegraph_query::{PromptSeed, PromptSeedKind};
 use codegraph_store::{GraphStore, SqliteGraphStore};
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -130,6 +131,7 @@ pub(crate) fn open_context_pack_connection(db_path: &Path) -> Result<Connection,
     Ok(connection)
 }
 
+#[cfg(test)]
 pub(crate) fn context_pack_seed_values(
     options: &ContextPackOptions,
     max_seeds: usize,
@@ -146,18 +148,328 @@ pub(crate) fn context_pack_seed_values(
     )
 }
 
+pub(crate) fn context_pack_seed_values_for_connection(
+    connection: &Connection,
+    options: &ContextPackOptions,
+    max_seeds: usize,
+) -> Result<Vec<String>, String> {
+    let prompt_exact = context_pack_prompt_exact_seed_values_for_connection(
+        connection,
+        &options.task,
+        max_seeds.max(1),
+    )?;
+    Ok(unique_limited_strings(
+        options
+            .seeds
+            .iter()
+            .chain(options.stage0_candidates.iter())
+            .chain(prompt_exact.iter())
+            .cloned(),
+        max_seeds.max(1),
+    ))
+}
+
 pub(crate) fn context_pack_prompt_exact_seed_values(task: &str) -> Vec<String> {
     let (positive_task, negative_task) = context_pack_nuance_positive_task(task);
     let positive_lower = positive_task.to_ascii_lowercase();
     let negative_lower = negative_task.to_ascii_lowercase();
     extract_prompt_seeds(task)
         .into_iter()
-        .filter_map(|seed| seed.exact_value())
+        .filter_map(|seed| context_pack_prompt_seed_syntactic_exact_value(&seed))
         .filter(|seed| {
             let lower = seed.to_ascii_lowercase();
             positive_lower.contains(&lower) && !negative_lower.contains(&lower)
         })
         .collect()
+}
+
+pub(crate) fn context_pack_prompt_exact_seed_values_for_connection(
+    connection: &Connection,
+    task: &str,
+    limit: usize,
+) -> Result<Vec<String>, String> {
+    let (positive_task, negative_task) = context_pack_nuance_positive_task(task);
+    let positive_lower = positive_task.to_ascii_lowercase();
+    let negative_lower = negative_task.to_ascii_lowercase();
+    let mut output = Vec::new();
+    for seed in extract_prompt_seeds(task) {
+        let Some(value) = context_pack_prompt_seed_syntactic_exact_value(&seed) else {
+            continue;
+        };
+        let lower = value.to_ascii_lowercase();
+        if !positive_lower.contains(&lower) || negative_lower.contains(&lower) {
+            continue;
+        }
+        if context_pack_prompt_seed_resolves_in_graph(connection, &value)?
+            || (context_pack_prompt_seed_source_is_quoted(&seed)
+                && !context_pack_prompt_seed_is_generic_prose(&value))
+        {
+            output.push(value);
+        }
+        if output.len() >= limit.max(1) {
+            break;
+        }
+    }
+    Ok(unique_limited_strings(output, limit.max(1)))
+}
+
+pub(crate) fn context_pack_prompt_seed_hygiene_json(
+    connection: &Connection,
+    task: &str,
+    limit: usize,
+) -> Result<Value, String> {
+    let (positive_task, negative_task) = context_pack_nuance_positive_task(task);
+    let positive_lower = positive_task.to_ascii_lowercase();
+    let negative_lower = negative_task.to_ascii_lowercase();
+    let mut accepted_exact = Vec::new();
+    let mut symbol_seeds = Vec::new();
+    let mut file_seeds = Vec::new();
+    let mut text_query_terms = Vec::new();
+    let mut ignored_prose_terms = Vec::new();
+    let mut role_task_terms = Vec::new();
+    let mut rejected_exact_candidates = Vec::new();
+
+    for seed in extract_prompt_seeds(task) {
+        let value = seed.value.trim().to_string();
+        if value.is_empty() {
+            continue;
+        }
+        if matches!(seed.kind, PromptSeedKind::TaskVerbIgnored) {
+            role_task_terms.push(value.clone());
+            ignored_prose_terms.push(value);
+            continue;
+        }
+        if matches!(
+            seed.kind,
+            PromptSeedKind::TextToken | PromptSeedKind::ErrorMessage | PromptSeedKind::Unknown
+        ) {
+            text_query_terms.push(value.clone());
+            if context_pack_prompt_seed_is_generic_prose(&value) {
+                ignored_prose_terms.push(value);
+            }
+            continue;
+        }
+
+        let exact_value = context_pack_prompt_seed_syntactic_exact_value(&seed);
+        let Some(exact_value) = exact_value else {
+            text_query_terms.push(value.clone());
+            if context_pack_prompt_seed_is_generic_prose(&value) {
+                ignored_prose_terms.push(value);
+            }
+            continue;
+        };
+        let lower = exact_value.to_ascii_lowercase();
+        let in_positive_scope = positive_lower.contains(&lower) && !negative_lower.contains(&lower);
+        let resolved = if in_positive_scope {
+            context_pack_prompt_seed_resolves_in_graph(connection, &exact_value)?
+        } else {
+            false
+        };
+        let quoted_explicit = context_pack_prompt_seed_source_is_quoted(&seed)
+            && !context_pack_prompt_seed_is_generic_prose(&exact_value);
+        if in_positive_scope && (resolved || quoted_explicit) {
+            accepted_exact.push(json!({
+                "seed": exact_value.clone(),
+                "kind": seed.kind.provenance_kind(),
+                "resolution": if resolved { "graph_dictionary" } else { "quoted_explicit" },
+                "source_text": seed.source_text.clone(),
+            }));
+            match seed.kind {
+                PromptSeedKind::FilePath
+                | PromptSeedKind::LineNumber
+                | PromptSeedKind::StackTrace
+                | PromptSeedKind::PathToken => file_seeds.push(exact_value),
+                _ => symbol_seeds.push(exact_value),
+            }
+        } else {
+            if context_pack_prompt_seed_is_generic_prose(&exact_value) {
+                ignored_prose_terms.push(exact_value.clone());
+            } else {
+                text_query_terms.push(exact_value.clone());
+            }
+            rejected_exact_candidates.push(json!({
+                "seed": exact_value.clone(),
+                "kind": seed.kind.provenance_kind(),
+                "reason": if !in_positive_scope {
+                    "outside_positive_task_scope"
+                } else if context_pack_prompt_seed_is_generic_prose(&value) {
+                    "generic_prose_term"
+                } else {
+                    "not_in_symbol_or_path_dictionary"
+                },
+                "source_text": seed.source_text.clone(),
+            }));
+        }
+    }
+
+    let accepted_count = accepted_exact.len();
+    if accepted_exact.len() > limit.max(1) {
+        accepted_exact.truncate(limit.max(1));
+    }
+    Ok(json!({
+        "schema_version": 1,
+        "diagnostic_only": true,
+        "accepted_exact_seeds": accepted_exact,
+        "accepted_exact_count": accepted_count,
+        "accepted_exact_cap": limit.max(1),
+        "symbol_seeds": unique_limited_strings(symbol_seeds, limit.max(1)),
+        "file_seeds": unique_limited_strings(file_seeds, limit.max(1)),
+        "text_query_terms": unique_limited_strings(text_query_terms, limit.saturating_mul(2).max(1)),
+        "ignored_prose_terms": unique_limited_strings(ignored_prose_terms, limit.saturating_mul(2).max(1)),
+        "role_task_terms": unique_limited_strings(role_task_terms, limit.saturating_mul(2).max(1)),
+        "rejected_exact_seed_candidates": rejected_exact_candidates,
+        "seed_hygiene_contract": "prompt-derived exact graph seeds must resolve through graph dictionaries or be explicitly quoted; nonmatching prose remains text evidence or ignored intent"
+    }))
+}
+
+fn context_pack_prompt_seed_syntactic_exact_value(seed: &PromptSeed) -> Option<String> {
+    let value = seed.exact_value()?;
+    if context_pack_prompt_seed_is_generic_prose(&value) {
+        return None;
+    }
+    match seed.kind {
+        PromptSeedKind::Symbol
+        | PromptSeedKind::TestName
+        | PromptSeedKind::Identifier
+        | PromptSeedKind::ConfigToken => Some(value),
+        PromptSeedKind::FilePath
+        | PromptSeedKind::LineNumber
+        | PromptSeedKind::StackTrace
+        | PromptSeedKind::PathToken => {
+            if context_pack_prompt_seed_looks_path_like(&value)
+                || context_pack_prompt_seed_source_is_quoted(seed)
+            {
+                Some(value)
+            } else {
+                None
+            }
+        }
+        PromptSeedKind::FilePattern
+        | PromptSeedKind::TextToken
+        | PromptSeedKind::ErrorMessage
+        | PromptSeedKind::TaskVerbIgnored
+        | PromptSeedKind::Unknown => None,
+    }
+}
+
+fn context_pack_prompt_seed_resolves_in_graph(
+    connection: &Connection,
+    value: &str,
+) -> Result<bool, String> {
+    if lookup_i64_if_available(connection, "object_id_lookup", value)?.is_some()
+        || lookup_i64_if_available(connection, "symbol_dict", value)?.is_some()
+        || lookup_i64_if_available(connection, "qualified_name_dict", value)?.is_some()
+        || lookup_i64_if_available(connection, "path_dict", value)?.is_some()
+    {
+        return Ok(true);
+    }
+    let normalized = value.replace('\\', "/");
+    if normalized != value
+        && lookup_i64_if_available(connection, "path_dict", &normalized)?.is_some()
+    {
+        return Ok(true);
+    }
+    if let Some((path, line)) = normalized.rsplit_once(':') {
+        if !path.is_empty()
+            && line.chars().all(|character| character.is_ascii_digit())
+            && lookup_i64_if_available(connection, "path_dict", path)?.is_some()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn lookup_i64_if_available(
+    connection: &Connection,
+    table: &str,
+    value: &str,
+) -> Result<Option<i64>, String> {
+    match lookup_i64(connection, table, value) {
+        Ok(value) => Ok(value),
+        Err(error)
+            if error.contains("no such table")
+                || error.contains("no such column")
+                || error.contains("no such view") =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn context_pack_prompt_seed_source_is_quoted(seed: &PromptSeed) -> bool {
+    let source = seed.source_text.trim();
+    source.len() >= 2
+        && ((source.starts_with('"') && source.ends_with('"'))
+            || (source.starts_with('\'') && source.ends_with('\''))
+            || (source.starts_with('`') && source.ends_with('`')))
+}
+
+fn context_pack_prompt_seed_looks_path_like(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    value.contains('/')
+        || value.contains('\\')
+        || [
+            ".rs",
+            ".py",
+            ".js",
+            ".jsx",
+            ".ts",
+            ".tsx",
+            ".go",
+            ".java",
+            ".kt",
+            ".cs",
+            ".cpp",
+            ".c",
+            ".h",
+            ".hpp",
+            ".sql",
+            ".json",
+            ".toml",
+            ".yaml",
+            ".yml",
+            ".md",
+            ".mk",
+            ".adoc",
+            ".asciidoc",
+            ".sh",
+        ]
+        .iter()
+        .any(|extension| lower.ends_with(extension))
+}
+
+fn context_pack_prompt_seed_is_generic_prose(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "markdown"
+            | "function"
+            | "functions"
+            | "file"
+            | "files"
+            | "code"
+            | "build"
+            | "package"
+            | "packages"
+            | "docs"
+            | "doc"
+            | "documentation"
+            | "module"
+            | "modules"
+            | "crate"
+            | "crates"
+            | "repo"
+            | "repository"
+            | "project"
+            | "agent-use"
+            | "agent"
+            | "routing"
+            | "route"
+            | "context"
+            | "packet"
+            | "pack"
+    )
 }
 
 pub(crate) fn unique_limited_strings(
@@ -5711,6 +6023,20 @@ pub(crate) fn context_pack_retrieval_explain_json(
     );
     explain.insert("seeds_extracted".to_string(), json!(seeds_extracted));
     explain.insert("ignored_seeds".to_string(), json!(ignored_seeds));
+    explain.insert(
+        "seed_hygiene".to_string(),
+        packet
+            .metadata
+            .get("prompt_seed_hygiene")
+            .cloned()
+            .unwrap_or_else(|| {
+                json!({
+                    "schema_version": 1,
+                    "diagnostic_only": true,
+                    "status": "unavailable"
+                })
+            }),
+    );
     explain.insert("candidate_sources".to_string(), json!(candidate_sources));
     explain.insert("traversal_mode".to_string(), traversal_mode);
     explain.insert("relation_allowlist".to_string(), relation_allowlist);
@@ -5919,6 +6245,24 @@ pub(crate) fn context_pack_retrieval_explain_budget_summary(
             .get("graph_proof")
             .cloned()
             .unwrap_or(Value::Null),
+        "seed_hygiene": retrieval_explain
+            .get("seed_hygiene")
+            .cloned()
+            .unwrap_or_else(|| {
+                json!({
+                    "schema_version": 1,
+                    "diagnostic_only": true,
+                    "status": "unavailable"
+                })
+            }),
+        "seeds_extracted": retrieval_explain
+            .get("seeds_extracted")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+        "ignored_seeds": retrieval_explain
+            .get("ignored_seeds")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
         "ranking_reasons": {
             "available_in_full_explain": true,
             "omitted_by_explain_debug_budget": true
@@ -5928,6 +6272,52 @@ pub(crate) fn context_pack_retrieval_explain_budget_summary(
             "fallback snippets and likely files are not pruned to make room for full explain payload"
         ]
     })
+}
+
+pub(crate) fn context_pack_seed_hygiene_summary_json(retrieval_explain: &Value) -> Option<Value> {
+    let seed_hygiene = retrieval_explain.get("seed_hygiene")?;
+    let accepted = seed_hygiene
+        .get("accepted_exact_seeds")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.get("seed")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .or_else(|| item.as_str().map(str::to_string))
+                })
+                .take(8)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let ignored = seed_hygiene
+        .get("ignored_prose_terms")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .take(12)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let rejected_count = seed_hygiene
+        .get("rejected_exact_seed_candidates")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    Some(json!({
+        "schema_version": 1,
+        "diagnostic_only": true,
+        "status": "available",
+        "accepted_exact_seeds": accepted,
+        "ignored_prose_terms": ignored,
+        "rejected_exact_seed_candidate_count": rejected_count,
+        "proof_contract": "seed hygiene is diagnostic provenance only; it does not create graph proof"
+    }))
 }
 
 pub(crate) fn context_pack_no_proof_fallback_status(
@@ -6660,8 +7050,17 @@ pub(crate) fn context_pack_agent_json_response(
     if let Some(retrieval_explain) = retrieval_explain {
         let mut explain_response = response.clone();
         let full_explain_bytes = serialized_json_len(&retrieval_explain);
+        let seed_hygiene_summary = context_pack_seed_hygiene_summary_json(&retrieval_explain);
+        if let Some(object) = response.as_object_mut() {
+            if let Some(summary) = seed_hygiene_summary.clone() {
+                object.insert("seed_hygiene_summary".to_string(), summary);
+            }
+        }
         if let Some(object) = explain_response.as_object_mut() {
             object.insert("retrieval_explain".to_string(), retrieval_explain.clone());
+            if let Some(summary) = seed_hygiene_summary.clone() {
+                object.insert("seed_hygiene_summary".to_string(), summary);
+            }
             object.insert(
                 "explain_budget_status".to_string(),
                 json!({
@@ -7827,6 +8226,13 @@ pub(crate) fn enforce_context_agent_max_output_bytes(
         }
         let mut removed_compact_field = false;
         for key in [
+            "stale_evidence",
+            "refreshed_evidence",
+            "unavailable_evidence",
+            "stale_non_proof_reasons",
+            "sidecar_statuses",
+            "proof_ladder_change_counts",
+            "severity_effect",
             "candidate_source_counts",
             "candidate_omitted_reason",
             "candidate_exact_seed_cap_override",
@@ -7920,6 +8326,10 @@ pub(crate) fn enforce_context_agent_max_output_bytes(
         // so it is the last narrative section to go.
         if remove_context_agent_field(response, "planning_packet") {
             omitted.planning_packet += 1;
+            continue;
+        }
+        if remove_context_agent_field(response, "fallback_snippets") {
+            omitted.snippets += 1;
             continue;
         }
         // The minimal patch_assist stub (first_use_state / graph_proof) is the
@@ -8340,6 +8750,23 @@ pub(crate) fn update_context_agent_truncation(
         .map(|bytes| bytes.len())
         .unwrap_or_default();
     if let Some(object) = response.as_object_mut() {
+        let budget_max_output_bytes = object
+            .get("agent_json_budget")
+            .and_then(|budget| budget.get("max_output_bytes"))
+            .and_then(Value::as_u64)
+            .map(|value| value as usize);
+        if let Some(budget) = object
+            .get_mut("agent_json_budget")
+            .and_then(Value::as_object_mut)
+        {
+            budget.insert("output_bytes".to_string(), json!(byte_count));
+            budget.insert(
+                "max_output_bytes_exceeded".to_string(),
+                json!(budget_max_output_bytes
+                    .map(|max| byte_count > max)
+                    .unwrap_or(max_output_bytes_exceeded)),
+            );
+        }
         object.insert("omitted_count".to_string(), json!(omitted_count));
         object.insert("omitted_by_budget".to_string(), json!(omitted_by_budget));
         if let Some(status) = object

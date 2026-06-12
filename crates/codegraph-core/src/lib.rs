@@ -31,7 +31,8 @@ pub use kinds::{
 };
 pub use model::{
     classify_edge_evidence_role, classify_entity_source_role, combine_evidence_roles,
-    infer_edge_class, infer_edge_context, normalize_edge_classification, ContextPacket,
+    entity_kind_defines_symbol, infer_edge_class, infer_edge_context,
+    normalize_edge_classification, ContextPacket,
     ContextSnippet, DerivedClosureEdge, Edge, Entity, EvidenceRoleDecision, FileRecord, Metadata,
     PathEvidence, RepoIndexState, RetrievalCandidate, RetrievalCandidateLifecycleBinding,
     RetrievalCandidateLifecycleStatus, RetrievalCandidateSource, RetrievalProofStatus,
@@ -42,7 +43,8 @@ pub use normalized::{
     NormalizedEntityFact, NormalizedFactChangeSet, NormalizedFactEnvelope, NormalizedFactKind,
     NormalizedFactOmission, NormalizedFileFact, NormalizedLifecycleMetadata,
     NormalizedPathEvidenceFact, NormalizedSidecarFreshnessFact, NormalizedSourceRoleFact,
-    NormalizedSourceSpanFact, NormalizedTextEvidenceFact, NORMALIZED_FACT_SCHEMA_VERSION,
+    NormalizedSourceSpanFact, NormalizedTextEvidenceFact, NormalizedUnresolvedReferenceFact,
+    NORMALIZED_FACT_SCHEMA_VERSION,
 };
 pub use validation::{
     aggregate_final_validation_status, classify_validation_finding,

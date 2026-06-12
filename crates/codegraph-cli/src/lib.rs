@@ -48,25 +48,29 @@ pub use codegraph_index::{
     default_db_path, graph_fact_hash, index_repo, index_repo_to_db_with_options,
     index_repo_with_options, inspect_db_lifecycle_preflight,
     inspect_db_lifecycle_surface_preflight, inspect_repo_db_passport, load_vector_chunk_index_json,
-    normalize_changed_path, parse_extract_pending_files, query_candidate_spool_index_for_repo,
-    rebuild_candidate_spool_query_index_for_repo, refresh_index_profile_derived_fields,
-    require_reusable_db_passport, rtds_dependency_closure_for_changed_paths_to_db,
-    scope_policy_hash, should_ignore_path, should_start_new_index_batch,
-    snapshot_normalized_facts_for_paths_to_db, update_changed_files, update_changed_files_to_db,
-    update_changed_files_with_cache, update_changed_files_with_cache_to_db,
-    validate_edit_changed_files_preflight_with_scope, validate_vector_chunk_source_bindings,
-    vector_chunk_search_hit_to_retrieval_candidate, CandidateSpoolIndexLoad,
-    CandidateSpoolIndexQueryResult, CandidateSpoolPolicy, DbLifecycleOperationKind,
-    DbLifecyclePolicy, DbLifecyclePreflight, DbLifecycleSurfacePreflight,
+    normalize_changed_path, open_normalized_fact_snapshot_session, parse_extract_pending_files,
+    query_candidate_spool_index_for_repo, rebuild_candidate_spool_query_index_for_repo,
+    refresh_index_profile_derived_fields, require_reusable_db_passport,
+    rtds_dependency_closure_for_changed_paths_to_db, scope_policy_hash, should_ignore_path,
+    should_start_new_index_batch, snapshot_normalized_facts_for_paths_to_db, update_changed_files,
+    update_changed_files_to_db, update_changed_files_with_cache,
+    update_changed_files_with_cache_to_db, validate_edit_changed_files_preflight_with_scope,
+    validate_vector_chunk_source_bindings, vector_chunk_search_hit_to_retrieval_candidate,
+    CandidateSpoolIndexLoad, CandidateSpoolIndexQueryResult, CandidateSpoolPolicy,
+    DbLifecycleOperationKind, DbLifecyclePolicy, DbLifecyclePreflight, DbLifecycleSurfacePreflight,
     DbLifecycleSurfacePreflightRequest, EntitySourceRoleDeltaOptions, EntitySourceRoleDeltaReport,
     FreshnessLayerDelta, IncrementalIndexCache, IncrementalIndexSummary, IndexBuildMode,
     IndexError, IndexIssue, IndexOptions, IndexProfile, IndexScopeOptions, IndexSummary,
-    LocalFactBundle, NormalizedFactSnapshotOptions, PendingIndexFile, StorageMode,
+    LocalFactBundle, NormalizedFactSnapshotOptions, NormalizedFactSnapshotSession,
+    PendingIndexFile, StorageMode, UnresolvedReferenceDeltaEntry,
     ValidateEditChangedFilesPreflight, VectorChunkArtifactFormat, VectorChunkIndexArtifactOptions,
     VectorChunkIndexBuildOptions, DEFAULT_ENTITY_SOURCE_ROLE_DELTA_TOP_LIMIT,
     DEFAULT_INDEX_BATCH_MAX_FILES, DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY,
-    INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES, SCOPE_POLICY_KIND_DEFAULT_WITH_OVERRIDES,
-    SCOPE_TRUTH_STATUS_OVERRIDE_ONLY, UNBOUNDED_STORE_READ_LIMIT,
+    INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES, REFERENCE_CLASS_BUILTIN_OR_STD,
+    REFERENCE_CLASS_DYNAMIC_OR_COMPUTED, REFERENCE_CLASS_EXTERNAL_DEPENDENCY,
+    REFERENCE_CLASS_MACRO_OR_CODEGEN, REFERENCE_CLASS_REPO_LOCAL_CANDIDATE,
+    SCOPE_POLICY_KIND_DEFAULT_WITH_OVERRIDES, SCOPE_TRUTH_STATUS_OVERRIDE_ONLY,
+    UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::{
     content_hash, detect_language, extract_entities_and_relations, language_frontends,
@@ -5244,7 +5248,8 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
 
     let budgets = ContextPackBudgets::for_options(&options);
     let seed_start = Instant::now();
-    let raw_seed_values = context_pack_seed_values(&options, budgets.max_seed_entities);
+    let raw_seed_values =
+        context_pack_seed_values_for_connection(&connection, &options, budgets.max_seed_entities)?;
     let seed_entities =
         resolve_context_seed_entities(&connection, &raw_seed_values, budgets.max_seed_entities)?;
     let seed_ids = context_seed_ids(&raw_seed_values, &seed_entities, budgets.max_seed_entities);
@@ -5522,6 +5527,14 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
         budgets,
         stored_path_count,
         requested_span_count,
+    );
+    packet.metadata.insert(
+        "prompt_seed_hygiene".to_string(),
+        context_pack_prompt_seed_hygiene_json(
+            &connection,
+            &options.task,
+            budgets.max_seed_entities,
+        )?,
     );
     packet.metadata.insert(
         "path_evidence_telemetry".to_string(),

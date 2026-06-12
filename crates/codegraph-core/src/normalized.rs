@@ -21,6 +21,7 @@ pub enum NormalizedFactKind {
     TextEvidence,
     PathEvidence,
     SidecarFreshness,
+    UnresolvedReference,
 }
 
 impl NormalizedFactKind {
@@ -34,6 +35,7 @@ impl NormalizedFactKind {
             Self::TextEvidence => "text_evidence",
             Self::PathEvidence => "path_evidence",
             Self::SidecarFreshness => "sidecar_freshness",
+            Self::UnresolvedReference => "unresolved_reference",
         }
     }
 }
@@ -687,6 +689,89 @@ impl NormalizedSidecarFreshnessFact {
     }
 }
 
+/// A persisted unresolved-reference lane row normalized for snapshot/delta
+/// use. Explicitly non-proof: an unresolved reference is the absence of a
+/// link, and must never feed proof-ladder rungs above text/candidate evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NormalizedUnresolvedReferenceFact {
+    pub stable_identity_key: String,
+    pub fact_hash: String,
+    pub fact_kind: NormalizedFactKind,
+    pub repo_relative_path: String,
+    pub file_id: String,
+    pub reference_id: String,
+    pub name: String,
+    pub relation: RelationKind,
+    pub source_span: SourceSpan,
+    pub reference_class: String,
+    pub exactness: Exactness,
+    pub extractor: String,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub lifecycle: NormalizedLifecycleMetadata,
+}
+
+impl NormalizedUnresolvedReferenceFact {
+    pub fn new(
+        reference_id: impl Into<String>,
+        name: impl Into<String>,
+        relation: RelationKind,
+        source_span: SourceSpan,
+        reference_class: impl Into<String>,
+        exactness: Exactness,
+        extractor: impl Into<String>,
+    ) -> Self {
+        let reference_id = reference_id.into();
+        let name = name.into();
+        let reference_class = reference_class.into();
+        let extractor = extractor.into();
+        let repo_relative_path = normalize_repo_relative_path(&source_span.repo_relative_path);
+        let file_id = repo_relative_path.clone();
+        let span_key = span_key(&source_span);
+        // Spec identity key: (path, span, relation, name).
+        let identity_values = [
+            repo_relative_path.clone(),
+            span_key.clone(),
+            relation.to_string(),
+            name.clone(),
+        ];
+        let hash_values = [
+            repo_relative_path.clone(),
+            span_key,
+            relation.to_string(),
+            name.clone(),
+            reference_class.clone(),
+            exactness.to_string(),
+            extractor.clone(),
+        ];
+        Self {
+            stable_identity_key: stable_fact_identity_key(
+                NormalizedFactKind::UnresolvedReference.as_str(),
+                identity_values.iter().map(String::as_str),
+            ),
+            fact_hash: stable_fact_hash(
+                NormalizedFactKind::UnresolvedReference.as_str(),
+                hash_values.iter().map(String::as_str),
+            ),
+            fact_kind: NormalizedFactKind::UnresolvedReference,
+            repo_relative_path,
+            file_id,
+            reference_id,
+            name,
+            relation,
+            source_span,
+            reference_class,
+            exactness,
+            extractor,
+            claimability: NormalizedClaimabilityMetadata::claimable_non_graph(
+                "unresolved reference is absence of a link; claimable as source-text reference only, never graph proof",
+            ),
+            lifecycle: NormalizedLifecycleMetadata::current(
+                "normalized_unresolved_reference_fact_v1",
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct NormalizedFactEnvelope {
     pub stable_identity_key: String,
@@ -730,6 +815,7 @@ impl_envelope_from_fact!(NormalizedSourceRoleFact);
 impl_envelope_from_fact!(NormalizedTextEvidenceFact);
 impl_envelope_from_fact!(NormalizedPathEvidenceFact);
 impl_envelope_from_fact!(NormalizedSidecarFreshnessFact);
+impl_envelope_from_fact!(NormalizedUnresolvedReferenceFact);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NormalizedFactChangeSet {

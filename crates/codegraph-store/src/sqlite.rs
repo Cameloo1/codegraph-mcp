@@ -154,6 +154,20 @@ pub struct EntityFeatureRow {
     pub claimability: String,
 }
 
+/// One persisted unresolved-reference lane row (an explicitly non-proof fact:
+/// a reference the extractor saw but could not link to a definition).
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnresolvedReferenceRecord {
+    pub reference_id: String,
+    pub name: String,
+    pub relation: RelationKind,
+    pub source_span: SourceSpan,
+    pub file_hash: Option<String>,
+    pub exactness: Exactness,
+    pub extractor: String,
+    pub metadata: Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeFeatureRow {
     pub edge_id: String,
@@ -587,6 +601,17 @@ pub struct SqliteGraphStore {
     connection: Connection,
     dictionary_cache: RefCell<DictionaryInternCache>,
     entity_file_cache: RefCell<BTreeMap<i64, Vec<String>>>,
+    // MVP3.9.5.3: instance-lifetime read caches, enabled only for read-only
+    // connections opened with SQLite's `immutable` assumption (the file
+    // cannot change under this connection, so caching rows is exactly as
+    // correct as SQLite's own page cache), or explicitly via
+    // `enable_session_read_caches` when the caller owns the no-concurrent-
+    // writer guarantee for the store's lifetime.
+    read_cache_enabled: bool,
+    read_entity_cache: RefCell<BTreeMap<String, Option<Entity>>>,
+    read_edge_cache: RefCell<BTreeMap<String, Option<Edge>>>,
+    read_edges_by_file_cache: RefCell<BTreeMap<String, Vec<Edge>>>,
+    read_entities_by_file_cache: RefCell<BTreeMap<String, Vec<Entity>>>,
 }
 
 #[derive(Debug, Default)]
@@ -595,6 +620,10 @@ struct DictionaryInternCache {
     entity_ids: BTreeMap<String, i64>,
     file_ids: BTreeMap<String, CachedFileIds>,
     content_templates: BTreeMap<(String, i64), i64>,
+    // MVP3.9.5.3: once-per-store check that file_fts_rows fully maps
+    // stage0_fts, so a file with no mapped rows can skip the per-path
+    // full-FTS-scan fallback (legacy DBs without a complete map keep it).
+    fts_file_map_authoritative: Option<bool>,
     next_dense_entity_id: Option<i64>,
 }
 
@@ -614,6 +643,11 @@ impl SqliteGraphStore {
             connection,
             dictionary_cache: RefCell::new(DictionaryInternCache::default()),
             entity_file_cache: RefCell::new(BTreeMap::new()),
+            read_cache_enabled: false,
+            read_entity_cache: RefCell::new(BTreeMap::new()),
+            read_edge_cache: RefCell::new(BTreeMap::new()),
+            read_edges_by_file_cache: RefCell::new(BTreeMap::new()),
+            read_entities_by_file_cache: RefCell::new(BTreeMap::new()),
         };
         let configure_start = Instant::now();
         store.configure()?;
@@ -641,12 +675,36 @@ impl SqliteGraphStore {
             PRAGMA busy_timeout = 5000;
             ",
         )?;
+        connection.set_prepared_statement_cache_capacity(64);
         register_sqlite_functions(&connection)?;
         Ok(Self {
             connection,
             dictionary_cache: RefCell::new(DictionaryInternCache::default()),
             entity_file_cache: RefCell::new(BTreeMap::new()),
+            read_cache_enabled: immutable,
+            read_entity_cache: RefCell::new(BTreeMap::new()),
+            read_edge_cache: RefCell::new(BTreeMap::new()),
+            read_edges_by_file_cache: RefCell::new(BTreeMap::new()),
+            read_entities_by_file_cache: RefCell::new(BTreeMap::new()),
         })
+    }
+
+    pub fn read_cache_enabled(&self) -> bool {
+        self.read_cache_enabled
+    }
+
+    /// Enables the instance-lifetime row caches on a read-only store whose
+    /// caller guarantees no writer mutates the DB for this store's lifetime
+    /// (e.g. one phase of an agent-use run, which owns the profile's
+    /// publish-state writer exclusion). The `immutable` open already enables
+    /// them automatically; this exists because a run's earlier write phase
+    /// leaves WAL sidecars on disk, which makes the immutable open unsafe
+    /// even though the session itself is single-writer. The connection stays
+    /// a normal (locking) reader; only row-level memoization is added.
+    pub fn enable_session_read_caches(&mut self) {
+        if self.connection.is_readonly(rusqlite::DatabaseName::Main).unwrap_or(false) {
+            self.read_cache_enabled = true;
+        }
     }
 
     pub fn open_in_memory() -> StoreResult<Self> {
@@ -654,10 +712,53 @@ impl SqliteGraphStore {
             connection: Connection::open_in_memory()?,
             dictionary_cache: RefCell::new(DictionaryInternCache::default()),
             entity_file_cache: RefCell::new(BTreeMap::new()),
+            read_cache_enabled: false,
+            read_entity_cache: RefCell::new(BTreeMap::new()),
+            read_edge_cache: RefCell::new(BTreeMap::new()),
+            read_edges_by_file_cache: RefCell::new(BTreeMap::new()),
+            read_entities_by_file_cache: RefCell::new(BTreeMap::new()),
         };
         store.configure()?;
         store.migrate()?;
         Ok(store)
+    }
+
+    /// Memoized read-path variant of `lookup_object_id` (MVP3.9.5.3): the
+    /// validation read path resolves the same entity ids once per edge, and
+    /// the value→id_key mapping is stable for an open connection. Misses are
+    /// not cached (absent entities must stay re-checkable after writes).
+    fn lookup_object_id_memoized(&self, value: &str) -> StoreResult<Option<i64>> {
+        if let Some(id) = self.dictionary_cache.borrow().entity_ids.get(value).copied() {
+            return Ok(Some(id));
+        }
+        let resolved = lookup_object_id(&self.connection, value)?;
+        if let Some(id) = resolved {
+            self.dictionary_cache
+                .borrow_mut()
+                .entity_ids
+                .insert(value.to_string(), id);
+        }
+        Ok(resolved)
+    }
+
+    /// True when `file_fts_rows` fully maps `stage0_fts` (one map row per
+    /// FTS row — the single FTS write path keeps them in sync), making "no
+    /// mapped rows for this file" proof of "no FTS rows for this file".
+    /// Computed once per store instance; legacy DBs built before the map
+    /// existed return false and keep the per-path scan fallback.
+    fn fts_file_map_is_authoritative(&self) -> StoreResult<bool> {
+        if let Some(cached) = self.dictionary_cache.borrow().fts_file_map_authoritative {
+            return Ok(cached);
+        }
+        let map_rows: i64 =
+            self.connection
+                .query_row("SELECT COUNT(*) FROM file_fts_rows", [], |row| row.get(0))?;
+        let fts_rows: i64 =
+            self.connection
+                .query_row("SELECT COUNT(*) FROM stage0_fts", [], |row| row.get(0))?;
+        let authoritative = map_rows == fts_rows;
+        self.dictionary_cache.borrow_mut().fts_file_map_authoritative = Some(authoritative);
+        Ok(authoritative)
     }
 
     pub fn transaction<T>(&self, f: impl FnOnce(&Self) -> StoreResult<T>) -> StoreResult<T> {
@@ -1528,6 +1629,59 @@ impl SqliteGraphStore {
         collect_rows(rows)
     }
 
+    pub fn list_unresolved_references_by_file(
+        &self,
+        repo_relative_path: &str,
+    ) -> StoreResult<Vec<UnresolvedReferenceRecord>> {
+        if !self.table_exists("unresolved_references")? {
+            return Ok(Vec::new());
+        }
+        let mut statement = self.connection.prepare_cached(
+            "
+            SELECT reference_id, name, relation,
+                   source_span_path AS span_repo_relative_path,
+                   start_line, start_column, end_line, end_column,
+                   file_hash, exactness, extractor, metadata_json
+            FROM unresolved_references
+            WHERE source_span_path = ?1
+            ORDER BY start_line, start_column, reference_id
+            ",
+        )?;
+        let rows = statement.query_map(
+            [normalize_repo_relative_path(repo_relative_path)],
+            unresolved_reference_from_row,
+        )?;
+        collect_rows(rows)
+    }
+
+    /// Returns `(warning, metadata)` rows for one file, ordered by warning text.
+    pub fn list_extraction_warnings_by_file(
+        &self,
+        repo_relative_path: &str,
+    ) -> StoreResult<Vec<(String, Value)>> {
+        if !self.table_exists("extraction_warnings")? {
+            return Ok(Vec::new());
+        }
+        let mut statement = self.connection.prepare_cached(
+            "
+            SELECT warning, metadata_json
+            FROM extraction_warnings
+            WHERE repo_relative_path = ?1
+            ORDER BY warning
+            ",
+        )?;
+        let rows = statement.query_map(
+            [normalize_repo_relative_path(repo_relative_path)],
+            |row| {
+                Ok((
+                    row.get::<_, String>("warning")?,
+                    json_column_by_name(row, "metadata_json")?,
+                ))
+            },
+        )?;
+        collect_rows(rows)
+    }
+
     pub fn insert_source_span_after_file_delete(
         &self,
         id: &str,
@@ -2156,6 +2310,10 @@ impl SqliteGraphStore {
             PRAGMA busy_timeout = 5000;
             ",
         )?;
+        // The hot read path keeps several large UNION selects plus many small
+        // point lookups cached; the default 16-slot LRU thrashes them
+        // (MVP3.9.5.3 read-path perf).
+        self.connection.set_prepared_statement_cache_capacity(64);
         register_sqlite_functions(&self.connection)?;
         Ok(())
     }
@@ -2223,6 +2381,7 @@ impl SqliteGraphStore {
 
 impl GraphStore for SqliteGraphStore {
     fn migrate(&self) -> StoreResult<()> {
+        ensure_entity_hash_read_index(&self.connection)?;
         let current_version: u32 = self
             .connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -2348,18 +2507,34 @@ impl GraphStore for SqliteGraphStore {
     }
 
     fn get_entity(&self, id: &str) -> StoreResult<Option<Entity>> {
-        let Some(id_key) = lookup_object_id(&self.connection, id)? else {
-            return find_synthesized_template_entity(&self.connection, id);
-        };
-        let physical = self
-            .connection
-            .query_row(ENTITY_SELECT_BY_ID, [id_key], entity_from_row)
-            .optional()
-            .map_err(StoreError::from)?;
-        if physical.is_some() {
-            return Ok(physical);
+        if self.read_cache_enabled {
+            if let Some(cached) = self.read_entity_cache.borrow().get(id) {
+                return Ok(cached.clone());
+            }
         }
-        find_synthesized_template_entity(&self.connection, id)
+        let resolved = (|| -> StoreResult<Option<Entity>> {
+            let Some(id_key) = self.lookup_object_id_memoized(id)? else {
+                return find_synthesized_template_entity(&self.connection, id);
+            };
+            // prepare_cached: this large UNION select is re-issued per entity
+            // on the validation read path (MVP3.9.5.3).
+            let physical = self
+                .connection
+                .prepare_cached(ENTITY_SELECT_BY_ID)?
+                .query_row([id_key], entity_from_row)
+                .optional()
+                .map_err(StoreError::from)?;
+            if physical.is_some() {
+                return Ok(physical);
+            }
+            find_synthesized_template_entity(&self.connection, id)
+        })()?;
+        if self.read_cache_enabled {
+            self.read_entity_cache
+                .borrow_mut()
+                .insert(id.to_string(), resolved.clone());
+        }
+        Ok(resolved)
     }
 
     fn delete_entity(&self, id: &str) -> StoreResult<bool> {
@@ -2376,15 +2551,34 @@ impl GraphStore for SqliteGraphStore {
     }
 
     fn list_entities_by_file(&self, repo_relative_path: &str) -> StoreResult<Vec<Entity>> {
-        let Some(path_id) = lookup_path(&self.connection, repo_relative_path)? else {
-            return Ok(Vec::new());
-        };
-        let mut statement = self.connection.prepare(ENTITY_SELECT_BY_FILE)?;
-        let rows = statement.query_map([path_id], entity_from_row)?;
-        let mut entities = collect_rows(rows)?;
-        if let Some(instance) = template_instance_for_file(&self.connection, repo_relative_path)? {
-            entities.extend(template_entities_for_instance(&self.connection, &instance)?);
-            dedupe_entities(&mut entities);
+        if self.read_cache_enabled {
+            if let Some(cached) = self
+                .read_entities_by_file_cache
+                .borrow()
+                .get(repo_relative_path)
+            {
+                return Ok(cached.clone());
+            }
+        }
+        let entities = (|| -> StoreResult<Vec<Entity>> {
+            let Some(path_id) = lookup_path(&self.connection, repo_relative_path)? else {
+                return Ok(Vec::new());
+            };
+            let mut statement = self.connection.prepare(ENTITY_SELECT_BY_FILE)?;
+            let rows = statement.query_map([path_id], entity_from_row)?;
+            let mut entities = collect_rows(rows)?;
+            if let Some(instance) =
+                template_instance_for_file(&self.connection, repo_relative_path)?
+            {
+                entities.extend(template_entities_for_instance(&self.connection, &instance)?);
+                dedupe_entities(&mut entities);
+            }
+            Ok(entities)
+        })()?;
+        if self.read_cache_enabled {
+            self.read_entities_by_file_cache
+                .borrow_mut()
+                .insert(repo_relative_path.to_string(), entities.clone());
         }
         Ok(entities)
     }
@@ -2419,18 +2613,34 @@ impl GraphStore for SqliteGraphStore {
     }
 
     fn get_edge(&self, id: &str) -> StoreResult<Option<Edge>> {
-        let Some(id_key) = edge_lookup_key(&self.connection, id)? else {
-            return find_synthesized_template_edge(&self.connection, id);
-        };
-        let physical = self
-            .connection
-            .query_row(EDGE_SELECT_BY_ID, [id_key], edge_from_row)
-            .optional()
-            .map_err(StoreError::from)?;
-        if physical.is_some() {
-            return Ok(physical);
+        if self.read_cache_enabled {
+            if let Some(cached) = self.read_edge_cache.borrow().get(id) {
+                return Ok(cached.clone());
+            }
         }
-        find_synthesized_template_edge(&self.connection, id)
+        let resolved = (|| -> StoreResult<Option<Edge>> {
+            let Some(id_key) = edge_lookup_key(&self.connection, id)? else {
+                return find_synthesized_template_edge(&self.connection, id);
+            };
+            // prepare_cached: this large UNION select is re-issued per edge on
+            // the validation read path (MVP3.9.5.3).
+            let physical = self
+                .connection
+                .prepare_cached(EDGE_SELECT_BY_ID)?
+                .query_row([id_key], edge_from_row)
+                .optional()
+                .map_err(StoreError::from)?;
+            if physical.is_some() {
+                return Ok(physical);
+            }
+            find_synthesized_template_edge(&self.connection, id)
+        })()?;
+        if self.read_cache_enabled {
+            self.read_edge_cache
+                .borrow_mut()
+                .insert(id.to_string(), resolved.clone());
+        }
+        Ok(resolved)
     }
 
     fn delete_edge(&self, id: &str) -> StoreResult<bool> {
@@ -2493,6 +2703,12 @@ impl GraphStore for SqliteGraphStore {
 
     fn list_edges_by_file(&self, repo_relative_path: &str) -> StoreResult<Vec<Edge>> {
         let repo_relative_path = normalize_repo_relative_path(repo_relative_path);
+        if self.read_cache_enabled {
+            if let Some(cached) = self.read_edges_by_file_cache.borrow().get(&repo_relative_path)
+            {
+                return Ok(cached.clone());
+            }
+        }
         let mut edge_ids = edge_ids_for_file_map(&self.connection, &repo_relative_path)?;
         if edge_ids.is_empty() {
             if let Some(path_id) = lookup_path(&self.connection, &repo_relative_path)? {
@@ -2502,15 +2718,78 @@ impl GraphStore for SqliteGraphStore {
         edge_ids.sort();
         edge_ids.dedup();
 
-        let mut edges = Vec::new();
-        for edge_id in edge_ids {
-            if let Some(edge) = self.get_edge(&edge_id)? {
+        // Batched hydration (MVP3.9.5.3): ids whose compact key has a fact
+        // row are hydrated via chunked IN-queries; everything else (legacy
+        // object-id mappings, synthesized template edges) keeps the exact
+        // per-id `get_edge` semantics on the cold path.
+        let compact_keys = edge_ids
+            .iter()
+            .map(|id| compact_edge_key(id))
+            .collect::<Vec<_>>();
+        let existing_compact = existing_edge_fact_keys(&self.connection, &compact_keys)?;
+        let mut resolved_keys = Vec::new();
+        let mut cold_ids = Vec::new();
+        let mut id_by_key = BTreeMap::<i64, Vec<&str>>::new();
+        for (edge_id, compact_key) in edge_ids.iter().zip(compact_keys.iter()) {
+            if existing_compact.contains(compact_key) {
+                resolved_keys.push(*compact_key);
+                id_by_key.entry(*compact_key).or_default().push(edge_id);
+            } else {
+                cold_ids.push(edge_id.as_str());
+            }
+        }
+        resolved_keys.sort_unstable();
+        resolved_keys.dedup();
+        let (mut edges, hydrated_keys) = edges_by_id_keys(&self.connection, &resolved_keys)?;
+        for key in resolved_keys {
+            if !hydrated_keys.contains(&key) {
+                cold_ids.extend(id_by_key.get(&key).into_iter().flatten());
+            }
+        }
+        for edge_id in cold_ids {
+            if let Some(edge) = self.get_edge(edge_id)? {
                 edges.push(edge);
             }
         }
         dedupe_edges(&mut edges);
         edges.sort_by(|left, right| left.id.cmp(&right.id));
+        if self.read_cache_enabled {
+            self.read_edges_by_file_cache
+                .borrow_mut()
+                .insert(repo_relative_path, edges.clone());
+        }
         Ok(edges)
+    }
+
+    fn list_edges_touching_paths(
+        &self,
+        repo_relative_paths: &[String],
+        limit: usize,
+    ) -> StoreResult<Vec<Edge>> {
+        if limit == 0 || repo_relative_paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut path_ids = Vec::new();
+        for path in repo_relative_paths {
+            let normalized = normalize_repo_relative_path(path);
+            if let Some(path_id) = lookup_path(&self.connection, &normalized)? {
+                path_ids.push(path_id);
+            }
+        }
+        path_ids.sort_unstable();
+        path_ids.dedup();
+        if path_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = vec!["?"; path_ids.len()].join(",");
+        let sql = EDGE_SELECT_TOUCHING_PATHS_TEMPLATE.replace("{path_ids}", &placeholders);
+        let mut params = path_ids;
+        params.push(limit as i64);
+        query_edges(
+            &self.connection,
+            &sql,
+            rusqlite::params_from_iter(params.iter()),
+        )
     }
 
     fn count_edges(&self) -> StoreResult<u64> {
@@ -2527,7 +2806,7 @@ impl GraphStore for SqliteGraphStore {
         head_id: &str,
         relation: RelationKind,
     ) -> StoreResult<Vec<Edge>> {
-        let Some(head_id_key) = lookup_object_id(&self.connection, head_id)? else {
+        let Some(head_id_key) = self.lookup_object_id_memoized(head_id)? else {
             return synthesized_template_edges_by_relation(
                 &self.connection,
                 Some(head_id),
@@ -2560,7 +2839,7 @@ impl GraphStore for SqliteGraphStore {
                 relation,
             );
         };
-        query_edges(
+        query_edges_cached(
             &self.connection,
             EDGE_SELECT_BY_HEAD_RELATION,
             params![head_id_key, relation_id],
@@ -2582,7 +2861,7 @@ impl GraphStore for SqliteGraphStore {
         tail_id: &str,
         relation: RelationKind,
     ) -> StoreResult<Vec<Edge>> {
-        let Some(tail_id_key) = lookup_object_id(&self.connection, tail_id)? else {
+        let Some(tail_id_key) = self.lookup_object_id_memoized(tail_id)? else {
             return synthesized_template_edges_by_relation(
                 &self.connection,
                 None,
@@ -2615,7 +2894,7 @@ impl GraphStore for SqliteGraphStore {
                 relation,
             );
         };
-        query_edges(
+        query_edges_cached(
             &self.connection,
             EDGE_SELECT_BY_TAIL_RELATION,
             params![tail_id_key, relation_id],
@@ -3159,6 +3438,12 @@ impl GraphStore for SqliteGraphStore {
         let repo_relative_path = normalize_repo_relative_path(repo_relative_path);
         let rowids = fts_rowids_for_file(&self.connection, &repo_relative_path)?;
         if rowids.is_empty() {
+            // A complete rowid map means "no mapped rows" is proof of "no
+            // rows" — skip the per-path full-FTS-scan fallback (MVP3.9.5.3).
+            if self.fts_file_map_is_authoritative()? {
+                return Ok(Vec::new());
+            }
+            let sql_start = Instant::now();
             let mut statement = self.connection.prepare(
                 "
                 SELECT kind, id, repo_relative_path, line, title, body,
@@ -3169,7 +3454,9 @@ impl GraphStore for SqliteGraphStore {
                 ",
             )?;
             let rows = statement.query_map([repo_relative_path], text_search_hit_from_row)?;
-            return collect_rows(rows);
+            let hits = collect_rows(rows);
+            record_sqlite_profile("fts_file_fallback_scan_sql", sql_start.elapsed());
+            return hits;
         }
 
         let mut hits = Vec::new();
@@ -3239,6 +3526,22 @@ impl GraphStore for SqliteGraphStore {
     fn delete_retrieval_trace(&self, id: &str) -> StoreResult<bool> {
         delete_by_id(&self.connection, "retrieval_traces", id)
     }
+}
+
+// MVP3.9.5.3: `lookup_entity_id_by_hash` is the hot read-path id resolver,
+// but the build-time `idx_entities_entity_hash_build` index is dropped after
+// bulk builds — leaving `entity_hash` unindexed (a full `entities` scan per
+// lookup). Recreated permanently here, gated on the column existing so
+// legacy schemas stay untouched.
+fn ensure_entity_hash_read_index(connection: &Connection) -> StoreResult<()> {
+    if exists_in_sqlite_master(connection, "table", "entities")?
+        && table_has_column(connection, "entities", "entity_hash")?
+    {
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_entities_entity_hash ON entities(entity_hash);",
+        )?;
+    }
+    Ok(())
 }
 
 fn exists_in_sqlite_master(
@@ -6056,6 +6359,64 @@ fn edge_lookup_key(connection: &Connection, id: &str) -> StoreResult<Option<i64>
     Ok(None)
 }
 
+// MVP3.9.5.3 batched edge hydration: SQLite parameter budget per chunk.
+const EDGE_ID_BATCH_CHUNK: usize = 500;
+
+/// Returns which of `candidate_keys` exist as edge-fact rows, in chunked
+/// point-lookup queries (the batched form of `edge_fact_row_exists`).
+fn existing_edge_fact_keys(
+    connection: &Connection,
+    candidate_keys: &[i64],
+) -> StoreResult<BTreeSet<i64>> {
+    let mut existing = BTreeSet::new();
+    for chunk in candidate_keys.chunks(EDGE_ID_BATCH_CHUNK) {
+        let placeholders = vec!["(?)"; chunk.len()].join(",");
+        let sql = format!(
+            "WITH wanted(id_key) AS (VALUES {placeholders})
+             SELECT wanted.id_key FROM wanted
+             WHERE EXISTS(SELECT 1 FROM edges WHERE edges.id_key = wanted.id_key)
+                OR EXISTS(SELECT 1 FROM structural_relations WHERE structural_relations.id_key = wanted.id_key)
+                OR EXISTS(SELECT 1 FROM callsites WHERE callsites.id_key = wanted.id_key)
+                OR EXISTS(SELECT 1 FROM callsite_args WHERE callsite_args.id_key = wanted.id_key)"
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+            row.get::<_, i64>(0)
+        })?;
+        for row in rows {
+            existing.insert(row?);
+        }
+    }
+    Ok(existing)
+}
+
+/// Hydrates edges for a set of resolved id_keys in chunked IN-queries
+/// (the batched form of `get_edge`'s physical-row select). Also returns the
+/// keys that produced a row so the caller can route misses through the
+/// per-id cold path.
+fn edges_by_id_keys(
+    connection: &Connection,
+    id_keys: &[i64],
+) -> StoreResult<(Vec<Edge>, BTreeSet<i64>)> {
+    let mut edges = Vec::new();
+    let mut hydrated_keys = BTreeSet::new();
+    for chunk in id_keys.chunks(EDGE_ID_BATCH_CHUNK) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = EDGE_SELECT_BY_ID_SET_TEMPLATE.replace("{id_keys}", &placeholders);
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+            let batch_id_key = row.get::<_, i64>("batch_id_key")?;
+            Ok((batch_id_key, edge_from_row(row)?))
+        })?;
+        for row in rows {
+            let (id_key, edge) = row?;
+            hydrated_keys.insert(id_key);
+            edges.push(edge);
+        }
+    }
+    Ok((edges, hydrated_keys))
+}
+
 fn entity_row_exists(connection: &Connection, id_key: i64) -> StoreResult<bool> {
     let exists = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM entities WHERE id_key = ?1)",
@@ -7795,6 +8156,18 @@ where
     collect_rows(rows)
 }
 
+// For static SQL re-issued per fact on hot read paths; dynamic
+// (format!-built) SQL must use `query_edges` so it does not churn the
+// prepared-statement cache.
+fn query_edges_cached<P>(connection: &Connection, sql: &str, params: P) -> StoreResult<Vec<Edge>>
+where
+    P: rusqlite::Params,
+{
+    let mut statement = connection.prepare_cached(sql)?;
+    let rows = statement.query_map(params, edge_from_row)?;
+    collect_rows(rows)
+}
+
 fn fts_query(query: &str) -> String {
     query
         .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '.'))
@@ -8079,6 +8452,19 @@ fn source_span_from_compact_row(row: &Row<'_>) -> rusqlite::Result<SourceSpan> {
         start_column: row.get("start_column")?,
         end_line: row.get("end_line")?,
         end_column: row.get("end_column")?,
+    })
+}
+
+fn unresolved_reference_from_row(row: &Row<'_>) -> rusqlite::Result<UnresolvedReferenceRecord> {
+    Ok(UnresolvedReferenceRecord {
+        reference_id: row.get("reference_id")?,
+        name: row.get("name")?,
+        relation: enum_column_by_name(row, "relation")?,
+        source_span: source_span_from_compact_row(row)?,
+        file_hash: row.get("file_hash")?,
+        exactness: enum_column_by_name(row, "exactness")?,
+        extractor: row.get("extractor")?,
+        metadata: json_column_by_name(row, "metadata_json")?,
     })
 }
 
@@ -9445,6 +9831,113 @@ LEFT JOIN edge_context_dict edge_context ON edge_context.id = e.context_id
 WHERE e.id_key = ?1
 "#;
 
+// Batched variant of EDGE_SELECT_BY_ID (MVP3.9.5.3): `{id_keys}` is replaced
+// with a placeholder list at call time; `batch_id_key` lets the caller map
+// hydrated rows back to the requested keys.
+const EDGE_SELECT_BY_ID_SET_TEMPLATE: &str = r#"
+WITH edge_facts AS (
+    SELECT id_key, head_id_key, relation_id, tail_id_key,
+           span_path_id, start_line, start_column, end_line, end_column,
+           repo_commit, file_id, extractor_id, confidence, exactness_id,
+           edge_class_id, context_id, derived, provenance_edges_json, metadata_json
+    FROM edges_compat
+    UNION ALL
+    SELECT id_key, head_id_key, relation_id, tail_id_key,
+           span_path_id, start_line, start_column, end_line, end_column,
+           repo_commit, file_id, extractor_id, confidence, exactness_id,
+           edge_class_id, context_id, 0 AS derived, '[]' AS provenance_edges_json, metadata_json
+    FROM structural_relations
+    UNION ALL
+    SELECT id_key, callsite_id_key AS head_id_key, relation_id, callee_id_key AS tail_id_key,
+           span_path_id, start_line, start_column, end_line, end_column,
+           repo_commit, file_id, extractor_id, confidence, exactness_id,
+           edge_class_id, context_id, 0 AS derived, '[]' AS provenance_edges_json, metadata_json
+    FROM callsites
+    UNION ALL
+    SELECT id_key, callsite_id_key AS head_id_key, relation_id, argument_id_key AS tail_id_key,
+           span_path_id, start_line, start_column, end_line, end_column,
+           repo_commit, file_id, extractor_id, confidence, exactness_id,
+           edge_class_id, context_id, 0 AS derived, '[]' AS provenance_edges_json, metadata_json
+    FROM callsite_args
+)
+SELECT e.id_key AS batch_id_key,
+       oid.value AS id, head.value AS head_id, relation.value AS relation,
+       tail.value AS tail_id, span_path.value AS span_repo_relative_path,
+       e.start_line, e.start_column, e.end_line, e.end_column,
+       e.repo_commit, file.content_hash AS file_hash, extractor.value AS extractor,
+       e.confidence, exactness.value AS exactness,
+       edge_class.value AS edge_class, edge_context.value AS context, e.derived,
+       e.provenance_edges_json, e.metadata_json
+FROM edge_facts e
+LEFT JOIN object_id_lookup oid ON oid.id = e.id_key
+JOIN object_id_lookup head ON head.id = e.head_id_key
+JOIN relation_kind_dict relation ON relation.id = e.relation_id
+JOIN object_id_lookup tail ON tail.id = e.tail_id_key
+JOIN path_dict span_path ON span_path.id = e.span_path_id
+LEFT JOIN files file ON file.file_id = e.file_id
+JOIN extractor_dict extractor ON extractor.id = e.extractor_id
+JOIN exactness_dict exactness ON exactness.id = e.exactness_id
+LEFT JOIN edge_class_dict edge_class ON edge_class.id = e.edge_class_id
+LEFT JOIN edge_context_dict edge_context ON edge_context.id = e.context_id
+WHERE e.id_key IN ({id_keys})
+"#;
+
+// Edges touching entities of a path set (MVP3.9.5.3): `{path_ids}` is
+// replaced with a placeholder list at call time; filters on the indexed
+// head/tail columns instead of hydrating the whole edge table.
+const EDGE_SELECT_TOUCHING_PATHS_TEMPLATE: &str = r#"
+WITH edge_facts AS (
+    SELECT id_key, head_id_key, relation_id, tail_id_key,
+           span_path_id, start_line, start_column, end_line, end_column,
+           repo_commit, file_id, extractor_id, confidence, exactness_id,
+           edge_class_id, context_id, derived, provenance_edges_json, metadata_json
+    FROM edges_compat
+    UNION ALL
+    SELECT id_key, head_id_key, relation_id, tail_id_key,
+           span_path_id, start_line, start_column, end_line, end_column,
+           repo_commit, file_id, extractor_id, confidence, exactness_id,
+           edge_class_id, context_id, 0 AS derived, '[]' AS provenance_edges_json, metadata_json
+    FROM structural_relations
+    UNION ALL
+    SELECT id_key, callsite_id_key AS head_id_key, relation_id, callee_id_key AS tail_id_key,
+           span_path_id, start_line, start_column, end_line, end_column,
+           repo_commit, file_id, extractor_id, confidence, exactness_id,
+           edge_class_id, context_id, 0 AS derived, '[]' AS provenance_edges_json, metadata_json
+    FROM callsites
+    UNION ALL
+    SELECT id_key, callsite_id_key AS head_id_key, relation_id, argument_id_key AS tail_id_key,
+           span_path_id, start_line, start_column, end_line, end_column,
+           repo_commit, file_id, extractor_id, confidence, exactness_id,
+           edge_class_id, context_id, 0 AS derived, '[]' AS provenance_edges_json, metadata_json
+    FROM callsite_args
+),
+touched_entities AS (
+    SELECT id_key FROM entities WHERE path_id IN ({path_ids})
+)
+SELECT oid.value AS id, head.value AS head_id, relation.value AS relation,
+       tail.value AS tail_id, span_path.value AS span_repo_relative_path,
+       e.start_line, e.start_column, e.end_line, e.end_column,
+       e.repo_commit, file.content_hash AS file_hash, extractor.value AS extractor,
+       e.confidence, exactness.value AS exactness,
+       edge_class.value AS edge_class, edge_context.value AS context, e.derived,
+       e.provenance_edges_json, e.metadata_json
+FROM edge_facts e
+LEFT JOIN object_id_lookup oid ON oid.id = e.id_key
+JOIN object_id_lookup head ON head.id = e.head_id_key
+JOIN relation_kind_dict relation ON relation.id = e.relation_id
+JOIN object_id_lookup tail ON tail.id = e.tail_id_key
+JOIN path_dict span_path ON span_path.id = e.span_path_id
+LEFT JOIN files file ON file.file_id = e.file_id
+JOIN extractor_dict extractor ON extractor.id = e.extractor_id
+JOIN exactness_dict exactness ON exactness.id = e.exactness_id
+LEFT JOIN edge_class_dict edge_class ON edge_class.id = e.edge_class_id
+LEFT JOIN edge_context_dict edge_context ON edge_context.id = e.context_id
+WHERE e.head_id_key IN (SELECT id_key FROM touched_entities)
+   OR e.tail_id_key IN (SELECT id_key FROM touched_entities)
+ORDER BY e.id_key
+LIMIT ?
+"#;
+
 const EDGE_SELECT_LIST: &str = r#"
 WITH edge_facts AS (
     SELECT id_key, head_id_key, relation_id, tail_id_key,
@@ -10646,6 +11139,7 @@ DROP INDEX IF EXISTS idx_entities_entity_hash_build;
 CREATE INDEX IF NOT EXISTS idx_entities_path ON entities(path_id);
 CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name_id);
 CREATE INDEX IF NOT EXISTS idx_entities_qname ON entities(qualified_name_id);
+CREATE INDEX IF NOT EXISTS idx_entities_entity_hash ON entities(entity_hash);
 CREATE INDEX IF NOT EXISTS idx_edges_head_relation ON edges(head_id_key, relation_id);
 CREATE INDEX IF NOT EXISTS idx_edges_tail_relation ON edges(tail_id_key, relation_id);
 CREATE INDEX IF NOT EXISTS idx_edges_span_path ON edges(span_path_id);
@@ -10718,6 +11212,7 @@ CREATE INDEX IF NOT EXISTS idx_file_edges_edge ON file_edges(edge_id, file_id);
 CREATE INDEX IF NOT EXISTS idx_file_source_spans_span ON file_source_spans(span_id, file_id);
 CREATE INDEX IF NOT EXISTS idx_file_path_evidence_path ON file_path_evidence(path_id, file_id);
 CREATE INDEX IF NOT EXISTS idx_file_fts_rows_object ON file_fts_rows(object_id, kind, file_id);
+CREATE INDEX IF NOT EXISTS idx_entities_entity_hash ON entities(entity_hash);
 ANALYZE;
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = FULL;

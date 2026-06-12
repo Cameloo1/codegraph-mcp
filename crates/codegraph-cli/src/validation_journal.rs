@@ -44,8 +44,8 @@ use codegraph_core::{
     ValidationLifecycleState,
 };
 use codegraph_index::{
-    compute_entity_source_role_delta, snapshot_normalized_facts_for_paths_to_db,
-    EntitySourceRoleDeltaOptions, NormalizedFactSnapshot, NormalizedFactSnapshotOptions,
+    compute_entity_source_role_delta, EntitySourceRoleDeltaOptions, NormalizedFactSnapshot,
+    NormalizedFactSnapshotOptions,
 };
 use codegraph_store::{GraphStore, SqliteGraphStore};
 
@@ -103,6 +103,28 @@ impl ValidationStageTracker {
             "name": stage,
             "started_unix_ms": unix_ms_now(),
         }));
+        self.write_best_effort();
+        let failpoint = format!("{AGENT_USE_VALIDATION_STAGE_PANIC_FAILPOINT_PREFIX}{stage}");
+        if cli_write_path_chaos_failpoint_enabled(&failpoint) {
+            panic!("chaos_failpoint:{failpoint}");
+        }
+    }
+
+    /// Like [`Self::mark`] but attaches extra attribution fields (substage
+    /// timings, fan-out counters) to the stage record. Used by the validation
+    /// stage's per-substage instrumentation (MVP3.9.5.3) so a live reader or
+    /// post-mortem can attribute cost INSIDE the validation stage.
+    pub(crate) fn mark_with(&mut self, stage: &str, detail: Value) {
+        let mut record = json!({
+            "name": stage,
+            "started_unix_ms": unix_ms_now(),
+        });
+        if let (Some(object), Some(extra)) = (record.as_object_mut(), detail.as_object()) {
+            for (key, value) in extra {
+                object.insert(key.clone(), value.clone());
+            }
+        }
+        self.stages.push(record);
         self.write_best_effort();
         let failpoint = format!("{AGENT_USE_VALIDATION_STAGE_PANIC_FAILPOINT_PREFIX}{stage}");
         if cli_write_path_chaos_failpoint_enabled(&failpoint) {
@@ -275,7 +297,16 @@ pub(crate) fn write_validation_journal(
     journal: &ValidationJournal,
 ) -> Result<usize, String> {
     let bytes = serde_json::to_vec(journal).map_err(|error| error.to_string())?;
-    write_json_file_atomic(&agent_use_validation_journal_path(profile), &bytes)?;
+    write_validation_journal_bytes(profile, &bytes)
+}
+
+/// Writes pre-serialized journal bytes, so callers that already serialized
+/// (for the size bound) do not pay the multi-MB serialization twice.
+pub(crate) fn write_validation_journal_bytes(
+    profile: &AgentUseProfile,
+    bytes: &[u8],
+) -> Result<usize, String> {
+    write_json_file_atomic(&agent_use_validation_journal_path(profile), bytes)?;
     Ok(bytes.len())
 }
 
@@ -371,6 +402,10 @@ pub(crate) fn write_validation_state_record(
     write_json_file_atomic(&agent_use_validation_state_path(profile), &bytes)
 }
 
+pub(crate) fn clear_validation_state_record(profile: &AgentUseProfile) {
+    let _ = fs::remove_file(agent_use_validation_state_path(profile));
+}
+
 fn short_symbol_name(name: &str) -> String {
     name.rsplit("::")
         .next()
@@ -434,23 +469,13 @@ fn finding_dedup_key(finding: &ValidationFinding) -> String {
     format!("{}:{}", finding.validation_rule_id, edge_id)
 }
 
-fn entity_kind_defines_symbol(kind: EntityKind) -> bool {
-    !matches!(
-        kind,
-        EntityKind::Import
-            | EntityKind::Export
-            | EntityKind::CallSite
-            | EntityKind::ReturnSite
-            | EntityKind::Expression
-            | EntityKind::Assignment
-            | EntityKind::Parameter
-            | EntityKind::LocalVariable
-    )
+pub(crate) fn entity_kind_defines_symbol(kind: EntityKind) -> bool {
+    codegraph_core::entity_kind_defines_symbol(kind)
 }
 
 pub(crate) enum OpenBlockerReverification {
     StillContradicted { fresh_evidence: Vec<String> },
-    Resolved { _reason: String },
+    Resolved { reason: String },
     Uncheckable { reason: String },
 }
 
@@ -480,7 +505,7 @@ pub(crate) fn reverify_open_blocker(
                     .count();
                 if definitions > 0 {
                     return OpenBlockerReverification::Resolved {
-                        _reason: format!(
+                        reason: format!(
                             "a defining entity named `{name}` now exists in the repo graph ({definitions} definition match(es))"
                         ),
                     };
@@ -509,7 +534,7 @@ pub(crate) fn reverify_open_blocker(
         Ok(source) => source,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return OpenBlockerReverification::Resolved {
-                _reason: format!("referencing file {file} no longer exists"),
+                reason: format!("referencing file {file} no longer exists"),
             };
         }
         Err(error) => {
@@ -546,7 +571,7 @@ pub(crate) fn reverify_open_blocker(
             ],
         },
         None => OpenBlockerReverification::Resolved {
-            _reason: format!(
+            reason: format!(
                 "{file} no longer references any recorded missing target name (fresh source read)"
             ),
         },
@@ -741,19 +766,23 @@ pub(crate) fn agent_use_replay_pending_validation(profile: &AgentUseProfile) -> 
             .iter()
             .map(PathBuf::from)
             .collect::<Vec<_>>();
-        let current_snapshot = snapshot_normalized_facts_for_paths_to_db(
-            &profile.repo_root,
-            &changed_paths,
-            &closure_paths,
-            &profile.db_path,
-            journal.snapshot_options.clone(),
-        )
-        .map_err(|error| format!("replay snapshot failed: {error}"))?;
+        // Replay reads a committed baseline; one session feeds the snapshot
+        // and the validation packet below (MVP3.9.5.3 residual).
+        let replay_read_session =
+            crate::open_normalized_fact_snapshot_session(&profile.repo_root, &profile.db_path)
+                .map_err(|error| format!("replay snapshot failed: {error}"))?;
+        let current_snapshot = replay_read_session
+            .snapshot_for_paths(
+                &changed_paths,
+                &closure_paths,
+                journal.snapshot_options.clone(),
+            )
+            .map_err(|error| format!("replay snapshot failed: {error}"))?;
         let delta = compute_entity_source_role_delta(
             &journal.old_facts,
             &current_snapshot,
             EntitySourceRoleDeltaOptions {
-                max_items_per_category: usize::MAX,
+                max_items_per_category: crate::agent_use_validation_graph_delta_max_items(),
             },
         );
         let post_preflight = inspect_read_db_lifecycle_preflight(
@@ -762,13 +791,25 @@ pub(crate) fn agent_use_replay_pending_validation(profile: &AgentUseProfile) -> 
             Some(profile.scope_policy.clone()),
         )?;
         let graph_delta_json = agent_use_graph_delta_json(&delta);
-        let packet = agent_use_exact_calls_validation_packet(
+        let (packet, replay_substages) = agent_use_exact_calls_validation_packet(
             profile,
             &post_preflight,
             &delta,
             graph_delta_json,
             journal.changed_files.clone(),
+            None,
+            crate::agent_use_validation_wall(None),
+            Some(replay_read_session.store()),
         )?;
+        // Residual (documented): a replay that is ITSELF bounded still clears
+        // the journal below — the unknown outcome is persisted and labeled,
+        // but skipped delta-derived findings are unrecoverable once the next
+        // run's own journal overwrites this one; recovery is `agent-use
+        // index`. Keeping the journal here cannot survive that overwrite.
+        let replay_bounded = replay_substages
+            .get("validation_bounded")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         Ok(json!({
             "replayed": true,
             "origin": "journal_replay",
@@ -781,7 +822,8 @@ pub(crate) fn agent_use_replay_pending_validation(profile: &AgentUseProfile) -> 
             "warning_count": packet.warnings.len(),
             "unknown_count": packet.unknowns.len(),
             "outcome_persisted": true,
-            "bounded": journal.journal_scope == "changed_files_only",
+            "bounded": journal.journal_scope == "changed_files_only" || replay_bounded,
+            "replay_validation_bounded": replay_bounded,
             "note": "replayed block-class findings are persisted as open blockers and re-emitted by this run's validation packet after fresh re-verification",
         }))
     })();

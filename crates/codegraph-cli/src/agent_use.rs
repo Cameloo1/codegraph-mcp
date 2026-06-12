@@ -14,6 +14,59 @@ use serde_json::{json, Value};
 use crate::*;
 
 const AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT: usize = 3;
+// MVP3.9.5.3: the validation delta is bounded; overflow in a blocking-relevant
+// category caps the packet at unknown (`graph_delta_bounded`) instead of
+// retaining an unbounded number of hydrated delta entries in memory.
+pub(crate) const AGENT_USE_VALIDATION_GRAPH_DELTA_MAX_ITEMS_PER_CATEGORY: usize = 10_000;
+// MVP3.9.5.3: shared per-run budget for per-edge CALLS reverification across
+// all validation fan-out loops; exhaustion is labeled via
+// CG_MVP3_GRAPH_DELTA_BOUNDED (unknown), never silently passed.
+pub(crate) const AGENT_USE_VALIDATION_MAX_EDGE_REVERIFICATIONS: usize = 10_000;
+// MVP3.9.5.3: whole-pipeline validation wall budget. On breach the current
+// substage finishes, remaining skippable substages are skipped, and the
+// packet is capped at unknown via CG_MVP3_GRAPH_DELTA_BOUNDED — never a
+// silent pass and never a silent overrun. Default sized from the measured
+// release-binary cost of a real large-file edit on a ~73k-edge repo
+// (~100-130 s): the wall defends against pathological hangs, and a default
+// below the genuine cost of honest validation would bound every big edit.
+pub(crate) const AGENT_USE_VALIDATION_DEFAULT_MAX_WALL_MS: u64 = 300_000;
+pub(crate) const AGENT_USE_MAX_VALIDATION_MS_ENV: &str = "CODEGRAPH_MAX_VALIDATION_MS";
+// Test/operator overrides for the validation bounds (fixtures force them low
+// to prove bounded runs are labeled `unknown`, never silently passed).
+pub(crate) const AGENT_USE_VALIDATION_MAX_DELTA_ITEMS_ENV: &str =
+    "CODEGRAPH_VALIDATION_MAX_DELTA_ITEMS";
+pub(crate) const AGENT_USE_VALIDATION_MAX_EDGE_REVERIFICATIONS_ENV: &str =
+    "CODEGRAPH_VALIDATION_MAX_EDGE_REVERIFICATIONS";
+
+pub(crate) fn agent_use_validation_graph_delta_max_items() -> usize {
+    std::env::var(AGENT_USE_VALIDATION_MAX_DELTA_ITEMS_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(AGENT_USE_VALIDATION_GRAPH_DELTA_MAX_ITEMS_PER_CATEGORY)
+}
+
+pub(crate) fn agent_use_validation_max_edge_reverifications() -> usize {
+    std::env::var(AGENT_USE_VALIDATION_MAX_EDGE_REVERIFICATIONS_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(AGENT_USE_VALIDATION_MAX_EDGE_REVERIFICATIONS)
+}
+
+/// Resolves the validation wall deadline: explicit flag value, then the
+/// `CODEGRAPH_MAX_VALIDATION_MS` env override, then the default.
+pub(crate) fn agent_use_validation_wall(max_validation_ms: Option<u64>) -> (Instant, u64) {
+    let budget_ms = max_validation_ms
+        .or_else(|| {
+            std::env::var(AGENT_USE_MAX_VALIDATION_MS_ENV)
+                .ok()
+                .and_then(|value| value.trim().parse().ok())
+        })
+        .unwrap_or(AGENT_USE_VALIDATION_DEFAULT_MAX_WALL_MS);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_millis(budget_ms))
+        .unwrap_or_else(|| Instant::now() + Duration::from_secs(31_536_000));
+    (deadline, budget_ms)
+}
 const AGENT_USE_WATCH_COMPACT_MAX_OUTPUT_BYTES: usize = 256 * 1024;
 const CG_MVP3_CALLS_DANGLING_TARGET: &str = "CG_MVP3_CALLS_DANGLING_TARGET";
 const CG_MVP3_CALLS_REMOVED_CALLEE_STILL_REFERENCED: &str =
@@ -45,6 +98,23 @@ const CG_MVP3_OLD_GOOD_DB_NOT_PRESERVED: &str = "CG_MVP3_OLD_GOOD_DB_NOT_PRESERV
 const CG_MVP3_CORRUPT_OR_INCOMPLETE_UPDATE_TRANSACTION: &str =
     "CG_MVP3_CORRUPT_OR_INCOMPLETE_UPDATE_TRANSACTION";
 const CG_MVP3_QUERY_DURING_UPDATE_UNSAFE: &str = "CG_MVP3_QUERY_DURING_UPDATE_UNSAFE";
+const CG_MVP3_GRAPH_DELTA_BOUNDED: &str = "CG_MVP3_GRAPH_DELTA_BOUNDED";
+const CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL: &str = "CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL";
+const CG_MVP3_REF_NEW_UNRESOLVED_IMPORT: &str = "CG_MVP3_REF_NEW_UNRESOLVED_IMPORT";
+const CG_MVP3_REF_EXTERNAL_OR_BUILTIN: &str = "CG_MVP3_REF_EXTERNAL_OR_BUILTIN";
+const CG_MVP3_REF_DYNAMIC: &str = "CG_MVP3_REF_DYNAMIC";
+// Policy opt-in (default off): promote escalated repo-local unresolved
+// references from warning to blocking. Spec §1.3.4 keeps warning as the
+// default ceiling — an unresolved reference is absence of a link, not
+// deterministic proof of error.
+pub(crate) const AGENT_USE_BLOCK_ON_UNRESOLVED_LOCAL_ENV: &str =
+    "CODEGRAPH_BLOCK_ON_UNRESOLVED_LOCAL";
+
+pub(crate) fn agent_use_block_on_unresolved_local() -> bool {
+    std::env::var(AGENT_USE_BLOCK_ON_UNRESOLVED_LOCAL_ENV)
+        .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
 const CG_MVP3_SIDECAR_CORRUPT_VS_INACCESSIBLE_MISCLASSIFIED: &str =
     "CG_MVP3_SIDECAR_CORRUPT_VS_INACCESSIBLE_MISCLASSIFIED";
 const CG_MVP3_SOURCE_ROLE_TEST_EVIDENCE_IN_PRODUCTION_PROOF: &str =
@@ -165,6 +235,7 @@ pub(crate) struct AgentUseValidateEditOptions {
     task_id: Option<String>,
     edit_intent: Option<String>,
     expected_touched_files: Vec<PathBuf>,
+    max_validation_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -436,6 +507,7 @@ pub(crate) fn parse_agent_use_validate_edit_args(
     let mut task_id = None;
     let mut edit_intent = None;
     let mut expected_touched_files = Vec::new();
+    let mut max_validation_ms = None;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -488,6 +560,23 @@ pub(crate) fn parse_agent_use_validate_edit_args(
                 max_output_bytes = Some(parse_context_pack_max_output_bytes(value)?);
             }
             "--fail-on-blocking" | "--fail_on_blocking" => fail_on_blocking = true,
+            // Policy opt-in (§1.3.4): the validation pipeline reads the env
+            // var, so the flag is a process-local env bridge — this also makes
+            // the policy uniform across validate-edit, watch, and journal
+            // replay within the same run.
+            "--block-on-unresolved-local" | "--block_on_unresolved_local" => {
+                std::env::set_var(AGENT_USE_BLOCK_ON_UNRESOLVED_LOCAL_ENV, "1");
+            }
+            "--max-validation-ms" | "--max_validation_ms" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--max-validation-ms requires a value".to_string());
+                };
+                max_validation_ms = Some(value.trim().parse::<u64>().map_err(|_| {
+                    "--max-validation-ms requires a non-negative integer of milliseconds"
+                        .to_string()
+                })?);
+            }
             "--db" => {
                 return Err(
                     "agent-use validate-edit owns DB resolution through the production profile; --db is not accepted"
@@ -526,6 +615,19 @@ pub(crate) fn parse_agent_use_validate_edit_args(
                         .map(|(_, value)| value.to_string())
                         .unwrap_or_default(),
                 );
+            }
+            value
+                if value.starts_with("--max-validation-ms=")
+                    || value.starts_with("--max_validation_ms=") =>
+            {
+                let value = value
+                    .split_once('=')
+                    .map(|(_, value)| value)
+                    .unwrap_or_default();
+                max_validation_ms = Some(value.trim().parse::<u64>().map_err(|_| {
+                    "--max-validation-ms requires a non-negative integer of milliseconds"
+                        .to_string()
+                })?);
             }
             value
                 if value.starts_with("--expected-touched-file=")
@@ -572,6 +674,7 @@ pub(crate) fn parse_agent_use_validate_edit_args(
         task_id,
         edit_intent,
         expected_touched_files,
+        max_validation_ms,
     })
 }
 
@@ -1666,6 +1769,7 @@ pub(crate) fn run_agent_use_watch_command(args: &[String]) -> Result<Value, Stri
             options.changed_paths,
             options.detail_mode,
             normal_dot_codegraph_existed_before,
+            None,
         );
     }
     if !options.changed_paths.is_empty() {
@@ -1687,6 +1791,7 @@ pub(crate) fn run_agent_use_validate_edit_command(args: &[String]) -> Result<Val
         options.changed_paths.clone(),
         options.detail_mode,
         normal_dot_codegraph_existed_before,
+        options.max_validation_ms,
     )?;
     if source_update
         .get("validation_pipeline_error")
@@ -1813,12 +1918,24 @@ pub(crate) fn agent_use_validate_edit_packet_json(
         .get("journal_replay")
         .cloned()
         .unwrap_or(Value::Null);
+    let validation_wall_bounded = source_update
+        .get("validation_wall_bounded")
+        .cloned()
+        .unwrap_or(Value::Bool(false));
+    // Small (~600 B) per-substage attribution block; copied to the top level
+    // because the budget enforcer nulls source_update_packet under pressure.
+    let validation_substage_summary = source_update
+        .get("validation_substage_summary")
+        .cloned()
+        .unwrap_or(Value::Null);
     let mut value = json!({
         "schema_version": 1,
         "schema_name": "validate_edit_agent_json",
         "packet_kind": "validate_edit_packet",
         "validation_state": validation_state,
         "journal_replay": journal_replay,
+        "validation_wall_bounded": validation_wall_bounded,
+        "validation_substage_summary": validation_substage_summary,
         "command": "validate-edit",
         "command_namespace": "agent-use",
         "agent_use_command": "agent-use validate-edit",
@@ -1914,6 +2031,13 @@ pub(crate) fn agent_use_validate_edit_packet_json(
             .or_else(|| source_update.pointer("/validation_packet/hard_interrupt").cloned())
             .unwrap_or(Value::Null),
         "must_fix_before_continuing": must_fix_before_continuing,
+        // §1.3.5 compact block; copied to the top level (like
+        // validation_substage_summary) because the budget enforcer nulls
+        // nested detail under pressure and the counts must survive.
+        "unresolved_references": source_update
+            .pointer("/validation_packet/unresolved_references")
+            .cloned()
+            .unwrap_or(Value::Null),
         "warnings": source_update
             .pointer("/validation_packet/warnings")
             .cloned()
@@ -2477,43 +2601,41 @@ fn agent_use_validate_edit_finalize_budget(
 ) {
     let initial_output_bytes = serialized_json_len(packet);
     let mut output_truncated = false;
-    if initial_output_bytes > max_output_bytes {
+    let mut omitted_by_enforcer = 0u64;
+    if initial_output_bytes > max_output_bytes && !detail_mode.preserves_full_details() {
+        output_truncated = true;
+        agent_use_validate_edit_enforce_compact_budget(
+            packet,
+            max_output_bytes,
+            initial_output_bytes,
+            &mut omitted_by_enforcer,
+        );
+        agent_use_validate_edit_add_mode_aware_severity_fields(packet, detail_mode);
+        agent_use_validate_edit_enforce_compact_budget(
+            packet,
+            max_output_bytes,
+            initial_output_bytes,
+            &mut omitted_by_enforcer,
+        );
+    } else if initial_output_bytes > max_output_bytes {
         output_truncated = true;
         if let Some(object) = packet.as_object_mut() {
-            object.insert("source_update_packet".to_string(), Value::Null);
             object.insert("output_truncated".to_string(), json!(true));
             object.insert("max_output_bytes".to_string(), json!(max_output_bytes));
             object.insert(
                 "pre_truncation_bytes".to_string(),
                 json!(initial_output_bytes),
             );
-            for key in ["warnings", "unknowns", "diagnostics"] {
-                if let Some(items) = object.get_mut(key).and_then(Value::as_array_mut) {
-                    if items.len() > 1 {
-                        items.truncate(1);
-                    }
-                }
-            }
-            if let Some(validation_packet) = object.get_mut("validation_packet") {
-                agent_use_validate_edit_truncate_validation_packet(validation_packet, 1);
-            }
-            let omitted_count = object
-                .get("validation_packet")
-                .and_then(|packet| packet.get("omitted_count"))
-                .cloned()
-                .unwrap_or_else(|| json!(0));
-            let expansion_handles = object
-                .get("validation_packet")
-                .and_then(|packet| packet.get("expansion_handles"))
-                .cloned()
-                .unwrap_or_else(|| json!(["validation_packet:full"]));
-            object.insert("omitted_count".to_string(), omitted_count);
-            object.insert("expansion_handles".to_string(), expansion_handles);
         }
-        agent_use_validate_edit_add_mode_aware_severity_fields(packet, detail_mode);
     }
     let output_bytes = serialized_json_len(packet);
     if let Some(object) = packet.as_object_mut() {
+        let total_omitted = object
+            .get("omitted_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            .saturating_add(omitted_by_enforcer);
+        object.insert("omitted_count".to_string(), json!(total_omitted));
         object.insert(
             "agent_json_budget".to_string(),
             json!({
@@ -2523,11 +2645,26 @@ fn agent_use_validate_edit_finalize_budget(
                 "pre_truncation_bytes": initial_output_bytes,
                 "truncated": output_truncated,
                 "output_truncated": output_truncated,
-                "omitted_count": object.get("omitted_count").and_then(Value::as_u64).unwrap_or(0),
+                "omitted_count": total_omitted,
                 "max_output_bytes_exceeded": output_bytes > max_output_bytes,
                 "required_safety_fields_preserved": true,
+                "evidence_first_shedding": true,
+                "metadata_shed_before_evidence": true,
             }),
         );
+    }
+    let final_output_bytes = serialized_json_len(packet);
+    if let Some(object) = packet.as_object_mut() {
+        if let Some(budget) = object
+            .get_mut("agent_json_budget")
+            .and_then(Value::as_object_mut)
+        {
+            budget.insert("output_bytes".to_string(), json!(final_output_bytes));
+            budget.insert(
+                "max_output_bytes_exceeded".to_string(),
+                json!(final_output_bytes > max_output_bytes),
+            );
+        }
     }
 }
 
@@ -2558,13 +2695,687 @@ fn agent_use_validate_edit_truncate_validation_packet(packet: &mut Value, limit:
     }
 }
 
+fn agent_use_validate_edit_enforce_compact_budget(
+    packet: &mut Value,
+    max_output_bytes: usize,
+    pre_truncation_bytes: usize,
+    omitted_count: &mut u64,
+) {
+    if let Some(object) = packet.as_object_mut() {
+        object.insert("source_update_packet".to_string(), Value::Null);
+        object.insert("output_truncated".to_string(), json!(true));
+        object.insert("max_output_bytes".to_string(), json!(max_output_bytes));
+        object.insert(
+            "pre_truncation_bytes".to_string(),
+            json!(pre_truncation_bytes),
+        );
+        object.insert(
+            "compact_contract".to_string(),
+            json!({
+                "evidence_first_shedding": true,
+                "metadata_shed_before_evidence": true,
+                "findings_anchor": "validation_packet",
+                "recovery_commands_ref": "validation_recovery_commands",
+            }),
+        );
+        if let Some(lifecycle) = object.get("lifecycle").cloned() {
+            object.insert(
+                "lifecycle".to_string(),
+                compact_agent_use_public_lifecycle_summary(&compact_agent_use_lifecycle_summary(
+                    &lifecycle,
+                )),
+            );
+        }
+        if let Some(staged) = object.get("staged_availability").cloned() {
+            object.insert(
+                "staged_availability".to_string(),
+                compact_agent_use_staged_availability_summary(&staged),
+            );
+        }
+        if let Some(severity_summary) = object.get("severity_summary").cloned() {
+            object.insert(
+                "severity_summary".to_string(),
+                agent_use_validate_edit_compact_severity_summary(&severity_summary),
+            );
+        }
+        for key in ["warnings", "unknowns", "diagnostics"] {
+            if let Some(items) = object.get_mut(key).and_then(Value::as_array_mut) {
+                if items.len() > 3 {
+                    *omitted_count = omitted_count.saturating_add((items.len() - 3) as u64);
+                    items.truncate(3);
+                }
+                for item in items {
+                    agent_use_validate_edit_compact_finding(item);
+                }
+            }
+        }
+        if let Some(validation_packet) = object.get_mut("validation_packet") {
+            agent_use_validate_edit_truncate_validation_packet(validation_packet, 3);
+            agent_use_validate_edit_compact_validation_packet(validation_packet);
+        }
+        if let Some(unresolved) = object.get_mut("unresolved_references") {
+            agent_use_validate_edit_compact_unresolved_references(unresolved, 3);
+        }
+        let validation_omitted = object
+            .get("validation_packet")
+            .and_then(|packet| packet.get("omitted_count"))
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let prior_omitted = object
+            .get("omitted_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        object.insert(
+            "omitted_count".to_string(),
+            json!(prior_omitted.saturating_add(validation_omitted)),
+        );
+        let expansion_handles = object
+            .get("validation_packet")
+            .and_then(|packet| packet.get("expansion_handles"))
+            .cloned()
+            .unwrap_or_else(|| json!(["validation_packet:full"]));
+        object.insert("expansion_handles".to_string(), expansion_handles);
+    }
+
+    for _ in 0..128 {
+        if serialized_json_len(packet) <= max_output_bytes.saturating_sub(1024) {
+            break;
+        }
+        if agent_use_validate_edit_compact_dirty_evidence(packet) {
+            *omitted_count = omitted_count.saturating_add(1);
+            continue;
+        }
+        if agent_use_validate_edit_compact_hard_interrupt(packet) {
+            *omitted_count = omitted_count.saturating_add(1);
+            continue;
+        }
+        let mut removed = false;
+        for key in [
+            "command_rerun_hint",
+            "canonical_cli_surface",
+            "compatibility_alias_status",
+            "agent_use_command",
+            "repo_root",
+            "resolved_db",
+            "db_path",
+            "db",
+            "profile_name",
+            "uses_production_agent_use_resolver",
+            "external_profile_db_used",
+            "external_db_used",
+            "aggregate_guidance",
+            "source_update_status",
+            "source_update_command",
+            "detail_mode",
+            "compact_default",
+            "default_exit_zero_on_validation_blocker",
+            "json_printed_on_blocking",
+            "fail_on_blocking",
+            "fail_on_blocking_exit_code",
+            "max_changed_files",
+            "partial_input_failures_reported",
+            "too_many_changed_files",
+            "task_id",
+            "edit_intent",
+            "expected_touched_files",
+            "expected_touched_files_missing",
+            "changed_paths",
+            "changed_paths_requested",
+            "normalized_changed_files",
+            "input_policy",
+            "rename_policy",
+            "no_silent_path_drops",
+            "no_dot_codegraph_fallback",
+            "staged_availability",
+            "warnings",
+            "unknowns",
+            "diagnostics",
+            "severity_trace",
+            "proof_ladder_changes",
+            "validation_recovery_commands",
+            "recovery_commands",
+            "timings",
+            "metrics",
+            "per_file_status",
+            "input_diagnostics",
+            "input_warnings",
+            "atomic_temp_paths",
+            "ignored_paths",
+            "generated_paths",
+            "outside_repo_paths",
+            "duplicate_paths",
+            "rejected_paths",
+            "no_op_paths",
+            "deleted_paths",
+            "renamed_paths",
+            "validation_substage_summary",
+            "editor_policy",
+        ] {
+            if agent_use_remove_field(packet, key) {
+                *omitted_count = omitted_count.saturating_add(1);
+                removed = true;
+                break;
+            }
+        }
+        if removed {
+            continue;
+        }
+        if agent_use_validate_edit_pop_array(packet, "warnings", 1)
+            || agent_use_validate_edit_pop_array(packet, "unknowns", 1)
+            || agent_use_validate_edit_pop_array(packet, "diagnostics", 1)
+        {
+            *omitted_count = omitted_count.saturating_add(1);
+            continue;
+        }
+        if let Some(validation_packet) = packet.get_mut("validation_packet") {
+            if agent_use_validate_edit_pop_array(validation_packet, "warnings", 1)
+                || agent_use_validate_edit_pop_array(validation_packet, "unknowns", 1)
+                || agent_use_validate_edit_pop_array(validation_packet, "diagnostics", 1)
+                || agent_use_validate_edit_pop_array(validation_packet, "blocking_errors", 1)
+            {
+                *omitted_count = omitted_count.saturating_add(1);
+                continue;
+            }
+        }
+        if agent_use_validate_edit_shrink_unresolved_references(packet, 3) {
+            *omitted_count = omitted_count.saturating_add(1);
+            continue;
+        }
+        if let Some(validation_packet) = packet.get_mut("validation_packet") {
+            if agent_use_validate_edit_shrink_unresolved_references(validation_packet, 3) {
+                *omitted_count = omitted_count.saturating_add(1);
+                continue;
+            }
+        }
+        break;
+    }
+    if let Some(object) = packet.as_object_mut() {
+        object
+            .entry("stale_unsafe_blockers".to_string())
+            .or_insert_with(|| json!([]));
+        object
+            .entry("severity_trace".to_string())
+            .or_insert_with(|| {
+                json!({
+                    "mode": "compact",
+                    "summary_only": true,
+                    "request_full_trace_with": "--explain or --audit-json",
+                    "full_source_bodies_included": false,
+                    "full_graph_dump_included": false,
+                })
+            });
+        let editor_policy = agent_use_validate_edit_editor_policy_json(
+            object
+                .get("final_status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+            object
+                .get("must_fix_before_continuing")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            object
+                .get("hard_interrupt_available")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            object
+                .get("should_request_explain")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            object
+                .get("should_rerun_validation")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        );
+        object
+            .entry("editor_policy".to_string())
+            .or_insert(editor_policy);
+    }
+}
+
+fn agent_use_validate_edit_compact_validation_packet(packet: &mut Value) {
+    if let Some(object) = packet.as_object_mut() {
+        if let Some(severity_summary) = object.get("severity_summary").cloned() {
+            object.insert(
+                "severity_summary".to_string(),
+                agent_use_validate_edit_compact_severity_summary(&severity_summary),
+            );
+        }
+        if let Some(graph_delta) = object.get("graph_delta").cloned() {
+            object.insert(
+                "graph_delta".to_string(),
+                json!({
+                    "summary": agent_use_validate_edit_compact_graph_delta_summary(&graph_delta),
+                    "full_detail_handle": "validation_packet.graph_delta",
+                    "agent_json_compacted": true,
+                }),
+            );
+        }
+        if let Some(unresolved) = object.get_mut("unresolved_references") {
+            agent_use_validate_edit_compact_unresolved_references(unresolved, 3);
+        }
+        if let Some(lifecycle) = object.get("lifecycle").cloned() {
+            object.insert(
+                "lifecycle".to_string(),
+                compact_agent_use_public_lifecycle_summary(&compact_agent_use_lifecycle_summary(
+                    &lifecycle,
+                )),
+            );
+        }
+        if let Some(claimability) = object.get("claimability").cloned() {
+            object.insert(
+                "claimability".to_string(),
+                json!({
+                    "claimable": claimability.get("claimable").cloned().unwrap_or(Value::Null),
+                    "current": claimability.get("current").cloned().unwrap_or(Value::Null),
+                    "diagnostic_only": claimability.get("diagnostic_only").cloned().unwrap_or(Value::Null),
+                    "non_claimable_reason": claimability.get("non_claimable_reason").cloned().unwrap_or(Value::Null),
+                    "agent_json_compacted": true,
+                }),
+            );
+        }
+        if let Some(dirty_summary) = object
+            .get_mut("dirty_evidence_summary")
+            .and_then(Value::as_object_mut)
+        {
+            dirty_summary.insert("summary_only".to_string(), json!(true));
+            dirty_summary.insert("agent_json_compacted".to_string(), json!(true));
+            dirty_summary.remove("exact_db_path_checked");
+            dirty_summary.remove("db_path");
+        }
+        for (key, reference) in [
+            ("dirty_evidence_summary", "dirty_evidence_summary"),
+            ("lifecycle", "lifecycle"),
+            ("claimability", "claimability"),
+            (
+                "proof_ladder_changes_summary",
+                "proof_ladder_changes_summary",
+            ),
+        ] {
+            if object.remove(key).is_some() {
+                object.insert(format!("{key}_ref"), json!(reference));
+            }
+        }
+        if let Some(evaluated) = object.get("validation_rules_evaluated").cloned() {
+            let count = evaluated
+                .get("count")
+                .and_then(Value::as_u64)
+                .or_else(|| {
+                    evaluated
+                        .get("rule_ids")
+                        .and_then(Value::as_array)
+                        .map(|ids| ids.len() as u64)
+                })
+                .unwrap_or_default();
+            object.insert(
+                "validation_rules_evaluated".to_string(),
+                json!({
+                    "count": count,
+                    "full_detail_handle": "validation_packet.validation_rules_evaluated",
+                    "agent_json_compacted": true,
+                }),
+            );
+        }
+        if let Some(skipped) = object.get("validation_rules_skipped").cloned() {
+            let count = skipped
+                .as_object()
+                .map(|rules| rules.len() as u64)
+                .or_else(|| skipped.get("count").and_then(Value::as_u64))
+                .unwrap_or_default();
+            object.insert(
+                "validation_rules_skipped".to_string(),
+                json!({
+                    "count": count,
+                    "full_detail_handle": "validation_packet.validation_rules_skipped",
+                    "agent_json_compacted": true,
+                }),
+            );
+        }
+        if let Some(proof_ladder) = object.get("proof_ladder_changes").cloned() {
+            object.insert(
+                "proof_ladder_changes".to_string(),
+                agent_use_validate_edit_proof_ladder_summary(&proof_ladder),
+            );
+        }
+        for key in ["blocking_errors", "warnings", "unknowns", "diagnostics"] {
+            if let Some(items) = object.get_mut(key).and_then(Value::as_array_mut) {
+                for item in items {
+                    agent_use_validate_edit_compact_finding(item);
+                }
+            }
+        }
+        if object.remove("hard_interrupt").is_some() {
+            object.insert("hard_interrupt_ref".to_string(), json!("hard_interrupt"));
+        }
+        for key in [
+            "severity_decisions",
+            "severity_aggregation_trace",
+            "activation_gate_state",
+            "relation_family_status",
+            "editor_policy",
+            "recovery_commands",
+            "refreshed_evidence",
+            "stale_evidence",
+            "unavailable_evidence",
+            "invalidated_evidence",
+            "proof_ladder_change_counts",
+            "sidecar_statuses",
+            "severity_effect",
+            "stale_non_proof_reasons",
+            "aggregate_guidance",
+        ] {
+            object.remove(key);
+        }
+        object.insert(
+            "recovery_commands_pointer".to_string(),
+            json!("validation_recovery_commands"),
+        );
+        object.insert("critical_safety_fields_preserved".to_string(), json!(true));
+        object.insert("full_graph_dump_included".to_string(), json!(false));
+        object.insert("full_source_bodies_included".to_string(), json!(false));
+    }
+}
+
+fn agent_use_validate_edit_compact_severity_summary(summary: &Value) -> Value {
+    json!({
+        "schema_version": summary.get("schema_version").cloned().unwrap_or_else(|| json!(1)),
+        "final_status": summary.get("final_status").cloned().unwrap_or(Value::Null),
+        "max_severity": summary.get("max_severity").cloned().unwrap_or(Value::Null),
+        "hard_interrupt_available": summary.get("hard_interrupt_available").cloned().unwrap_or(Value::Null),
+        "must_fix_before_continuing": summary.get("must_fix_before_continuing").cloned().unwrap_or(Value::Null),
+        "counts_by_severity": summary.get("counts_by_severity").cloned().unwrap_or(Value::Null),
+        "decision_count": summary.get("decision_count").cloned().unwrap_or(Value::Null),
+        "public_claim": false,
+        "agent_json_compacted": true,
+    })
+}
+
+fn agent_use_validate_edit_compact_graph_delta_summary(graph_delta: &Value) -> Value {
+    let summary = graph_delta.get("summary").unwrap_or(&Value::Null);
+    let closure = graph_delta
+        .get("closure_delta_summary")
+        .unwrap_or(&Value::Null);
+    json!({
+        "entity_delta_count": summary.get("entity_delta_count").cloned().unwrap_or(Value::Null),
+        "edge_delta_count": summary.get("edge_delta_count").cloned().unwrap_or(Value::Null),
+        "source_span_delta_count": summary.get("source_span_delta_count").cloned().unwrap_or(Value::Null),
+        "freshness_delta_count": summary.get("freshness_delta_count").cloned().unwrap_or(Value::Null),
+        "closure_files_considered": closure
+            .get("closure_files_considered")
+            .and_then(Value::as_array)
+            .map(|files| files.len())
+            .or_else(|| closure.get("closure_files_considered").and_then(Value::as_u64).map(|count| count as usize))
+            .unwrap_or_default(),
+        "closure_budget_hit": closure.get("closure_budget_hit").cloned().unwrap_or(Value::Null),
+        "status": closure.get("status").cloned().unwrap_or(Value::Null),
+        "graph_proof": false,
+        "agent_json_compacted": true,
+    })
+}
+
+fn agent_use_validate_edit_compact_unresolved_references(value: &mut Value, preserve: usize) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let mut escalated_omitted = 0u64;
+    if let Some(items) = object.get_mut("escalated").and_then(Value::as_array_mut) {
+        let total = items.len();
+        if total > preserve {
+            items.truncate(preserve);
+            escalated_omitted = total.saturating_sub(preserve) as u64;
+        }
+        for item in items {
+            let Some(source) = item.as_object() else {
+                continue;
+            };
+            let mut compact = serde_json::Map::new();
+            for key in [
+                "name",
+                "relation",
+                "reference_class",
+                "file",
+                "span",
+                "severity",
+                "proof_strength",
+                "claimability",
+                "repo_graph_lookup",
+                "recommended_fix",
+            ] {
+                if let Some(value) = source.get(key) {
+                    compact.insert(key.to_string(), value.clone());
+                }
+            }
+            compact.insert("graph_proof".to_string(), json!(false));
+            compact.insert("not_graph_proof".to_string(), json!(true));
+            *item = Value::Object(compact);
+        }
+    }
+    if escalated_omitted > 0 {
+        let prior = object
+            .get("escalated_omitted_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        object.insert(
+            "escalated_omitted_count".to_string(),
+            json!(prior.saturating_add(escalated_omitted)),
+        );
+    }
+    object.insert("agent_json_compacted".to_string(), json!(true));
+    object
+        .entry("expansion_handle".to_string())
+        .or_insert_with(|| json!("validation_packet:unresolved_references"));
+}
+
+fn agent_use_validate_edit_shrink_unresolved_references(
+    value: &mut Value,
+    preserve: usize,
+) -> bool {
+    let Some(unresolved) = value.get_mut("unresolved_references") else {
+        return false;
+    };
+    let before = serialized_json_len(unresolved);
+    agent_use_validate_edit_compact_unresolved_references(unresolved, preserve);
+    serialized_json_len(unresolved) < before
+}
+
+fn agent_use_validate_edit_compact_finding(finding: &mut Value) {
+    let Some(object) = finding.as_object() else {
+        return;
+    };
+    let mut compact = serde_json::Map::new();
+    for key in [
+        "validation_rule_id",
+        "severity",
+        "classification",
+        "message",
+        "reason",
+        "file",
+        "source_span",
+        "top_blocking_source_span",
+        "blocking_level",
+        "recommended_fix",
+        "suggested_next_steps",
+        "next_steps",
+        "proof_level",
+        "proof_strength",
+        "graph_proof",
+        "claimability_effect",
+        "evidence_kind",
+        "exactness",
+        "integrity_kind",
+        "expansion_handle",
+    ] {
+        if let Some(value) = object.get(key) {
+            compact.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(diagnostics) = object.get("diagnostics").and_then(Value::as_array) {
+        compact.insert(
+            "diagnostics".to_string(),
+            Value::Array(diagnostics.iter().take(1).cloned().collect()),
+        );
+    }
+    let is_blocking = object
+        .get("blocking_level")
+        .and_then(Value::as_str)
+        .is_some_and(|level| level == "block" || level == "blocking")
+        || object
+            .get("classification")
+            .and_then(Value::as_str)
+            .is_some_and(|classification| classification == "block");
+    if is_blocking {
+        if let Some(finding_id) = object.get("finding_id") {
+            compact.insert("finding_id".to_string(), finding_id.clone());
+        }
+    }
+    if is_blocking {
+        if let Some(items) = object.get("evidence_items").and_then(Value::as_array) {
+            let compact_items = items
+                .iter()
+                .take(1)
+                .map(agent_use_validate_edit_compact_evidence_item)
+                .collect::<Vec<_>>();
+            compact.insert("evidence_items".to_string(), json!(compact_items));
+        }
+    }
+    *finding = Value::Object(compact);
+}
+
+fn agent_use_validate_edit_compact_evidence_item(item: &Value) -> Value {
+    json!({
+        "evidence_id": item.get("evidence_id").cloned().unwrap_or(Value::Null),
+        "evidence_kind": item.get("evidence_kind").cloned().unwrap_or(Value::Null),
+        "proof_status": item.get("proof_status").cloned().unwrap_or(Value::Null),
+        "graph_proof": item.get("graph_proof").cloned().unwrap_or(Value::Null),
+        "claimable": item.get("claimable").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn agent_use_validate_edit_compact_dirty_evidence(packet: &mut Value) -> bool {
+    let mut changed = false;
+    for key in [
+        "invalidated_evidence",
+        "refreshed_evidence",
+        "stale_evidence",
+        "unavailable_evidence",
+        "sidecar_statuses",
+        "stale_non_proof_reasons",
+        "claimability_effect",
+        "severity_effect",
+        "proof_ladder_change_counts",
+    ] {
+        changed |= agent_use_remove_field(packet, key);
+    }
+    if let Some(summary) = packet
+        .get_mut("dirty_evidence_summary")
+        .and_then(Value::as_object_mut)
+    {
+        if summary
+            .get("summary_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            && summary
+                .get("agent_json_compacted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        {
+            return changed;
+        }
+        summary.insert("summary_only".to_string(), json!(true));
+        summary.insert("agent_json_compacted".to_string(), json!(true));
+        changed = true;
+    }
+    changed
+}
+
+fn agent_use_validate_edit_compact_hard_interrupt(packet: &mut Value) -> bool {
+    let Some(mut hard_interrupt) = packet.get("hard_interrupt").cloned() else {
+        return false;
+    };
+    if hard_interrupt.is_null()
+        || hard_interrupt
+            .get("agent_json_compacted")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return false;
+    }
+    agent_use_validate_edit_compact_hard_interrupt_value(&mut hard_interrupt);
+    if let Some(object) = packet.as_object_mut() {
+        object.insert("hard_interrupt".to_string(), hard_interrupt);
+        return true;
+    }
+    false
+}
+
+fn agent_use_validate_edit_compact_hard_interrupt_value(hard_interrupt: &mut Value) {
+    if hard_interrupt.is_null()
+        || hard_interrupt
+            .get("agent_json_compacted")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return;
+    }
+    let mut summary = hard_interrupt
+        .get("summary")
+        .cloned()
+        .unwrap_or(Value::Null);
+    if let Some(summary_object) = summary.as_object_mut() {
+        if let Some(steps) = summary_object
+            .get_mut("top_error_suggested_next_steps")
+            .and_then(Value::as_array_mut)
+        {
+            steps.truncate(3);
+        }
+    }
+    let expansion_handles = hard_interrupt
+        .get("expansion_handles")
+        .and_then(Value::as_array)
+        .map(|items| {
+            Value::Array(
+                items
+                    .iter()
+                    .take(3)
+                    .map(|item| item.get("handle").cloned().unwrap_or_else(|| item.clone()))
+                    .collect(),
+            )
+        })
+        .unwrap_or_else(|| json!(["hard_interrupt:full"]));
+    let compact = json!({
+        "packet_kind": hard_interrupt.get("packet_kind").cloned().unwrap_or_else(|| json!("hard_interrupt")),
+        "status": hard_interrupt.get("status").cloned().unwrap_or(Value::Null),
+        "hard_interrupt": hard_interrupt.get("hard_interrupt").cloned().unwrap_or_else(|| json!(true)),
+        "summary": summary,
+        "source_validation_packet_ref": hard_interrupt.get("source_validation_packet_ref").cloned().unwrap_or_else(|| json!("validation_packet")),
+        "expansion_handles": expansion_handles,
+        "agent_json_compacted": true,
+    });
+    *hard_interrupt = compact;
+}
+
+fn agent_use_validate_edit_pop_array(packet: &mut Value, key: &str, preserve: usize) -> bool {
+    let Some(items) = packet.get_mut(key).and_then(Value::as_array_mut) else {
+        return false;
+    };
+    if items.len() <= preserve {
+        return false;
+    }
+    items.pop();
+    true
+}
+
 pub(crate) fn run_agent_use_watch_once_delta(
     profile: &AgentUseProfile,
     changed_paths: Vec<PathBuf>,
     detail_mode: AgentUseDetailMode,
     normal_dot_codegraph_existed_before: bool,
+    max_validation_ms: Option<u64>,
 ) -> Result<Value, String> {
     let total_update_plus_delta_start = Instant::now();
+    // Whole-pipeline wall budget (MVP3.9.5.3): anchored at run entry so slow
+    // pre-commit snapshots also consume it; enforced at validation substage
+    // boundaries (commit semantics are never aborted mid-flight).
+    let validation_wall = agent_use_validation_wall(max_validation_ms);
     let mut validation_stage_tracker =
         ValidationStageTracker::start(profile, "agent-use.watch.once");
     let normal_dot_codegraph = profile.repo_root.join(".codegraph");
@@ -2618,13 +3429,18 @@ pub(crate) fn run_agent_use_watch_once_delta(
         ..NormalizedFactSnapshotOptions::default()
     };
     validation_stage_tracker.mark("closure");
+    // MVP3.9.5.3 residual: one read session (one lifecycle preflight, one
+    // cached store) serves every pre-commit read — closure, old snapshot,
+    // and the bounded-journal re-snapshot — instead of each call re-opening
+    // and re-hydrating its own connection. Dropped before the write phase:
+    // a session must never span a DB commit.
+    let pre_commit_read_session =
+        open_normalized_fact_snapshot_session(&profile.repo_root, &profile.db_path)
+            .map_err(|error| format!("old RTDS dependency closure snapshot failed: {error}"))?;
     let dependency_closure_start = Instant::now();
-    let pre_update_dependency_closure = rtds_dependency_closure_for_changed_paths_to_db(
-        &profile.repo_root,
-        &update_changed_paths,
-        &profile.db_path,
-    )
-    .map_err(|error| format!("old RTDS dependency closure snapshot failed: {error}"))?;
+    let pre_update_dependency_closure = pre_commit_read_session
+        .dependency_closure_for_changed_paths(&update_changed_paths)
+        .map_err(|error| format!("old RTDS dependency closure snapshot failed: {error}"))?;
     let pre_update_dependency_closure_ms = dependency_closure_start.elapsed().as_millis();
     let pre_update_requested_set = pre_update_dependency_closure
         .requested_changed_files
@@ -2639,14 +3455,13 @@ pub(crate) fn run_agent_use_watch_once_delta(
         .collect::<Vec<_>>();
     validation_stage_tracker.mark("old_snapshot");
     let old_snapshot_start = Instant::now();
-    let old_graph_delta_snapshot = snapshot_normalized_facts_for_paths_to_db(
-        &profile.repo_root,
-        &update_changed_paths,
-        &pre_update_closure_paths,
-        &profile.db_path,
-        snapshot_options.clone(),
-    )
-    .map_err(|error| format!("old normalized graph delta snapshot failed: {error}"))?;
+    let old_graph_delta_snapshot = pre_commit_read_session
+        .snapshot_for_paths(
+            &update_changed_paths,
+            &pre_update_closure_paths,
+            snapshot_options.clone(),
+        )
+        .map_err(|error| format!("old normalized graph delta snapshot failed: {error}"))?;
     let snapshot_old_ms = old_snapshot_start.elapsed().as_millis();
     // Phase B (MVP3.9.5b): journal the pre-commit facts before anything is
     // published, so a post-commit death leaves a replayable record. Refusing
@@ -2665,25 +3480,26 @@ pub(crate) fn run_agent_use_watch_once_delta(
         snapshot_options: snapshot_options.clone(),
         old_facts: old_graph_delta_snapshot.clone(),
     };
-    let journal_serialized_len = serde_json::to_vec(&validation_journal)
-        .map(|bytes| bytes.len())
-        .unwrap_or(usize::MAX);
-    if journal_serialized_len > VALIDATION_JOURNAL_MAX_BYTES {
-        let changed_only_snapshot = snapshot_normalized_facts_for_paths_to_db(
-            &profile.repo_root,
-            &update_changed_paths,
-            &[],
-            &profile.db_path,
-            snapshot_options.clone(),
-        )
-        .map_err(|error| format!("bounded journal snapshot failed: {error}"))?;
+    // Serialized once: these bytes are both the size check and the write
+    // (the journal is multi-MB on large-file edits; serializing it twice
+    // was measurable wall time).
+    let mut journal_bytes = serde_json::to_vec(&validation_journal).unwrap_or_default();
+    if journal_bytes.is_empty() || journal_bytes.len() > VALIDATION_JOURNAL_MAX_BYTES {
+        let changed_only_snapshot = pre_commit_read_session
+            .snapshot_for_paths(&update_changed_paths, &[], snapshot_options.clone())
+            .map_err(|error| format!("bounded journal snapshot failed: {error}"))?;
         validation_journal.journal_scope = "changed_files_only".to_string();
         validation_journal.closure_files = Vec::new();
         validation_journal.old_facts = changed_only_snapshot;
+        journal_bytes = serde_json::to_vec(&validation_journal).map_err(|error| {
+            format!("validation journal serialize failed; refusing to commit without an atomicity journal: {error}")
+        })?;
     }
-    write_validation_journal(profile, &validation_journal).map_err(|error| {
+    write_validation_journal_bytes(profile, &journal_bytes).map_err(|error| {
         format!("validation journal write failed; refusing to commit without an atomicity journal: {error}")
     })?;
+    drop(journal_bytes);
+    drop(pre_commit_read_session);
     validation_stage_tracker.mark("publish");
     write_agent_use_publish_state(profile, "updating", None)?;
     validation_stage_tracker.mark("commit");
@@ -2714,8 +3530,11 @@ pub(crate) fn run_agent_use_watch_once_delta(
             }
             // Phase D: the DB is now consistent with source; what is pending
             // is VALIDATION. Transition before clearing the publish marker so
-            // no instant exists where neither sidecar covers the run.
-            transition_validation_journal_state(profile, VALIDATION_JOURNAL_STATE_VALIDATING);
+            // no instant exists where neither sidecar covers the run. Written
+            // from the in-memory journal: reloading the multi-MB file from
+            // disk just to flip the state string was measurable wall time.
+            validation_journal.state = VALIDATION_JOURNAL_STATE_VALIDATING.to_string();
+            let _ = write_validation_journal(profile, &validation_journal);
             clear_agent_use_publish_state(profile)?;
             summary
         }
@@ -2794,14 +3613,18 @@ pub(crate) fn run_agent_use_watch_once_delta(
                 .collect::<Vec<_>>();
             validation_stage_tracker.mark("new_snapshot");
             let new_snapshot_start = Instant::now();
-            let new_graph_delta_snapshot = snapshot_normalized_facts_for_paths_to_db(
-                &profile.repo_root,
-                &delta_changed_paths,
-                &delta_closure_paths,
-                &profile.db_path,
-                snapshot_options,
-            )
-            .map_err(|error| format!("new normalized graph delta snapshot failed: {error}"))?;
+            // MVP3.9.5.3 residual: one post-commit read session feeds the new
+            // snapshot AND the validation collectors below, so row hydration for the
+            // changed/closure files is paid once. Opened after the commit, so it
+            // sees (and caches) the published baseline.
+            let post_commit_read_session =
+                open_normalized_fact_snapshot_session(&profile.repo_root, &profile.db_path)
+                    .map_err(|error| {
+                        format!("new normalized graph delta snapshot failed: {error}")
+                    })?;
+            let new_graph_delta_snapshot = post_commit_read_session
+                .snapshot_for_paths(&delta_changed_paths, &delta_closure_paths, snapshot_options)
+                .map_err(|error| format!("new normalized graph delta snapshot failed: {error}"))?;
             let snapshot_new_ms = new_snapshot_start.elapsed().as_millis();
             validation_stage_tracker.mark("delta");
             let delta_compute_start = Instant::now();
@@ -2809,7 +3632,7 @@ pub(crate) fn run_agent_use_watch_once_delta(
                 &old_graph_delta_snapshot,
                 &new_graph_delta_snapshot,
                 EntitySourceRoleDeltaOptions {
-                    max_items_per_category: usize::MAX,
+                    max_items_per_category: agent_use_validation_graph_delta_max_items(),
                 },
             );
             validation_entity_source_role_delta
@@ -2819,16 +3642,10 @@ pub(crate) fn run_agent_use_watch_once_delta(
             let mut entity_source_role_delta = if detail_mode.preserves_full_details() {
                 validation_entity_source_role_delta.clone()
             } else {
-                let mut compact_delta = compute_entity_source_role_delta(
-                    &old_graph_delta_snapshot,
-                    &new_graph_delta_snapshot,
-                    EntitySourceRoleDeltaOptions {
-                        max_items_per_category: AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT,
-                    },
-                );
-                compact_delta.apply_dependency_closure_summary(&summary.dependency_closure);
-                compact_delta.timings = validation_entity_source_role_delta.timings.clone();
-                compact_delta
+                // The compact view is derived from the full report instead of
+                // recomputing the whole delta at a lower cap.
+                validation_entity_source_role_delta
+                    .truncated_to_max_items(AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT)
             };
             let delta_compute_ms = delta_compute_start.elapsed().as_millis();
             entity_source_role_delta.timings.diff_closure_ms = pre_update_dependency_closure_ms;
@@ -2840,6 +3657,7 @@ pub(crate) fn run_agent_use_watch_once_delta(
                 normal_dot_codegraph_existed_before,
             );
             add_agent_use_durability_labels(&mut value, profile, &post_preflight, None);
+            let mut validation_was_bounded = false;
             if let Some(object) = value.as_object_mut() {
                 let update_no_op_paths = agent_use_watch_no_op_paths(&summary);
                 let no_op_paths = path_preflight.merge_no_op_paths(&update_no_op_paths);
@@ -2862,13 +3680,17 @@ pub(crate) fn run_agent_use_watch_once_delta(
                     total_update_plus_delta_start.elapsed().as_millis(),
                 );
                 validation_stage_tracker.mark("validation");
-                let validation_packet = agent_use_exact_calls_validation_packet(
-                    profile,
-                    &post_preflight,
-                    &validation_entity_source_role_delta,
-                    graph_delta_json.clone(),
-                    changed_paths_normalized.clone(),
-                )?;
+                let (validation_packet, validation_substage_summary) =
+                    agent_use_exact_calls_validation_packet(
+                        profile,
+                        &post_preflight,
+                        &validation_entity_source_role_delta,
+                        graph_delta_json.clone(),
+                        changed_paths_normalized.clone(),
+                        Some(&mut validation_stage_tracker),
+                        validation_wall,
+                        Some(post_commit_read_session.store()),
+                    )?;
                 validation_stage_tracker.mark("packet");
                 let validation_packet_json = if detail_mode.preserves_full_details() {
                     serde_json::to_value(&validation_packet).map_err(|error| error.to_string())?
@@ -3064,6 +3886,27 @@ pub(crate) fn run_agent_use_watch_once_delta(
                     "validation_packet".to_string(),
                     validation_packet_json.clone(),
                 );
+                let validation_wall_bounded = validation_substage_summary
+                    .get("wall_budget")
+                    .and_then(|value| value.get("exceeded"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                object.insert(
+                    "validation_wall_bounded".to_string(),
+                    json!(validation_wall_bounded),
+                );
+                validation_was_bounded = validation_substage_summary
+                    .get("validation_bounded")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if detail_mode.preserves_full_details() {
+                    // Compact output gets substage attribution from the stage-tracker
+                    // sidecar instead; this inline mirror is for --audit-json runs.
+                    object.insert(
+                        "validation_substage_summary".to_string(),
+                        validation_substage_summary,
+                    );
+                }
                 object.insert(
                     "validation_status".to_string(),
                     validation_packet_json["status"].clone(),
@@ -3413,7 +4256,15 @@ pub(crate) fn run_agent_use_watch_once_delta(
             // two-phase operation is complete and the journal can be retired. The
             // validation_state block is computed only now, after retirement, so this
             // run's own (intentionally open) journal does not read as "incomplete".
-            clear_validation_journal(profile);
+            //
+            // EXCEPT when the validation itself was bounded (wall budget, edge
+            // budget, or delta-cap omission): a bounded validation is incomplete, so
+            // the journal stays and the NEXT run replays the pending delta — without
+            // this, a wall-bounded run absorbs the unvalidated baseline and the rerun
+            // reports a silent ok (found by the MVP3.9.5.3 adversarial gate probe).
+            if !validation_was_bounded {
+                clear_validation_journal(profile);
+            }
             if let Some(object) = value.as_object_mut() {
                 object.insert(
                     "validation_state".to_string(),
@@ -3455,18 +4306,91 @@ pub(crate) fn run_agent_use_watch_once_delta(
     }
 }
 
+/// Per-substage wall/fan-out attribution INSIDE the validation stage
+/// (MVP3.9.5.3). Substage starts are marked live on the stage-tracker sidecar
+/// (post-mortem + live-readable during a slow run); elapsed ms and fan-out
+/// counters are folded into a compact summary returned with the packet.
+struct ValidationSubstageMeter<'a> {
+    tracker: Option<&'a mut ValidationStageTracker>,
+    summary: serde_json::Map<String, Value>,
+    current: Option<(String, Instant)>,
+}
+
+impl<'a> ValidationSubstageMeter<'a> {
+    fn new(tracker: Option<&'a mut ValidationStageTracker>) -> Self {
+        Self {
+            tracker,
+            summary: serde_json::Map::new(),
+            current: None,
+        }
+    }
+
+    /// Closes the previous substage (if any) and marks the start of `name`.
+    fn begin(&mut self, name: &str) {
+        self.finish_with(json!({}));
+        if let Some(tracker) = self.tracker.as_deref_mut() {
+            tracker.mark(&format!("validation:{name}"));
+        }
+        self.current = Some((name.to_string(), Instant::now()));
+    }
+
+    /// Closes the current substage, recording elapsed ms plus `detail`
+    /// counters (e.g. edges validated). Idempotent when nothing is open.
+    fn finish_with(&mut self, detail: Value) {
+        if let Some((name, start)) = self.current.take() {
+            let mut record = serde_json::Map::new();
+            record.insert("ms".to_string(), json!(start.elapsed().as_millis() as u64));
+            if let Some(extra) = detail.as_object() {
+                for (key, value) in extra {
+                    record.insert(key.clone(), value.clone());
+                }
+            }
+            self.summary.insert(name, Value::Object(record));
+        }
+    }
+
+    /// Records a non-substage attribution entry (e.g. the wall-budget
+    /// verdict) alongside the substage records.
+    fn note(&mut self, key: &str, value: Value) {
+        self.summary.insert(key.to_string(), value);
+    }
+
+    /// Finalizes the meter: the full substage map is marked once on the
+    /// stage tracker (live/post-mortem lane) and returned for inline output.
+    fn into_summary(mut self) -> Value {
+        self.finish_with(json!({}));
+        let summary = Value::Object(std::mem::take(&mut self.summary));
+        if let Some(tracker) = self.tracker.as_deref_mut() {
+            tracker.mark_with(
+                "validation:substage_summary",
+                json!({ "substages": summary.clone() }),
+            );
+        }
+        summary
+    }
+}
+
 pub(crate) fn agent_use_exact_calls_validation_packet(
     profile: &AgentUseProfile,
     preflight: &DbLifecyclePreflight,
     delta: &EntitySourceRoleDeltaReport,
     graph_delta: Value,
     changed_files: Vec<String>,
-) -> Result<ValidationPacket, String> {
+    stage_tracker: Option<&mut ValidationStageTracker>,
+    validation_wall: (Instant, u64),
+    // A read store whose caches are already warm from the post-commit
+    // snapshot (MVP3.9.5.3 residual). `None` opens a fresh one (replay path).
+    shared_read_store: Option<&SqliteGraphStore>,
+) -> Result<(ValidationPacket, Value), String> {
+    let (validation_deadline, validation_wall_budget_ms) = validation_wall;
+    let mut wall_skipped_substages: Vec<&'static str> = Vec::new();
+    let mut substages = ValidationSubstageMeter::new(stage_tracker);
     let mut rules = agent_use_exact_calls_validation_rules();
     rules.extend(agent_use_exact_imports_validation_rules());
     rules.extend(agent_use_proof_integrity_validation_rules());
     rules.extend(agent_use_source_role_tests_validation_rules());
     rules.extend(agent_use_activation_gated_contract_validation_rules());
+    rules.extend(agent_use_unresolved_reference_validation_rules());
     let lifecycle = agent_use_validation_lifecycle_from_read_preflight(preflight);
     let claimability = json!({
         "claimable": lifecycle.claimable,
@@ -3495,6 +4419,7 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
         .iter()
         .map(|rule| (rule.validation_rule_id.as_str(), rule))
         .collect::<BTreeMap<_, _>>();
+    substages.begin("lifecycle_integrity");
     let mut findings = agent_use_collect_lifecycle_integrity_findings(
         profile,
         &rule_by_id,
@@ -3513,14 +4438,27 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
             json!(delta.proof_ladder_changes),
             lifecycle_json,
         );
-        return Ok(agent_use_attach_activation_gated_contract_metadata(
+        let packet = agent_use_attach_activation_gated_contract_metadata(
             packet.with_eligible_hard_interrupts(format!("unix_ms:{}", unix_time_ms())),
             delta,
-        ));
+        );
+        return Ok((packet, substages.into_summary()));
     }
 
-    let store = SqliteGraphStore::open_read_only(&profile.db_path)
-        .map_err(|error| format!("open validation DB read-only failed: {error}"))?;
+    let owned_read_store;
+    let store: &SqliteGraphStore = match shared_read_store {
+        Some(shared) => shared,
+        None => {
+            let mut opened = SqliteGraphStore::open_read_only(&profile.db_path)
+                .map_err(|error| format!("open validation DB read-only failed: {error}"))?;
+            // Same session contract as the snapshot side: this store lives
+            // for one validation pass over a committed baseline.
+            opened.enable_session_read_caches();
+            owned_read_store = opened;
+            &owned_read_store
+        }
+    };
+    substages.note("read_cache_enabled", json!(store.read_cache_enabled()));
     let renamed_old_paths = delta
         .file_renames_detected
         .iter()
@@ -3547,44 +4485,83 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
         .collect::<BTreeMap<_, _>>();
 
     let mut seen_edge_rule = BTreeSet::<String>::new();
-    agent_use_collect_proof_integrity_findings(
-        profile,
-        &store,
-        &rule_by_id,
-        lifecycle.clone(),
-        delta,
-        &changed_files,
-        &mut findings,
-        &mut seen_edge_rule,
-    )?;
-    agent_use_collect_source_role_tests_findings(
-        profile,
-        &store,
-        &rule_by_id,
-        lifecycle.clone(),
-        delta,
-        &changed_files,
-        &mut findings,
-        &mut seen_edge_rule,
-    )?;
-    agent_use_collect_activation_gated_contract_findings(
-        profile,
-        &store,
-        &rule_by_id,
-        lifecycle.clone(),
-        delta,
-        &changed_files,
-        &renamed_old_paths,
-        &removed_entity_paths_by_id,
-        &mut findings,
-        &mut seen_edge_rule,
-    )?;
+    let edge_reverification_budget_max = agent_use_validation_max_edge_reverifications();
+    let mut edge_reverification_budget = edge_reverification_budget_max;
+    let mut edge_reverifications_skipped = 0usize;
+    substages.begin("proof_integrity");
+    if Instant::now() >= validation_deadline {
+        wall_skipped_substages.push("proof_integrity");
+    } else {
+        agent_use_collect_proof_integrity_findings(
+            profile,
+            &store,
+            &rule_by_id,
+            lifecycle.clone(),
+            delta,
+            &changed_files,
+            &mut findings,
+            &mut seen_edge_rule,
+        )?;
+    }
+    substages.begin("source_role_tests");
+    if Instant::now() >= validation_deadline {
+        wall_skipped_substages.push("source_role_tests");
+    } else {
+        agent_use_collect_source_role_tests_findings(
+            profile,
+            &store,
+            &rule_by_id,
+            lifecycle.clone(),
+            delta,
+            &changed_files,
+            &mut findings,
+            &mut seen_edge_rule,
+        )?;
+    }
+    substages.begin("activation_gated_contract");
+    if Instant::now() >= validation_deadline {
+        wall_skipped_substages.push("activation_gated_contract");
+    } else {
+        agent_use_collect_activation_gated_contract_findings(
+            profile,
+            &store,
+            &rule_by_id,
+            lifecycle.clone(),
+            delta,
+            &changed_files,
+            &renamed_old_paths,
+            &removed_entity_paths_by_id,
+            &mut findings,
+            &mut seen_edge_rule,
+        )?;
+    }
 
+    substages.begin("unresolved_references");
+    let mut unresolved_references_block = Value::Null;
+    if Instant::now() >= validation_deadline {
+        wall_skipped_substages.push("unresolved_references");
+    } else {
+        unresolved_references_block = agent_use_collect_unresolved_reference_findings(
+            store,
+            &rule_by_id,
+            lifecycle.clone(),
+            delta,
+            &changed_files,
+            &mut findings,
+        )?;
+    }
+
+    substages.begin("removed_callee_incoming_calls");
+    let mut substage_edges_validated = 0usize;
     for removed in delta
         .entities_removed
         .iter()
         .filter(|entry| exact_calls_target_entity_kind(entry.entity_kind))
     {
+        if Instant::now() >= validation_deadline {
+            wall_skipped_substages.push("removed_callee_incoming_calls");
+            break;
+        }
         let Some(removed_entity_id) = agent_use_entity_delta_id(removed) else {
             continue;
         };
@@ -3592,6 +4569,12 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
             .find_edges_by_tail_relation(&removed_entity_id, RelationKind::Calls)
             .map_err(|error| format!("read incoming CALLS edges failed: {error}"))?;
         for edge in incoming {
+            if edge_reverification_budget == 0 {
+                edge_reverifications_skipped += 1;
+                continue;
+            }
+            edge_reverification_budget -= 1;
+            substage_edges_validated += 1;
             let rule_id = if renamed_old_paths
                 .contains(&normalize_repo_relative_path(&removed.repo_relative_path))
             {
@@ -3613,11 +4596,18 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
         }
     }
 
+    substages.finish_with(json!({ "edges_validated": substage_edges_validated }));
+    substages.begin("removed_calls_delta_edges");
+    substage_edges_validated = 0;
     for entry in delta
         .edges_removed
         .iter()
         .filter(|entry| entry.relation == RelationKind::Calls)
     {
+        if Instant::now() >= validation_deadline {
+            wall_skipped_substages.push("removed_calls_delta_edges");
+            break;
+        }
         let target_path = entry
             .target_endpoint
             .repo_relative_path
@@ -3630,6 +4620,12 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
         if !target_removed_or_renamed {
             continue;
         }
+        if edge_reverification_budget == 0 {
+            edge_reverifications_skipped += 1;
+            continue;
+        }
+        edge_reverification_budget -= 1;
+        substage_edges_validated += 1;
         let rule_id = if renamed_old_paths.contains(&target_path) {
             CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED
         } else {
@@ -3647,12 +4643,19 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
         )?;
     }
 
+    substages.finish_with(json!({ "edges_validated": substage_edges_validated }));
+    substages.begin("added_changed_calls_edges");
+    substage_edges_validated = 0;
     for entry in delta
         .edges_added
         .iter()
         .chain(delta.edges_changed.iter())
         .filter(|entry| entry.relation == RelationKind::Calls)
     {
+        if Instant::now() >= validation_deadline {
+            wall_skipped_substages.push("added_changed_calls_edges");
+            break;
+        }
         if !agent_use_exactness_is_proof_grade(entry.exactness) {
             findings.push(agent_use_calls_boundary_diagnostic(
                 rule_by_id[CG_MVP3_CALLS_DANGLING_TARGET],
@@ -3662,6 +4665,12 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
             ));
             continue;
         }
+        if edge_reverification_budget == 0 {
+            edge_reverifications_skipped += 1;
+            continue;
+        }
+        edge_reverification_budget -= 1;
+        substage_edges_validated += 1;
         let Some(edge) = store
             .get_edge(&entry.edge_id)
             .map_err(|error| format!("read CALLS edge failed: {error}"))?
@@ -3681,6 +4690,9 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
         )?;
     }
 
+    substages.finish_with(json!({ "edges_validated": substage_edges_validated }));
+    substages.begin("current_edge_file_scan");
+    substage_edges_validated = 0;
     let mut scan_paths = changed_files
         .iter()
         .chain(delta.closure_files_updated.iter())
@@ -3688,7 +4700,12 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
         .collect::<Vec<_>>();
     scan_paths.sort();
     scan_paths.dedup();
+    let scan_path_count = scan_paths.len();
     for path in scan_paths {
+        if Instant::now() >= validation_deadline {
+            wall_skipped_substages.push("current_edge_file_scan");
+            break;
+        }
         let edges = store
             .list_edges_by_file(&path)
             .map_err(|error| format!("read changed-file CALLS edges failed: {error}"))?;
@@ -3696,6 +4713,12 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
             .into_iter()
             .filter(|edge| edge.relation == RelationKind::Calls)
         {
+            if edge_reverification_budget == 0 {
+                edge_reverifications_skipped += 1;
+                continue;
+            }
+            edge_reverification_budget -= 1;
+            substage_edges_validated += 1;
             let missing_target_rule_id = agent_use_missing_target_rule_for_current_edge(
                 &edge,
                 &removed_entity_paths_by_id,
@@ -3718,19 +4741,28 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
         }
     }
 
-    agent_use_collect_exact_imports_findings(
-        profile,
-        &store,
-        &rule_by_id,
-        lifecycle.clone(),
-        delta,
-        &changed_files,
-        &renamed_old_paths,
-        &ambiguous_rename_old_paths,
-        &removed_entity_paths_by_id,
-        &mut findings,
-        &mut seen_edge_rule,
-    )?;
+    substages.finish_with(json!({
+        "edges_validated": substage_edges_validated,
+        "paths_scanned": scan_path_count,
+    }));
+    substages.begin("exact_imports");
+    if Instant::now() >= validation_deadline {
+        wall_skipped_substages.push("exact_imports");
+    } else {
+        agent_use_collect_exact_imports_findings(
+            profile,
+            &store,
+            &rule_by_id,
+            lifecycle.clone(),
+            delta,
+            &changed_files,
+            &renamed_old_paths,
+            &ambiguous_rename_old_paths,
+            &removed_entity_paths_by_id,
+            &mut findings,
+            &mut seen_edge_rule,
+        )?;
+    }
 
     for path in ambiguous_rename_old_paths {
         findings.push(agent_use_calls_boundary_unknown(
@@ -3764,9 +4796,83 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
         }
     }
 
+    // MVP3.9.5.3: if the bounded validation delta omitted entries in a
+    // blocking-relevant category, or the per-run edge-reverification budget
+    // ran out, the rules above only saw a prefix of the change set — the
+    // packet must not claim absence of contradictions.
+    substages.begin("bounded_labeling");
+    wall_skipped_substages.sort_unstable();
+    wall_skipped_substages.dedup();
+    let wall_budget_json = json!({
+        "budget_ms": validation_wall_budget_ms,
+        "exceeded": !wall_skipped_substages.is_empty(),
+        "skipped_substages": wall_skipped_substages.clone(),
+    });
+    substages.note("wall_budget", wall_budget_json.clone());
+    // Bounded validation is INCOMPLETE validation: the caller must not retire
+    // the journal, so the next run replays the pending delta instead of
+    // absorbing the unvalidated baseline (adversarial probe finding,
+    // MVP3.9.5.3 gate).
+    let validation_bounded = !wall_skipped_substages.is_empty()
+        || edge_reverifications_skipped > 0
+        || delta.omission.entities_removed_omitted
+            + delta.omission.edges_removed_omitted
+            + delta.omission.edges_added_omitted
+            > 0;
+    substages.note("validation_bounded", json!(validation_bounded));
+    if !wall_skipped_substages.is_empty() {
+        findings.push(agent_use_graph_delta_bounded_unknown(
+            rule_by_id[CG_MVP3_GRAPH_DELTA_BOUNDED],
+            lifecycle.clone(),
+            json!({
+                "validation_wall_bounded": true,
+                "wall_budget": wall_budget_json,
+            }),
+            &format!(
+                "validation_wall_bounded: the validation wall budget ({validation_wall_budget_ms} ms) was exhausted and substages [{}] were skipped; rerun with a higher --max-validation-ms or run `agent-use index` and re-validate",
+                wall_skipped_substages.join(", ")
+            ),
+        ));
+    }
+    if edge_reverifications_skipped > 0 {
+        findings.push(agent_use_graph_delta_bounded_unknown(
+            rule_by_id[CG_MVP3_GRAPH_DELTA_BOUNDED],
+            lifecycle.clone(),
+            json!({
+                "edge_reverification_bounded": true,
+                "edge_reverifications_skipped": edge_reverifications_skipped,
+                "edge_reverification_budget": edge_reverification_budget_max,
+            }),
+            &format!(
+                "edge_reverification_bounded: {edge_reverifications_skipped} CALLS edges were not re-verified because the per-run reverification budget ({edge_reverification_budget_max}) was exhausted; run `agent-use index` and re-validate"
+            ),
+        ));
+    }
+    let blocking_relevant_omitted = delta.omission.entities_removed_omitted
+        + delta.omission.edges_removed_omitted
+        + delta.omission.edges_added_omitted;
+    if blocking_relevant_omitted > 0 {
+        findings.push(agent_use_graph_delta_bounded_unknown(
+            rule_by_id[CG_MVP3_GRAPH_DELTA_BOUNDED],
+            lifecycle.clone(),
+            json!({
+                "graph_delta_bounded": true,
+                "max_items_per_category": delta.omission.max_items_per_category,
+                "entities_removed_omitted": delta.omission.entities_removed_omitted,
+                "edges_removed_omitted": delta.omission.edges_removed_omitted,
+                "edges_added_omitted": delta.omission.edges_added_omitted,
+            }),
+            &format!(
+                "graph_delta_bounded: {blocking_relevant_omitted} blocking-relevant delta entries were omitted by the per-category cap ({}); run `agent-use index` and re-validate",
+                delta.omission.max_items_per_category
+            ),
+        ));
+    }
+
     // MVP3.9.5c sticky blockers: re-verify previously persisted block-class
     // findings against the CURRENT store + source and re-emit the ones that
     // are still contradicted, so an unchanged broken baseline keeps blocking.
+    substages.begin("persisted_open_blockers");
     let persisted_blockers_summary = agent_use_apply_persisted_open_blockers(
         profile,
         &store,
@@ -3776,6 +4882,7 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
     );
 
     let persisted_changed_files = changed_files.clone();
+    substages.begin("packet_build");
     let packet = ValidationPacket::new(
         changed_files,
         graph_delta,
@@ -3786,14 +4893,16 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
         json!(delta.proof_ladder_changes),
         lifecycle_json,
     );
-    let packet = agent_use_attach_activation_gated_contract_metadata(
+    let mut packet = agent_use_attach_activation_gated_contract_metadata(
         packet.with_eligible_hard_interrupts(format!("unix_ms:{}", unix_time_ms())),
         delta,
     );
+    packet.unresolved_references = unresolved_references_block;
     let final_severity = serde_json::to_value(&packet.final_status)
         .ok()
         .and_then(|value| value.as_str().map(ToString::to_string))
         .unwrap_or_default();
+    substages.begin("persist_outcome");
     persist_validation_outcome(
         profile,
         "agent_use_validation_packet",
@@ -3802,7 +4911,7 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
         &packet.blocking_errors,
         &persisted_blockers_summary,
     );
-    Ok(packet)
+    Ok((packet, substages.into_summary()))
 }
 
 fn agent_use_exact_calls_validation_rules() -> Vec<ValidationRule> {
@@ -3862,6 +4971,305 @@ fn agent_use_exact_calls_validation_rules() -> Vec<ValidationRule> {
         missing_source_span,
         missing_provenance,
     ]
+}
+
+fn agent_use_unresolved_reference_validation_rules() -> Vec<ValidationRule> {
+    vec![
+        ValidationRule::diagnostic(
+            CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL,
+            "new unresolved repo-local call references on changed files escalate to warnings via a repo-graph definition lookup; they are never graph proof",
+            "Define the called symbol, fix the name, or mark the dependency external; warnings clear when the reference resolves.",
+        ),
+        ValidationRule::diagnostic(
+            CG_MVP3_REF_NEW_UNRESOLVED_IMPORT,
+            "new unresolved repo-local import/alias/reexport references on changed files escalate to warnings via a repo-graph definition lookup; they are never graph proof",
+            "Define or export the imported symbol, fix the import path, or mark the dependency external.",
+        ),
+        ValidationRule::diagnostic(
+            CG_MVP3_REF_EXTERNAL_OR_BUILTIN,
+            "unresolved references classified external_dependency/builtin_or_std/macro_or_codegen are counted as diagnostics only and never produce a warning",
+            "No action required; these references resolve outside the repo graph by design.",
+        ),
+        ValidationRule::diagnostic(
+            CG_MVP3_REF_DYNAMIC,
+            "unresolved references classified dynamic_or_computed stay at the existing heuristic unknown boundary",
+            "Dynamic or computed callees cannot be verified statically; treat as unknown, not as proof of error.",
+        ),
+    ]
+}
+
+struct UnresolvedReferenceRepoGraphLookup {
+    lookup_name: String,
+    definition_count: usize,
+    top_candidate: Option<String>,
+}
+
+/// Cheap escalation lookup (§1.3.4): does ANY definition-shaped entity with
+/// the referenced name exist anywhere in the current repo graph? Qualified
+/// names look up their final segment (the defining entity's own name).
+fn agent_use_unresolved_reference_repo_graph_lookup(
+    store: &SqliteGraphStore,
+    reference_name: &str,
+) -> Result<UnresolvedReferenceRepoGraphLookup, String> {
+    let after_path = reference_name.rsplit("::").next().unwrap_or(reference_name);
+    let lookup_name = after_path.rsplit('.').next().unwrap_or(after_path).trim();
+    let entities = store
+        .find_entities_by_exact_symbol(lookup_name)
+        .map_err(|error| format!("repo graph lookup for `{lookup_name}` failed: {error}"))?;
+    let definitions = entities
+        .iter()
+        .filter(|entity| crate::validation_journal::entity_kind_defines_symbol(entity.kind))
+        .collect::<Vec<_>>();
+    Ok(UnresolvedReferenceRepoGraphLookup {
+        lookup_name: lookup_name.to_string(),
+        definition_count: definitions.len(),
+        top_candidate: definitions.first().map(|entity| {
+            format!(
+                "{} ({})",
+                entity.qualified_name,
+                normalize_repo_relative_path(&entity.repo_relative_path)
+            )
+        }),
+    })
+}
+
+fn agent_use_unresolved_reference_warning(
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    entry: &UnresolvedReferenceDeltaEntry,
+    lookup: &UnresolvedReferenceRepoGraphLookup,
+    block_on_unresolved_local: bool,
+) -> ValidationFinding {
+    let escalated = lookup.definition_count == 0;
+    let relation_label = entry.relation.to_ascii_lowercase();
+    let reason = if escalated {
+        format!(
+            "new unresolved {relation_label} reference `{}` is a likely hallucinated symbol: no defining entity named `{}` exists anywhere in the current repo graph (lookup scope: whole-graph exact symbol dictionary)",
+            entry.name, lookup.lookup_name
+        )
+    } else {
+        format!(
+            "new unresolved {relation_label} reference `{}` did not resolve to a graph edge; {} definition candidate(s) named `{}` exist elsewhere in the repo (top candidate: {}) but the link could not be proven",
+            entry.name,
+            lookup.definition_count,
+            lookup.lookup_name,
+            lookup.top_candidate.as_deref().unwrap_or("unknown")
+        )
+    };
+    let evidence_id = format!(
+        "unresolved-reference://{}:{}:{}",
+        entry.repo_relative_path, entry.source_span.start_line, entry.name
+    );
+    // The opt-in promotion must survive the MVP3.6 severity model, which
+    // demotes block findings carrying only non-graph evidence. The promoted
+    // case cites the same fresh contradiction pair the sticky blockers do:
+    // the current source references the name at an exact span AND a fresh
+    // whole-graph lookup found no defining entity.
+    let promoted = escalated && block_on_unresolved_local;
+    let mut input =
+        ValidationReverificationInput::exact_graph_source(lifecycle, evidence_id.clone(), &reason);
+    input.relation_exact = false;
+    input.source_span_required = false;
+    input.provenance_required = false;
+    input.provenance_present = true;
+    if promoted {
+        input.evidence_items = vec![ValidationEvidenceItem::graph_source(
+            evidence_id,
+            format!(
+                "fresh re-verified contradiction: {}:{} references `{}` in the current source, and a fresh whole-graph lookup found no defining entity named `{}`",
+                entry.repo_relative_path,
+                entry.source_span.start_line,
+                entry.name,
+                lookup.lookup_name
+            ),
+        )];
+    } else {
+        input.graph_source_relation_reverified = false;
+        input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+            ValidationEvidenceKind::Diagnostic,
+            evidence_id,
+            &reason,
+        )];
+    }
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_9_5_4/unresolved-reference/{:016x}",
+            agent_use_validation_stable_u64(&entry.stable_identity_key)
+        ),
+        input,
+    );
+    if promoted {
+        finding.classification = ValidationClassification::Block;
+        finding.blocking_level = ValidationBlockingLevel::Blocking;
+        finding.proof_strength = "reverified_absence_of_definition".to_string();
+    } else {
+        finding.classification = ValidationClassification::Warn;
+        finding.blocking_level = ValidationBlockingLevel::Warning;
+        finding.proof_status = ValidationProofStatus::NotGraphProof;
+        finding.proof_level = "not_graph_proof".to_string();
+        finding.proof_strength = "text_evidence".to_string();
+        finding.reverified_graph_source_proof = false;
+    }
+    finding.affected_delta = json!({
+        "unresolved_reference": {
+            "name": entry.name,
+            "relation": entry.relation,
+            "reference_class": entry.reference_class,
+            "repo_graph_lookup": if escalated {
+                format!("no_defining_entity_named_{}", lookup.lookup_name)
+            } else {
+                format!("{}_definition_candidates_exist", lookup.definition_count)
+            },
+            "claimability": "claimable_as_source_text_reference_only",
+        }
+    });
+    finding.affected_file = Some(normalize_repo_relative_path(&entry.repo_relative_path));
+    finding.source_span = Some(entry.source_span.clone());
+    finding.source_role = Some(EvidenceRole::Unknown);
+    finding.relation_kind = entry.relation.parse().ok();
+    finding.exactness = Some(Exactness::StaticHeuristic);
+    finding.old_fact_claim_state = "claimable_as_source_text_reference_only".to_string();
+    finding.new_fact_claim_state = "claimable_as_source_text_reference_only".to_string();
+    finding.reason = reason;
+    finding.recommended_fix = Some(format!(
+        "Define `{}` with a source span, fix the name, or mark the dependency external.",
+        entry.name
+    ));
+    finding.suggested_next_steps = vec![format!(
+        "Define `{}` with a source span, fix the name, or mark the dependency external.",
+        entry.name
+    )];
+    finding.diagnostics = vec!["unresolved_reference_not_graph_proof".to_string()];
+    finding.expansion_handle = Some("validation_packet:unresolved_references".to_string());
+    finding
+}
+
+/// Evaluates the §1.3.4 CG_MVP3_REF_* family over the delta's new unresolved
+/// references on changed files and returns the §1.3.5 packet block. CALLEE
+/// rows are the callsite-side mirror of CALLS rows and are skipped so one
+/// hallucinated call yields one finding.
+fn agent_use_collect_unresolved_reference_findings(
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    delta: &EntitySourceRoleDeltaReport,
+    changed_files: &[String],
+    findings: &mut Vec<ValidationFinding>,
+) -> Result<Value, String> {
+    const ESCALATED_INLINE_LIMIT: usize = 3;
+    let changed_set = changed_files
+        .iter()
+        .map(|path| normalize_repo_relative_path(path))
+        .collect::<BTreeSet<_>>();
+    let block_on_unresolved_local = agent_use_block_on_unresolved_local();
+    let mut by_class = BTreeMap::<String, usize>::new();
+    let mut new_count = 0usize;
+    let mut escalated_inline = Vec::<Value>::new();
+    let mut escalated_total = 0usize;
+    let mut external_or_builtin_count = 0usize;
+    let mut dynamic_or_computed_count = 0usize;
+
+    for entry in &delta.unresolved_references_added {
+        if !changed_set.contains(&normalize_repo_relative_path(&entry.repo_relative_path)) {
+            continue;
+        }
+        if entry.relation == "CALLEE" {
+            continue;
+        }
+        new_count += 1;
+        *by_class.entry(entry.reference_class.clone()).or_insert(0) += 1;
+        if entry.reference_class == REFERENCE_CLASS_REPO_LOCAL_CANDIDATE {
+            let rule_id = match entry.relation.as_str() {
+                "CALLS" => CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL,
+                "IMPORTS" | "ALIAS_OF" | "ALIASED_BY" | "REEXPORTS" => {
+                    CG_MVP3_REF_NEW_UNRESOLVED_IMPORT
+                }
+                _ => continue,
+            };
+            let Some(rule) = rule_by_id.get(rule_id) else {
+                continue;
+            };
+            let lookup = agent_use_unresolved_reference_repo_graph_lookup(store, &entry.name)?;
+            // Parser-level references cannot see cross-file resolution, so
+            // "definition candidates exist" is the NORMAL state for a valid
+            // new cross-module call or import — warning there fires on the
+            // very edit that fixes a hallucination (2026-06-11 adversarial
+            // finding). Only the no-definition-anywhere case escalates;
+            // candidates-exist references stay visible in the block's
+            // class counts as diagnostics.
+            if lookup.definition_count > 0 {
+                continue;
+            }
+            escalated_total += 1;
+            let finding = agent_use_unresolved_reference_warning(
+                rule,
+                lifecycle.clone(),
+                entry,
+                &lookup,
+                block_on_unresolved_local,
+            );
+            if escalated_inline.len() < ESCALATED_INLINE_LIMIT {
+                escalated_inline.push(json!({
+                    "name": entry.name,
+                    "relation": entry.relation,
+                    "reference_class": entry.reference_class,
+                    "file": entry.repo_relative_path,
+                    "span": {
+                        "line_start": entry.source_span.start_line,
+                        "line_end": entry.source_span.end_line,
+                    },
+                    "repo_graph_lookup": if lookup.definition_count == 0 {
+                        format!("no_defining_entity_named_{}", lookup.lookup_name)
+                    } else {
+                        format!("{}_definition_candidates_exist", lookup.definition_count)
+                    },
+                    "severity": if lookup.definition_count == 0 && block_on_unresolved_local {
+                        "blocking"
+                    } else {
+                        "warning"
+                    },
+                    "proof_strength": "text_evidence",
+                    "claimability": "claimable_as_source_text_reference_only",
+                    "recommended_fix": format!(
+                        "Define {} with a source span, fix the name, or mark the dependency external.",
+                        entry.name
+                    ),
+                }));
+            }
+            findings.push(finding);
+        } else if entry.reference_class == REFERENCE_CLASS_DYNAMIC_OR_COMPUTED {
+            dynamic_or_computed_count += 1;
+        } else {
+            external_or_builtin_count += 1;
+        }
+    }
+
+    let resolved_count = delta
+        .unresolved_references_removed
+        .iter()
+        .filter(|entry| {
+            entry.relation != "CALLEE"
+                && changed_set.contains(&normalize_repo_relative_path(&entry.repo_relative_path))
+        })
+        .count();
+
+    Ok(json!({
+        "schema_version": 1,
+        "new_count": new_count,
+        "resolved_count": resolved_count,
+        "by_class": by_class,
+        "escalated": escalated_inline,
+        "escalated_total": escalated_total,
+        "escalated_omitted_count": escalated_total.saturating_sub(
+            escalated_inline.len().min(escalated_total)
+        ),
+        "external_or_builtin_count": external_or_builtin_count,
+        "dynamic_or_computed_count": dynamic_or_computed_count,
+        "block_on_unresolved_local": block_on_unresolved_local,
+        "expansion_handle": "validation_packet:unresolved_references",
+        "not_graph_proof": true,
+    }))
 }
 
 fn agent_use_exact_imports_validation_rules() -> Vec<ValidationRule> {
@@ -4002,6 +5410,11 @@ fn agent_use_proof_integrity_validation_rules() -> Vec<ValidationRule> {
             CG_MVP3_SIDECAR_CORRUPT_VS_INACCESSIBLE_MISCLASSIFIED,
             "sidecar access failures must not be misclassified as corruption without corruption proof",
             "Classify inaccessible sidecars separately and keep sidecar freshness diagnostic-only.",
+        ),
+        (
+            CG_MVP3_GRAPH_DELTA_BOUNDED,
+            "bounded validation work (delta entry omission or reverification budget exhaustion) cannot claim absence of contradictions",
+            "Run `agent-use index` for a full reindex, then re-validate the changed files.",
         ),
     ]
     .into_iter()
@@ -4780,6 +6193,34 @@ fn agent_use_collect_activation_gated_contract_findings(
         )?;
     }
 
+    for entry in delta
+        .edges_removed
+        .iter()
+        .filter(|entry| agent_use_route_validation_relation(entry.relation))
+    {
+        let target_path = entry
+            .target_endpoint
+            .repo_relative_path
+            .as_deref()
+            .map(normalize_repo_relative_path)
+            .unwrap_or_else(|| normalize_repo_relative_path(&entry.repo_relative_path));
+        let rule_id = if renamed_old_paths.contains(&target_path) {
+            CG_MVP3_ROUTE_HANDLER_RENAMED_NOT_UPDATED
+        } else {
+            CG_MVP3_ROUTE_HANDLER_DANGLING_TARGET
+        };
+        agent_use_validate_removed_route_delta_edge(
+            profile,
+            store,
+            rule_by_id,
+            lifecycle.clone(),
+            entry,
+            rule_id,
+            findings,
+            seen_edge_rule,
+        )?;
+    }
+
     let mut scan_paths = changed_files
         .iter()
         .chain(delta.closure_files_updated.iter())
@@ -4838,6 +6279,10 @@ fn agent_use_activation_gated_contract_relation(relation: RelationKind) -> bool 
         relation,
         RelationKind::Reads | RelationKind::Writes | RelationKind::Handles | RelationKind::Exposes
     )
+}
+
+fn agent_use_route_validation_relation(relation: RelationKind) -> bool {
+    matches!(relation, RelationKind::Handles | RelationKind::Exposes)
 }
 
 fn agent_use_validate_current_activation_gated_contract_edge(
@@ -5106,6 +6551,92 @@ fn agent_use_route_missing_target_rule_for_current_edge(
         }
     }
     CG_MVP3_ROUTE_HANDLER_DANGLING_TARGET
+}
+
+fn agent_use_validate_removed_route_delta_edge(
+    profile: &AgentUseProfile,
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    entry: &codegraph_index::EdgeDeltaEntry,
+    rule_id: &'static str,
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    let rule = rule_by_id[rule_id];
+    let edge = agent_use_validation_edge_from_delta_entry(entry);
+    if !agent_use_exactness_is_proof_grade(entry.exactness) {
+        findings.push(agent_use_relation_contract_unknown(
+            rule,
+            lifecycle,
+            &edge,
+            json!(entry),
+            "removed non-exact route/handler delta is unknown and cannot block",
+        ));
+        return Ok(());
+    }
+
+    let span_text = match agent_use_reverify_edge_source_span_text(&profile.repo_root, &edge) {
+        Ok(span_text) => span_text,
+        Err(error) => {
+            findings.push(agent_use_relation_contract_unknown(
+                rule,
+                lifecycle,
+                &edge,
+                json!({
+                    "removed_route_delta": entry,
+                    "source_span_recheck_error": error,
+                }),
+                "removed exact route/handler delta cannot block because the current source span could not be reverified",
+            ));
+            return Ok(());
+        }
+    };
+
+    if !agent_use_removed_route_delta_span_still_names_target(&span_text, entry) {
+        findings.push(agent_use_relation_contract_unknown(
+            rule,
+            lifecycle,
+            &edge,
+            json!({
+                "removed_route_delta": entry,
+                "source_span_text": span_text,
+            }),
+            "removed exact route/handler delta source span no longer names the old handler target, so it is not blocking proof",
+        ));
+        return Ok(());
+    }
+
+    let target = store
+        .get_entity(&edge.tail_id)
+        .map_err(|error| format!("read removed route/handler target entity failed: {error}"))?;
+    let source_role = classify_edge_evidence_role(&edge).role;
+    let head_role = store
+        .get_entity(&edge.head_id)
+        .map_err(|error| format!("read removed route/handler source entity failed: {error}"))?
+        .as_ref()
+        .map(classify_entity_source_role)
+        .map(|decision| decision.role)
+        .unwrap_or(source_role);
+    let source_role_allowed = source_role.is_production() || head_role.is_production();
+
+    agent_use_push_relation_contract_finding(
+        findings,
+        seen_edge_rule,
+        rule,
+        &edge,
+        target.as_ref(),
+        Some(json!(entry)),
+        agent_use_graph_source_input(
+            lifecycle,
+            &edge,
+            source_role_allowed,
+            "removed exact route/handler edge was graph/source reverified from the current source span and the route still names the old handler target without a current exact HANDLES/EXPOSES relation",
+        ),
+        "exact route/handler edge was removed while the route source still names the old handler target",
+        "Restore the handler, update the route registration to a current exact handler, or re-index after a deliberate safe route rewrite.",
+    );
+    Ok(())
 }
 
 fn agent_use_push_relation_contract_finding(
@@ -6491,6 +8022,51 @@ fn agent_use_validation_edge_from_delta_entry(entry: &codegraph_index::EdgeDelta
     }
 }
 
+fn agent_use_removed_route_delta_span_still_names_target(
+    span_text: &str,
+    entry: &codegraph_index::EdgeDeltaEntry,
+) -> bool {
+    let mut target_tokens = Vec::new();
+    if let Some(name) = entry.target_endpoint.name.as_deref() {
+        target_tokens.push(name.to_string());
+    }
+    if let Some(qualified_name) = entry.target_endpoint.qualified_name.as_deref() {
+        target_tokens.extend(
+            qualified_name
+                .split([':', '.', '/', '\\'])
+                .filter(|token| !token.is_empty())
+                .map(ToOwned::to_owned),
+        );
+    }
+    if let Some(path) = entry.target_endpoint.repo_relative_path.as_deref() {
+        let normalized = normalize_repo_relative_path(path);
+        target_tokens.extend(
+            normalized
+                .split(['/', '\\', '.'])
+                .filter(|token| !token.is_empty())
+                .map(ToOwned::to_owned),
+        );
+        if let Some(stem) = Path::new(&normalized)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+        {
+            target_tokens.push(stem.to_string());
+        }
+    }
+    target_tokens.extend(
+        entry
+            .target_entity_id
+            .split([':', '.', '/', '\\'])
+            .filter(|token| !token.is_empty())
+            .map(ToOwned::to_owned),
+    );
+    target_tokens.sort();
+    target_tokens.dedup();
+    target_tokens
+        .iter()
+        .any(|token| token.len() >= 2 && span_text.contains(token))
+}
+
 fn agent_use_removed_import_delta_span_still_names_target(
     span_text: &str,
     entry: &codegraph_index::EdgeDeltaEntry,
@@ -7146,6 +8722,32 @@ fn agent_use_calls_boundary_unknown(
     finding
 }
 
+fn agent_use_graph_delta_bounded_unknown(
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    affected_delta: Value,
+    reason: &str,
+) -> ValidationFinding {
+    let mut input = ValidationReverificationInput::exact_graph_source(
+        lifecycle,
+        "evidence://graph-delta-bounded",
+        reason,
+    );
+    input.relation_exact = false;
+    input.graph_source_relation_reverified = false;
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp3_9_5/graph-delta/bounded/{:016x}",
+            agent_use_validation_stable_u64(reason)
+        ),
+        input,
+    );
+    finding.affected_delta = affected_delta;
+    finding.reason = reason.to_string();
+    finding
+}
+
 fn agent_use_import_boundary_diagnostic(
     rule: &ValidationRule,
     lifecycle: ValidationLifecycleState,
@@ -7428,6 +9030,81 @@ fn agent_use_entity_delta_id(entry: &codegraph_index::EntityDeltaEntry) -> Optio
         .map(|summary| summary.entity_id.clone())
 }
 
+// MVP3.9.5.3: span reverification runs once per validated edge; without a
+// cache that is one whole-file read PLUS one whole-file line split per edge.
+// Contents and a precomputed line index are cached per thread keyed by
+// (mtime, len) so an edited file is re-read, never served stale.
+const AGENT_USE_REVERIFY_SOURCE_CACHE_MAX_FILES: usize = 64;
+
+struct CachedReverifySource {
+    content: String,
+    // Byte range of each line, exclusive of the line terminator (and of a
+    // trailing `\r`), matching `str::lines()` segmentation exactly.
+    line_spans: Vec<(usize, usize)>,
+}
+
+impl CachedReverifySource {
+    fn from_content(content: String) -> Self {
+        let bytes = content.as_bytes();
+        let mut line_spans = Vec::new();
+        let mut line_start = 0usize;
+        for (index, byte) in bytes.iter().enumerate() {
+            if *byte == b'\n' {
+                let mut line_end = index;
+                if line_end > line_start && bytes[line_end - 1] == b'\r' {
+                    line_end -= 1;
+                }
+                line_spans.push((line_start, line_end));
+                line_start = index + 1;
+            }
+        }
+        if line_start < bytes.len() {
+            line_spans.push((line_start, bytes.len()));
+        }
+        Self {
+            content,
+            line_spans,
+        }
+    }
+
+    fn line(&self, index: usize) -> &str {
+        let (start, end) = self.line_spans[index];
+        &self.content[start..end]
+    }
+}
+
+thread_local! {
+    static AGENT_USE_REVERIFY_SOURCE_CACHE: std::cell::RefCell<
+        BTreeMap<PathBuf, (Option<std::time::SystemTime>, u64, std::rc::Rc<CachedReverifySource>)>,
+    > = std::cell::RefCell::new(BTreeMap::new());
+}
+
+fn agent_use_read_reverify_source_cached(
+    source_path: &Path,
+) -> Result<std::rc::Rc<CachedReverifySource>, String> {
+    let metadata = std::fs::metadata(source_path)
+        .map_err(|error| format!("source span file could not be read: {error}"))?;
+    let modified = metadata.modified().ok();
+    let len = metadata.len();
+    AGENT_USE_REVERIFY_SOURCE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some((cached_modified, cached_len, content)) = cache.get(source_path) {
+            if *cached_modified == modified && cached_modified.is_some() && *cached_len == len {
+                return Ok(content.clone());
+            }
+        }
+        let content = std::rc::Rc::new(CachedReverifySource::from_content(
+            std::fs::read_to_string(source_path)
+                .map_err(|error| format!("source span file could not be read: {error}"))?,
+        ));
+        if cache.len() >= AGENT_USE_REVERIFY_SOURCE_CACHE_MAX_FILES {
+            cache.clear();
+        }
+        cache.insert(source_path.to_path_buf(), (modified, len, content.clone()));
+        Ok(content)
+    })
+}
+
 fn agent_use_reverify_edge_source_span(repo_root: &Path, edge: &Edge) -> Result<(), String> {
     agent_use_reverify_edge_source_span_text(repo_root, edge).map(|_| ())
 }
@@ -7466,22 +9143,21 @@ fn agent_use_reverify_source_span_text(
     }
     let source_path =
         repo_root.join(repo_relative_path.replace('/', std::path::MAIN_SEPARATOR_STR));
-    let source = std::fs::read_to_string(&source_path)
-        .map_err(|error| format!("source span file could not be read: {error}"))?;
-    let lines = source.lines().collect::<Vec<_>>();
+    let source = agent_use_read_reverify_source_cached(&source_path)?;
+    let line_count = source.line_spans.len();
     let start = span.start_line.saturating_sub(1) as usize;
     let mut end = span.end_line.saturating_sub(1) as usize;
-    if end == lines.len() && span.end_column == Some(1) && start < lines.len() {
-        end = lines.len().saturating_sub(1);
+    if end == line_count && span.end_column == Some(1) && start < line_count {
+        end = line_count.saturating_sub(1);
         if start == end {
-            end_column = (lines[end].len() as u32).saturating_add(1);
+            end_column = (source.line(end).len() as u32).saturating_add(1);
         }
     }
-    if start >= lines.len() || end >= lines.len() {
+    if start >= line_count || end >= line_count {
         return Err("source span line is outside the current source file".to_string());
     }
     let snippet = if start == end {
-        let line = lines[start];
+        let line = source.line(start);
         let start_index = start_column.saturating_sub(1) as usize;
         let end_index = end_column.saturating_sub(1) as usize;
         if start_index >= line.len() || end_index > line.len() || end_index <= start_index {
@@ -7491,7 +9167,10 @@ fn agent_use_reverify_source_span_text(
             .ok_or_else(|| "source span columns split a UTF-8 codepoint".to_string())?
             .to_string()
     } else {
-        lines[start..=end].join("\n")
+        (start..=end)
+            .map(|index| source.line(index))
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     if snippet.trim().is_empty() {
         return Err("source span resolves to empty source text".to_string());
@@ -7511,7 +9190,7 @@ fn agent_use_validation_stable_u64(input: &str) -> u64 {
 #[cfg(test)]
 mod exact_calls_validation_tests {
     use super::*;
-    use codegraph_core::ValidationClassification;
+    use codegraph_core::{NormalizedClaimabilityMetadata, ValidationClassification};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -7811,6 +9490,7 @@ mod exact_calls_validation_tests {
             task_id: Some("task-1".to_string()),
             edit_intent: Some("validate interrupt propagation".to_string()),
             expected_touched_files: vec![PathBuf::from("src/a.ts")],
+            max_validation_ms: None,
         }
     }
 
@@ -8247,6 +9927,109 @@ mod exact_calls_validation_tests {
         source_update
     }
 
+    fn validate_edit_bloated_budget_source_update() -> Value {
+        let mut source_update = validate_edit_blocking_source_update_with_severity_trace();
+        let warning = json!({
+            "validation_rule_id": "CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL",
+            "classification": "warn",
+            "severity": "warning",
+            "message": "new unresolved local call",
+            "file": "src/a.ts",
+            "source_span": {
+                "repo_relative_path": "src/a.ts",
+                "start_line": 3,
+                "start_column": 5,
+                "end_line": 3,
+                "end_column": 20
+            },
+            "recommended_fix": "Define missing_fn or correct the call.",
+            "suggested_next_steps": ["Define missing_fn.", "Rerun validate-edit."],
+            "affected_delta": {
+                "unresolved_reference": {
+                    "name": "missing_fn",
+                    "relation": "CALLS",
+                    "reference_class": "repo_local_candidate",
+                    "claimability": "claimable_as_source_text_reference_only"
+                },
+                "large_audit_copy": "x".repeat(2048)
+            }
+        });
+        source_update["validation_packet"]["warnings"] = Value::Array(
+            (0..8)
+                .map(|index| {
+                    let mut item = warning.clone();
+                    item["finding_id"] = json!(format!("finding://warning/{index}"));
+                    item
+                })
+                .collect(),
+        );
+        source_update["validation_packet"]["unknowns"] = Value::Array(
+            (0..5)
+                .map(|index| {
+                    json!({
+                        "finding_id": format!("finding://unknown/{index}"),
+                        "validation_rule_id": format!("CG_MVP3_UNKNOWN_BUDGET_{index}"),
+                        "classification": "unknown",
+                        "message": "bounded unknown",
+                        "recommended_fix": "Inspect source span."
+                    })
+                })
+                .collect(),
+        );
+        source_update["validation_packet"]["diagnostics"] = Value::Array(
+            (0..5)
+                .map(|index| {
+                    json!({
+                        "finding_id": format!("finding://diagnostic/{index}"),
+                        "validation_rule_id": format!("CG_MVP3_DIAGNOSTIC_BUDGET_{index}"),
+                        "classification": "diagnostic",
+                        "message": "diagnostic metadata"
+                    })
+                })
+                .collect(),
+        );
+        source_update["validation_packet"]["unresolved_references"] = json!({
+            "schema_version": 1,
+            "new_count": 1,
+            "resolved_count": 0,
+            "by_class": {"repo_local_candidate": 1},
+            "not_graph_proof": true,
+            "escalated_total": 1,
+            "escalated": [{
+                "file": "src/a.ts",
+                "name": "missing_fn",
+                "relation": "CALLS",
+                "reference_class": "repo_local_candidate",
+                "severity": "warning",
+                "proof_strength": "text_evidence",
+                "claimability": "claimable_as_source_text_reference_only",
+                "span": {"line_start": 3, "line_end": 3},
+                "recommended_fix": "Define missing_fn or correct the call."
+            }]
+        });
+        source_update["timings"] = json!({"audit_only_stage_timings": "x".repeat(4096)});
+        source_update["per_file_status"] = json!((0..32)
+            .map(|index| json!({"path": format!("src/{index}.ts"), "status": "accepted", "audit": "x".repeat(256)}))
+            .collect::<Vec<_>>());
+        source_update["staged_availability"] = json!({
+            "graph_db_status": "ready",
+            "candidate_spool_status": "stale",
+            "vector_runtime_status": "stale",
+            "vector_audit_status": "missing",
+            "graph_proof_available": true,
+            "candidate_only_available": false,
+            "candidate_context_available": true,
+            "active_candidate_sources": ["graph_db", "stage0_text_evidence", "symbol_lookup"],
+            "claimability": {"claimable": true, "graph_proof_available": true},
+            "layer_readiness": {
+                "graph_db": {"status": "ready", "ready": true, "graph_proof": true, "verbose": "x".repeat(1024)},
+                "candidate_spool": {"status": "stale", "ready": false, "candidate_only": true, "verbose": "x".repeat(1024)}
+            },
+            "warnings": ["x".repeat(1024)]
+        });
+        source_update
+    }
+
     fn assert_compact_validate_edit_safety_fields(packet: &Value) {
         for field in [
             "status",
@@ -8541,6 +10324,280 @@ mod exact_calls_validation_tests {
     }
 
     #[test]
+    fn validate_edit_compact_budget_enforced() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let mut packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_bloated_budget_source_update(),
+        );
+        agent_use_validate_edit_finalize_budget(
+            &mut packet,
+            AgentUseDetailMode::Compact,
+            DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+        );
+
+        assert!(
+            serialized_json_len(&packet) <= DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+            "{}",
+            serialized_json_len(&packet)
+        );
+        assert_eq!(
+            packet["agent_json_budget"]["max_output_bytes"].as_u64(),
+            Some(DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES as u64)
+        );
+        assert_eq!(
+            packet["agent_json_budget"]["max_output_bytes_exceeded"].as_bool(),
+            Some(false)
+        );
+        assert_compact_validate_edit_safety_fields(&packet);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn evidence_first_shedding_order_enforced() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let mut packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_bloated_budget_source_update(),
+        );
+        agent_use_validate_edit_finalize_budget(
+            &mut packet,
+            AgentUseDetailMode::Compact,
+            DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+        );
+
+        assert!(packet["validation_packet"]["blocking_errors"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+        assert!(packet["validation_packet"]["warnings"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+        assert!(packet["timings"].is_null(), "{packet}");
+        assert!(packet["per_file_status"].is_null(), "{packet}");
+        assert_eq!(
+            packet["agent_json_budget"]["evidence_first_shedding"].as_bool(),
+            Some(true)
+        );
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn metadata_shed_before_evidence() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let mut packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_bloated_budget_source_update(),
+        );
+        agent_use_validate_edit_finalize_budget(
+            &mut packet,
+            AgentUseDetailMode::Compact,
+            DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+        );
+
+        assert!(packet["source_update_packet"].is_null());
+        assert!(
+            packet["validation_packet"]["blocking_errors"][0]["validation_rule_id"]
+                .as_str()
+                .is_some()
+        );
+        assert!(
+            packet["validation_packet"]["blocking_errors"][0]["recommended_fix"]
+                .as_str()
+                .is_some()
+        );
+        assert_eq!(
+            packet["agent_json_budget"]["metadata_shed_before_evidence"].as_bool(),
+            Some(true)
+        );
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn blocking_errors_survive_budget() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let mut packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_bloated_budget_source_update(),
+        );
+        agent_use_validate_edit_finalize_budget(
+            &mut packet,
+            AgentUseDetailMode::Compact,
+            DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+        );
+        let first = &packet["validation_packet"]["blocking_errors"][0];
+        assert_eq!(
+            first["validation_rule_id"].as_str(),
+            Some(CG_MVP3_CALLS_DANGLING_TARGET)
+        );
+        assert!(first["source_span"].is_object(), "{first}");
+        assert!(first["recommended_fix"].as_str().is_some(), "{first}");
+        assert!(
+            first["suggested_next_steps"].as_array().is_some(),
+            "{first}"
+        );
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn unresolved_references_survive_budget() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let mut packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_bloated_budget_source_update(),
+        );
+        agent_use_validate_edit_finalize_budget(
+            &mut packet,
+            AgentUseDetailMode::Compact,
+            DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+        );
+
+        assert_eq!(
+            packet["unresolved_references"]["new_count"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            packet["validation_packet"]["unresolved_references"]["not_graph_proof"].as_bool(),
+            Some(true)
+        );
+        assert!(
+            packet["validation_packet"]["unresolved_references"]["escalated"][0]["recommended_fix"]
+                .as_str()
+                .is_some()
+        );
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn finding_serialization_deduped() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let mut packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_bloated_budget_source_update(),
+        );
+        agent_use_validate_edit_finalize_budget(
+            &mut packet,
+            AgentUseDetailMode::Compact,
+            DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+        );
+
+        assert!(packet["hard_interrupt"]["errors"].is_null(), "{packet}");
+        assert!(packet["severity_trace"]["warning_unknown_diagnostic_details"].is_null());
+        assert!(packet["validation_packet"]["blocking_errors"][0].is_object());
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn lifecycle_recovery_metadata_deduped() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let mut packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_bloated_budget_source_update(),
+        );
+        agent_use_validate_edit_finalize_budget(
+            &mut packet,
+            AgentUseDetailMode::Compact,
+            DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+        );
+
+        assert!(packet["recovery_commands"].is_null(), "{packet}");
+        assert_eq!(
+            packet["recovery_commands_pointer"].as_str(),
+            Some("validation_recovery_commands")
+        );
+        assert_eq!(packet["lifecycle"]["claimable"].as_bool(), Some(true));
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn critical_fields_not_omitted() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let mut packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_bloated_budget_source_update(),
+        );
+        agent_use_validate_edit_finalize_budget(
+            &mut packet,
+            AgentUseDetailMode::Compact,
+            DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+        );
+
+        assert_compact_validate_edit_safety_fields(&packet);
+        assert!(packet["top_blocking_source_span"].is_object(), "{packet}");
+        assert!(packet["top_recommended_fix"].as_str().is_some(), "{packet}");
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn expansion_handles_present_when_truncated() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let mut packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_bloated_budget_source_update(),
+        );
+        agent_use_validate_edit_finalize_budget(
+            &mut packet,
+            AgentUseDetailMode::Compact,
+            DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+        );
+
+        assert!(packet["agent_json_budget"]["truncated"].as_bool() == Some(true));
+        assert!(packet["expansion_handles"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn compact_bound_not_raised() {
+        assert_eq!(DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES, 12 * 1024);
+    }
+
+    #[test]
+    fn explain_audit_still_full_detail() {
+        for detail_mode in [AgentUseDetailMode::Explain, AgentUseDetailMode::Audit] {
+            let repo = test_repo();
+            let profile = test_profile(&repo);
+            let options = validate_edit_test_options(&repo, detail_mode, false);
+            let packet = agent_use_validate_edit_packet_json(
+                &profile,
+                &options,
+                validate_edit_blocking_source_update_with_severity_trace(),
+            );
+            assert!(packet["severity_trace"]["per_finding_severity_mapping"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty()));
+            cleanup_repo(repo);
+        }
+    }
+
+    #[test]
     fn validate_edit_packet_wraps_real_validation_packet() {
         let repo = test_repo();
         let profile = test_profile(&repo);
@@ -8553,6 +10610,7 @@ mod exact_calls_validation_tests {
             task_id: Some("task-1".to_string()),
             edit_intent: Some("rename".to_string()),
             expected_touched_files: vec![PathBuf::from("src/a.ts")],
+            max_validation_ms: None,
         };
         let source_update = json!({
             "status": "updated",
@@ -8834,6 +10892,7 @@ mod exact_calls_validation_tests {
             task_id: None,
             edit_intent: None,
             expected_touched_files: Vec::new(),
+            max_validation_ms: None,
         };
         let source_update = json!({
             "status": "not_indexed",
@@ -9310,6 +11369,105 @@ mod exact_calls_validation_tests {
         assert_eq!(finding.classification, ValidationClassification::Block);
         assert_eq!(finding.relation_kind, Some(RelationKind::Handles));
         assert!(finding.reverified_graph_source_proof);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn removed_exact_route_handler_delta_blocks_when_source_still_names_target() {
+        let repo = test_repo();
+        write_source(&repo, "src/routes.ts", "app.get('/x', handleAdmin);\n");
+        let store = test_store(&repo);
+        let route = route_entity("src/routes.ts", "GET /x", 1);
+        let handler = function_entity("src/routes.ts", "handleAdmin", 1);
+        store.upsert_entity(&route).expect("route");
+        let span = SourceSpan::with_columns("src/routes.ts", 1, 1, 1, 28);
+        let edge = relation_edge(
+            &route,
+            RelationKind::Handles,
+            &handler.id,
+            span.clone(),
+            Exactness::ParserVerified,
+            EvidenceRole::Production,
+        );
+        let claimability =
+            NormalizedClaimabilityMetadata::graph_source_proof("test exact route handler edge");
+        let endpoint_span = Some(SourceSpan::with_columns("src/routes.ts", 1, 1, 1, 12));
+        let removed = codegraph_index::EdgeDeltaEntry {
+            stable_identity_key: edge.id.clone(),
+            old_stable_identity_key: Some(edge.id.clone()),
+            new_stable_identity_key: None,
+            old: None,
+            new: None,
+            edge_id: edge.id.clone(),
+            source_entity_id: route.id.clone(),
+            target_entity_id: handler.id.clone(),
+            source_endpoint: codegraph_index::EdgeDeltaEndpointSummary {
+                entity_id: route.id.clone(),
+                name: Some(route.name.clone()),
+                qualified_name: Some(route.qualified_name.clone()),
+                entity_kind: Some(route.kind),
+                repo_relative_path: Some(route.repo_relative_path.clone()),
+                source_span: endpoint_span.clone(),
+                hydrated: true,
+            },
+            target_endpoint: codegraph_index::EdgeDeltaEndpointSummary {
+                entity_id: handler.id.clone(),
+                name: Some(handler.name.clone()),
+                qualified_name: Some(handler.qualified_name.clone()),
+                entity_kind: Some(handler.kind),
+                repo_relative_path: Some(handler.repo_relative_path.clone()),
+                source_span: endpoint_span,
+                hydrated: true,
+            },
+            relation: RelationKind::Handles,
+            relation_kind: RelationKind::Handles.to_string(),
+            repo_relative_path: "src/routes.ts".to_string(),
+            source_span: span,
+            exactness: Exactness::ParserVerified,
+            exactness_label: Exactness::ParserVerified.to_string(),
+            derived: false,
+            provenance_edges: Vec::new(),
+            provenance_status: "base_fact".to_string(),
+            source_role: EvidenceRole::Production,
+            edge_class: EdgeClass::BaseExact.to_string(),
+            edge_context: EdgeContext::Production.to_string(),
+            normalized_claimability: claimability.clone(),
+            claimability,
+            proof_strength: "graph_source".to_string(),
+            lifecycle_status: "current".to_string(),
+            relation_support: "supported".to_string(),
+            change_kind: "removed".to_string(),
+            reason: "target_removed".to_string(),
+            warnings: Vec::new(),
+        };
+        let rules = rules();
+        let rule_by_id = rule_map(&rules);
+        let mut findings = Vec::new();
+        let mut seen = BTreeSet::new();
+
+        agent_use_validate_removed_route_delta_edge(
+            &test_profile(&repo),
+            &store,
+            &rule_by_id,
+            ValidationLifecycleState::claimable_current(),
+            &removed,
+            CG_MVP3_ROUTE_HANDLER_DANGLING_TARGET,
+            &mut findings,
+            &mut seen,
+        )
+        .expect("removed route delta validation");
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP3_ROUTE_HANDLER_DANGLING_TARGET)
+            .expect("route handler dangling finding");
+        assert_eq!(finding.classification, ValidationClassification::Block);
+        assert_eq!(finding.relation_kind, Some(RelationKind::Handles));
+        assert!(finding.reverified_graph_source_proof);
+        assert!(finding.source_span.is_some());
+        assert!(finding.recommended_fix.is_some());
+        assert!(!finding.suggested_next_steps.is_empty());
         drop(store);
         cleanup_repo(repo);
     }
@@ -12116,6 +14274,7 @@ pub(crate) fn agent_use_watch_once_delta_with_lock_retry(
             changed_paths.clone(),
             detail_mode,
             normal_dot_codegraph_existed_before,
+            None,
         )
     })
 }
@@ -14815,6 +16974,13 @@ pub(crate) fn add_agent_use_rtds_freshness_fields(
                 .get("graph_proof_available")
                 .cloned()
                 .unwrap_or_else(|| json!(false)),
+        );
+        object.insert(
+            "active_candidate_sources".to_string(),
+            staged_availability
+                .get("active_candidate_sources")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
         );
     }
 }

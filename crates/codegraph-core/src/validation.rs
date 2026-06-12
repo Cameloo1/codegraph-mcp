@@ -3839,6 +3839,11 @@ pub struct ValidationPacket {
     pub proof_ladder_changes: Value,
     pub lifecycle: Value,
     pub stale_unsafe_blockers: Vec<String>,
+    /// §1.3.5 unresolved-reference block (MVP3.9.5.4). Counts plus the top-N
+    /// escalated items; always `not_graph_proof`. Null when the lane was not
+    /// evaluated (non-claimable DB or wall-skipped substage).
+    #[serde(default)]
+    pub unresolved_references: Value,
     pub top_blocking_source_spans: Vec<SourceSpan>,
     pub recommended_next_steps: Vec<String>,
     #[serde(default)]
@@ -3957,6 +3962,7 @@ impl ValidationPacket {
             proof_ladder_changes,
             lifecycle,
             stale_unsafe_blockers,
+            unresolved_references: Value::Null,
             top_blocking_source_spans,
             recommended_next_steps,
             severity_summary: Value::Null,

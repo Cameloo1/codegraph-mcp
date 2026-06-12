@@ -1,0 +1,277 @@
+{
+  "fixture_id": "mvp3_8_inline_test_added",
+  "fixture_family": "source_role_boundary",
+  "fixture_title": "Inline test added to production source stays non-production proof",
+  "description": "Baseline Rust production code gains an inline #[cfg(test)] module; the fixture expects source-role changes to be visible while production proof excludes inline test evidence.",
+  "language": "rust",
+  "domain": "validation",
+  "proof_boundary": "Inline test evidence is source-role evidence only and must not be promoted into production graph proof.",
+  "required_support_status": "degraded",
+  "unsupported_or_not_applicable_reason": "Current release output preserves the source-role proof boundary without emitting a warning for this inline-test-only mutation; the warning expectation remains a harness/schema contract and no production proof leakage is allowed.",
+  "fixture_version": 1,
+  "schema_version": 1,
+  "tags": [
+    "mvp3_8",
+    "source_role",
+    "inline_test",
+    "non_blocking"
+  ],
+  "expected_mvp_phase": "mvp3_8_validation_fixtures",
+  "initial_files": [
+    {
+      "path": "src/lib.rs",
+      "contents": "pub fn production_value() -> i32 {\n    41\n}\n",
+      "source_role": "production"
+    }
+  ],
+  "initial_graph_expectations": {
+    "entities_present": [
+      "src/lib.production_value"
+    ],
+    "production_proof_excludes_roles": [
+      "test",
+      "mock",
+      "stub",
+      "generated"
+    ]
+  },
+  "initial_text_evidence_expectations": {
+    "text_evidence_expected": false
+  },
+  "initial_sidecar_expectations": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable"
+  },
+  "initial_lifecycle_expectations": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "baseline_queries": [
+    {
+      "surface": "query_symbols",
+      "query": "production_value",
+      "expected_symbol": "production_value"
+    }
+  ],
+  "baseline_context_pack_expectations": {
+    "status": "ok",
+    "proof_path_required": true,
+    "forbidden_roles": [
+      "test"
+    ]
+  },
+  "mutation_steps": [
+    {
+      "type": "replace_text",
+      "path": "src/lib.rs",
+      "find": "pub fn production_value() -> i32 {\n    41\n}\n",
+      "replace": "pub fn production_value() -> i32 {\n    41\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn production_value_adds_one() {\n        assert_eq!(production_value() + 1, 42);\n    }\n}\n",
+      "reason": "Add inline test evidence inside a production source file."
+    }
+  ],
+  "changed_files": [
+    "src/lib.rs"
+  ],
+  "added_files": [],
+  "deleted_files": [],
+  "renamed_files": [],
+  "expected_changed_file_normalization": {
+    "normalized_changed_files": [
+      "src/lib.rs"
+    ],
+    "rejected_paths": []
+  },
+  "expected_graph_delta": {
+    "entities_added": 2,
+    "entities_removed": 0,
+    "entities_changed": 1,
+    "edges_added": 1,
+    "edges_removed": 0,
+    "edges_changed": 0,
+    "source_spans_added": 2,
+    "source_spans_removed": 0,
+    "source_spans_changed": 1,
+    "source_roles_changed": 1
+  },
+  "expected_blocking_errors": [],
+  "expected_warnings": [
+    {
+      "validation_rule_id": "CG_MVP3_SOURCE_ROLE_INLINE_TEST_PROMOTED_TO_PRODUCTION",
+      "proof_ladder_level": "symbol_evidence",
+      "severity": "warning",
+      "message_contains": "inline test",
+      "source_file": "src/lib.rs"
+    }
+  ],
+  "expected_unknowns": [],
+  "expected_diagnostics": [],
+  "expected_hard_interrupt": false,
+  "expected_severity": "warning",
+  "expected_must_fix_before_continuing": false,
+  "expected_recommended_fix": null,
+  "expected_suggested_next_steps": [
+    "Keep inline test evidence role-labeled and rerun validation if production proof changes."
+  ],
+  "expected_source_spans": [
+    {
+      "source_file": "src/lib.rs",
+      "start_line": 6,
+      "start_column": 1,
+      "end_line": 12,
+      "end_column": 2,
+      "expected_text": "mod tests",
+      "required_for_graph_proof": false
+    }
+  ],
+  "expected_final_db_lifecycle_status": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "expected_proof_ladder_changes": {
+    "symbol_evidence": {
+      "invalidated": 1,
+      "refreshed": 2
+    },
+    "graph_relation_proof": {
+      "invalidated": 0,
+      "refreshed": 0
+    }
+  },
+  "expected_dirty_evidence_changes": {
+    "invalidated_count": 1,
+    "refreshed_count": 2,
+    "stale_count": 0,
+    "levels": [
+      "symbol_evidence"
+    ]
+  },
+  "expected_sidecar_statuses": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable"
+  },
+  "forbidden_claimable_outputs": [
+    "inline_test_as_production_claim"
+  ],
+  "forbidden_graph_proof_outputs": [
+    "inline_test_promoted_to_graph_relation_proof",
+    "test_evidence_as_production_proof"
+  ],
+  "forbidden_hard_interrupts": [
+    "inline_test_added_hard_interrupt"
+  ],
+  "forbidden_source_role_leakage": [
+    "test_module_as_production_source_role",
+    "inline_test_source_role_leakage"
+  ],
+  "expected_cli_validate_edit_behavior": {
+    "status": "warning",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "dirty_evidence_summary",
+      "proof_ladder_changes",
+      "source_roles_changed"
+    ],
+    "forbidden_fields": [
+      "hard_interrupt"
+    ],
+    "notes": []
+  },
+  "expected_watch_once_behavior": {
+    "status": "warning",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "dirty_evidence_summary",
+      "proof_ladder_changes"
+    ],
+    "forbidden_fields": [
+      "hard_interrupt"
+    ],
+    "notes": []
+  },
+  "expected_mcp_validate_edit_behavior": {
+    "status": "not_applicable",
+    "supported": false,
+    "not_applicable": true,
+    "required_fields": [],
+    "forbidden_fields": [],
+    "notes": [
+      "MCP execution is planned by this harness and exercised in the later release matrix."
+    ]
+  },
+  "expected_context_pack_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "source_roles",
+      "production_proof_excludes_test"
+    ],
+    "forbidden_fields": [
+      "inline_test_as_graph_proof"
+    ],
+    "notes": []
+  },
+  "expected_status_doctor_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_db_state",
+      "sidecar_statuses"
+    ],
+    "forbidden_fields": [],
+    "notes": []
+  },
+  "expected_compact_output": {
+    "summary_first": true,
+    "warning_count": 1,
+    "dirty_evidence_summary": true
+  },
+  "expected_explain_output": {
+    "source_role_detail": true,
+    "proof_ladder_change_detail": true
+  },
+  "expected_audit_output": {
+    "source_role_boundary_detail": true,
+    "inline_test_detail": true
+  },
+  "fix_mutation_if_any": [],
+  "post_fix_changed_files": [],
+  "post_fix_expected_status": "warning",
+  "post_fix_expected_graph_delta": {
+    "source_roles_changed": 1
+  },
+  "post_fix_forbidden_stale_outputs": [
+    "inline test as production proof"
+  ],
+  "recovery_commands_expected": [],
+  "fix_steps": [],
+  "post_fix_expected_severity": "warning",
+  "post_fix_expected_hard_interrupt": false,
+  "post_fix_expected_warnings": [
+    {
+      "validation_rule_id": "CG_MVP3_SOURCE_ROLE_INLINE_TEST_PROMOTED_TO_PRODUCTION",
+      "proof_ladder_level": "symbol_evidence",
+      "severity": "warning",
+      "message_contains": "inline test",
+      "source_file": "src/lib.rs"
+    }
+  ],
+  "post_fix_expected_unknowns": [],
+  "post_fix_expected_diagnostics": [],
+  "recovery_command_verification": {
+    "recovery_command_alone_not_proof": true,
+    "lifecycle_preflight_required": true,
+    "graph_source_verification_required_for_graph_proof": true,
+    "recovery_command_may_refresh_state": false,
+    "post_recovery_lifecycle": {
+      "claimable": true,
+      "status": "fresh_or_unchanged"
+    },
+    "public_claim": false,
+    "real_agent_patch_quality_claim": false
+  },
+  "recovery_is_hint_not_proof": true
+}

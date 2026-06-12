@@ -1024,6 +1024,8 @@ pub(crate) struct UnresolvedCallsOptions {
     pub(crate) explicit_scope_policy: Option<IndexScopeOptions>,
     pub(crate) surface_name: String,
     pub(crate) operation_kind: DbLifecycleOperationKind,
+    pub(crate) class_filter: Option<String>,
+    pub(crate) path_filter: Option<String>,
 }
 
 impl Default for UnresolvedCallsOptions {
@@ -1041,6 +1043,8 @@ impl Default for UnresolvedCallsOptions {
             explicit_scope_policy: None,
             surface_name: "cli.query.unresolved_calls".to_string(),
             operation_kind: DbLifecycleOperationKind::NormalRead,
+            class_filter: None,
+            path_filter: None,
         }
     }
 }
@@ -1094,6 +1098,16 @@ pub(crate) fn parse_unresolved_calls_args(
             "--allow-foreign-db" => {
                 options.allow_foreign_db = true;
             }
+            "--class" => {
+                index += 1;
+                let class = args.get(index).ok_or_else(unresolved_calls_usage)?;
+                options.class_filter = Some(class.clone());
+            }
+            "--path" => {
+                index += 1;
+                let path = args.get(index).ok_or_else(unresolved_calls_usage)?;
+                options.path_filter = Some(path.clone());
+            }
             other => {
                 return Err(format!(
                     "unknown unresolved-calls option: {other}\n{}",
@@ -1107,7 +1121,7 @@ pub(crate) fn parse_unresolved_calls_args(
 }
 
 pub(crate) fn unresolved_calls_usage() -> String {
-    "Usage: codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets] [--include-snippets] [--db <path>] [--allow-stale-read] [--allow-foreign-db]".to_string()
+    "Usage: codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--class <reference_class>] [--path <repo/relative/path>] [--json] [--no-snippets] [--include-snippets] [--db <path>] [--allow-stale-read] [--allow-foreign-db]".to_string()
 }
 
 pub(crate) fn unresolved_calls_lifecycle_preflight(
@@ -1283,6 +1297,19 @@ pub(crate) fn query_unresolved_calls(
     )?;
     let page_query_ms = elapsed_ms(page_start);
 
+    // MVP3.9.5.4: the always-on unresolved-reference lane (populated in every
+    // storage mode, Proof included). The legacy `calls` array reads the
+    // Audit/Debug heuristic-edge sidecar and stays empty on Proof DBs.
+    let lane_start = Instant::now();
+    let lane_rows = query_unresolved_reference_lane_page(
+        &connection,
+        options.limit,
+        options.offset,
+        options.class_filter.as_deref(),
+        options.path_filter.as_deref(),
+    )?;
+    let lane_query_ms = elapsed_ms(lane_start);
+
     let mut source_scan = json!({
         "enabled": false,
         "reason": "disabled_by_default_to_avoid_unbounded_reparse",
@@ -1323,6 +1350,21 @@ pub(crate) fn query_unresolved_calls(
         "diagnostic_only": preflight.diagnostic_only,
         "exact_db_path_checked": preflight.exact_db_path_checked,
         "calls": unresolved,
+        "unresolved_references": {
+            "rows": lane_rows.len(),
+            "items": lane_rows,
+            "filters": {
+                "class": options.class_filter,
+                "path": options.path_filter,
+            },
+            "pagination": {
+                "limit": options.limit,
+                "offset": options.offset,
+            },
+            "source_table": "unresolved_references",
+            "populated_in_all_storage_modes": true,
+            "not_graph_proof": true,
+        },
         "pagination": {
             "requested_limit": options.requested_limit,
             "effective_limit": options.limit,
@@ -1347,13 +1389,15 @@ pub(crate) fn query_unresolved_calls(
                 "page_query": UNRESOLVED_CALLS_PAGE_SQL,
                 "count_query": if options.count_total { Value::String(UNRESOLVED_CALLS_COUNT_SQL.to_string()) } else { Value::Null },
             },
-            "explain_query_plan": explain_plan,
             "query_plan_analysis": query_plan_analysis,
+            "explain_query_plan_omitted": true,
+            "full_detail_handle": "query.unresolved_calls.instrumentation.explain_query_plan",
             "elapsed_ms": {
                 "open_db": open_ms,
                 "explain_query_plan": explain_query_plan_ms,
                 "count_total": count_ms,
                 "page_query": page_query_ms,
+                "lane_query": lane_query_ms,
                 "total": total_ms,
             },
             "snippets": {
@@ -1517,6 +1561,68 @@ pub(crate) fn count_unresolved_calls(connection: &Connection) -> Result<i64, Str
     connection
         .query_row(UNRESOLVED_CALLS_COUNT_SQL, [], |row| row.get::<_, i64>(0))
         .map_err(|error| error.to_string())
+}
+
+/// Bounded page over the always-on unresolved-reference lane (MVP3.9.5.4).
+/// This is the Proof-mode source of truth; `heuristic_edges` remains the
+/// Audit/Debug sidecar read.
+pub(crate) const UNRESOLVED_REFERENCE_LANE_PAGE_SQL: &str = "
+SELECT reference_id, name, relation,
+       source_span_path AS span_repo_relative_path,
+       start_line, start_column, end_line, end_column,
+       file_hash, exactness, extractor, metadata_json
+FROM unresolved_references
+WHERE (?3 IS NULL OR json_extract(metadata_json, '$.reference_class') = ?3)
+  AND (?4 IS NULL OR source_span_path = ?4)
+ORDER BY source_span_path, start_line, reference_id
+LIMIT ?1 OFFSET ?2
+";
+
+pub(crate) fn query_unresolved_reference_lane_page(
+    connection: &Connection,
+    limit: usize,
+    offset: usize,
+    class_filter: Option<&str>,
+    path_filter: Option<&str>,
+) -> Result<Vec<Value>, String> {
+    if !sqlite_table_exists(connection, "unresolved_references")? {
+        return Ok(Vec::new());
+    }
+    let mut statement = connection
+        .prepare(UNRESOLVED_REFERENCE_LANE_PAGE_SQL)
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(
+            params![limit as i64, offset as i64, class_filter, path_filter],
+            |row| {
+                let metadata = json_from_sql_text(row.get::<_, String>("metadata_json")?);
+                let reference_class = metadata
+                    .get("reference_class")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unclassified")
+                    .to_string();
+                Ok(json!({
+                    "reference_id": row.get::<_, String>("reference_id")?,
+                    "name": row.get::<_, String>("name")?,
+                    "relation": row.get::<_, String>("relation")?,
+                    "reference_class": reference_class,
+                    "source_span": source_span_value(
+                        row.get::<_, String>("span_repo_relative_path")?,
+                        row.get::<_, i64>("start_line")?,
+                        row.get::<_, Option<i64>>("start_column")?,
+                        row.get::<_, i64>("end_line")?,
+                        row.get::<_, Option<i64>>("end_column")?,
+                    ),
+                    "file_hash": row.get::<_, Option<String>>("file_hash")?,
+                    "exactness": row.get::<_, String>("exactness")?,
+                    "extractor": row.get::<_, String>("extractor")?,
+                    "metadata": metadata,
+                    "not_graph_proof": true,
+                }))
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    collect_sqlite_values(rows)
 }
 
 pub(crate) fn query_unresolved_calls_page(

@@ -3,7 +3,7 @@
 # codegraph-mcp
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Cameloo1/codegraph-mcp/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/Cameloo1/codegraph-mcp/actions/workflows/ci.yml)
-[![MIT License](https://img.shields.io/github/license/Cameloo1/codegraph-mcp?style=flat-square&label=license)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-quickstart-informational?style=flat-square)](docs/quickstart.md)
 
 Local, proof-grounded repo context for AI coding agents.
@@ -45,7 +45,7 @@ is the only path to graph proof.
 
 | Roadmap To MVP4 | Retrieval Quality | SWE-bench Readiness |
 |---|---|---|
-| ![Roadmap To MVP4 Agent Utility Readiness](docs/assets/readme/mvp4_readiness_over_time.png) | ![Retrieval Quality By Benchmark Track](docs/assets/readme/retrieval_quality_by_track.png) | ![SWE-bench Readiness Ladder](docs/assets/readme/swebench_readiness_ladder.png) |
+| ![MVP2 To MVP4 Implementation Roadmap](docs/assets/readme/mvp2_to_mvp4_implementation_roadmap.png) | ![Retrieval Quality By Benchmark Track](docs/assets/readme/retrieval_quality_by_track.png) | ![SWE-bench Readiness Ladder](docs/assets/readme/swebench_readiness_ladder.png) |
 
 These visuals summarize local diagnostic readiness and benchmark-lab evidence
 only. They are not official SWE-bench, RepoBench, CrossCodeEval, CGC, or `rg`
@@ -125,9 +125,7 @@ They do not prove correctness. Final context should come from graph facts,
 exactness labels, source spans, provenance, and stored path evidence, not from
 "top-k similar chunks."
 
-## Evidence Boundary
-
-When reading any CodeGraph output, keep the proof boundary intact:
+When reading any CodeGraph output, keep the evidence boundary intact:
 
 - Typed graph facts with source spans and a lifecycle-valid DB can support graph
   proof.
@@ -202,29 +200,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke_index.ps1
 The deterministic fixture at [fixtures/smoke/basic_repo](fixtures/smoke/basic_repo)
 is the mandatory CI-sized smoke. Full-repo indexing is an explicit opt-in check.
 
-## Contributor Guide
-
-Start with [CONTRIBUTING.md](CONTRIBUTING.md). The short version:
-
-- keep release/product work separate from benchmark/OpenEvolve lab work;
-- do not stage generated DBs, raw logs, benchmark payloads, patches,
-  predictions, WAL/SHM files, or local run directories;
-- preserve the evidence boundary in code, docs, reports, and examples;
-- update CLI/MCP docs when command contracts change.
-
-## Known Limitations
-
-- Final intended-performance pass is not claimed.
-- Relation coverage varies by language and extractor.
-- macOS is coming soon; it is not tested or supported by this baseline.
-- Full-repo indexing is an explicit opt-in check, not a default CI smoke.
-- `agent-use validate-edit` is available as an explicit production-profile
-  after-patch validation command; it is not a compiler/test replacement and
-  does not imply an editor daemon or plugin.
-- Knowledge-graph embeddings such as TransE, RotatE, ComplEx, TuckER,
-  hyperbolic relation embeddings, and tensor decomposition are offline research
-  directions, not runtime requirements.
-
 ## Safety and Scope
 
 - **Local first.** Default CLI graph state is local; production `agent-use`
@@ -237,7 +212,43 @@ Start with [CONTRIBUTING.md](CONTRIBUTING.md). The short version:
   stays `unknown`, `skipped`, or `diagnostic`. A timeout or partial run is never
   counted as a win.
 
+## Contributor Guide
+
+<details>
+<summary>Contributor workflow and hygiene rules</summary>
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md). The short version:
+
+- keep release/product work separate from benchmark/OpenEvolve lab work;
+- do not stage generated DBs, raw logs, benchmark payloads, patches,
+  predictions, WAL/SHM files, or local run directories;
+- preserve the evidence boundary in code, docs, reports, and examples;
+- update CLI/MCP docs when command contracts change.
+
+</details>
+
+## Known Limitations
+
+<details>
+<summary>Current boundaries and non-goals</summary>
+
+- Final intended-performance pass is not claimed.
+- Relation coverage varies by language and extractor.
+- macOS is coming soon; it is not tested or supported by this baseline.
+- Full-repo indexing is an explicit opt-in check, not a default CI smoke.
+- `agent-use validate-edit` is available as an explicit production-profile
+  after-patch validation command; it is not a compiler/test replacement and
+  does not imply an editor daemon or plugin.
+- Knowledge-graph embeddings such as TransE, RotatE, ComplEx, TuckER,
+  hyperbolic relation embeddings, and tensor decomposition are offline research
+  directions, not runtime requirements.
+
+</details>
+
 ## Benchmark Lab
+
+<details>
+<summary>Benchmark lab branch, suites, and external-agent setup</summary>
 
 Branch: `benchmark-and-openevolve-lab`.
 
@@ -266,7 +277,12 @@ Docker launch, and a live one-task gold validation passed. A one-task repo-side
 preflight with `--skip-agent --skip-eval` is runnable and passed; no
 real-agent patch-quality claim is made.
 
+</details>
+
 ## OpenEvolve Lab
+
+<details>
+<summary>OpenEvolve policy-search lane</summary>
 
 OpenEvolve is an evolutionary coding loop: an LLM mutates code, an evaluator
 scores it, and the run keeps better variants.
@@ -274,6 +290,8 @@ scores it, and the run keeps better variants.
 For CodeGraph, it is lab-only policy search for retrieval/ranking experiments
 on `benchmark-and-openevolve-lab`; outputs are not proof and are not merged
 automatically.
+
+</details>
 
 ## References
 

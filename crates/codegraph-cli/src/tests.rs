@@ -1213,6 +1213,10 @@ fn bundle_import_rejects_foreign_corrupt_schema_and_repo_head_mismatch() {
 #[test]
 fn bundle_replace_failpoints_preserve_old_db_and_success_replaces_atomically() {
     let _guard = lock_bundle_test();
+    // CODEGRAPH_WRITE_PATH_FAILPOINT is process-wide; every other test that
+    // sets it holds ENV_TEST_LOCK, so this test must too or they clobber each
+    // other's failpoint under parallel `cargo test`.
+    let _env_guard_lock = lock_env_test();
     let repo = temp_repo();
     write_cli_fixture_file(
         &repo,
@@ -3858,6 +3862,18 @@ fn agent_use_validate_edit_panic_failpoint_emits_structured_error_packet_and_sta
     remove_dir_all_with_retry(&data_root, "cleanup data root");
 }
 
+/// Warning findings from a validate-edit packet, robust to the compact
+/// budget contract: the findings anchor is `validation_packet.warnings`;
+/// older shapes carried the array top-level.
+fn validate_edit_warning_findings(packet: &Value) -> Vec<Value> {
+    packet
+        .pointer("/validation_packet/warnings")
+        .and_then(Value::as_array)
+        .or_else(|| packet.get("warnings").and_then(Value::as_array))
+        .cloned()
+        .unwrap_or_default()
+}
+
 fn validate_edit_args_for(repo: &Path) -> Vec<String> {
     vec![
         "validate-edit".to_string(),
@@ -3868,6 +3884,731 @@ fn validate_edit_args_for(repo: &Path) -> Vec<String> {
         "--agent-json".to_string(),
         "--fail-on-blocking".to_string(),
     ]
+}
+
+#[test]
+fn validate_edit_warns_on_new_unresolved_local_call_and_clears_on_fix() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+    let clean_source = "export function login(input) {\n  return input;\n}\n";
+    write_cli_fixture_file(&repo, "src/service.js", clean_source);
+    // A sibling module whose helper exists (indexed): a NEW valid
+    // cross-module call must stay diagnostic (candidates-exist never warns —
+    // 2026-06-11 adversarial finding: warning there fires on the edit that
+    // fixes a hallucination).
+    write_cli_fixture_file(
+        &repo,
+        "src/format.js",
+        "export function formatHelper(value) {\n  return value;\n}\n",
+    );
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    // Forward-direction hallucination (Q4): a NEW call to a nonexistent local
+    // symbol, plus a builtin call and a valid cross-module call that must
+    // both stay quiet.
+    write_cli_fixture_file(
+        &repo,
+        "src/service.js",
+        "export function login(input) {\n  console.log(input);\n  formatHelper(input);\n  return hallucinatedHelper(input);\n}\n",
+    );
+    let first = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&validate_edit_args_for(&repo))
+    })
+    .expect("validate-edit with hallucinated call");
+
+    let block = &first["unresolved_references"];
+    assert!(
+        block["new_count"].as_u64().unwrap_or_default() >= 1,
+        "{first}"
+    );
+    assert!(
+        block["by_class"]["repo_local_candidate"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 1,
+        "{block}"
+    );
+    assert_eq!(block["not_graph_proof"].as_bool(), Some(true), "{block}");
+    let escalated = block["escalated"].as_array().expect("escalated array");
+    assert!(
+        escalated.iter().any(|item| {
+            item["name"].as_str() == Some("hallucinatedHelper")
+                && item["repo_graph_lookup"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .starts_with("no_defining_entity_named_")
+                && item["severity"].as_str() == Some("warning")
+        }),
+        "{block}"
+    );
+    let warnings = validate_edit_warning_findings(&first);
+    let warning = warnings
+        .iter()
+        .find(|finding| {
+            finding["validation_rule_id"].as_str() == Some("CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL")
+        })
+        .unwrap_or_else(|| panic!("expected unresolved-local-call warning; got {first}"));
+    // Budget compaction may shed the top-level `reason` (it survives in
+    // evidence_items); assert over the serialized finding.
+    let warning_text = warning.to_string();
+    assert!(warning_text.contains("hallucinatedHelper"), "{warning}");
+    assert_eq!(
+        warning["proof_strength"].as_str(),
+        Some("text_evidence"),
+        "{warning}"
+    );
+    // The warning ceiling holds: no blocking, exit 0 even with
+    // --fail-on-blocking, and the builtin call produced no warning.
+    assert_eq!(
+        first["must_fix_before_continuing"].as_bool(),
+        Some(false),
+        "{first}"
+    );
+    assert!(first.get("_cli_exit_code").is_none(), "{first}");
+    assert!(
+        warnings.iter().all(|finding| {
+            let text = finding.to_string();
+            !text.contains("console") && !text.contains("formatHelper")
+        }),
+        "builtin and candidates-exist references must never warn; got {warnings:?}"
+    );
+    assert!(
+        escalated
+            .iter()
+            .all(|item| item["name"].as_str() != Some("formatHelper")),
+        "candidates-exist references must not escalate; got {block}"
+    );
+
+    // Fixing the reference clears the warning and reports it resolved.
+    write_cli_fixture_file(&repo, "src/service.js", clean_source);
+    let second = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&validate_edit_args_for(&repo))
+    })
+    .expect("validate-edit after fix");
+    assert!(
+        second["unresolved_references"]["resolved_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 1,
+        "{second}"
+    );
+    assert!(
+        validate_edit_warning_findings(&second)
+            .iter()
+            .all(|finding| {
+                finding["validation_rule_id"]
+                    .as_str()
+                    .map(|rule| !rule.starts_with("CG_MVP3_REF_"))
+                    .unwrap_or(true)
+            }),
+        "{second}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn query_unresolved_calls_reads_populated_lane_with_class_filter() {
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+    write_cli_fixture_file(
+        &repo,
+        "src/service.js",
+        "export function login(input) {\n  console.log(input);\n  return hallucinatedHelper(input);\n}\n",
+    );
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    let query_args = |extra: &[&str]| {
+        let mut args = vec![
+            "query".to_string(),
+            "unresolved-calls".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--agent-json".to_string(),
+        ];
+        args.extend(extra.iter().map(ToString::to_string));
+        args
+    };
+
+    // Proof-mode profile DB: the lane must be populated even though the
+    // legacy heuristic-edge sidecar is empty.
+    let unfiltered = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&query_args(&[]))
+    })
+    .expect("query unresolved-calls");
+    assert_eq!(unfiltered["status"].as_str(), Some("ok"), "{unfiltered}");
+    let lane = &unfiltered["unresolved_references"];
+    let items = lane["items"].as_array().expect("lane items");
+    assert!(
+        items.iter().any(|item| {
+            item["name"].as_str() == Some("hallucinatedHelper")
+                && item["reference_class"].as_str() == Some("repo_local_candidate")
+        }),
+        "lane must surface the hallucinated reference; got {lane}"
+    );
+    assert_eq!(lane["not_graph_proof"].as_bool(), Some(true));
+
+    // --class filters to one tier.
+    let local_only = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&query_args(&["--class", "repo_local_candidate"]))
+    })
+    .expect("query unresolved-calls --class");
+    let local_items = local_only["unresolved_references"]["items"]
+        .as_array()
+        .expect("filtered items");
+    assert!(
+        !local_items.is_empty()
+            && local_items
+                .iter()
+                .all(|item| { item["reference_class"].as_str() == Some("repo_local_candidate") }),
+        "{local_only}"
+    );
+
+    // --class for a different tier excludes the hallucinated reference.
+    let builtin_only = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&query_args(&["--class", "builtin_or_std"]))
+    })
+    .expect("query unresolved-calls --class builtin");
+    assert!(
+        builtin_only["unresolved_references"]["items"]
+            .as_array()
+            .expect("builtin items")
+            .iter()
+            .all(|item| item["name"].as_str() != Some("hallucinatedHelper")),
+        "{builtin_only}"
+    );
+
+    // --path filters by file.
+    let other_path = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&query_args(&["--path", "src/other.js"]))
+    })
+    .expect("query unresolved-calls --path");
+    assert_eq!(
+        other_path["unresolved_references"]["rows"].as_u64(),
+        Some(0),
+        "{other_path}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn explain_query_plan_removed_from_compact() {
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+    write_cli_fixture_file(
+        &repo,
+        "src/service.js",
+        "export function login(input) {\n  return hallucinatedHelper(input);\n}\n",
+    );
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    let compact = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "query".to_string(),
+            "unresolved-calls".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--agent-json".to_string(),
+        ])
+    })
+    .expect("agent-use query unresolved-calls");
+
+    assert_eq!(compact["status"].as_str(), Some("ok"), "{compact}");
+    assert!(compact
+        .pointer("/instrumentation/explain_query_plan")
+        .is_none());
+    assert_eq!(
+        compact["instrumentation"]["explain_query_plan_omitted"].as_bool(),
+        Some(true)
+    );
+    assert!(compact["unresolved_references"]["items"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn validate_edit_forward_fixture_matrix_python() {
+    // §1.3.6 forward cases, Python first (the no-compiler niche gates first).
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(
+        &repo,
+        "src/tools.py",
+        "def helper(value):\n    return value\n",
+    );
+    let clean_source = "def run(value):\n    return value\n";
+    write_cli_fixture_file(&repo, "src/api.py", clean_source);
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    // Same-file unqualified call to a nonexistent fn + sibling-module call to
+    // a nonexistent fn + builtin call (must stay quiet).
+    write_cli_fixture_file(
+        &repo,
+        "src/api.py",
+        "def run(value):\n    print(value)\n    tools.missing_sibling_fn(value)\n    return summarize_results(value)\n",
+    );
+    let validate_args = vec![
+        "validate-edit".to_string(),
+        "--repo".to_string(),
+        path_string(&repo),
+        "--changed".to_string(),
+        "src/api.py".to_string(),
+        "--agent-json".to_string(),
+        "--fail-on-blocking".to_string(),
+    ];
+    let first =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit python forward case");
+
+    // The compact budget enforcer truncates the warnings LIST to one item
+    // when the packet is over budget (§4.3.1, parked for 9.5.5), so the
+    // multi-warning contract is carried by the summary counts and the
+    // unresolved_references block (which keeps its top-3 escalated inline).
+    assert_eq!(
+        first
+            .pointer("/validation_packet/summary_counts_by_rule_id/CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL")
+            .and_then(Value::as_u64),
+        Some(2),
+        "{first}"
+    );
+    let warnings = validate_edit_warning_findings(&first);
+    assert!(
+        warnings.iter().any(|finding| {
+            finding["validation_rule_id"].as_str() == Some("CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL")
+        }),
+        "at least the top escalated warning must survive the budget; got {first}"
+    );
+    let escalated = first["unresolved_references"]["escalated"]
+        .as_array()
+        .expect("escalated");
+    for expected in ["summarize_results", "tools.missing_sibling_fn"] {
+        assert!(
+            escalated.iter().any(|item| {
+                item["name"].as_str() == Some(expected)
+                    && item["repo_graph_lookup"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .starts_with("no_defining_entity_named_")
+            }),
+            "expected escalated entry for `{expected}`; got {first}"
+        );
+    }
+    assert!(
+        warnings.iter().all(|finding| {
+            !finding["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("print")
+        }),
+        "builtin `print` must stay quiet; got {warnings:?}"
+    );
+    assert_eq!(first["must_fix_before_continuing"].as_bool(), Some(false));
+    assert!(first.get("_cli_exit_code").is_none(), "{first}");
+    assert!(
+        first["unresolved_references"]["by_class"]["repo_local_candidate"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2,
+        "{first}"
+    );
+
+    // Fix → warnings clear, resolved_count reported.
+    write_cli_fixture_file(&repo, "src/api.py", clean_source);
+    let second =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit python after fix");
+    assert!(
+        validate_edit_warning_findings(&second)
+            .iter()
+            .all(|finding| {
+                finding["validation_rule_id"]
+                    .as_str()
+                    .map(|rule| !rule.starts_with("CG_MVP3_REF_"))
+                    .unwrap_or(true)
+            }),
+        "{second}"
+    );
+    assert!(
+        second["unresolved_references"]["resolved_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2,
+        "{second}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn validate_edit_forward_fixture_matrix_js_ts() {
+    // §1.3.6 forward cases, JS/TS before Rust: same-file missing call,
+    // imported/local missing call, builtin/dependency/dynamic negatives, and
+    // post-fix resolution.
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(
+        &repo,
+        "package.json",
+        "{\n  \"type\": \"module\",\n  \"dependencies\": {\"lodash\": \"^4.17.21\"}\n}\n",
+    );
+    write_cli_fixture_file(
+        &repo,
+        "src/local.js",
+        "export function existingLocal(value) {\n  return value;\n}\n",
+    );
+    let clean_source = "export function run(value) {\n  return value;\n}\n";
+    write_cli_fixture_file(&repo, "src/service.js", clean_source);
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    write_cli_fixture_file(
+        &repo,
+        "src/service.js",
+        "import { missingImportedHelper } from './local.js';\n\nexport function run(value, obj, key) {\n  console.log(value);\n  lodash.map([value], item => item);\n  obj[key](value);\n  missingImportedHelper(value);\n  return missingSameFile(value);\n}\n",
+    );
+    let validate_args = vec![
+        "validate-edit".to_string(),
+        "--repo".to_string(),
+        path_string(&repo),
+        "--changed".to_string(),
+        "src/service.js".to_string(),
+        "--agent-json".to_string(),
+        "--fail-on-blocking".to_string(),
+    ];
+    let first =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit js forward case");
+
+    assert_eq!(
+        first
+            .pointer("/validation_packet/summary_counts_by_rule_id/CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL")
+            .and_then(Value::as_u64),
+        Some(2),
+        "{first}"
+    );
+    let escalated = first["unresolved_references"]["escalated"]
+        .as_array()
+        .expect("escalated");
+    for expected in ["missingImportedHelper", "missingSameFile"] {
+        assert!(
+            escalated.iter().any(|item| {
+                item["name"].as_str() == Some(expected)
+                    && item["proof_strength"].as_str() == Some("text_evidence")
+                    && item["claimability"].as_str()
+                        == Some("claimable_as_source_text_reference_only")
+            }),
+            "expected escalated entry for `{expected}`; got {first}"
+        );
+    }
+    let warnings = validate_edit_warning_findings(&first);
+    assert!(
+        warnings.iter().all(|finding| {
+            let reason = finding["reason"].as_str().unwrap_or_default();
+            !reason.contains("console") && !reason.contains("lodash")
+        }),
+        "builtin/dependency references must stay quiet; got {warnings:?}"
+    );
+    assert_eq!(first["must_fix_before_continuing"].as_bool(), Some(false));
+    assert!(first.get("_cli_exit_code").is_none(), "{first}");
+    assert_eq!(
+        first["unresolved_references"]["not_graph_proof"].as_bool(),
+        Some(true),
+        "{first}"
+    );
+    assert!(
+        !first.to_string().contains("obj[key]"),
+        "computed property calls must not become warning/blocking findings; got {first}"
+    );
+
+    write_cli_fixture_file(&repo, "src/service.js", clean_source);
+    let second =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit js after fix");
+    assert!(
+        second["unresolved_references"]["resolved_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2,
+        "{second}"
+    );
+    assert!(
+        validate_edit_warning_findings(&second)
+            .iter()
+            .all(|finding| {
+                finding["validation_rule_id"]
+                    .as_str()
+                    .map(|rule| !rule.starts_with("CG_MVP3_REF_"))
+                    .unwrap_or(true)
+            }),
+        "{second}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn validate_edit_forward_fixture_matrix_rust() {
+    // §1.3.6 Rust forward cases: cross-module qualified call, import of a
+    // nonexistent symbol, macro and external-dependency negatives.
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(
+        &repo,
+        "Cargo.toml",
+        "[package]\nname = \"fixture-crate\"\nversion = \"0.0.0\"\n\n[dependencies]\nserde_json = \"1\"\n",
+    );
+    write_cli_fixture_file(
+        &repo,
+        "src/auth.rs",
+        "pub fn real_auth_fn() -> u32 {\n    1\n}\n",
+    );
+    let clean_source = "mod auth;\n\nfn main() {\n    let value = 1;\n    let _ = value;\n}\n";
+    write_cli_fixture_file(&repo, "src/main.rs", clean_source);
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    write_cli_fixture_file(
+        &repo,
+        "src/main.rs",
+        "mod auth;\nuse crate::auth::nonexistent_thing;\n\nfn main() {\n    let token = auth::revoke_token();\n    audit_login_attempt(token);\n    println!(\"{token:?}\");\n    let _ = serde_json::to_string(\"x\");\n}\n",
+    );
+    let validate_args = vec![
+        "validate-edit".to_string(),
+        "--repo".to_string(),
+        path_string(&repo),
+        "--changed".to_string(),
+        "src/main.rs".to_string(),
+        "--agent-json".to_string(),
+        "--fail-on-blocking".to_string(),
+    ];
+    let result =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit rust forward case");
+
+    let warnings = validate_edit_warning_findings(&result);
+    // Cross-module qualified call to a nonexistent fn (sibling src/auth.rs
+    // makes auth:: repo-local) and same-file unqualified call both escalate.
+    // The budget enforcer truncates the warnings LIST to one item over
+    // budget (§4.3.1, 9.5.5 scope); the escalated block keeps all inline.
+    let escalated = result["unresolved_references"]["escalated"]
+        .as_array()
+        .expect("escalated");
+    for expected in ["auth::revoke_token", "audit_login_attempt"] {
+        assert!(
+            escalated.iter().any(|item| {
+                item["name"].as_str() == Some(expected)
+                    && item["repo_graph_lookup"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .starts_with("no_defining_entity_named_")
+            }),
+            "expected escalated entry for `{expected}`; got {result}"
+        );
+    }
+    assert!(
+        warnings.iter().any(|finding| {
+            finding["validation_rule_id"]
+                .as_str()
+                .is_some_and(|rule| rule.starts_with("CG_MVP3_REF_NEW_UNRESOLVED_"))
+        }),
+        "at least the top escalated warning must survive the budget; got {result}"
+    );
+    // §1.3.6: `use crate::auth::nonexistent_thing` must escalate via the
+    // imports rule family.
+    assert!(
+        escalated.iter().any(|item| {
+            item["name"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("nonexistent_thing")
+        }),
+        "expected escalated entry for the nonexistent import; got {result}"
+    );
+    // Macro and declared-external-dependency calls never warn and never block.
+    assert!(
+        warnings.iter().all(|finding| {
+            let reason = finding.to_string();
+            !reason.contains("println") && !reason.contains("serde_json")
+        }),
+        "macro/external references must stay quiet; got {warnings:?}"
+    );
+    assert_eq!(result["must_fix_before_continuing"].as_bool(), Some(false));
+    assert!(result.get("_cli_exit_code").is_none(), "{result}");
+    let by_class = &result["unresolved_references"]["by_class"];
+    assert!(
+        by_class["repo_local_candidate"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2,
+        "{result}"
+    );
+
+    // Fix -> forward warnings clear and the lane reports resolved rows.
+    write_cli_fixture_file(&repo, "src/main.rs", clean_source);
+    let fixed =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit rust after fix");
+    assert!(
+        fixed["unresolved_references"]["resolved_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 3,
+        "{fixed}"
+    );
+    assert!(
+        validate_edit_warning_findings(&fixed)
+            .iter()
+            .all(|finding| {
+                finding["validation_rule_id"]
+                    .as_str()
+                    .map(|rule| !rule.starts_with("CG_MVP3_REF_"))
+                    .unwrap_or(true)
+            }),
+        "{fixed}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn validate_edit_block_on_unresolved_local_promotes_escalated_warning() {
+    // Holds ENV_TEST_LOCK: this test sets a process-wide policy env var.
+    let _guard = lock_env_test();
+    struct PolicyEnvGuard {
+        previous: Option<std::ffi::OsString>,
+    }
+    impl PolicyEnvGuard {
+        fn set() -> Self {
+            let key = super::AGENT_USE_BLOCK_ON_UNRESOLVED_LOCAL_ENV;
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, "1");
+            Self { previous }
+        }
+    }
+    impl Drop for PolicyEnvGuard {
+        fn drop(&mut self) {
+            let key = super::AGENT_USE_BLOCK_ON_UNRESOLVED_LOCAL_ENV;
+            match self.previous.take() {
+                Some(previous) => std::env::set_var(key, previous),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+    write_cli_fixture_file(
+        &repo,
+        "src/service.js",
+        "export function login(input) {\n  return input;\n}\n",
+    );
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    write_cli_fixture_file(
+        &repo,
+        "src/service.js",
+        "export function login(input) {\n  return hallucinatedHelper(input);\n}\n",
+    );
+    let _policy = PolicyEnvGuard::set();
+    let result = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&validate_edit_args_for(&repo))
+    })
+    .expect("validate-edit with promotion policy");
+    assert_eq!(
+        result["must_fix_before_continuing"].as_bool(),
+        Some(true),
+        "{result}"
+    );
+    assert_eq!(result["_cli_exit_code"].as_i64(), Some(2), "{result}");
+    let blocking = result
+        .pointer("/validation_packet/blocking_errors")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("expected blocking_errors in validation packet; got {result}"));
+    assert!(
+        blocking.iter().any(|finding| {
+            finding["validation_rule_id"].as_str() == Some("CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL")
+        }),
+        "{result}"
+    );
+    assert!(
+        result["unresolved_references"]["escalated"]
+            .as_array()
+            .expect("escalated")
+            .iter()
+            .any(|item| item["severity"].as_str() == Some("blocking")),
+        "{result}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
 }
 
 #[test]
@@ -4102,6 +4843,205 @@ fn agent_use_index_clears_validation_journal_and_rechecks_blockers() {
     assert!(
         !journal_path.exists(),
         "a full reindex supersedes the pending validation journal"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn agent_use_validate_edit_wall_budget_breach_is_labeled_never_silent_ok() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_agent_use_hard_interrupt_fixture(&repo, 1);
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    // A real break that a full validation would catch as blocking.
+    remove_agent_use_hard_interrupt_targets(&repo);
+
+    // Wall budget 0: the deadline is already breached when validation
+    // starts, so every skippable substage is skipped deterministically.
+    let mut args = validate_edit_args_for(&repo);
+    args.push("--max-validation-ms".to_string());
+    args.push("0".to_string());
+    let packet = with_agent_use_data_root(&data_root, || super::run_agent_use_command(&args))
+        .expect("validate-edit with zero wall budget");
+
+    assert_eq!(
+        packet["validation_wall_bounded"].as_bool(),
+        Some(true),
+        "{packet}"
+    );
+    assert_ne!(
+        packet["status"].as_str(),
+        Some("ok"),
+        "a wall-bounded validation must never report a silent pass: {packet}"
+    );
+    let serialized = serde_json::to_string(&packet).unwrap_or_default();
+    assert!(
+        serialized.contains("validation_wall_bounded"),
+        "the bounded-unknown finding must name the wall budget: {packet}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn agent_use_validate_edit_bounded_run_keeps_journal_and_rerun_recovers_blocking() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_agent_use_hard_interrupt_fixture(&repo, 1);
+    let profile =
+        super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    remove_agent_use_hard_interrupt_targets(&repo);
+
+    // Run 1: wall budget 0 — the blocking detection is skipped (bounded),
+    // the run is labeled, AND the journal must survive so the validation can
+    // be replayed (without this, the bounded run absorbs the broken baseline
+    // and the rerun is a silent ok — the gate-probe regression).
+    let mut args = validate_edit_args_for(&repo);
+    args.push("--max-validation-ms".to_string());
+    args.push("0".to_string());
+    let bounded = with_agent_use_data_root(&data_root, || super::run_agent_use_command(&args))
+        .expect("bounded validate-edit");
+    assert_eq!(bounded["validation_wall_bounded"].as_bool(), Some(true));
+    assert_ne!(bounded["status"].as_str(), Some("ok"), "{bounded}");
+    let journal_path = super::agent_use_validation_journal_path(&profile);
+    assert!(
+        journal_path.exists(),
+        "bounded validation must keep the journal for replay"
+    );
+    assert_eq!(
+        bounded["validation_state"]["state"].as_str(),
+        Some("incomplete"),
+        "{bounded}"
+    );
+
+    // Run 2: default wall. The pending validation replays from the journal,
+    // re-derives the delta, and the lost blocking finding is recovered.
+    let recovered = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&validate_edit_args_for(&repo))
+    })
+    .expect("recovery validate-edit");
+    assert_eq!(
+        recovered["journal_replay"]["replayed"].as_bool(),
+        Some(true),
+        "{recovered}"
+    );
+    assert_eq!(
+        recovered["status"].as_str(),
+        Some("blocking_graph_error"),
+        "the replayed validation must recover the blocking finding: {recovered}"
+    );
+    assert_eq!(recovered["_cli_exit_code"].as_i64(), Some(2));
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn agent_use_validate_edit_low_delta_cap_is_labeled_graph_delta_bounded() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_agent_use_hard_interrupt_fixture(&repo, 3);
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    // Removing 3 targets produces a multi-entry delta; cap of 1 omits
+    // blocking-relevant entries.
+    remove_agent_use_hard_interrupt_targets(&repo);
+    let env_name = super::AGENT_USE_VALIDATION_MAX_DELTA_ITEMS_ENV;
+    let _env = ProcessEnvGuard {
+        name: env_name.to_string(),
+        old: std::env::var_os(env_name),
+    };
+    std::env::set_var(env_name, "1");
+    let packet = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&validate_edit_args_for(&repo))
+    })
+    .expect("validate-edit with low delta cap");
+
+    assert_ne!(
+        packet["status"].as_str(),
+        Some("ok"),
+        "a bounded delta must never report a silent pass: {packet}"
+    );
+    let serialized = serde_json::to_string(&packet).unwrap_or_default();
+    assert!(
+        serialized.contains("graph_delta_bounded"),
+        "blocking-relevant delta omission must be labeled graph_delta_bounded: {packet}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn agent_use_validate_edit_exhausted_edge_budget_is_labeled_bounded() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_agent_use_hard_interrupt_fixture(&repo, 2);
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    remove_agent_use_hard_interrupt_targets(&repo);
+    let env_name = super::AGENT_USE_VALIDATION_MAX_EDGE_REVERIFICATIONS_ENV;
+    let _env = ProcessEnvGuard {
+        name: env_name.to_string(),
+        old: std::env::var_os(env_name),
+    };
+    std::env::set_var(env_name, "0");
+    let packet = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&validate_edit_args_for(&repo))
+    })
+    .expect("validate-edit with zero edge reverification budget");
+
+    assert_ne!(
+        packet["status"].as_str(),
+        Some("ok"),
+        "an exhausted reverification budget must never report a silent pass: {packet}"
+    );
+    let serialized = serde_json::to_string(&packet).unwrap_or_default();
+    assert!(
+        serialized.contains("edge_reverification_bounded"),
+        "skipped edge reverifications must be labeled: {packet}"
     );
 
     remove_dir_all_with_retry(&repo, "cleanup repo");
@@ -13182,6 +14122,49 @@ fn context_pack_explain_budget_summary_does_not_starve_fallback_snippets() {
 }
 
 #[test]
+fn explain_audit_seed_trace_available() {
+    let retrieval_explain = json!({
+        "proof_status": "proof_path_found",
+        "graph_proof": true,
+        "seed_hygiene": {
+            "schema_version": 1,
+            "diagnostic_only": true,
+            "accepted_exact_seeds": [{"seed": "target_func"}],
+            "ignored_prose_terms": ["Markdown", "agent-use"]
+        },
+        "seeds_extracted": [{"seed": "target_func"}],
+        "ignored_seeds": []
+    });
+    let summary =
+        super::context_pack_retrieval_explain_budget_summary(&retrieval_explain, 24_000, 12_288);
+
+    assert_eq!(
+        summary["seed_hygiene"]["accepted_exact_seeds"][0]["seed"].as_str(),
+        Some("target_func")
+    );
+    assert!(summary["seed_hygiene"]["ignored_prose_terms"]
+        .as_array()
+        .expect("ignored prose")
+        .iter()
+        .any(|value| value.as_str() == Some("Markdown")));
+    assert_eq!(
+        summary["seeds_extracted"][0]["seed"].as_str(),
+        Some("target_func")
+    );
+    let compact_seed_summary = super::context_pack_seed_hygiene_summary_json(&retrieval_explain)
+        .expect("seed hygiene summary");
+    assert_eq!(
+        compact_seed_summary["accepted_exact_seeds"][0].as_str(),
+        Some("target_func")
+    );
+    assert!(compact_seed_summary["ignored_prose_terms"]
+        .as_array()
+        .expect("ignored prose summary")
+        .iter()
+        .any(|value| value.as_str() == Some("agent-use")));
+}
+
+#[test]
 fn context_pack_agent_json_labels_empty_packet_as_unknown_no_evidence() {
     let options = context_agent_test_options("production", Some(3), Some(3), None);
     let budgets = super::ContextPackBudgets::for_options(&options);
@@ -13264,6 +14247,43 @@ fn context_pack_agent_json_labels_empty_packet_as_unknown_no_evidence() {
             .iter()
             .any(|value| value.as_str() == Some("no_follow_up_query_found")));
     }
+}
+
+#[test]
+fn no_evidence_found_preserved_for_nonsense() {
+    let mut options = context_agent_test_options("production", Some(3), Some(3), None);
+    options.task = "Trace zzz_nonsense_seed_94831".to_string();
+    options.seeds = vec!["zzz_nonsense_seed_94831".to_string()];
+    let budgets = super::ContextPackBudgets::for_options(&options);
+    let packet = super::build_context_packet_from_stored_evidence(
+        &options,
+        &options.seeds,
+        &options.seeds,
+        &[],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        budgets,
+        0,
+        0,
+    );
+    let response = super::context_pack_agent_json_response(
+        &options,
+        &packet,
+        &json!({"claimable": true, "diagnostic_only": false, "decision": "read_reuse"}),
+        budgets,
+        Path::new("fixture"),
+        Path::new("fixture/.codegraph/codegraph.sqlite"),
+        json!({"wall_ms": 1.0}),
+    );
+
+    assert_eq!(
+        response["evidence_status"].as_str(),
+        Some("no_evidence_found")
+    );
+    assert_eq!(response["graph_proof"].as_bool(), Some(false));
+    assert_eq!(response["proof_path_available"].as_bool(), Some(false));
 }
 
 #[test]
@@ -14388,6 +15408,97 @@ fn context_pack_nuance_path_hits_ignore_deleted_path_dict_entries() {
         super::load_context_pack_nuance_path_hits(&connection, &token, 10).expect("load path hits");
 
     assert_eq!(paths, vec!["support/scripts/nuance-audit".to_string()]);
+}
+
+#[test]
+fn seed_hygiene_filters_prose_tokens() {
+    let connection = Connection::open_in_memory().expect("open memory db");
+    connection
+        .execute_batch(
+            "
+                CREATE TABLE object_id_lookup (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE symbol_dict (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE qualified_name_dict (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE path_dict (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO symbol_dict (id, value) VALUES (1, 'resolve_agent_use_profile');
+                ",
+        )
+        .expect("create minimal dictionary schema");
+    let mut options = context_agent_test_options("production", Some(3), Some(3), None);
+    options.task = "Write Markdown docs for agent-use around resolve_agent_use_profile".to_string();
+    options.seeds.clear();
+
+    let seeds =
+        super::context_pack_seed_values_for_connection(&connection, &options, 16).expect("seeds");
+    assert!(seeds.iter().any(|seed| seed == "resolve_agent_use_profile"));
+    assert!(!seeds.iter().any(|seed| seed == "Markdown"));
+    assert!(!seeds.iter().any(|seed| seed == "agent-use"));
+
+    let candidate_seeds = super::context_agent_candidate_seed_values(&options);
+    assert!(candidate_seeds
+        .iter()
+        .any(|seed| seed == "resolve_agent_use_profile"));
+    assert!(!candidate_seeds.iter().any(|seed| seed == "Markdown"));
+    assert!(!candidate_seeds.iter().any(|seed| seed == "agent-use"));
+
+    let hygiene = super::context_pack_prompt_seed_hygiene_json(&connection, &options.task, 16)
+        .expect("seed hygiene trace");
+    assert!(hygiene["accepted_exact_seeds"]
+        .as_array()
+        .expect("accepted exact seeds")
+        .iter()
+        .any(|item| item["seed"].as_str() == Some("resolve_agent_use_profile")));
+    assert!(hygiene["ignored_prose_terms"]
+        .as_array()
+        .expect("ignored prose terms")
+        .iter()
+        .any(|item| item.as_str() == Some("Markdown")));
+}
+
+#[test]
+fn nonmatching_prose_terms_do_not_become_symbol_seeds() {
+    let connection = Connection::open_in_memory().expect("open memory db");
+    connection
+        .execute_batch(
+            "
+                CREATE TABLE object_id_lookup (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE symbol_dict (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE qualified_name_dict (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE path_dict (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                ",
+        )
+        .expect("create minimal dictionary schema");
+    let mut options = context_agent_test_options("production", Some(3), Some(3), None);
+    options.task = "Build Markdown package docs from file code".to_string();
+    options.seeds.clear();
+
+    let seeds =
+        super::context_pack_seed_values_for_connection(&connection, &options, 16).expect("seeds");
+    assert!(seeds.is_empty(), "{seeds:?}");
+    assert!(super::context_agent_candidate_seed_values(&options).is_empty());
+}
+
+#[test]
+fn quoted_explicit_symbol_seed_survives() {
+    let connection = Connection::open_in_memory().expect("open memory db");
+    connection
+        .execute_batch(
+            "
+                CREATE TABLE object_id_lookup (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE symbol_dict (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE qualified_name_dict (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE path_dict (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                ",
+        )
+        .expect("create minimal dictionary schema");
+    let values = super::context_pack_prompt_exact_seed_values_for_connection(
+        &connection,
+        "Trace `AuthService.login` callers",
+        16,
+    )
+    .expect("prompt exact seeds");
+
+    assert_eq!(values, vec!["AuthService.login".to_string()]);
 }
 
 #[test]

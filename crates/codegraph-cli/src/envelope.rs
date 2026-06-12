@@ -36,6 +36,7 @@ pub(crate) fn enforce_agent_use_context_pack_max_output_bytes(
             "recommended_tests",
             "risks",
             "snippets",
+            "staged_availability",
             "agent_use_profile_root",
             "candidate_spool_query_index_path",
             "candidate_spool_query_index_bytes",
@@ -49,7 +50,6 @@ pub(crate) fn enforce_agent_use_context_pack_max_output_bytes(
             "candidate_total_count",
             "candidate_omitted_count",
             "candidate_sources",
-            "stale_candidate_layers",
             "blocked_labels",
             "retryable_labels",
         ] {
@@ -133,13 +133,15 @@ pub(crate) fn compact_agent_use_agent_json_envelope(
             }
         }
         agent_use_compact_publish_state_field(value, &mut truncated_sections, &mut omitted_count);
-        agent_use_compact_lock_state_field(value, &mut truncated_sections, &mut omitted_count);
         agent_use_compact_read_path_metrics_field(
             value,
             &mut truncated_sections,
             &mut omitted_count,
         );
         agent_use_compact_query_results_field(value, &mut truncated_sections, &mut omitted_count);
+        let command = value.get("command").and_then(Value::as_str);
+        let preserve_candidate_source_safety =
+            matches!(command, Some("context-pack" | "status" | "watch"));
         for key in [
             "agent_use_profile_name",
             "output_mode",
@@ -149,9 +151,6 @@ pub(crate) fn compact_agent_use_agent_json_envelope(
             "agent_use_profile",
             "db_health",
             "sqlite_sidecars",
-            "graph_verification",
-            "limits",
-            "omitted",
             "agent_use_profile_root",
             "normal_dot_codegraph_path",
             "repo_root",
@@ -185,6 +184,9 @@ pub(crate) fn compact_agent_use_agent_json_envelope(
             "source_spans",
             "languages",
         ] {
+            if preserve_candidate_source_safety && key == "active_candidate_sources" {
+                continue;
+            }
             if agent_use_remove_field(value, key) {
                 truncated_sections.push(key.to_string());
                 omitted_count = omitted_count.saturating_add(1);
@@ -377,19 +379,22 @@ pub(crate) fn agent_use_compact_recovery_fields(
     truncated_sections: &mut Vec<String>,
     omitted_count: &mut u64,
 ) {
-    let preserve_array_commands = value.get("command").and_then(Value::as_str) == Some("watch");
     if let Some(object) = value.as_object_mut() {
-        if preserve_array_commands {
+        if object.get("command").and_then(Value::as_str) == Some("watch") {
             object.insert(
                 "recovery_commands".to_string(),
                 json!(profile.recovery_commands.clone()),
             );
-        } else {
             object.insert(
-                "recovery_commands".to_string(),
-                compact_agent_use_recovery_commands_json(),
+                "recovery".to_string(),
+                agent_use_recovery_reference_json(profile),
             );
+            return;
         }
+        object.insert(
+            "recovery_commands".to_string(),
+            compact_agent_use_recovery_commands_json(),
+        );
         object.insert(
             "recovery".to_string(),
             json!({
@@ -684,44 +689,6 @@ pub(crate) fn compact_agent_use_publish_state_summary(publish_state: &Value) -> 
     })
 }
 
-pub(crate) fn agent_use_compact_lock_state_field(
-    value: &mut Value,
-    truncated_sections: &mut Vec<String>,
-    omitted_count: &mut u64,
-) {
-    let Some(lock_state) = value.get("lock_state").cloned() else {
-        return;
-    };
-    let compact = compact_agent_use_lock_state_summary(&lock_state);
-    if let Some(object) = value.as_object_mut() {
-        object.insert("lock_state".to_string(), compact);
-    }
-    truncated_sections.push("lock_state".to_string());
-    *omitted_count = omitted_count.saturating_add(1);
-}
-
-pub(crate) fn compact_agent_use_lock_state_summary(lock_state: &Value) -> Value {
-    json!({
-        "scope": lock_state.get("scope").cloned().unwrap_or(Value::Null),
-        "profile_name": lock_state.get("profile_name").cloned().unwrap_or(Value::Null),
-        "writer_queue_serialized": lock_state.get("writer_queue_serialized").cloned().unwrap_or(Value::Null),
-        "max_concurrent_writers": lock_state.get("max_concurrent_writers").cloned().unwrap_or(Value::Null),
-        "active_update": lock_state.get("active_update").cloned().unwrap_or(Value::Null),
-        "publish_status": lock_state.get("publish_status").cloned().unwrap_or(Value::Null),
-        "db_locked": lock_state.get("db_locked").cloned().unwrap_or(Value::Null),
-        "retryable": lock_state.get("retryable").cloned().unwrap_or(Value::Null),
-        "retryable_labels": lock_state.get("retryable_labels").cloned().unwrap_or_else(|| json!([])),
-        "blocked_labels": lock_state.get("blocked_labels").cloned().unwrap_or_else(|| json!([])),
-        "lock_retry_count": lock_state.get("lock_retry_count").cloned().unwrap_or(Value::Null),
-        "global_lock_scope": lock_state.get("global_lock_scope").cloned().unwrap_or(Value::Null),
-        "unrelated_repo_blocking": lock_state.get("unrelated_repo_blocking").cloned().unwrap_or(Value::Null),
-        "old_db_preserved": lock_state.get("old_db_preserved").cloned().unwrap_or(Value::Null),
-        "temp_db_claimable": lock_state.get("temp_db_claimable").cloned().unwrap_or(Value::Null),
-        "no_dot_codegraph_fallback": lock_state.get("no_dot_codegraph_fallback").cloned().unwrap_or(Value::Null),
-        "agent_json_compacted": true,
-    })
-}
-
 pub(crate) fn agent_use_compact_read_path_metrics_field(
     value: &mut Value,
     truncated_sections: &mut Vec<String>,
@@ -833,13 +800,6 @@ pub(crate) fn agent_use_enforce_total_output_budget(
             "follow_up_queries",
             "recommended_tests",
             "risks",
-            "artifact_hygiene",
-            "dirty_evidence_summary",
-            "refreshed_evidence",
-            "stale_evidence",
-            "unavailable_evidence",
-            "invalidated_evidence",
-            "stale_non_proof_reasons",
         ] {
             if agent_use_remove_field(value, key) {
                 truncated_sections.push(key.to_string());
@@ -861,36 +821,50 @@ pub(crate) fn agent_use_enforce_hard_agent_json_budget(
     truncated_sections: &mut Vec<String>,
     omitted_count: &mut u64,
 ) {
+    let command = value.get("command").and_then(Value::as_str);
+    let preserve_update_safety_state = matches!(command, Some("status" | "watch"));
+    let preserve_rtds_safety_state = matches!(command, Some("status" | "watch" | "context-pack"));
     for key in [
-        // Watch/queue/candidate diagnostics: large and not contract-required for
-        // compact context-pack/status output, so they are the first to go under
-        // hard budget pressure (e.g. an explicit small --max-output-bytes), before
-        // contract sections like patch_assist_packet.
-        "refreshed_evidence",
-        "stale_evidence",
-        "unavailable_evidence",
-        "invalidated_evidence",
-        "dirty_evidence_summary",
+        // Candidate diagnostics are large and not contract-required for compact
+        // context-pack/status output, so they go before evidence and safety
+        // fields under hard budget pressure.
         "candidate_spool_trace",
+        "update_queue_state",
+        "lock_state",
         "artifact_hygiene",
+        "staged_availability",
+        "rtds_freshness",
+        "read_path_metrics",
+        "db_lifecycle_read",
         "graph_verification",
         "limits",
         "omitted",
         "candidate_cap",
         "candidate_count",
+        "candidate_only_available",
         "candidate_payload_compacted",
+        "candidate_spool_query_index_status",
+        "candidate_spool_status",
         "candidates",
+        "delta_state",
+        "dirty_state",
         "evidence_status",
+        "graph_db_status",
+        "graph_freshness",
+        "graph_proof_available",
         "mode",
         "normal_dot_codegraph_created",
         "omitted_by_budget",
         "omitted_by_dedup",
         "proof_failure_reason",
         "proof_path_available",
+        "proof_path_count",
         "publishing",
         "staged_claimability",
         "task",
         "truncated_sections",
+        "vector_audit_status",
+        "vector_runtime_status",
         // candidate_spool is a verbose lifecycle blob; the compact
         // candidate_spool_status scalar already conveys readiness, so drop the
         // blob before sacrificing the patch_assist contract section.
@@ -898,6 +872,29 @@ pub(crate) fn agent_use_enforce_hard_agent_json_budget(
     ] {
         if serialized_json_len(value) <= max_output_bytes {
             return;
+        }
+        if preserve_update_safety_state
+            && matches!(
+                key,
+                "update_queue_state" | "lock_state" | "staged_availability" | "graph_db_status"
+            )
+        {
+            continue;
+        }
+        if preserve_rtds_safety_state
+            && matches!(
+                key,
+                "rtds_freshness"
+                    | "graph_freshness"
+                    | "dirty_state"
+                    | "graph_proof_available"
+                    | "candidate_spool_status"
+                    | "vector_runtime_status"
+                    | "candidate_only_available"
+                    | "active_candidate_sources"
+            )
+        {
+            continue;
         }
         if agent_use_remove_field(value, key) {
             truncated_sections.push(key.to_string());
@@ -921,6 +918,7 @@ pub(crate) fn agent_use_enforce_hard_agent_json_budget(
         *omitted_count = omitted_count.saturating_add(1);
     }
     if serialized_json_len(value) > max_output_bytes
+        && !preserve_update_safety_state
         && agent_use_remove_field(value, "recovery_commands")
     {
         if let Some(recovery) = value.get_mut("recovery").and_then(Value::as_object_mut) {
@@ -1039,6 +1037,110 @@ pub(crate) fn agent_use_finalize_agent_json_budget(
             truncation.insert(
                 "max_output_bytes_exceeded".to_string(),
                 json!(final_output_bytes > max_output_bytes),
+            );
+        }
+    }
+    let command = value.get("command").and_then(Value::as_str);
+    let preserve_watch_recovery_commands = matches!(command, Some("watch"));
+    let preserve_status_safety_state = matches!(command, Some("status" | "watch"));
+    let mut late_omitted = 0u64;
+    if serialized_json_len(value) > max_output_bytes {
+        for key in [
+            "stale_candidate_layers",
+            "stale_evidence",
+            "refreshed_evidence",
+            "invalidated_evidence",
+            "unavailable_evidence",
+            "stale_non_proof_reasons",
+            "sidecar_statuses",
+            "proof_ladder_change_counts",
+            "severity_effect",
+            "selected_role_coverage",
+            "recovery_commands",
+        ] {
+            if serialized_json_len(value) <= max_output_bytes {
+                break;
+            }
+            if preserve_watch_recovery_commands && key == "recovery_commands" {
+                continue;
+            }
+            if preserve_status_safety_state && key == "stale_candidate_layers" {
+                continue;
+            }
+            if agent_use_remove_field(value, key) {
+                late_omitted = late_omitted.saturating_add(1);
+                if key == "recovery_commands" {
+                    if let Some(recovery) = value.get_mut("recovery").and_then(Value::as_object_mut)
+                    {
+                        recovery.insert(
+                            "commands_status".to_string(),
+                            json!("omitted_by_max_output_bytes"),
+                        );
+                    }
+                }
+                if let Some(sections) = value
+                    .get_mut("truncated_sections")
+                    .and_then(Value::as_array_mut)
+                {
+                    sections.push(json!(key));
+                }
+            }
+        }
+    }
+    let settled_output_bytes = serialized_json_len(value);
+    if let Some(object) = value.as_object_mut() {
+        if late_omitted > 0 {
+            let total_omitted = object
+                .get("omitted_count")
+                .and_then(Value::as_u64)
+                .unwrap_or_default()
+                .saturating_add(late_omitted);
+            object.insert("omitted_count".to_string(), json!(total_omitted));
+            if let Some(budget) = object
+                .get_mut("agent_json_budget")
+                .and_then(Value::as_object_mut)
+            {
+                budget.insert("omitted_count".to_string(), json!(total_omitted));
+            }
+            if let Some(truncation) = object.get_mut("truncation").and_then(Value::as_object_mut) {
+                let current_omitted = truncation
+                    .get("omitted_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+                truncation.insert(
+                    "omitted_count".to_string(),
+                    json!(current_omitted.saturating_add(late_omitted)),
+                );
+            }
+        }
+        let truncated_section_count = object
+            .get("truncated_sections")
+            .and_then(Value::as_array)
+            .map(|sections| sections.len())
+            .unwrap_or_default();
+        if let Some(budget) = object
+            .get_mut("agent_json_budget")
+            .and_then(Value::as_object_mut)
+        {
+            budget.insert("output_bytes".to_string(), json!(settled_output_bytes));
+            budget.insert(
+                "max_output_bytes_exceeded".to_string(),
+                json!(settled_output_bytes > max_output_bytes),
+            );
+            budget.insert(
+                "truncated_section_count".to_string(),
+                json!(truncated_section_count),
+            );
+        }
+        if let Some(truncation) = object.get_mut("truncation").and_then(Value::as_object_mut) {
+            truncation.insert("output_bytes".to_string(), json!(settled_output_bytes));
+            truncation.insert(
+                "max_output_bytes_exceeded".to_string(),
+                json!(settled_output_bytes > max_output_bytes),
+            );
+            truncation.insert(
+                "truncated_section_count".to_string(),
+                json!(truncated_section_count),
             );
         }
     }

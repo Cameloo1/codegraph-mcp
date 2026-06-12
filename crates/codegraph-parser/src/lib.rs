@@ -1962,7 +1962,42 @@ impl<'a> GenericLanguageExtractor<'a> {
             let binding_id = self.push_import_binding(scope_id, scope_name, node, index, &binding);
             annotate_import_artifact(&mut self.entities, &mut self.edges, &binding_id, &binding);
             self.register_rust_import_binding(scope_id, &binding);
+            self.push_unresolved_import_target_reference(&binding_id, scope_name, node, &binding);
         }
+    }
+
+    /// Emits the §1.3 unresolved-import-target reference: the import TARGET
+    /// (not the local binding) as a reference entity plus a StaticHeuristic
+    /// IMPORTS edge, so imports of nonexistent symbols become visible
+    /// lane facts the same way unresolved callees do.
+    fn push_unresolved_import_target_reference(
+        &mut self,
+        import_binding_id: &str,
+        scope_name: &str,
+        node: Node<'_>,
+        binding: &ImportBinding,
+    ) {
+        let Some(target_label) = unresolved_import_target_label(self.parsed.language, binding)
+        else {
+            return;
+        };
+        let target_id = self.push_reference_entity(
+            EntityKind::Import,
+            &target_label,
+            scope_name,
+            node,
+            "unresolved-import-target",
+            0.5,
+        );
+        let span = source_span_for_node(&self.parsed.repo_relative_path, node);
+        self.push_edge_with(
+            import_binding_id,
+            RelationKind::Imports,
+            &target_id,
+            &span,
+            Exactness::StaticHeuristic,
+            0.5,
+        );
     }
 
     fn push_import_binding(
@@ -3664,7 +3699,41 @@ impl<'a> BasicEntityExtractor<'a> {
         {
             let binding_id = self.push_import_binding(scope_id, scope_name, node, index, &binding);
             annotate_import_artifact(&mut self.entities, &mut self.edges, &binding_id, &binding);
+            self.push_unresolved_import_target_reference(&binding_id, scope_name, node, &binding);
         }
+    }
+
+    /// See the Tier-1 extractor's equivalent: the import TARGET becomes a
+    /// reference entity + StaticHeuristic IMPORTS edge so nonexistent import
+    /// targets are visible unresolved-reference lane facts.
+    fn push_unresolved_import_target_reference(
+        &mut self,
+        import_binding_id: &str,
+        scope_name: &str,
+        node: Node<'_>,
+        binding: &ImportBinding,
+    ) {
+        let Some(target_label) = unresolved_import_target_label(self.parsed.language, binding)
+        else {
+            return;
+        };
+        let target_id = self.push_reference_entity(
+            EntityKind::Import,
+            &target_label,
+            scope_name,
+            node,
+            "unresolved-import-target",
+            0.5,
+        );
+        let span = source_span_for_node(&self.parsed.repo_relative_path, node);
+        self.push_edge_with(
+            import_binding_id,
+            RelationKind::Imports,
+            &target_id,
+            &span,
+            Exactness::StaticHeuristic,
+            0.5,
+        );
     }
 
     fn push_import_binding(
@@ -7781,6 +7850,35 @@ fn generic_import_name(language: SourceLanguage, node: Node<'_>, source: &str) -
         _ => node_text(node, source),
     }
     .map(|value| compact_extracted_label(&value, node))
+}
+
+/// The unresolved-import lane target label for a parsed import binding
+/// (MVP3.9.5.4). Only languages whose import syntax names a concrete target
+/// path participate in v1: Rust `use` paths, Python module.name pairs, and Go
+/// import specifiers. JS/TS module specifiers are mostly relative paths that
+/// classify dynamic downstream and are skipped to avoid lane noise.
+fn unresolved_import_target_label(
+    language: SourceLanguage,
+    binding: &ImportBinding,
+) -> Option<String> {
+    let label = match language {
+        SourceLanguage::Rust => binding.imported_name.clone()?,
+        SourceLanguage::Python => match (&binding.module_specifier, &binding.imported_name) {
+            (Some(module), Some(imported)) if !module.is_empty() && module != imported => {
+                format!("{module}.{imported}")
+            }
+            (_, Some(imported)) => imported.clone(),
+            (Some(module), None) => module.clone(),
+            _ => return None,
+        },
+        SourceLanguage::Go => binding.module_specifier.clone()?,
+        _ => return None,
+    };
+    let label = label.trim();
+    if label.is_empty() {
+        return None;
+    }
+    Some(label.to_string())
 }
 
 fn statement_import_binding(language: SourceLanguage, name: &str) -> ImportBinding {

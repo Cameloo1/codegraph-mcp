@@ -71,6 +71,15 @@ pub trait GraphStore {
     fn delete_edge(&self, id: &str) -> StoreResult<bool>;
     fn list_edges(&self, limit: usize) -> StoreResult<Vec<Edge>>;
     fn list_edges_by_file(&self, repo_relative_path: &str) -> StoreResult<Vec<Edge>>;
+    /// Edges whose head or tail entity is defined in one of
+    /// `repo_relative_paths`, bounded by `limit`. Backends filter on the
+    /// indexed head/tail columns instead of hydrating the whole edge table
+    /// (MVP3.9.5.3 dependency-closure read path).
+    fn list_edges_touching_paths(
+        &self,
+        repo_relative_paths: &[String],
+        limit: usize,
+    ) -> StoreResult<Vec<Edge>>;
     fn count_edges(&self) -> StoreResult<u64>;
     fn find_edges_by_head_relation(
         &self,

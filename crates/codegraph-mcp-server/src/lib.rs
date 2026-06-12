@@ -20,13 +20,14 @@ use std::{
 
 use codegraph_core::{
     classify_edge_evidence_role, classify_entity_source_role, classify_validation_finding,
-    normalize_repo_relative_path, ContextPacket, ContextSnippet, Edge, Entity, EvidenceRole,
-    Exactness, PathEvidence, RelationKind, RetrievalCandidate, SourceSpan, SupportedRelationStatus,
-    ValidationBlockingLevel, ValidationClassification, ValidationEvidenceItem,
-    ValidationEvidenceKind, ValidationFinding, ValidationLifecycleRequirement,
-    ValidationLifecycleState, ValidationPacket, ValidationProofRequirement, ValidationProofStatus,
-    ValidationProvenanceRequirement, ValidationReverificationInput, ValidationRule,
-    ValidationRuleKind, ValidationSourceRoleRequirement, ValidationSourceSpanRequirement,
+    entity_kind_defines_symbol, normalize_repo_relative_path, ContextPacket, ContextSnippet, Edge,
+    Entity, EvidenceRole, Exactness, PathEvidence, RelationKind, RetrievalCandidate, SourceSpan,
+    SupportedRelationStatus, ValidationBlockingLevel, ValidationClassification,
+    ValidationEvidenceItem, ValidationEvidenceKind, ValidationFinding,
+    ValidationLifecycleRequirement, ValidationLifecycleState, ValidationPacket,
+    ValidationProofRequirement, ValidationProofStatus, ValidationProvenanceRequirement,
+    ValidationReverificationInput, ValidationRule, ValidationRuleKind,
+    ValidationSourceRoleRequirement, ValidationSourceSpanRequirement,
 };
 use codegraph_index::{
     candidate_spool_index_status_for_repo, compute_entity_source_role_delta, default_db_path,
@@ -37,8 +38,9 @@ use codegraph_index::{
     vector_chunk_search_hit_to_retrieval_candidate, CandidateSpoolIndexLoad,
     CandidateSpoolIndexQueryResult, DbLifecyclePreflight, EdgeDeltaEntry,
     EntitySourceRoleDeltaOptions, EntitySourceRoleDeltaReport, IndexOptions, IndexScopeOptions,
-    NormalizedFactSnapshotOptions, ValidateEditChangedFilesPreflight, VectorChunkIndexBuildOptions,
-    UNBOUNDED_STORE_READ_LIMIT, VALIDATE_EDIT_CHANGED_FILES_MAX,
+    NormalizedFactSnapshotOptions, UnresolvedReferenceDeltaEntry,
+    ValidateEditChangedFilesPreflight, VectorChunkIndexBuildOptions, UNBOUNDED_STORE_READ_LIMIT,
+    VALIDATE_EDIT_CHANGED_FILES_MAX,
 };
 use codegraph_parser::language_frontends;
 use codegraph_query::{
@@ -75,6 +77,7 @@ const MCP_VECTOR_SOURCE_SCOPE: &str = "context-pack-release-vector-candidates";
 const MCP_VECTOR_PROVIDER_DIMENSION: usize = 64;
 const MCP_VECTOR_CANDIDATE_TOP_K: usize = 16;
 const MCP_CONTEXT_PACK_DEFAULT_LIMIT: usize = 12;
+const MCP_CONTEXT_PACK_COMPACT_MAX_OUTPUT_BYTES: usize = 16 * 1024;
 const MCP_CONTEXT_PACK_DOCUMENT_LIMIT: usize = 512;
 const MCP_CONTEXT_PACK_EDGE_LIMIT: usize = 4_096;
 const MCP_CONTEXT_PACK_SOURCE_FILE_LIMIT: usize = 64;
@@ -86,9 +89,16 @@ const CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED: &str = "CG_MVP3_CALLS_RENAMED_CA
 const CG_MVP3_IMPORTS_DANGLING_TARGET: &str = "CG_MVP3_IMPORTS_DANGLING_TARGET";
 const CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH: &str = "CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH";
 const CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING: &str = "CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING";
+const CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL: &str = "CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL";
+const CG_MVP3_REF_NEW_UNRESOLVED_IMPORT: &str = "CG_MVP3_REF_NEW_UNRESOLVED_IMPORT";
+const CG_MVP3_REF_EXTERNAL_OR_BUILTIN: &str = "CG_MVP3_REF_EXTERNAL_OR_BUILTIN";
+const CG_MVP3_REF_DYNAMIC: &str = "CG_MVP3_REF_DYNAMIC";
 const CG_MVP3_STALE_OR_FOREIGN_DB_VALIDATION_ATTEMPT: &str =
     "CG_MVP3_STALE_OR_FOREIGN_DB_VALIDATION_ATTEMPT";
 const CG_MCP_VALIDATE_EDIT_REJECTED_PATHS: &str = "CG_MCP_VALIDATE_EDIT_REJECTED_PATHS";
+const MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV: &str = "CODEGRAPH_BLOCK_ON_UNRESOLVED_LOCAL";
+const REFERENCE_CLASS_REPO_LOCAL_CANDIDATE: &str = "repo_local_candidate";
+const REFERENCE_CLASS_DYNAMIC_OR_COMPUTED: &str = "dynamic_or_computed";
 
 const MCP_RESOURCE_URIS: &[&str] = &[
     "codegraph://status",
@@ -1762,7 +1772,7 @@ impl McpServer {
         if let Some(object) = compact.as_object_mut() {
             object.insert("read_path_metrics".to_string(), read_path_metrics);
         }
-        mcp_attach_rtds_freshness_fields(
+        mcp_attach_compact_rtds_freshness_fields(
             &mut compact,
             &repo_root,
             &db_path,
@@ -1770,6 +1780,10 @@ impl McpServer {
             &staged_availability,
         );
         mcp_attach_dirty_evidence_output_fields(&mut compact, "codegraph.context_pack", false);
+        mcp_enforce_context_pack_compact_budget(
+            &mut compact,
+            MCP_CONTEXT_PACK_COMPACT_MAX_OUTPUT_BYTES,
+        );
         Ok(compact)
     }
 
@@ -3386,7 +3400,33 @@ fn mcp_validate_edit_validation_rules() -> Vec<ValidationRule> {
         "Stage 0 text evidence changed for Config.in, package metadata, or build-system text"
             .to_string();
     rules.push(config_text);
+    rules.extend(mcp_validate_edit_unresolved_reference_validation_rules());
     rules
+}
+
+fn mcp_validate_edit_unresolved_reference_validation_rules() -> Vec<ValidationRule> {
+    vec![
+        ValidationRule::diagnostic(
+            CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL,
+            "new unresolved repo-local call references on changed files escalate to warnings via a repo-graph definition lookup; they are never graph proof",
+            "Define the called symbol, fix the name, or mark the dependency external; warnings clear when the reference resolves.",
+        ),
+        ValidationRule::diagnostic(
+            CG_MVP3_REF_NEW_UNRESOLVED_IMPORT,
+            "new unresolved repo-local import/alias/reexport references on changed files escalate to warnings via a repo-graph definition lookup; they are never graph proof",
+            "Define or export the imported symbol, fix the import path, or mark the dependency external.",
+        ),
+        ValidationRule::diagnostic(
+            CG_MVP3_REF_EXTERNAL_OR_BUILTIN,
+            "unresolved references classified external_dependency/builtin_or_std/macro_or_codegen are counted as diagnostics only and never produce a warning",
+            "No action required; these references resolve outside the repo graph by design.",
+        ),
+        ValidationRule::diagnostic(
+            CG_MVP3_REF_DYNAMIC,
+            "unresolved references classified dynamic_or_computed stay at the existing heuristic unknown boundary",
+            "Dynamic or computed callees cannot be verified statically; treat as unknown, not as proof of error.",
+        ),
+    ]
 }
 
 fn mcp_validate_edit_validation_packet(
@@ -3408,6 +3448,19 @@ fn mcp_validate_edit_validation_packet(
         &rules,
         lifecycle.clone(),
     )?);
+    let rule_by_id = rules
+        .iter()
+        .map(|rule| (rule.validation_rule_id.as_str(), rule))
+        .collect::<BTreeMap<_, _>>();
+    let unresolved_references_block = mcp_validate_edit_collect_unresolved_reference_findings(
+        store,
+        &rule_by_id,
+        lifecycle.clone(),
+        delta,
+        &changed_files,
+        &mut findings,
+    )
+    .map_err(|error| ToolCallError::new("validation_unresolved_reference_failed", error))?;
     let mut packet = ValidationPacket::new(
         changed_files,
         json!({
@@ -3425,6 +3478,7 @@ fn mcp_validate_edit_validation_packet(
         mcp_validate_edit_lifecycle_json(preflight, &lifecycle),
     )
     .with_eligible_hard_interrupts(format!("unix_ms:{}", unix_time_ms()));
+    packet.unresolved_references = unresolved_references_block;
     packet.relation_family_status = json!({
         "calls": "exact_dangling_and_removed_target_checked",
         "imports": "exact_dangling_and_removed_target_checked",
@@ -3438,6 +3492,271 @@ fn mcp_validate_edit_validation_packet(
         "dot_codegraph_fallback": false,
     });
     Ok(packet)
+}
+
+/// MCP mirror of the cli validate-edit unresolved-reference warning path.
+struct McpUnresolvedReferenceRepoGraphLookup {
+    lookup_name: String,
+    definition_count: usize,
+    top_candidate: Option<String>,
+}
+
+fn mcp_validate_edit_block_on_unresolved_local() -> bool {
+    std::env::var(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV)
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+fn mcp_validate_edit_unresolved_reference_repo_graph_lookup(
+    store: &SqliteGraphStore,
+    reference_name: &str,
+) -> Result<McpUnresolvedReferenceRepoGraphLookup, String> {
+    let after_path = reference_name.rsplit("::").next().unwrap_or(reference_name);
+    let lookup_name = after_path.rsplit('.').next().unwrap_or(after_path).trim();
+    let entities = store
+        .find_entities_by_exact_symbol(lookup_name)
+        .map_err(|error| format!("repo graph lookup for `{lookup_name}` failed: {error}"))?;
+    let definitions = entities
+        .iter()
+        .filter(|entity| entity_kind_defines_symbol(entity.kind))
+        .collect::<Vec<_>>();
+    Ok(McpUnresolvedReferenceRepoGraphLookup {
+        lookup_name: lookup_name.to_string(),
+        definition_count: definitions.len(),
+        top_candidate: definitions.first().map(|entity| {
+            format!(
+                "{} ({})",
+                entity.qualified_name,
+                normalize_repo_relative_path(&entity.repo_relative_path)
+            )
+        }),
+    })
+}
+
+fn mcp_validate_edit_unresolved_reference_warning(
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    entry: &UnresolvedReferenceDeltaEntry,
+    lookup: &McpUnresolvedReferenceRepoGraphLookup,
+    block_on_unresolved_local: bool,
+) -> ValidationFinding {
+    let escalated = lookup.definition_count == 0;
+    let relation_label = entry.relation.to_ascii_lowercase();
+    let reason = if escalated {
+        format!(
+            "new unresolved {relation_label} reference `{}` is a likely hallucinated symbol: no defining entity named `{}` exists anywhere in the current repo graph (lookup scope: whole-graph exact symbol dictionary)",
+            entry.name, lookup.lookup_name
+        )
+    } else {
+        format!(
+            "new unresolved {relation_label} reference `{}` did not resolve to a graph edge; {} definition candidate(s) named `{}` exist elsewhere in the repo (top candidate: {}) but the link could not be proven",
+            entry.name,
+            lookup.definition_count,
+            lookup.lookup_name,
+            lookup.top_candidate.as_deref().unwrap_or("unknown")
+        )
+    };
+    let evidence_id = format!(
+        "unresolved-reference://{}:{}:{}",
+        entry.repo_relative_path, entry.source_span.start_line, entry.name
+    );
+    let promoted = escalated && block_on_unresolved_local;
+    let mut input =
+        ValidationReverificationInput::exact_graph_source(lifecycle, evidence_id.clone(), &reason);
+    input.relation_exact = false;
+    input.source_span_required = false;
+    input.provenance_required = false;
+    input.provenance_present = true;
+    if promoted {
+        input.evidence_items = vec![ValidationEvidenceItem::graph_source(
+            evidence_id,
+            format!(
+                "fresh re-verified contradiction: {}:{} references `{}` in the current source, and a fresh whole-graph lookup found no defining entity named `{}`",
+                entry.repo_relative_path,
+                entry.source_span.start_line,
+                entry.name,
+                lookup.lookup_name
+            ),
+        )];
+    } else {
+        input.graph_source_relation_reverified = false;
+        input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+            ValidationEvidenceKind::Diagnostic,
+            evidence_id,
+            &reason,
+        )];
+    }
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mcp_validate_edit/unresolved-reference/{:016x}",
+            mcp_validate_edit_stable_u64(&entry.stable_identity_key)
+        ),
+        input,
+    );
+    if promoted {
+        finding.classification = ValidationClassification::Block;
+        finding.blocking_level = ValidationBlockingLevel::Blocking;
+        finding.proof_strength = "reverified_absence_of_definition".to_string();
+    } else {
+        finding.classification = ValidationClassification::Warn;
+        finding.blocking_level = ValidationBlockingLevel::Warning;
+        finding.proof_status = ValidationProofStatus::NotGraphProof;
+        finding.proof_level = "not_graph_proof".to_string();
+        finding.proof_strength = "text_evidence".to_string();
+        finding.reverified_graph_source_proof = false;
+    }
+    let affected_file = normalize_repo_relative_path(&entry.repo_relative_path);
+    finding.file = Some(affected_file.clone());
+    finding.affected_file = Some(affected_file);
+    finding.affected_delta = json!({
+        "unresolved_reference": {
+            "name": entry.name,
+            "relation": entry.relation,
+            "reference_class": entry.reference_class,
+            "repo_graph_lookup": if escalated {
+                format!("no_defining_entity_named_{}", lookup.lookup_name)
+            } else {
+                format!("{}_definition_candidates_exist", lookup.definition_count)
+            },
+            "claimability": "claimable_as_source_text_reference_only",
+        }
+    });
+    finding.source_span = Some(entry.source_span.clone());
+    finding.source_role = Some(EvidenceRole::Unknown);
+    finding.relation_kind = entry.relation.parse().ok();
+    finding.exactness = Some(Exactness::StaticHeuristic);
+    finding.old_fact_claim_state = "claimable_as_source_text_reference_only".to_string();
+    finding.new_fact_claim_state = "claimable_as_source_text_reference_only".to_string();
+    finding.reason = reason;
+    finding.recommended_fix = Some(format!(
+        "Define `{}` with a source span, fix the name, or mark the dependency external.",
+        entry.name
+    ));
+    finding.suggested_next_steps = vec![format!(
+        "Define `{}` with a source span, fix the name, or mark the dependency external.",
+        entry.name
+    )];
+    finding.diagnostics = vec!["unresolved_reference_not_graph_proof".to_string()];
+    finding.expansion_handle = Some("validation_packet:unresolved_references".to_string());
+    finding
+}
+
+fn mcp_validate_edit_collect_unresolved_reference_findings(
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    delta: &EntitySourceRoleDeltaReport,
+    changed_files: &[String],
+    findings: &mut Vec<ValidationFinding>,
+) -> Result<Value, String> {
+    const ESCALATED_INLINE_LIMIT: usize = 3;
+    let changed_set = changed_files
+        .iter()
+        .map(|path| normalize_repo_relative_path(path))
+        .collect::<BTreeSet<_>>();
+    let block_on_unresolved_local = mcp_validate_edit_block_on_unresolved_local();
+    let mut by_class = BTreeMap::<String, usize>::new();
+    let mut new_count = 0usize;
+    let mut escalated_inline = Vec::<Value>::new();
+    let mut escalated_total = 0usize;
+    let mut external_or_builtin_count = 0usize;
+    let mut dynamic_or_computed_count = 0usize;
+
+    for entry in &delta.unresolved_references_added {
+        if !changed_set.contains(&normalize_repo_relative_path(&entry.repo_relative_path)) {
+            continue;
+        }
+        if entry.relation == "CALLEE" {
+            continue;
+        }
+        new_count += 1;
+        *by_class.entry(entry.reference_class.clone()).or_insert(0) += 1;
+        if entry.reference_class == REFERENCE_CLASS_REPO_LOCAL_CANDIDATE {
+            let rule_id = match entry.relation.as_str() {
+                "CALLS" => CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL,
+                "IMPORTS" | "ALIAS_OF" | "ALIASED_BY" | "REEXPORTS" => {
+                    CG_MVP3_REF_NEW_UNRESOLVED_IMPORT
+                }
+                _ => continue,
+            };
+            let Some(rule) = rule_by_id.get(rule_id).copied() else {
+                continue;
+            };
+            escalated_total += 1;
+            let lookup =
+                mcp_validate_edit_unresolved_reference_repo_graph_lookup(store, &entry.name)?;
+            let finding = mcp_validate_edit_unresolved_reference_warning(
+                rule,
+                lifecycle.clone(),
+                entry,
+                &lookup,
+                block_on_unresolved_local,
+            );
+            if escalated_inline.len() < ESCALATED_INLINE_LIMIT {
+                escalated_inline.push(json!({
+                    "name": entry.name,
+                    "relation": entry.relation,
+                    "reference_class": entry.reference_class,
+                    "file": entry.repo_relative_path,
+                    "span": {
+                        "line_start": entry.source_span.start_line,
+                        "line_end": entry.source_span.end_line,
+                    },
+                    "repo_graph_lookup": if lookup.definition_count == 0 {
+                        format!("no_defining_entity_named_{}", lookup.lookup_name)
+                    } else {
+                        format!("{}_definition_candidates_exist", lookup.definition_count)
+                    },
+                    "severity": if lookup.definition_count == 0 && block_on_unresolved_local {
+                        "blocking"
+                    } else {
+                        "warning"
+                    },
+                    "proof_strength": "text_evidence",
+                    "claimability": "claimable_as_source_text_reference_only",
+                    "recommended_fix": format!(
+                        "Define {} with a source span, fix the name, or mark the dependency external.",
+                        entry.name
+                    ),
+                }));
+            }
+            findings.push(finding);
+        } else if entry.reference_class == REFERENCE_CLASS_DYNAMIC_OR_COMPUTED {
+            dynamic_or_computed_count += 1;
+        } else {
+            external_or_builtin_count += 1;
+        }
+    }
+
+    let resolved_count = delta
+        .unresolved_references_removed
+        .iter()
+        .filter(|entry| {
+            entry.relation != "CALLEE"
+                && changed_set.contains(&normalize_repo_relative_path(&entry.repo_relative_path))
+        })
+        .count();
+
+    Ok(json!({
+        "schema_version": 1,
+        "new_count": new_count,
+        "resolved_count": resolved_count,
+        "by_class": by_class,
+        "escalated": escalated_inline,
+        "escalated_total": escalated_total,
+        "escalated_omitted_count": escalated_total.saturating_sub(
+            escalated_inline.len().min(escalated_total)
+        ),
+        "external_or_builtin_count": external_or_builtin_count,
+        "dynamic_or_computed_count": dynamic_or_computed_count,
+        "block_on_unresolved_local": block_on_unresolved_local,
+        "expansion_handle": "validation_packet:unresolved_references",
+        "not_graph_proof": true,
+    }))
 }
 
 fn mcp_validate_edit_delta_summary_json(delta: &EntitySourceRoleDeltaReport) -> Value {
@@ -4829,7 +5148,8 @@ fn mcp_context_pack_compact_json(
     let proof_strength =
         mcp_context_pack_proof_strength(graph_proof, &fallback_evidence, &packet.snippets);
     let (task_intent, task_profile, retrieval_plan) = plan_task_retrieval(task);
-    let staged_fields = mcp_staged_top_level_fields(&staged_availability);
+    let compact_staged_availability = mcp_compact_staged_availability_summary(&staged_availability);
+    let staged_fields = mcp_staged_top_level_fields(&compact_staged_availability);
 
     let mut value = json!({
         "status": "ok",
@@ -4860,7 +5180,7 @@ fn mcp_context_pack_compact_json(
         "graph_proof": graph_proof,
         "evidence_status": packet.metadata.get("evidence_status").cloned().unwrap_or(Value::Null),
         "proof_failure_reason": packet.metadata.get("proof_failure_reason").cloned().unwrap_or(Value::Null),
-        "staged_availability": staged_availability.clone(),
+        "staged_availability": compact_staged_availability,
         "truncation": {
             "returned_count": returned_count,
             "limit_applied": omitted_count > 0,
@@ -6095,6 +6415,221 @@ fn mcp_staged_top_level_fields(staged: &Value) -> Value {
     })
 }
 
+fn mcp_compact_staged_availability_summary(staged: &Value) -> Value {
+    let mut layer_readiness = Map::new();
+    if let Some(layers) = staged.get("layer_readiness").and_then(Value::as_object) {
+        for (name, layer) in layers {
+            layer_readiness.insert(
+                name.clone(),
+                json!({
+                    "status": layer.get("status").cloned().unwrap_or(Value::Null),
+                    "ready": layer.get("ready").cloned().unwrap_or(Value::Null),
+                    "graph_proof": layer.get("graph_proof").cloned().unwrap_or(Value::Null),
+                    "candidate_only": layer.get("candidate_only").cloned().unwrap_or(Value::Null),
+                    "diagnostic_only": layer.get("diagnostic_only").cloned().unwrap_or(Value::Null),
+                    "runtime_dependency": layer.get("runtime_dependency").cloned().unwrap_or(Value::Null),
+                }),
+            );
+        }
+    }
+    json!({
+        "schema_version": staged.get("schema_version").cloned().unwrap_or_else(|| json!(1)),
+        "available_layers": staged.get("available_layers").cloned().unwrap_or_else(|| json!([])),
+        "missing_layers": staged.get("missing_layers").cloned().unwrap_or_else(|| json!([])),
+        "layer_readiness": Value::Object(layer_readiness),
+        "graph_db_status": staged.get("graph_db_status").cloned().unwrap_or(Value::Null),
+        "candidate_spool_status": staged.get("candidate_spool_status").cloned().unwrap_or(Value::Null),
+        "vector_runtime_status": staged.get("vector_runtime_status").cloned().unwrap_or(Value::Null),
+        "vector_audit_status": staged.get("vector_audit_status").cloned().unwrap_or(Value::Null),
+        "active_candidate_sources": staged.get("active_candidate_sources").cloned().unwrap_or_else(|| json!([])),
+        "candidate_context_available": staged.get("candidate_context_available").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_context_truncated": staged.get("candidate_context_truncated").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_spool_unavailable": staged.get("candidate_spool_unavailable").cloned().unwrap_or_else(|| json!(false)),
+        "candidate_only_available": staged.get("candidate_only_available").cloned().unwrap_or_else(|| json!(false)),
+        "graph_proof_available": staged.get("graph_proof_available").cloned().unwrap_or_else(|| json!(false)),
+        "lifecycle_decision": staged.get("lifecycle_decision").cloned().unwrap_or(Value::Null),
+        "claimability": staged.get("claimability").cloned().unwrap_or(Value::Null),
+        "recommended_next_step": staged.get("recommended_next_step").cloned().unwrap_or(Value::Null),
+        "warning_count": staged.get("warnings").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
+        "blocker_count": staged.get("blockers").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
+        "warnings": staged.get("warnings").and_then(Value::as_array).map(|items| {
+            Value::Array(items.iter().take(2).cloned().collect())
+        }).unwrap_or_else(|| json!([])),
+        "blockers": staged.get("blockers").and_then(Value::as_array).map(|items| {
+            Value::Array(items.iter().take(2).cloned().collect())
+        }).unwrap_or_else(|| json!([])),
+        "agent_json_compacted": true,
+        "public_claim": false,
+    })
+}
+
+fn mcp_compact_publish_state_summary(publish_state: &Value) -> Value {
+    json!({
+        "status": publish_state.get("status").cloned().unwrap_or(Value::Null),
+        "active": publish_state.get("active").cloned().unwrap_or(Value::Null),
+        "updating": publish_state.get("updating").cloned().unwrap_or(Value::Null),
+        "publishing": publish_state.get("publishing").cloned().unwrap_or(Value::Null),
+        "visible_db_mutation_claim": publish_state.get("visible_db_mutation_claim").cloned().unwrap_or(Value::Null),
+        "temp_db_claimability": publish_state.get("temp_db_claimability").cloned().unwrap_or(Value::Null),
+        "agent_json_compacted": true,
+    })
+}
+
+fn mcp_compact_last_delta_summary(summary: &Value) -> Value {
+    if summary.is_null() {
+        return Value::Null;
+    }
+    json!({
+        "status": summary.get("status").cloned().unwrap_or(Value::Null),
+        "changed_files": summary.get("changed_files").cloned().unwrap_or(Value::Null),
+        "delta_state": summary.get("delta_state").cloned().unwrap_or(Value::Null),
+        "new_graph_valid": summary.get("new_graph_valid").cloned().unwrap_or(Value::Null),
+        "agent_json_compacted": true,
+    })
+}
+
+fn mcp_compact_rtds_freshness_json(rtds: &Value) -> Value {
+    json!({
+        "schema_version": rtds.get("schema_version").cloned().unwrap_or_else(|| json!(1)),
+        "profile_name": rtds.get("profile_name").cloned().unwrap_or(Value::Null),
+        "active_profile_name": rtds.get("active_profile_name").cloned().unwrap_or(Value::Null),
+        "profile_identity": rtds.get("profile_identity").cloned().unwrap_or(Value::Null),
+        "graph_freshness": rtds.get("graph_freshness").cloned().unwrap_or(Value::Null),
+        "dirty_state": rtds.get("dirty_state").cloned().unwrap_or(Value::Null),
+        "delta_state": rtds.get("delta_state").cloned().unwrap_or(Value::Null),
+        "publish_state": rtds.get("publish_state").map(mcp_compact_publish_state_summary).unwrap_or(Value::Null),
+        "last_delta_update_summary": rtds.get("last_delta_update_summary").map(mcp_compact_last_delta_summary).unwrap_or(Value::Null),
+        "startup_auto_index": rtds.get("startup_auto_index").cloned().unwrap_or(Value::Null),
+        "dot_codegraph_fallback": rtds.get("dot_codegraph_fallback").cloned().unwrap_or(Value::Null),
+        "candidate_context_policy": rtds.get("candidate_context_policy").cloned().unwrap_or(Value::Null),
+        "stale_candidate_layers": rtds.get("stale_candidate_layers").cloned().unwrap_or_else(|| json!([])),
+        "blocked_label_count": rtds.get("blocked_labels").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
+        "retryable_labels": rtds.get("retryable_labels").and_then(Value::as_array).map(|items| {
+            Value::Array(items.iter().take(3).cloned().collect())
+        }).unwrap_or_else(|| json!([])),
+        "candidate_only_available": rtds.get("candidate_only_available").cloned().unwrap_or(Value::Null),
+        "graph_proof_available": rtds.get("graph_proof_available").cloned().unwrap_or(Value::Null),
+        "candidate_context_available": rtds.get("candidate_context_available").cloned().unwrap_or(Value::Null),
+        "recovery_commands_ref": "recovery_commands",
+        "agent_json_compacted": true,
+        "public_claim": false,
+    })
+}
+
+fn mcp_attach_compact_rtds_freshness_fields(
+    value: &mut Value,
+    repo_root: &Path,
+    db_path: &Path,
+    preflight: Option<&DbLifecyclePreflight>,
+    staged_availability: &Value,
+) {
+    let rtds = mcp_rtds_freshness_json(repo_root, db_path, preflight, staged_availability);
+    let compact_rtds = mcp_compact_rtds_freshness_json(&rtds);
+    let profile_identity = rtds
+        .get("profile_identity")
+        .cloned()
+        .unwrap_or_else(|| mcp_profile_identity_json(repo_root, db_path));
+    if let Some(object) = value.as_object_mut() {
+        object.insert("profile_identity".to_string(), profile_identity.clone());
+        object.insert(
+            "profile_name".to_string(),
+            profile_identity
+                .get("profile_name")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "active_profile_name".to_string(),
+            profile_identity
+                .get("active_profile_name")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "repo_identity_label".to_string(),
+            profile_identity
+                .get("repo_identity_label")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "repo_identity_hash".to_string(),
+            profile_identity
+                .get("repo_identity_hash")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert("rtds_freshness".to_string(), compact_rtds);
+        object.insert(
+            "publish_state".to_string(),
+            rtds.get("publish_state")
+                .map(mcp_compact_publish_state_summary)
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "last_delta_update_summary".to_string(),
+            rtds.get("last_delta_update_summary")
+                .map(mcp_compact_last_delta_summary)
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "graph_freshness".to_string(),
+            rtds.get("graph_freshness").cloned().unwrap_or(Value::Null),
+        );
+        object.insert(
+            "delta_state".to_string(),
+            rtds.get("delta_state").cloned().unwrap_or(Value::Null),
+        );
+        object.insert(
+            "dirty_state".to_string(),
+            rtds.get("dirty_state").cloned().unwrap_or(Value::Null),
+        );
+        object.insert(
+            "stale_candidate_layers".to_string(),
+            rtds.get("stale_candidate_layers")
+                .and_then(Value::as_array)
+                .map(|items| Value::Array(items.iter().take(3).cloned().collect()))
+                .unwrap_or_else(|| json!([])),
+        );
+        object.insert(
+            "blocked_label_count".to_string(),
+            json!(rtds
+                .get("blocked_labels")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or_default()),
+        );
+        object.insert(
+            "retryable_labels".to_string(),
+            rtds.get("retryable_labels")
+                .and_then(Value::as_array)
+                .map(|items| Value::Array(items.iter().take(3).cloned().collect()))
+                .unwrap_or_else(|| json!([])),
+        );
+        object.insert(
+            "recovery_commands_ref".to_string(),
+            json!("recovery_commands"),
+        );
+        object
+            .entry("recovery_commands".to_string())
+            .or_insert_with(|| json!(mcp_agent_use_recovery_commands(repo_root)));
+        object.insert(
+            "candidate_only_available".to_string(),
+            staged_availability
+                .get("candidate_only_available")
+                .cloned()
+                .unwrap_or_else(|| json!(false)),
+        );
+        object.insert(
+            "graph_proof_available".to_string(),
+            staged_availability
+                .get("graph_proof_available")
+                .cloned()
+                .unwrap_or_else(|| json!(false)),
+        );
+    }
+}
+
 fn mcp_attach_rtds_freshness_fields(
     value: &mut Value,
     repo_root: &Path,
@@ -6196,6 +6731,309 @@ fn mcp_attach_rtds_freshness_fields(
                 .unwrap_or_else(|| json!(false)),
         );
     }
+}
+
+fn mcp_enforce_context_pack_compact_budget(value: &mut Value, max_output_bytes: usize) {
+    let pre_truncation_bytes = mcp_serialized_json_len(value);
+    let mut omitted_count = 0u64;
+    let mut truncated_sections = Vec::<String>::new();
+    let mut truncated = false;
+    if pre_truncation_bytes > max_output_bytes {
+        truncated = true;
+        for _ in 0..96 {
+            if mcp_serialized_json_len(value) <= max_output_bytes.saturating_sub(768) {
+                break;
+            }
+            if mcp_context_pack_compact_staged_availability_field(value) {
+                truncated_sections.push("staged_availability".to_string());
+                omitted_count = omitted_count.saturating_add(1);
+                continue;
+            }
+            if mcp_context_pack_compact_rtds_freshness_field(value) {
+                truncated_sections.push("rtds_freshness".to_string());
+                omitted_count = omitted_count.saturating_add(1);
+                continue;
+            }
+            if mcp_context_pack_compact_dirty_evidence(value) {
+                truncated_sections.push("dirty_evidence_detail".to_string());
+                omitted_count = omitted_count.saturating_add(1);
+                continue;
+            }
+            if mcp_context_pack_compact_read_path_metrics(value) {
+                truncated_sections.push("read_path_metrics".to_string());
+                omitted_count = omitted_count.saturating_add(1);
+                continue;
+            }
+            let mut removed = false;
+            for key in [
+                "vector_candidate_diagnostics",
+                "nuance_rescue_diagnostics",
+                "proof",
+                "retrieval_plan_summary",
+                "task_profile",
+                "task_intent",
+                "publish_state",
+                "last_delta_update_summary",
+                "stale_candidate_layers",
+                "retryable_labels",
+                "blocked_labels",
+                "sidecar_statuses",
+                "stale_non_proof_reasons",
+                "recovery_commands",
+            ] {
+                if mcp_context_pack_remove_field(value, key) {
+                    truncated_sections.push(key.to_string());
+                    omitted_count = omitted_count.saturating_add(1);
+                    removed = true;
+                    break;
+                }
+            }
+            if removed {
+                continue;
+            }
+            if mcp_context_pack_pop_array_preserve_one(value, "symbols") {
+                truncated_sections.push("symbols".to_string());
+                omitted_count = omitted_count.saturating_add(1);
+                continue;
+            }
+            if mcp_context_pack_pop_array_preserve_one(value, "snippets") {
+                truncated_sections.push("snippets".to_string());
+                omitted_count = omitted_count.saturating_add(1);
+                continue;
+            }
+            if mcp_context_pack_pop_array_preserve_one(value, "fallback_evidence") {
+                truncated_sections.push("fallback_evidence".to_string());
+                omitted_count = omitted_count.saturating_add(1);
+                continue;
+            }
+            if mcp_context_pack_pop_array_preserve_one(value, "paths") {
+                truncated_sections.push("paths".to_string());
+                omitted_count = omitted_count.saturating_add(1);
+                continue;
+            }
+            break;
+        }
+    }
+    if let Some(object) = value.as_object_mut() {
+        if omitted_count > 0 {
+            let prior = object
+                .get("omitted_count")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            object.insert(
+                "omitted_count".to_string(),
+                json!(prior.saturating_add(omitted_count)),
+            );
+            let handles = object
+                .entry("expansion_handles".to_string())
+                .or_insert_with(|| json!([]));
+            if let Some(handles) = handles.as_array_mut() {
+                for handle in ["context_pack:full", "dirty_evidence:full"] {
+                    if !handles.iter().any(|value| value.as_str() == Some(handle)) {
+                        handles.push(json!(handle));
+                    }
+                }
+            }
+        } else {
+            object
+                .entry("expansion_handles".to_string())
+                .or_insert_with(|| json!([]));
+        }
+        object.insert(
+            "budget_contract".to_string(),
+            json!({
+                "evidence_first_shedding": true,
+                "metadata_shed_before_evidence": true,
+                "protected": [
+                    "paths",
+                    "snippets",
+                    "fallback_evidence",
+                    "proof_status",
+                    "proof_strength",
+                    "graph_proof",
+                    "claimability",
+                    "lifecycle"
+                ],
+                "truncated_sections": truncated_sections,
+            }),
+        );
+    }
+    let output_bytes_before_budget = mcp_serialized_json_len(value);
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "agent_json_budget".to_string(),
+            json!({
+                "mode": "compact",
+                "max_output_bytes": max_output_bytes,
+                "output_bytes": output_bytes_before_budget,
+                "pre_truncation_bytes": pre_truncation_bytes,
+                "truncated": truncated || omitted_count > 0,
+                "output_truncated": truncated || omitted_count > 0,
+                "omitted_count": omitted_count,
+                "max_output_bytes_exceeded": output_bytes_before_budget > max_output_bytes,
+                "required_safety_fields_preserved": true,
+            }),
+        );
+    }
+    let final_bytes = mcp_serialized_json_len(value);
+    if final_bytes > max_output_bytes {
+        if mcp_context_pack_remove_field(value, "budget_contract") {
+            omitted_count = omitted_count.saturating_add(1);
+        }
+        if final_bytes > max_output_bytes
+            && mcp_context_pack_remove_field(value, "recovery_commands")
+        {
+            omitted_count = omitted_count.saturating_add(1);
+        }
+        for key in ["rtds_freshness", "staged_availability"] {
+            if mcp_serialized_json_len(value) <= max_output_bytes {
+                break;
+            }
+            if mcp_context_pack_remove_field(value, key) {
+                omitted_count = omitted_count.saturating_add(1);
+            }
+        }
+    }
+    let final_bytes = mcp_serialized_json_len(value);
+    if let Some(object) = value.as_object_mut() {
+        if let Some(budget) = object
+            .get_mut("agent_json_budget")
+            .and_then(Value::as_object_mut)
+        {
+            budget.insert("output_bytes".to_string(), json!(final_bytes));
+            budget.insert(
+                "max_output_bytes_exceeded".to_string(),
+                json!(final_bytes > max_output_bytes),
+            );
+            budget.insert("omitted_count".to_string(), json!(omitted_count));
+        }
+    }
+}
+
+fn mcp_serialized_json_len(value: &Value) -> usize {
+    serde_json::to_vec(value)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
+}
+
+fn mcp_context_pack_remove_field(value: &mut Value, key: &str) -> bool {
+    value
+        .as_object_mut()
+        .is_some_and(|object| object.remove(key).is_some())
+}
+
+fn mcp_context_pack_pop_array_preserve_one(value: &mut Value, key: &str) -> bool {
+    let Some(items) = value.get_mut(key).and_then(Value::as_array_mut) else {
+        return false;
+    };
+    if items.len() <= 1 {
+        return false;
+    }
+    items.pop();
+    true
+}
+
+fn mcp_context_pack_compact_read_path_metrics(value: &mut Value) -> bool {
+    let Some(metrics) = value.get("read_path_metrics").cloned() else {
+        return false;
+    };
+    if metrics
+        .get("agent_json_compacted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let compact = json!({
+        "schema_version": metrics.get("schema_version").cloned().unwrap_or_else(|| json!(1)),
+        "full_scan_count": metrics.get("full_scan_count").cloned().unwrap_or_else(|| json!(0)),
+        "entity_edge_million_row_load": metrics.get("entity_edge_million_row_load").cloned().unwrap_or_else(|| json!(false)),
+        "limits_apply_before_hydration": metrics.get("limits_apply_before_hydration").cloned().unwrap_or_else(|| json!(true)),
+        "elapsed_ms": metrics.get("elapsed_ms").cloned().unwrap_or(Value::Null),
+        "agent_json_compacted": true,
+    });
+    if let Some(object) = value.as_object_mut() {
+        object.insert("read_path_metrics".to_string(), compact);
+        return true;
+    }
+    false
+}
+
+fn mcp_context_pack_compact_staged_availability_field(value: &mut Value) -> bool {
+    let Some(staged) = value.get("staged_availability").cloned() else {
+        return false;
+    };
+    if staged
+        .get("agent_json_compacted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "staged_availability".to_string(),
+            mcp_compact_staged_availability_summary(&staged),
+        );
+        return true;
+    }
+    false
+}
+
+fn mcp_context_pack_compact_rtds_freshness_field(value: &mut Value) -> bool {
+    let Some(rtds) = value.get("rtds_freshness").cloned() else {
+        return false;
+    };
+    if rtds
+        .get("agent_json_compacted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "rtds_freshness".to_string(),
+            mcp_compact_rtds_freshness_json(&rtds),
+        );
+        return true;
+    }
+    false
+}
+
+fn mcp_context_pack_compact_dirty_evidence(value: &mut Value) -> bool {
+    let mut changed = false;
+    if let Some(summary) = value.get_mut("dirty_evidence_summary") {
+        if let Some(object) = summary.as_object_mut() {
+            if object
+                .get("summary_only")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                && object
+                    .get("agent_json_compacted")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            {
+                return false;
+            }
+            object.insert("summary_only".to_string(), json!(true));
+            object.insert("agent_json_compacted".to_string(), json!(true));
+            changed = true;
+        }
+    }
+    for key in [
+        "invalidated_evidence",
+        "refreshed_evidence",
+        "stale_evidence",
+        "unavailable_evidence",
+        "proof_ladder_changes",
+        "proof_ladder_change_counts",
+        "severity_effect",
+        "claimability_effect",
+    ] {
+        changed |= mcp_context_pack_remove_field(value, key);
+    }
+    changed
 }
 
 fn mcp_rtds_freshness_json(
@@ -9733,6 +10571,98 @@ mod tests {
     }
 
     #[test]
+    fn mcp_validate_edit_mirrors_unresolved_reference_warning_block() {
+        let repo = fixture_repo();
+        fs::write(
+            repo.join("src").join("forward.ts"),
+            "export function run(value: string) {\n  return value;\n}\n",
+        )
+        .expect("write clean forward fixture");
+        let profile_id = FIXTURE_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+        let profile_root = repo
+            .parent()
+            .expect("repo parent")
+            .join(format!("app-validate-edit-unresolved-{profile_id}"));
+        if profile_root.exists() {
+            fs::remove_dir_all(&profile_root).expect("remove stale profile");
+        }
+        fs::create_dir_all(&profile_root).expect("profile root");
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+        ok(server.call_tool(
+            "codegraph.index_repo",
+            &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
+        ));
+        ok(server.call_tool(
+            MCP_VALIDATE_EDIT_TOOL_NAME,
+            &json!({
+                "repo": path_string(&repo),
+                "changed_files": ["src/forward.ts"],
+                "mode": "agent-json"
+            }),
+        ));
+
+        fs::write(
+            repo.join("src").join("forward.ts"),
+            "export function run(value: string) {\n  console.log(value);\n  return missingMcpHelper(value);\n}\n",
+        )
+        .expect("write unresolved forward fixture");
+        let response = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 95,
+                "method": "tools/call",
+                "params": {
+                    "name": MCP_VALIDATE_EDIT_TOOL_NAME,
+                    "arguments": {
+                        "repo": path_string(&repo),
+                        "changed_files": ["src/forward.ts"],
+                        "mode": "agent-json",
+                        "fail_on_blocking": true
+                    }
+                }
+            }))
+            .expect("tools/call response");
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+        let packet = &response["result"]["structuredContent"];
+        assert_eq!(packet["status"].as_str(), Some("warning"), "{packet}");
+        assert_eq!(
+            packet["must_fix_before_continuing"].as_bool(),
+            Some(false),
+            "{packet}"
+        );
+        assert_eq!(
+            packet["hard_interrupt_available"].as_bool(),
+            Some(false),
+            "{packet}"
+        );
+        let block = &packet["validation_packet"]["unresolved_references"];
+        assert_eq!(block["not_graph_proof"].as_bool(), Some(true), "{packet}");
+        assert_eq!(
+            block["by_class"]["repo_local_candidate"].as_u64(),
+            Some(1),
+            "{packet}"
+        );
+        assert!(
+            block["escalated"]
+                .as_array()
+                .expect("escalated")
+                .iter()
+                .any(|item| {
+                    item["name"].as_str() == Some("missingMcpHelper")
+                        && item["proof_strength"].as_str() == Some("text_evidence")
+                        && item["claimability"].as_str()
+                            == Some("claimable_as_source_text_reference_only")
+                }),
+            "{packet}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
+    }
+
+    #[test]
     fn mcp_blocking_structured_success_response() {
         let (response, repo, profile_root) = mcp_validate_edit_dangling_response(true);
 
@@ -11087,6 +12017,138 @@ mod tests {
         );
 
         fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mcp_context_pack_compact_budget_enforced() {
+        let (server, repo, login, _sanitize) = indexed_server();
+
+        let compact = ok(server.call_tool(
+            "codegraph.context_pack",
+            &json!({"repo": path_string(&repo), "task": "Change login", "seeds": [login], "limit": 1}),
+        ));
+
+        assert_eq!(
+            MCP_CONTEXT_PACK_COMPACT_MAX_OUTPUT_BYTES,
+            16 * 1024,
+            "compact bound must not be raised"
+        );
+        assert!(
+            mcp_serialized_json_len(&compact) < MCP_CONTEXT_PACK_COMPACT_MAX_OUTPUT_BYTES,
+            "{}",
+            mcp_serialized_json_len(&compact)
+        );
+        assert_eq!(
+            compact["agent_json_budget"]["max_output_bytes"].as_u64(),
+            Some(MCP_CONTEXT_PACK_COMPACT_MAX_OUTPUT_BYTES as u64)
+        );
+        assert_eq!(
+            compact["agent_json_budget"]["max_output_bytes_exceeded"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            compact["staged_availability"]["agent_json_compacted"].as_bool(),
+            Some(true)
+        );
+        assert!(compact["rtds_freshness"]["agent_json_compacted"]
+            .as_bool()
+            .unwrap_or(false));
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn fallback_snippets_survive_budget() {
+        let mut value = json!({
+            "status": "ok",
+            "command": "codegraph.context_pack",
+            "response_mode": "compact",
+            "paths": [],
+            "snippets": [{
+                "path": "src/auth.ts",
+                "snippet": "export function login() { return fallback(); }",
+                "proof_status": "source_navigation_evidence",
+                "graph_proof": false
+            }],
+            "fallback_evidence": [{
+                "path": "src/auth.ts",
+                "snippet": "fallback source text",
+                "proof_status": "text_evidence",
+                "graph_proof": false
+            }],
+            "proof_status": "no_proof_path_found",
+            "proof_strength": "text_evidence",
+            "graph_proof": false,
+            "claimability": {
+                "claimable": false,
+                "diagnostic_only": false,
+                "graph_proof": false
+            },
+            "lifecycle": {"claimable": true},
+            "staged_availability": {
+                "layer_readiness": {"candidate_spool": {"status": "stale", "verbose": "x".repeat(4096)}},
+                "recommended_next_step": "inspect candidate spans"
+            },
+            "rtds_freshness": {"verbose": "x".repeat(4096)},
+            "recovery_commands": ["x".repeat(4096)],
+            "vector_candidate_diagnostics": {"verbose": "x".repeat(4096)},
+            "nuance_rescue_diagnostics": {"verbose": "x".repeat(4096)},
+            "dirty_evidence_summary": {"surface": "codegraph.context_pack"},
+            "stale_evidence": [{"verbose": "x".repeat(4096)}],
+            "unavailable_evidence": [{"verbose": "x".repeat(4096)}]
+        });
+
+        mcp_enforce_context_pack_compact_budget(&mut value, 2048);
+
+        assert!(mcp_serialized_json_len(&value) <= 2048, "{value}");
+        assert!(value["snippets"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+        assert!(value["fallback_evidence"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+        assert!(value["vector_candidate_diagnostics"].is_null());
+        assert!(value["recovery_commands"].is_null());
+        assert!(value["expansion_handles"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+    }
+
+    #[test]
+    fn metadata_shed_before_evidence_mcp_context_pack() {
+        let mut value = json!({
+            "status": "ok",
+            "paths": [{"path_id": "p1", "proof_status": "graph_relation_proof", "graph_proof": true}],
+            "snippets": [{"path": "src/auth.ts", "snippet": "login();"}],
+            "fallback_evidence": [{"snippet": "fallback"}],
+            "proof_status": "proof_path_found",
+            "proof_strength": "graph_relation_proof",
+            "graph_proof": true,
+            "claimability": {"claimable": true},
+            "lifecycle": {"claimable": true},
+            "task_profile": {"verbose": "x".repeat(4096)},
+            "retrieval_plan_summary": {"verbose": "x".repeat(4096)},
+            "vector_candidate_diagnostics": {"verbose": "x".repeat(4096)},
+            "dirty_evidence_summary": {"surface": "codegraph.context_pack"},
+            "refreshed_evidence": [{"verbose": "x".repeat(4096)}]
+        });
+
+        mcp_enforce_context_pack_compact_budget(&mut value, 2048);
+
+        assert!(value["paths"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+        assert!(value["snippets"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+        assert!(value["fallback_evidence"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+        assert!(value["task_profile"].is_null());
+        assert!(value["retrieval_plan_summary"].is_null());
+        assert_eq!(
+            value["agent_json_budget"]["required_safety_fields_preserved"].as_bool(),
+            Some(true)
+        );
     }
 
     #[test]

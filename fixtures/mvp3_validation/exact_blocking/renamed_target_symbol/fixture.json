@@ -1,0 +1,312 @@
+{
+  "fixture_id": "mvp3_8_renamed_target_symbol",
+  "fixture_family": "exact_blocking",
+  "fixture_title": "Deterministic renamed CALLS target blocks stale old reference",
+  "description": "Baseline has an exact call to oldTarget; mutation renames the target symbol to newTarget without updating the caller, expecting the current renamed-callee rule to block.",
+  "language": "typescript",
+  "domain": "validation",
+  "proof_boundary": "Rename blocking requires deterministic graph/source proof; ambiguous rename evidence remains unknown and non-interrupting.",
+  "required_support_status": "supported",
+  "unsupported_or_not_applicable_reason": "",
+  "fixture_version": 1,
+  "schema_version": 1,
+  "tags": [
+    "mvp3_8",
+    "exact_blocking",
+    "calls",
+    "rename",
+    "hard_interrupt",
+    "fix_recovery"
+  ],
+  "expected_mvp_phase": "mvp3_8_validation_fixtures",
+  "initial_files": [
+    {
+      "path": "src/caller.ts",
+      "contents": "import { oldTarget } from './target';\n\nexport function run(): string {\n  return oldTarget();\n}\n",
+      "source_role": "production"
+    },
+    {
+      "path": "src/target.ts",
+      "contents": "export function oldTarget(): string {\n  return 'old';\n}\n",
+      "source_role": "production"
+    }
+  ],
+  "initial_graph_expectations": {
+    "entities_present": [
+      "src/caller.run",
+      "src/target.oldTarget"
+    ],
+    "edges_present": [
+      "src/caller.run CALLS src/target.oldTarget"
+    ],
+    "source_spans_required": true
+  },
+  "initial_text_evidence_expectations": {
+    "text_evidence_expected": false
+  },
+  "initial_sidecar_expectations": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable"
+  },
+  "initial_lifecycle_expectations": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "baseline_queries": [
+    {
+      "surface": "query_callees",
+      "query": "oldTarget",
+      "expected_symbol": "oldTarget"
+    }
+  ],
+  "baseline_context_pack_expectations": {
+    "status": "ok",
+    "proof_path_required": true
+  },
+  "mutation_steps": [
+    {
+      "type": "replace_text",
+      "path": "src/target.ts",
+      "find": "oldTarget",
+      "replace": "newTarget",
+      "reason": "Rename deterministic callee without updating caller."
+    }
+  ],
+  "changed_files": [
+    "src/target.ts"
+  ],
+  "added_files": [],
+  "deleted_files": [],
+  "renamed_files": [
+    {
+      "from": "src/target.ts",
+      "to": "src/target.ts",
+      "classification": "symbol_rename_detected"
+    }
+  ],
+  "expected_changed_file_normalization": {
+    "normalized_changed_files": [
+      "src/target.ts"
+    ],
+    "renamed_symbols": [
+      {
+        "from": "oldTarget",
+        "to": "newTarget",
+        "rename_status": "detected"
+      }
+    ],
+    "rejected_paths": []
+  },
+  "expected_graph_delta": {
+    "entities_added": 1,
+    "entities_removed": 1,
+    "entities_changed": 1,
+    "edges_added": 0,
+    "edges_removed": 1,
+    "edges_changed": 1,
+    "source_spans_added": 1,
+    "source_spans_removed": 1,
+    "source_spans_changed": 1
+  },
+  "expected_blocking_errors": [
+    {
+      "validation_rule_id": "CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED",
+      "proof_ladder_level": "graph_relation_proof",
+      "severity": "blocking",
+      "message_contains": "oldTarget",
+      "source_file": "src/caller.ts"
+    }
+  ],
+  "expected_warnings": [],
+  "expected_unknowns": [],
+  "expected_diagnostics": [],
+  "expected_hard_interrupt": true,
+  "expected_severity": "blocking",
+  "expected_must_fix_before_continuing": true,
+  "expected_recommended_fix": "Retarget the caller to the renamed callee or represent the change as unknown.",
+  "expected_suggested_next_steps": [
+    "Update src/caller.ts to call newTarget, then rerun validate-edit."
+  ],
+  "expected_source_spans": [
+    {
+      "source_file": "src/caller.ts",
+      "start_line": 4,
+      "start_column": 10,
+      "end_line": 4,
+      "end_column": 21,
+      "expected_text": "oldTarget()",
+      "required_for_graph_proof": true
+    }
+  ],
+  "expected_final_db_lifecycle_status": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "expected_proof_ladder_changes": {
+    "graph_relation_proof": {
+      "invalidated": 1,
+      "refreshed": 1
+    },
+    "candidate_evidence": {
+      "invalidated": 0,
+      "refreshed": 0
+    }
+  },
+  "expected_dirty_evidence_changes": {
+    "invalidated_count": 2,
+    "refreshed_count": 1,
+    "stale_count": 0,
+    "levels": [
+      "graph_relation_proof"
+    ]
+  },
+  "expected_sidecar_statuses": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable"
+  },
+  "forbidden_claimable_outputs": [
+    "oldTarget stale claimable"
+  ],
+  "forbidden_graph_proof_outputs": [
+    "candidate_evidence_as_blocking_source",
+    "text_evidence_as_blocking_source",
+    "vector_evidence_as_blocking_source",
+    "source_navigation_evidence_as_blocking_source"
+  ],
+  "forbidden_hard_interrupts": [
+    "ambiguous_rename_hard_interrupt"
+  ],
+  "forbidden_source_role_leakage": [
+    "test_oldTarget_as_production"
+  ],
+  "expected_cli_validate_edit_behavior": {
+    "status": "blocked",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "validation_rule_id",
+      "proof_reason",
+      "source_spans",
+      "recommended_fix",
+      "suggested_next_steps",
+      "hard_interrupt",
+      "proof_ladder_changes"
+    ],
+    "forbidden_fields": [
+      "candidate_only_as_proof"
+    ],
+    "notes": []
+  },
+  "expected_watch_once_behavior": {
+    "status": "blocked",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "hard_interrupt"
+    ],
+    "forbidden_fields": [
+      "ambiguous_rename_hard_interrupt"
+    ],
+    "notes": []
+  },
+  "expected_mcp_validate_edit_behavior": {
+    "status": "not_applicable",
+    "supported": false,
+    "not_applicable": true,
+    "required_fields": [],
+    "forbidden_fields": [],
+    "notes": [
+      "MCP execution is planned by this harness and exercised in the later release matrix."
+    ]
+  },
+  "expected_context_pack_behavior": {
+    "status": "blocked",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_relation_proof",
+      "source_spans"
+    ],
+    "forbidden_fields": [
+      "stale_candidate_as_graph_proof"
+    ],
+    "notes": []
+  },
+  "expected_status_doctor_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_db_state",
+      "sidecar_statuses"
+    ],
+    "forbidden_fields": [],
+    "notes": []
+  },
+  "expected_compact_output": {
+    "summary_first": true,
+    "blocking_count": 1
+  },
+  "expected_explain_output": {
+    "source_span_detail": true,
+    "proof_ladder_change_detail": true
+  },
+  "expected_audit_output": {
+    "validation_rule_id_detail": true,
+    "exact_proof_reason": true,
+    "rename_status": "detected"
+  },
+  "fix_mutation_if_any": [
+    {
+      "type": "replace_text",
+      "path": "src/caller.ts",
+      "find": "oldTarget",
+      "replace": "newTarget",
+      "reason": "Retarget caller to the renamed callee."
+    }
+  ],
+  "post_fix_changed_files": [
+    "src/caller.ts"
+  ],
+  "post_fix_expected_status": "ok",
+  "post_fix_expected_graph_delta": {
+    "entities_added": 0,
+    "entities_removed": 0,
+    "edges_added": 1,
+    "edges_removed": 1
+  },
+  "post_fix_forbidden_stale_outputs": [
+    "oldTarget as fresh",
+    "CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED after fix"
+  ],
+  "recovery_commands_expected": [
+    "codegraph-mcp agent-use validate-edit --repo <fixture> --changed src/caller.ts --changed src/target.ts --json"
+  ],
+  "fix_steps": [
+    {
+      "type": "replace_text",
+      "path": "src/caller.ts",
+      "find": "oldTarget",
+      "replace": "newTarget",
+      "reason": "Retarget caller to the renamed callee."
+    }
+  ],
+  "post_fix_expected_severity": "ok",
+  "post_fix_expected_hard_interrupt": false,
+  "post_fix_expected_warnings": [],
+  "post_fix_expected_unknowns": [],
+  "post_fix_expected_diagnostics": [],
+  "recovery_command_verification": {
+    "recovery_command_alone_not_proof": true,
+    "lifecycle_preflight_required": true,
+    "graph_source_verification_required_for_graph_proof": true,
+    "recovery_command_may_refresh_state": true,
+    "post_recovery_lifecycle": {
+      "claimable": true,
+      "status": "fresh_or_unchanged"
+    },
+    "public_claim": false,
+    "real_agent_patch_quality_claim": false
+  },
+  "recovery_is_hint_not_proof": true
+}

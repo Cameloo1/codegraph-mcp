@@ -29,7 +29,8 @@ use codegraph_core::{
     EvidenceRole, Exactness, FileRecord, Metadata, NormalizedClaimabilityMetadata,
     NormalizedEdgeFact, NormalizedEntityFact, NormalizedFactEnvelope, NormalizedFactOmission,
     NormalizedFileFact, NormalizedPathEvidenceFact, NormalizedSidecarFreshnessFact,
-    NormalizedSourceRoleFact, NormalizedSourceSpanFact, NormalizedTextEvidenceFact, PathEvidence,
+    NormalizedSourceRoleFact, NormalizedSourceSpanFact, NormalizedTextEvidenceFact,
+    NormalizedUnresolvedReferenceFact, PathEvidence,
     RelationKind, RepoIndexState, RetrievalCandidate, RetrievalCandidateLifecycleBinding,
     RetrievalCandidateLifecycleStatus, RetrievalCandidateSource, RetrievalProofStatus,
     RetrievalVerificationStatus, SourceSpan, VectorEmbeddingSource,
@@ -94,6 +95,9 @@ pub const DEFAULT_GRAPH_OUTPUT_MAX_GENERATED_TEST_FILE_DETAIL_LEVEL: usize = 0;
 pub const DEFAULT_GRAPH_OUTPUT_MAX_GENERATED_TEST_SOURCE_BYTES_PER_FILE: usize = 64 * 1024;
 pub const DEFAULT_GRAPH_OUTPUT_MAX_SOURCE_BYTES_PER_FILE_BEFORE_DEGRADE: usize = 2 * 1024 * 1024;
 const GRAPH_OUTPUT_BUDGET_REPORTED_HIT_LIMIT: usize = 16;
+pub const UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE: usize = 256;
+pub const UNRESOLVED_REFERENCE_LANE_TRUNCATED_WARNING: &str =
+    "unresolved_reference_lane_truncated";
 pub const DEFAULT_STORAGE_POLICY: &str = "proof:compact-proof-graph";
 pub const FILE_LIFECYCLE_STATE_KEY: &str = "file_lifecycle_state";
 pub const FILE_LIFECYCLE_STATE_CURRENT: &str = "current";
@@ -1319,6 +1323,10 @@ pub struct NormalizedFactSnapshotOptions {
     pub include_text_evidence: bool,
     pub include_path_evidence: bool,
     pub include_sidecar_freshness: bool,
+    /// Pre-9.5.4 serialized options (e.g. an in-flight validation journal)
+    /// deserialize without the lane and keep their old behavior.
+    #[serde(default)]
+    pub include_unresolved_references: bool,
 }
 
 impl Default for NormalizedFactSnapshotOptions {
@@ -1328,6 +1336,7 @@ impl Default for NormalizedFactSnapshotOptions {
             include_text_evidence: true,
             include_path_evidence: true,
             include_sidecar_freshness: true,
+            include_unresolved_references: true,
         }
     }
 }
@@ -1342,6 +1351,8 @@ pub struct NormalizedFactSnapshotFacts {
     pub text_evidence: Vec<NormalizedTextEvidenceFact>,
     pub path_evidence: Vec<NormalizedPathEvidenceFact>,
     pub sidecar_freshness: Vec<NormalizedSidecarFreshnessFact>,
+    #[serde(default)]
+    pub unresolved_references: Vec<NormalizedUnresolvedReferenceFact>,
     pub envelopes: Vec<NormalizedFactEnvelope>,
 }
 
@@ -2042,7 +2053,89 @@ pub struct EntitySourceRoleDeltaOmission {
     pub source_roles_changed_omitted: usize,
     pub file_renames_detected_omitted: usize,
     pub rename_ambiguities_omitted: usize,
+    #[serde(default)]
+    pub unresolved_references_added_omitted: usize,
+    #[serde(default)]
+    pub unresolved_references_removed_omitted: usize,
     pub expansion_handle: Option<String>,
+}
+
+/// One unresolved-reference lane change in the graph delta. Always non-proof:
+/// `graph_proof=false` and `proof_strength` capped at text evidence so these
+/// entries can never feed proof-ladder rungs above text/candidate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnresolvedReferenceDeltaEntry {
+    pub stable_identity_key: String,
+    pub name: String,
+    pub relation: String,
+    pub reference_class: String,
+    pub repo_relative_path: String,
+    pub source_span: SourceSpan,
+    pub change_kind: String,
+    pub graph_proof: bool,
+    pub proof_strength: String,
+    pub claimability: NormalizedClaimabilityMetadata,
+}
+
+impl UnresolvedReferenceDeltaEntry {
+    fn from_fact(fact: &NormalizedUnresolvedReferenceFact, change_kind: &str) -> Self {
+        Self {
+            stable_identity_key: fact.stable_identity_key.clone(),
+            name: fact.name.clone(),
+            relation: fact.relation.to_string(),
+            reference_class: fact.reference_class.clone(),
+            repo_relative_path: fact.repo_relative_path.clone(),
+            source_span: fact.source_span.clone(),
+            change_kind: change_kind.to_string(),
+            graph_proof: false,
+            proof_strength: "text_evidence".to_string(),
+            claimability: fact.claimability.clone(),
+        }
+    }
+}
+
+fn classify_unresolved_reference_delta_entries(
+    old: &[NormalizedUnresolvedReferenceFact],
+    new: &[NormalizedUnresolvedReferenceFact],
+) -> (
+    Vec<UnresolvedReferenceDeltaEntry>,
+    Vec<UnresolvedReferenceDeltaEntry>,
+    usize,
+) {
+    let old_by_key = old
+        .iter()
+        .map(|fact| (fact.stable_identity_key.as_str(), fact))
+        .collect::<BTreeMap<_, _>>();
+    let new_by_key = new
+        .iter()
+        .map(|fact| (fact.stable_identity_key.as_str(), fact))
+        .collect::<BTreeMap<_, _>>();
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    let mut changed = 0usize;
+    for (key, fact) in &new_by_key {
+        match old_by_key.get(key) {
+            None => added.push(UnresolvedReferenceDeltaEntry::from_fact(fact, "added")),
+            Some(old_fact) if old_fact.fact_hash != fact.fact_hash => changed += 1,
+            Some(_) => {}
+        }
+    }
+    for (key, fact) in &old_by_key {
+        if !new_by_key.contains_key(key) {
+            removed.push(UnresolvedReferenceDeltaEntry::from_fact(fact, "removed"));
+        }
+    }
+    (added, removed, changed)
+}
+
+fn unresolved_reference_class_counts(
+    entries: &[UnresolvedReferenceDeltaEntry],
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for entry in entries {
+        *counts.entry(entry.reference_class.clone()).or_insert(0) += 1;
+    }
+    counts
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -2517,6 +2610,18 @@ pub struct EntitySourceRoleDeltaReport {
     pub text_evidence_changed_count: usize,
     pub path_evidence_invalidated_count: usize,
     pub sidecar_freshness_changed_count: usize,
+    #[serde(default)]
+    pub unresolved_references_added_count: usize,
+    #[serde(default)]
+    pub unresolved_references_removed_count: usize,
+    #[serde(default)]
+    pub unresolved_references_changed_count: usize,
+    #[serde(default)]
+    pub unresolved_references_added_by_class: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub unresolved_references_added: Vec<UnresolvedReferenceDeltaEntry>,
+    #[serde(default)]
+    pub unresolved_references_removed: Vec<UnresolvedReferenceDeltaEntry>,
     pub entities_added: Vec<EntityDeltaEntry>,
     pub entities_removed: Vec<EntityDeltaEntry>,
     pub entities_changed: Vec<EntityDeltaEntry>,
@@ -2635,6 +2740,131 @@ impl EntitySourceRoleDeltaReport {
                     .any(|class| class == relation)
             });
         self.no_silent_full_repo_fallback = closure.full_repo_fallback_avoided;
+    }
+
+    /// Derive a smaller view of this report by truncating the hydrated
+    /// per-category entry lists. Counts, invariants, timings, and closure
+    /// metadata are preserved from the full report; only the entry lists
+    /// shrink, with the omission accounting updated so truncation is never
+    /// silent. This replaces recomputing the whole delta at a lower cap.
+    pub fn truncated_to_max_items(&self, max_items: usize) -> Self {
+        let mut report = self.clone();
+        fn truncate_tracked<T>(items: &mut Vec<T>, max_items: usize, omitted: &mut usize) {
+            if items.len() > max_items {
+                *omitted += items.len() - max_items;
+                items.truncate(max_items);
+            }
+        }
+        let omission = &mut report.omission;
+        truncate_tracked(
+            &mut report.entities_added,
+            max_items,
+            &mut omission.entities_added_omitted,
+        );
+        truncate_tracked(
+            &mut report.entities_removed,
+            max_items,
+            &mut omission.entities_removed_omitted,
+        );
+        truncate_tracked(
+            &mut report.entities_changed,
+            max_items,
+            &mut omission.entities_changed_omitted,
+        );
+        truncate_tracked(
+            &mut report.edges_added,
+            max_items,
+            &mut omission.edges_added_omitted,
+        );
+        truncate_tracked(
+            &mut report.edges_removed,
+            max_items,
+            &mut omission.edges_removed_omitted,
+        );
+        truncate_tracked(
+            &mut report.edges_changed,
+            max_items,
+            &mut omission.edges_changed_omitted,
+        );
+        truncate_tracked(
+            &mut report.source_spans_added,
+            max_items,
+            &mut omission.source_spans_added_omitted,
+        );
+        truncate_tracked(
+            &mut report.source_spans_removed,
+            max_items,
+            &mut omission.source_spans_removed_omitted,
+        );
+        truncate_tracked(
+            &mut report.source_spans_changed,
+            max_items,
+            &mut omission.source_spans_changed_omitted,
+        );
+        truncate_tracked(
+            &mut report.text_evidence_changed,
+            max_items,
+            &mut omission.text_evidence_changed_omitted,
+        );
+        truncate_tracked(
+            &mut report.path_evidence_invalidated,
+            max_items,
+            &mut omission.path_evidence_invalidated_omitted,
+        );
+        truncate_tracked(
+            &mut report.sidecar_freshness_changed,
+            max_items,
+            &mut omission.sidecar_freshness_changed_omitted,
+        );
+        truncate_tracked(
+            &mut report.source_roles_changed,
+            max_items,
+            &mut omission.source_roles_changed_omitted,
+        );
+        truncate_tracked(
+            &mut report.file_renames_detected,
+            max_items,
+            &mut omission.file_renames_detected_omitted,
+        );
+        truncate_tracked(
+            &mut report.rename_ambiguities,
+            max_items,
+            &mut omission.rename_ambiguities_omitted,
+        );
+        truncate_tracked(
+            &mut report.unresolved_references_added,
+            max_items,
+            &mut omission.unresolved_references_added_omitted,
+        );
+        truncate_tracked(
+            &mut report.unresolved_references_removed,
+            max_items,
+            &mut omission.unresolved_references_removed_omitted,
+        );
+        omission.max_items_per_category = max_items;
+        omission.truncated = omission.entities_added_omitted
+            + omission.entities_removed_omitted
+            + omission.entities_changed_omitted
+            + omission.edges_added_omitted
+            + omission.edges_removed_omitted
+            + omission.edges_changed_omitted
+            + omission.source_spans_added_omitted
+            + omission.source_spans_removed_omitted
+            + omission.source_spans_changed_omitted
+            + omission.text_evidence_changed_omitted
+            + omission.path_evidence_invalidated_omitted
+            + omission.sidecar_freshness_changed_omitted
+            + omission.source_roles_changed_omitted
+            + omission.file_renames_detected_omitted
+            + omission.rename_ambiguities_omitted
+            + omission.unresolved_references_added_omitted
+            + omission.unresolved_references_removed_omitted
+            > 0;
+        if omission.truncated && omission.expansion_handle.is_none() {
+            omission.expansion_handle =
+                Some("rerun with --audit-json for full local delta list".to_string());
+        }
+        report
     }
 }
 
@@ -2963,6 +3193,16 @@ pub fn compute_entity_source_role_delta(
     let diff_text_evidence_ms = diff_text_evidence_start.elapsed().as_millis();
 
     let diff_sidecars_start = Instant::now();
+    let (
+        unresolved_references_added_all,
+        unresolved_references_removed_all,
+        unresolved_references_changed_count,
+    ) = classify_unresolved_reference_delta_entries(
+        &old.facts.unresolved_references,
+        &new.facts.unresolved_references,
+    );
+    let unresolved_references_added_by_class =
+        unresolved_reference_class_counts(&unresolved_references_added_all);
     let path_evidence_invalidated_all =
         classify_path_evidence_delta_entries(&old.facts.path_evidence, &new.facts.path_evidence);
     let sidecar_freshness_changed_all = classify_sidecar_freshness_delta_entries(
@@ -3050,6 +3290,10 @@ pub fn compute_entity_source_role_delta(
     let file_renames_detected_omitted =
         omitted_after_limit(file_renames_detected_all.len(), max_items);
     let rename_ambiguities_omitted = omitted_after_limit(rename_ambiguities_all.len(), max_items);
+    let unresolved_references_added_omitted =
+        omitted_after_limit(unresolved_references_added_all.len(), max_items);
+    let unresolved_references_removed_omitted =
+        omitted_after_limit(unresolved_references_removed_all.len(), max_items);
     let truncated = entities_added_omitted
         + entities_removed_omitted
         + entities_changed_omitted
@@ -3065,6 +3309,8 @@ pub fn compute_entity_source_role_delta(
         + source_roles_changed_omitted
         + file_renames_detected_omitted
         + rename_ambiguities_omitted
+        + unresolved_references_added_omitted
+        + unresolved_references_removed_omitted
         > 0;
     let exactness_preserved =
         edge_delta_exactness_preserved(&edges_added_all, &edges_removed_all, &edges_changed_all);
@@ -3120,6 +3366,15 @@ pub fn compute_entity_source_role_delta(
         text_evidence_changed_count: text_evidence_changed_all.len(),
         path_evidence_invalidated_count: path_evidence_invalidated_all.len(),
         sidecar_freshness_changed_count: sidecar_freshness_changed_all.len(),
+        unresolved_references_added_count: unresolved_references_added_all.len(),
+        unresolved_references_removed_count: unresolved_references_removed_all.len(),
+        unresolved_references_changed_count,
+        unresolved_references_added_by_class,
+        unresolved_references_added: take_delta_items(unresolved_references_added_all, max_items),
+        unresolved_references_removed: take_delta_items(
+            unresolved_references_removed_all,
+            max_items,
+        ),
         entities_added: take_delta_items(entities_added_all, max_items),
         entities_removed: take_delta_items(entities_removed_all, max_items),
         entities_changed: take_delta_items(entities_changed_all, max_items),
@@ -3235,6 +3490,8 @@ pub fn compute_entity_source_role_delta(
             source_roles_changed_omitted,
             file_renames_detected_omitted,
             rename_ambiguities_omitted,
+            unresolved_references_added_omitted,
+            unresolved_references_removed_omitted,
             expansion_handle: truncated
                 .then(|| "rerun with --audit-json for full local delta list".to_string()),
         },
@@ -4481,11 +4738,27 @@ pub fn snapshot_normalized_facts_for_paths_to_db(
     db_path: &Path,
     options: NormalizedFactSnapshotOptions,
 ) -> Result<NormalizedFactSnapshot, IndexError> {
+    let session = open_normalized_fact_snapshot_session(repo_path, db_path)?;
+    session.snapshot_for_paths(changed_paths, closure_paths, options)
+}
+
+/// One lifecycle preflight plus one cached read-only store, shared by every
+/// snapshot/closure read within a pipeline phase. Without this, each helper
+/// re-opens its own connection and re-pays row hydration for the same files
+/// (MVP3.9.5.3 residual). The caller owns the phase boundary: a session must
+/// never be used across a DB commit.
+pub struct NormalizedFactSnapshotSession {
+    repo_root: PathBuf,
+    exact_db_path: PathBuf,
+    lifecycle: DbLifecycleSurfacePreflight,
+    store: SqliteGraphStore,
+}
+
+pub fn open_normalized_fact_snapshot_session(
+    repo_path: &Path,
+    db_path: &Path,
+) -> Result<NormalizedFactSnapshotSession, IndexError> {
     let repo_root = resolve_repo_root_for_index(repo_path)?;
-    let changed_normalized =
-        normalize_paths_for_normalized_fact_snapshot(&repo_root, changed_paths)?;
-    let closure_normalized =
-        normalize_paths_for_normalized_fact_snapshot(&repo_root, closure_paths)?;
     let exact_db_path = normalize_db_path(&repo_root, db_path);
     let lifecycle = inspect_db_lifecycle_surface_preflight(DbLifecycleSurfacePreflightRequest {
         repo_root: repo_root.clone(),
@@ -4505,79 +4778,119 @@ pub fn snapshot_normalized_facts_for_paths_to_db(
         )));
     }
 
-    let store = SqliteGraphStore::open_read_only(&exact_db_path)?;
+    let mut store = SqliteGraphStore::open_read_only(&exact_db_path)?;
+    // A run's earlier write phase leaves WAL sidecars on disk, which makes
+    // the automatic `immutable` cache enablement unsafe to assume; the
+    // session contract (single phase, no writer) restores that guarantee.
+    store.enable_session_read_caches();
 
-    let mut path_scope = BTreeMap::<String, String>::new();
-    for repo_relative_path in &changed_normalized {
-        path_scope.insert(
-            normalize_graph_path(repo_relative_path),
-            "changed".to_string(),
-        );
-    }
-    for repo_relative_path in &closure_normalized {
-        path_scope
-            .entry(normalize_graph_path(repo_relative_path))
-            .or_insert_with(|| "closure".to_string());
-    }
-
-    let mut facts = NormalizedFactSnapshotFacts::default();
-    let mut snapshot_paths = Vec::new();
-    let mut total_omitted = 0usize;
-    let mut truncated = false;
-    for (repo_relative_path, scope) in path_scope {
-        let mut path_budget = SnapshotPathBudget::new(options.max_facts_per_path);
-        collect_normalized_facts_for_path(
-            &store,
-            &repo_relative_path,
-            &scope,
-            &options,
-            &mut path_budget,
-            &mut facts,
-        )?;
-        total_omitted += path_budget.omitted;
-        truncated |= path_budget.omitted > 0;
-        snapshot_paths.push(NormalizedFactSnapshotPath {
-            repo_relative_path,
-            scope,
-            facts_seen: path_budget.seen,
-            facts_omitted: path_budget.omitted,
-        });
-    }
-
-    let changed_files = changed_normalized
-        .into_iter()
-        .map(normalize_graph_path)
-        .collect::<Vec<_>>();
-    let closure_files = closure_normalized
-        .into_iter()
-        .map(normalize_graph_path)
-        .collect::<Vec<_>>();
-
-    Ok(NormalizedFactSnapshot {
-        status: "complete".to_string(),
-        repo_root: path_string(&repo_root),
-        db_path: path_string(&exact_db_path),
-        exact_db_path_checked: lifecycle.exact_db_path_checked.clone(),
-        changed_files,
-        closure_files,
-        snapshot_paths,
-        claimable: lifecycle.claimable,
-        diagnostic_only: lifecycle.diagnostic_only,
+    Ok(NormalizedFactSnapshotSession {
+        repo_root,
+        exact_db_path,
         lifecycle,
-        read_only: true,
-        bounded_to_changed_or_closure_files: true,
-        full_scan_count: 0,
-        facts,
-        omission: NormalizedFactOmission {
-            truncated,
-            omitted_count: total_omitted,
-            limit: Some(options.max_facts_per_path),
-            reason: truncated.then(|| {
-                "normalized fact snapshot exceeded max_facts_per_path; omitted facts are not implied absent"
-                    .to_string()
-            }),
-        },
+        store,
     })
+}
+
+impl NormalizedFactSnapshotSession {
+    pub fn store(&self) -> &SqliteGraphStore {
+        &self.store
+    }
+
+    pub fn dependency_closure_for_changed_paths(
+        &self,
+        changed_paths: &[PathBuf],
+    ) -> Result<RtdsDependencyClosureSummary, IndexError> {
+        let requested = changed_paths
+            .iter()
+            .map(|path| normalize_changed_path(&self.repo_root, path))
+            .collect::<Result<Vec<_>, _>>()?;
+        rtds_dependency_closure_for_changed_paths(&self.repo_root, &self.store, &requested)
+    }
+
+    pub fn snapshot_for_paths(
+        &self,
+        changed_paths: &[PathBuf],
+        closure_paths: &[PathBuf],
+        options: NormalizedFactSnapshotOptions,
+    ) -> Result<NormalizedFactSnapshot, IndexError> {
+        let changed_normalized =
+            normalize_paths_for_normalized_fact_snapshot(&self.repo_root, changed_paths)?;
+        let closure_normalized =
+            normalize_paths_for_normalized_fact_snapshot(&self.repo_root, closure_paths)?;
+
+        let mut path_scope = BTreeMap::<String, String>::new();
+        for repo_relative_path in &changed_normalized {
+            path_scope.insert(
+                normalize_graph_path(repo_relative_path),
+                "changed".to_string(),
+            );
+        }
+        for repo_relative_path in &closure_normalized {
+            path_scope
+                .entry(normalize_graph_path(repo_relative_path))
+                .or_insert_with(|| "closure".to_string());
+        }
+
+        let mut facts = NormalizedFactSnapshotFacts::default();
+        let mut snapshot_paths = Vec::new();
+        let mut total_omitted = 0usize;
+        let mut truncated = false;
+        for (repo_relative_path, scope) in path_scope {
+            let mut path_budget = SnapshotPathBudget::new(options.max_facts_per_path);
+            collect_normalized_facts_for_path(
+                &self.store,
+                &repo_relative_path,
+                &scope,
+                &options,
+                &mut path_budget,
+                &mut facts,
+            )?;
+            total_omitted += path_budget.omitted;
+            truncated |= path_budget.omitted > 0;
+            snapshot_paths.push(NormalizedFactSnapshotPath {
+                repo_relative_path,
+                scope,
+                facts_seen: path_budget.seen,
+                facts_omitted: path_budget.omitted,
+            });
+        }
+
+        let changed_files = changed_normalized
+            .into_iter()
+            .map(normalize_graph_path)
+            .collect::<Vec<_>>();
+        let closure_files = closure_normalized
+            .into_iter()
+            .map(normalize_graph_path)
+            .collect::<Vec<_>>();
+
+        Ok(NormalizedFactSnapshot {
+            status: "complete".to_string(),
+            repo_root: path_string(&self.repo_root),
+            db_path: path_string(&self.exact_db_path),
+            exact_db_path_checked: self.lifecycle.exact_db_path_checked.clone(),
+            changed_files,
+            closure_files,
+            snapshot_paths,
+            claimable: self.lifecycle.claimable,
+            diagnostic_only: self.lifecycle.diagnostic_only,
+            lifecycle: self.lifecycle.clone(),
+            read_only: true,
+            bounded_to_changed_or_closure_files: true,
+            full_scan_count: 0,
+            facts,
+            omission: NormalizedFactOmission {
+                truncated,
+                omitted_count: total_omitted,
+                limit: Some(options.max_facts_per_path),
+                reason: truncated.then(|| {
+                    "normalized fact snapshot exceeded max_facts_per_path; omitted facts are not implied absent"
+                        .to_string()
+                }),
+            },
+        })
+    }
 }
 
 fn normalize_paths_for_normalized_fact_snapshot(
@@ -4741,6 +5054,31 @@ fn collect_normalized_facts_for_path(
             ),
             |facts, fact| facts.source_spans.push(fact),
         );
+    }
+
+    if options.include_unresolved_references {
+        for record in store.list_unresolved_references_by_file(repo_relative_path)? {
+            let reference_class = record
+                .metadata
+                .get("reference_class")
+                .and_then(Value::as_str)
+                .unwrap_or(REFERENCE_CLASS_DYNAMIC_OR_COMPUTED)
+                .to_string();
+            push_fact(
+                budget,
+                facts,
+                NormalizedUnresolvedReferenceFact::new(
+                    record.reference_id,
+                    record.name,
+                    record.relation,
+                    record.source_span,
+                    reference_class,
+                    record.exactness,
+                    record.extractor,
+                ),
+                |facts, fact| facts.unresolved_references.push(fact),
+            );
+        }
     }
 
     if options.include_text_evidence {
@@ -5956,6 +6294,11 @@ impl LocalFactBundle {
         let mut local_callsites = Vec::new();
         let mut local_reads_writes = Vec::new();
         let mut unresolved_references = Vec::new();
+        let entity_by_id = extraction
+            .entities
+            .iter()
+            .map(|entity| (entity.id.as_str(), entity))
+            .collect::<BTreeMap<_, _>>();
         for edge in &extraction.edges {
             let fact = local_fact_relation(edge);
             match edge.relation {
@@ -5981,7 +6324,12 @@ impl LocalFactBundle {
                 | RelationKind::DataDependsOn => local_reads_writes.push(fact),
                 _ => {}
             }
-            if let Some(reference) = unresolved_reference_for_edge(edge) {
+            if let Some(reference) = unresolved_reference_for_edge_named(edge, &entity_by_id) {
+                unresolved_references.push(reference);
+            }
+        }
+        for entity in &extraction.entities {
+            if let Some(reference) = unresolved_reference_for_import_artifact(entity) {
                 unresolved_references.push(reference);
             }
         }
@@ -8064,6 +8412,7 @@ fn index_repo_to_existing_db_with_options(
         hashed_candidates.len() as u64,
     );
 
+    let unresolved_reference_classifier = UnresolvedReferenceClassifier::for_repo(repo_root);
     let mut batch = PendingIndexBatch::default();
     for candidate in hashed_candidates {
         let source_bytes = candidate.source.len();
@@ -8086,6 +8435,7 @@ fn index_repo_to_existing_db_with_options(
                 &store,
                 &mut summary,
                 &options,
+                &unresolved_reference_classifier,
                 bulk_durability,
                 std::mem::take(&mut batch),
                 indexed_at,
@@ -8123,6 +8473,7 @@ fn index_repo_to_existing_db_with_options(
                 &store,
                 &mut summary,
                 &options,
+                &unresolved_reference_classifier,
                 bulk_durability,
                 std::mem::take(&mut batch),
                 indexed_at,
@@ -8143,6 +8494,7 @@ fn index_repo_to_existing_db_with_options(
             &store,
             &mut summary,
             &options,
+            &unresolved_reference_classifier,
             bulk_durability,
             batch,
             indexed_at,
@@ -9841,6 +10193,64 @@ fn local_fact_relation(edge: &Edge) -> LocalFactRelation {
     }
 }
 
+/// Like `unresolved_reference_for_edge`, but resolves the human-readable
+/// referenced-symbol name from the extraction's entities. Entity ids are
+/// opaque digests, so the id-derived fallback name is useless for symbol
+/// lookups; the parser's reference entity carries the real name.
+fn unresolved_reference_for_edge_named(
+    edge: &Edge,
+    entity_by_id: &BTreeMap<&str, &Entity>,
+) -> Option<LocalFactReference> {
+    let mut reference = unresolved_reference_for_edge(edge)?;
+    if let Some(name) = entity_by_id
+        .get(reference.reference_id.as_str())
+        .or_else(|| entity_by_id.get(edge.tail_id.as_str()))
+        .map(|entity| entity.name.as_str())
+    {
+        reference.name = name.to_string();
+    }
+    Some(reference)
+}
+
+fn unresolved_reference_for_import_artifact(entity: &Entity) -> Option<LocalFactReference> {
+    if entity.kind != EntityKind::Import {
+        return None;
+    }
+    let import_kind = entity
+        .metadata
+        .get("import_kind")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if import_kind != "rust_use" {
+        return None;
+    }
+    let imported_name = entity
+        .metadata
+        .get("imported_name")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            entity
+                .metadata
+                .get("module_specifier")
+                .and_then(Value::as_str)
+        })?;
+    if !matches!(
+        imported_name.split("::").next().unwrap_or_default(),
+        "crate" | "self" | "super"
+    ) {
+        return None;
+    }
+    let source_span = entity.source_span.clone()?;
+    Some(LocalFactReference {
+        name: imported_name.to_string(),
+        reference_id: entity.id.clone(),
+        relation: RelationKind::Imports,
+        source_span,
+        exactness: Exactness::StaticHeuristic,
+        extractor: "unresolved-import-artifact-lane".to_string(),
+    })
+}
+
 fn unresolved_reference_for_edge(edge: &Edge) -> Option<LocalFactReference> {
     let unresolved_tail = edge.tail_id.contains("static_reference:")
         || edge.tail_id.contains("dynamic_import:")
@@ -10259,10 +10669,12 @@ fn commit_bulk_index_batch(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_and_commit_index_batch(
     store: &SqliteGraphStore,
     summary: &mut IndexSummary,
     options: &IndexOptions,
+    classifier: &UnresolvedReferenceClassifier,
     bulk_durability: BulkIndexLoadDurability,
     batch: PendingIndexBatch,
     indexed_at: u64,
@@ -10283,6 +10695,7 @@ fn process_and_commit_index_batch(
         store,
         summary,
         options,
+        classifier,
         batch,
         indexed_at,
         profile,
@@ -11119,10 +11532,12 @@ fn git_output(repo_root: &Path, args: &[&str]) -> Option<String> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_index_batch(
     store: &SqliteGraphStore,
     summary: &mut IndexSummary,
     options: &IndexOptions,
+    classifier: &UnresolvedReferenceClassifier,
     batch: PendingIndexBatch,
     indexed_at: u64,
     profile: &mut IndexPhaseRecorder,
@@ -11327,7 +11742,8 @@ fn process_index_batch(
     for failed in &failed_paths {
         store.delete_facts_for_file(failed)?;
     }
-    let persisted = persist_reduced_index_plan(store, reduced_plan, indexed_at, options, profile)?;
+    let persisted =
+        persist_reduced_index_plan(store, reduced_plan, indexed_at, options, classifier, profile)?;
     let db_write_ms = db_start.elapsed().as_millis();
 
     summary.files_indexed += persisted.files;
@@ -11421,10 +11837,11 @@ fn persist_reduced_index_plan(
     plan: ReducedIndexPlan,
     indexed_at: u64,
     options: &IndexOptions,
+    classifier: &UnresolvedReferenceClassifier,
     profile: &mut IndexPhaseRecorder,
 ) -> Result<PersistedBatchSummary, StoreError> {
     let mut summary =
-        persist_local_fact_bundles(store, plan.bundles, indexed_at, options, profile)?;
+        persist_local_fact_bundles(store, plan.bundles, indexed_at, options, classifier, profile)?;
     let global_summary =
         persist_global_fact_reduction_plan(store, plan.global_facts, options, profile)?;
     summary.entities += global_summary.entities_inserted;
@@ -11735,6 +12152,7 @@ fn persist_local_fact_bundles(
     indexed_files: Vec<LocalFactBundle>,
     indexed_at: u64,
     options: &IndexOptions,
+    classifier: &UnresolvedReferenceClassifier,
     profile: &mut IndexPhaseRecorder,
 ) -> Result<PersistedBatchSummary, StoreError> {
     let mut summary = PersistedBatchSummary::default();
@@ -11759,6 +12177,16 @@ fn persist_local_fact_bundles(
             summary.files += 1;
             continue;
         }
+
+        persist_unresolved_reference_lane(
+            store,
+            &indexed.repo_relative_path,
+            Some(&indexed.file_hash),
+            indexed.language.as_deref(),
+            classifier,
+            &indexed.unresolved_references,
+            profile,
+        )?;
 
         if options.storage_mode.preserves_heuristic_sidecars() {
             persist_debug_sidecars(
@@ -11886,6 +12314,489 @@ fn persist_local_fact_bundles(
     Ok(summary)
 }
 
+pub const REFERENCE_CLASS_REPO_LOCAL_CANDIDATE: &str = "repo_local_candidate";
+pub const REFERENCE_CLASS_EXTERNAL_DEPENDENCY: &str = "external_dependency";
+pub const REFERENCE_CLASS_BUILTIN_OR_STD: &str = "builtin_or_std";
+pub const REFERENCE_CLASS_MACRO_OR_CODEGEN: &str = "macro_or_codegen";
+pub const REFERENCE_CLASS_DYNAMIC_OR_COMPUTED: &str = "dynamic_or_computed";
+
+const RUST_STD_ROOTS: &[&str] = &["std", "core", "alloc"];
+const RUST_BUILTIN_MACROS: &[&str] = &[
+    "println", "print", "eprintln", "eprint", "format", "vec", "panic", "assert", "assert_eq",
+    "assert_ne", "debug_assert", "write", "writeln", "todo", "unimplemented", "unreachable",
+    "dbg", "matches", "include_str", "include_bytes", "env", "option_env", "concat", "stringify",
+    "cfg", "line", "file", "column", "compile_error", "format_args",
+];
+const PYTHON_BUILTINS_AND_STDLIB: &[&str] = &[
+    "print", "len", "range", "str", "int", "float", "bool", "list", "dict", "set", "tuple",
+    "open", "isinstance", "issubclass", "super", "enumerate", "zip", "map", "filter", "sorted",
+    "reversed", "min", "max", "sum", "abs", "round", "type", "getattr", "setattr", "hasattr",
+    "delattr", "repr", "hash", "id", "iter", "next", "vars", "dir", "input", "format", "any",
+    "all", "divmod", "pow", "ord", "chr", "bytes", "bytearray", "frozenset", "slice", "object",
+    "staticmethod", "classmethod", "property", "callable", "exec", "eval", "compile", "globals",
+    "locals", "breakpoint", "os", "sys", "re", "json", "math", "time", "datetime", "typing",
+    "collections", "itertools", "functools", "pathlib", "logging", "subprocess", "threading",
+    "asyncio", "unittest", "random", "string", "io", "csv", "copy", "pickle", "hashlib",
+    "base64", "struct", "socket", "shutil", "tempfile", "glob", "argparse", "enum", "abc",
+    "dataclasses", "contextlib", "traceback", "warnings", "uuid", "inspect", "operator",
+    "sqlite3", "urllib", "http", "textwrap", "pprint", "secrets", "statistics", "decimal",
+    "multiprocessing", "concurrent", "signal", "platform", "ctypes", "errno", "mmap",
+];
+const JS_TS_BUILTIN_ROOTS: &[&str] = &[
+    "console", "JSON", "Math", "Object", "Array", "Promise", "Reflect", "Proxy", "Symbol",
+    "String", "Number", "Boolean", "Date", "RegExp", "Error", "TypeError", "RangeError",
+    "SyntaxError", "Map", "Set", "WeakMap", "WeakSet", "WeakRef", "Intl", "globalThis",
+    "window", "document", "navigator", "location", "history", "localStorage", "sessionStorage",
+    "fetch", "atob", "btoa", "parseInt", "parseFloat", "isNaN", "isFinite",
+    "encodeURIComponent", "decodeURIComponent", "encodeURI", "decodeURI", "setTimeout",
+    "setInterval", "clearTimeout", "clearInterval", "queueMicrotask", "structuredClone",
+    "requestAnimationFrame", "cancelAnimationFrame", "alert", "confirm", "prompt", "process",
+    "Buffer", "require", "module", "exports", "URL", "URLSearchParams", "TextEncoder",
+    "TextDecoder", "AbortController", "AbortSignal", "Event", "CustomEvent", "EventTarget",
+    "Worker", "Blob", "File", "FormData", "Headers", "Request", "Response", "WebSocket",
+    "crypto", "performance", "BigInt", "Function", "ArrayBuffer", "SharedArrayBuffer",
+    "DataView", "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array",
+    "Int32Array", "Uint32Array", "Float32Array", "Float64Array", "BigInt64Array",
+    "BigUint64Array", "Atomics", "Iterator",
+];
+const GO_BUILTINS_AND_STDLIB_ROOTS: &[&str] = &[
+    "len", "cap", "make", "new", "append", "copy", "delete", "panic", "recover", "print",
+    "println", "close", "complex", "real", "imag", "min", "max", "clear", "fmt", "errors",
+    "strings", "strconv", "os", "io", "bufio", "bytes", "time", "math", "sort", "context",
+    "sync", "net", "http", "encoding", "json", "log", "slog", "regexp", "path", "filepath",
+    "reflect", "runtime", "testing", "flag", "unicode", "utf8", "hash", "crypto", "rand",
+    "database", "sql", "template", "url", "mime", "archive", "compress", "container", "image",
+    "signal", "syscall", "unsafe", "slices", "maps", "cmp", "iter",
+];
+
+/// Built once per index/update run. Classifies persisted lane rows into the
+/// §1.3.2 `reference_class` tiers from name shape, per-language builtin
+/// allowlists, declared workspace dependency manifests, and sibling-module
+/// file existence. Sibling checks hit the filesystem and are memoized; the
+/// classifier is used on the single-threaded persist path only.
+pub struct UnresolvedReferenceClassifier {
+    repo_root: PathBuf,
+    declared_dependency_roots: BTreeSet<String>,
+    workspace_member_roots: BTreeSet<String>,
+    sibling_module_memo: RefCell<BTreeMap<(String, String), bool>>,
+}
+
+impl UnresolvedReferenceClassifier {
+    pub fn for_repo(repo_root: &Path) -> Self {
+        let mut declared_dependency_roots = BTreeSet::new();
+        let mut workspace_member_roots = BTreeSet::new();
+        let mut manifest_paths = Vec::new();
+        collect_dependency_manifest_paths(repo_root, 0, &mut manifest_paths);
+        for manifest_path in manifest_paths {
+            let Ok(contents) = fs::read_to_string(&manifest_path) else {
+                continue;
+            };
+            let file_name = manifest_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            match file_name {
+                "Cargo.toml" => collect_cargo_manifest_roots(
+                    &contents,
+                    &mut declared_dependency_roots,
+                    &mut workspace_member_roots,
+                ),
+                "package.json" => collect_package_json_roots(
+                    &contents,
+                    &mut declared_dependency_roots,
+                    &mut workspace_member_roots,
+                ),
+                "pyproject.toml" => {
+                    collect_pyproject_roots(&contents, &mut declared_dependency_roots)
+                }
+                _ => {}
+            }
+        }
+        Self {
+            repo_root: repo_root.to_path_buf(),
+            declared_dependency_roots,
+            workspace_member_roots,
+            sibling_module_memo: RefCell::new(BTreeMap::new()),
+        }
+    }
+
+    pub fn classify(
+        &self,
+        reference: &LocalFactReference,
+        language: Option<&str>,
+        repo_relative_path: &str,
+    ) -> &'static str {
+        let name = reference.name.trim();
+        let language = normalize_reference_language(language);
+        // Parser placeholder for a callsite with no resolvable callee node.
+        if name.is_empty() || name == "unknown_callee" {
+            return REFERENCE_CLASS_DYNAMIC_OR_COMPUTED;
+        }
+        if language == ReferenceLanguage::Rust && name.ends_with('!') {
+            let macro_name = name.trim_end_matches('!');
+            if RUST_BUILTIN_MACROS.contains(&macro_name) {
+                return REFERENCE_CLASS_BUILTIN_OR_STD;
+            }
+            return REFERENCE_CLASS_MACRO_OR_CODEGEN;
+        }
+        // Computed callee shapes (expression labels, call chains, indexing).
+        if name.contains(['(', '[', '{', ' ', '<']) {
+            return REFERENCE_CLASS_DYNAMIC_OR_COMPUTED;
+        }
+        let segments: Vec<&str> = if name.contains("::") {
+            name.split("::").collect()
+        } else {
+            name.split('.').collect()
+        };
+        let first = segments.first().copied().unwrap_or_default();
+        if first.is_empty() {
+            return REFERENCE_CLASS_DYNAMIC_OR_COMPUTED;
+        }
+
+        match language {
+            ReferenceLanguage::Rust => {
+                if RUST_STD_ROOTS.contains(&first) {
+                    return REFERENCE_CLASS_BUILTIN_OR_STD;
+                }
+            }
+            ReferenceLanguage::Python => {
+                if PYTHON_BUILTINS_AND_STDLIB.contains(&first) {
+                    return REFERENCE_CLASS_BUILTIN_OR_STD;
+                }
+            }
+            ReferenceLanguage::JsTs => {
+                if JS_TS_BUILTIN_ROOTS.contains(&first) {
+                    return REFERENCE_CLASS_BUILTIN_OR_STD;
+                }
+            }
+            ReferenceLanguage::Go => {
+                if GO_BUILTINS_AND_STDLIB_ROOTS.contains(&first) {
+                    return REFERENCE_CLASS_BUILTIN_OR_STD;
+                }
+            }
+            ReferenceLanguage::Other => {}
+        }
+
+        let normalized_first = normalize_dependency_root(first);
+        if self.declared_dependency_roots.contains(&normalized_first)
+            || self.declared_dependency_roots.contains(first)
+        {
+            return REFERENCE_CLASS_EXTERNAL_DEPENDENCY;
+        }
+
+        // Tier-2 language guard: only languages with fixture-backed call
+        // coverage may produce repo_local_candidate (escalation eligibility).
+        if language == ReferenceLanguage::Other {
+            return REFERENCE_CLASS_DYNAMIC_OR_COMPUTED;
+        }
+
+        if self.workspace_member_roots.contains(&normalized_first) {
+            return REFERENCE_CLASS_REPO_LOCAL_CANDIDATE;
+        }
+        if segments.len() == 1 {
+            if looks_like_reference_identifier(first) {
+                return REFERENCE_CLASS_REPO_LOCAL_CANDIDATE;
+            }
+            return REFERENCE_CLASS_DYNAMIC_OR_COMPUTED;
+        }
+        if language == ReferenceLanguage::Rust && matches!(first, "crate" | "self" | "super") {
+            return REFERENCE_CLASS_REPO_LOCAL_CANDIDATE;
+        }
+        if self.first_segment_is_sibling_module(repo_relative_path, first, language) {
+            return REFERENCE_CLASS_REPO_LOCAL_CANDIDATE;
+        }
+        REFERENCE_CLASS_DYNAMIC_OR_COMPUTED
+    }
+
+    fn first_segment_is_sibling_module(
+        &self,
+        repo_relative_path: &str,
+        first_segment: &str,
+        language: ReferenceLanguage,
+    ) -> bool {
+        if !looks_like_reference_identifier(first_segment) {
+            return false;
+        }
+        let source_dir = Path::new(repo_relative_path)
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .to_string_lossy()
+            .to_string();
+        let memo_key = (source_dir.clone(), first_segment.to_string());
+        if let Some(known) = self.sibling_module_memo.borrow().get(&memo_key) {
+            return *known;
+        }
+        let dir = self.repo_root.join(&source_dir);
+        let candidates: Vec<PathBuf> = match language {
+            ReferenceLanguage::Rust => vec![
+                dir.join(format!("{first_segment}.rs")),
+                dir.join(first_segment).join("mod.rs"),
+            ],
+            ReferenceLanguage::Python => vec![
+                dir.join(format!("{first_segment}.py")),
+                dir.join(first_segment).join("__init__.py"),
+            ],
+            ReferenceLanguage::JsTs => vec![
+                dir.join(format!("{first_segment}.ts")),
+                dir.join(format!("{first_segment}.tsx")),
+                dir.join(format!("{first_segment}.js")),
+                dir.join(format!("{first_segment}.jsx")),
+            ],
+            ReferenceLanguage::Go => vec![dir.join(format!("{first_segment}.go"))],
+            ReferenceLanguage::Other => Vec::new(),
+        };
+        let exists = candidates.iter().any(|candidate| candidate.is_file());
+        self.sibling_module_memo.borrow_mut().insert(memo_key, exists);
+        exists
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReferenceLanguage {
+    Rust,
+    JsTs,
+    Python,
+    Go,
+    Other,
+}
+
+fn normalize_reference_language(language: Option<&str>) -> ReferenceLanguage {
+    match language.unwrap_or_default().to_ascii_lowercase().as_str() {
+        "rust" => ReferenceLanguage::Rust,
+        "javascript" | "typescript" | "jsx" | "tsx" | "js" | "ts" => ReferenceLanguage::JsTs,
+        "python" => ReferenceLanguage::Python,
+        "go" => ReferenceLanguage::Go,
+        _ => ReferenceLanguage::Other,
+    }
+}
+
+fn looks_like_reference_identifier(token: &str) -> bool {
+    !token.is_empty()
+        && token
+            .chars()
+            .all(|character| character.is_alphanumeric() || character == '_')
+        && !token.chars().next().is_some_and(|first| first.is_numeric())
+}
+
+fn normalize_dependency_root(token: &str) -> String {
+    token.to_ascii_lowercase().replace('-', "_")
+}
+
+const DEPENDENCY_MANIFEST_SCAN_MAX_DEPTH: usize = 4;
+const DEPENDENCY_MANIFEST_SCAN_MAX_MANIFESTS: usize = 128;
+
+fn collect_dependency_manifest_paths(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
+    if depth > DEPENDENCY_MANIFEST_SCAN_MAX_DEPTH
+        || found.len() >= DEPENDENCY_MANIFEST_SCAN_MAX_MANIFESTS
+    {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if found.len() >= DEPENDENCY_MANIFEST_SCAN_MAX_MANIFESTS {
+            return;
+        }
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if path.is_dir() {
+            if matches!(
+                name.as_ref(),
+                ".git" | "node_modules" | "target" | ".codegraph" | "dist" | "build" | "vendor"
+                    | "__pycache__" | "venv" | ".venv"
+            ) {
+                continue;
+            }
+            collect_dependency_manifest_paths(&path, depth + 1, found);
+        } else if matches!(name.as_ref(), "Cargo.toml" | "package.json" | "pyproject.toml") {
+            found.push(path);
+        }
+    }
+}
+
+fn collect_cargo_manifest_roots(
+    contents: &str,
+    dependency_roots: &mut BTreeSet<String>,
+    member_roots: &mut BTreeSet<String>,
+) {
+    let mut section = String::new();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            section = line[1..line.len() - 1].trim().to_string();
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim().trim_matches('"');
+        if section == "package" && key == "name" {
+            member_roots.insert(normalize_dependency_root(value.trim().trim_matches('"')));
+        }
+        if section.ends_with("dependencies") {
+            let root = key.split('.').next().unwrap_or(key);
+            if !root.is_empty() {
+                dependency_roots.insert(normalize_dependency_root(root));
+            }
+        }
+    }
+}
+
+fn collect_package_json_roots(
+    contents: &str,
+    dependency_roots: &mut BTreeSet<String>,
+    member_roots: &mut BTreeSet<String>,
+) {
+    let Ok(parsed) = serde_json::from_str::<Value>(contents) else {
+        return;
+    };
+    if let Some(name) = parsed.get("name").and_then(Value::as_str) {
+        member_roots.insert(name.to_string());
+    }
+    for key in [
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "optionalDependencies",
+    ] {
+        if let Some(map) = parsed.get(key).and_then(Value::as_object) {
+            for dependency_name in map.keys() {
+                dependency_roots.insert(dependency_name.clone());
+            }
+        }
+    }
+}
+
+fn collect_pyproject_roots(contents: &str, dependency_roots: &mut BTreeSet<String>) {
+    let mut section = String::new();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            section = line[1..line.len() - 1].trim().to_string();
+            continue;
+        }
+        if section == "tool.poetry.dependencies" || section == "tool.poetry.dev-dependencies" {
+            if let Some((key, _)) = line.split_once('=') {
+                let key = key.trim().trim_matches('"');
+                if !key.is_empty() && key != "python" {
+                    dependency_roots.insert(normalize_dependency_root(key));
+                }
+            }
+            continue;
+        }
+        if section == "project" || section == "project.optional-dependencies" {
+            // List items like "requests>=2.0" inside dependencies = [...]
+            if !(line.starts_with('"') || line.starts_with('\'')) {
+                continue;
+            }
+            let item =
+                line.trim_matches(|character| matches!(character, '"' | '\'' | ',' | '[' | ']'));
+            let root: String = item
+                .chars()
+                .take_while(|character| {
+                    character.is_alphanumeric() || matches!(character, '_' | '-')
+                })
+                .collect();
+            if !root.is_empty() && root != "python" {
+                dependency_roots.insert(normalize_dependency_root(&root));
+            }
+        }
+    }
+}
+
+/// Reference-shaped relations that belong in the always-on unresolved-reference
+/// lane. Local-dataflow relations (Reads/Writes/FlowsTo/Argument*/...) stay
+/// debug-sidecar material: they are noise for hallucination detection.
+fn unresolved_reference_lane_relation(relation: RelationKind) -> bool {
+    matches!(
+        relation,
+        RelationKind::Calls
+            | RelationKind::Callee
+            | RelationKind::Imports
+            | RelationKind::AliasOf
+            | RelationKind::AliasedBy
+            | RelationKind::Reexports
+    )
+}
+
+/// Persists reference-shaped unresolved references in ALL storage modes (Proof
+/// included). Rows are explicitly non-proof facts; on cap overflow a per-file
+/// extraction warning is written so validation can label the file bounded
+/// instead of silently passing.
+fn persist_unresolved_reference_lane(
+    store: &SqliteGraphStore,
+    repo_relative_path: &str,
+    file_hash: Option<&String>,
+    language: Option<&str>,
+    classifier: &UnresolvedReferenceClassifier,
+    unresolved_references: &[LocalFactReference],
+    profile: &mut IndexPhaseRecorder,
+) -> Result<(), StoreError> {
+    let start = Instant::now();
+    let mut lane_references = unresolved_references
+        .iter()
+        .filter(|reference| unresolved_reference_lane_relation(reference.relation))
+        .collect::<Vec<_>>();
+    lane_references.sort_by(|left, right| {
+        left.source_span
+            .to_string()
+            .cmp(&right.source_span.to_string())
+            .then_with(|| left.reference_id.cmp(&right.reference_id))
+            .then_with(|| left.relation.to_string().cmp(&right.relation.to_string()))
+    });
+    lane_references.dedup_by(|left, right| {
+        left.reference_id == right.reference_id
+            && left.relation == right.relation
+            && left.source_span == right.source_span
+    });
+    let total = lane_references.len();
+    let mut rows = 0u64;
+    for reference in lane_references
+        .iter()
+        .take(UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE)
+    {
+        let metadata = json!({
+            "fact_class": "unresolved_reference",
+            "persistence_lane": "unresolved_reference_lane",
+            "not_graph_proof": true,
+            "reference_class": classifier.classify(reference, language, repo_relative_path),
+            "repo_relative_path": normalize_graph_path(repo_relative_path),
+        });
+        store.insert_unresolved_reference_after_file_delete(
+            &reference.reference_id,
+            &reference.name,
+            reference.relation,
+            &reference.source_span,
+            file_hash.map(String::as_str),
+            reference.exactness,
+            &reference.extractor,
+            &metadata,
+        )?;
+        rows += 1;
+    }
+    if total > UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE {
+        let metadata = json!({
+            "fact_class": "extraction_warning",
+            "warning_kind": UNRESOLVED_REFERENCE_LANE_TRUNCATED_WARNING,
+            "kept_rows": UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE,
+            "total_rows": total,
+        });
+        store.insert_extraction_warning_after_file_delete(
+            repo_relative_path,
+            file_hash.map(String::as_str),
+            &format!(
+                "{UNRESOLVED_REFERENCE_LANE_TRUNCATED_WARNING}: kept {UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE} of {total} reference-shaped unresolved references"
+            ),
+            &metadata,
+        )?;
+        rows += 1;
+    }
+    profile.add_duration("unresolved_reference_lane_insert", start.elapsed(), 1, rows);
+    Ok(())
+}
+
 fn persist_debug_sidecars(
     store: &SqliteGraphStore,
     repo_relative_path: &str,
@@ -11911,7 +12822,13 @@ fn persist_debug_sidecars(
         store.insert_heuristic_edge_after_file_delete(edge)?;
         rows += 1;
     }
-    for reference in unresolved_references {
+    // Lane-shaped relations are persisted in all modes by
+    // persist_unresolved_reference_lane; only the local-dataflow remainder is
+    // debug-sidecar material here.
+    for reference in unresolved_references
+        .iter()
+        .filter(|reference| !unresolved_reference_lane_relation(reference.relation))
+    {
         let metadata = json!({
             "fact_class": "unresolved_reference",
             "storage_mode": "audit_debug_sidecar",
@@ -12824,6 +13741,7 @@ pub fn update_changed_files_with_cache_to_db(
     let mut changed_cache_edges = Vec::<Edge>::new();
     let mut dirty_path_evidence_edges = Vec::<Edge>::new();
     let mut changed_static_resolver_inputs = false;
+    let unresolved_reference_classifier = UnresolvedReferenceClassifier::for_repo(&repo_root);
     let transaction_begin_start = Instant::now();
     store.begin_write_transaction()?;
     phase_profile.add_duration("transaction_begin", transaction_begin_start.elapsed(), 1, 0);
@@ -13306,6 +14224,32 @@ pub fn update_changed_files_with_cache_to_db(
                 edge_count += 1;
             }
 
+            let entity_by_id = extraction
+                .entities
+                .iter()
+                .map(|entity| (entity.id.as_str(), entity))
+                .collect::<BTreeMap<_, _>>();
+            let mut lane_unresolved_references = extraction
+                .edges
+                .iter()
+                .filter_map(|edge| unresolved_reference_for_edge_named(edge, &entity_by_id))
+                .collect::<Vec<_>>();
+            lane_unresolved_references.extend(
+                extraction
+                    .entities
+                    .iter()
+                    .filter_map(unresolved_reference_for_import_artifact),
+            );
+            persist_unresolved_reference_lane(
+                tx,
+                repo_relative_path,
+                Some(&hash),
+                Some(language.as_str()),
+                &unresolved_reference_classifier,
+                &lane_unresolved_references,
+                &mut phase_profile,
+            )?;
+
             summary.files_indexed += 1;
             summary.entities += entity_count;
             summary.edges += edge_count;
@@ -13776,15 +14720,6 @@ fn rtds_dependency_closure_for_changed_paths(
         return Ok(summary);
     }
 
-    let edge_count = store.count_edges()? as usize;
-    if edge_count
-        > summary
-            .budgets
-            .max_db_rows_hydrated
-            .saturating_sub(rows_hydrated)
-    {
-        rtds_mark_closure_budget_hit(&mut summary, "db_rows_hydrated", "edge_scan");
-    }
     let edge_limit = summary
         .budgets
         .max_edges_inspected
@@ -13795,7 +14730,17 @@ fn rtds_dependency_closure_for_changed_paths(
                 .saturating_sub(rows_hydrated),
         )
         .max(1);
-    let edges = store.list_edges(edge_limit)?;
+    // MVP3.9.5.3: only edges touching the changed files are hydrated (indexed
+    // head/tail filter in SQL) instead of scanning the whole edge table into
+    // memory. One row over the limit is fetched so truncation is labeled.
+    let mut edges = store.list_edges_touching_paths(
+        &summary.requested_changed_files,
+        edge_limit.saturating_add(1),
+    )?;
+    if edges.len() > edge_limit {
+        edges.truncate(edge_limit);
+        rtds_mark_closure_budget_hit(&mut summary, "db_rows_hydrated", "edge_scan");
+    }
     let mut relation_counts = BTreeMap::<String, usize>::new();
     let mut relation_classes = BTreeSet::<String>::new();
 
@@ -29694,6 +30639,278 @@ pub fn caller() {
     }
 
     #[test]
+    fn proof_mode_index_persists_unresolved_reference_lane() {
+        let repo = temp_repo("unresolved-lane-proof");
+        write_test_file(
+            &repo,
+            "src/login.ts",
+            "export function login(input: string) {\n  return missingHelper(input);\n}\n",
+        );
+        let db = repo.join("target").join("lane.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        let store = SqliteGraphStore::open_read_only(&db).expect("store");
+        let lane = store
+            .list_unresolved_references_by_file("src/login.ts")
+            .expect("lane rows");
+        let row = lane
+            .iter()
+            .find(|row| row.name == "missingHelper" && row.relation == RelationKind::Calls)
+            .unwrap_or_else(|| {
+                panic!("proof-mode index must persist the unresolved-reference lane with the referenced symbol's name; got {lane:?}")
+            });
+        assert_eq!(
+            row.metadata.get("fact_class").and_then(Value::as_str),
+            Some("unresolved_reference")
+        );
+        assert_eq!(
+            row.metadata.get("not_graph_proof").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(row.source_span.repo_relative_path, "src/login.ts");
+        assert_eq!(row.exactness, Exactness::StaticHeuristic);
+        assert_eq!(
+            row.metadata.get("reference_class").and_then(Value::as_str),
+            Some(REFERENCE_CLASS_REPO_LOCAL_CANDIDATE)
+        );
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn reference_class_tiers_match_spec_shapes() {
+        let repo = temp_repo("reference-class");
+        write_test_file(&repo, "src/auth.rs", "pub fn real() {}\n");
+        write_test_file(&repo, "src/tools.py", "def real():\n    return 1\n");
+        write_test_file(
+            &repo,
+            "Cargo.toml",
+            "[package]\nname = \"fixture-crate\"\n\n[dependencies]\nserde_json = \"1\"\n",
+        );
+        write_test_file(
+            &repo,
+            "package.json",
+            "{\n  \"name\": \"fixture\",\n  \"dependencies\": { \"lodash\": \"^4\" }\n}\n",
+        );
+        write_test_file(
+            &repo,
+            "pyproject.toml",
+            "[project]\nname = \"fixture\"\ndependencies = [\n  \"requests>=2.0\",\n]\n",
+        );
+        let classifier = UnresolvedReferenceClassifier::for_repo(&repo);
+        let reference = |name: &str| LocalFactReference {
+            reference_id: format!("test:{name}"),
+            name: name.to_string(),
+            relation: RelationKind::Calls,
+            source_span: SourceSpan {
+                repo_relative_path: "src/main.rs".to_string(),
+                start_line: 1,
+                start_column: None,
+                end_line: 1,
+                end_column: None,
+            },
+            exactness: Exactness::StaticHeuristic,
+            extractor: "test".to_string(),
+        };
+        let classify = |name: &str, language: &str, path: &str| {
+            classifier.classify(&reference(name), Some(language), path)
+        };
+
+        // Rust shapes.
+        assert_eq!(
+            classify("audit_login_attempt", "rust", "src/main.rs"),
+            REFERENCE_CLASS_REPO_LOCAL_CANDIDATE
+        );
+        assert_eq!(
+            classify("auth::revoke_token", "rust", "src/main.rs"),
+            REFERENCE_CLASS_REPO_LOCAL_CANDIDATE,
+            "sibling src/auth.rs must make auth:: repo-local"
+        );
+        assert_eq!(
+            classify("crate::auth::nonexistent_thing", "rust", "src/main.rs"),
+            REFERENCE_CLASS_REPO_LOCAL_CANDIDATE
+        );
+        assert_eq!(
+            classify("fixture_crate::helper", "rust", "src/main.rs"),
+            REFERENCE_CLASS_REPO_LOCAL_CANDIDATE,
+            "workspace member crate paths are repo-local"
+        );
+        assert_eq!(
+            classify("std::mem::take", "rust", "src/main.rs"),
+            REFERENCE_CLASS_BUILTIN_OR_STD
+        );
+        assert_eq!(
+            classify("format!", "rust", "src/main.rs"),
+            REFERENCE_CLASS_BUILTIN_OR_STD
+        );
+        assert_eq!(
+            classify("custom_derive!", "rust", "src/main.rs"),
+            REFERENCE_CLASS_MACRO_OR_CODEGEN
+        );
+        assert_eq!(
+            classify("serde_json::to_vec", "rust", "src/main.rs"),
+            REFERENCE_CLASS_EXTERNAL_DEPENDENCY
+        );
+
+        // JS/TS shapes.
+        assert_eq!(
+            classify("console.log", "typescript", "src/app.ts"),
+            REFERENCE_CLASS_BUILTIN_OR_STD
+        );
+        assert_eq!(
+            classify("lodash.merge", "javascript", "src/app.js"),
+            REFERENCE_CLASS_EXTERNAL_DEPENDENCY
+        );
+        assert_eq!(
+            classify("input.trim", "typescript", "src/app.ts"),
+            REFERENCE_CLASS_DYNAMIC_OR_COMPUTED,
+            "method on a local receiver is not escalation-eligible"
+        );
+        assert_eq!(
+            classify("missingHelper", "typescript", "src/app.ts"),
+            REFERENCE_CLASS_REPO_LOCAL_CANDIDATE
+        );
+
+        // Python shapes.
+        assert_eq!(
+            classify("print", "python", "src/api.py"),
+            REFERENCE_CLASS_BUILTIN_OR_STD
+        );
+        assert_eq!(
+            classify("requests.get", "python", "src/api.py"),
+            REFERENCE_CLASS_EXTERNAL_DEPENDENCY
+        );
+        assert_eq!(
+            classify("tools.summarize_results", "python", "src/api.py"),
+            REFERENCE_CLASS_REPO_LOCAL_CANDIDATE,
+            "sibling src/tools.py must make tools. repo-local"
+        );
+        assert_eq!(
+            classify("summarize_results", "python", "src/api.py"),
+            REFERENCE_CLASS_REPO_LOCAL_CANDIDATE
+        );
+
+        // Guards.
+        assert_eq!(
+            classify("missing_fn", "ruby", "src/app.rb"),
+            REFERENCE_CLASS_DYNAMIC_OR_COMPUTED,
+            "non-Tier-2 languages must never produce repo_local_candidate"
+        );
+        assert_eq!(
+            classify("unknown_callee", "typescript", "src/app.ts"),
+            REFERENCE_CLASS_DYNAMIC_OR_COMPUTED
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn incremental_update_persists_and_clears_unresolved_reference_lane() {
+        let repo = temp_repo("unresolved-lane-incremental");
+        // No calls at all: even a method call on a parameter is a legitimate
+        // dynamic unresolved reference and would seed the lane.
+        let clean_source = "export function login(input: string) {\n  return input;\n}\n";
+        write_test_file(&repo, "src/auth.ts", clean_source);
+        let db = repo.join("target").join("lane-update.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        {
+            let store = SqliteGraphStore::open_read_only(&db).expect("store");
+            assert!(
+                store
+                    .list_unresolved_references_by_file("src/auth.ts")
+                    .expect("lane")
+                    .is_empty(),
+                "clean fixture must not seed lane rows"
+            );
+        }
+
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function login(input: string) {\n  return hallucinatedHelper(input);\n}\n",
+        );
+        update_changed_files_to_db(&repo, &[PathBuf::from("src/auth.ts")], &db)
+            .expect("update with unresolved call");
+        {
+            let store = SqliteGraphStore::open_read_only(&db).expect("store");
+            let lane = store
+                .list_unresolved_references_by_file("src/auth.ts")
+                .expect("lane");
+            assert!(
+                lane.iter().any(|row| row.name == "hallucinatedHelper"
+                    && row.relation == RelationKind::Calls),
+                "incremental update must persist new unresolved references; got {lane:?}"
+            );
+        }
+
+        write_test_file(&repo, "src/auth.ts", clean_source);
+        update_changed_files_to_db(&repo, &[PathBuf::from("src/auth.ts")], &db)
+            .expect("update back to clean source");
+        {
+            let store = SqliteGraphStore::open_read_only(&db).expect("store");
+            let lane = store
+                .list_unresolved_references_by_file("src/auth.ts")
+                .expect("lane");
+            assert!(
+                lane.iter().all(|row| row.name != "hallucinatedHelper"),
+                "per-file invalidation must clear stale lane rows; got {lane:?}"
+            );
+        }
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn unresolved_reference_lane_caps_rows_and_writes_truncation_warning() {
+        let repo = temp_repo("unresolved-lane-cap");
+        let mut source = String::from("export function flood(input: string) {\n");
+        for index in 0..300 {
+            source.push_str(&format!("  missing_fn_{index}(input);\n"));
+        }
+        source.push_str("  return input;\n}\n");
+        write_test_file(&repo, "src/flood.ts", &source);
+        let db = repo.join("target").join("lane-cap.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        let store = SqliteGraphStore::open_read_only(&db).expect("store");
+        let lane = store
+            .list_unresolved_references_by_file("src/flood.ts")
+            .expect("lane");
+        assert_eq!(
+            lane.len(),
+            UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE,
+            "lane must cap rows per file"
+        );
+        let warnings = store
+            .list_extraction_warnings_by_file("src/flood.ts")
+            .expect("warnings");
+        let truncation = warnings
+            .iter()
+            .find(|(warning, _)| warning.starts_with(UNRESOLVED_REFERENCE_LANE_TRUNCATED_WARNING))
+            .unwrap_or_else(|| {
+                panic!("cap overflow must write a truncation warning; got {warnings:?}")
+            });
+        assert_eq!(
+            truncation
+                .1
+                .get("warning_kind")
+                .and_then(Value::as_str),
+            Some(UNRESOLVED_REFERENCE_LANE_TRUNCATED_WARNING)
+        );
+        assert!(
+            truncation
+                .1
+                .get("total_rows")
+                .and_then(Value::as_u64)
+                .is_some_and(|total| total >= 300),
+            "truncation metadata must record the pre-cap total; got {truncation:?}"
+        );
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
     fn update_newly_ignored_file_deletes_stale_facts_before_ignore_skip() {
         let repo = temp_repo("newly-ignored-stale");
         write_test_file(
@@ -32585,6 +33802,112 @@ pub fn caller() {
         );
         assert_eq!(new_snapshot.full_scan_count, 0);
         assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn delta_reports_added_and_resolved_unresolved_references() {
+        let repo = temp_repo("unresolved-reference-delta");
+        let clean_source = "export function login(input: string) {\n  return input;\n}\n";
+        write_test_file(&repo, "src/auth.ts", clean_source);
+        let db = repo.join("target").join("unresolved-delta.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        let changed = [PathBuf::from("src/auth.ts")];
+        let old_snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &changed,
+            &[],
+            &db,
+            NormalizedFactSnapshotOptions::default(),
+        )
+        .expect("old snapshot");
+        assert!(
+            old_snapshot.facts.unresolved_references.is_empty(),
+            "clean baseline must have no lane facts"
+        );
+
+        write_test_file(
+            &repo,
+            "src/auth.ts",
+            "export function login(input: string) {\n  return hallucinatedHelper(input);\n}\n",
+        );
+        update_changed_files_to_db(&repo, &changed, &db).expect("update");
+        let new_snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &changed,
+            &[],
+            &db,
+            NormalizedFactSnapshotOptions::default(),
+        )
+        .expect("new snapshot");
+
+        let delta = compute_entity_source_role_delta(
+            &old_snapshot,
+            &new_snapshot,
+            EntitySourceRoleDeltaOptions::default(),
+        );
+        let added = delta
+            .unresolved_references_added
+            .iter()
+            .find(|entry| entry.name == "hallucinatedHelper" && entry.relation == "CALLS")
+            .unwrap_or_else(|| {
+                panic!(
+                    "delta must report the new unresolved reference; got {:?}",
+                    delta.unresolved_references_added
+                )
+            });
+        assert_eq!(added.reference_class, REFERENCE_CLASS_REPO_LOCAL_CANDIDATE);
+        assert!(
+            !added.graph_proof,
+            "lane delta entries are never graph proof"
+        );
+        assert_eq!(added.proof_strength, "text_evidence");
+        assert!(!added.claimability.graph_proof);
+        // One hallucinated call yields a CALLS row plus its CALLEE mirror;
+        // rule-level consumers dedupe by relation, the raw lane count doesn't.
+        assert_eq!(
+            delta
+                .unresolved_references_added_by_class
+                .get(REFERENCE_CLASS_REPO_LOCAL_CANDIDATE),
+            Some(&2)
+        );
+        // Lane changes must never claim graph-proof ladder rungs.
+        for (rung, change) in &delta.proof_ladder_changes {
+            if change.changed && change.graph_proof {
+                assert!(
+                    !rung.contains("unresolved"),
+                    "unresolved lane must not feed graph-proof ladder rung {rung}"
+                );
+            }
+        }
+
+        // Fixing the reference reports it as resolved (removed).
+        write_test_file(&repo, "src/auth.ts", clean_source);
+        update_changed_files_to_db(&repo, &changed, &db).expect("update back");
+        let fixed_snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &changed,
+            &[],
+            &db,
+            NormalizedFactSnapshotOptions::default(),
+        )
+        .expect("fixed snapshot");
+        let resolved_delta = compute_entity_source_role_delta(
+            &new_snapshot,
+            &fixed_snapshot,
+            EntitySourceRoleDeltaOptions::default(),
+        );
+        assert!(
+            resolved_delta
+                .unresolved_references_removed
+                .iter()
+                .any(|entry| entry.name == "hallucinatedHelper"),
+            "fix must surface as a removed (resolved) lane entry; got {:?}",
+            resolved_delta.unresolved_references_removed
+        );
+        assert_eq!(resolved_delta.unresolved_references_added_count, 0);
 
         fs::remove_dir_all(repo).expect("cleanup");
     }

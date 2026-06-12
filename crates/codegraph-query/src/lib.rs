@@ -900,6 +900,39 @@ fn production_traversal_relation_allowed(relation: RelationKind) -> bool {
     )
 }
 
+const CONTEXT_PACK_ONE_HOP_RELATION_HYDRATION_TRAVERSALS: [Traversal; 26] = [
+    Traversal::forward(RelationKind::Calls),
+    Traversal::reverse(RelationKind::Calls),
+    Traversal::forward(RelationKind::Imports),
+    Traversal::reverse(RelationKind::Imports),
+    Traversal::forward(RelationKind::Reads),
+    Traversal::reverse(RelationKind::Reads),
+    Traversal::forward(RelationKind::Writes),
+    Traversal::reverse(RelationKind::Writes),
+    Traversal::forward(RelationKind::Mutates),
+    Traversal::reverse(RelationKind::Mutates),
+    Traversal::forward(RelationKind::MayMutate),
+    Traversal::reverse(RelationKind::MayMutate),
+    Traversal::forward(RelationKind::MayRead),
+    Traversal::reverse(RelationKind::MayRead),
+    Traversal::forward(RelationKind::FlowsTo),
+    Traversal::reverse(RelationKind::FlowsTo),
+    Traversal::forward(RelationKind::AssignedFrom),
+    Traversal::reverse(RelationKind::AssignedFrom),
+    Traversal::forward(RelationKind::Exports),
+    Traversal::reverse(RelationKind::Exports),
+    Traversal::forward(RelationKind::Reexports),
+    Traversal::reverse(RelationKind::Reexports),
+    Traversal::forward(RelationKind::AliasOf),
+    Traversal::reverse(RelationKind::AliasOf),
+    Traversal::forward(RelationKind::AliasedBy),
+    Traversal::reverse(RelationKind::AliasedBy),
+];
+
+fn context_pack_one_hop_relation_hydration_traversals() -> &'static [Traversal] {
+    &CONTEXT_PACK_ONE_HOP_RELATION_HYDRATION_TRAVERSALS
+}
+
 fn test_traversal_relation_allowed(relation: RelationKind) -> bool {
     matches!(
         relation,
@@ -2910,6 +2943,20 @@ impl ExactGraphQueryEngine {
                 "test_or_mock"
             }),
         );
+        metadata.insert(
+            "path_length".to_string(),
+            serde_json::json!(path.steps.len()),
+        );
+        if path.steps.len() == 1 {
+            metadata.insert(
+                "hydration".to_string(),
+                serde_json::json!("demand_driven_one_hop"),
+            );
+            metadata.insert(
+                "single_seed_relation_hydration".to_string(),
+                serde_json::json!(true),
+            );
+        }
         match validate_proof_path_edge_classes(path) {
             Ok(()) => {
                 metadata.insert(
@@ -3769,6 +3816,24 @@ impl ExactGraphQueryEngine {
         );
         paths.append(&mut result);
         telemetry.push(run);
+
+        if paths.is_empty() {
+            let one_hop_limits = QueryLimits {
+                max_depth: 1,
+                max_paths: limits.max_paths.max(1),
+                max_edges_visited: limits.max_edges_visited,
+            };
+            let (mut result, run) = self.bounded_bfs_with_policy_telemetry_label(
+                "single_seed_relation_hydration_fallback",
+                seed,
+                context_pack_one_hop_relation_hydration_traversals(),
+                one_hop_limits,
+                policy,
+                &|path| !path.steps.is_empty(),
+            );
+            paths.append(&mut result);
+            telemetry.push(run);
+        }
 
         (sorted_paths(paths), telemetry)
     }
@@ -9913,6 +9978,57 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("failed")
         );
+    }
+
+    #[test]
+    fn single_seed_relation_hydration_fallback_passed() {
+        let source = "import { checkRole } from \"./auth\";\nexport const ok = true;\n";
+        let edge = edge_with_span(
+            "fixtures/imports.ts",
+            RelationKind::Imports,
+            "checkRole",
+            SourceSpan::with_columns("fixtures/imports.ts", 1, 1, 1, 36),
+        );
+        let engine = ExactGraphQueryEngine::new(vec![edge]);
+        let packet = engine.context_pack(
+            ContextPackRequest::new(
+                "Trace fixtures/imports.ts imports",
+                "impact",
+                4_000,
+                vec!["fixtures/imports.ts".to_string()],
+            ),
+            &single_source("fixtures/imports.ts", source),
+        );
+        let path = packet
+            .verified_paths
+            .iter()
+            .find(|path| path.metapath == vec![RelationKind::Imports])
+            .expect("single-hop import path evidence");
+
+        assert_eq!(path.length, 1);
+        assert_eq!(path.exactness, Exactness::ParserVerified);
+        assert_eq!(
+            path.metadata
+                .get("hydration")
+                .and_then(|value| value.as_str()),
+            Some("demand_driven_one_hop")
+        );
+        assert_eq!(
+            path.metadata
+                .get("single_seed_relation_hydration")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            path.metadata
+                .get("proof_grade_source_spans")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert!(packet
+            .snippets
+            .iter()
+            .any(|snippet| snippet.text.contains("checkRole")));
     }
 
     #[test]
