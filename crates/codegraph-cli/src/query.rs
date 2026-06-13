@@ -1055,7 +1055,19 @@ pub(crate) fn parse_unresolved_calls_args(
     let mut options = UnresolvedCallsOptions::default();
     let mut index = 0;
     while index < args.len() {
-        match args[index].as_str() {
+        let current = args[index].as_str();
+        if let Some(value) = current.strip_prefix("--class=") {
+            options.class_filter = Some(parse_unresolved_calls_class_filter(value)?);
+            index += 1;
+            continue;
+        }
+        if let Some(value) = current.strip_prefix("--path=") {
+            options.path_filter = Some(value.to_string());
+            index += 1;
+            continue;
+        }
+
+        match current {
             "--limit" => {
                 index += 1;
                 let raw = args
@@ -1101,7 +1113,7 @@ pub(crate) fn parse_unresolved_calls_args(
             "--class" => {
                 index += 1;
                 let class = args.get(index).ok_or_else(unresolved_calls_usage)?;
-                options.class_filter = Some(class.clone());
+                options.class_filter = Some(parse_unresolved_calls_class_filter(class)?);
             }
             "--path" => {
                 index += 1;
@@ -1109,8 +1121,14 @@ pub(crate) fn parse_unresolved_calls_args(
                 options.path_filter = Some(path.clone());
             }
             other => {
+                if other.starts_with('-') {
+                    return Err(format!(
+                        "unknown unresolved-calls option: {other}\n{}",
+                        unresolved_calls_usage()
+                    ));
+                }
                 return Err(format!(
-                    "unknown unresolved-calls option: {other}\n{}",
+                    "unresolved-calls does not accept positional query arguments: {other}; use --path <repo-relative-or-absolute-path> and/or --class <reference_class>.\n{}",
                     unresolved_calls_usage()
                 ));
             }
@@ -1120,8 +1138,76 @@ pub(crate) fn parse_unresolved_calls_args(
     Ok(options)
 }
 
+pub(crate) fn unresolved_reference_classes() -> &'static [&'static str] {
+    &[
+        REFERENCE_CLASS_REPO_LOCAL_CANDIDATE,
+        REFERENCE_CLASS_EXTERNAL_DEPENDENCY,
+        REFERENCE_CLASS_BUILTIN_OR_STD,
+        REFERENCE_CLASS_MACRO_OR_CODEGEN,
+        REFERENCE_CLASS_DYNAMIC_OR_COMPUTED,
+    ]
+}
+
+pub(crate) fn parse_unresolved_calls_class_filter(raw: &str) -> Result<String, String> {
+    let value = raw.trim();
+    if unresolved_reference_classes().contains(&value) {
+        return Ok(value.to_string());
+    }
+    Err(format!(
+        "invalid unresolved-calls --class value: {value}; accepted values: {}",
+        unresolved_reference_classes().join(", ")
+    ))
+}
+
+pub(crate) fn normalize_unresolved_calls_path_filter(
+    repo_root: &Path,
+    raw: &str,
+) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("unresolved-calls --path must not be empty".to_string());
+    }
+
+    let candidate = PathBuf::from(trimmed);
+    if candidate.is_absolute() {
+        let canonical_repo =
+            std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+        if let Ok(canonical_candidate) = std::fs::canonicalize(&candidate) {
+            if let Ok(relative) = canonical_candidate.strip_prefix(&canonical_repo) {
+                return Ok(normalize_repo_relative_path(path_to_query_filter_string(
+                    relative,
+                )));
+            }
+        }
+        if let Ok(relative) = candidate.strip_prefix(&canonical_repo) {
+            return Ok(normalize_repo_relative_path(path_to_query_filter_string(
+                relative,
+            )));
+        }
+        if let Ok(relative) = candidate.strip_prefix(repo_root) {
+            return Ok(normalize_repo_relative_path(path_to_query_filter_string(
+                relative,
+            )));
+        }
+        return Err(format!(
+            "unresolved-calls --path must be repo-relative or inside repo {}; got {}",
+            repo_root.display(),
+            candidate.display()
+        ));
+    }
+
+    Ok(normalize_repo_relative_path(trimmed))
+}
+
+fn path_to_query_filter_string(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 pub(crate) fn unresolved_calls_usage() -> String {
-    "Usage: codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--class <reference_class>] [--path <repo/relative/path>] [--json] [--no-snippets] [--include-snippets] [--db <path>] [--allow-stale-read] [--allow-foreign-db]".to_string()
+    format!(
+        "Usage: codegraph-mcp query unresolved-calls [--path <repo-relative-or-absolute-path>] [--class <reference_class>] [--limit <n>] [--offset <n>] [--json|--agent-json] [--no-snippets] [--include-snippets] [--db <path>] [--allow-stale-read] [--allow-foreign-db]\nAccepted --class values: {}\nThis command does not accept a positional symbol/query argument.",
+        unresolved_reference_classes().join(", ")
+    )
 }
 
 pub(crate) fn unresolved_calls_lifecycle_preflight(
@@ -1301,12 +1387,17 @@ pub(crate) fn query_unresolved_calls(
     // storage mode, Proof included). The legacy `calls` array reads the
     // Audit/Debug heuristic-edge sidecar and stays empty on Proof DBs.
     let lane_start = Instant::now();
+    let normalized_path_filter = options
+        .path_filter
+        .as_deref()
+        .map(|path| normalize_unresolved_calls_path_filter(repo_root, path))
+        .transpose()?;
     let lane_rows = query_unresolved_reference_lane_page(
         &connection,
         options.limit,
         options.offset,
         options.class_filter.as_deref(),
-        options.path_filter.as_deref(),
+        normalized_path_filter.as_deref(),
     )?;
     let lane_query_ms = elapsed_ms(lane_start);
 
@@ -1355,7 +1446,8 @@ pub(crate) fn query_unresolved_calls(
             "items": lane_rows,
             "filters": {
                 "class": options.class_filter,
-                "path": options.path_filter,
+                "path": normalized_path_filter,
+                "path_input": options.path_filter,
             },
             "pagination": {
                 "limit": options.limit,
@@ -2457,6 +2549,43 @@ pub(crate) fn agent_call_relation_response(
     let graph_proof = results
         .iter()
         .any(|result| result.get("graph_proof").and_then(Value::as_bool) == Some(true));
+    let proof_status = call_relation_agent_proof_status(graph_proof, rich_status);
+    let proof_strength = call_relation_agent_proof_strength(graph_proof, rich_status);
+    let ambiguous_candidates = rich
+        .get("ambiguous_symbol_matches")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .take(output.limit.max(1))
+                .map(agent_compact_entity_ref_from_value)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let resolved_entity_ref = rich
+        .get("exact_resolved_entity")
+        .filter(|value| !value.is_null())
+        .map(agent_compact_entity_ref_from_value);
+    if !ambiguous_candidates.is_empty() {
+        query.insert(
+            "candidate_entities".to_string(),
+            json!(ambiguous_candidates.clone()),
+        );
+        query.insert(
+            "candidate_count".to_string(),
+            json!(rich
+                .get("ambiguous_symbol_matches")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(ambiguous_candidates.len())),
+        );
+        query.insert(
+            "rerun_with_entity_id_template".to_string(),
+            json!(format!(
+                "codegraph-mcp agent-use query {key} --entity-id <candidate-id> --repo <repo> --agent-json"
+            )),
+        );
+    }
 
     let mut response = canonical_agent_query_response(
         "callers_callees_agent_json",
@@ -2476,24 +2605,74 @@ pub(crate) fn agent_call_relation_response(
     if let Some(object) = response.as_object_mut() {
         object.insert("direction".to_string(), json!(key));
         object.insert("graph_proof".to_string(), json!(graph_proof));
-        object.insert(
-            "proof_status".to_string(),
-            json!(if graph_proof {
-                "proof_path_found"
+        object.insert("proof_status".to_string(), json!(proof_status));
+        object.insert("proof_strength".to_string(), json!(proof_strength));
+        if !graph_proof {
+            let fallback_entities = if !ambiguous_candidates.is_empty() {
+                ambiguous_candidates.clone()
             } else {
-                "no_proof_path_found"
-            }),
-        );
-        object.insert(
-            "proof_strength".to_string(),
-            json!(if graph_proof {
-                "graph_relation_proof"
-            } else {
-                "source_navigation_evidence"
-            }),
-        );
+                resolved_entity_ref.into_iter().collect::<Vec<_>>()
+            };
+            object.insert(
+                "relation_resolution".to_string(),
+                json!({
+                    "status": rich_status,
+                    "resolution_mode": rich.get("resolution_mode").cloned().unwrap_or(Value::Null),
+                    "graph_proof": false,
+                    "proof_status": proof_status,
+                    "proof_strength": proof_strength,
+                    "source_navigation_fallback": {
+                        "available": !fallback_entities.is_empty(),
+                        "evidence_role": "symbol_candidate_evidence",
+                        "graph_proof": false,
+                        "candidate_entities": fallback_entities,
+                    },
+                    "suggested_next_steps": call_relation_agent_next_steps(rich_status, key),
+                }),
+            );
+        }
     }
     response
+}
+
+pub(crate) fn call_relation_agent_proof_status(
+    graph_proof: bool,
+    rich_status: &str,
+) -> &'static str {
+    if graph_proof {
+        "proof_path_found"
+    } else if rich_status == "ambiguous_symbol" {
+        "relation_resolution_ambiguous"
+    } else {
+        "no_proof_path_found"
+    }
+}
+
+pub(crate) fn call_relation_agent_proof_strength(
+    graph_proof: bool,
+    rich_status: &str,
+) -> &'static str {
+    if graph_proof {
+        "graph_relation_proof"
+    } else if rich_status == "ambiguous_symbol" {
+        "symbol_candidate_evidence"
+    } else {
+        "source_navigation_evidence"
+    }
+}
+
+pub(crate) fn call_relation_agent_next_steps(rich_status: &str, key: &str) -> Vec<String> {
+    if rich_status == "ambiguous_symbol" {
+        return vec![
+            format!("Inspect query.candidate_entities and choose the intended symbol id."),
+            format!(
+                "Rerun codegraph-mcp agent-use query {key} --entity-id <candidate-id> --repo <repo> --agent-json."
+            ),
+        ];
+    }
+    vec![format!(
+        "Use query symbols/definitions/context-pack for source-navigation context; do not treat this no-proof result as graph absence outside the indexed exact relation set."
+    )]
 }
 
 pub(crate) fn agent_call_relation_row_json(row: &Value) -> Value {

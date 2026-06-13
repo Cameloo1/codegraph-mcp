@@ -3233,6 +3233,313 @@ fn agent_use_profile_resolver_handles_remote_path_spaces_unicode_and_case() {
 }
 
 #[test]
+fn git_metadata_unavailable_identity_does_not_drift() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_agent_use_context_fixture(&repo);
+    add_git_remote_for_test(&repo, "https://example.invalid/acme/profile-drift.git");
+    let remote_profile =
+        super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("remote profile");
+    assert_eq!(
+        remote_profile.repo_identity_hash,
+        super::stable_agent_use_identity_hash(
+            b"remote:https://example.invalid/acme/profile-drift.git"
+        )
+    );
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("index remote-keyed profile");
+    assert!(
+        remote_profile.db_path.exists(),
+        "indexed remote profile DB should exist"
+    );
+
+    let _git_unavailable =
+        BundleFailpointEnvGuard::set(super::AGENT_USE_GIT_METADATA_UNAVAILABLE_FAILPOINT);
+    let degraded_profile = with_agent_use_data_root(&data_root, || {
+        super::resolve_agent_use_profile(&repo).expect("degraded profile")
+    });
+    assert_eq!(degraded_profile.db_path, remote_profile.db_path);
+    assert_eq!(
+        degraded_profile.repo_identity_hash,
+        remote_profile.repo_identity_hash
+    );
+
+    let status = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "status".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("status with git metadata unavailable");
+    assert_ne!(status["status"].as_str(), Some("not_indexed"));
+    assert_eq!(
+        status["db_path"].as_str(),
+        Some(path_string(&remote_profile.db_path).as_str())
+    );
+    assert_eq!(
+        status["repo_identity_hash"].as_str(),
+        Some(remote_profile.repo_identity_hash.as_str())
+    );
+
+    let config = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "mcp-config".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("mcp config with git metadata unavailable");
+    assert_ne!(config["status"].as_str(), Some("not_indexed"));
+    assert_eq!(
+        config["db_path"].as_str(),
+        Some(path_string(&remote_profile.db_path).as_str())
+    );
+    assert_eq!(
+        config["repo_identity_hash"].as_str(),
+        Some(remote_profile.repo_identity_hash.as_str())
+    );
+    assert_no_dot_codegraph_sqlite(&repo);
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn same_repo_same_profile_identity_across_status_index_mcp_config() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_agent_use_context_fixture(&repo);
+    let profile =
+        super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+
+    let missing_status = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "status".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("missing status");
+    assert_eq!(missing_status["status"].as_str(), Some("not_indexed"));
+    assert_eq!(
+        missing_status["db_path"].as_str(),
+        Some(path_string(&profile.db_path).as_str())
+    );
+    assert!(
+        !profile.profile_root.exists(),
+        "status must not create the production profile"
+    );
+
+    let indexed = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("index");
+    assert_eq!(indexed["status"].as_str(), Some("indexed"));
+    assert_eq!(
+        indexed["db_path"].as_str(),
+        Some(path_string(&profile.db_path).as_str())
+    );
+    assert_eq!(
+        indexed["repo_identity_hash"].as_str(),
+        Some(profile.repo_identity_hash.as_str())
+    );
+
+    let status = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "status".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("status");
+    let config = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "mcp-config".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("mcp config");
+    assert_eq!(status["db_path"], indexed["db_path"]);
+    assert_eq!(config["db_path"], indexed["db_path"]);
+    assert_eq!(status["repo_identity_hash"], config["repo_identity_hash"]);
+    assert_eq!(
+        config["mcp_config_identity"]["repo_identity_hash"],
+        status["repo_identity_hash"]
+    );
+    assert_no_dot_codegraph_sqlite(&repo);
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn same_repo_same_profile_identity_across_query_context_validate_watch() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_agent_use_context_fixture(&repo);
+    let profile =
+        super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("index");
+
+    let query = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "query".to_string(),
+            "symbols".to_string(),
+            "agentUseTarget".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--limit".to_string(),
+            "5".to_string(),
+            "--agent-json".to_string(),
+        ])
+    })
+    .expect("query");
+    let context = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "context-pack".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--task".to_string(),
+            "Find agentUseTarget callers".to_string(),
+            "--agent-json".to_string(),
+        ])
+    })
+    .expect("context-pack");
+    let validate = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "validate-edit".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--changed".to_string(),
+            "src/service.ts".to_string(),
+            "--agent-json".to_string(),
+        ])
+    })
+    .expect("validate-edit");
+    let watch = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "watch".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--once".to_string(),
+            "--changed".to_string(),
+            "src/service.ts".to_string(),
+            "--json".to_string(),
+        ])
+    })
+    .expect("watch");
+
+    for value in [&query, &context, &validate, &watch] {
+        assert_eq!(
+            value["db_path"].as_str().or_else(|| value["db"].as_str()),
+            Some(path_string(&profile.db_path).as_str()),
+            "{value:?}"
+        );
+        assert_ne!(value["status"].as_str(), Some("not_indexed"), "{value:?}");
+    }
+    assert_no_dot_codegraph_sqlite(&repo);
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn permission_denied_not_false_not_indexed() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_agent_use_context_fixture(&repo);
+    let _failpoint =
+        BundleFailpointEnvGuard::set(super::AGENT_USE_PROFILE_PARENT_PERMISSION_DENIED_FAILPOINT);
+
+    for command in ["status", "mcp-config"] {
+        let value = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                command.to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("structured access status");
+        assert_eq!(value["status"].as_str(), Some("permission_denied"));
+        assert_ne!(value["status"].as_str(), Some("not_indexed"));
+        assert_eq!(
+            value["profile_access"]["not_false_not_indexed"].as_bool(),
+            Some(true)
+        );
+        assert_json_array_contains(&value, "safety_labels", "profile_root_inaccessible");
+    }
+    assert_no_dot_codegraph_sqlite(&repo);
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn inaccessible_profile_root_structured_error() {
+    let _guard = lock_env_test();
+    let parent = temp_repo();
+    let data_root = parent.join("agent-use-data-root-is-a-file");
+    fs::write(&data_root, "not a directory").expect("write file data root");
+    let repo = temp_repo();
+    write_agent_use_context_fixture(&repo);
+
+    for command in ["status", "mcp-config"] {
+        let value = with_agent_use_data_root(&data_root, || {
+            super::run_agent_use_command(&[
+                command.to_string(),
+                "--repo".to_string(),
+                path_string(&repo),
+                "--json".to_string(),
+            ])
+        })
+        .expect("structured inaccessible profile root");
+        assert_eq!(value["status"].as_str(), Some("filesystem_inaccessible"));
+        assert_ne!(value["status"].as_str(), Some("not_indexed"));
+        assert_eq!(
+            value["profile_access"]["not_false_not_indexed"].as_bool(),
+            Some(true)
+        );
+        assert_json_array_contains(&value, "safety_labels", "profile_root_inaccessible");
+    }
+    assert_no_dot_codegraph_sqlite(&repo);
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&parent, "cleanup parent");
+}
+
+#[test]
 fn artifact_safe_filename_shortens_deterministically_and_preserves_origin_metadata() {
     let long_name = format!(
         "{}-report.sqlite",
@@ -4019,6 +4326,116 @@ fn validate_edit_warns_on_new_unresolved_local_call_and_clears_on_fix() {
 }
 
 #[test]
+fn restored_original_status_not_unknown_without_findings() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+    let clean_source =
+        "export function login(input, key) {\n  const value = input[key];\n  return value;\n}\n";
+    write_cli_fixture_file(&repo, "src/service.js", clean_source);
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    write_cli_fixture_file(
+        &repo,
+        "src/service.js",
+        "export function login(input, key) {\n  const value = input[key];\n  hallucinatedOne(input);\n  hallucinatedTwo(value);\n  return value;\n}\n",
+    );
+    let bad = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&validate_edit_args_for(&repo))
+    })
+    .expect("validate-edit with missing helpers");
+    assert_eq!(bad["status"].as_str(), Some("warning"), "{bad}");
+    assert_eq!(bad["blocking_error_count"].as_u64(), Some(0), "{bad}");
+
+    write_cli_fixture_file(
+        &repo,
+        "src/service.js",
+        "function hallucinatedOne(input) {\n  return input;\n}\n\nfunction hallucinatedTwo(input) {\n  return input;\n}\n\nexport function login(input, key) {\n  const value = input[key];\n  hallucinatedOne(input);\n  hallucinatedTwo(value);\n  return value;\n}\n",
+    );
+    let fixed = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&validate_edit_args_for(&repo))
+    })
+    .expect("validate-edit after helper definitions");
+    assert_eq!(fixed["status"].as_str(), Some("ok"), "{fixed}");
+    assert_eq!(fixed["warning_count"].as_u64(), Some(0), "{fixed}");
+    assert_eq!(fixed["unknown_count"].as_u64(), Some(0), "{fixed}");
+    assert_eq!(fixed["blocking_error_count"].as_u64(), Some(0), "{fixed}");
+
+    write_cli_fixture_file(&repo, "src/service.js", clean_source);
+    let restored = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&validate_edit_args_for(&repo))
+    })
+    .expect("validate-edit after restoring original source");
+    assert_ne!(restored["status"].as_str(), Some("unknown"), "{restored}");
+    assert!(matches!(
+        restored["status"].as_str(),
+        Some("ok") | Some("diagnostic_only")
+    ));
+    assert_eq!(
+        restored["blocking_error_count"].as_u64(),
+        Some(0),
+        "{restored}"
+    );
+    assert_eq!(restored["warning_count"].as_u64(), Some(0), "{restored}");
+    assert_eq!(restored["unknown_count"].as_u64(), Some(0), "{restored}");
+    assert_eq!(
+        restored["validation_state"]["open_blocker_count"].as_u64(),
+        Some(0),
+        "{restored}"
+    );
+    assert_eq!(
+        restored["hard_interrupt_available"].as_bool(),
+        Some(false),
+        "{restored}"
+    );
+
+    let watch = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "watch".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--once".to_string(),
+            "--changed".to_string(),
+            "src/service.js".to_string(),
+            "--json".to_string(),
+        ])
+    })
+    .expect("watch --once after restoring original source");
+    assert_ne!(
+        watch["validation_status"].as_str(),
+        Some("unknown"),
+        "{watch}"
+    );
+    assert_eq!(watch["validation_status"].as_str(), Some("ok"), "{watch}");
+    assert!(matches!(
+        watch["status"].as_str(),
+        Some("updated") | Some("no_op")
+    ));
+    assert_eq!(
+        watch["validation_warning_count"].as_u64(),
+        Some(0),
+        "{watch}"
+    );
+    assert_eq!(
+        watch["validation_unknown_count"].as_u64(),
+        Some(0),
+        "{watch}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
 fn query_unresolved_calls_reads_populated_lane_with_class_filter() {
     let data_root = temp_repo();
     let repo = temp_repo();
@@ -4111,6 +4528,231 @@ fn query_unresolved_calls_reads_populated_lane_with_class_filter() {
 
     remove_dir_all_with_retry(&repo, "cleanup repo");
     remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn validate_edit_unresolved_findings_queryable() {
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+    let clean_source = "export function login(input) {\n  return input;\n}\n";
+    write_cli_fixture_file(&repo, "src/service.js", clean_source);
+
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    write_cli_fixture_file(
+        &repo,
+        "src/service.js",
+        "export function login(input) {\n  missingFirstHelper(input);\n  return missingSecondHelper(input);\n}\n",
+    );
+    let validate = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&validate_edit_args_for(&repo))
+    })
+    .expect("validate-edit bad edit");
+    assert_eq!(validate["status"].as_str(), Some("warning"), "{validate}");
+    assert_eq!(
+        validate["must_fix_before_continuing"].as_bool(),
+        Some(false),
+        "{validate}"
+    );
+    assert!(validate.get("_cli_exit_code").is_none(), "{validate}");
+    assert!(
+        validate["unresolved_references"]["new_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2,
+        "{validate}"
+    );
+    let escalated_names = validate["unresolved_references"]["escalated"]
+        .as_array()
+        .expect("escalated unresolved references")
+        .iter()
+        .filter_map(|item| item["name"].as_str())
+        .collect::<BTreeSet<_>>();
+    assert!(escalated_names.contains("missingFirstHelper"), "{validate}");
+    assert!(
+        escalated_names.contains("missingSecondHelper"),
+        "{validate}"
+    );
+
+    let query_args = |extra: &[String]| {
+        let mut args = vec![
+            "query".to_string(),
+            "unresolved-calls".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--agent-json".to_string(),
+        ];
+        args.extend(extra.iter().cloned());
+        args
+    };
+    let assert_query_has_missing_refs = |value: &Value, label: &str| {
+        assert_eq!(value["status"].as_str(), Some("ok"), "{label}: {value}");
+        let lane = &value["unresolved_references"];
+        assert_eq!(
+            lane["not_graph_proof"].as_bool(),
+            Some(true),
+            "{label}: {value}"
+        );
+        assert!(
+            lane["rows"].as_u64().unwrap_or_default() >= 2,
+            "{label}: {value}"
+        );
+        let names = lane["items"]
+            .as_array()
+            .expect("lane items")
+            .iter()
+            .filter_map(|item| item["name"].as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(names.contains("missingFirstHelper"), "{label}: {value}");
+        assert!(names.contains("missingSecondHelper"), "{label}: {value}");
+        assert!(
+            lane["items"]
+                .as_array()
+                .expect("lane items")
+                .iter()
+                .all(|item| item["not_graph_proof"].as_bool() == Some(true)),
+            "{label}: {value}"
+        );
+    };
+
+    let unfiltered = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&query_args(&[]))
+    })
+    .expect("query unresolved-calls unfiltered");
+    assert_query_has_missing_refs(&unfiltered, "unfiltered");
+
+    let by_class = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&query_args(&[
+            "--class".to_string(),
+            "repo_local_candidate".to_string(),
+        ]))
+    })
+    .expect("query unresolved-calls --class");
+    assert_query_has_missing_refs(&by_class, "class");
+    assert_eq!(
+        by_class["unresolved_references"]["filters"]["class"].as_str(),
+        Some("repo_local_candidate"),
+        "{by_class}"
+    );
+
+    let by_relative_path = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&query_args(&[
+            "--path".to_string(),
+            "src/service.js".to_string(),
+        ]))
+    })
+    .expect("query unresolved-calls --path relative");
+    assert_query_has_missing_refs(&by_relative_path, "relative path");
+    assert_eq!(
+        by_relative_path["unresolved_references"]["filters"]["path"].as_str(),
+        Some("src/service.js"),
+        "{by_relative_path}"
+    );
+
+    let absolute_source = repo.join("src").join("service.js");
+    let by_absolute_path = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&query_args(&[
+            "--path".to_string(),
+            path_string(&absolute_source),
+        ]))
+    })
+    .expect("query unresolved-calls --path absolute");
+    assert_query_has_missing_refs(&by_absolute_path, "absolute path");
+    assert_eq!(
+        by_absolute_path["unresolved_references"]["filters"]["path"].as_str(),
+        Some("src/service.js"),
+        "{by_absolute_path}"
+    );
+    assert_eq!(
+        by_absolute_path["unresolved_references"]["filters"]["path_input"].as_str(),
+        Some(path_string(&absolute_source).as_str()),
+        "{by_absolute_path}"
+    );
+
+    write_cli_fixture_file(&repo, "src/service.js", clean_source);
+    let fixed = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&validate_edit_args_for(&repo))
+    })
+    .expect("validate-edit after fix");
+    assert!(
+        fixed["unresolved_references"]["resolved_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2,
+        "{fixed}"
+    );
+    let after_fix = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&query_args(&[]))
+    })
+    .expect("query unresolved-calls after fix");
+    assert_eq!(
+        after_fix["unresolved_references"]["rows"].as_u64(),
+        Some(0),
+        "{after_fix}"
+    );
+    assert_no_dot_codegraph_sqlite(&repo);
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn query_unresolved_calls_help_and_parser_agree() {
+    let usage = super::unresolved_calls_usage();
+    assert!(usage.contains("--path <repo-relative-or-absolute-path>"));
+    assert!(usage.contains("--class <reference_class>"));
+    assert!(usage.contains("repo_local_candidate"));
+    assert!(usage.contains("external_dependency"));
+    assert!(usage.contains("builtin_or_std"));
+    assert!(usage.contains("macro_or_codegen"));
+    assert!(usage.contains("dynamic_or_computed"));
+    assert!(usage.contains("does not accept a positional"));
+
+    let parsed = super::parse_unresolved_calls_args(&[
+        "--class".to_string(),
+        "repo_local_candidate".to_string(),
+        "--path".to_string(),
+        "src/service.js".to_string(),
+        "--limit".to_string(),
+        "5".to_string(),
+        "--agent-json".to_string(),
+    ])
+    .expect("parse documented unresolved-calls flags");
+    assert_eq!(parsed.class_filter.as_deref(), Some("repo_local_candidate"));
+    assert_eq!(parsed.path_filter.as_deref(), Some("src/service.js"));
+    assert_eq!(parsed.limit, 5);
+
+    let parsed_equals = super::parse_unresolved_calls_args(&[
+        "--class=repo_local_candidate".to_string(),
+        "--path=src/service.js".to_string(),
+    ])
+    .expect("parse equals-form unresolved-calls flags");
+    assert_eq!(
+        parsed_equals.class_filter.as_deref(),
+        Some("repo_local_candidate")
+    );
+    assert_eq!(parsed_equals.path_filter.as_deref(), Some("src/service.js"));
+
+    let invalid_class =
+        super::parse_unresolved_calls_args(&["--class".to_string(), "local".to_string()])
+            .expect_err("invalid class rejected");
+    assert!(invalid_class.contains("invalid unresolved-calls --class value"));
+    assert!(invalid_class.contains("repo_local_candidate"));
+
+    let positional = super::parse_unresolved_calls_args(&["missingHelper".to_string()])
+        .expect_err("positional unresolved-calls argument rejected");
+    assert!(positional.contains("does not accept positional query arguments"));
+    assert!(positional.contains("--path"));
+    assert!(positional.contains("--class"));
 }
 
 #[test]
@@ -8394,6 +9036,29 @@ fn agent_use_watch_once_dirty_sidecars_do_not_masquerade_as_fresh_context() {
         changed["staged_availability"]["layer_readiness"]["vector_runtime"]["status"].as_str(),
         Some("stale")
     );
+    assert_ne!(changed["status"].as_str(), Some("degraded"));
+    assert_eq!(changed["graph_validation_status"].as_str(), Some("ok"));
+    assert_eq!(changed["agent_action"].as_str(), Some("continue"));
+    assert_eq!(
+        changed["candidate_recall_status"].as_str(),
+        Some("degraded")
+    );
+    assert_eq!(
+        changed["candidate_recall_action"].as_str(),
+        Some("refresh_sidecars_if_candidate_recall_needed")
+    );
+    assert_eq!(
+        changed["sidecar_degradation_kind"].as_str(),
+        Some("candidate_layer_only")
+    );
+    assert_eq!(
+        changed["graph_validation_unaffected_by_optional_sidecars"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        changed["optional_sidecar_staleness_affects_graph_proof"].as_bool(),
+        Some(false)
+    );
     assert!(
         path_evidence_total_count(&profile.db_path) > 0,
         "fresh PathEvidence should remain source-bound to the changed file"
@@ -8451,6 +9116,20 @@ fn agent_use_watch_once_dirty_sidecars_do_not_masquerade_as_fresh_context() {
     assert_eq!(context["status"].as_str(), Some("ok"));
     assert_eq!(context["graph_proof_available"].as_bool(), Some(true));
     assert_eq!(context["graph_freshness"].as_str(), Some("current"));
+    assert_eq!(context["graph_validation_status"].as_str(), Some("ok"));
+    assert_eq!(context["agent_action"].as_str(), Some("continue"));
+    assert_eq!(
+        context["candidate_recall_status"].as_str(),
+        Some("degraded")
+    );
+    assert_eq!(
+        context["candidate_recall_action"].as_str(),
+        Some("refresh_sidecars_if_candidate_recall_needed")
+    );
+    assert_eq!(
+        context["graph_validation_unaffected_by_optional_sidecars"].as_bool(),
+        Some(true)
+    );
     assert_eq!(
         context["last_delta_update_summary"]["status"].as_str(),
         Some("updated")
@@ -11767,6 +12446,57 @@ fn callers_ambiguous_symbol_lists_candidates_without_legacy_exact_noise() {
         .expect("rerun suggestion")
         .contains("--entity-id"));
 
+    let lifecycle = json!({
+        "claimable": true,
+        "diagnostic_only": false,
+        "decision": "read_reuse",
+    });
+    let parsed = parse_call_relation_args_with_output(
+        "callers",
+        &[
+            "target".to_string(),
+            "--limit".to_string(),
+            "5".to_string(),
+            "--agent-json".to_string(),
+        ],
+    )
+    .expect("parse compact ambiguous callers");
+    let compact = query_call_relation_with_output(
+        &fixture.repo,
+        parsed,
+        CallQueryDirection::Callers,
+        Some(&lifecycle),
+    )
+    .expect("compact ambiguous callers");
+    assert_eq!(compact["status"].as_str(), Some("warning"));
+    assert_eq!(compact["graph_proof"].as_bool(), Some(false));
+    assert_eq!(
+        compact["proof_status"].as_str(),
+        Some("relation_resolution_ambiguous")
+    );
+    assert_eq!(
+        compact["proof_strength"].as_str(),
+        Some("symbol_candidate_evidence")
+    );
+    let compact_candidates = compact["query"]["candidate_entities"]
+        .as_array()
+        .expect("compact ambiguous candidates");
+    assert!(compact_candidates
+        .iter()
+        .any(|candidate| { candidate["id"].as_str() == Some(fixture.alpha_target_id.as_str()) }));
+    assert!(compact_candidates
+        .iter()
+        .any(|candidate| { candidate["id"].as_str() == Some(fixture.beta_target_id.as_str()) }));
+    assert!(compact["query"]["rerun_with_entity_id_template"]
+        .as_str()
+        .expect("rerun template")
+        .contains("--entity-id <candidate-id>"));
+    assert_eq!(
+        compact["relation_resolution"]["source_navigation_fallback"]["graph_proof"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(compact["result_count"].as_u64(), Some(0));
+
     remove_dir_all_with_retry(&fixture.repo, "cleanup");
 }
 
@@ -11845,6 +12575,54 @@ fn callees_entity_id_mode_returns_exact_callees_and_fuzzy_mode_still_works() {
             .expect("legacy fuzzy callers")
             .len()
             >= 2
+    );
+
+    remove_dir_all_with_retry(&fixture.repo, "cleanup");
+}
+
+#[test]
+fn relation_query_no_proof_path_found_is_for_relationless_exact_symbol() {
+    let fixture = caller_callee_precision_fixture();
+    let lifecycle = json!({
+        "claimable": true,
+        "diagnostic_only": false,
+        "decision": "read_reuse",
+    });
+    let parsed = parse_call_relation_args_with_output(
+        "callers",
+        &[
+            "callUnique".to_string(),
+            "--limit".to_string(),
+            "5".to_string(),
+            "--agent-json".to_string(),
+        ],
+    )
+    .expect("parse relationless callers");
+
+    let result = query_call_relation_with_output(
+        &fixture.repo,
+        parsed,
+        CallQueryDirection::Callers,
+        Some(&lifecycle),
+    )
+    .expect("query relationless callers");
+
+    assert_eq!(result["status"].as_str(), Some("ok"));
+    assert_eq!(result["graph_proof"].as_bool(), Some(false));
+    assert_eq!(result["proof_status"].as_str(), Some("no_proof_path_found"));
+    assert_eq!(
+        result["proof_strength"].as_str(),
+        Some("source_navigation_evidence")
+    );
+    assert_eq!(result["result_count"].as_u64(), Some(0));
+    assert_eq!(
+        result["relation_resolution"]["source_navigation_fallback"]["graph_proof"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        result["relation_resolution"]["source_navigation_fallback"]["candidate_entities"][0]["id"]
+            .as_str(),
+        Some(fixture.unique_caller_id.as_str())
     );
 
     remove_dir_all_with_retry(&fixture.repo, "cleanup");
@@ -15335,6 +16113,7 @@ struct CallerCalleePrecisionFixture {
     unique_target_id: String,
     alpha_caller_id: String,
     beta_caller_id: String,
+    unique_caller_id: String,
 }
 
 #[test]
@@ -17945,6 +18724,7 @@ fn caller_callee_precision_fixture() -> CallerCalleePrecisionFixture {
         unique_target_id: unique_target.id,
         alpha_caller_id: alpha_caller.id,
         beta_caller_id: beta_caller.id,
+        unique_caller_id: unique_caller.id,
     }
 }
 

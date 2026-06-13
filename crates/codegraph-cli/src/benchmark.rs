@@ -2597,8 +2597,43 @@ pub(crate) fn resolve_agent_use_profile_with_data_root(
 ) -> Result<AgentUseProfile, String> {
     let repo_root = resolve_repo_root(repo_root)?;
     let repo_identity_label = safe_repo_identity_label(&repo_root);
-    let identity_material = agent_use_repo_identity_material(&repo_root);
+    let identity_candidates = agent_use_repo_identity_candidates(&repo_root);
+    for identity_material in &identity_candidates {
+        let repo_identity_hash = stable_agent_use_identity_hash(identity_material.as_bytes());
+        let profile = agent_use_profile_from_identity_hash(
+            repo_root.clone(),
+            data_root,
+            repo_identity_label.clone(),
+            repo_identity_hash,
+        );
+        if profile.db_path.exists() {
+            return Ok(profile);
+        }
+    }
+    if let Some(profile) =
+        discover_existing_agent_use_profile_for_repo(&repo_root, data_root, &repo_identity_label)
+    {
+        return Ok(profile);
+    }
+    let identity_material = identity_candidates
+        .first()
+        .cloned()
+        .unwrap_or_else(|| agent_use_repo_path_identity_material(&repo_root));
     let repo_identity_hash = stable_agent_use_identity_hash(identity_material.as_bytes());
+    Ok(agent_use_profile_from_identity_hash(
+        repo_root,
+        data_root,
+        repo_identity_label,
+        repo_identity_hash,
+    ))
+}
+
+pub(crate) fn agent_use_profile_from_identity_hash(
+    repo_root: PathBuf,
+    data_root: &Path,
+    repo_identity_label: String,
+    repo_identity_hash: String,
+) -> AgentUseProfile {
     let profile_root = data_root.join(format!("{repo_identity_label}-{repo_identity_hash}"));
     let db_path = profile_root.join("production-agent-use.sqlite");
     let candidate_spool_path = profile_root.join("codegraph-candidate-spool.jsonl");
@@ -2650,7 +2685,7 @@ pub(crate) fn resolve_agent_use_profile_with_data_root(
             repo = repo_string.as_str()
         ),
     ];
-    Ok(AgentUseProfile {
+    AgentUseProfile {
         profile_name: PRODUCTION_AGENT_USE_PROFILE_NAME.to_string(),
         repo_root,
         repo_identity_label,
@@ -2674,7 +2709,7 @@ pub(crate) fn resolve_agent_use_profile_with_data_root(
         mcp_args,
         binary_profile: "release".to_string(),
         scope_policy: IndexScopeOptions::default(),
-    })
+    }
 }
 
 pub(crate) fn agent_use_profile_data_root() -> Result<PathBuf, String> {
@@ -2749,13 +2784,33 @@ pub(crate) fn safe_repo_identity_label(repo_root: &Path) -> String {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn agent_use_repo_identity_material(repo_root: &Path) -> String {
+    agent_use_repo_identity_candidates(repo_root)
+        .first()
+        .cloned()
+        .unwrap_or_else(|| agent_use_repo_path_identity_material(repo_root))
+}
+
+pub(crate) fn agent_use_repo_identity_candidates(repo_root: &Path) -> Vec<String> {
+    let mut candidates = Vec::new();
     if let Some(remote) = git_remote_url(repo_root) {
         let remote = remote.trim();
         if !remote.is_empty() {
-            return format!("remote:{remote}");
+            candidates.push(format!("remote:{remote}"));
         }
     }
+    let path_material = agent_use_repo_path_identity_material(repo_root);
+    if !candidates
+        .iter()
+        .any(|candidate| candidate == &path_material)
+    {
+        candidates.push(path_material);
+    }
+    candidates
+}
+
+pub(crate) fn agent_use_repo_path_identity_material(repo_root: &Path) -> String {
     format!(
         "path:{}",
         normalize_agent_use_identity_path(&path_string(repo_root))
@@ -2763,6 +2818,9 @@ pub(crate) fn agent_use_repo_identity_material(repo_root: &Path) -> String {
 }
 
 pub(crate) fn git_remote_url(repo_root: &Path) -> Option<String> {
+    if cli_write_path_chaos_failpoint_enabled(AGENT_USE_GIT_METADATA_UNAVAILABLE_FAILPOINT) {
+        return None;
+    }
     let worktree_root = Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -2794,6 +2852,67 @@ pub(crate) fn git_remote_url(repo_root: &Path) -> Option<String> {
     }
     let remote = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!remote.is_empty()).then_some(remote)
+}
+
+pub(crate) fn discover_existing_agent_use_profile_for_repo(
+    repo_root: &Path,
+    data_root: &Path,
+    repo_identity_label: &str,
+) -> Option<AgentUseProfile> {
+    let prefix = format!("{repo_identity_label}-");
+    let entries = fs::read_dir(data_root).ok()?;
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let Some(repo_identity_hash) =
+            agent_use_profile_hash_from_dir_name(&name, repo_identity_label, &prefix)
+        else {
+            continue;
+        };
+        let candidate = agent_use_profile_from_identity_hash(
+            repo_root.to_path_buf(),
+            data_root,
+            repo_identity_label.to_string(),
+            repo_identity_hash,
+        );
+        if agent_use_profile_passport_matches_repo(&candidate.db_path, repo_root) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+pub(crate) fn agent_use_profile_hash_from_dir_name(
+    name: &str,
+    repo_identity_label: &str,
+    prefix: &str,
+) -> Option<String> {
+    let hash = name.strip_prefix(prefix).or_else(|| {
+        name.strip_prefix(repo_identity_label)
+            .and_then(|rest| rest.strip_prefix('-'))
+    })?;
+    if hash.len() == 32 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Some(hash.to_string())
+    } else {
+        None
+    }
+}
+
+pub(crate) fn agent_use_profile_passport_matches_repo(db_path: &Path, repo_root: &Path) -> bool {
+    let Ok(store) = SqliteGraphStore::open_read_only(db_path) else {
+        return false;
+    };
+    let Ok(Some(passport)) = store.get_db_passport() else {
+        return false;
+    };
+    paths_equivalent_string(&passport.canonical_repo_root, &path_string(repo_root))
 }
 
 pub(crate) fn normalize_agent_use_identity_path(path: &str) -> String {

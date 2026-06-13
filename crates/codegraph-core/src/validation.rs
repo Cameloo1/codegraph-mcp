@@ -5207,6 +5207,24 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_only_entries_do_not_force_top_level_unknown() {
+        let (finding, rule) = candidate_only_finding(ValidationEvidenceKind::Diagnostic);
+        let aggregate =
+            aggregate_for_test(vec![mapped_decision_for_test(&finding, Some(&rule))], false);
+
+        assert_eq!(
+            aggregate.final_status,
+            FinalValidationStatus::DiagnosticOnly
+        );
+        assert_ne!(aggregate.final_status, FinalValidationStatus::Unknown);
+        assert_eq!(
+            aggregate.next_agent_action,
+            "continue_with_diagnostic_context"
+        );
+        assert!(!aggregate.hard_interrupt_available);
+    }
+
+    #[test]
     fn unsafe_db_state_not_source_code_interrupt() {
         let packet = ValidationPacket::new(
             vec!["src/main.rs".to_string()],

@@ -3423,8 +3423,8 @@ fn mcp_validate_edit_unresolved_reference_validation_rules() -> Vec<ValidationRu
         ),
         ValidationRule::diagnostic(
             CG_MVP3_REF_DYNAMIC,
-            "unresolved references classified dynamic_or_computed stay at the existing heuristic unknown boundary",
-            "Dynamic or computed callees cannot be verified statically; treat as unknown, not as proof of error.",
+            "unresolved references classified dynamic_or_computed are diagnostic-only non-graph evidence and never make a clean packet top-level unknown",
+            "Dynamic or computed callees cannot be verified statically; keep them visible as diagnostics, not proof of error.",
         ),
     ]
 }
@@ -7251,6 +7251,32 @@ fn mcp_dirty_evidence_output_fields(
         graph_status.as_str(),
         Some("corrupt" | "inaccessible" | "permission_denied")
     );
+    let graph_validation_status = mcp_graph_validation_status(
+        source,
+        graph_proof_available,
+        graph_status.as_str().unwrap_or("unknown"),
+    );
+    let candidate_recall_status = mcp_candidate_recall_status(&sidecar_statuses);
+    let candidate_recall_degraded = candidate_recall_status == "degraded";
+    let graph_validation_unaffected_by_optional_sidecars =
+        graph_proof_available && candidate_recall_degraded && !graph_db_corrupt_or_unavailable;
+    let agent_action = mcp_agent_action_for_dirty_evidence(
+        &graph_validation_status,
+        graph_db_corrupt_or_unavailable,
+        graph_proof_available,
+    );
+    let candidate_recall_action = if candidate_recall_degraded {
+        "refresh_sidecars_if_candidate_recall_needed"
+    } else {
+        "none"
+    };
+    let sidecar_degradation_kind = if graph_db_corrupt_or_unavailable {
+        "graph_lifecycle"
+    } else if candidate_recall_degraded {
+        "candidate_layer_only"
+    } else {
+        "none"
+    };
 
     json!({
         "dirty_evidence_summary": {
@@ -7264,6 +7290,14 @@ fn mcp_dirty_evidence_output_fields(
             "corrupt_count": mcp_count_status(&sidecar_statuses, "corrupt"),
             "not_applicable_count": mcp_count_status(&sidecar_statuses, "not_applicable"),
             "graph_proof_available": graph_proof_available,
+            "graph_validation_status": graph_validation_status.clone(),
+            "agent_action": agent_action,
+            "candidate_recall_status": candidate_recall_status,
+            "candidate_recall_degraded": candidate_recall_degraded,
+            "candidate_recall_action": candidate_recall_action,
+            "sidecar_degradation_kind": sidecar_degradation_kind,
+            "graph_validation_unaffected_by_optional_sidecars": graph_validation_unaffected_by_optional_sidecars,
+            "optional_sidecar_staleness_affects_graph_proof": false,
             "sidecar_corrupt_or_unavailable": mcp_any_sidecar_corrupt_or_unavailable(&sidecar_statuses),
             "graph_db_corrupt_or_unavailable": graph_db_corrupt_or_unavailable,
             "text_evidence_is_not_graph_proof": true,
@@ -7284,12 +7318,21 @@ fn mcp_dirty_evidence_output_fields(
         "source_navigation_status": sidecar_statuses["source_navigation_status"].clone(),
         "routing_handle_status": sidecar_statuses["routing_handle_status"].clone(),
         "sidecar_statuses": sidecar_statuses,
+        "graph_validation_status": graph_validation_status,
+        "agent_action": agent_action,
+        "candidate_recall_status": candidate_recall_status,
+        "candidate_recall_degraded": candidate_recall_degraded,
+        "candidate_recall_action": candidate_recall_action,
+        "sidecar_degradation_kind": sidecar_degradation_kind,
+        "graph_validation_unaffected_by_optional_sidecars": graph_validation_unaffected_by_optional_sidecars,
+        "optional_sidecar_staleness_affects_graph_proof": false,
         "stale_non_proof_reasons": stale_non_proof_reasons,
         "claimability_effect": claimability_effect,
         "severity_effect": {
             "severity_model_preserved": true,
             "hard_interrupt_eligibility_unchanged": true,
             "stale_sidecar_not_hard_interrupt": true,
+            "top_level_status_not_degraded_by_optional_sidecars": true,
             "text_evidence_change_not_broken_graph_behavior": true,
             "candidate_vector_source_navigation_non_proof": true,
         },
@@ -7306,6 +7349,100 @@ fn mcp_dirty_evidence_hard_interrupt_fields(fields: &Value) -> Value {
         "claimability_effect": fields.get("claimability_effect").cloned().unwrap_or_else(|| json!("not_applicable")),
         "severity_effect": fields.get("severity_effect").cloned().unwrap_or(Value::Null),
     })
+}
+
+fn mcp_graph_validation_status(
+    source: &Value,
+    graph_proof_available: bool,
+    graph_status: &str,
+) -> String {
+    if let Some(status) = source
+        .pointer("/validation_packet/status")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            source
+                .pointer("/validation_packet/final_status")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| source.get("validation_status").and_then(Value::as_str))
+    {
+        return mcp_normalize_graph_validation_status(status).to_string();
+    }
+    if source.get("new_graph_valid").and_then(Value::as_bool) == Some(true) {
+        return "ok".to_string();
+    }
+    if source.get("new_graph_valid").and_then(Value::as_bool) == Some(false) {
+        return "unknown".to_string();
+    }
+    if graph_proof_available && graph_status == "fresh" {
+        return "ok".to_string();
+    }
+    if matches!(
+        graph_status,
+        "corrupt" | "inaccessible" | "permission_denied"
+    ) {
+        return "unknown".to_string();
+    }
+    "not_applicable".to_string()
+}
+
+fn mcp_normalize_graph_validation_status(status: &str) -> &'static str {
+    match status {
+        "ok" => "ok",
+        "no_op" => "no_op",
+        "updated" => "updated",
+        "diagnostic_only" => "diagnostic_only",
+        "not_applicable" => "not_applicable",
+        "warning" | "warnings" => "warning",
+        "blocking" | "blocking_graph_error" | "blocked" => "blocking",
+        "unknown" | "unknown_with_recovery" => "unknown",
+        "tool_error" | "lifecycle_error" | "unsafe_db" => "unknown",
+        _ => "unknown",
+    }
+}
+
+fn mcp_candidate_recall_status(sidecar_statuses: &Value) -> &'static str {
+    let keys = [
+        "candidate_layer_status",
+        "candidate_spool_query_index_status",
+        "vector_layer_status",
+        "path_evidence_status",
+        "source_navigation_status",
+        "routing_handle_status",
+    ];
+    let mut saw_fresh = false;
+    for key in keys {
+        let status = sidecar_statuses
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        match status {
+            "fresh" => saw_fresh = true,
+            "not_applicable" | "diagnostic_only" => {}
+            "missing" | "stale" | "truncated" | "partial" | "corrupt" | "inaccessible"
+            | "permission_denied" | "rebuilding" | "publishing" | "unknown" => return "degraded",
+            _ => return "degraded",
+        }
+    }
+    if saw_fresh {
+        "fresh"
+    } else {
+        "not_applicable"
+    }
+}
+
+fn mcp_agent_action_for_dirty_evidence(
+    graph_validation_status: &str,
+    graph_db_corrupt_or_unavailable: bool,
+    graph_proof_available: bool,
+) -> &'static str {
+    match graph_validation_status {
+        "blocking" => "fix_blockers",
+        "warning" => "inspect_warnings",
+        "unknown" if graph_db_corrupt_or_unavailable || !graph_proof_available => "refresh_index",
+        "unknown" => "inspect_unknowns",
+        _ => "continue",
+    }
 }
 
 fn mcp_append_dirty_evidence_expansion_handle(value: &mut Value, full_detail: bool) {
@@ -8239,6 +8376,13 @@ mod mvp3_7_sidecar_status_tests {
             packet["severity_effect"]["stale_sidecar_not_hard_interrupt"].as_bool(),
             Some(true)
         );
+        assert_eq!(packet["graph_validation_status"].as_str(), Some("ok"));
+        assert_eq!(packet["agent_action"].as_str(), Some("continue"));
+        assert_eq!(packet["candidate_recall_status"].as_str(), Some("degraded"));
+        assert_eq!(
+            packet["graph_validation_unaffected_by_optional_sidecars"].as_bool(),
+            Some(true)
+        );
     }
 
     #[test]
@@ -8252,6 +8396,18 @@ mod mvp3_7_sidecar_status_tests {
         assert_eq!(
             packet["claimability_effect"].as_str(),
             Some("graph_proof_available")
+        );
+        assert_eq!(
+            packet["sidecar_degradation_kind"].as_str(),
+            Some("candidate_layer_only")
+        );
+        assert_eq!(
+            packet["candidate_recall_action"].as_str(),
+            Some("refresh_sidecars_if_candidate_recall_needed")
+        );
+        assert_eq!(
+            packet["optional_sidecar_staleness_affects_graph_proof"].as_bool(),
+            Some(false)
         );
         assert!(packet["stale_non_proof_reasons"]
             .as_array()

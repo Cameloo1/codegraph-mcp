@@ -267,6 +267,15 @@ pub(crate) fn agent_use_ensure_required_agent_fields(value: &mut Value, profile:
         .entry("profile_name".to_string())
         .or_insert_with(|| json!(profile.profile_name.clone()));
     object
+        .entry("repo_identity_label".to_string())
+        .or_insert_with(|| json!(profile.repo_identity_label.clone()));
+    object
+        .entry("repo_identity_hash".to_string())
+        .or_insert_with(|| json!(profile.repo_identity_hash.clone()));
+    object
+        .entry("repo_identity_short_hash".to_string())
+        .or_insert_with(|| json!(agent_use_repo_identity_short_hash(profile)));
+    object
         .entry("warnings".to_string())
         .or_insert_with(|| json!([]));
     object
@@ -834,7 +843,6 @@ pub(crate) fn agent_use_enforce_hard_agent_json_budget(
         "artifact_hygiene",
         "staged_availability",
         "rtds_freshness",
-        "read_path_metrics",
         "db_lifecycle_read",
         "graph_verification",
         "limits",

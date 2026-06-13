@@ -876,7 +876,7 @@ pub(crate) fn run_agent_use_query_command(args: &[String]) -> Result<Value, Stri
     let options = parse_agent_use_forward_args(args, "query")?;
     let Some(query_kind) = options.forwarded_args.first().cloned() else {
         return Err(
-            "Usage: codegraph-mcp agent-use query <symbols|text|files|references|definitions|callers|callees|path|chain|unresolved-calls> <args> --repo <repo> --limit <n> --agent-json"
+            "Usage: codegraph-mcp agent-use query <symbols|text|files|references|definitions|callers|callees|path|chain> <args> --repo <repo> --limit <n> --agent-json\n  codegraph-mcp agent-use query unresolved-calls --repo <repo> [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] --agent-json"
                 .to_string(),
         );
     };
@@ -892,6 +892,23 @@ pub(crate) fn run_agent_use_query_command(args: &[String]) -> Result<Value, Stri
     let profile = resolve_agent_use_profile(&options.repo)?;
     let normal_dot_codegraph = profile.repo_root.join(".codegraph");
     let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
+    if let Some(problem) = agent_use_profile_root_access_problem(&profile) {
+        let mut value = agent_use_profile_access_unavailable_json(
+            &profile,
+            "query",
+            Some(query_kind.as_str()),
+            &problem,
+            normal_dot_codegraph_existed_before,
+        );
+        compact_agent_use_agent_json_envelope(
+            &mut value,
+            &profile,
+            detail_mode,
+            max_output_bytes,
+            None,
+        );
+        return Ok(value);
+    }
     let preflight = inspect_read_db_lifecycle_preflight(
         &profile.repo_root,
         &profile.db_path,
@@ -965,14 +982,31 @@ pub(crate) fn run_agent_use_context_pack_command(args: &[String]) -> Result<Valu
     let profile = resolve_agent_use_profile(&options.repo)?;
     let normal_dot_codegraph = profile.repo_root.join(".codegraph");
     let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
+    let mut forwarded_args = options.forwarded_args;
+    let detail_mode = agent_use_forward_detail_mode(&forwarded_args);
+    let max_output_bytes = agent_use_context_max_output_bytes(&forwarded_args, detail_mode);
+    if let Some(problem) = agent_use_profile_root_access_problem(&profile) {
+        let mut value = agent_use_profile_access_unavailable_json(
+            &profile,
+            "context-pack",
+            None,
+            &problem,
+            normal_dot_codegraph_existed_before,
+        );
+        compact_agent_use_agent_json_envelope(
+            &mut value,
+            &profile,
+            detail_mode,
+            max_output_bytes,
+            None,
+        );
+        return Ok(value);
+    }
     let preflight = inspect_read_db_lifecycle_preflight(
         &profile.repo_root,
         &profile.db_path,
         Some(profile.scope_policy.clone()),
     )?;
-    let mut forwarded_args = options.forwarded_args;
-    let detail_mode = agent_use_forward_detail_mode(&forwarded_args);
-    let max_output_bytes = agent_use_context_max_output_bytes(&forwarded_args, detail_mode);
     ensure_context_pack_max_output_arg(&mut forwarded_args, max_output_bytes);
     if !context_args_request_agent_json(&forwarded_args) {
         forwarded_args.push("--agent-json".to_string());
@@ -1163,6 +1197,15 @@ pub(crate) fn run_agent_use_mcp_config_command(args: &[String]) -> Result<Value,
     let generated_at_unix_ms = unix_time_ms();
     let normal_dot_codegraph = profile.repo_root.join(".codegraph");
     let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
+    if let Some(problem) = agent_use_profile_root_access_problem(&profile) {
+        return Ok(agent_use_profile_access_unavailable_json(
+            &profile,
+            "mcp-config",
+            None,
+            &problem,
+            normal_dot_codegraph_existed_before,
+        ));
+    }
     let preflight = inspect_read_db_lifecycle_preflight(
         &profile.repo_root,
         &profile.db_path,
@@ -1288,6 +1331,15 @@ pub(crate) fn run_agent_use_status_command(args: &[String]) -> Result<Value, Str
     let db_existed_before = profile.db_path.exists();
     let normal_dot_codegraph = profile.repo_root.join(".codegraph");
     let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
+    if let Some(problem) = agent_use_profile_root_access_problem(&profile) {
+        return Ok(agent_use_profile_access_unavailable_json(
+            &profile,
+            "status",
+            None,
+            &problem,
+            normal_dot_codegraph_existed_before,
+        ));
+    }
 
     let preflight = inspect_read_db_lifecycle_preflight(
         &profile.repo_root,
@@ -1573,6 +1625,18 @@ pub(crate) fn run_agent_use_index_command(args: &[String]) -> Result<Value, Stri
             "profile_name".to_string(),
             json!(profile.profile_name.clone()),
         );
+        object.insert(
+            "repo_identity_label".to_string(),
+            json!(profile.repo_identity_label.clone()),
+        );
+        object.insert(
+            "repo_identity_hash".to_string(),
+            json!(profile.repo_identity_hash.clone()),
+        );
+        object.insert(
+            "repo_identity_short_hash".to_string(),
+            json!(agent_use_repo_identity_short_hash(&profile)),
+        );
         object.insert("profile".to_string(), agent_use_profile_json(&profile));
         object.insert(
             "agent_use_profile".to_string(),
@@ -1764,6 +1828,15 @@ pub(crate) fn run_agent_use_watch_command(args: &[String]) -> Result<Value, Stri
         let profile = resolve_agent_use_profile(&options.repo)?;
         let normal_dot_codegraph = profile.repo_root.join(".codegraph");
         let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
+        if let Some(problem) = agent_use_profile_root_access_problem(&profile) {
+            return Ok(agent_use_profile_access_unavailable_json(
+                &profile,
+                "watch",
+                Some("once"),
+                &problem,
+                normal_dot_codegraph_existed_before,
+            ));
+        }
         return run_agent_use_watch_once_delta(
             &profile,
             options.changed_paths,
@@ -1786,6 +1859,15 @@ pub(crate) fn run_agent_use_validate_edit_command(args: &[String]) -> Result<Val
     let profile = resolve_agent_use_profile(&options.repo)?;
     let normal_dot_codegraph = profile.repo_root.join(".codegraph");
     let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
+    if let Some(problem) = agent_use_profile_root_access_problem(&profile) {
+        return Ok(agent_use_profile_access_unavailable_json(
+            &profile,
+            "validate-edit",
+            None,
+            &problem,
+            normal_dot_codegraph_existed_before,
+        ));
+    }
     let source_update = run_agent_use_watch_once_delta(
         &profile,
         options.changed_paths.clone(),
@@ -1991,6 +2073,9 @@ pub(crate) fn agent_use_validate_edit_packet_json(
         "resolved_db": path_string(&profile.db_path),
         "db_source": "agent-use profile",
         "profile_name": profile.profile_name.clone(),
+        "repo_identity_label": profile.repo_identity_label.clone(),
+        "repo_identity_hash": profile.repo_identity_hash.clone(),
+        "repo_identity_short_hash": agent_use_repo_identity_short_hash(profile),
         "uses_production_agent_use_resolver": true,
         "external_profile_db_used": true,
         "external_db_used": true,
@@ -2797,9 +2882,6 @@ fn agent_use_validate_edit_enforce_compact_budget(
             "agent_use_command",
             "repo_root",
             "resolved_db",
-            "db_path",
-            "db",
-            "profile_name",
             "uses_production_agent_use_resolver",
             "external_profile_db_used",
             "external_db_used",
@@ -4992,8 +5074,8 @@ fn agent_use_unresolved_reference_validation_rules() -> Vec<ValidationRule> {
         ),
         ValidationRule::diagnostic(
             CG_MVP3_REF_DYNAMIC,
-            "unresolved references classified dynamic_or_computed stay at the existing heuristic unknown boundary",
-            "Dynamic or computed callees cannot be verified statically; treat as unknown, not as proof of error.",
+            "unresolved references classified dynamic_or_computed are diagnostic-only non-graph evidence and never make a clean packet top-level unknown",
+            "Dynamic or computed callees cannot be verified statically; keep them visible as diagnostics, not proof of error.",
         ),
     ]
 }
@@ -7777,14 +7859,14 @@ fn agent_use_validate_removed_calls_delta_edge(
     let span_text = match agent_use_reverify_edge_source_span_text(&profile.repo_root, &edge) {
         Ok(span_text) => span_text,
         Err(error) => {
-            findings.push(agent_use_calls_boundary_unknown(
+            findings.push(agent_use_calls_boundary_diagnostic(
                 rule,
                 lifecycle,
                 json!({
                     "removed_calls_delta": entry,
                     "source_span_recheck_error": error,
                 }),
-                "removed exact CALLS delta cannot block because the current source span could not be reverified",
+                "removed exact CALLS delta source span is no longer reverified in current source; without a current source-spanned reference this is diagnostic, not an actionable unknown",
             ));
             return Ok(());
         }
@@ -7905,14 +7987,14 @@ fn agent_use_validate_removed_import_delta_edge(
     let span_text = match agent_use_reverify_edge_source_span_text(&profile.repo_root, &edge) {
         Ok(span_text) => span_text,
         Err(error) => {
-            findings.push(agent_use_import_boundary_unknown(
+            findings.push(agent_use_import_boundary_diagnostic(
                 rule,
                 lifecycle,
                 json!({
                     "removed_import_delta": entry,
                     "source_span_recheck_error": error,
                 }),
-                "removed exact import delta cannot block because the current source span could not be reverified",
+                "removed exact import delta source span is no longer reverified in current source; without a current source-spanned reference this is diagnostic, not an actionable unknown",
             ));
             return Ok(());
         }
@@ -11685,6 +11767,11 @@ mod exact_calls_validation_tests {
         );
 
         assert_no_blocking_findings("heuristic dynamic call", &findings);
+        assert!(findings.iter().any(|finding| {
+            finding.validation_rule_id == CG_MVP3_CALLS_DANGLING_TARGET
+                && finding.classification == ValidationClassification::Diagnostic
+                && !finding.reverified_graph_source_proof
+        }));
         drop(store);
         cleanup_repo(repo);
     }
@@ -11715,12 +11802,7 @@ mod exact_calls_validation_tests {
         assert_no_blocking_findings("computed import", &findings);
         assert!(findings.iter().any(|finding| {
             finding.validation_rule_id == CG_MVP3_IMPORTS_DANGLING_TARGET
-                && matches!(
-                    finding.classification,
-                    ValidationClassification::Diagnostic
-                        | ValidationClassification::Unknown
-                        | ValidationClassification::Unsupported
-                )
+                && finding.classification == ValidationClassification::Diagnostic
                 && !finding.reverified_graph_source_proof
         }));
         drop(store);
@@ -13670,6 +13752,18 @@ mod exact_calls_validation_tests {
             packet["claimability_effect"].as_str(),
             Some("graph_proof_available")
         );
+        assert_eq!(
+            packet["sidecar_degradation_kind"].as_str(),
+            Some("candidate_layer_only")
+        );
+        assert_eq!(
+            packet["graph_validation_unaffected_by_optional_sidecars"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            packet["optional_sidecar_staleness_affects_graph_proof"].as_bool(),
+            Some(false)
+        );
     }
 
     #[test]
@@ -13872,6 +13966,13 @@ mod exact_calls_validation_tests {
             .iter()
             .all(|item| item["graph_proof"].as_bool() != Some(true)
                 || item["proof_ladder_level"].as_str() == Some("graph_relation_proof")));
+        assert_eq!(packet["graph_validation_status"].as_str(), Some("ok"));
+        assert_eq!(packet["agent_action"].as_str(), Some("continue"));
+        assert_eq!(packet["candidate_recall_status"].as_str(), Some("degraded"));
+        assert_eq!(
+            packet["candidate_recall_action"].as_str(),
+            Some("refresh_sidecars_if_candidate_recall_needed")
+        );
     }
 
     #[test]
@@ -13897,6 +13998,12 @@ mod exact_calls_validation_tests {
             .expect("stale")
             .iter()
             .any(|item| item["surface_name"].as_str() == Some("graph_relation_proof")));
+        assert_eq!(packet["graph_validation_status"].as_str(), Some("unknown"));
+        assert_eq!(packet["agent_action"].as_str(), Some("refresh_index"));
+        assert_eq!(
+            packet["graph_validation_unaffected_by_optional_sidecars"].as_bool(),
+            Some(false)
+        );
     }
 
     #[test]
@@ -13911,6 +14018,66 @@ mod exact_calls_validation_tests {
             .any(|reason| reason
                 .as_str()
                 .is_some_and(|text| text.contains("cannot be used as graph proof"))));
+        assert_eq!(packet["candidate_recall_status"].as_str(), Some("degraded"));
+        assert_eq!(
+            packet["sidecar_degradation_kind"].as_str(),
+            Some("candidate_layer_only")
+        );
+        assert_eq!(
+            packet["graph_validation_unaffected_by_optional_sidecars"].as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn clean_graph_validation_not_top_level_degraded_by_optional_sidecars() {
+        let mut packet = dirty_output_source_packet();
+        packet["status"] = json!("ok");
+        packet["validation_packet"] = json!({
+            "status": "ok",
+            "hard_interrupt_available": false,
+            "warnings": [],
+            "unknowns": [],
+            "diagnostics": [{"validation_rule_id": "CG_MVP3_SIDECAR_STALE", "severity": "diagnostic"}],
+        });
+        add_agent_use_dirty_evidence_output_fields(&mut packet, "agent-use.validate-edit", false);
+        assert_eq!(packet["status"].as_str(), Some("ok"));
+        assert_eq!(packet["graph_validation_status"].as_str(), Some("ok"));
+        assert_eq!(packet["agent_action"].as_str(), Some("continue"));
+        assert_eq!(packet["candidate_recall_status"].as_str(), Some("degraded"));
+        assert_eq!(
+            packet["graph_validation_unaffected_by_optional_sidecars"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            packet["severity_effect"]["top_level_status_not_degraded_by_optional_sidecars"]
+                .as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn context_pack_graph_proof_unaffected_by_optional_sidecar_stale() {
+        let mut packet = dirty_output_source_packet();
+        packet["status"] = json!("ok");
+        add_agent_use_dirty_evidence_output_fields(&mut packet, "agent-use.context-pack", false);
+        assert_eq!(packet["status"].as_str(), Some("ok"));
+        assert_eq!(
+            packet["claimability_effect"].as_str(),
+            Some("graph_proof_available")
+        );
+        assert_eq!(
+            packet["graph_validation_unaffected_by_optional_sidecars"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            packet["optional_sidecar_staleness_affects_graph_proof"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            packet["candidate_recall_action"].as_str(),
+            Some("refresh_sidecars_if_candidate_recall_needed")
+        );
     }
 
     #[test]
@@ -13948,6 +14115,8 @@ mod exact_calls_validation_tests {
             packet["claimability_effect"].as_str(),
             Some("graph_proof_available")
         );
+        assert_eq!(packet["candidate_recall_status"].as_str(), Some("degraded"));
+        assert_eq!(packet["agent_action"].as_str(), Some("continue"));
     }
 
     #[test]
@@ -14070,6 +14239,15 @@ pub(crate) fn run_agent_use_persistent_watch_command(
     let profile = resolve_agent_use_profile(&options.repo)?;
     let normal_dot_codegraph = profile.repo_root.join(".codegraph");
     let normal_dot_codegraph_existed_before = normal_dot_codegraph.exists();
+    if let Some(problem) = agent_use_profile_root_access_problem(&profile) {
+        return Ok(agent_use_profile_access_unavailable_json(
+            &profile,
+            "watch",
+            Some("persistent"),
+            &problem,
+            normal_dot_codegraph_existed_before,
+        ));
+    }
     let started = Instant::now();
     let mut last_activity = started;
     let mut preflight_lock_retries = 0usize;
@@ -14647,6 +14825,9 @@ pub(crate) fn agent_use_watch_rejected_paths_json(
         "profile_name": profile.profile_name.clone(),
         "repo": path_string(&profile.repo_root),
         "repo_root": path_string(&profile.repo_root),
+        "repo_identity_label": profile.repo_identity_label.clone(),
+        "repo_identity_hash": profile.repo_identity_hash.clone(),
+        "repo_identity_short_hash": agent_use_repo_identity_short_hash(profile),
         "db": path_string(&profile.db_path),
         "db_path": path_string(&profile.db_path),
         "resolved_db": path_string(&profile.db_path),
@@ -15168,7 +15349,11 @@ pub(crate) fn agent_use_graph_delta_json(delta: &EntitySourceRoleDeltaReport) ->
 pub(crate) fn agent_use_watch_dependency_closure_degraded(
     summary: &IncrementalIndexSummary,
 ) -> bool {
-    summary.dependency_closure.closure_budget_hit || summary.dependency_closure.status == "degraded"
+    summary.dependency_closure.closure_budget_hit
+        || !summary
+            .dependency_closure
+            .degraded_relation_classes
+            .is_empty()
 }
 
 pub(crate) fn agent_use_watch_reason(
@@ -15290,6 +15475,9 @@ pub(crate) fn agent_use_status_base_json(
         "profile_name": profile.profile_name.clone(),
         "repo": path_string(&profile.repo_root),
         "repo_root": path_string(&profile.repo_root),
+        "repo_identity_label": profile.repo_identity_label.clone(),
+        "repo_identity_hash": profile.repo_identity_hash.clone(),
+        "repo_identity_short_hash": agent_use_repo_identity_short_hash(profile),
         "db": path_string(&profile.db_path),
         "db_path": path_string(&profile.db_path),
         "external_db_used": true,
@@ -15807,6 +15995,173 @@ pub(crate) fn agent_use_profile_parent_create_error_json(
     .map_err(|error| error.to_string())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentUseProfileAccessProblem {
+    pub(crate) status: &'static str,
+    pub(crate) problem_kind: &'static str,
+    pub(crate) message: String,
+}
+
+pub(crate) fn agent_use_profile_root_access_problem(
+    profile: &AgentUseProfile,
+) -> Option<AgentUseProfileAccessProblem> {
+    if cli_write_path_chaos_failpoint_enabled(AGENT_USE_PROFILE_PARENT_PERMISSION_DENIED_FAILPOINT)
+    {
+        return Some(AgentUseProfileAccessProblem {
+            status: "permission_denied",
+            problem_kind: "permission_denied",
+            message: format!(
+                "chaos_failpoint:{AGENT_USE_PROFILE_PARENT_PERMISSION_DENIED_FAILPOINT}"
+            ),
+        });
+    }
+    if cli_write_path_chaos_failpoint_enabled(
+        AGENT_USE_PROFILE_PARENT_FILESYSTEM_INACCESSIBLE_FAILPOINT,
+    ) {
+        return Some(AgentUseProfileAccessProblem {
+            status: "filesystem_inaccessible",
+            problem_kind: "filesystem_inaccessible",
+            message: format!(
+                "chaos_failpoint:{AGENT_USE_PROFILE_PARENT_FILESYSTEM_INACCESSIBLE_FAILPOINT}"
+            ),
+        });
+    }
+    let Some(data_root) = profile.profile_root.parent() else {
+        return Some(AgentUseProfileAccessProblem {
+            status: "filesystem_inaccessible",
+            problem_kind: "filesystem_inaccessible",
+            message: format!(
+                "agent-use profile root has no parent: {}",
+                profile.profile_root.display()
+            ),
+        });
+    };
+    match fs::metadata(data_root) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Some(AgentUseProfileAccessProblem {
+                status: "filesystem_inaccessible",
+                problem_kind: "filesystem_inaccessible",
+                message: format!(
+                    "agent-use profile data root is not a directory: {}",
+                    data_root.display()
+                ),
+            });
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Some(AgentUseProfileAccessProblem {
+                status: "permission_denied",
+                problem_kind: "permission_denied",
+                message: format!(
+                    "agent-use profile data root is not readable: {}: {error}",
+                    data_root.display()
+                ),
+            });
+        }
+        Err(error) => {
+            return Some(AgentUseProfileAccessProblem {
+                status: "filesystem_inaccessible",
+                problem_kind: "filesystem_inaccessible",
+                message: format!(
+                    "agent-use profile data root is not accessible: {}: {error}",
+                    data_root.display()
+                ),
+            });
+        }
+    }
+    match fs::metadata(&profile.profile_root) {
+        Ok(metadata) if metadata.is_dir() => None,
+        Ok(_) => Some(AgentUseProfileAccessProblem {
+            status: "filesystem_inaccessible",
+            problem_kind: "filesystem_inaccessible",
+            message: format!(
+                "agent-use profile root is not a directory: {}",
+                profile.profile_root.display()
+            ),
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Some(AgentUseProfileAccessProblem {
+                status: "permission_denied",
+                problem_kind: "permission_denied",
+                message: format!(
+                    "agent-use profile root is not readable: {}: {error}",
+                    profile.profile_root.display()
+                ),
+            })
+        }
+        Err(error) => Some(AgentUseProfileAccessProblem {
+            status: "filesystem_inaccessible",
+            problem_kind: "filesystem_inaccessible",
+            message: format!(
+                "agent-use profile root is not accessible: {}: {error}",
+                profile.profile_root.display()
+            ),
+        }),
+    }
+}
+
+pub(crate) fn agent_use_profile_access_unavailable_json(
+    profile: &AgentUseProfile,
+    command: &str,
+    subcommand: Option<&str>,
+    problem: &AgentUseProfileAccessProblem,
+    normal_dot_codegraph_existed_before: bool,
+) -> Value {
+    let normal_dot_codegraph = profile.repo_root.join(".codegraph");
+    let safety_labels = [
+        problem.status.to_string(),
+        "profile_root_inaccessible".to_string(),
+        "diagnostic_only".to_string(),
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>()
+    .into_iter()
+    .collect::<Vec<_>>();
+    json!({
+        "status": problem.status,
+        "command": command,
+        "subcommand": subcommand,
+        "command_namespace": "agent-use",
+        "profile_name": profile.profile_name.clone(),
+        "repo": path_string(&profile.repo_root),
+        "repo_root": path_string(&profile.repo_root),
+        "repo_identity_label": profile.repo_identity_label.clone(),
+        "repo_identity_hash": profile.repo_identity_hash.clone(),
+        "repo_identity_short_hash": agent_use_repo_identity_short_hash(profile),
+        "profile_root": path_string(&profile.profile_root),
+        "db": path_string(&profile.db_path),
+        "db_path": path_string(&profile.db_path),
+        "resolved_db": path_string(&profile.db_path),
+        "db_source": "agent-use profile",
+        "external_db_used": true,
+        "claimable": false,
+        "diagnostic_only": true,
+        "path_access_status": problem.status,
+        "path_access_error": problem.message,
+        "db_problem_kind": problem.problem_kind,
+        "profile_access": {
+            "status": problem.status,
+            "problem_kind": problem.problem_kind,
+            "profile_root": path_string(&profile.profile_root),
+            "db_path": path_string(&profile.db_path),
+            "existing_profile_state": "unknown_due_to_access",
+            "message": problem.message,
+            "not_false_not_indexed": true,
+        },
+        "safety_labels": safety_labels,
+        "recovery": agent_use_recovery_json(profile),
+        "recovery_commands": profile.recovery_commands.clone(),
+        "warnings": [problem.message.clone()],
+        "errors": [problem.message.clone()],
+        "normal_dot_codegraph_path": path_string(&normal_dot_codegraph),
+        "normal_dot_codegraph_created": !normal_dot_codegraph_existed_before && normal_dot_codegraph.exists(),
+        "normal_dot_codegraph_mutated": normal_dot_codegraph_existed_before != normal_dot_codegraph.exists(),
+        "public_claim": false,
+    })
+}
+
 pub(crate) fn write_agent_use_publish_state(
     profile: &AgentUseProfile,
     status: &str,
@@ -16225,6 +16580,32 @@ pub(crate) fn agent_use_dirty_evidence_output_fields(
         graph_status.as_str(),
         Some("corrupt" | "inaccessible" | "permission_denied")
     );
+    let graph_validation_status = agent_use_graph_validation_status(
+        source,
+        graph_proof_available,
+        graph_status.as_str().unwrap_or("unknown"),
+    );
+    let candidate_recall_status = agent_use_candidate_recall_status(&sidecar_statuses);
+    let candidate_recall_degraded = candidate_recall_status == "degraded";
+    let graph_validation_unaffected_by_optional_sidecars =
+        graph_proof_available && candidate_recall_degraded && !graph_db_corrupt_or_unavailable;
+    let agent_action = agent_use_agent_action_for_dirty_evidence(
+        &graph_validation_status,
+        graph_db_corrupt_or_unavailable,
+        graph_proof_available,
+    );
+    let candidate_recall_action = if candidate_recall_degraded {
+        "refresh_sidecars_if_candidate_recall_needed"
+    } else {
+        "none"
+    };
+    let sidecar_degradation_kind = if graph_db_corrupt_or_unavailable {
+        "graph_lifecycle"
+    } else if candidate_recall_degraded {
+        "candidate_layer_only"
+    } else {
+        "none"
+    };
 
     json!({
         "dirty_evidence_summary": {
@@ -16238,6 +16619,14 @@ pub(crate) fn agent_use_dirty_evidence_output_fields(
             "corrupt_count": agent_use_count_status(&sidecar_statuses, "corrupt"),
             "not_applicable_count": agent_use_count_status(&sidecar_statuses, "not_applicable"),
             "graph_proof_available": graph_proof_available,
+            "graph_validation_status": graph_validation_status.clone(),
+            "agent_action": agent_action,
+            "candidate_recall_status": candidate_recall_status,
+            "candidate_recall_degraded": candidate_recall_degraded,
+            "candidate_recall_action": candidate_recall_action,
+            "sidecar_degradation_kind": sidecar_degradation_kind,
+            "graph_validation_unaffected_by_optional_sidecars": graph_validation_unaffected_by_optional_sidecars,
+            "optional_sidecar_staleness_affects_graph_proof": false,
             "sidecar_corrupt_or_unavailable": sidecar_corrupt_or_unavailable,
             "graph_db_corrupt_or_unavailable": graph_db_corrupt_or_unavailable,
             "text_evidence_is_not_graph_proof": true,
@@ -16258,12 +16647,21 @@ pub(crate) fn agent_use_dirty_evidence_output_fields(
         "source_navigation_status": sidecar_statuses["source_navigation_status"].clone(),
         "routing_handle_status": sidecar_statuses["routing_handle_status"].clone(),
         "sidecar_statuses": sidecar_statuses,
+        "graph_validation_status": graph_validation_status,
+        "agent_action": agent_action,
+        "candidate_recall_status": candidate_recall_status,
+        "candidate_recall_degraded": candidate_recall_degraded,
+        "candidate_recall_action": candidate_recall_action,
+        "sidecar_degradation_kind": sidecar_degradation_kind,
+        "graph_validation_unaffected_by_optional_sidecars": graph_validation_unaffected_by_optional_sidecars,
+        "optional_sidecar_staleness_affects_graph_proof": false,
         "stale_non_proof_reasons": stale_non_proof_reasons,
         "claimability_effect": claimability_effect,
         "severity_effect": {
             "severity_model_preserved": true,
             "hard_interrupt_eligibility_unchanged": true,
             "stale_sidecar_not_hard_interrupt": true,
+            "top_level_status_not_degraded_by_optional_sidecars": true,
             "text_evidence_change_not_broken_graph_behavior": true,
             "candidate_vector_source_navigation_non_proof": true,
         },
@@ -16280,6 +16678,106 @@ fn agent_use_dirty_evidence_hard_interrupt_fields(fields: &Value) -> Value {
         "claimability_effect": fields.get("claimability_effect").cloned().unwrap_or_else(|| json!("not_applicable")),
         "severity_effect": fields.get("severity_effect").cloned().unwrap_or(Value::Null),
     })
+}
+
+fn agent_use_graph_validation_status(
+    source: &Value,
+    graph_proof_available: bool,
+    graph_status: &str,
+) -> String {
+    if let Some(status) = source
+        .pointer("/validation_packet/status")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            source
+                .pointer("/validation_packet/final_status")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| source.get("validation_status").and_then(Value::as_str))
+    {
+        return agent_use_normalize_graph_validation_status(status).to_string();
+    }
+    if source.get("new_graph_valid").and_then(Value::as_bool) == Some(true) {
+        return "ok".to_string();
+    }
+    if source.get("new_graph_valid").and_then(Value::as_bool) == Some(false) {
+        return "unknown".to_string();
+    }
+    if graph_proof_available && graph_status == "fresh" {
+        return "ok".to_string();
+    }
+    if matches!(
+        graph_status,
+        "corrupt" | "inaccessible" | "permission_denied" | "stale" | "missing" | "absent"
+    ) {
+        return "unknown".to_string();
+    }
+    "not_applicable".to_string()
+}
+
+fn agent_use_normalize_graph_validation_status(status: &str) -> &'static str {
+    match status {
+        "ok" => "ok",
+        "no_op" => "no_op",
+        "updated" => "updated",
+        "diagnostic_only" => "diagnostic_only",
+        "not_applicable" => "not_applicable",
+        "warning" | "warnings" => "warning",
+        "blocking" | "blocking_graph_error" | "blocked" => "blocking",
+        "unknown" | "unknown_with_recovery" => "unknown",
+        "tool_error" | "lifecycle_error" | "unsafe_db" => "unknown",
+        _ => "unknown",
+    }
+}
+
+fn agent_use_candidate_recall_status(sidecar_statuses: &Value) -> &'static str {
+    let keys = [
+        "candidate_layer_status",
+        "candidate_spool_query_index_status",
+        "vector_layer_status",
+        "path_evidence_status",
+        "source_navigation_status",
+        "routing_handle_status",
+    ];
+    let mut saw_applicable = false;
+    let mut saw_fresh = false;
+    for key in keys {
+        let status = sidecar_statuses
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        match status {
+            "fresh" => {
+                saw_applicable = true;
+                saw_fresh = true;
+            }
+            "not_applicable" | "diagnostic_only" => {}
+            "missing" | "stale" | "truncated" | "partial" | "corrupt" | "inaccessible"
+            | "permission_denied" | "rebuilding" | "publishing" | "unknown" => return "degraded",
+            _ => return "degraded",
+        }
+    }
+    if saw_fresh {
+        "fresh"
+    } else if saw_applicable {
+        "fresh"
+    } else {
+        "not_applicable"
+    }
+}
+
+fn agent_use_agent_action_for_dirty_evidence(
+    graph_validation_status: &str,
+    graph_db_corrupt_or_unavailable: bool,
+    graph_proof_available: bool,
+) -> &'static str {
+    match graph_validation_status {
+        "blocking" => "fix_blockers",
+        "warning" => "inspect_warnings",
+        "unknown" if graph_db_corrupt_or_unavailable || !graph_proof_available => "refresh_index",
+        "unknown" => "inspect_unknowns",
+        _ => "continue",
+    }
 }
 
 fn agent_use_append_dirty_evidence_expansion_handle(value: &mut Value, full_detail: bool) {
@@ -17604,6 +18102,18 @@ pub(crate) fn annotate_agent_use_output(
         "repo_root".to_string(),
         json!(path_string(&profile.repo_root)),
     );
+    object.insert(
+        "repo_identity_label".to_string(),
+        json!(profile.repo_identity_label.clone()),
+    );
+    object.insert(
+        "repo_identity_hash".to_string(),
+        json!(profile.repo_identity_hash.clone()),
+    );
+    object.insert(
+        "repo_identity_short_hash".to_string(),
+        json!(agent_use_repo_identity_short_hash(profile)),
+    );
     object.insert("db".to_string(), json!(path_string(&profile.db_path)));
     object.insert("db_path".to_string(), json!(path_string(&profile.db_path)));
     object.insert(
@@ -17739,6 +18249,9 @@ pub(crate) fn agent_use_unavailable_json(
         "profile_name": profile.profile_name.clone(),
         "repo": path_string(&profile.repo_root),
         "repo_root": path_string(&profile.repo_root),
+        "repo_identity_label": profile.repo_identity_label.clone(),
+        "repo_identity_hash": profile.repo_identity_hash.clone(),
+        "repo_identity_short_hash": agent_use_repo_identity_short_hash(profile),
         "db": path_string(&profile.db_path),
         "db_path": path_string(&profile.db_path),
         "resolved_db": path_string(&profile.db_path),
@@ -17815,6 +18328,9 @@ pub(crate) fn agent_use_watch_unavailable_json(
         "profile_name": profile.profile_name.clone(),
         "repo": path_string(&profile.repo_root),
         "repo_root": path_string(&profile.repo_root),
+        "repo_identity_label": profile.repo_identity_label.clone(),
+        "repo_identity_hash": profile.repo_identity_hash.clone(),
+        "repo_identity_short_hash": agent_use_repo_identity_short_hash(profile),
         "db": path_string(&profile.db_path),
         "db_path": path_string(&profile.db_path),
         "resolved_db": path_string(&profile.db_path),

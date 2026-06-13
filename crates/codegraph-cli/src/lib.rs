@@ -138,6 +138,7 @@ const AGENT_USE_PROFILE_PARENT_PERMISSION_DENIED_FAILPOINT: &str =
     "agent_use_profile_parent_permission_denied";
 const AGENT_USE_PROFILE_PARENT_FILESYSTEM_INACCESSIBLE_FAILPOINT: &str =
     "agent_use_profile_parent_filesystem_inaccessible";
+const AGENT_USE_GIT_METADATA_UNAVAILABLE_FAILPOINT: &str = "agent_use_git_metadata_unavailable";
 const AGENT_USE_WATCH_AFTER_DELTA_COMMIT_BEFORE_STATE_CLEAR_FAILPOINT: &str =
     "agent_use_watch_after_delta_commit_before_state_clear";
 const AGENT_USE_WATCH_DEFAULT_DEBOUNCE_MS: u64 = 250;
@@ -317,7 +318,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "agent-use",
-        usage: "codegraph-mcp agent-use <status|index|query|context-pack|mcp-config|watch|validate-edit> --repo <repo> --json\n  codegraph-mcp agent-use status --repo <repo> --json\n  codegraph-mcp agent-use index --repo <repo> [--fresh|--rebuild|--incremental] [--json]\n  codegraph-mcp agent-use query symbols|text|files|references|definitions|callers|callees|path|chain|unresolved-calls <args> --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use context-pack --repo <repo> --task <task> --agent-json\n  codegraph-mcp agent-use mcp-config --repo <repo> --json\n  codegraph-mcp agent-use watch --repo <repo> --json [--debounce-ms <ms>]\n  codegraph-mcp agent-use watch --repo <repo> --once --changed <path> [--changed <path>] --json\n  codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> [--changed <path>] --agent-json [--fail-on-blocking]",
+        usage: "codegraph-mcp agent-use <status|index|query|context-pack|mcp-config|watch|validate-edit> --repo <repo> --json\n  codegraph-mcp agent-use status --repo <repo> --json\n  codegraph-mcp agent-use index --repo <repo> [--fresh|--rebuild|--incremental] [--json]\n  codegraph-mcp agent-use query symbols|text|files|references|definitions|callers|callees|path|chain <args> --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use query unresolved-calls --repo <repo> [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] --agent-json\n  codegraph-mcp agent-use context-pack --repo <repo> --task <task> --agent-json\n  codegraph-mcp agent-use mcp-config --repo <repo> --json\n  codegraph-mcp agent-use watch --repo <repo> --json [--debounce-ms <ms>]\n  codegraph-mcp agent-use watch --repo <repo> --once --changed <path> [--changed <path>] --json\n  codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> [--changed <path>] --agent-json [--fail-on-blocking]",
         description: "Use the production agent profile outside the source tree.",
     },
     CommandSpec {
@@ -332,7 +333,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "query",
-        usage: "codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]\n  codegraph-mcp query symbols|text|files <query> [--limit <n>] [--candidate-spool <path> --early-candidates] [--concise|--agent-json] [--verbose|--debug|--explain]\n  codegraph-mcp query callers|callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain] <symbol>\n  codegraph-mcp query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets]",
+        usage: "codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]\n  codegraph-mcp query symbols|text|files <query> [--limit <n>] [--candidate-spool <path> --early-candidates] [--concise|--agent-json] [--verbose|--debug|--explain]\n  codegraph-mcp query callers|callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain] <symbol>\n  codegraph-mcp query unresolved-calls [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] [--offset <n>] [--json|--agent-json] [--no-snippets] [--db <path>]",
         description: "Query symbols, text, files, references, definitions, calls, chains, or relation paths.",
     },
     CommandSpec {
