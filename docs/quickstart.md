@@ -36,6 +36,24 @@ cargo build --workspace
 cargo test --workspace
 ```
 
+On Windows, a failure that says `An Application Control policy has blocked this
+file. (os error 4551)` before a Rust test body runs is a Windows application
+control/WDAC policy block on a freshly built executable. Diagnose the blocked
+path and local policy first; do not treat that message as a product test
+assertion failure.
+
+This checkout is not published as a `codegraph-mcp` crates.io package. For a
+local install from source, build the release binary or install the workspace
+package path:
+
+```powershell
+cargo build --release --bin codegraph-mcp
+cargo install --path crates\codegraph-cli
+```
+
+The path install may still contact the crates.io index unless your Cargo cache
+or offline settings already contain all dependencies.
+
 ## Initialize A Repo
 
 From a repository checkout:
@@ -88,7 +106,9 @@ test/mock evidence. Production context excludes test/mock/mixed/unknown
 evidence by default.
 
 Optional vector and nuance-rescue lanes can improve candidate recall for hard
-tasks, but they remain candidates until graph/source verification succeeds.
+tasks, but they remain candidates until graph/source verification succeeds. The
+current local vector provider is deterministic/token-based and must not be
+described as learned production semantic quality.
 
 ## Serve MCP
 
@@ -107,9 +127,11 @@ codegraph-mcp agent-use watch --repo <repo> --once --changed src\file.ts --json
 codegraph-mcp agent-use watch --repo <repo> --json
 ```
 
-The one-shot command updates a changed file only after the existing profile DB
-passes lifecycle preflight. Persistent watch debounces editor save bursts and
-schedules the same changed-file update primitive.
+Use the one-shot command first. It updates a changed file only after the
+existing profile DB passes lifecycle preflight, and it is the deterministic
+release-tested update primitive. Persistent watch debounces editor save bursts
+and schedules that same changed-file update primitive; it is a scheduler, not a
+second proof surface.
 
 ## Proof-Path UI
 

@@ -120,6 +120,28 @@ Relation and path agent JSON includes relation kind, exactness/provenance,
 source spans, evidence role, `proof_status`, and `proof_strength`;
 `graph_proof=true` is only for verified graph/source relation proof.
 
+The release binary prints a shared compact help block for the `agent-use`
+subcommands. That help block is the quick grammar surface; this reference
+records the parser behavior verified by the release command matrix, including
+`--explain` and `--audit-json` on validate-edit/context-pack.
+
+`agent-use query unresolved-calls` takes filters, not a positional symbol:
+
+```powershell
+codegraph-mcp agent-use query unresolved-calls --repo <repo> `
+  --path src\file.ts `
+  --class repo_local_candidate `
+  --limit 20 --agent-json
+```
+
+Accepted classes are `repo_local_candidate`, `external_dependency`,
+`builtin_or_std`, `macro_or_codegen`, and `dynamic_or_computed`. A positional
+argument such as `unresolved-calls missing_symbol` is rejected with a targeted
+message. By default, the lane reports unresolved `CALLS` rows that have no
+defining entity in the current graph and summarizes omitted CALLEE duplicates or
+definition-backed candidates. This lane is non-graph evidence; it supports
+warning/query parity for unresolved references and does not fabricate proof.
+
 `agent-use validate-edit` is the canonical agent/editor validation surface:
 
 ```powershell
@@ -260,11 +282,16 @@ ambiguous, and fuzzy modes as `query callers`.
 Runs cycle-safe call-chain recovery over `CALLS` edges, preserving exactness and
 confidence labels.
 
-`query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets|--include-snippets] [--db <path>]`
+`query unresolved-calls [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] [--offset <n>] [--json|--agent-json] [--no-snippets|--include-snippets] [--db <path>]`
 
-Lists retained unresolved calls labeled as `static_heuristic`. The exact DB path
-used by this command is checked with the same lifecycle/passport preflight as
-other read paths.
+Lists the unresolved-reference lane with optional path and class filters. The
+command does not accept a positional symbol/query argument. Output includes the
+bounded `unresolved_references` block populated in proof-mode DBs, and may also
+include the legacy `calls` array for retained heuristic-sidecar CALLS rows. The
+lane is `not_graph_proof`: it is useful for warning/query parity, but it does
+not prove a typed relation exists or is broken. The exact DB path used by this
+command is checked with the same lifecycle/passport preflight as other read
+paths.
 
 `query path <source> <target> [--limit <n>] [--concise|--agent-json]`
 
@@ -342,10 +369,11 @@ files, and minified JS. Persistent watch mode honors the configured DB path and
 runs lifecycle preflight before opening it.
 
 For production agent-use, prefer `agent-use watch --repo <repo> --once
---changed <path> --json` for deterministic updates, or `agent-use watch --repo
-<repo> --json` for persistent scheduling over the same update primitive. That
-wrapper owns the external production profile DB resolver and will not mutate
-repo-local `.codegraph`.
+--changed <path> --json` for deterministic updates. `agent-use watch --repo
+<repo> --json` is the persistent scheduling surface where used, and schedules
+the same once-delta update primitive rather than owning separate validation
+semantics. That wrapper owns the external production profile DB resolver and
+will not mutate repo-local `.codegraph`.
 
 `serve-mcp`
 
@@ -450,4 +478,5 @@ to an unsafe mode.
 
 See `docs/install.md` for GitHub release archive names, PowerShell and shell
 installer templates, cargo/cargo-binstall/Homebrew paths, and release metadata
-dry-run commands.
+dry-run commands. The current checkout is `publish = false`; do not document
+`cargo install codegraph-mcp` as a verified crates.io install path.

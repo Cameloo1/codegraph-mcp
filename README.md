@@ -25,6 +25,7 @@ is the only path to graph proof.
 | Use CodeGraph with a coding agent | [Agent Use](docs/agent-use.md) |
 | Understand the architecture and proof model | [Architecture Notes](docs/architecture.md) |
 | Understand benchmark and evidence boundaries | [Agent Benchmarking](docs/agent-benchmarking.md) |
+| Run local edit-guard diagnostics | [Agent Reliability Benchmark Lab](docs/agent-reliability-benchmark-lab.md) |
 | Contribute safely | [Contributing](CONTRIBUTING.md) |
 
 ## Current Status
@@ -86,8 +87,10 @@ cargo run --bin codegraph-mcp -- context-pack \
     --budget 1600
 ```
 
-If `codegraph-mcp` is on your `PATH`, drop the
-`cargo run --bin codegraph-mcp --` prefix. Full CLI surface:
+If the locally built `codegraph-mcp` binary is on your `PATH`, drop the
+`cargo run --bin codegraph-mcp --` prefix. This checkout is not published as a
+`codegraph-mcp` crates.io package; the source build or local path install is the
+authoritative setup path for now. Full CLI surface:
 [docs/cli-reference.md](docs/cli-reference.md).
 
 For a coding-agent loop, use the production profile:
@@ -97,6 +100,7 @@ cargo build --release --bin codegraph-mcp
 codegraph-mcp agent-use status --repo <repo> --json
 codegraph-mcp agent-use index --repo <repo> --json
 codegraph-mcp agent-use watch --repo <repo> --once --changed src/file.ts --json
+codegraph-mcp agent-use validate-edit --repo <repo> --changed src/file.ts --agent-json
 codegraph-mcp agent-use query symbols <symbol> --repo <repo> --limit 5 --agent-json
 codegraph-mcp agent-use context-pack --repo <repo> \
     --task "Trace the change impact" \
@@ -110,9 +114,16 @@ tree by default. Use `context-pack --mode test-impact --agent-json` when the
 agent explicitly needs test/mock evidence. Production context excludes
 test/mock/mixed/unknown evidence by default.
 
+Vector/semantic candidate lanes are optional recall aids. They are not learned
+production embeddings in this checkout, and they are not graph proof unless a
+typed graph/source verification path proves the claim.
+
 For long-lived agent use, keep the agent-facing index separate from temporary
 lab and development databases. See [Agent Use](docs/agent-use.md) and
 [Operational Profiles](docs/operational-profiles.md).
+The full task lifecycle, including when to ask for planning packets, focused
+query packets, validate-edit packets, and explain/audit detail, lives in
+[Agent Use](docs/agent-use.md#agent-task-lifecycle).
 
 ## Why It Exists
 
@@ -253,14 +264,18 @@ Start with [CONTRIBUTING.md](CONTRIBUTING.md). The short version:
 Branch: `benchmark-and-openevolve-lab`.
 
 Docs: [Agent Benchmarking](docs/agent-benchmarking.md),
-[Benchmark Guide](docs/benchmark-guide.md), [Benchmark Findings](docs/benchmark-findings.md).
+[Benchmark Guide](docs/benchmark-guide.md), [Benchmark Findings](docs/benchmark-findings.md),
+and [Agent Reliability Benchmark Lab](docs/agent-reliability-benchmark-lab.md).
 
 Current lab tracks:
 
 - internal gold retrieval;
 - RepoBench smoke and small retrieval runs;
 - CrossCodeEval parser/load smoke and retrieval runs;
-- SWE-bench Lite setup/preflight checks and blocked real-agent ladder tracking.
+- SWE-bench Lite setup/preflight checks and blocked real-agent ladder tracking;
+- Agent Guard Playground local diagnostics for bad edits caught, clean edits
+  passed, repairs cleared, proof/trust ledger discipline, packet usability, and
+  same-agent A/B scaffold invariants.
 
 Current provider arms: `baseline`, `rg_only`, `codegraph_exact_text`, and
 `codegraph_full`.

@@ -12,6 +12,7 @@ Schema files live in `docs/schemas/agent-json/`:
 - `query_symbols_agent_json.schema.json`
 - `query_text_agent_json.schema.json`
 - `query_files_agent_json.schema.json`
+- `query_unresolved_calls_agent_json.schema.json`
 - `context_pack_agent_json.schema.json`
 - `callers_callees_agent_json.schema.json`
 - `status_compact_json.schema.json`
@@ -148,6 +149,19 @@ available and compact lifecycle/truncation metadata.
 metadata when available, source spans, exactness/confidence labels, and evidence
 roles.
 
+`query_unresolved_calls_agent_json` returns bounded unresolved-reference lane
+rows plus lifecycle, claimability, and pagination state. It may include a
+legacy `calls` array, but the stable MVP3 release contract is the
+`unresolved_references` block with `filters`, `items`, `rows`,
+`not_graph_proof: true`, and pagination. This surface is warning/query parity
+for references that could not be resolved; it is not graph relation proof.
+
+`validation_packet_agent_json` may include an `unresolved_references` block for
+new or resolved unresolved references in changed files. That block is capped,
+contains counts and top escalated entries where present, and always remains
+non-graph evidence unless a separate exact graph/source finding proves a
+blocking relation or lifecycle violation.
+
 `context_pack_agent_json` returns bounded symbols, snippets, and proof paths
 with evidence role, classification reason/source when relevant, and production
 proof eligibility.
@@ -157,3 +171,7 @@ shape for status-like agent surfaces. The existing `status` and `doctor --json`
 commands still expose their historical rich diagnostic objects unless a compact
 mode is added; clients should treat these schemas as the compact lifecycle
 contract, not as a claim that the rich diagnostics were removed.
+
+`languages --json` is release capability metadata for language frontend
+support. It is intentionally outside the agent JSON packet schema set unless a
+future release promotes it as a stable coding-agent packet surface.

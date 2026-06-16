@@ -156,12 +156,20 @@ The output shape includes `validation_packet`, `hard_interrupt_available`,
 `hard_interrupt`, `must_fix_before_continuing`, `changed_files`,
 `rejected_paths`, `no_op_paths`, `warnings`, `unknowns`, `diagnostics`,
 `claimability`, `lifecycle`, `recovery_commands`, `final_severity`,
-finding-count fields, severity trace handles, `editor_policy`,
+finding-count fields, the `unresolved_references` warning lane when present,
+severity trace handles, `editor_policy`,
 `omitted_count`, `expansion_handles`, and `timings`. `blocking_graph_error`
 means the validation completed and found a stop condition. `warning`, `unknown`,
 and `diagnostic_only` values do not interrupt by default. Compact mode preserves
 safety-critical severity fields; `explain` and `audit-json` include severity
 mapping and aggregation trace details.
+
+Unresolved-reference findings are surfaced as non-graph evidence. They may warn
+or, under explicit policy, become blocking validation findings, but they are not
+typed relation proof by themselves. The corresponding CLI query surface is
+`agent-use query unresolved-calls --path <path> --class <class> --agent-json`;
+MCP clients should treat the same data as warning/query parity evidence rather
+than relation proof.
 
 `codegraph.validate_edit` may update the configured SQLite graph DB and bounded
 profile sidecars. It must not mutate source files, must not start a background
@@ -258,6 +266,10 @@ or unknown DB state is not silently trusted.
   preflight against the explicit DB or external production profile DB. Unsafe DB
   state or outside-repo changed paths are reported as structured validation
   preflight responses; missing `changed_files` input remains a tool error.
+- Blocking validation, warning validation, unknown validation, stale sidecar
+  diagnostics, and unsafe lifecycle validation packets are structured tool
+  results. Tool errors remain reserved for malformed input, protocol/runtime
+  failures, configuration failures, or internal failures that prevent a packet.
 - The generated agent-use MCP config points at the external production profile
   DB. MCP startup does not surprise-index a missing profile; use
   `agent-use index` first, then `agent-use watch --once --changed <path>` for
