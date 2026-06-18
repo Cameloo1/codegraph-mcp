@@ -3262,7 +3262,7 @@ fn git_metadata_unavailable_identity_does_not_drift() {
     );
 
     let _git_unavailable =
-        BundleFailpointEnvGuard::set(super::AGENT_USE_GIT_METADATA_UNAVAILABLE_FAILPOINT);
+        AgentUseFailpointGuard::set(super::AGENT_USE_GIT_METADATA_UNAVAILABLE_FAILPOINT);
     let degraded_profile = with_agent_use_data_root(&data_root, || {
         super::resolve_agent_use_profile(&repo).expect("degraded profile")
     });
@@ -3480,7 +3480,7 @@ fn permission_denied_not_false_not_indexed() {
     let repo = temp_repo();
     write_agent_use_context_fixture(&repo);
     let _failpoint =
-        BundleFailpointEnvGuard::set(super::AGENT_USE_PROFILE_PARENT_PERMISSION_DENIED_FAILPOINT);
+        AgentUseFailpointGuard::set(super::AGENT_USE_PROFILE_PARENT_PERMISSION_DENIED_FAILPOINT);
 
     for command in ["status", "mcp-config"] {
         let value = with_agent_use_data_root(&data_root, || {
@@ -4095,7 +4095,7 @@ fn agent_use_validate_edit_panic_failpoint_emits_structured_error_packet_and_sta
     );
 
     let packet = {
-        let _failpoint = BundleFailpointEnvGuard::set("agent_use_validation_panic_at_delta");
+        let _failpoint = AgentUseFailpointGuard::set("agent_use_validation_panic_at_delta");
         with_agent_use_data_root(&data_root, || {
             super::run_agent_use_command(&[
                 "validate-edit".to_string(),
@@ -5277,7 +5277,7 @@ fn agent_use_validate_edit_crash_after_commit_replays_blocking_finding() {
     // (the exact dogfood poisoning window).
     let crashed = {
         let _failpoint =
-            BundleFailpointEnvGuard::set("agent_use_validation_panic_at_lifecycle_reads");
+            AgentUseFailpointGuard::set("agent_use_validation_panic_at_lifecycle_reads");
         with_agent_use_data_root(&data_root, || {
             super::run_agent_use_command(&validate_edit_args_for(&repo))
         })
@@ -5458,7 +5458,7 @@ fn agent_use_index_clears_validation_journal_and_rechecks_blockers() {
     remove_agent_use_hard_interrupt_targets(&repo);
     let crashed = {
         let _failpoint =
-            BundleFailpointEnvGuard::set("agent_use_validation_panic_at_lifecycle_reads");
+            AgentUseFailpointGuard::set("agent_use_validation_panic_at_lifecycle_reads");
         with_agent_use_data_root(&data_root, || {
             super::run_agent_use_command(&validate_edit_args_for(&repo))
         })
@@ -7305,7 +7305,7 @@ fn agent_use_watch_once_post_commit_interrupt_reports_recovered_complete_db() {
         "src/service.js",
         "export function newPostCommitSymbol() {\n  return \"new\";\n}\n",
     );
-    let failpoint = BundleFailpointEnvGuard::set(
+    let failpoint = AgentUseFailpointGuard::set(
         super::AGENT_USE_WATCH_AFTER_DELTA_COMMIT_BEFORE_STATE_CLEAR_FAILPOINT,
     );
     let error = with_agent_use_data_root(&data_root, || {
@@ -9730,7 +9730,7 @@ fn agent_use_profile_durability_labels_lock_sidecars_permission_and_publish_stat
         super::resolve_agent_use_profile_with_data_root(&permission_repo, &data_root)
             .expect("permission profile");
     let permission_error = {
-        let _failpoint = BundleFailpointEnvGuard::set(
+        let _failpoint = AgentUseFailpointGuard::set(
             super::AGENT_USE_PROFILE_PARENT_PERMISSION_DENIED_FAILPOINT,
         );
         with_agent_use_data_root(&data_root, || {
@@ -9754,7 +9754,7 @@ fn agent_use_profile_durability_labels_lock_sidecars_permission_and_publish_stat
         super::resolve_agent_use_profile_with_data_root(&filesystem_repo, &data_root)
             .expect("filesystem profile");
     let filesystem_error = {
-        let _failpoint = BundleFailpointEnvGuard::set(
+        let _failpoint = AgentUseFailpointGuard::set(
             super::AGENT_USE_PROFILE_PARENT_FILESYSTEM_INACCESSIBLE_FAILPOINT,
         );
         with_agent_use_data_root(&data_root, || {
@@ -19180,6 +19180,24 @@ impl Drop for BundleFailpointEnvGuard {
         } else {
             std::env::remove_var("CODEGRAPH_WRITE_PATH_FAILPOINT");
         }
+    }
+}
+
+struct AgentUseFailpointGuard {
+    previous: Option<String>,
+}
+
+impl AgentUseFailpointGuard {
+    fn set(failpoint: &str) -> Self {
+        let previous =
+            super::set_cli_write_path_chaos_failpoint_override(Some(failpoint.to_string()));
+        Self { previous }
+    }
+}
+
+impl Drop for AgentUseFailpointGuard {
+    fn drop(&mut self) {
+        super::set_cli_write_path_chaos_failpoint_override(self.previous.take());
     }
 }
 

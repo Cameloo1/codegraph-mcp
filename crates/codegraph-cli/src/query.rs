@@ -1482,7 +1482,8 @@ pub(crate) fn query_unresolved_calls(
                 "count_query": if options.count_total { Value::String(UNRESOLVED_CALLS_COUNT_SQL.to_string()) } else { Value::Null },
             },
             "query_plan_analysis": query_plan_analysis,
-            "explain_query_plan_omitted": true,
+            "explain_query_plan": explain_plan,
+            "explain_query_plan_omitted": false,
             "full_detail_handle": "query.unresolved_calls.instrumentation.explain_query_plan",
             "elapsed_ms": {
                 "open_db": open_ms,

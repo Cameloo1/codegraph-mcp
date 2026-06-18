@@ -10181,11 +10181,17 @@ mod tests {
             &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
         ));
 
+        let outside = repo
+            .parent()
+            .expect("repo parent")
+            .join("outside-mcp-validate-edit.ts");
+        fs::write(&outside, "export function outside() {}\n").expect("outside file");
+
         let packet = ok(server.call_tool(
             MCP_VALIDATE_EDIT_TOOL_NAME,
             &json!({
                 "repo": path_string(&repo),
-                "changed_files": ["..\\outside.ts"],
+                "changed_files": [path_string(&outside)],
                 "mode": "audit-json"
             }),
         ));
@@ -10197,6 +10203,7 @@ mod tests {
         assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(false));
 
         fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_file(outside).expect("cleanup outside");
         fs::remove_dir_all(profile_root).expect("cleanup profile");
     }
 

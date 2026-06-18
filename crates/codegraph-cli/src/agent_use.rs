@@ -13,6 +13,12 @@ use serde_json::{json, Value};
 
 use crate::*;
 
+#[cfg(test)]
+thread_local! {
+    static CLI_WRITE_PATH_CHAOS_FAILPOINT_OVERRIDE: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 const AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT: usize = 3;
 // MVP3.9.5.3: the validation delta is bounded; overflow in a blocking-relevant
 // category caps the packet at unknown (`graph_delta_bounded`) instead of
@@ -863,6 +869,19 @@ pub(crate) fn agent_use_index_should_auto_fresh_rebuild(preflight: &DbLifecycleP
 }
 
 pub(crate) fn cli_write_path_chaos_failpoint_enabled(name: &str) -> bool {
+    #[cfg(test)]
+    if let Some(raw) = CLI_WRITE_PATH_CHAOS_FAILPOINT_OVERRIDE.with(|override_cell| {
+        override_cell
+            .borrow()
+            .as_ref()
+            .map(std::string::ToString::to_string)
+    }) {
+        return raw
+            .split(',')
+            .map(str::trim)
+            .any(|value| value == name || value == "agent_use_profile_all");
+    }
+
     std::env::var(WRITE_PATH_CHAOS_FAILPOINT_ENV)
         .ok()
         .is_some_and(|raw| {
@@ -870,6 +889,17 @@ pub(crate) fn cli_write_path_chaos_failpoint_enabled(name: &str) -> bool {
                 .map(str::trim)
                 .any(|value| value == name || value == "agent_use_profile_all")
         })
+}
+
+#[cfg(test)]
+pub(crate) fn set_cli_write_path_chaos_failpoint_override(
+    failpoint: Option<String>,
+) -> Option<String> {
+    CLI_WRITE_PATH_CHAOS_FAILPOINT_OVERRIDE.with(|override_cell| {
+        let previous = override_cell.borrow().clone();
+        *override_cell.borrow_mut() = failpoint;
+        previous
+    })
 }
 
 pub(crate) fn run_agent_use_query_command(args: &[String]) -> Result<Value, String> {
@@ -14801,11 +14831,7 @@ pub(crate) fn agent_use_watch_rejected_paths_json(
     );
     let rejected = !path_preflight.rejected_paths.is_empty();
     let status = if rejected { "rejected" } else { "no_op" };
-    let reason = if rejected {
-        "no_updateable_changed_paths_after_input_preflight"
-    } else {
-        "changed_paths_are_noop_after_input_preflight"
-    };
+    let reason = agent_use_watch_preflight_no_update_reason(path_preflight);
     let delta_state = if rejected { "blocked" } else { "ready" };
     let publish_strategy = if rejected {
         "no_update_when_changed_path_preflight_has_only_rejected_inputs"
@@ -15021,6 +15047,29 @@ pub(crate) fn agent_use_watch_deleted_paths(summary: &IncrementalIndexSummary) -
         .filter(|(_, reasons)| reasons.iter().any(|reason| reason == "deleted"))
         .map(|(path, _)| path.clone())
         .collect()
+}
+
+pub(crate) fn agent_use_watch_preflight_no_update_reason(
+    path_preflight: &ValidateEditChangedFilesPreflight,
+) -> &'static str {
+    if path_preflight.outside_repo_only
+        || (!path_preflight.rejected_paths.is_empty()
+            && path_preflight
+                .rejected_paths
+                .iter()
+                .all(|path| path.reason == "path_outside_repo"))
+    {
+        "one_or_more_changed_paths_are_outside_repo"
+    } else if !path_preflight.rejected_paths.is_empty() {
+        "no_updateable_changed_paths_after_input_preflight"
+    } else if !path_preflight.atomic_temp_paths.is_empty()
+        || !path_preflight.ignored_paths.is_empty()
+        || !path_preflight.generated_paths.is_empty()
+    {
+        "ignored_path_no_graph_changes"
+    } else {
+        "changed_paths_are_noop_after_input_preflight"
+    }
 }
 
 pub(crate) fn agent_use_watch_no_op_paths(summary: &IncrementalIndexSummary) -> Vec<String> {

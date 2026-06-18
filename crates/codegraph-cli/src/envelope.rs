@@ -133,7 +133,23 @@ pub(crate) fn compact_agent_use_agent_json_envelope(
             }
         }
         agent_use_compact_publish_state_field(value, &mut truncated_sections, &mut omitted_count);
+        agent_use_compact_lock_state_field(value, &mut truncated_sections, &mut omitted_count);
+        agent_use_compact_update_queue_state_field(
+            value,
+            &mut truncated_sections,
+            &mut omitted_count,
+        );
+        agent_use_compact_config_discovery_field(
+            value,
+            &mut truncated_sections,
+            &mut omitted_count,
+        );
         agent_use_compact_read_path_metrics_field(
+            value,
+            &mut truncated_sections,
+            &mut omitted_count,
+        );
+        agent_use_compact_query_instrumentation_field(
             value,
             &mut truncated_sections,
             &mut omitted_count,
@@ -698,6 +714,146 @@ pub(crate) fn compact_agent_use_publish_state_summary(publish_state: &Value) -> 
     })
 }
 
+pub(crate) fn agent_use_compact_lock_state_field(
+    value: &mut Value,
+    truncated_sections: &mut Vec<String>,
+    omitted_count: &mut u64,
+) {
+    let Some(lock_state) = value.get("lock_state").cloned() else {
+        return;
+    };
+    let compact = json!({
+        "active_update": lock_state.get("active_update").cloned().unwrap_or(Value::Null),
+        "publish_status": lock_state.get("publish_status").cloned().unwrap_or(Value::Null),
+        "db_locked": lock_state.get("db_locked").cloned().unwrap_or(Value::Null),
+        "retryable": lock_state.get("retryable").cloned().unwrap_or(Value::Null),
+        "retryable_labels": lock_state
+            .get("retryable_labels")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+        "blocked_label_count": lock_state
+            .get("blocked_labels")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default(),
+        "blocked_labels_ref": "errors",
+        "lock_retry_count": lock_state.get("lock_retry_count").cloned().unwrap_or(Value::Null),
+        "old_db_preserved": lock_state.get("old_db_preserved").cloned().unwrap_or(Value::Null),
+        "temp_db_claimable": lock_state.get("temp_db_claimable").cloned().unwrap_or(Value::Null),
+        "unrelated_repo_blocking": lock_state
+            .get("unrelated_repo_blocking")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "writer_queue_serialized": lock_state
+            .get("writer_queue_serialized")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "no_dot_codegraph_fallback": lock_state
+            .get("no_dot_codegraph_fallback")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "global_lock_scope": lock_state.get("global_lock_scope").cloned().unwrap_or(Value::Null),
+        "scope": lock_state.get("scope").cloned().unwrap_or(Value::Null),
+        "profile_name": lock_state.get("profile_name").cloned().unwrap_or(Value::Null),
+        "repo_identity_hash": lock_state.get("repo_identity_hash").cloned().unwrap_or(Value::Null),
+        "db_ref": "db",
+        "repo_ref": "repo",
+        "profile_root_ref": "profile_root",
+        "publish_state_ref": "publish_state",
+        "agent_json_compacted": true,
+    });
+    if let Some(object) = value.as_object_mut() {
+        object.insert("lock_state".to_string(), compact);
+    }
+    truncated_sections.push("lock_state".to_string());
+    *omitted_count = omitted_count.saturating_add(1);
+}
+
+pub(crate) fn agent_use_compact_update_queue_state_field(
+    value: &mut Value,
+    truncated_sections: &mut Vec<String>,
+    omitted_count: &mut u64,
+) {
+    let Some(queue_state) = value.get("update_queue_state").cloned() else {
+        return;
+    };
+    let compact = json!({
+        "status": queue_state.get("status").cloned().unwrap_or(Value::Null),
+        "active_update": queue_state.get("active_update").cloned().unwrap_or(Value::Null),
+        "queue_depth": queue_state.get("queue_depth").cloned().unwrap_or(Value::Null),
+        "updates_attempted": queue_state
+            .get("updates_attempted")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "updates_succeeded": queue_state
+            .get("updates_succeeded")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "old_db_preserved": queue_state.get("old_db_preserved").cloned().unwrap_or(Value::Null),
+        "temp_db_claimable": queue_state.get("temp_db_claimable").cloned().unwrap_or(Value::Null),
+        "unrelated_repo_blocking": queue_state
+            .get("unrelated_repo_blocking")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "writer_queue_serialized": queue_state
+            .get("writer_queue_serialized")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "persistent_watch_attached": queue_state
+            .get("persistent_watch_attached")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "auto_index_enabled": queue_state
+            .get("auto_index_enabled")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "max_concurrent_writers": queue_state
+            .get("max_concurrent_writers")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "last_error": queue_state.get("last_error").cloned().unwrap_or(Value::Null),
+        "last_update_summary": queue_state
+            .get("last_update_summary")
+            .map(compact_agent_use_last_delta_update_summary)
+            .unwrap_or(Value::Null),
+        "agent_json_compacted": true,
+    });
+    if let Some(object) = value.as_object_mut() {
+        object.insert("update_queue_state".to_string(), compact);
+    }
+    truncated_sections.push("update_queue_state".to_string());
+    *omitted_count = omitted_count.saturating_add(1);
+}
+
+pub(crate) fn agent_use_compact_config_discovery_field(
+    value: &mut Value,
+    truncated_sections: &mut Vec<String>,
+    omitted_count: &mut u64,
+) {
+    let Some(config) = value.get("config_discovery").cloned() else {
+        return;
+    };
+    if config
+        .get("agent_json_compacted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let compact = json!({
+        "status": config.get("status").cloned().unwrap_or(Value::Null),
+        "required": config.get("required").cloned().unwrap_or(Value::Null),
+        "diagnostic_only": config.get("diagnostic_only").cloned().unwrap_or(Value::Null),
+        "recovery_ref": config.get("recovery_ref").cloned().unwrap_or(Value::Null),
+        "agent_json_compacted": true,
+    });
+    if let Some(object) = value.as_object_mut() {
+        object.insert("config_discovery".to_string(), compact);
+    }
+    truncated_sections.push("config_discovery".to_string());
+    *omitted_count = omitted_count.saturating_add(1);
+}
+
 pub(crate) fn agent_use_compact_read_path_metrics_field(
     value: &mut Value,
     truncated_sections: &mut Vec<String>,
@@ -726,6 +882,27 @@ pub(crate) fn agent_use_compact_read_path_metrics_field(
     }
     truncated_sections.push("read_path_metrics".to_string());
     *omitted_count = omitted_count.saturating_add(1);
+}
+
+pub(crate) fn agent_use_compact_query_instrumentation_field(
+    value: &mut Value,
+    truncated_sections: &mut Vec<String>,
+    omitted_count: &mut u64,
+) {
+    let Some(instrumentation) = value
+        .get_mut("instrumentation")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    if instrumentation.remove("explain_query_plan").is_some() {
+        instrumentation.insert("explain_query_plan_omitted".to_string(), json!(true));
+        instrumentation
+            .entry("full_detail_handle".to_string())
+            .or_insert_with(|| json!("query.instrumentation.explain_query_plan"));
+        truncated_sections.push("instrumentation.explain_query_plan".to_string());
+        *omitted_count = omitted_count.saturating_add(1);
+    }
 }
 
 pub(crate) fn agent_use_compact_query_results_field(
@@ -832,7 +1009,10 @@ pub(crate) fn agent_use_enforce_hard_agent_json_budget(
 ) {
     let command = value.get("command").and_then(Value::as_str);
     let preserve_update_safety_state = matches!(command, Some("status" | "watch"));
+    let preserve_lifecycle_safety_state =
+        matches!(command, Some("status" | "watch" | "context-pack"));
     let preserve_rtds_safety_state = matches!(command, Some("status" | "watch" | "context-pack"));
+    let preserve_context_proof_state = matches!(command, Some("context-pack"));
     for key in [
         // Candidate diagnostics are large and not contract-required for compact
         // context-pack/status output, so they go before evidence and safety
@@ -889,14 +1069,25 @@ pub(crate) fn agent_use_enforce_hard_agent_json_budget(
         {
             continue;
         }
+        if preserve_lifecycle_safety_state && key == "db_lifecycle_read" {
+            continue;
+        }
+        if preserve_context_proof_state
+            && matches!(key, "proof_path_available" | "proof_path_count")
+        {
+            continue;
+        }
         if preserve_rtds_safety_state
             && matches!(
                 key,
                 "rtds_freshness"
                     | "graph_freshness"
                     | "dirty_state"
+                    | "graph_db_status"
                     | "graph_proof_available"
+                    | "candidate_spool_query_index_status"
                     | "candidate_spool_status"
+                    | "vector_audit_status"
                     | "vector_runtime_status"
                     | "candidate_only_available"
                     | "active_candidate_sources"
@@ -1049,7 +1240,7 @@ pub(crate) fn agent_use_finalize_agent_json_budget(
         }
     }
     let command = value.get("command").and_then(Value::as_str);
-    let preserve_watch_recovery_commands = matches!(command, Some("watch"));
+    let preserve_recovery_commands = matches!(command, Some("status" | "watch"));
     let preserve_status_safety_state = matches!(command, Some("status" | "watch"));
     let mut late_omitted = 0u64;
     if serialized_json_len(value) > max_output_bytes {
@@ -1069,7 +1260,7 @@ pub(crate) fn agent_use_finalize_agent_json_budget(
             if serialized_json_len(value) <= max_output_bytes {
                 break;
             }
-            if preserve_watch_recovery_commands && key == "recovery_commands" {
+            if preserve_recovery_commands && key == "recovery_commands" {
                 continue;
             }
             if preserve_status_safety_state && key == "stale_candidate_layers" {

@@ -8456,6 +8456,7 @@ pub(crate) fn compact_context_agent_db_lifecycle_read(response: &mut Value) -> b
         "artifact_freshness": lifecycle.get("artifact_freshness").cloned().unwrap_or(Value::Null),
         "passport_status": lifecycle.get("passport_status").cloned().unwrap_or(Value::Null),
         "path_access_status": lifecycle.get("path_access_status").cloned().unwrap_or(Value::Null),
+        "exact_db_path_checked": lifecycle.get("exact_db_path_checked").cloned().unwrap_or(Value::Null),
         "repo_root_status": lifecycle.get("repo_root_status").cloned().unwrap_or(Value::Null),
         "schema_status": lifecycle.get("schema_status").cloned().unwrap_or(Value::Null),
         "scope_status": lifecycle.get("scope_status").cloned().unwrap_or(Value::Null),

@@ -19197,6 +19197,17 @@ fn collect_repo_files_inner(
         record_scope_path_warning_label(root, path, "symlink_entry", label, &error, scope_report);
         return Ok(());
     }
+    if scope_metadata_is_reparse_point(&metadata) {
+        record_scope_path_warning_label(
+            root,
+            path,
+            "reparse_entry",
+            "path_mapping_unavailable",
+            "windows reparse point skipped without target resolution",
+            scope_report,
+        );
+        return Ok(());
+    }
 
     if file_type.is_dir() {
         match fs::canonicalize(path) {
@@ -19347,6 +19358,19 @@ fn scope_loop_label() -> &'static str {
     } else {
         "symlink_loop"
     }
+}
+
+#[cfg(windows)]
+fn scope_metadata_is_reparse_point(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn scope_metadata_is_reparse_point(_metadata: &fs::Metadata) -> bool {
+    false
 }
 
 fn scope_path_identity_key(path: &Path) -> String {
@@ -25360,6 +25384,21 @@ mod tests {
         }
     }
 
+    fn remove_dir_symlink_if_present(link: &Path) -> bool {
+        if fs::symlink_metadata(link).is_err() {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            let _ = fs::remove_dir(link);
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = fs::remove_file(link);
+        }
+        fs::symlink_metadata(link).is_err()
+    }
+
     fn graph_output_test_budgets() -> GraphOutputBudgets {
         GraphOutputBudgets {
             max_entities_per_file: 100,
@@ -28432,17 +28471,48 @@ pub fn spool_target(value: i32) -> i32 {
         .expect("write fixture");
         let link = repo.join("src").join("loop");
 
-        if try_create_dir_symlink(&repo, &link).is_ok() {
-            let scoped = collect_repo_files_with_scope(&repo, &IndexScopeOptions::default())
-                .expect("collect scope with symlink");
+        if cfg!(windows) {
+            let mut report = IndexScopeRuntimeReport::new(&IndexScopeOptions::default());
+            record_scope_path_warning_label(
+                &repo,
+                &link,
+                "reparse_entry",
+                "path_mapping_unavailable",
+                "windows reparse point skipped without target resolution",
+                &mut report,
+            );
             assert_eq!(
-                scoped
-                    .scope_report
+                report
                     .path_io_warning_counts
-                    .get("symlink_loop")
+                    .get("path_mapping_unavailable")
                     .copied(),
                 Some(1)
             );
+            fs::remove_dir_all(repo).expect("cleanup repo");
+            return;
+        }
+
+        if try_create_dir_symlink(&repo, &link).is_ok() {
+            let scoped = collect_repo_files_with_scope(&repo, &IndexScopeOptions::default())
+                .expect("collect scope with symlink");
+            let loop_warning_count = scoped
+                .scope_report
+                .path_io_warning_counts
+                .get("symlink_loop")
+                .or_else(|| {
+                    scoped
+                        .scope_report
+                        .path_io_warning_counts
+                        .get("junction_loop")
+                })
+                .or_else(|| {
+                    scoped
+                        .scope_report
+                        .path_io_warning_counts
+                        .get("path_mapping_unavailable")
+                })
+                .copied();
+            assert_eq!(loop_warning_count, Some(1), "{:?}", scoped.scope_report);
             assert!(
                 scoped.files.iter().all(|path| !path.starts_with(&link)),
                 "symlink traversal must not add duplicate source paths"
@@ -28466,7 +28536,9 @@ pub fn spool_target(value: i32) -> i32 {
             );
         }
 
-        fs::remove_dir_all(repo).expect("cleanup repo");
+        if remove_dir_symlink_if_present(&link) {
+            fs::remove_dir_all(repo).expect("cleanup repo");
+        }
     }
 
     #[test]
