@@ -5648,6 +5648,89 @@ fn agent_use_validate_edit_low_delta_cap_is_labeled_graph_delta_bounded() {
 }
 
 #[test]
+fn agent_use_validate_edit_truncated_unresolved_lane_is_labeled_bounded_not_silent_ok() {
+    // MVP3 stress-test Q8 regression: a changed file whose unresolved-reference
+    // lane is truncated at the per-file cap is INCOMPLETE for forward checks (a
+    // NEW hallucinated call appended past the cap is shed at index time). The
+    // run must be labeled bounded/unknown (never a silent ok), and resolved_count
+    // must be marked bounded instead of reporting phantom "fixes".
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(
+        &repo,
+        "Cargo.toml",
+        "[package]\nname = \"fixture-crate\"\nversion = \"0.0.0\"\n",
+    );
+    // 300 distinct unresolved local calls overflow the 256-row/file lane cap, so
+    // indexing writes an `unresolved_reference_lane_truncated` extraction warning.
+    let flood_source = |calls: usize| {
+        let mut source = String::from("pub fn flood(input: i32) -> i32 {\n");
+        for index in 0..calls {
+            source.push_str(&format!("    missing_fn_{index}(input);\n"));
+        }
+        source.push_str("    input\n}\n");
+        source
+    };
+    write_cli_fixture_file(&repo, "src/flood.rs", &flood_source(300));
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    // Edit: append one more nonexistent call. With 301 unresolved refs the lane
+    // is still truncated and the appended call lands past the cap (the exact
+    // forward-miss the stress test caught).
+    write_cli_fixture_file(&repo, "src/flood.rs", &flood_source(301));
+    let validate_args = vec![
+        "validate-edit".to_string(),
+        "--repo".to_string(),
+        path_string(&repo),
+        "--changed".to_string(),
+        "src/flood.rs".to_string(),
+        "--agent-json".to_string(),
+    ];
+    let packet =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit on truncated-lane file");
+
+    assert_ne!(
+        packet["status"].as_str(),
+        Some("ok"),
+        "a truncated unresolved-reference lane must never report a silent pass: {packet}"
+    );
+    let serialized = serde_json::to_string(&packet).unwrap_or_default();
+    assert!(
+        serialized.contains("unresolved_reference_lane_truncated"),
+        "the bounded-unknown finding must name the lane truncation: {packet}"
+    );
+    assert_eq!(
+        packet["unresolved_references"]["resolved_count_bounded"].as_bool(),
+        Some(true),
+        "resolved_count must be marked bounded when a changed file's lane was truncated: {packet}"
+    );
+    let truncated = packet["unresolved_references"]["lane_truncated_files"]
+        .as_array()
+        .expect("lane_truncated_files array");
+    assert!(
+        truncated.iter().any(|path| path
+            .as_str()
+            .unwrap_or_default()
+            .replace('\\', "/")
+            .ends_with("flood.rs")),
+        "the truncated changed file must be named: {packet}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
 fn agent_use_validate_edit_exhausted_edge_budget_is_labeled_bounded() {
     let _guard = lock_env_test();
     let data_root = temp_repo();

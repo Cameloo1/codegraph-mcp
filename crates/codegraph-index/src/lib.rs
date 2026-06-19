@@ -5057,6 +5057,16 @@ fn collect_normalized_facts_for_path(
     }
 
     if options.include_unresolved_references {
+        // Forward-hallucination detection reads NEW unresolved references from
+        // this snapshot's delta. The lane is already capped per file
+        // (UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE), so give it a DEDICATED
+        // budget: the shared per-path fact budget is spent on entities and the
+        // (bulk) edge facts read earlier, which on fact-dense files starves the
+        // unresolved lane out of the snapshot and makes the forward check go
+        // SILENTLY blind (validate-edit `new_count=0`, `status=ok` on a file
+        // with a genuinely new hallucinated call) — 2026-06-18 stress test, Q8 1d.
+        let mut unresolved_budget =
+            SnapshotPathBudget::new(UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE.max(1));
         for record in store.list_unresolved_references_by_file(repo_relative_path)? {
             let reference_class = record
                 .metadata
@@ -5065,7 +5075,7 @@ fn collect_normalized_facts_for_path(
                 .unwrap_or(REFERENCE_CLASS_DYNAMIC_OR_COMPUTED)
                 .to_string();
             push_fact(
-                budget,
+                &mut unresolved_budget,
                 facts,
                 NormalizedUnresolvedReferenceFact::new(
                     record.reference_id,
@@ -12327,6 +12337,17 @@ const RUST_BUILTIN_MACROS: &[&str] = &[
     "dbg", "matches", "include_str", "include_bytes", "env", "option_env", "concat", "stringify",
     "cfg", "line", "file", "column", "compile_error", "format_args",
 ];
+/// Rust prelude value/type/trait names that appear BARE (no `std::`/`core::`
+/// path prefix) and so are not caught by RUST_STD_ROOTS. Without this,
+/// `Ok(...)`/`Some(...)`/`Vec::new()` classify as repo_local_candidate and
+/// escalate as false-positive "likely hallucinated symbol" warnings on
+/// ordinary edits (2026-06-18 stress test, Q9).
+const RUST_PRELUDE: &[&str] = &[
+    "Ok", "Err", "Some", "None", "Option", "Result", "Vec", "String", "Box", "Copy", "Clone",
+    "Debug", "Default", "Drop", "Eq", "PartialEq", "Ord", "PartialOrd", "Hash", "From", "Into",
+    "TryFrom", "TryInto", "AsRef", "AsMut", "Iterator", "IntoIterator", "Send", "Sync", "Sized",
+    "ToString", "ToOwned",
+];
 const PYTHON_BUILTINS_AND_STDLIB: &[&str] = &[
     "print", "len", "range", "str", "int", "float", "bool", "list", "dict", "set", "tuple",
     "open", "isinstance", "issubclass", "super", "enumerate", "zip", "map", "filter", "sorted",
@@ -12455,7 +12476,7 @@ impl UnresolvedReferenceClassifier {
 
         match language {
             ReferenceLanguage::Rust => {
-                if RUST_STD_ROOTS.contains(&first) {
+                if RUST_STD_ROOTS.contains(&first) || RUST_PRELUDE.contains(&first) {
                     return REFERENCE_CLASS_BUILTIN_OR_STD;
                 }
             }
@@ -12721,6 +12742,22 @@ fn unresolved_reference_lane_relation(relation: RelationKind) -> bool {
     )
 }
 
+/// Cap-eviction priority for the unresolved-reference lane (lower = kept first
+/// when a file exceeds the per-file row cap). Repo-local candidates are the
+/// forward-hallucination signal and must survive eviction; known-good
+/// builtin/std and external-dependency references are dropped first
+/// (2026-06-18 stress test, Q8 1a).
+fn unresolved_reference_lane_class_priority(reference_class: &str) -> u8 {
+    match reference_class {
+        REFERENCE_CLASS_REPO_LOCAL_CANDIDATE => 0,
+        REFERENCE_CLASS_MACRO_OR_CODEGEN => 1,
+        REFERENCE_CLASS_DYNAMIC_OR_COMPUTED => 2,
+        REFERENCE_CLASS_EXTERNAL_DEPENDENCY => 3,
+        REFERENCE_CLASS_BUILTIN_OR_STD => 4,
+        _ => 5,
+    }
+}
+
 /// Persists reference-shaped unresolved references in ALL storage modes (Proof
 /// included). Rows are explicitly non-proof facts; on cap overflow a per-file
 /// extraction warning is written so validation can label the file bounded
@@ -12752,8 +12789,38 @@ fn persist_unresolved_reference_lane(
             && left.source_span == right.source_span
     });
     let total = lane_references.len();
+    // 1a (2026-06-18 stress test): when a file exceeds the per-file cap, keep the
+    // hallucination-relevant references first. A bare repo_local_candidate (no
+    // std/prelude/builtin/external/macro shape, no repo definition) is the forward
+    // hallucination signal; builtin/std/external/dynamic refs are known-good noise.
+    // Without this bias a NEW unresolved call could be evicted purely for sorting
+    // late by source span. Classification is computed once and reused for the row
+    // metadata. This changes only WHICH rows survive the cap, never the read order
+    // (the lane query re-sorts by span); files still over the cap remain labeled
+    // bounded/unknown by the validate-edit lane-truncation finding.
+    let mut classified = lane_references
+        .iter()
+        .map(|reference| {
+            (
+                *reference,
+                classifier.classify(reference, language, repo_relative_path),
+            )
+        })
+        .collect::<Vec<_>>();
+    classified.sort_by(|(left, left_class), (right, right_class)| {
+        unresolved_reference_lane_class_priority(left_class)
+            .cmp(&unresolved_reference_lane_class_priority(right_class))
+            // Newest source span first WITHIN a class, so an appended/edited
+            // unresolved reference survives the cap even when the file has more
+            // than the cap of SAME-class references (an mcp-server/lib.rs-scale
+            // file has >256 repo_local_candidate refs; class priority alone would
+            // still evict the latest-span one).
+            .then_with(|| right.source_span.start_line.cmp(&left.source_span.start_line))
+            .then_with(|| right.source_span.start_column.cmp(&left.source_span.start_column))
+            .then_with(|| left.reference_id.cmp(&right.reference_id))
+    });
     let mut rows = 0u64;
-    for reference in lane_references
+    for (reference, reference_class) in classified
         .iter()
         .take(UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE)
     {
@@ -12761,7 +12828,7 @@ fn persist_unresolved_reference_lane(
             "fact_class": "unresolved_reference",
             "persistence_lane": "unresolved_reference_lane",
             "not_graph_proof": true,
-            "reference_class": classifier.classify(reference, language, repo_relative_path),
+            "reference_class": *reference_class,
             "repo_relative_path": normalize_graph_path(repo_relative_path),
         });
         store.insert_unresolved_reference_after_file_delete(
@@ -30983,6 +31050,41 @@ pub fn caller() {
     }
 
     #[test]
+    fn unresolved_reference_lane_cap_keeps_repo_local_candidate_over_builtin() {
+        // 1a regression (2026-06-18 stress test): a file with more refs than the
+        // cap, where the only repo_local_candidate has the LATEST source span,
+        // must still keep that candidate — known-good builtin/std refs are evicted
+        // first so an appended hallucinated call is never silently shed by the cap.
+        let repo = temp_repo("unresolved-lane-priority");
+        let mut source = String::from("pub fn flood() {\n");
+        for index in 0..UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE {
+            source.push_str(&format!("    std::probe_noise_{index}();\n"));
+        }
+        // Lone repo-local candidate at the latest span: span-order alone evicts it.
+        source.push_str("    missing_local_fn_zzz();\n");
+        source.push_str("}\n");
+        write_test_file(&repo, "src/flood.rs", &source);
+        let db = repo.join("target").join("lane-priority.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        let store = SqliteGraphStore::open_read_only(&db).expect("store");
+        let lane = store
+            .list_unresolved_references_by_file("src/flood.rs")
+            .expect("lane");
+        assert_eq!(
+            lane.len(),
+            UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE,
+            "lane must cap rows per file"
+        );
+        assert!(
+            lane.iter().any(|row| row.name == "missing_local_fn_zzz"),
+            "the repo_local_candidate must survive the cap over builtin/std refs; got {lane:?}"
+        );
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
     fn update_newly_ignored_file_deletes_stale_facts_before_ignore_skip() {
         let repo = temp_repo("newly-ignored-stale");
         write_test_file(
@@ -35269,6 +35371,53 @@ pub fn caller() {
                 && entity.repo_relative_path != "src/other.ts"));
         assert!(!repo.join(".codegraph").exists());
 
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn snapshot_unresolved_lane_survives_shared_budget_exhaustion() {
+        // 1d regression (2026-06-18 stress test): the unresolved-reference lane is
+        // read LAST in the per-path snapshot, after entities/edges spend the shared
+        // budget. On fact-dense files that silently starved the forward-hallucination
+        // delta (validate-edit new_count=0 / status=ok on a genuinely new bad call).
+        // The lane now has a dedicated budget and must survive even when the shared
+        // per-path budget is fully exhausted.
+        let repo = temp_repo("snapshot-unresolved-budget");
+        write_test_file(
+            &repo,
+            "src/lib.rs",
+            "pub fn real_fn() -> i32 { 0 }\n\
+             pub fn big() {\n\
+             real_fn();\n    real_fn();\n    real_fn();\n\
+             cg_nonexistent_zzz();\n\
+             }\n",
+        );
+        let db = repo.join("target").join("snap-unresolved.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        let snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &[PathBuf::from("src/lib.rs")],
+            &[],
+            &db,
+            NormalizedFactSnapshotOptions {
+                max_facts_per_path: 3,
+                ..NormalizedFactSnapshotOptions::default()
+            },
+        )
+        .expect("snapshot");
+        assert!(
+            snapshot.omission.truncated,
+            "test must exhaust the shared per-path budget to be meaningful"
+        );
+        assert!(
+            snapshot
+                .facts
+                .unresolved_references
+                .iter()
+                .any(|fact| fact.name == "cg_nonexistent_zzz"),
+            "the unresolved ref must survive shared-budget exhaustion via its dedicated budget; got {:?}",
+            snapshot.facts.unresolved_references
+        );
         fs::remove_dir_all(repo).expect("cleanup");
     }
 

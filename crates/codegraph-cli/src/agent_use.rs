@@ -4925,8 +4925,10 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
     // the journal, so the next run replays the pending delta instead of
     // absorbing the unvalidated baseline (adversarial probe finding,
     // MVP3.9.5.3 gate).
+    let lane_truncated_files = agent_use_unresolved_lane_truncated_files(store, &changed_files);
     let validation_bounded = !wall_skipped_substages.is_empty()
         || edge_reverifications_skipped > 0
+        || !lane_truncated_files.is_empty()
         || delta.omission.entities_removed_omitted
             + delta.omission.edges_removed_omitted
             + delta.omission.edges_added_omitted
@@ -4977,6 +4979,24 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
             &format!(
                 "graph_delta_bounded: {blocking_relevant_omitted} blocking-relevant delta entries were omitted by the per-category cap ({}); run `agent-use index` and re-validate",
                 delta.omission.max_items_per_category
+            ),
+        ));
+    }
+    // MVP3 stress test Q8(1b): a per-file unresolved-reference lane truncated at
+    // the cap means a NEW hallucinated reference may have been shed at index
+    // time, so the forward check on that file is incomplete — label the run
+    // bounded (unknown ceiling) instead of letting it pass as ok.
+    if !lane_truncated_files.is_empty() {
+        let lane_truncated_count = lane_truncated_files.len();
+        findings.push(agent_use_graph_delta_bounded_unknown(
+            rule_by_id[CG_MVP3_GRAPH_DELTA_BOUNDED],
+            lifecycle.clone(),
+            json!({
+                "unresolved_reference_lane_truncated": true,
+                "lane_truncated_files": lane_truncated_files,
+            }),
+            &format!(
+                "unresolved_reference_lane_truncated: {lane_truncated_count} changed file(s) had more unresolved references than the per-file lane cap, so a NEW hallucinated reference may be silently dropped and forward checks are incomplete; run `agent-use index` and re-validate"
             ),
         ));
     }
@@ -5257,6 +5277,30 @@ fn agent_use_unresolved_reference_warning(
     finding
 }
 
+/// Changed files whose unresolved-reference lane was truncated at the per-file
+/// cap during indexing. A truncated lane is INCOMPLETE: a NEW hallucinated
+/// reference can be shed by the cap (forward miss), and pre-cap baseline rows
+/// look "resolved" when they were merely dropped (phantom resolved_count).
+/// Reads the extraction-warning sidecar written by
+/// `persist_unresolved_reference_lane` (2026-06-18 stress test, Q8 1b/1c).
+fn agent_use_unresolved_lane_truncated_files(
+    store: &SqliteGraphStore,
+    changed_files: &[String],
+) -> Vec<String> {
+    let mut truncated = Vec::new();
+    for path in changed_files {
+        let Ok(warnings) = store.list_extraction_warnings_by_file(path) else {
+            continue;
+        };
+        if warnings.iter().any(|(warning, _)| {
+            warning.starts_with(codegraph_index::UNRESOLVED_REFERENCE_LANE_TRUNCATED_WARNING)
+        }) {
+            truncated.push(normalize_repo_relative_path(path));
+        }
+    }
+    truncated
+}
+
 /// Evaluates the §1.3.4 CG_MVP3_REF_* family over the delta's new unresolved
 /// references on changed files and returns the §1.3.5 packet block. CALLEE
 /// rows are the callsite-side mirror of CALLS rows and are skipped so one
@@ -5357,12 +5401,23 @@ fn agent_use_collect_unresolved_reference_findings(
         }
     }
 
+    let lane_truncated_files = agent_use_unresolved_lane_truncated_files(store, changed_files);
+    let lane_truncated = !lane_truncated_files.is_empty();
+    let lane_truncated_set = lane_truncated_files
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    // A capped lane makes before-vs-after removals unreliable: baseline rows
+    // shed by the cap masquerade as "resolved". Only count removals on files
+    // whose lane is complete; surface the bound so the count isn't trusted blind.
     let resolved_count = delta
         .unresolved_references_removed
         .iter()
         .filter(|entry| {
+            let path = normalize_repo_relative_path(&entry.repo_relative_path);
             entry.relation != "CALLEE"
-                && changed_set.contains(&normalize_repo_relative_path(&entry.repo_relative_path))
+                && changed_set.contains(&path)
+                && !lane_truncated_set.contains(&path)
         })
         .count();
 
@@ -5370,6 +5425,8 @@ fn agent_use_collect_unresolved_reference_findings(
         "schema_version": 1,
         "new_count": new_count,
         "resolved_count": resolved_count,
+        "resolved_count_bounded": lane_truncated,
+        "lane_truncated_files": lane_truncated_files,
         "by_class": by_class,
         "escalated": escalated_inline,
         "escalated_total": escalated_total,
