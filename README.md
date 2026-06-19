@@ -17,36 +17,59 @@ context packets that a coding agent can inspect instead of guessing. Retrieval
 lanes can suggest likely files or symbols, but typed graph/source verification
 is the only path to graph proof.
 
-## Start Here
+<table>
+<tr>
+<td width="50%" valign="top">
 
-| Need | Go to |
-|---|---|
-| Build and run the first commands | [Quickstart](docs/quickstart.md) |
-| Use CodeGraph with a coding agent | [Agent Use](docs/agent-use.md) |
-| Understand the architecture and proof model | [Architecture Notes](docs/architecture.md) |
-| Understand benchmark and evidence boundaries | [Agent Benchmarking](docs/agent-benchmarking.md) |
-| Run local edit-guard diagnostics | [Agent Reliability Benchmark Lab](docs/agent-reliability-benchmark-lab.md) |
-| Contribute safely | [Contributing](CONTRIBUTING.md) |
+<h2>Start Here</h2>
 
-## Current Status
+<table>
+<thead>
+<tr><th>Need</th><th>Go to</th></tr>
+</thead>
+<tbody>
+<tr><td>Build and run the first commands</td><td><a href="docs/quickstart.md">Quickstart</a></td></tr>
+<tr><td>Use CodeGraph with a coding agent</td><td><a href="docs/agent-use.md">Agent Use</a></td></tr>
+<tr><td>Estimate local DB size and cold/warm timing</td><td><a href="docs/local-footprint.md">Local Footprint</a></td></tr>
+<tr><td>Understand the architecture and proof model</td><td><a href="docs/architecture.md">Architecture Notes</a></td></tr>
+<tr><td>Understand benchmark and evidence boundaries</td><td><a href="docs/agent-benchmarking.md">Agent Benchmarking</a></td></tr>
+<tr><td>Run local edit-guard diagnostics</td><td><a href="docs/agent-reliability-benchmark-lab.md">Agent Reliability Lab</a></td></tr>
+<tr><td>Contribute safely</td><td><a href="CONTRIBUTING.md">Contributing</a></td></tr>
+</tbody>
+</table>
 
-| Surface | Current behavior |
-|---|---|
-| Production agent profile | `agent-use` resolves a release-binary profile with the DB outside the source tree. |
-| Status and recovery | `agent-use status` is read-only and returns lifecycle blockers plus recovery commands. |
-| Indexing | `agent-use index` is the first mutating production-profile command. |
-| Query and context | `agent-use query` and `agent-use context-pack` read the same external profile DB and emit bounded agent JSON. |
-| Change tracking | `agent-use watch --once --changed` updates an existing safe profile DB; persistent watch schedules the same update primitive. |
-| Evidence boundary | Candidate, vector, text, and source-navigation evidence remain non-proof unless graph/source verification proves the relation. |
-| MCP | `agent-use mcp-config` emits a read-mostly MCP config tied to the external profile DB. |
+</td>
+<td width="50%" valign="top">
+
+<h2>Current Status</h2>
+
+<table>
+<thead>
+<tr><th>Surface</th><th>What it means</th></tr>
+</thead>
+<tbody>
+<tr><td>Agent-use profile</td><td>Keeps the agent-facing DB outside the source tree by default.</td></tr>
+<tr><td>Read-only status</td><td>Checks whether repo context is usable before indexing or querying.</td></tr>
+<tr><td>Indexing</td><td>Full indexing is manual; real-time delta sync can refresh changed files, and linter-style validation reports blockers, warnings, and unknowns.</td></tr>
+<tr><td>Query and context</td><td>Returns compact repo context for planning and inspection.</td></tr>
+<tr><td>Edit validation</td><td>Checks changed files after edits and reports blockers, warnings, and unknowns.</td></tr>
+<tr><td>MCP setup</td><td>Emits a read-mostly MCP config for agent clients.</td></tr>
+</tbody>
+</table>
+
+</td>
+</tr>
+</table>
 
 ## Product Shape
 
-![CodeGraph Agent Use Loop](docs/assets/readme/agent_use_loop.svg)
+<p align="center">
+  <img src="docs/assets/readme/agent_use_loop.svg" alt="CodeGraph Agent Use Loop" width="100%" />
+</p>
 
-| Roadmap To MVP4 | Retrieval Quality | SWE-bench Readiness |
+| Roadmap To MVP4 | Retrieval Quality | Local Agent Metrics |
 |---|---|---|
-| ![MVP2 To MVP4 Implementation Roadmap](docs/assets/readme/mvp2_to_mvp4_implementation_roadmap.png) | ![Retrieval Quality By Benchmark Track](docs/assets/readme/retrieval_quality_by_track.png) | ![SWE-bench Readiness Ladder](docs/assets/readme/swebench_readiness_ladder.png) |
+| ![MVP2 To MVP4 Implementation Roadmap](docs/assets/readme/mvp2_to_mvp4_implementation_roadmap.png) | ![Retrieval Quality By Benchmark Track](docs/assets/readme/retrieval_quality_by_track.png) | ![Local Agent Loop Metrics](docs/assets/readme/swebench_readiness_ladder.png) |
 
 These visuals summarize local diagnostic readiness and benchmark-lab evidence
 only. They are not official SWE-bench, RepoBench, CrossCodeEval, CGC, or `rg`
@@ -63,7 +86,9 @@ better-supported plans when CodeGraph is available alongside normal tools.
 
 ## Quickstart
 
-<img src="docs/assets/readme/codegraph_terminal.svg" alt="codegraph terminal animation" width="100%" />
+<p align="center">
+  <img src="docs/assets/readme/codegraph_terminal.svg" alt="codegraph terminal animation" width="100%" />
+</p>
 
 Build:
 
@@ -125,16 +150,30 @@ The full task lifecycle, including when to ask for planning packets, focused
 query packets, validate-edit packets, and explain/audit detail, lives in
 [Agent Use](docs/agent-use.md#agent-task-lifecycle).
 
-## Why It Exists
+## Measured Local Footprint
+
+These local release-binary measurements use the production `agent-use` profile
+with the DB outside the source tree. They are practical size examples, not
+public benchmark claims. Cold index is the one-time setup cost for a repo state;
+warm reads are the normal agent loop after the profile DB exists.
+
+| Repo / fixture | Source footprint | Files seen / indexed | Graph DB | Cold index | Warm status / query / context |
+|---|---:|---:|---:|---:|---:|
+| Smoke fixture | 0.52 MB | 3 / 2 | 0.55 MB | 1.07 s | 0.36 s / 0.44 s / 0.35 s |
+| codegraph-mcp clean worktree | 11.80 MB | 263 / 181 | 53.11 MB | 71.35 s | 0.79 s / 1.49 s / 1.87 s |
+
+In practice: expect to pay cold index when setting up a repo, after a stale or
+missing profile, or after a deliberate full refresh. Once warm, `status`,
+focused `query`, and `context-pack` calls are the usable tight-loop operations
+for planning, inspection, and validation while the agent continues using normal
+search, editing, and tests. Detailed sidecar sizes, read-path timings, method,
+and caveats are in [Local Footprint](docs/local-footprint.md).
+
+## Purpose
 
 Coding agents are strongest when they have current, compact, verifiable project
 memory. They are weakest when they have to infer APIs, schemas, call paths, data
 flow, tests, or security behavior from scattered text search results.
-
-Embeddings, BM25, binary signatures, and ranking help find candidates quickly.
-They do not prove correctness. Final context should come from graph facts,
-exactness labels, source spans, provenance, and stored path evidence, not from
-"top-k similar chunks."
 
 When reading any CodeGraph output, keep the evidence boundary intact:
 
@@ -142,8 +181,8 @@ When reading any CodeGraph output, keep the evidence boundary intact:
   proof.
 - Source-navigation and text evidence can guide inspection, but they do not
   prove typed graph relations.
-- Vector, binary, nuance, routing-packet, and candidate-spool lanes route
-  attention only until graph/source verification succeeds.
+- Retrieval hints can guide inspection, but they are not proof until
+  graph/source verification succeeds.
 - Local diagnostic benchmark output is useful for development, but it is not a
   public superiority claim.
 
@@ -166,7 +205,7 @@ exactness labels, and known limitations.
 - `codegraph-mcp serve-mcp` - expose local read-mostly MCP tools.
 - `codegraph-mcp serve-ui` - open the local Proof-Path UI.
 - `codegraph-mcp agent-use ...` - use the production agent profile with an
-  external DB and bounded agent JSON.
+  external DB and budget-aware agent JSON.
 - `codegraph-mcp languages` - inspect supported language frontends and proof
   limitations.
 
@@ -183,7 +222,22 @@ safely instead of silently reused.
 | WSL2 | Supported | Use Linux scripts inside an Ubuntu/Debian WSL2 distro |
 | macOS | Coming soon | Not currently tested, no CI coverage, not claimed as supported |
 
+## Safety and Scope
+
+- **Local first.** Default CLI graph state is local; production `agent-use`
+  graph state lives outside the source tree by default.
+- **Read-mostly MCP.** Source-editing and destructive tools are not exposed.
+- **Exact graph first.** Retrieval shortcuts cannot prove facts by themselves.
+- **Single-agent workflow.** Designed for one linear Codex-style coding agent,
+  not parallel subagent delegation.
+- **Honest measurement.** Unsupported, skipped, unavailable, or diagnostic data
+  stays `unknown`, `skipped`, or `diagnostic`. A timeout or partial run is never
+  counted as a win.
+
 ## Verification
+
+<details>
+<summary>Build, test, and smoke commands</summary>
 
 Core local checks:
 
@@ -211,17 +265,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke_index.ps1
 The deterministic fixture at [fixtures/smoke/basic_repo](fixtures/smoke/basic_repo)
 is the mandatory CI-sized smoke. Full-repo indexing is an explicit opt-in check.
 
-## Safety and Scope
-
-- **Local first.** Default CLI graph state is local; production `agent-use`
-  graph state lives outside the source tree by default.
-- **Read-mostly MCP.** Source-editing and destructive tools are not exposed.
-- **Exact graph first.** Retrieval shortcuts cannot prove facts by themselves.
-- **Single-agent workflow.** Designed for one linear Codex-style coding agent,
-  not parallel subagent delegation.
-- **Honest measurement.** Unsupported, skipped, unavailable, or diagnostic data
-  stays `unknown`, `skipped`, or `diagnostic`. A timeout or partial run is never
-  counted as a win.
+</details>
 
 ## Contributor Guide
 
@@ -265,7 +309,7 @@ Branch: `benchmark-and-openevolve-lab`.
 
 Docs: [Agent Benchmarking](docs/agent-benchmarking.md),
 [Benchmark Guide](docs/benchmark-guide.md), [Benchmark Findings](docs/benchmark-findings.md),
-and [Agent Reliability Benchmark Lab](docs/agent-reliability-benchmark-lab.md).
+and [Agent Reliability Lab](docs/agent-reliability-benchmark-lab.md).
 
 Current lab tracks:
 
